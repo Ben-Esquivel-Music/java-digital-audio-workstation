@@ -129,6 +129,18 @@ public final class WorkshopSelectionHostController {
     private EventBus.Subscription pluginUnloadedSubscription;
 
     /**
+     * Subscription handle for {@link PluginEvent.Loaded}: a newly inserted
+     * plugin shifts every {@code insertIndex} at or after its slot, so the
+     * affected {@code (trackId, insertIndex)} cache keys are stale. The event
+     * carries only a {@code pluginInstanceId} (no track) and the new plugin is
+     * not yet cached, so the whole plugin-panel cache is conservatively cleared
+     * — story 281's deferred S3 plugin-view cache invalidation, now a bus
+     * subscriber (story 294). {@code null} when {@link #eventBus} is null.
+     * Closed in {@link #dispose()}.
+     */
+    private EventBus.Subscription pluginLoadedSubscription;
+
+    /**
      * Subscription handle for {@link MixerEvent.ChannelRemoved}: removes
      * every cached plugin panel whose key's {@code trackId} equals the
      * event's {@code channelId()} (per the channelId==trackId invariant
@@ -227,7 +239,8 @@ public final class WorkshopSelectionHostController {
      *                               (Skill §14); must not be {@code null}
      * @param eventBus               story 283 — the bus this controller
      *                               subscribes to for cache-invalidation
-     *                               events ({@code PluginEvent.Unloaded},
+     *                               events ({@code PluginEvent.Loaded},
+     *                               {@code PluginEvent.Unloaded},
      *                               {@code MixerEvent.ChannelRemoved},
      *                               {@code ClipEvent.Removed}); may be
      *                               {@code null} for tests that don't
@@ -263,6 +276,10 @@ public final class WorkshopSelectionHostController {
                     PluginEvent.Unloaded.class,
                     DispatchMode.ON_UI_THREAD,
                     this::onPluginUnloaded);
+            this.pluginLoadedSubscription = this.eventBus.on(
+                    PluginEvent.Loaded.class,
+                    DispatchMode.ON_UI_THREAD,
+                    this::onPluginLoaded);
             this.channelRemovedSubscription = this.eventBus.on(
                     MixerEvent.ChannelRemoved.class,
                     DispatchMode.ON_UI_THREAD,
@@ -299,6 +316,18 @@ public final class WorkshopSelectionHostController {
         }
     }
 
+    private void onPluginLoaded(PluginEvent.Loaded ev) {
+        // A newly inserted plugin shifts the insertIndex of every slot at or
+        // after it, so cached panels keyed by the old indices are stale. The
+        // event carries no track and the new plugin is not yet cached, so we
+        // cannot scope the eviction — clear the whole plugin-panel cache. (The
+        // cache-hit slot-identity check would catch most of these lazily on the
+        // next access, but explicit invalidation keeps the §6.6 "reacts to
+        // InsertAdded" contract observable — story 281 S3 / story 294.) The
+        // clip-editor caches are structural-plugin-independent and untouched.
+        pluginPanelCache.clear();
+    }
+
     private void onChannelRemoved(MixerEvent.ChannelRemoved ev) {
         UUID trackId = ev.channelId();
         pluginPanelCache.entrySet().removeIf(
@@ -323,6 +352,10 @@ public final class WorkshopSelectionHostController {
         if (pluginUnloadedSubscription != null) {
             pluginUnloadedSubscription.close();
             pluginUnloadedSubscription = null;
+        }
+        if (pluginLoadedSubscription != null) {
+            pluginLoadedSubscription.close();
+            pluginLoadedSubscription = null;
         }
         if (channelRemovedSubscription != null) {
             channelRemovedSubscription.close();

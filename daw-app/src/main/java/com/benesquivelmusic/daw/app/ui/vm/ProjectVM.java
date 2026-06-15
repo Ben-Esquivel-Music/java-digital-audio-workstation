@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.DawProject.ChangeKind;
 import com.benesquivelmusic.daw.core.track.Track;
 
+import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.ReadOnlyStringProperty;
@@ -47,10 +48,18 @@ import java.util.function.Consumer;
  *
  * <h2>Threading</h2>
  *
- * <p>The core signal may fire on any thread; every property write is marshalled
- * onto the FX thread through the story-289 {@link FxDispatcher#onFx(Runnable)}
- * (§4.5). {@code ProjectVM} carries no continuous (per-frame) value, so it opens
- * no {@link FxDispatcher.ContinuousDoubleChannel}.</p>
+ * <p>The core signal may fire on any thread. The {@code NAME} and {@code DIRTY}
+ * slices re-read the live authority inside their write, so they take an inline
+ * fast-path when the signal already arrives on the FX thread (the common case —
+ * a UI edit calling {@code markDirty()}/{@code setName()}) and otherwise marshal
+ * through the story-289 {@link FxDispatcher#onFx(Runnable)} (§4.5). The inline
+ * path keeps the mirror faithful to {@link DawProject#isDirty()} /
+ * {@link DawProject#getName()} within the <em>same</em> FX pulse, so a derived
+ * Save-menu item or window title never reads a one-pulse-stale value. The
+ * {@code TRACKS} slice carries a <em>captured</em> snapshot across the thread
+ * boundary and so stays strictly deferred (see {@link #onCoreChange(ChangeKind)}).
+ * {@code ProjectVM} carries no continuous (per-frame) value, so it opens no
+ * {@link FxDispatcher.ContinuousDoubleChannel}.</p>
  *
  * <h2>Lifecycle</h2>
  *
@@ -111,8 +120,8 @@ public final class ProjectVM {
      */
     private void onCoreChange(ChangeKind kind) {
         switch (kind) {
-            case NAME -> dispatcher.onFx(() -> name.set(project.getName()));
-            case DIRTY -> dispatcher.onFx(() -> dirty.set(project.isDirty()));
+            case NAME -> applyOnFx(() -> name.set(project.getName()));
+            case DIRTY -> applyOnFx(() -> dirty.set(project.isDirty()));
             case TRACKS -> {
                 // Snapshot on the signaling (mutating) thread, not on the FX thread:
                 // the signal may fire off the FX thread (e.g. a background project
@@ -121,9 +130,41 @@ public final class ProjectVM {
                 // thread is still adding tracks would throw a
                 // ConcurrentModificationException; copy once here and hand the
                 // immutable snapshot across the thread boundary.
+                //
+                // Unlike NAME/DIRTY this carries a *captured* value, so it must NOT
+                // take the inline fast-path: an inline FX update could apply a newer
+                // snapshot before a still-queued off-thread one runs, leaving the
+                // older snapshot as the final state. Strict onFx FIFO ordering keeps
+                // the last snapshot last.
                 List<Track> snapshot = List.copyOf(project.getTracks());
                 dispatcher.onFx(() -> tracksBacking.setAll(snapshot));
             }
+        }
+    }
+
+    /**
+     * Applies a single-writer property write, running it inline when the caller is
+     * already on the FX thread and otherwise marshalling it through
+     * {@link FxDispatcher#onFx(Runnable)}. The inline fast-path is the one
+     * sanctioned by {@code FxDispatcher}'s contract — callers that want it test
+     * {@link Platform#isFxApplicationThread()} themselves rather than asking the
+     * dispatcher to run inline (its {@code onFx} always enqueues, deliberately).
+     * Running inline keeps the mirror faithful to the authority within a single FX
+     * pulse, so a UI edit that calls {@code markDirty()} / {@code setName()} on the
+     * FX thread updates this property — and anything derived from it (Save-menu
+     * enablement, the window title) — synchronously instead of one pulse late.
+     *
+     * <p>Only slices whose write re-reads the live authority ({@code NAME},
+     * {@code DIRTY}) use this; {@code TRACKS} carries a captured snapshot and stays
+     * strictly deferred (see {@link #onCoreChange(ChangeKind)}). Because the write
+     * re-reads the authority, an inline FX update interleaved with a still-queued
+     * off-thread one still converges on the current value regardless of order.</p>
+     */
+    private void applyOnFx(Runnable write) {
+        if (Platform.isFxApplicationThread()) {
+            write.run();
+        } else {
+            dispatcher.onFx(write);
         }
     }
 

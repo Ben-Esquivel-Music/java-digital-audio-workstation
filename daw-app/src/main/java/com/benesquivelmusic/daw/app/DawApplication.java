@@ -83,6 +83,18 @@ public final class DawApplication extends Application {
                 .uiExecutor(fxDispatcher::onFx)
                 .build();
         EventBusPublisher.setDefault(bus);
+
+        // Story 294 — the appearance managers are now subscribers, not
+        // poke-targets (Control Synchronization Design Book §6.7). Wire each
+        // one to the live bus here, AFTER it is installed: SettingsDialog
+        // publishes a UiEvent.SettingsApplied on apply and these subscriptions
+        // re-theme / re-densify / toggle Reduce Motion. The explicit seam (vs.
+        // self-subscribe at construction) is required because the manager
+        // singletons may construct before this bus exists; subscribeToSettings
+        // captures the bus once and is idempotent.
+        ThemeManager.getDefault().subscribeToSettings(bus);
+        DensityManager.getDefault().subscribeToSettings(bus);
+        MotionManager.getDefault().subscribeToSettings(bus);
         primaryStage.addEventHandler(WindowEvent.WINDOW_HIDDEN, _ -> {
             bus.close();
             if (EventBusPublisher.getDefault() == bus) {

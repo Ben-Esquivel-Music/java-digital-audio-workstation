@@ -1,6 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.theme;
 
+import com.benesquivelmusic.daw.app.ui.SettingsAppliedSubscriptions;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.sdk.event.DispatchMode;
+import com.benesquivelmusic.daw.sdk.event.EventBus;
+import com.benesquivelmusic.daw.sdk.event.UiEvent;
 
 import javafx.application.Platform;
 import javafx.beans.property.ObjectProperty;
@@ -214,6 +218,17 @@ public final class ThemeManager {
     private volatile String resolvedBaseUrl;
 
     /**
+     * The live {@link UiEvent.SettingsApplied} subscription, installed once at
+     * app startup by {@link #subscribeToSettings(EventBus)} with the production
+     * bus (and re-installable by a test with its own bus). Held so a repeat
+     * {@code subscribeToSettings} call can cancel the prior subscription first
+     * (idempotent re-wiring). {@code null} until first wired. This manager is an
+     * app-lifetime singleton, so the subscription is not auto-disposed — the bus
+     * itself is closed at shutdown, which cancels it.
+     */
+    private EventBus.Subscription settingsSubscription;
+
+    /**
      * Creates a {@code ThemeManager} backed by the given preferences
      * node, restoring the persisted active theme (defaulting to
      * {@link #DEFAULT_THEME} for a missing/unknown value) and persisting
@@ -282,6 +297,60 @@ public final class ThemeManager {
      */
     public void setActiveTheme(Theme theme) {
         activeTheme.set(Objects.requireNonNull(theme, "theme must not be null"));
+    }
+
+    // ── Settings-event subscription (story 294) ──────────────────────────────
+
+    /**
+     * Subscribes this manager to {@link UiEvent.SettingsApplied} on {@code bus}
+     * so that applying appearance settings in the Preferences dialog re-themes
+     * the UI <em>via the shared event layer</em> rather than the dialog poking
+     * this manager directly (Control Synchronization Design Book §6.7, story
+     * 294). On each event the manager parses {@code themeId} back to a
+     * {@link Theme} and calls its own {@link #setActiveTheme(Theme)} — which
+     * persists and live-reapplies through the existing active-theme listener.
+     *
+     * <p><strong>Idempotent re-wiring.</strong> Any prior subscription is
+     * cancelled first, so calling this twice (or swapping buses in a test) never
+     * leaks a stale subscription. The application installs this once at startup
+     * with the production bus, <em>after</em> {@code EventBusPublisher} is set;
+     * a test calls it with its own {@code DefaultEventBus}. The reference is
+     * captured here once (per the "capture a swappable singleton once" rule) —
+     * the apply path never re-reads {@code EventBusPublisher.getDefault()}.</p>
+     *
+     * <p>The subscription dispatches {@link DispatchMode#ON_UI_THREAD} because
+     * applying a theme touches scenes / dialog-panes / CSS. An unrecognised
+     * {@code themeId} is logged and ignored rather than thrown, so a malformed
+     * event never escapes onto the bus delivery thread.</p>
+     *
+     * @param bus the event bus to subscribe on (must not be {@code null})
+     * @return the (new) subscription handle, also retained internally
+     */
+    public synchronized EventBus.Subscription subscribeToSettings(EventBus bus) {
+        settingsSubscription = SettingsAppliedSubscriptions.resubscribe(
+                bus, settingsSubscription, this::applySettingsEvent);
+        return settingsSubscription;
+    }
+
+    /**
+     * Applies the theme slice of a {@link UiEvent.SettingsApplied} event by
+     * parsing its {@code themeId} and delegating to {@link #setActiveTheme}.
+     * Parses defensively: an unknown enum name (e.g. from a newer build) is
+     * logged at {@code WARNING} and ignored — the current theme is left
+     * untouched rather than throwing on the bus delivery thread.
+     */
+    private void applySettingsEvent(UiEvent.SettingsApplied event) {
+        Theme theme;
+        try {
+            theme = Theme.valueOf(event.themeId());
+        } catch (IllegalArgumentException | NullPointerException unknownTheme) {
+            LOG.log(Level.WARNING,
+                    "Ignoring SettingsApplied with unknown themeId '"
+                            + event.themeId() + "'; active theme left unchanged",
+                    unknownTheme);
+            return;
+        }
+        setActiveTheme(theme);
     }
 
     // ── Application ──────────────────────────────────────────────────────────

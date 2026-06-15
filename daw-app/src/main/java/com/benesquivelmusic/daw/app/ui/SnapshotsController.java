@@ -28,6 +28,9 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -56,39 +59,34 @@ final class SnapshotsController {
             DateTimeFormatter.ofPattern("HH:mm:ss");
 
     /**
-     * Callback interface implemented by {@code MainController} so the
-     * snapshot workflow can read project state, prompt the user, and
-     * apply a restored project without depending on the host class
-     * directly.
+     * The functional dependencies the composition root supplies — story 294
+     * replaces the callback-up {@code Host} interface (Control Synchronization
+     * Design Book §4.2/§9 "use publish/subscribe, not a callback-up {@code Host}
+     * for cross-surface updates") with a record of direct functional deps. The
+     * swappable owner stage / current project are {@link Supplier}s read live;
+     * the discard prompt is a {@link BooleanSupplier} (delegated to
+     * {@code ProjectLifecycleController.confirmDiscardUnsavedChanges()}); the
+     * restore cascade is a {@link BiConsumer} that swaps the project, resets the
+     * undo manager, and rebuilds the UI exactly as for an open-from-disk.
      */
-    interface Host {
-        /** The window that should own modal/secondary stages, may be {@code null} during startup. */
-        Stage ownerStage();
-
-        /** The currently-loaded project, never {@code null} once initialised. */
-        DawProject currentProject();
-
-        /**
-         * Prompts the user to save / discard / cancel any unsaved
-         * changes before a destructive operation (typically delegated to
-         * {@code ProjectLifecycleController.confirmDiscardUnsavedChanges()}).
-         *
-         * @return {@code true} if the operation should proceed
-         */
-        boolean confirmDiscardUnsavedChanges();
-
-        /**
-         * Replaces the currently-open project with the one restored from
-         * a snapshot. Implementations should swap the project, reset the
-         * undo manager, and rebuild the UI exactly as for an open-from-disk.
-         */
-        void applyRestoredProject(DawProject project, String label);
+    record Deps(
+            Supplier<Stage> ownerStage,
+            Supplier<DawProject> currentProject,
+            BooleanSupplier confirmDiscardUnsavedChanges,
+            BiConsumer<DawProject, String> applyRestoredProject) {
+        Deps {
+            Objects.requireNonNull(ownerStage, "ownerStage must not be null");
+            Objects.requireNonNull(currentProject, "currentProject must not be null");
+            Objects.requireNonNull(confirmDiscardUnsavedChanges,
+                    "confirmDiscardUnsavedChanges must not be null");
+            Objects.requireNonNull(applyRestoredProject, "applyRestoredProject must not be null");
+        }
     }
 
     private final SnapshotBrowserService service;
     private final CheckpointManager checkpointManager;
     private final ProjectManager projectManager;
-    private final Host host;
+    private final Deps deps;
     private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer = new ProjectDeserializer();
 
@@ -109,21 +107,21 @@ final class SnapshotsController {
     SnapshotsController(SnapshotBrowserService service,
                         CheckpointManager checkpointManager,
                         ProjectManager projectManager,
-                        Host host) {
-        this(service, checkpointManager, projectManager, host, FxDispatcher.getDefault());
+                        Deps deps) {
+        this(service, checkpointManager, projectManager, deps, FxDispatcher.getDefault());
     }
 
     SnapshotsController(SnapshotBrowserService service,
                         CheckpointManager checkpointManager,
                         ProjectManager projectManager,
-                        Host host,
+                        Deps deps,
                         FxDispatcher fxDispatcher) {
         this.service = Objects.requireNonNull(service, "service must not be null");
         this.checkpointManager = Objects.requireNonNull(checkpointManager,
                 "checkpointManager must not be null");
         this.projectManager = Objects.requireNonNull(projectManager,
                 "projectManager must not be null");
-        this.host = Objects.requireNonNull(host, "host must not be null");
+        this.deps = Objects.requireNonNull(deps, "deps must not be null");
         // May be null in a pure-unit context; SnapshotBrowser falls back to the
         // static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
@@ -189,7 +187,7 @@ final class SnapshotsController {
             browserStage = new Stage();
             browserStage.setTitle("Snapshots");
             browserStage.initModality(Modality.NONE);
-            Stage owner = host.ownerStage();
+            Stage owner = deps.ownerStage().get();
             if (owner != null) {
                 browserStage.initOwner(owner);
             }
@@ -215,7 +213,7 @@ final class SnapshotsController {
         dialog.setTitle("Create Checkpoint");
         dialog.setHeaderText("Save the current state as a recoverable checkpoint.");
         dialog.setContentText("Label (optional):");
-        Stage owner = host.ownerStage();
+        Stage owner = deps.ownerStage().get();
         if (owner != null) {
             dialog.initOwner(owner);
         }
@@ -243,7 +241,7 @@ final class SnapshotsController {
                 : trimmed;
         String content;
         try {
-            content = serializer.serialize(host.currentProject());
+            content = serializer.serialize(deps.currentProject().get());
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to serialize project for checkpoint", e);
             return null;
@@ -267,12 +265,12 @@ final class SnapshotsController {
         if (entry == null) {
             return;
         }
-        if (!host.confirmDiscardUnsavedChanges()) {
+        if (!deps.confirmDiscardUnsavedChanges().getAsBoolean()) {
             return;
         }
         try {
             DawProject project = loadFromEntry(entry);
-            host.applyRestoredProject(project, entry.label());
+            deps.applyRestoredProject().accept(project, entry.label());
             if (browserView != null) {
                 browserView.refresh();
             }
@@ -288,7 +286,7 @@ final class SnapshotsController {
         }
         try {
             DawProject snapshotProject = loadFromEntry(entry);
-            SnapshotDiff diff = SnapshotDiff.between(snapshotProject, host.currentProject());
+            SnapshotDiff diff = SnapshotDiff.between(snapshotProject, deps.currentProject().get());
             showDiffDialog(entry, diff);
         } catch (IOException | RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to compare snapshot " + entry.id(), e);
@@ -327,7 +325,7 @@ final class SnapshotsController {
         Stage diffStage = new Stage();
         diffStage.setTitle("Compare with current — " + entry.label());
         diffStage.initModality(Modality.NONE);
-        Stage owner = host.ownerStage();
+        Stage owner = deps.ownerStage().get();
         if (owner != null) {
             diffStage.initOwner(owner);
         }
@@ -342,7 +340,7 @@ final class SnapshotsController {
         alert.setTitle("Snapshot");
         alert.setHeaderText(header);
         alert.setContentText(cause.getMessage());
-        Stage owner = host.ownerStage();
+        Stage owner = deps.ownerStage().get();
         if (owner != null) {
             alert.initOwner(owner);
         }

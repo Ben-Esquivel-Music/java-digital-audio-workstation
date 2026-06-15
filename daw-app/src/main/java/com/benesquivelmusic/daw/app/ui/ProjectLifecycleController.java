@@ -41,6 +41,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
@@ -60,38 +62,41 @@ final class ProjectLifecycleController {
     private static final Logger LOG = Logger.getLogger(ProjectLifecycleController.class.getName());
 
     /**
-     * Callback interface implemented by the host controller to provide
-     * mutable project state access and coordination methods that remain
-     * in the top-level controller.
+     * The functional dependencies the composition root supplies — story 294
+     * replaces the callback-up {@code Host} interface (Control Synchronization
+     * Design Book §4.2/§9 "use publish/subscribe, not a callback-up {@code Host}
+     * for cross-surface updates") with a record of direct functional deps. The
+     * swappable project / undo manager are {@link Supplier}s read live, so a
+     * project load is reflected without rebuilding this controller; the action /
+     * cascade hooks are {@link Runnable}/{@link Consumer}.
+     *
+     * <p>The dirty flag is deliberately <em>not</em> a dep: it now lives on
+     * {@link DawProject} as the §1.2 "one dirty bit", so this controller reads
+     * {@code project().get().isDirty()} and calls {@code markDirty()}/
+     * {@code markClean()} directly through the project supplier — the imperative
+     * {@code MainController.projectDirty} boolean it used to poke is gone.</p>
      */
-    interface Host {
-        DawProject project();
-        void setProject(DawProject project);
-        UndoManager undoManager();
-        void setUndoManager(UndoManager undoManager);
-        boolean isProjectDirty();
-        void setProjectDirty(boolean dirty);
-        void resetTrackCounters();
-        void rebuildHistoryPanel();
-        void onProjectUIRebuild(MixerView mixerView);
-
-        /**
-         * Story 282 — Mission Control. Captures the live layout state
-         * to embed in the project file before save. Implementations
-         * return {@code LayoutManager.toJson()}, or {@code null} when
-         * the layout manager has not been installed (early startup /
-         * headless tests). Default returns {@code null}.
-         */
-        default String captureLayoutJson() { return null; }
-
-        /**
-         * Story 282 — applies a previously-persisted layout JSON blob
-         * after a project load. Implementations call
-         * {@code LayoutManager.fromJson(json)}; {@code null} is a valid
-         * input meaning "no persisted layout — fall back to Default".
-         * Default is a no-op.
-         */
-        default void applyLayoutJson(String json) { /* no-op */ }
+    record Deps(
+            Supplier<DawProject> project,
+            Consumer<DawProject> setProject,
+            Supplier<UndoManager> undoManager,
+            Consumer<UndoManager> setUndoManager,
+            Runnable resetTrackCounters,
+            Runnable rebuildHistoryPanel,
+            Consumer<MixerView> onProjectUIRebuild,
+            Supplier<String> captureLayoutJson,
+            Consumer<String> applyLayoutJson) {
+        Deps {
+            Objects.requireNonNull(project, "project must not be null");
+            Objects.requireNonNull(setProject, "setProject must not be null");
+            Objects.requireNonNull(undoManager, "undoManager must not be null");
+            Objects.requireNonNull(setUndoManager, "setUndoManager must not be null");
+            Objects.requireNonNull(resetTrackCounters, "resetTrackCounters must not be null");
+            Objects.requireNonNull(rebuildHistoryPanel, "rebuildHistoryPanel must not be null");
+            Objects.requireNonNull(onProjectUIRebuild, "onProjectUIRebuild must not be null");
+            Objects.requireNonNull(captureLayoutJson, "captureLayoutJson must not be null");
+            Objects.requireNonNull(applyLayoutJson, "applyLayoutJson must not be null");
+        }
     }
 
     private final ProjectManager projectManager;
@@ -101,7 +106,7 @@ final class ProjectLifecycleController {
     private final Label checkpointLabel;
     private final BorderPane rootPane;
     private final VBox trackListPanel;
-    private final Host host;
+    private final Deps deps;
     /** Story 189 — engine for {@code .dawz} archive save/restore. */
     private final ProjectArchiver projectArchiver;
     /**
@@ -120,10 +125,10 @@ final class ProjectLifecycleController {
                                Label checkpointLabel,
                                BorderPane rootPane,
                                VBox trackListPanel,
-                               Host host,
+                               Deps deps,
                                ProjectArchiver projectArchiver) {
         this(projectManager, sessionInterchangeController, notificationBar,
-                statusBarLabel, checkpointLabel, rootPane, trackListPanel, host,
+                statusBarLabel, checkpointLabel, rootPane, trackListPanel, deps,
                 projectArchiver, FxDispatcher.getDefault());
     }
 
@@ -134,7 +139,7 @@ final class ProjectLifecycleController {
                                Label checkpointLabel,
                                BorderPane rootPane,
                                VBox trackListPanel,
-                               Host host,
+                               Deps deps,
                                ProjectArchiver projectArchiver,
                                FxDispatcher fxDispatcher) {
         this.projectManager = Objects.requireNonNull(projectManager, "projectManager must not be null");
@@ -145,7 +150,7 @@ final class ProjectLifecycleController {
         this.checkpointLabel = Objects.requireNonNull(checkpointLabel, "checkpointLabel must not be null");
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.trackListPanel = Objects.requireNonNull(trackListPanel, "trackListPanel must not be null");
-        this.host = Objects.requireNonNull(host, "host must not be null");
+        this.deps = Objects.requireNonNull(deps, "deps must not be null");
         this.projectArchiver = Objects.requireNonNull(projectArchiver, "projectArchiver must not be null");
         // May be null in a pure-unit context; postFx() / the leaf views fall
         // back to the static seam, preserving today's behaviour byte-for-byte.
@@ -176,16 +181,16 @@ final class ProjectLifecycleController {
         try {
             if (projectManager.getCurrentProject() == null) {
                 Path tempDir = Files.createTempDirectory("daw-project-");
-                projectManager.createProject(host.project().getName(), tempDir);
+                projectManager.createProject(deps.project().get().getName(), tempDir);
             }
             // Story 282 — capture the live layout state into the project
-            // model before serialisation. {@code null} from the host
+            // model before serialisation. {@code null} from the supplier
             // clears the field so legacy projects round-trip byte-
             // identical when the layout manager is not installed.
-            host.project().setLayoutJson(host.captureLayoutJson());
-            projectManager.saveDawProject(host.project());
+            deps.project().get().setLayoutJson(deps.captureLayoutJson().get());
+            projectManager.saveDawProject(deps.project().get());
             projectManager.saveProject();
-            host.setProjectDirty(false);
+            deps.project().get().markClean();
             int count = projectManager.getCheckpointManager().getCheckpointCount();
             checkpointLabel.setText("Saved (checkpoint #" + count + ")");
             checkpointLabel.setGraphic(IconNode.of(DawIcon.SUCCESS, 12));
@@ -208,16 +213,16 @@ final class ProjectLifecycleController {
             return;
         }
         resetProjectState();
-        host.setProject(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
-        host.setUndoManager(new UndoManager());
-        host.rebuildHistoryPanel();
-        host.resetTrackCounters();
-        host.setProjectDirty(false);
+        deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
+        deps.setUndoManager().accept(new UndoManager());
+        deps.rebuildHistoryPanel().run();
+        deps.resetTrackCounters().run();
+        deps.project().get().markClean();
         rebuildUI();
         // Story 282 — Reset layouts to the built-in Default so that a
         // previously opened project's saved layouts don't leak into the
         // new project.
-        host.applyLayoutJson(null);
+        deps.applyLayoutJson().accept(null);
         statusBarLabel.setText("New project created");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
         notificationBar.show(NotificationLevel.SUCCESS, "New project created");
@@ -288,12 +293,12 @@ final class ProjectLifecycleController {
         try {
             SessionImportResult result = sessionInterchangeController.importSession(selected.toPath());
             resetProjectState();
-            host.setProject(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
-            host.setUndoManager(new UndoManager());
-            host.rebuildHistoryPanel();
-            host.resetTrackCounters();
-            sessionInterchangeController.applySessionData(result.sessionData(), host.project());
-            host.setProjectDirty(true);
+            deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
+            deps.setUndoManager().accept(new UndoManager());
+            deps.rebuildHistoryPanel().run();
+            deps.resetTrackCounters().run();
+            sessionInterchangeController.applySessionData(result.sessionData(), deps.project().get());
+            deps.project().get().markDirty();
             rebuildUI();
 
             String summary = sessionInterchangeController.buildImportSummary(result);
@@ -328,7 +333,7 @@ final class ProjectLifecycleController {
         }
         try {
             SessionExportResult result = sessionInterchangeController.exportSession(
-                    host.project(), selected.toPath(), host.project().getName());
+                    deps.project().get(), selected.toPath(), deps.project().get().getName());
 
             String message = "Session exported to " + result.outputPath().getFileName();
             if (!result.warnings().isEmpty()) {
@@ -378,7 +383,7 @@ final class ProjectLifecycleController {
      * size.</p>
      */
     void onArchiveProject() {
-        DawProject current = host.project();
+        DawProject current = deps.project().get();
         if (current == null) {
             notificationBar.show(NotificationLevel.ERROR, "No project to archive");
             return;
@@ -622,7 +627,7 @@ final class ProjectLifecycleController {
      *         {@code false} if the user cancelled or saving failed
      */
     boolean confirmDiscardUnsavedChanges() {
-        if (!host.isProjectDirty()) {
+        if (!deps.project().get().isDirty()) {
             return true;
         }
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
@@ -662,17 +667,17 @@ final class ProjectLifecycleController {
                         projectManager.getCurrentProject().name(),
                         AudioFormat.STUDIO_QUALITY);
             }
-            host.setProject(dawProject);
-            host.setUndoManager(new UndoManager());
-            host.rebuildHistoryPanel();
-            host.resetTrackCounters();
-            host.setProjectDirty(false);
+            deps.setProject().accept(dawProject);
+            deps.setUndoManager().accept(new UndoManager());
+            deps.rebuildHistoryPanel().run();
+            deps.resetTrackCounters().run();
+            deps.project().get().markClean();
             rebuildUI();
             // Story 282 — Mission Control. Apply the layout JSON blob
             // embedded in the project file (may be {@code null} for
             // legacy projects, in which case the layout manager falls
             // back to the Default built-in).
-            host.applyLayoutJson(dawProject.getLayoutJson());
+            deps.applyLayoutJson().accept(dawProject.getLayoutJson());
             statusBarLabel.setText("Opened: " + projectDir.getFileName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
             notificationBar.show(NotificationLevel.SUCCESS,
@@ -754,12 +759,12 @@ final class ProjectLifecycleController {
                 // No backup yet: the migrated DawProject lives only in
                 // memory, so abandoning is a complete rollback.
                 resetProjectState();
-                host.setProject(new DawProject("Untitled Project",
+                deps.setProject().accept(new DawProject("Untitled Project",
                         AudioFormat.STUDIO_QUALITY));
-                host.setUndoManager(new UndoManager());
-                host.rebuildHistoryPanel();
-                host.resetTrackCounters();
-                host.setProjectDirty(false);
+                deps.setUndoManager().accept(new UndoManager());
+                deps.rebuildHistoryPanel().run();
+                deps.resetTrackCounters().run();
+                deps.project().get().markClean();
                 rebuildUI();
                 statusBarLabel.setText("Rolled back: discarded migrated project");
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
@@ -811,7 +816,7 @@ final class ProjectLifecycleController {
         header.getStyleClass().add("panel-header");
         // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
-        MixerView newMixerView = new MixerView(host.project(), host.undoManager(), fxDispatcher);
-        host.onProjectUIRebuild(newMixerView);
+        MixerView newMixerView = new MixerView(deps.project().get(), deps.undoManager().get(), fxDispatcher);
+        deps.onProjectUIRebuild().accept(newMixerView);
     }
 }

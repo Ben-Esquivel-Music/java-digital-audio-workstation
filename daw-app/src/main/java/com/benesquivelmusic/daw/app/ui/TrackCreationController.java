@@ -10,11 +10,14 @@ import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 /**
@@ -27,26 +30,35 @@ final class TrackCreationController {
 
     private static final Logger LOG = Logger.getLogger(TrackCreationController.class.getName());
 
-    interface Host {
-        DawProject project();
-        UndoManager undoManager();
-        TrackStripController trackStripController();
-        MixerView mixerView();
-        javafx.scene.layout.VBox trackListPanel();
-        void updateArrangementPlaceholder();
-        void updateUndoRedoState();
-        void markProjectDirty();
-        void updateStatusBar(String text, DawIcon icon);
-        void showNotification(NotificationLevel level, String message);
+    /**
+     * Story 294 — direct functional deps replace the callback-up {@code Host}
+     * (Control Synchronization Design Book §4.2/§9). The swappable project /
+     * undo manager / track-strip controller / mixer view are live
+     * {@link Supplier}s (a project load is reflected without rebuilding this
+     * controller); undo-menu/dirty/status/notification are {@link Runnable}/
+     * {@link BiConsumer} sinks. The old {@code updateArrangementPlaceholder}
+     * hook is gone — the arrangement placeholder binds {@code ProjectVM.tracks}
+     * now (story 293), so the add/undo paths no longer poke it.
+     */
+    record Deps(
+            Supplier<DawProject> project,
+            Supplier<UndoManager> undoManager,
+            Supplier<TrackStripController> trackStripController,
+            Supplier<MixerView> mixerView,
+            Supplier<VBox> trackListPanel,
+            Runnable updateUndoRedoState,
+            Runnable markProjectDirty,
+            BiConsumer<String, DawIcon> updateStatusBar,
+            BiConsumer<NotificationLevel, String> showNotification) {
     }
 
-    private final Host host;
+    private final Deps deps;
     private final AudioDeviceManager audioDeviceManager;
     private int audioTrackCounter;
     private int midiTrackCounter;
 
-    TrackCreationController(Host host, AudioDeviceManager audioDeviceManager) {
-        this.host = host;
+    TrackCreationController(Deps deps, AudioDeviceManager audioDeviceManager) {
+        this.deps = deps;
         this.audioDeviceManager = audioDeviceManager;
     }
 
@@ -68,40 +80,38 @@ final class TrackCreationController {
         AudioDeviceInfo selectedDevice = selected.get();
         audioTrackCounter++;
         String name = "Audio " + audioTrackCounter;
-        host.undoManager().execute(new UndoableAction() {
+        deps.undoManager().get().execute(new UndoableAction() {
             private Track track;
             private HBox trackItem;
             private boolean initialExecute = true;
             @Override public String description() { return "Add Audio Track: " + name; }
             @Override public void execute() {
                 if (initialExecute) {
-                    track = host.project().createAudioTrack(name);
+                    track = deps.project().get().createAudioTrack(name);
                     track.setInputDeviceIndex(selectedDevice.index());
-                    trackItem = host.trackStripController().addTrackToUI(track);
+                    trackItem = deps.trackStripController().get().addTrackToUI(track);
                     initialExecute = false;
                 } else {
-                    host.project().addTrack(track);
-                    host.trackListPanel().getChildren().add(trackItem);
+                    deps.project().get().addTrack(track);
+                    deps.trackListPanel().get().getChildren().add(trackItem);
                 }
                 EventBusPublisher.publish(new MixerEvent.ChannelAdded(
-                        channelIdFor(track, host.project()), Instant.now()));
-                host.updateArrangementPlaceholder();
-                host.mixerView().refresh();
+                        channelIdFor(track, deps.project().get()), Instant.now()));
+                deps.mixerView().get().refresh();
             }
             @Override public void undo() {
-                host.project().removeTrack(track);
+                deps.project().get().removeTrack(track);
                 EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
-                        channelIdFor(track, host.project()), Instant.now()));
-                host.trackListPanel().getChildren().remove(trackItem);
+                        channelIdFor(track, deps.project().get()), Instant.now()));
+                deps.trackListPanel().get().getChildren().remove(trackItem);
                 audioTrackCounter--;
-                host.updateArrangementPlaceholder();
-                host.mixerView().refresh();
+                deps.mixerView().get().refresh();
             }
         });
-        host.updateUndoRedoState();
-        host.updateStatusBar("Added audio track: " + name + " \u2190 " + selectedDevice.name(), DawIcon.INPUT);
-        host.showNotification(NotificationLevel.SUCCESS, "Added audio track: " + name);
-        host.markProjectDirty();
+        deps.updateUndoRedoState().run();
+        deps.updateStatusBar().accept("Added audio track: " + name + " \u2190 " + selectedDevice.name(), DawIcon.INPUT);
+        deps.showNotification().accept(NotificationLevel.SUCCESS, "Added audio track: " + name);
+        deps.markProjectDirty().run();
         LOG.fine(() -> "Added audio track: " + name + " with input: " + selectedDevice.name());
     }
 
@@ -115,40 +125,38 @@ final class TrackCreationController {
         javax.sound.midi.MidiDevice.Info selectedMidi = selected.get();
         midiTrackCounter++;
         String name = "MIDI " + midiTrackCounter;
-        host.undoManager().execute(new UndoableAction() {
+        deps.undoManager().get().execute(new UndoableAction() {
             private Track track;
             private HBox trackItem;
             private boolean initialExecute = true;
             @Override public String description() { return "Add MIDI Track: " + name; }
             @Override public void execute() {
                 if (initialExecute) {
-                    track = host.project().createMidiTrack(name);
+                    track = deps.project().get().createMidiTrack(name);
                     track.setMidiInputDeviceName(selectedMidi.getName());
-                    trackItem = host.trackStripController().addTrackToUI(track);
+                    trackItem = deps.trackStripController().get().addTrackToUI(track);
                     initialExecute = false;
                 } else {
-                    host.project().addTrack(track);
-                    host.trackListPanel().getChildren().add(trackItem);
+                    deps.project().get().addTrack(track);
+                    deps.trackListPanel().get().getChildren().add(trackItem);
                 }
                 EventBusPublisher.publish(new MixerEvent.ChannelAdded(
-                        channelIdFor(track, host.project()), Instant.now()));
-                host.updateArrangementPlaceholder();
-                host.mixerView().refresh();
+                        channelIdFor(track, deps.project().get()), Instant.now()));
+                deps.mixerView().get().refresh();
             }
             @Override public void undo() {
-                host.project().removeTrack(track);
+                deps.project().get().removeTrack(track);
                 EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
-                        channelIdFor(track, host.project()), Instant.now()));
-                host.trackListPanel().getChildren().remove(trackItem);
+                        channelIdFor(track, deps.project().get()), Instant.now()));
+                deps.trackListPanel().get().getChildren().remove(trackItem);
                 midiTrackCounter--;
-                host.updateArrangementPlaceholder();
-                host.mixerView().refresh();
+                deps.mixerView().get().refresh();
             }
         });
-        host.updateUndoRedoState();
-        host.updateStatusBar("Added MIDI track: " + name + " \u2190 " + selectedMidi.getName(), DawIcon.MUSIC_NOTE);
-        host.showNotification(NotificationLevel.SUCCESS, "Added MIDI track: " + name);
-        host.markProjectDirty();
+        deps.updateUndoRedoState().run();
+        deps.updateStatusBar().accept("Added MIDI track: " + name + " \u2190 " + selectedMidi.getName(), DawIcon.MUSIC_NOTE);
+        deps.showNotification().accept(NotificationLevel.SUCCESS, "Added MIDI track: " + name);
+        deps.markProjectDirty().run();
         LOG.fine(() -> "Added MIDI track: " + name + " with input: " + selectedMidi.getName());
     }
 

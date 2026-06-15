@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -60,24 +61,30 @@ public final class TrackTemplateController {
     private static final Logger LOG = Logger.getLogger(TrackTemplateController.class.getName());
 
     /**
-     * Callback host the controller queries to obtain the live project, undo
-     * manager, parent window, and to surface notifications to the user.
-     *
-     * <p>Defined as an interface so {@link MainController} can wire the
-     * controller into existing collaborators without coupling this class to
-     * any particular field layout.</p>
+     * Story 294 — direct functional deps replace the callback-up {@code Host}
+     * (Control Synchronization Design Book §4.2/§9 "use publish/subscribe, not a
+     * callback-up {@code Host} for cross-surface updates"). The swappable
+     * project / undo manager / parent window are live {@link Supplier}s (read
+     * live, so a project load is reflected without rebuilding this controller);
+     * notification and mixer-refresh are {@link BiConsumer}/{@link Runnable}
+     * sinks. The window supplier may yield {@code null} (no modal parent yet).
      */
-    public interface Host {
-        DawProject project();
-        UndoManager undoManager();
-        /** Returns the window to use as the parent for modal dialogs, or {@code null}. */
-        Window window();
-        void showNotification(NotificationLevel level, String message);
-        /** Refresh the mixer view after an apply / instantiate that changes the strip. */
-        void refreshMixer();
+    public record Deps(
+            Supplier<DawProject> project,
+            Supplier<UndoManager> undoManager,
+            Supplier<Window> window,
+            BiConsumer<NotificationLevel, String> showNotification,
+            Runnable refreshMixer) {
+        public Deps {
+            Objects.requireNonNull(project, "project must not be null");
+            Objects.requireNonNull(undoManager, "undoManager must not be null");
+            Objects.requireNonNull(window, "window must not be null");
+            Objects.requireNonNull(showNotification, "showNotification must not be null");
+            Objects.requireNonNull(refreshMixer, "refreshMixer must not be null");
+        }
     }
 
-    private final Host host;
+    private final Deps deps;
     private final Supplier<TrackTemplateStore> storeSupplier;
     private volatile TrackTemplateStore cachedStore;
 
@@ -85,21 +92,21 @@ public final class TrackTemplateController {
      * Creates a controller backed by the user's default template store
      * (under {@code ~/.daw}).
      *
-     * @param host the host providing project, undo manager, and window
+     * @param deps the functional deps providing project, undo manager, and window
      */
-    public TrackTemplateController(Host host) {
-        this(host, TrackTemplateStore::new);
+    public TrackTemplateController(Deps deps) {
+        this(deps, TrackTemplateStore::new);
     }
 
     /**
      * Creates a controller backed by a custom {@link TrackTemplateStore}
      * supplier — used by tests to point persistence at a temp directory.
      *
-     * @param host          the host providing project, undo manager, and window
+     * @param deps          the functional deps providing project, undo manager, and window
      * @param storeSupplier supplier of the disk-backed store
      */
-    public TrackTemplateController(Host host, Supplier<TrackTemplateStore> storeSupplier) {
-        this.host = Objects.requireNonNull(host, "host must not be null");
+    public TrackTemplateController(Deps deps, Supplier<TrackTemplateStore> storeSupplier) {
+        this.deps = Objects.requireNonNull(deps, "deps must not be null");
         this.storeSupplier = Objects.requireNonNull(storeSupplier, "storeSupplier must not be null");
     }
 
@@ -135,13 +142,13 @@ public final class TrackTemplateController {
         }
         try {
             TrackTemplate template = TrackTemplateService.captureTrack(
-                    name.get(), track, host.project());
+                    name.get(), track, deps.project().get());
             store().saveTemplate(template);
-            host.showNotification(NotificationLevel.SUCCESS,
+            deps.showNotification().accept(NotificationLevel.SUCCESS,
                     "Saved track template: " + template.templateName());
         } catch (IOException | RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to save track template", e);
-            host.showNotification(NotificationLevel.ERROR,
+            deps.showNotification().accept(NotificationLevel.ERROR,
                     "Failed to save track template: " + e.getMessage());
         }
     }
@@ -167,11 +174,11 @@ public final class TrackTemplateController {
             ChannelStripPreset preset = TrackTemplateService.captureChannelStrip(
                     name.get(), channel);
             store().savePreset(preset);
-            host.showNotification(NotificationLevel.SUCCESS,
+            deps.showNotification().accept(NotificationLevel.SUCCESS,
                     "Saved channel strip preset: " + preset.presetName());
         } catch (IOException | RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to save channel strip preset", e);
-            host.showNotification(NotificationLevel.ERROR,
+            deps.showNotification().accept(NotificationLevel.ERROR,
                     "Failed to save channel strip preset: " + e.getMessage());
         }
     }
@@ -191,14 +198,14 @@ public final class TrackTemplateController {
         }
         try {
             AddTrackFromTemplateAction action = new AddTrackFromTemplateAction(
-                    host.project(), template);
-            host.undoManager().execute(action);
-            host.refreshMixer();
-            host.showNotification(NotificationLevel.SUCCESS,
+                    deps.project().get(), template);
+            deps.undoManager().get().execute(action);
+            deps.refreshMixer().run();
+            deps.showNotification().accept(NotificationLevel.SUCCESS,
                     "Added track from template: " + template.templateName());
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to instantiate template", e);
-            host.showNotification(NotificationLevel.ERROR,
+            deps.showNotification().accept(NotificationLevel.ERROR,
                     "Failed to add track from template: " + e.getMessage());
         }
     }
@@ -224,8 +231,8 @@ public final class TrackTemplateController {
                             + preset.presetName() + "\u201D?",
                     ButtonType.OK, ButtonType.CANCEL);
             confirm.setHeaderText("Apply Channel Strip Preset");
-            if (host.window() != null) {
-                confirm.initOwner(host.window());
+            if (deps.window().get() != null) {
+                confirm.initOwner(deps.window().get());
             }
             Optional<ButtonType> response = confirm.showAndWait();
             if (response.isEmpty() || response.get() != ButtonType.OK) {
@@ -233,18 +240,18 @@ public final class TrackTemplateController {
             }
         }
         try {
-            Mixer mixer = host.project().getMixer();
-            AudioFormat format = host.project().getFormat();
+            Mixer mixer = deps.project().get().getMixer();
+            AudioFormat format = deps.project().get().getFormat();
             ApplyChannelStripPresetAction action = new ApplyChannelStripPresetAction(
                     channel, preset, mixer, format);
-            host.undoManager().execute(action);
-            host.refreshMixer();
-            host.showNotification(NotificationLevel.SUCCESS,
+            deps.undoManager().get().execute(action);
+            deps.refreshMixer().run();
+            deps.showNotification().accept(NotificationLevel.SUCCESS,
                     "Applied preset: " + preset.presetName()
                             + " \u2192 " + channel.getName());
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to apply channel strip preset", e);
-            host.showNotification(NotificationLevel.ERROR,
+            deps.showNotification().accept(NotificationLevel.ERROR,
                     "Failed to apply preset: " + e.getMessage());
         }
     }
@@ -266,7 +273,7 @@ public final class TrackTemplateController {
             return store().allTemplates();
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to load user templates; falling back to factory defaults", e);
-            host.showNotification(NotificationLevel.WARNING,
+            deps.showNotification().accept(NotificationLevel.WARNING,
                     "Failed to load user templates: " + e.getMessage());
             return List.copyOf(TrackTemplateFactory.factoryTemplates());
         }
@@ -278,7 +285,7 @@ public final class TrackTemplateController {
             return store().allPresets();
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to load user presets; falling back to factory defaults", e);
-            host.showNotification(NotificationLevel.WARNING,
+            deps.showNotification().accept(NotificationLevel.WARNING,
                     "Failed to load user presets: " + e.getMessage());
             return List.copyOf(TrackTemplateFactory.factoryPresets());
         }
@@ -289,8 +296,8 @@ public final class TrackTemplateController {
     private TrackTemplateBrowser openBrowser(TrackTemplateBrowser.InitialTab initialTab,
                                              boolean restrictToTab) {
         TrackTemplateBrowser browser = new TrackTemplateBrowser(this, initialTab, restrictToTab);
-        if (host.window() != null) {
-            browser.initOwner(host.window());
+        if (deps.window().get() != null) {
+            browser.initOwner(deps.window().get());
         }
         browser.showAndWait();
         return browser;
@@ -302,8 +309,8 @@ public final class TrackTemplateController {
         dialog.setTitle(title);
         dialog.setHeaderText(header);
         dialog.setContentText(label);
-        if (host.window() != null) {
-            dialog.initOwner(host.window());
+        if (deps.window().get() != null) {
+            dialog.initOwner(deps.window().get());
         }
         return dialog.showAndWait()
                 .map(String::trim)

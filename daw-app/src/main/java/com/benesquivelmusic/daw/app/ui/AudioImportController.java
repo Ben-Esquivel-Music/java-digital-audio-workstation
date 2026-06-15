@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
@@ -18,6 +19,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -31,30 +34,41 @@ final class AudioImportController {
 
     private static final Logger LOG = Logger.getLogger(AudioImportController.class.getName());
 
-    interface Host {
-        DawProject project();
-        UndoManager undoManager();
-        TrackStripController trackStripController();
-        TrackCreationController trackCreationController();
-        MixerView mixerView();
-        javafx.scene.layout.VBox trackListPanel();
-        Stage primaryStage();
-        void updateArrangementPlaceholder();
-        void refreshArrangementCanvas();
-        void updateUndoRedoState();
-        void markProjectDirty();
-        void updateStatusBar(String text, DawIcon icon);
-        void showNotification(NotificationLevel level, String message);
+    /**
+     * Story 294 — direct functional deps replace the callback-up {@code Host}
+     * (Control Synchronization Design Book §4.2/§9). The swappable project /
+     * undo manager / collaborators / stage are live {@link Supplier}s; the
+     * canvas-repaint / undo-menu / dirty / status / notification hooks are
+     * {@link Runnable}/{@link BiConsumer} sinks. The old
+     * {@code updateArrangementPlaceholder} hook is gone (the placeholder binds
+     * {@code ProjectVM.tracks} now, story 293), but {@code refreshArrangementCanvas}
+     * is kept: an import adds a clip to an existing track, which does not change
+     * the track LIST, so the canvas needs an explicit repaint the reactive
+     * {@code ProjectVM.tracks} binding does not cover.
+     */
+    record Deps(
+            Supplier<DawProject> project,
+            Supplier<UndoManager> undoManager,
+            Supplier<TrackStripController> trackStripController,
+            Supplier<TrackCreationController> trackCreationController,
+            Supplier<MixerView> mixerView,
+            Supplier<VBox> trackListPanel,
+            Supplier<Stage> primaryStage,
+            Runnable refreshArrangementCanvas,
+            Runnable updateUndoRedoState,
+            Runnable markProjectDirty,
+            BiConsumer<String, DawIcon> updateStatusBar,
+            BiConsumer<NotificationLevel, String> showNotification) {
     }
 
-    private final Host host;
+    private final Deps deps;
 
-    AudioImportController(Host host) {
-        this.host = host;
+    AudioImportController(Deps deps) {
+        this.deps = deps;
     }
 
     void onImportAudioFile() {
-        Stage stage = host.primaryStage();
+        Stage stage = deps.primaryStage().get();
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Import Audio File");
         chooser.getExtensionFilters().addAll(
@@ -75,7 +89,7 @@ final class AudioImportController {
     }
 
     boolean importAudioFile(Path file, Track targetTrack) {
-        DawProject project = host.project();
+        DawProject project = deps.project().get();
         AudioFileImporter importer = new AudioFileImporter(project);
         double playheadBeat = project.getTransport().getPositionInBeats();
         boolean createdNewTrack = (targetTrack == null);
@@ -84,13 +98,13 @@ final class AudioImportController {
             AudioImportResult result = importer.importFile(file, playheadBeat, targetTrack);
 
             HBox trackItem = createdNewTrack
-                    ? host.trackStripController().addTrackToUI(result.track()) : null;
+                    ? deps.trackStripController().get().addTrackToUI(result.track()) : null;
             if (createdNewTrack) {
-                host.trackCreationController().setAudioTrackCounter(
-                        host.trackCreationController().getAudioTrackCounter() + 1);
+                deps.trackCreationController().get().setAudioTrackCounter(
+                        deps.trackCreationController().get().getAudioTrackCounter() + 1);
             }
 
-            host.undoManager().execute(new UndoableAction() {
+            deps.undoManager().get().execute(new UndoableAction() {
                 private boolean initialExecute = true;
                 @Override public String description() { return "Import Audio File"; }
                 @Override public void execute() {
@@ -101,35 +115,32 @@ final class AudioImportController {
                     if (createdNewTrack) {
                         project.addTrack(result.track());
                         if (trackItem != null) {
-                            host.trackListPanel().getChildren().add(trackItem);
+                            deps.trackListPanel().get().getChildren().add(trackItem);
                         }
-                        host.trackCreationController().setAudioTrackCounter(
-                                host.trackCreationController().getAudioTrackCounter() + 1);
+                        deps.trackCreationController().get().setAudioTrackCounter(
+                                deps.trackCreationController().get().getAudioTrackCounter() + 1);
                     }
                     result.track().addClip(result.clip());
-                    host.updateArrangementPlaceholder();
-                    host.mixerView().refresh();
+                    deps.mixerView().get().refresh();
                 }
                 @Override public void undo() {
                     result.track().removeClip(result.clip());
                     if (createdNewTrack) {
                         project.removeTrack(result.track());
                         if (trackItem != null) {
-                            host.trackListPanel().getChildren().remove(trackItem);
+                            deps.trackListPanel().get().getChildren().remove(trackItem);
                         }
-                        host.trackCreationController().setAudioTrackCounter(
-                                host.trackCreationController().getAudioTrackCounter() - 1);
+                        deps.trackCreationController().get().setAudioTrackCounter(
+                                deps.trackCreationController().get().getAudioTrackCounter() - 1);
                     }
-                    host.updateArrangementPlaceholder();
-                    host.mixerView().refresh();
+                    deps.mixerView().get().refresh();
                 }
             });
 
-            host.updateArrangementPlaceholder();
-            host.refreshArrangementCanvas();
-            host.updateUndoRedoState();
-            host.mixerView().refresh();
-            host.markProjectDirty();
+            deps.refreshArrangementCanvas().run();
+            deps.updateUndoRedoState().run();
+            deps.mixerView().get().refresh();
+            deps.markProjectDirty().run();
 
             double durationSeconds = 0.0;
             float[][] audioData = result.clip().getAudioData();
@@ -143,18 +154,18 @@ final class AudioImportController {
                     .orElse("Audio");
             String durationStr = String.format("%.1fs", durationSeconds);
             String conversionNote = result.wasConverted() ? ", sample rate converted" : "";
-            host.showNotification(NotificationLevel.SUCCESS,
+            deps.showNotification().accept(NotificationLevel.SUCCESS,
                     "Imported: " + fileName + " (" + formatName + ", " + durationStr + conversionNote + ")");
-            host.updateStatusBar("Imported audio file: " + fileName, DawIcon.WAVEFORM);
+            deps.updateStatusBar().accept("Imported audio file: " + fileName, DawIcon.WAVEFORM);
             LOG.fine(() -> "Imported audio file: " + file);
             return true;
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to import audio file: " + file, e);
-            host.showNotification(NotificationLevel.ERROR, "Import failed: " + e.getMessage());
+            deps.showNotification().accept(NotificationLevel.ERROR, "Import failed: " + e.getMessage());
             return false;
         } catch (IllegalArgumentException e) {
             LOG.log(Level.WARNING, "Unsupported audio file: " + file, e);
-            host.showNotification(NotificationLevel.ERROR, "Import failed: " + e.getMessage());
+            deps.showNotification().accept(NotificationLevel.ERROR, "Import failed: " + e.getMessage());
             return false;
         }
     }
@@ -195,7 +206,7 @@ final class AudioImportController {
             }
 
             if (!filesToImport.isEmpty()) {
-                DawProject project = host.project();
+                DawProject project = deps.project().get();
                 int trackIndex = canvas.trackIndexAtY(event.getY());
                 Track targetTrack = null;
                 if (trackIndex >= 0 && trackIndex < project.getTracks().size()) {

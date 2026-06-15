@@ -43,7 +43,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         null, dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost(), dummyArchiver()))
+                        dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("projectManager"));
     }
 
@@ -54,7 +54,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), null, dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost(), dummyArchiver()))
+                        dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("sessionInterchangeController"));
     }
 
@@ -65,7 +65,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), null,
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost(), dummyArchiver()))
+                        dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("notificationBar"));
     }
 
@@ -76,7 +76,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         null, dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost(), dummyArchiver()))
+                        dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("statusBarLabel"));
     }
 
@@ -87,7 +87,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), null, dummyBorderPane(),
-                        dummyVBox(), dummyHost(), dummyArchiver()))
+                        dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("checkpointLabel"));
     }
 
@@ -98,7 +98,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), null,
-                        dummyVBox(), dummyHost(), dummyArchiver()))
+                        dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("rootPane"));
     }
 
@@ -109,19 +109,19 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        null, dummyHost(), dummyArchiver()))
+                        null, dummyDeps(), dummyArchiver()))
                 .withMessageContaining("trackListPanel"));
     }
 
     @Test
-    void constructorRejectsNullHost() throws Exception {
+    void constructorRejectsNullDeps() throws Exception {
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
                         dummyVBox(), null, dummyArchiver()))
-                .withMessageContaining("host"));
+                .withMessageContaining("deps"));
     }
 
     @Test
@@ -131,7 +131,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost(), null))
+                        dummyVBox(), dummyDeps(), null))
                 .withMessageContaining("projectArchiver"));
     }
 
@@ -148,7 +148,7 @@ class ProjectLifecycleControllerTest {
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
                 dummyLabel(), dummyLabel(), dummyBorderPane(),
-                dummyVBox(), dummyHost(), dummyArchiver())));
+                dummyVBox(), dummyDeps(), dummyArchiver())));
 
         ref.get().resetProjectState();
 
@@ -163,7 +163,7 @@ class ProjectLifecycleControllerTest {
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
                 dummyLabel(), dummyLabel(), dummyBorderPane(),
-                dummyVBox(), dummyHost(), dummyArchiver())));
+                dummyVBox(), dummyDeps(), dummyArchiver())));
 
         ref.get().resetProjectState();
         assertThat(pm.getCurrentProject()).isNull();
@@ -205,7 +205,7 @@ class ProjectLifecycleControllerTest {
             ref.set(new ProjectLifecycleController(
                     pm, dummySessionInterchange(), dummyNotificationBar(),
                     dummyLabel(), dummyLabel(), dummyBorderPane(),
-                    dummyVBox(), dummyHost(), dummyArchiver()));
+                    dummyVBox(), dummyDeps(), dummyArchiver()));
             loaded.set(ref.get().loadProjectFromPath(metadata.projectPath()));
         });
 
@@ -246,7 +246,7 @@ class ProjectLifecycleControllerTest {
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
                 dummyLabel(), dummyLabel(), dummyBorderPane(),
-                dummyVBox(), dummyHost(), dummyArchiver())));
+                dummyVBox(), dummyDeps(), dummyArchiver())));
 
         // Confirm a .bak exists pre-rollback.
         try (var entries = java.nio.file.Files.list(metadata.projectPath())) {
@@ -286,7 +286,7 @@ class ProjectLifecycleControllerTest {
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
                 dummyLabel(), dummyLabel(), dummyBorderPane(),
-                dummyVBox(), dummyHost(), dummyArchiver())));
+                dummyVBox(), dummyDeps(), dummyArchiver())));
 
         runOnFxThread(() -> ref.get().rollbackMigration(metadata.projectPath(), report));
 
@@ -371,21 +371,24 @@ class ProjectLifecycleControllerTest {
         return new ProjectArchiver();
     }
 
-    private static ProjectLifecycleController.Host dummyHost() {
-        return new ProjectLifecycleController.Host() {
-            private DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
-            private UndoManager undoManager = new UndoManager();
-            private boolean dirty;
-
-            @Override public DawProject project() { return project; }
-            @Override public void setProject(DawProject p) { project = p; }
-            @Override public UndoManager undoManager() { return undoManager; }
-            @Override public void setUndoManager(UndoManager um) { undoManager = um; }
-            @Override public boolean isProjectDirty() { return dirty; }
-            @Override public void setProjectDirty(boolean d) { dirty = d; }
-            @Override public void resetTrackCounters() { }
-            @Override public void rebuildHistoryPanel() { }
-            @Override public void onProjectUIRebuild(MixerView mixerView) { }
-        };
+    private static ProjectLifecycleController.Deps dummyDeps() {
+        // Story 294 — the Host is retired; the dummy supplies the same swappable
+        // project / undo manager via AtomicReference holders so setProject /
+        // setUndoManager still swap what the suppliers return. The dirty bit lives on
+        // DawProject now (the §1.2 "one dirty bit"), so there is no dirty field — the
+        // controller's markClean()/markDirty()/isDirty() operate on the held project.
+        AtomicReference<DawProject> project =
+                new AtomicReference<>(new DawProject("Test", AudioFormat.CD_QUALITY));
+        AtomicReference<UndoManager> undoManager = new AtomicReference<>(new UndoManager());
+        return new ProjectLifecycleController.Deps(
+                project::get,
+                project::set,
+                undoManager::get,
+                undoManager::set,
+                () -> { },
+                () -> { },
+                mixerView -> { },
+                () -> null,
+                json -> { });
     }
 }

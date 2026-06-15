@@ -87,6 +87,46 @@ class ProjectVMTest {
     }
 
     @Test
+    void dirtyUpdatesSynchronouslyForFxThreadEdits() throws InterruptedException {
+        DawProject project = new DawProject("Song", AudioFormat.CD_QUALITY);
+        ProjectVM vm = constructOnFx(project);
+        try {
+            // A UI edit marks dirty on the FX thread; the mirror must reflect it
+            // within the SAME pulse (the inline fast-path), with no intervening
+            // flushFx() — otherwise a Save-menu item or window title derived from
+            // dirtyProperty() reads one pulse stale (review findings 1 & 4).
+            boolean dirtyImmediately = callOnFx(() -> {
+                project.markDirty();
+                return vm.isDirty();
+            });
+            assertThat(dirtyImmediately)
+                    .as("an FX-thread markDirty() updates the mirror synchronously")
+                    .isTrue();
+        } finally {
+            disposeOnFx(vm);
+        }
+    }
+
+    @Test
+    void nameUpdatesSynchronouslyForFxThreadEdits() throws InterruptedException {
+        DawProject project = new DawProject("Song", AudioFormat.CD_QUALITY);
+        ProjectVM vm = constructOnFx(project);
+        try {
+            // NAME takes the same inline fast-path as DIRTY: an FX-thread rename is
+            // mirrored within the same pulse so a bound title updates without a flush.
+            String nameImmediately = callOnFx(() -> {
+                project.setName("Renamed");
+                return vm.getName();
+            });
+            assertThat(nameImmediately)
+                    .as("an FX-thread setName() updates the mirror synchronously")
+                    .isEqualTo("Renamed");
+        } finally {
+            disposeOnFx(vm);
+        }
+    }
+
+    @Test
     void tracksFollowAddThenRemove() throws InterruptedException {
         DawProject project = new DawProject("Song", AudioFormat.CD_QUALITY);
         ProjectVM vm = constructOnFx(project);

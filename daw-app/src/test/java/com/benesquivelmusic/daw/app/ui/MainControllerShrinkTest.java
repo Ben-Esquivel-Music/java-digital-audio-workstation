@@ -65,12 +65,12 @@ final class MainControllerShrinkTest {
         List<String> survivingMethods = new ArrayList<>();
         for (String method : RETIRED_REFRESH_METHODS) {
             // Target MainController's OWN method DECLARATIONS — every retired refresh
-            // method was a `private void`. A bare-name scan would false-fail on the
+            // method was a `private void`. (Before story 294, MainController also held
             // no-op `@Override public void updateArrangementPlaceholder()` /
-            // `updateUndoRedoState()` / `refreshArrangementCanvas()` that MainController
-            // must still provide for the OUT-OF-SCOPE TrackCreationController.Host /
-            // AudioImportController.Host interfaces (those move in story 294); those are
-            // not god-controller refresh methods and are correctly redirected/no-op'd.
+            // `updateUndoRedoState()` / `refreshArrangementCanvas()` for the
+            // TrackCreationController / AudioImportController Host interfaces; story 294
+            // migrated those surfaces to functional-dep records, so those @Overrides are
+            // gone too. Targeting `private void` declarations stays correct regardless.)
             if (Pattern.compile("\\bprivate\\s+void\\s+" + Pattern.quote(method) + "\\s*\\(")
                     .matcher(code).find()) {
                 survivingMethods.add(method);

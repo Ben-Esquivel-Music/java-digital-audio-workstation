@@ -42,6 +42,7 @@ class UiEventSealingTest {
         return switch (event) {
             case UiEvent.SelectionChanged ignored -> "selection";
             case UiEvent.UndoStateChanged ignored -> "undoState";
+            case UiEvent.SettingsApplied ignored -> "settingsApplied";
         };
     }
 
@@ -49,14 +50,17 @@ class UiEventSealingTest {
     void exhaustiveSwitchCoversUiEvents() {
         assertThat(classify(new UiEvent.SelectionChanged(T0))).isEqualTo("selection");
         assertThat(classify(new UiEvent.UndoStateChanged(T0))).isEqualTo("undoState");
+        assertThat(classify(new UiEvent.SettingsApplied(T0, "ONYX_REFINED", "COMFORTABLE", false)))
+                .isEqualTo("settingsApplied");
     }
 
     @Test
-    void uiEventPermitsExactlySelectionChangedAndUndoStateChanged() {
+    void uiEventPermitsExactlySelectionChangedUndoStateChangedAndSettingsApplied() {
         List<String> permitted = Arrays.stream(UiEvent.class.getPermittedSubclasses())
                 .map(Class::getSimpleName)
                 .toList();
-        assertThat(permitted).containsExactlyInAnyOrder("SelectionChanged", "UndoStateChanged");
+        assertThat(permitted).containsExactlyInAnyOrder(
+                "SelectionChanged", "UndoStateChanged", "SettingsApplied");
     }
 
     @Test

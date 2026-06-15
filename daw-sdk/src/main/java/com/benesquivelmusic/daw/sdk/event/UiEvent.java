@@ -39,7 +39,8 @@ import java.util.Objects;
  */
 public sealed interface UiEvent extends BusEvent
         permits UiEvent.SelectionChanged,
-                UiEvent.UndoStateChanged {
+                UiEvent.UndoStateChanged,
+                UiEvent.SettingsApplied {
 
     /** Returns the wall-clock instant at which this event was produced. */
     Instant timestamp();
@@ -74,6 +75,44 @@ public sealed interface UiEvent extends BusEvent
     record UndoStateChanged(Instant timestamp) implements UiEvent {
         public UndoStateChanged {
             Objects.requireNonNull(timestamp, "timestamp must not be null");
+        }
+    }
+
+    /**
+     * Emitted when the user applies appearance settings in the Preferences
+     * dialog (Control Synchronization Design Book §6.7, story 294). Unlike the
+     * other two variants — which are bare notifications whose canonical state
+     * lives in a view-model — this event <em>does</em> carry the new appearance
+     * values, because the three subscriber managers
+     * ({@code ThemeManager}/{@code DensityManager}/{@code MotionManager}, all in
+     * {@code daw-app}) are the canonical store for their own slice and have no
+     * shared VM to re-read from. The Preferences dialog therefore publishes this
+     * event instead of poking the managers directly, decoupling the dialog from
+     * them: each manager subscribes and applies only its own field via its own
+     * existing setter (which persists + re-applies).
+     *
+     * <p><strong>Why the ids are {@code String}s, not enums.</strong> This SDK
+     * module must not depend on {@code daw-app}, where {@code ThemeManager.Theme}
+     * and {@code DensityMode} live, so the appearance choices ride as their enum
+     * {@link Enum#name()} strings. {@code themeId} is a {@code ThemeManager.Theme}
+     * name (e.g. {@code "ONYX_REFINED"}) and {@code densityId} is a
+     * {@code DensityMode} name (e.g. {@code "COMFORTABLE"}); the subscriber
+     * managers parse them back via {@code valueOf}, defending against an
+     * unrecognised name rather than throwing on the bus delivery thread.
+     *
+     * @param timestamp    wall-clock instant of the event
+     * @param themeId      the chosen token theme as a {@code ThemeManager.Theme}
+     *                     enum {@code name()} (never {@code null})
+     * @param densityId    the chosen density profile as a {@code DensityMode}
+     *                     enum {@code name()} (never {@code null})
+     * @param reduceMotion the chosen Reduce Motion flag
+     */
+    record SettingsApplied(Instant timestamp, String themeId, String densityId,
+                           boolean reduceMotion) implements UiEvent {
+        public SettingsApplied {
+            Objects.requireNonNull(timestamp, "timestamp must not be null");
+            Objects.requireNonNull(themeId, "themeId must not be null");
+            Objects.requireNonNull(densityId, "densityId must not be null");
         }
     }
 }

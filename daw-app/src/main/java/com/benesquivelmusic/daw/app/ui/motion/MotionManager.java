@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.motion;
 
+import com.benesquivelmusic.daw.app.ui.SettingsAppliedSubscriptions;
+import com.benesquivelmusic.daw.sdk.event.DispatchMode;
+import com.benesquivelmusic.daw.sdk.event.EventBus;
+import com.benesquivelmusic.daw.sdk.event.UiEvent;
+
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 
@@ -151,6 +156,17 @@ public final class MotionManager {
     private final BooleanProperty reduceMotion;
 
     /**
+     * The live {@link UiEvent.SettingsApplied} subscription, installed once at
+     * app startup by {@link #subscribeToSettings(EventBus)} with the production
+     * bus (re-installable by a test with its own bus). Held so a repeat
+     * {@code subscribeToSettings} call can cancel the prior subscription first
+     * (idempotent re-wiring). {@code null} until first wired. Mirrors
+     * {@code ThemeManager} / {@code DensityManager}; not auto-disposed (the bus
+     * is closed at shutdown).
+     */
+    private EventBus.Subscription settingsSubscription;
+
+    /**
      * Creates a {@code MotionManager} backed by the given preferences
      * node using the real platform OS-hint detector
      * ({@link PlatformMotionHint}). Equivalent to
@@ -251,6 +267,40 @@ public final class MotionManager {
      */
     public boolean isAnimationAllowed() {
         return !reduceMotion.get();
+    }
+
+    // ── Settings-event subscription (story 294) ──────────────────────────────
+
+    /**
+     * Subscribes this manager to {@link UiEvent.SettingsApplied} on {@code bus}
+     * so that applying appearance settings in the Preferences dialog toggles
+     * Reduce Motion <em>via the shared event layer</em> rather than the dialog
+     * poking this manager directly (Control Synchronization Design Book §6.7,
+     * story 294). On each event the manager calls its own
+     * {@link #setReduceMotion(boolean)} with {@link UiEvent.SettingsApplied#reduceMotion()}
+     * — which persists through the existing listener.
+     *
+     * <p><strong>Idempotent re-wiring.</strong> Any prior subscription is
+     * cancelled first, so calling this twice (or swapping buses in a test) never
+     * leaks a stale subscription. The application installs this once at startup
+     * with the production bus, <em>after</em> {@code EventBusPublisher} is set;
+     * a test calls it with its own {@code DefaultEventBus}. The reference is
+     * captured here once (per the "capture a swappable singleton once" rule).</p>
+     *
+     * <p>The subscription dispatches {@link DispatchMode#ON_UI_THREAD} for
+     * symmetry with {@code ThemeManager} / {@code DensityManager} and because
+     * {@link #reduceMotionProperty()} is a JavaFX property that animatable
+     * controls observe on the FX thread. Unlike theme/density there is no enum
+     * to parse, so no defensive branch is needed — the flag is a plain
+     * {@code boolean}.</p>
+     *
+     * @param bus the event bus to subscribe on (must not be {@code null})
+     * @return the (new) subscription handle, also retained internally
+     */
+    public synchronized EventBus.Subscription subscribeToSettings(EventBus bus) {
+        settingsSubscription = SettingsAppliedSubscriptions.resubscribe(
+                bus, settingsSubscription, event -> setReduceMotion(event.reduceMotion()));
+        return settingsSubscription;
     }
 
     // ── Persistence (toolkit-free) ───────────────────────────────────────────

@@ -1,6 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.density;
 
+import com.benesquivelmusic.daw.app.ui.SettingsAppliedSubscriptions;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.sdk.event.DispatchMode;
+import com.benesquivelmusic.daw.sdk.event.EventBus;
+import com.benesquivelmusic.daw.sdk.event.UiEvent;
 
 import javafx.application.Platform;
 import javafx.beans.property.ObjectProperty;
@@ -146,6 +150,16 @@ public final class DensityManager {
             Collections.newSetFromMap(new WeakHashMap<>());
 
     /**
+     * The live {@link UiEvent.SettingsApplied} subscription, installed once at
+     * app startup by {@link #subscribeToSettings(EventBus)} with the production
+     * bus (re-installable by a test with its own bus). Held so a repeat
+     * {@code subscribeToSettings} call can cancel the prior subscription first
+     * (idempotent re-wiring). {@code null} until first wired. Mirrors
+     * {@code ThemeManager}; not auto-disposed (the bus is closed at shutdown).
+     */
+    private EventBus.Subscription settingsSubscription;
+
+    /**
      * Creates a {@code DensityManager} backed by the given preferences
      * node, restoring the persisted active density (defaulting to
      * {@link #DEFAULT_DENSITY} for a missing/unknown value) and
@@ -218,6 +232,60 @@ public final class DensityManager {
     public void setActiveDensity(DensityMode density) {
         activeDensity.set(
                 Objects.requireNonNull(density, "density must not be null"));
+    }
+
+    // ── Settings-event subscription (story 294) ──────────────────────────────
+
+    /**
+     * Subscribes this manager to {@link UiEvent.SettingsApplied} on {@code bus}
+     * so that applying appearance settings in the Preferences dialog
+     * re-densifies the UI <em>via the shared event layer</em> rather than the
+     * dialog poking this manager directly (Control Synchronization Design Book
+     * §6.7, story 294). On each event the manager parses {@code densityId} back
+     * to a {@link DensityMode} and calls its own
+     * {@link #setActiveDensity(DensityMode)} — which persists and live-reapplies
+     * through the existing active-density listener.
+     *
+     * <p><strong>Idempotent re-wiring.</strong> Any prior subscription is
+     * cancelled first, so calling this twice (or swapping buses in a test) never
+     * leaks a stale subscription. The application installs this once at startup
+     * with the production bus, <em>after</em> {@code EventBusPublisher} is set;
+     * a test calls it with its own {@code DefaultEventBus}. The reference is
+     * captured here once (per the "capture a swappable singleton once" rule).</p>
+     *
+     * <p>The subscription dispatches {@link DispatchMode#ON_UI_THREAD} because
+     * applying density touches scene roots / dialog-panes. An unrecognised
+     * {@code densityId} is logged and ignored rather than thrown (mirrors
+     * {@code ThemeManager}).</p>
+     *
+     * @param bus the event bus to subscribe on (must not be {@code null})
+     * @return the (new) subscription handle, also retained internally
+     */
+    public synchronized EventBus.Subscription subscribeToSettings(EventBus bus) {
+        settingsSubscription = SettingsAppliedSubscriptions.resubscribe(
+                bus, settingsSubscription, this::applySettingsEvent);
+        return settingsSubscription;
+    }
+
+    /**
+     * Applies the density slice of a {@link UiEvent.SettingsApplied} event by
+     * parsing its {@code densityId} and delegating to {@link #setActiveDensity}.
+     * Parses defensively: an unknown enum name is logged at {@code WARNING} and
+     * ignored — the current density is left untouched rather than throwing on
+     * the bus delivery thread.
+     */
+    private void applySettingsEvent(UiEvent.SettingsApplied event) {
+        DensityMode mode;
+        try {
+            mode = DensityMode.valueOf(event.densityId());
+        } catch (IllegalArgumentException | NullPointerException unknownMode) {
+            LOG.log(Level.WARNING,
+                    "Ignoring SettingsApplied with unknown densityId '"
+                            + event.densityId() + "'; active density left unchanged",
+                    unknownMode);
+            return;
+        }
+        setActiveDensity(mode);
     }
 
     // ── Application ──────────────────────────────────────────────────────────

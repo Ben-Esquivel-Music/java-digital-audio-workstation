@@ -11,8 +11,6 @@ import com.benesquivelmusic.daw.core.snapshot.SnapshotKind;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 
-import javafx.stage.Stage;
-
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -35,14 +33,11 @@ class SnapshotsControllerTest {
         ProjectManager projectManager = new ProjectManager(checkpointManager);
         AtomicReference<DawProject> projectRef = new AtomicReference<>(initial);
         return new SnapshotsController(service, checkpointManager, projectManager,
-                new SnapshotsController.Host() {
-                    @Override public Stage ownerStage() { return null; }
-                    @Override public DawProject currentProject() { return projectRef.get(); }
-                    @Override public boolean confirmDiscardUnsavedChanges() { return true; }
-                    @Override public void applyRestoredProject(DawProject project, String label) {
-                        projectRef.set(project);
-                    }
-                });
+                new SnapshotsController.Deps(
+                        () -> null,
+                        projectRef::get,
+                        () -> true,
+                        (project, label) -> projectRef.set(project)));
     }
 
     @Test

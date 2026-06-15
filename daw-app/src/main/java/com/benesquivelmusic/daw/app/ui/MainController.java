@@ -152,15 +152,6 @@ public final class MainController {
     private PluginRegistry pluginRegistry;
     private ProjectManager projectManager;
     private UndoManager undoManager;
-    // Story 293 review (#2): the imperative dirty bit that drives Save-enabled
-    // (read at the menu supplier in createMenuBar). ProjectVM.dirty (story 292's
-    // "one dirty bit") is the intended single source, but its producer —
-    // DawProject.markDirty() wired into the edit sites — and its consumers (Save /
-    // window-title binding) are story 294's charter (ProjectSurfaceWiringTest:
-    // "binds ProjectVM.name/dirty/tracks"). Until then this boolean is the live
-    // source: do NOT bind Save to ProjectVM.dirty yet — the core is almost never
-    // marked dirty by edits today, so Save would never enable.
-    private boolean projectDirty;
     private AudioEngine audioEngine;
     // Story 137: registry of per-track input-level monitors used by the
     // mixer's input-meter column and the arrangement-view clip indicator.
@@ -464,6 +455,21 @@ public final class MainController {
         projectVM.getTracks().addListener(projectTracksListener);
         vmDisposers.add(() -> projectVM.getTracks().removeListener(projectTracksListener));
 
+        // Dirty — the single dirty bit (§1.2, §7). ProjectVM.dirty mirrors
+        // DawProject.isDirty(), now the one source: every former projectDirty=true
+        // poke routes through DawProject.markDirty(), and New/Open/Save clear it via
+        // markClean(). The Save action derives its enablement from it (§6.9
+        // "derive, don't poke"); re-sync the menu when dirty flips so Save
+        // enables/disables reactively rather than on the next unrelated sync.
+        // The mirror updates synchronously for FX-thread edits (ProjectVM's inline
+        // fast-path), so an explicit syncMenuStateIfPresent() right after markDirty()
+        // already reads the new value, and a Save read stays consistent with the
+        // confirmDiscardUnsavedChanges() authority read within the same pulse.
+        javafx.beans.value.ChangeListener<Boolean> projectDirtyListener =
+                (obs, was, now) -> syncMenuStateIfPresent();
+        projectVM.dirtyProperty().addListener(projectDirtyListener);
+        vmDisposers.add(() -> projectVM.dirtyProperty().removeListener(projectDirtyListener));
+
         // Transport — the tempo label binds TransportVM.tempo (§4.3, replaces
         // updateTempoDisplay()) through the canonical TransportControlBinder, so the
         // "%.1f BPM" formatting lives in exactly one place. The label is read-only
@@ -486,6 +492,15 @@ public final class MainController {
         historyBinder.bindUndoButton(undoButton);
         historyBinder.bindRedoButton(redoButton);
         vmDisposers.add(historyBinder::dispose);
+
+        // Menu enablement (§6.9) — sync once here, AFTER the VMs are (re)built, so
+        // the Save action's `projectVM.isDirty()` supplier reads the FRESH VM. The
+        // dirty listener above only fires on a later flip, never on the seeded
+        // value (the same reason applyTracksToCanvas.run() seeds the canvas
+        // explicitly above). Both callers previously synced the menu BEFORE this
+        // rebuild — against the stale outgoing VM — which left Save enablement one
+        // project-load behind after Open / New / snapshot-restore.
+        syncMenuStateIfPresent();
     }
 
     /** Routes an undo/redo intent (button, menu, or shortcut) to the existing handlers (§2.8). */
@@ -582,20 +597,14 @@ public final class MainController {
                 new com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService(),
                 checkpointManager,
                 projectManager,
-                new SnapshotsController.Host() {
-                    @Override public Stage ownerStage() {
-                        return rootPane.getScene() != null
-                                ? (Stage) rootPane.getScene().getWindow() : null;
-                    }
-                    @Override public DawProject currentProject() { return project; }
-                    @Override public boolean confirmDiscardUnsavedChanges() {
-                        return projectLifecycleController == null
-                                || projectLifecycleController.confirmDiscardUnsavedChanges();
-                    }
-                    @Override public void applyRestoredProject(DawProject restored, String label) {
-                        applySnapshotRestoredProject(restored, label);
-                    }
-                },
+                // Story 294 — direct functional deps replace SnapshotsController.Host (§4.2/§9).
+                new SnapshotsController.Deps(
+                        () -> rootPane.getScene() != null
+                                ? (Stage) rootPane.getScene().getWindow() : null,
+                        () -> project,
+                        () -> projectLifecycleController == null
+                                || projectLifecycleController.confirmDiscardUnsavedChanges(),
+                        this::applySnapshotRestoredProject),
                 dispatcher());
         toolbarStateStore = new ToolbarStateStore(prefs);
         keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
@@ -652,7 +661,6 @@ public final class MainController {
         checkpointLabel.setText(MESSAGES.getString("statusbar.autosave.on"));
         ioRoutingLabel.setText(MESSAGES.getString("statusbar.io.initializing"));
         initializeStatusBarPlaceholders();
-        syncMenuStateIfPresent();
         rebuildViewModels();
         installIoLatencyClickHandler();
         animationController.start();
@@ -950,36 +958,40 @@ public final class MainController {
         projectLifecycleController = new ProjectLifecycleController(
                 projectManager, sessionInterchangeController, notificationBar,
                 statusBarLabel, checkpointLabel, rootPane, trackListPanel,
-                new ProjectLifecycleController.Host() {
-                    @Override public DawProject project() { return project; }
-                    @Override public void setProject(DawProject p) { project = p; }
-                    @Override public UndoManager undoManager() { return undoManager; }
-                    @Override public void setUndoManager(UndoManager um) { undoManager = um; }
-                    @Override public boolean isProjectDirty() { return projectDirty; }
-                    @Override public void setProjectDirty(boolean dirty) { projectDirty = dirty; }
-                    @Override public void resetTrackCounters() { trackCreationController.resetCounters(); }
-                    @Override public void rebuildHistoryPanel() { historyPanelController.rebuild(); }
-                    @Override public void onProjectUIRebuild(MixerView newMixerView) {
-                        handleProjectRebuild(newMixerView);
-                    }
-                    // Story 282 — Mission Control per-project persistence.
-                    @Override public String captureLayoutJson() {
-                        if (layoutManager == null) return null;
-                        // Omit layout JSON when still in the implicit default
-                        // state so legacy projects round-trip unchanged.
-                        boolean isDefault = BuiltInLayouts.DEFAULT.equals(layoutManager.currentLayout())
-                                && layoutManager.savedLayouts().stream()
-                                        .noneMatch(l -> !l.builtIn());
-                        return isDefault ? null : layoutManager.toJson();
-                    }
-                    @Override public void applyLayoutJson(String json) {
-                        if (layoutManager != null) {
-                            layoutManager.fromJson(json);
-                        }
-                    }
-                },
+                // Story 294 — direct functional deps replace the callback-up
+                // ProjectLifecycleController.Host (§4.2/§9). The swappable
+                // project / undo manager are live Suppliers (a load is reflected
+                // without rebuilding this controller); dirty is no longer a poke
+                // — the controller calls DawProject.markDirty()/markClean()
+                // through the project supplier (§1.2 "one dirty bit").
+                new ProjectLifecycleController.Deps(
+                        () -> project,
+                        p -> project = p,
+                        () -> undoManager,
+                        um -> undoManager = um,
+                        () -> trackCreationController.resetCounters(),
+                        () -> historyPanelController.rebuild(),
+                        this::handleProjectRebuild,
+                        this::captureLayoutJsonForSave,
+                        json -> { if (layoutManager != null) { layoutManager.fromJson(json); } }),
                 new ProjectArchiver(),
                 dispatcher());
+    }
+
+    /**
+     * Story 282 — captures the live Mission-Control layout JSON to embed in the
+     * project file before save (the {@code ProjectLifecycleController.Deps}
+     * {@code captureLayoutJson} supplier). Returns {@code null} when the layout
+     * manager is not installed or is still in the implicit Default state, so
+     * legacy projects round-trip unchanged.
+     */
+    private String captureLayoutJsonForSave() {
+        if (layoutManager == null) {
+            return null;
+        }
+        boolean isDefault = BuiltInLayouts.DEFAULT.equals(layoutManager.currentLayout())
+                && layoutManager.savedLayouts().stream().noneMatch(l -> !l.builtIn());
+        return isDefault ? null : layoutManager.toJson();
     }
 
     private void handleProjectRebuild(MixerView newMixerView) {
@@ -1026,7 +1038,6 @@ public final class MainController {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         }
         applyProjectInfoLabels();
-        syncMenuStateIfPresent();
         rebuildViewModels();
         if (rippleModeController != null) {
             rippleModeController.onProjectChanged();
@@ -1054,7 +1065,6 @@ public final class MainController {
         this.undoManager = new UndoManager();
         if (historyPanelController != null) historyPanelController.rebuild();
         if (trackCreationController != null) trackCreationController.resetCounters();
-        this.projectDirty = true;
         trackListPanel.getChildren().clear();
         Label header = new Label("TRACKS");
         header.getStyleClass().add("panel-header");
@@ -1062,6 +1072,14 @@ public final class MainController {
         trackListPanel.getChildren().add(header);
         MixerView newMixerView = new MixerView(project, undoManager, dispatcher());
         handleProjectRebuild(newMixerView);
+        // Mark dirty AFTER the rebuild so the DIRTY signal lands on the freshly built
+        // ProjectVM (the outgoing VM was disposed in rebuildViewModels and the new one
+        // is wired to `project` there), which re-syncs the Save menu through its dirty
+        // listener. Marking BEFORE the rebuild announced to no live listener and left
+        // the bit visible only via the new VM's constructor seed — correct merely by
+        // coincidence of ordering. A restored snapshot is unsaved relative to disk, so
+        // it must be dirty.
+        this.project.markDirty();
         if (notificationBar != null && label != null) {
             notificationBar.show(NotificationLevel.INFO,
                     "Restored snapshot: " + label);
@@ -1147,7 +1165,7 @@ public final class MainController {
                     @Override public void onEditorTrim() { clipEditController.onEditorTrim(); }
                     @Override public void onEditorFadeIn() { clipEditController.onEditorFadeIn(); }
                     @Override public void onEditorFadeOut() { clipEditController.onEditorFadeOut(); }
-                    @Override public void markProjectDirty() { projectDirty = true; }
+                    @Override public void markProjectDirty() { project.markDirty(); }
                     // ── Performance Stage (story 280) ─────────────────────────
                     @Override public ResourceBundle messages() { return MESSAGES; }
                     @Override public Label timeDisplay() { return timeDisplay; }
@@ -1188,23 +1206,25 @@ public final class MainController {
                 () -> viewNavigationController.onZoomOut(),
                 () -> viewNavigationController.onToggleSnap(),
                 () -> transportController.onSkipBack(),
-                () -> projectDirty = true,
+                () -> project.markDirty(),
                 () -> viewNavigationController.isSnapEnabled(),
                 () -> viewNavigationController.getZoomLevel(viewNavigationController.getActiveView()),
                 () -> viewNavigationController.getEditorView());
     }
 
     private void createPluginViewController() {
-        pluginViewController = new PluginViewController(new PluginViewController.Host() {
-            @Override public double sampleRate() { return project.getFormat().sampleRate(); }
-            @Override public int bufferSize() { return project.getFormat().bufferSize(); }
-            @Override public DawProject project() { return project; }
-            @Override public void setProjectDirty() { projectDirty = true; }
-            @Override public void switchToMasteringView() { viewNavigationController.switchView(DawView.MASTERING); }
-            @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
-            @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
-            @Override public void showTelemetryPanel() { MainController.this.showTelemetryPanel(); }
-        });
+        // Story 294 — direct functional deps replace PluginViewController.Host (§4.2/§9).
+        // project/sampleRate/bufferSize read the swappable project field live; dirty
+        // routes through DawProject.markDirty() (the §1.2 "one dirty bit").
+        pluginViewController = new PluginViewController(new PluginViewController.Deps(
+                () -> project.getFormat().sampleRate(),
+                () -> project.getFormat().bufferSize(),
+                () -> project,
+                () -> project.markDirty(),
+                () -> viewNavigationController.switchView(DawView.MASTERING),
+                this::status,
+                (level, message) -> notificationBar.show(level, message),
+                this::showTelemetryPanel));
     }
 
     /**
@@ -1244,7 +1264,7 @@ public final class MainController {
                 selectionModel,
                 this::repaintArrangementCanvas,
                 this::syncMenuStateIfPresent,
-                () -> projectDirty = true,
+                () -> project.markDirty(),
                 this::status,
                 (level, msg, undo) -> notificationBar.showWithUndo(level, msg, undo),
                 (level, message) -> notificationBar.show(level, message),
@@ -1265,44 +1285,49 @@ public final class MainController {
         // handleProjectRebuild).
         rippleModeController = new RippleModeController(
                 () -> project,
-                () -> projectDirty = true,
+                () -> project.markDirty(),
                 notificationBar,
                 toolbarStateStore, rippleModeButton, rippleBannerLabel);
     }
 
     private void createTrackCreationController() {
         AudioDeviceManager deviceManager = new AudioDeviceManager(audioEngine);
+        // Story 294 — direct functional deps replace TrackCreationController.Host (§4.2/§9).
+        // The swappable project / undo manager / track-strip controller / mixer view are
+        // live Suppliers; dirty routes through DawProject.markDirty(); the old
+        // updateArrangementPlaceholder poke is gone (the placeholder binds ProjectVM.tracks).
         trackCreationController = new TrackCreationController(
-                new TrackCreationController.Host() {
-                    @Override public DawProject project() { return project; }
-                    @Override public UndoManager undoManager() { return undoManager; }
-                    @Override public TrackStripController trackStripController() { return trackStripController; }
-                    @Override public MixerView mixerView() { return viewNavigationController.getMixerView(); }
-                    @Override public VBox trackListPanel() { return trackListPanel; }
-                    @Override public void updateArrangementPlaceholder() { /* story 293: arrangementPlaceholder binds ProjectVM.tracks */ }
-                    @Override public void updateUndoRedoState() { MainController.this.syncMenuStateIfPresent(); }
-                    @Override public void markProjectDirty() { projectDirty = true; }
-                    @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
-                    @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
-                }, deviceManager);
+                new TrackCreationController.Deps(
+                        () -> project,
+                        () -> undoManager,
+                        () -> trackStripController,
+                        () -> viewNavigationController.getMixerView(),
+                        () -> trackListPanel,
+                        this::syncMenuStateIfPresent,
+                        () -> project.markDirty(),
+                        this::status,
+                        (level, message) -> notificationBar.show(level, message)),
+                deviceManager);
     }
 
     private void createAudioImportController() {
-        audioImportController = new AudioImportController(new AudioImportController.Host() {
-            @Override public DawProject project() { return project; }
-            @Override public UndoManager undoManager() { return undoManager; }
-            @Override public TrackStripController trackStripController() { return trackStripController; }
-            @Override public TrackCreationController trackCreationController() { return trackCreationController; }
-            @Override public MixerView mixerView() { return viewNavigationController.getMixerView(); }
-            @Override public VBox trackListPanel() { return trackListPanel; }
-            @Override public Stage primaryStage() { return (Stage) rootPane.getScene().getWindow(); }
-            @Override public void updateArrangementPlaceholder() { /* story 293: arrangementPlaceholder binds ProjectVM.tracks */ }
-            @Override public void refreshArrangementCanvas() { MainController.this.repaintArrangementCanvas(); }
-            @Override public void updateUndoRedoState() { MainController.this.syncMenuStateIfPresent(); }
-            @Override public void markProjectDirty() { projectDirty = true; }
-            @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
-            @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
-        });
+        // Story 294 — direct functional deps replace AudioImportController.Host (§4.2/§9).
+        // refreshArrangementCanvas is kept (an import adds a clip to an existing track,
+        // which does not fire ChangeKind.TRACKS, so the reactive ProjectVM.tracks binding
+        // does not repaint it); the no-op updateArrangementPlaceholder poke is gone.
+        audioImportController = new AudioImportController(new AudioImportController.Deps(
+                () -> project,
+                () -> undoManager,
+                () -> trackStripController,
+                () -> trackCreationController,
+                () -> viewNavigationController.getMixerView(),
+                () -> trackListPanel,
+                () -> (Stage) rootPane.getScene().getWindow(),
+                this::repaintArrangementCanvas,
+                this::syncMenuStateIfPresent,
+                () -> project.markDirty(),
+                this::status,
+                (level, message) -> notificationBar.show(level, message)));
     }
 
     /**
@@ -1310,27 +1335,21 @@ public final class MainController {
      *
      * <p>Constructs the application-wide {@link TrackTemplateController}
      * that orchestrates the Save / Apply / Add-from / Manage workflows.
-     * The controller is constructor-injected with a {@link TrackTemplateController.Host}
-     * adapter that snapshots the current project, undo manager, primary
-     * stage, and notification bar so the templates and presets feature
-     * stays decoupled from this top-level controller.</p>
+     * The controller is constructor-injected with a {@link TrackTemplateController.Deps}
+     * record (story 294, replacing the callback-up {@code Host}) whose live
+     * {@code Supplier}s read the current project, undo manager, and primary
+     * window so the templates and presets feature stays decoupled from this
+     * top-level controller.</p>
      */
     private void createTrackTemplateController() {
         trackTemplateController = new TrackTemplateController(
-                new TrackTemplateController.Host() {
-                    @Override public DawProject project() { return project; }
-                    @Override public UndoManager undoManager() { return undoManager; }
-                    @Override public javafx.stage.Window window() {
-                        return rootPane.getScene() != null
-                                ? rootPane.getScene().getWindow() : null;
-                    }
-                    @Override public void showNotification(NotificationLevel level, String message) {
-                        notificationBar.show(level, message);
-                    }
-                    @Override public void refreshMixer() {
-                        viewNavigationController.getMixerView().refresh();
-                    }
-                });
+                new TrackTemplateController.Deps(
+                        () -> project,
+                        () -> undoManager,
+                        () -> rootPane.getScene() != null
+                                ? rootPane.getScene().getWindow() : null,
+                        (level, message) -> notificationBar.show(level, message),
+                        () -> viewNavigationController.getMixerView().refresh()));
     }
 
     /**
@@ -1358,7 +1377,7 @@ public final class MainController {
                     if (viewNavigationController != null) {
                         viewNavigationController.getMixerView().refresh();
                     }
-                    projectDirty = true;
+                    project.markDirty();
                 },
                 () -> {
                     // Batch callback: refresh every strip plus the mixer.
@@ -1368,7 +1387,7 @@ public final class MainController {
                     if (viewNavigationController != null) {
                         viewNavigationController.getMixerView().refresh();
                     }
-                    projectDirty = true;
+                    project.markDirty();
                 },
                 this::status,
                 dispatcher());
@@ -1913,9 +1932,10 @@ public final class MainController {
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager,
-                // Save-enabled reads the imperative dirty bit (see field decl);
-                // the ProjectVM.dirty binding is story 294's charter.
-                () -> projectDirty,
+                // Story 294 — Save-enabled derives from ProjectVM.dirty, the §1.2
+                // "one dirty bit". rebuildViewModels() re-syncs the menu when dirty
+                // flips, so Save enables/disables reactively (§6.9 derive-don't-poke).
+                () -> projectVM != null && projectVM.isDirty(),
                 () -> undoManager.canUndo(),
                 () -> undoManager.canRedo(),
                 () -> clipboardManager.hasContent(),
@@ -2183,7 +2203,7 @@ public final class MainController {
     }
 
     private void setProjectDirtyFromTelemetry() {
-        projectDirty = true;
+        project.markDirty();
         if (menuBarController != null) menuBarController.syncMenuState();
     }
 
@@ -3131,7 +3151,7 @@ public final class MainController {
         arrangementCanvas.toggleAllFoldsForTrack(focused);
         status((focused.getFoldState().isFullyFolded() ? "Folded: " : "Unfolded: ")
                 + focused.getName(), DawIcon.AUTOMATION);
-        projectDirty = true;
+        project.markDirty();
     }
 
     private void onToggleFoldSelectedTracks() {
@@ -3149,7 +3169,7 @@ public final class MainController {
         boolean targetFolded = arrangementCanvas.toggleAllFoldsForTracks(tracks);
         status((targetFolded ? "Folded " : "Unfolded ")
                 + tracks.size() + " selected track(s)", DawIcon.AUTOMATION);
-        projectDirty = true;
+        project.markDirty();
     }
 
     private void onFoldAllAutomation() {
@@ -3158,7 +3178,7 @@ public final class MainController {
         }
         arrangementCanvas.toggleFoldAllAutomation();
         status("Toggled fold for all automation lanes", DawIcon.AUTOMATION);
-        projectDirty = true;
+        project.markDirty();
     }
 
     // ── Track Freeze and Unfreeze (Story 035) ──────────────────────────────
@@ -3229,7 +3249,7 @@ public final class MainController {
     @FXML private void onUndo() {
         if (undoManager.undo()) {
             status("Undo: " + undoManager.redoDescription(), DawIcon.UNDO);
-            projectDirty = true;
+            project.markDirty();
         } else {
             status("Nothing to undo", DawIcon.INFO_CIRCLE);
         }
@@ -3239,7 +3259,7 @@ public final class MainController {
     @FXML private void onRedo() {
         if (undoManager.redo()) {
             status("Redo: " + undoManager.undoDescription(), DawIcon.REDO);
-            projectDirty = true;
+            project.markDirty();
         } else {
             status("Nothing to redo", DawIcon.INFO_CIRCLE);
         }

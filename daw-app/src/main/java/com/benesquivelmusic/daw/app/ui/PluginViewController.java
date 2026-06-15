@@ -2,8 +2,10 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplayWindow;
 import com.benesquivelmusic.daw.app.ui.display.TunerDisplayWindow;
+import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.plugin.*;
+import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfImportController;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfProfileLibrary;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
@@ -13,6 +15,10 @@ import javafx.stage.StageStyle;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.function.DoubleSupplier;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -27,26 +33,30 @@ final class PluginViewController {
 
     private static final Logger LOG = Logger.getLogger(PluginViewController.class.getName());
 
-    interface Host {
-        double sampleRate();
-        int bufferSize();
-        com.benesquivelmusic.daw.core.project.DawProject project();
-        void setProjectDirty();
-        void switchToMasteringView();
-        void updateStatusBar(String text, com.benesquivelmusic.daw.app.ui.icons.DawIcon icon);
-        void showNotification(NotificationLevel level, String message);
-
-        /**
-         * Story 287 — shows / focuses the docked Sound Wave Telemetry
-         * panel (the shared {@code TelemetryView}), instead of opening a
-         * standalone window. The host routes this through the
-         * {@code DockManager} so the panel docks, floats, and persists
-         * with every other analyzer.
-         */
-        void showTelemetryPanel();
+    /**
+     * Story 294 — direct functional deps replace the callback-up {@code Host}
+     * (Control Synchronization Design Book §4.2/§9 "use publish/subscribe, not a
+     * callback-up {@code Host} for cross-surface updates"). {@code sampleRate}/
+     * {@code bufferSize} are primitive {@link DoubleSupplier}/{@link IntSupplier}
+     * reads; the swappable project is a live {@link Supplier} (read live, so a
+     * project load is reflected without rebuilding this controller); mastering
+     * navigation, the docked telemetry panel (story 287), and dirty are
+     * {@link Runnable}s ({@code markProjectDirty} routes through
+     * {@code DawProject.markDirty()} now — the §1.2 "one dirty bit"); status and
+     * notification are {@link BiConsumer} sinks.
+     */
+    record Deps(
+            DoubleSupplier sampleRate,
+            IntSupplier bufferSize,
+            Supplier<DawProject> project,
+            Runnable markProjectDirty,
+            Runnable switchToMasteringView,
+            BiConsumer<String, DawIcon> updateStatusBar,
+            BiConsumer<NotificationLevel, String> showNotification,
+            Runnable showTelemetryPanel) {
     }
 
-    private final Host host;
+    private final Deps deps;
     private final Map<Class<? extends BuiltInDawPlugin>, BuiltInDawPlugin> builtInPluginCache = new HashMap<>();
     private Stage virtualKeyboardStage;
     private SpectrumDisplayWindow builtInSpectrumWindow;
@@ -73,15 +83,15 @@ final class PluginViewController {
     private MidSideWrapperPluginView midSideWrapperView;
     private final HrtfProfileLibrary hrtfProfileLibrary = new HrtfProfileLibrary();
 
-    PluginViewController(Host host) {
-        this.host = host;
+    PluginViewController(Deps deps) {
+        this.deps = deps;
     }
 
     void onManagePlugins(PluginRegistry pluginRegistry) {
-        host.updateStatusBar("Opening plugin manager...", com.benesquivelmusic.daw.app.ui.icons.DawIcon.MENU);
+        deps.updateStatusBar().accept("Opening plugin manager...", com.benesquivelmusic.daw.app.ui.icons.DawIcon.MENU);
         PluginManagerDialog dialog = new PluginManagerDialog(pluginRegistry);
         dialog.showAndWait();
-        host.updateStatusBar("Plugin manager closed", com.benesquivelmusic.daw.app.ui.icons.DawIcon.SETTINGS);
+        deps.updateStatusBar().accept("Plugin manager closed", com.benesquivelmusic.daw.app.ui.icons.DawIcon.SETTINGS);
     }
 
     void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass) {
@@ -90,8 +100,8 @@ final class PluginViewController {
                 try {
                     BuiltInDawPlugin instance = cls.getConstructor().newInstance();
                     PluginContext pluginContext = new PluginContext() {
-                        @Override public double getSampleRate() { return host.sampleRate(); }
-                        @Override public int getBufferSize() { return host.bufferSize(); }
+                        @Override public double getSampleRate() { return deps.sampleRate().getAsDouble(); }
+                        @Override public int getBufferSize() { return deps.bufferSize().getAsInt(); }
                         @Override public void log(String message) { LOG.info(message); }
                     };
                     instance.initialize(pluginContext);
@@ -100,15 +110,15 @@ final class PluginViewController {
                     throw new RuntimeException("Failed to instantiate built-in plugin: " + cls.getName(), e);
                 }
             });
-            host.updateStatusBar("Activating " + plugin.getMenuLabel() + "...", null);
+            deps.updateStatusBar().accept("Activating " + plugin.getMenuLabel() + "...", null);
             plugin.activate();
             openBuiltInPluginView(plugin);
-            host.updateStatusBar(plugin.getMenuLabel() + " activated", null);
+            deps.updateStatusBar().accept(plugin.getMenuLabel() + " activated", null);
             LOG.fine("Activated built-in plugin: " + plugin.getMenuLabel());
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to activate built-in plugin: " + pluginClass.getName(), e);
-            host.updateStatusBar("Failed to activate " + pluginClass.getSimpleName(), null);
-            host.showNotification(NotificationLevel.ERROR,
+            deps.updateStatusBar().accept("Failed to activate " + pluginClass.getSimpleName(), null);
+            deps.showNotification().accept(NotificationLevel.ERROR,
                     "Failed to activate " + pluginClass.getSimpleName() + ": " + e.getMessage());
         }
     }
@@ -177,7 +187,7 @@ final class PluginViewController {
             case MidSideWrapperPlugin.PLUGIN_ID -> openMidSideWrapperWindow((MidSideWrapperPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
-                 ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
+                 ReverbPlugin.PLUGIN_ID -> deps.switchToMasteringView().run();
             default -> LOG.fine("No associated built-in view mapping for plugin id: " + pluginId);
         }
     }
@@ -259,7 +269,7 @@ final class PluginViewController {
      * without tearing down the plugin.
      */
     private void openSoundWaveTelemetryWindow(SoundWaveTelemetryPlugin plugin) {
-        host.showTelemetryPanel();
+        deps.showTelemetryPanel().run();
     }
 
     private void openBusCompressorWindow(BusCompressorPlugin plugin) {
@@ -494,27 +504,27 @@ final class PluginViewController {
         }
 
         binauralMonitorView = new BinauralMonitorPluginView(
-                plugin, hrtfProfileLibrary, host.sampleRate());
+                plugin, hrtfProfileLibrary, deps.sampleRate().getAsDouble());
 
         // Persist the user's selection on the active project so it survives
         // save/load (story 174 — per-project active HRTF profile).
         binauralMonitorView.setProfileSelectionListener(entry -> {
-            String current = host.project().getActiveHrtfProfileName();
+            String current = deps.project().get().getActiveHrtfProfileName();
             if (!entry.displayName().equals(current)) {
-                host.project().setActiveHrtfProfileName(entry.displayName());
-                host.setProjectDirty();
+                deps.project().get().setActiveHrtfProfileName(entry.displayName());
+                deps.markProjectDirty().run();
             }
         });
         // Honour any previously saved selection, resolving through the
         // controller so missing profiles trigger the one-shot fallback warning.
-        String saved = host.project().getActiveHrtfProfileName();
+        String saved = deps.project().get().getActiveHrtfProfileName();
         if (saved != null) {
             HrtfImportController resolver = new HrtfImportController(
-                    hrtfProfileLibrary, host.sampleRate());
+                    hrtfProfileLibrary, deps.sampleRate().getAsDouble());
             HrtfImportController.Resolution resolution = resolver.resolve(saved);
             binauralMonitorView.selectProfileByNameSilently(resolution.displayName());
             resolution.fallbackWarning().ifPresent(warning ->
-                    host.showNotification(NotificationLevel.WARNING, warning));
+                    deps.showNotification().accept(NotificationLevel.WARNING, warning));
         }
 
         Stage stage = new Stage(StageStyle.UTILITY);
@@ -565,7 +575,7 @@ final class PluginViewController {
      */
     public void onManageHrtfProfiles() {
         HrtfProfileBrowserDialog dialog = new HrtfProfileBrowserDialog(
-                hrtfProfileLibrary, host.sampleRate());
+                hrtfProfileLibrary, deps.sampleRate().getAsDouble());
         dialog.showAndWait();
     }
 }

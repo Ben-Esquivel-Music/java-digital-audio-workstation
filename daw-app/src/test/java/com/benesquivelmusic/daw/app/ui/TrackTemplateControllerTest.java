@@ -15,7 +15,6 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.application.Platform;
-import javafx.stage.Window;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -70,14 +69,13 @@ class TrackTemplateControllerTest {
     private TrackTemplateController newController(DawProject project,
                                                   UndoManager undoManager,
                                                   Path tempDir) {
-        TrackTemplateController.Host host = new TrackTemplateController.Host() {
-            @Override public DawProject project() { return project; }
-            @Override public UndoManager undoManager() { return undoManager; }
-            @Override public Window window() { return null; }
-            @Override public void showNotification(NotificationLevel level, String message) { }
-            @Override public void refreshMixer() { }
-        };
-        return new TrackTemplateController(host, () -> new TrackTemplateStore(tempDir));
+        TrackTemplateController.Deps deps = new TrackTemplateController.Deps(
+                () -> project,
+                () -> undoManager,
+                () -> null,
+                (level, message) -> { },
+                () -> { });
+        return new TrackTemplateController(deps, () -> new TrackTemplateStore(tempDir));
     }
 
     @Test

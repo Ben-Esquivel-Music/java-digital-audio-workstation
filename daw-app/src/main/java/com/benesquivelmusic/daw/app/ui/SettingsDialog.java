@@ -7,6 +7,8 @@ import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.sdk.event.UiEvent;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.*;
@@ -18,6 +20,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 
+import java.time.Instant;
 import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
@@ -606,30 +609,34 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         // Appearance
         model.setUiScale(uiScaleSlider.getValue());
-        // Story 277 — apply + persist the token theme. Setting the
-        // active-theme property re-applies the overlay to every
-        // registered scene/dialog-pane (no restart) and persists the
-        // choice under ThemeManager's own preferences key.
+        // Story 294 — appearance changes now propagate through the shared
+        // EventBus instead of this dialog poking the three managers directly
+        // (Control Synchronization Design Book §6.7). ThemeManager,
+        // DensityManager and MotionManager each subscribe to
+        // UiEvent.SettingsApplied and apply their own slice via their own
+        // existing setter (which still persists + live-reapplies with no
+        // restart). The ids ride as enum name() strings because the SDK event
+        // type must not depend on daw-app's Theme / DensityMode enums.
+        //
+        // The combo / toggle reads here are SEEDED from the managers in the
+        // constructor (a read, not a cross-surface poke), so falling back to
+        // the manager's current value when a control is somehow empty keeps the
+        // published event well-formed (themeId/densityId are @NonNull).
         ThemeManager.Theme selectedTheme = themeCombo.getValue();
-        if (selectedTheme != null) {
-            themeManager.setActiveTheme(selectedTheme);
+        if (selectedTheme == null) {
+            selectedTheme = themeManager.getActiveTheme();
         }
-        // Story 278 — apply + persist the global density. Setting the
-        // active-density property re-applies the .density-* root class to
-        // every registered scene/dialog-pane (no restart) and persists
-        // the choice under DensityManager's own preferences key — exactly
-        // like the theme block above.
         Toggle selectedDensityToggle = densityGroup.getSelectedToggle();
-        if (selectedDensityToggle != null
-                && selectedDensityToggle.getUserData() instanceof DensityMode mode) {
-            densityManager.setActiveDensity(mode);
-        }
-        // Story 279 — apply + persist the global Reduce Motion flag.
-        // MotionManager is a pure observable flag: every animatable
-        // control observes reduceMotionProperty() and recomputes its
-        // combined animated state, so the change takes effect with no
-        // restart. The flag persists under MotionManager's own key.
-        motionManager.setReduceMotion(reduceMotionCheck.isSelected());
+        DensityMode selectedDensity =
+                selectedDensityToggle != null
+                        && selectedDensityToggle.getUserData() instanceof DensityMode mode
+                        ? mode
+                        : densityManager.getActiveDensity();
+        EventBusPublisher.publish(new UiEvent.SettingsApplied(
+                Instant.now(),
+                selectedTheme.name(),
+                selectedDensity.name(),
+                reduceMotionCheck.isSelected()));
 
         // Plugins
         String paths = pluginScanPathsField.getText();
