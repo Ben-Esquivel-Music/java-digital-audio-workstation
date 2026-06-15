@@ -898,7 +898,6 @@ final class ProjectLifecycleController {
         ProjectHubView hub = new ProjectHubView(
                 projectManager.getRecentProjectPaths(),
                 new ProjectHealthScanner(d),
-                d,
                 projectDir -> {
                     if (projectDir != null && confirmDiscardUnsavedChanges()) {
                         dismiss(ref[0]);

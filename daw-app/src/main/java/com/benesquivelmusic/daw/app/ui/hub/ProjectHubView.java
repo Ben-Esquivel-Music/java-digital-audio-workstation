@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.app.ui.hub;
 
-import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
 
 import javafx.geometry.Pos;
@@ -61,7 +60,7 @@ import java.util.function.Consumer;
  *
  * <p>Each project-directory card is populated by a background virtual-thread
  * {@link ProjectHealthScanner#scan(Path, Consumer) scan} whose result is
- * marshalled back to the FX thread through the story-289 {@link FxDispatcher};
+ * marshalled back to the FX thread via {@code Platform.runLater};
  * the FX thread never walks a project tree. The scan threads are collected into
  * {@link #pendingScans()} so a test can join them. Archive {@code .dawz} entries
  * are files (not directories): they are populated directly on the FX thread
@@ -96,7 +95,6 @@ public final class ProjectHubView extends BorderPane {
     private static final String SORT_NAME = "Name";
 
     private final ProjectHealthScanner scanner;
-    private final FxDispatcher dispatcher;
     private final Consumer<Path> onOpen;
     private final Consumer<Path> onReveal;
     private final Consumer<Path> onRestoreArchive;
@@ -142,7 +140,6 @@ public final class ProjectHubView extends BorderPane {
      * @param pinnedPaths      pinned project directories; {@code null} → empty
      * @param archivePaths     {@code .dawz} archive files; may be empty / {@code null}
      * @param scanner          the virtual-thread health/size scanner; must not be {@code null}
-     * @param dispatcher       the FX marshalling seam; must not be {@code null}
      * @param onOpen           opens a project directory; must not be {@code null}
      * @param onReveal         reveals a directory in the OS file browser; must not be {@code null}
      * @param onRestoreArchive restores a {@code .dawz} archive; must not be {@code null}
@@ -155,13 +152,11 @@ public final class ProjectHubView extends BorderPane {
             List<Path> pinnedPaths,
             List<Path> archivePaths,
             ProjectHealthScanner scanner,
-            FxDispatcher dispatcher,
             Consumer<Path> onOpen,
             Consumer<Path> onReveal,
             Consumer<Path> onRestoreArchive,
             Runnable onClearRecent) {
         this.scanner = Objects.requireNonNull(scanner, "scanner must not be null");
-        this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
         this.onOpen = Objects.requireNonNull(onOpen, "onOpen must not be null");
         this.onReveal = Objects.requireNonNull(onReveal, "onReveal must not be null");
         this.onRestoreArchive =
@@ -204,7 +199,6 @@ public final class ProjectHubView extends BorderPane {
      *
      * @param recentPaths recent project directories, most-recent-first; {@code null} → empty
      * @param scanner     the scanner; must not be {@code null}
-     * @param dispatcher  the FX dispatcher; must not be {@code null}
      * @param onOpen      opens a project directory; must not be {@code null}
      * @param onReveal    reveals a directory in the OS file browser; must not be {@code null}
      * @param onClearRecent clears the recent-projects list; must not be {@code null}
@@ -212,11 +206,10 @@ public final class ProjectHubView extends BorderPane {
     public ProjectHubView(
             List<Path> recentPaths,
             ProjectHealthScanner scanner,
-            FxDispatcher dispatcher,
             Consumer<Path> onOpen,
             Consumer<Path> onReveal,
             Runnable onClearRecent) {
-        this(recentPaths, List.of(), List.of(), scanner, dispatcher,
+        this(recentPaths, List.of(), List.of(), scanner,
                 onOpen, onReveal, p -> { }, onClearRecent);
     }
 
@@ -226,17 +219,15 @@ public final class ProjectHubView extends BorderPane {
      *
      * @param recentPaths recent project directories, most-recent-first; {@code null} → empty
      * @param scanner     the scanner; must not be {@code null}
-     * @param dispatcher  the FX dispatcher; must not be {@code null}
      * @param onOpen      opens a project directory; must not be {@code null}
      * @param onReveal    reveals a directory in the OS file browser; must not be {@code null}
      */
     public ProjectHubView(
             List<Path> recentPaths,
             ProjectHealthScanner scanner,
-            FxDispatcher dispatcher,
             Consumer<Path> onOpen,
             Consumer<Path> onReveal) {
-        this(recentPaths, scanner, dispatcher, onOpen, onReveal, () -> { });
+        this(recentPaths, scanner, onOpen, onReveal, () -> { });
     }
 
     // ── toolbar ──────────────────────────────────────────────────────────────

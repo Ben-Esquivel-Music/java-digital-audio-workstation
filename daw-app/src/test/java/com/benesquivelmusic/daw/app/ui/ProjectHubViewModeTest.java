@@ -61,7 +61,6 @@ class ProjectHubViewModeTest {
         runOnFxThread(() -> hubRef.set(new ProjectHubView(
                 recent,
                 new ProjectHealthScanner(dispatcher),
-                dispatcher,
                 p -> { },
                 p -> { })));
         ProjectHubView hub = hubRef.get();

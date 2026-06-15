@@ -106,7 +106,6 @@ class RecentProjectsStoreFeedsHubTest {
         runOnFxThread(() -> hubRef.set(new ProjectHubView(
                 recentPaths,
                 new ProjectHealthScanner(dispatcher),
-                dispatcher,
                 p -> { },
                 p -> { })));
         ProjectHubView hub = hubRef.get();
