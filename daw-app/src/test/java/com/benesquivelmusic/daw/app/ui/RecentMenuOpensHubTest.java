@@ -64,10 +64,9 @@ class RecentMenuOpensHubTest {
                         + "not a filename ContextMenu")
                 .isNotNull();
         assertThat(hub.recentCards())
-                .as("the Hub's Recent section renders one card per recent project")
-                .hasSize(2);
-        // Recent order mirrors the store (most-recent-first): Beta then Alpha.
-        assertThat(hub.recentCards().get(0).getName()).isIn("Beta", "Alpha");
+                .as("the Hub's Recent section renders one card per recent project in most-recent-first order")
+                .extracting(card -> card.getName())
+                .containsExactly("Beta", "Alpha");
 
         joinScans(hub); // let the per-card background scans finish before @TempDir cleanup
     }
