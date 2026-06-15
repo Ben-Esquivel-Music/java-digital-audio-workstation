@@ -1062,7 +1062,13 @@ final class ProjectLifecycleController {
             try {
                 if (java.awt.Desktop.isDesktopSupported()
                         && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN)) {
-                    java.awt.Desktop.getDesktop().open(projectDir.toFile());
+                    Path toOpen = Files.isDirectory(projectDir) ? projectDir : projectDir.getParent();
+                    if (toOpen == null) {
+                        postFx(() -> notificationBar.show(NotificationLevel.ERROR,
+                                "Could not reveal project: no parent directory"));
+                        return;
+                    }
+                    java.awt.Desktop.getDesktop().open(toOpen.toFile());
                 } else {
                     postFx(() -> notificationBar.show(NotificationLevel.ERROR,
                             "Reveal is not supported on this platform"));
