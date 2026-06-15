@@ -86,7 +86,7 @@ public final class SessionManifestStore {
 
     /**
      * The manifest file name for a session, e.g.
-     * {@code 2026-03-21-tracking-day-2.session.xml}.
+     * {@code 2026-03-21-tracking-day-2-<id>.session.xml}.
      *
      * @param session the session to name
      * @return the manifest file name (no directory component)
