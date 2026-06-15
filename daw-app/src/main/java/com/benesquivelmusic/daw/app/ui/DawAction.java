@@ -112,10 +112,10 @@ public enum DawAction {
     NUDGE_RIGHT_SAMPLE("Nudge Right (Sample)", Category.EDITING,
             new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.ALT_DOWN)),
 
-    // ── Session interchange ─────────────────────────────────────────────────
-    IMPORT_SESSION("Import Session", Category.EDITING,
+    // ── DAWproject Exchange (interchange) ───────────────────────────────────
+    IMPORT_SESSION("Import DAWproject Exchange", Category.EDITING,
             new KeyCodeCombination(KeyCode.I, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
-    EXPORT_SESSION("Export Session", Category.EDITING,
+    EXPORT_SESSION("Export DAWproject Exchange", Category.EDITING,
             new KeyCodeCombination(KeyCode.E, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     // Story 186 — Offline Render Queue. Opens the dockable RenderQueueView
     // which lists every queued / running / completed offline render job
@@ -229,6 +229,7 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     TOGGLE_VISUALIZATIONS("Toggle Visualizations", Category.VIEWS,
             new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    TOGGLE_SESSION_MANAGER("Toggle Session Manager", Category.VIEWS, null),
 
     // ── Dockable panels (Issue: Resizable and Detachable Dockable Panels) ──
     // Cubase-consistent function-key shortcuts: F3 mixer, F4 browser,

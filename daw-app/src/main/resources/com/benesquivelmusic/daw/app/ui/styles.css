@@ -2322,3 +2322,36 @@
     -insp-line-soft: -line-soft;
     -insp-accent:    -accent;
 }
+
+/* ── Session Manager dock (Project Manager Design Book §4.3) ──────────────── */
+.session-manager-dock {
+    -fx-background-color: -surface-1;
+    -fx-padding: 8;
+    -fx-spacing: 8;
+}
+
+.session-manager-title {
+    -fx-text-fill: -accent;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+.session-manager-list {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+}
+
+.session-manager-empty {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 12px;
+}
+
+.session-manager-cell-name {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 13px;
+}
+
+.session-manager-cell-status {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 12px;
+}

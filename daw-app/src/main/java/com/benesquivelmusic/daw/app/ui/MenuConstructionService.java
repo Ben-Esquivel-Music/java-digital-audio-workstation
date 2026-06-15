@@ -75,7 +75,7 @@ final class MenuConstructionService {
         // File menu items needing state sync
         MenuItem saveItem = menuItem("Save Project", DawIcon.DOWNLOAD,
                 DawAction.SAVE, host::onSaveProject);
-        MenuItem exportSessionItem = menuItem("Export Session\u2026", DawIcon.UPLOAD,
+        MenuItem exportSessionItem = menuItem("Export DAWproject Exchange\u2026", DawIcon.UPLOAD,
                 DawAction.EXPORT_SESSION, host::onExportSession);
         // Story 186 — Offline Render Queue. Always-available entry that
         // opens the queue UI even when no project is loaded (the queue is
@@ -135,7 +135,7 @@ final class MenuConstructionService {
                 DawAction.OPEN_PROJECT, host::onOpenProject);
         MenuItem recentProjects = menuItem("Recent Projects", DawIcon.HISTORY,
                 null, host::onRecentProjects);
-        MenuItem importSession = menuItem("Import Session\u2026", DawIcon.DOWNLOAD,
+        MenuItem importSession = menuItem("Import DAWproject Exchange\u2026", DawIcon.DOWNLOAD,
                 DawAction.IMPORT_SESSION, host::onImportSession);
 
         // Story 190 — Snapshot History Browser
@@ -352,11 +352,14 @@ final class MenuConstructionService {
                 DawAction.TOGGLE_NOTIFICATION_HISTORY, host::onToggleNotificationHistory);
         MenuItem toggleViz = menuItem("Toggle Visualizations", DawIcon.SPECTRUM,
                 DawAction.TOGGLE_VISUALIZATIONS, host::onToggleVisualizations);
+        MenuItem toggleSessionManager = menuItem("Toggle Session Manager", DawIcon.HISTORY,
+                DawAction.TOGGLE_SESSION_MANAGER, host::onToggleSessionManager);
 
         windowMenu.getItems().addAll(
                 arrangement, mixer, editor, mastering, performanceStage, workshop,
                 new SeparatorMenuItem(),
                 toggleBrowser, toggleHistory, toggleNotifications, toggleViz,
+                toggleSessionManager,
                 new SeparatorMenuItem(),
                 buildQcMenu()
         );

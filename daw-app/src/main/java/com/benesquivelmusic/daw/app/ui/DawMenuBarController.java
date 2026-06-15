@@ -115,6 +115,11 @@ public final class DawMenuBarController {
         void onToggleHistory();
         void onToggleNotificationHistory();
         void onToggleVisualizations();
+        /**
+         * Toggles the right-hand Session Manager dock (Project Manager Design
+         * Book §4.3). Default no-op so non-window hosts need not implement it.
+         */
+        default void onToggleSessionManager() { }
 
         // Track actions (Issue 568 — lane folding)
         void onToggleFoldFocusedTrack();
