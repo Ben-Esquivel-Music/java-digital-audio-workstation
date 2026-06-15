@@ -332,7 +332,7 @@ public final class ProjectLockManager implements AutoCloseable {
         Objects.requireNonNull(projectDir, "projectDir must not be null");
         try {
             return Optional.ofNullable(readLock(projectDir.resolve(LOCK_FILE_NAME)));
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             return Optional.empty();
         }
     }
