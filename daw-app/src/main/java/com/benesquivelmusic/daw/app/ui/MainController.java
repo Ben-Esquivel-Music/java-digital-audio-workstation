@@ -1288,7 +1288,6 @@ public final class MainController {
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> history;
             try {
                 var manager = new com.benesquivelmusic.daw.core.session.SessionManager();
-                manager.openSession(projectDir, java.time.Instant.now());
                 history = manager.history(projectDir);
             } catch (java.io.IOException e) {
                 LOG.log(Level.WARNING, "Failed to load session history for " + projectDir, e);

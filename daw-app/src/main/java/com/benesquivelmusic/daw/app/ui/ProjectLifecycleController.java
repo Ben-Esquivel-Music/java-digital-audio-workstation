@@ -421,11 +421,11 @@ final class ProjectLifecycleController {
                 warningDialog.showAndWait();
             }
 
-            LOG.info("Exported DAWproject session to " + result.outputPath());
+            LOG.info("Exported DAWproject Exchange to " + result.outputPath());
         } catch (IOException e) {
             notificationBar.show(NotificationLevel.ERROR,
                     "Export failed: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to export session", e);
+            LOG.log(Level.WARNING, "Failed to export DAWproject Exchange", e);
         }
     }
 

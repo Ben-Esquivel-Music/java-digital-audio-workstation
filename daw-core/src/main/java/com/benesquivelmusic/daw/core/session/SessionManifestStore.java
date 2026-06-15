@@ -94,7 +94,7 @@ public final class SessionManifestStore {
     public String manifestFileName(WorkingSession session) {
         Objects.requireNonNull(session, "session must not be null");
         LocalDate date = LocalDate.ofInstant(session.startTime(), zone);
-        return date + "-" + slug(session.name()) + MANIFEST_SUFFIX;
+        return date + "-" + slug(session.name()) + "-" + session.id() + MANIFEST_SUFFIX;
     }
 
     /**

@@ -83,9 +83,9 @@ public final class SessionManagerDock extends VBox implements Dockable {
         sessions.setAll(history);
     }
 
-    /** {@return the live list of sessions shown by the dock} */
+    /** {@return an unmodifiable view of the sessions shown by the dock} */
     public ObservableList<WorkingSession> getSessions() {
-        return sessions;
+        return FXCollections.unmodifiableObservableList(sessions);
     }
 
     // ── Dockable contract ────────────────────────────────────────────────────

@@ -33,7 +33,9 @@ class SessionManifestStoreTest {
                 .start(Instant.parse("2026-03-21T09:00:00Z"), ZoneOffset.UTC)
                 .withName("Tracking day 2");
         assertThat(store.manifestFileName(session))
-                .isEqualTo("2026-03-21-tracking-day-2.session.xml");
+                .startsWith("2026-03-21-tracking-day-2-")
+                .endsWith(".session.xml")
+                .contains(session.id());
     }
 
     @Test

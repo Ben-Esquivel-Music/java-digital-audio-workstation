@@ -110,7 +110,7 @@ public final class SessionManager {
 
         Optional<WorkingSession> sealed = Optional.empty();
         if (latest.isActive()) {
-            WorkingSession sealedSession = latest.sealed(lastActivity);
+            WorkingSession sealedSession = latest.sealed(now);
             store.write(projectDir, sealedSession);
             sealed = Optional.of(sealedSession);
         }
