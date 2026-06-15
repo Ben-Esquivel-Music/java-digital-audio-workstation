@@ -346,14 +346,14 @@ final class ProjectLifecycleController {
         projectHubPresenter.accept(buildProjectHub());
     }
 
-    // ── Session Import/Export ────────────────────────────────────────────────
+    // ── DAWproject Exchange Import/Export ────────────────────────────────────
 
     void onImportSession() {
         if (!confirmDiscardUnsavedChanges()) {
             return;
         }
         FileChooser chooser = new FileChooser();
-        chooser.setTitle("Import Session");
+        chooser.setTitle("Import DAWproject Exchange");
         chooser.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("DAWproject Files", "*.dawproject", "*.xml"));
         Stage stage = (Stage) rootPane.getScene().getWindow();
@@ -375,13 +375,13 @@ final class ProjectLifecycleController {
             String summary = sessionInterchangeController.buildImportSummary(result);
             Alert summaryDialog = new Alert(Alert.AlertType.INFORMATION);
             summaryDialog.setTitle("Import Summary");
-            summaryDialog.setHeaderText("Session imported successfully");
+            summaryDialog.setHeaderText("DAWproject Exchange imported successfully");
             summaryDialog.setContentText(summary);
             ThemeManager.getDefault().applyTo(summaryDialog.getDialogPane());
             summaryDialog.showAndWait();
 
             notificationBar.show(NotificationLevel.SUCCESS,
-                    "Imported session: " + result.sessionData().projectName());
+                    "Imported DAWproject Exchange: " + result.sessionData().projectName());
             LOG.info("Imported DAWproject session from " + selected.toPath());
         } catch (IOException e) {
             notificationBar.show(NotificationLevel.ERROR,
@@ -392,7 +392,7 @@ final class ProjectLifecycleController {
 
     void onExportSession() {
         DirectoryChooser chooser = new DirectoryChooser();
-        chooser.setTitle("Export Session");
+        chooser.setTitle("Export DAWproject Exchange");
         Stage stage = (Stage) rootPane.getScene().getWindow();
         java.io.File selected = chooser.showDialog(stage);
         if (selected == null) {
@@ -402,7 +402,7 @@ final class ProjectLifecycleController {
             SessionExportResult result = sessionInterchangeController.exportSession(
                     deps.project().get(), selected.toPath(), deps.project().get().getName());
 
-            String message = "Session exported to " + result.outputPath().getFileName();
+            String message = "DAWproject Exchange exported to " + result.outputPath().getFileName();
             if (!result.warnings().isEmpty()) {
                 message += " (" + result.warnings().size() + " warnings)";
             }
@@ -415,7 +415,7 @@ final class ProjectLifecycleController {
                 }
                 Alert warningDialog = new Alert(Alert.AlertType.WARNING);
                 warningDialog.setTitle("Export Warnings");
-                warningDialog.setHeaderText("Session exported with warnings");
+                warningDialog.setHeaderText("DAWproject Exchange exported with warnings");
                 warningDialog.setContentText(warningText.toString());
                 ThemeManager.getDefault().applyTo(warningDialog.getDialogPane());
                 warningDialog.showAndWait();

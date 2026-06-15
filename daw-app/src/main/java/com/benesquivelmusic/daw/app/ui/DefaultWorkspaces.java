@@ -59,6 +59,11 @@ public final class DefaultWorkspaces {
     public static final String PANEL_ROOM_3D = "room3d";
     /** Telemetry setup (room configuration) dockable panel (story 287). */
     public static final String PANEL_TELEMETRY = "telemetry";
+    /**
+     * Session Manager dock (Project Manager Design Book §4.3) — the durable,
+     * named, navigable session history surfaced on the right-hand edge.
+     */
+    public static final String PANEL_SESSION_MANAGER = "session-manager";
 
     private DefaultWorkspaces() { }
 

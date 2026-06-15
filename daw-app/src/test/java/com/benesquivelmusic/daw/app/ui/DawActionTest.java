@@ -48,7 +48,9 @@ class DawActionTest {
                 DawAction.OPEN_IMMERSIVE_AB,
                 DawAction.EXPORT_RENDER_QUEUE,
                 // Story 189 — File-menu only, no keyboard accelerator.
-                DawAction.ARCHIVE_PROJECT, DawAction.RESTORE_FROM_ARCHIVE);
+                DawAction.ARCHIVE_PROJECT, DawAction.RESTORE_FROM_ARCHIVE,
+                // Sessions Stage 3 — Window-menu only, no keyboard accelerator.
+                DawAction.TOGGLE_SESSION_MANAGER);
         for (DawAction action : DawAction.values()) {
             if (nullBindingAllowed.contains(action)) {
                 continue;
