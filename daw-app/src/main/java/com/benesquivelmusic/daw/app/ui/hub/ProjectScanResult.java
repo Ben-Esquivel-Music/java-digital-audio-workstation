@@ -26,7 +26,7 @@ import java.util.Objects;
  * @param sessionCount        number of sessions, or {@code -1} when unknown (Stage 2 has no sessions)
  * @param health              the health badge; coerced to {@link HealthBadge#HEALTHY} when {@code null}
  * @param missingAssetCount   number of missing referenced assets ({@code 0} in Stage 2)
- * @param schemaVersion       the current schema version, or {@code -1} when unknown
+ * @param schemaVersion       the schema version this build considers current (post-migration target), or {@code -1} when unknown
  * @param backupSchemaVersion the schema version of the newest pre-migration backup, or {@code -1} when none
  * @param lockHolderLabel     {@code "user @ host"} when a lock is present, else {@code ""} (coerced from {@code null})
  * @param lockPresent         whether a {@code .project.lock} sidecar exists
