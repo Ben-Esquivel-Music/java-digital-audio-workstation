@@ -1,0 +1,78 @@
+/*
+ * Story 296 — ProjectCard user-agent stylesheet (Project Hub / Welcome screen).
+ *
+ * Returned by ProjectCard#getUserAgentStylesheet(). Self-contained (mirrors
+ * knob.css / fader.css, story 268): the local -pc-* tokens carry literal
+ * Palette-A defaults here so the card renders correctly with NO application
+ * stylesheet loaded (e.g. an isolated control test, or the Hub shown before the
+ * scene's styles.css resolves). The author-origin forward block in styles.css
+ * (`.project-card { -pc-surface: -surface-1; … }`) RE-declares the same tokens
+ * from role tokens and WINS by CSS origin (AUTHOR > USER_AGENT), so a theme
+ * overlay re-tints the cards for free (feedback_control_css_role_token_forwarding,
+ * feedback_css_author_overrides_useragent_duplication). The literal values below
+ * match Palette A in styles.css; TokenValidationTest scans only styles.css /
+ * theme overlays, not control UA sheets, so these literals are by design.
+ */
+.project-card {
+    -pc-surface:      #15161B;  /* -surface-1   */
+    -pc-line:         #22242C;  /* -line-soft   */
+    -pc-line-strong:  #2E323D;  /* -line-strong */
+    -pc-accent:       #7C8CFF;  /* -accent      */
+    -pc-accent-soft:  rgba(124, 140, 255, 0.14);  /* -accent-soft */
+    -pc-text-hi:      #ECEEF2;  /* -text-hi     */
+    -pc-text-mute:    #7A808C;  /* -text-mute   */
+    -pc-ok:           #5BD2A0;  /* -ok          */
+    -pc-warn:         #E6B450;  /* -warn        */
+    -pc-danger:       #E5484D;  /* -danger      */
+
+    -fx-background-color: -pc-surface;
+    -fx-background-radius: 8;
+    -fx-border-color: -pc-line;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+    -fx-padding: 12 16 12 16;
+    -fx-min-width: 200;
+    -fx-pref-width: 240;
+    -fx-min-height: 84;
+}
+
+.project-card:hover {
+    -fx-border-color: -pc-line-strong;
+}
+
+.project-card.project-card-selected {
+    -fx-background-color: -pc-accent-soft;
+    -fx-border-color: -pc-accent;
+}
+
+.project-card .project-card-content {
+    -fx-spacing: 3;
+}
+
+.project-card-name {
+    -fx-text-fill: -pc-text-hi;
+    -fx-font-size: 14px;
+    -fx-font-weight: 600;
+}
+
+.project-card-meta {
+    -fx-text-fill: -pc-text-mute;
+    -fx-font-size: 12px;
+}
+
+.project-card-health {
+    -fx-text-fill: -pc-text-mute;
+    -fx-font-size: 12px;
+}
+
+/* Health-label fills per badge — the card adds exactly one of these classes
+   to itself (ProjectCard.healthProperty().invalidated()). */
+.project-card.project-card-healthy .project-card-health {
+    -fx-text-fill: -pc-ok;
+}
+.project-card.project-card-migrated .project-card-health {
+    -fx-text-fill: -pc-warn;
+}
+.project-card.project-card-missing .project-card-health {
+    -fx-text-fill: -pc-danger;
+}

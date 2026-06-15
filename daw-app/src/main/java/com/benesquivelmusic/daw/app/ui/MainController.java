@@ -1165,6 +1165,23 @@ public final class MainController {
     }
 
     /**
+     * Story 296 — shows the §4.1 Welcome screen on launch when no project is
+     * open on disk ({@code projectManager.getCurrentProject() == null}, which is
+     * true at a fresh start: the in-memory Untitled project is not yet an
+     * on-disk project). Called by {@code DawApplication} right after the primary
+     * stage is shown, so the Welcome opens as an owned window over the main
+     * scene. Recover lists projects whose lock shows an unclean exit; Continue
+     * lists recent projects; Start offers New / Open / Restore / Import.
+     */
+    public void showWelcomeIfNoProjectOpen() {
+        if (projectManager != null
+                && projectManager.getCurrentProject() == null
+                && projectLifecycleController != null) {
+            projectLifecycleController.showWelcome();
+        }
+    }
+
+    /**
      * Story 282 — captures the live Mission-Control layout JSON to embed in the
      * project file before save (the {@code ProjectLifecycleController.Deps}
      * {@code captureLayoutJson} supplier). Returns {@code null} when the layout

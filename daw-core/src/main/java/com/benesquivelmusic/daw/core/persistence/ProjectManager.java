@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -139,6 +140,13 @@ public final class ProjectManager {
     /**
      * Creates a new project in the specified directory.
      *
+     * <p>The project folder is created under {@code parentDirectory} from the
+     * sanitized name; if that directory already exists it is <em>not</em>
+     * overwritten — a numeric suffix is appended ({@code "Untitled Project 2"},
+     * {@code "Untitled Project 3"}, …). Two new projects created with the same
+     * default name into the same workspace therefore land in distinct
+     * directories instead of the second silently clobbering the first.</p>
+     *
      * @param name             the project name
      * @param parentDirectory  the parent directory where the project folder will be created
      * @return metadata for the new project
@@ -148,8 +156,7 @@ public final class ProjectManager {
         Objects.requireNonNull(name, "name must not be null");
         Objects.requireNonNull(parentDirectory, "parentDirectory must not be null");
 
-        Path projectDir = parentDirectory.resolve(sanitizeDirectoryName(name));
-        Files.createDirectories(projectDir);
+        Path projectDir = createUniqueProjectDirectory(parentDirectory, sanitizeDirectoryName(name));
         Files.createDirectories(projectDir.resolve(AUDIO_DIR_NAME));
 
         ProjectMetadata metadata = ProjectMetadata.createNew(name).withPath(projectDir);
@@ -160,11 +167,39 @@ public final class ProjectManager {
         readOnly = false;
         recentProjects.put(projectDir.toString(), metadata);
         recordRecentProject(projectDir);
-        // A brand-new project directory cannot already be in use, so unconditionally take the lock.
+        // createUniqueProjectDirectory() atomically created a brand-new folder, so
+        // the directory cannot already be locked — unconditionally take it.
         lockManager.forceAcquire(projectDir);
         lockManager.startHeartbeat();
         checkpointManager.start(projectDir);
         return metadata;
+    }
+
+    /**
+     * Atomically creates and returns a fresh child directory under {@code parent}:
+     * {@code base}, else {@code "base 2"}, {@code "base 3"}, … . Each candidate is
+     * claimed with {@link Files#createDirectory(Path, java.nio.file.attribute.FileAttribute[])}
+     * — which fails if the directory already exists — rather than an
+     * {@link Files#exists} check followed by a separate {@code createDirectories},
+     * closing the time-of-check/time-of-use gap: two processes (or threads)
+     * creating a same-named project into the same workspace can never both resolve
+     * the same name and have the loser silently merge into the winner's directory.
+     * Creating a new project therefore never overwrites — nor co-occupies — an
+     * existing project directory, an irreversible action the Project Manager design
+     * book reserves for an explicit confirmation, never a silent default.
+     */
+    private static Path createUniqueProjectDirectory(Path parent, String base) throws IOException {
+        Files.createDirectories(parent);
+        int suffix = 1;
+        Path candidate = parent.resolve(base);
+        while (true) {
+            try {
+                return Files.createDirectory(candidate);
+            } catch (FileAlreadyExistsException e) {
+                suffix++;
+                candidate = parent.resolve(base + " " + suffix);
+            }
+        }
     }
 
     /**

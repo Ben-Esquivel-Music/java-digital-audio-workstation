@@ -145,6 +145,13 @@ public final class DawApplication extends Application {
         primaryStage.setMinHeight(720);
         primaryStage.setMaximized(true);
         primaryStage.show();
+
+        // Story 296 — show the §4.1 Welcome screen on launch when no project is
+        // open on disk (a fresh start has only the in-memory Untitled project).
+        // Done after show() so it opens as an owned window over the main scene.
+        if (mainController != null) {
+            mainController.showWelcomeIfNoProjectOpen();
+        }
     }
 
     /**

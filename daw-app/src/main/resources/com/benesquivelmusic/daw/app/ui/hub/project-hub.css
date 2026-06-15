@@ -1,0 +1,106 @@
+/* Story 296 — ProjectHubView (the §4.2 full-window Project Hub).
+ *
+ * Unlike project-card.css (a Control USER_AGENT sheet that consumes only the
+ * forwarded local -pc-* tokens), this is an AUTHOR sheet loaded via
+ * getStylesheets() on a Region that lives inside the app scene. It therefore
+ * consumes the role tokens (-surface-1 / -line-soft / -text / -text-hi /
+ * -text-mute / -accent) directly: they resolve by CSS inheritance from the
+ * scene's .root-pane where styles.css defines them. No literal hex here. */
+
+.project-hub {
+    -fx-background-color: -surface-bg;
+}
+
+/* ── toolbar ─────────────────────────────────────────────────────────────── */
+
+.project-hub-toolbar {
+    -fx-background-color: -surface-1;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 8 12 8 12;
+    -fx-spacing: 12;
+}
+
+.project-hub-toolbar .label {
+    -fx-text-fill: -text-mute;
+}
+
+.project-hub-workspace {
+    -fx-text-fill: -text;
+}
+
+.project-hub-search {
+    -fx-min-width: 180;
+}
+
+.project-hub-view-toggles {
+    -fx-spacing: 0;
+}
+
+.project-hub-sort {
+    -fx-min-width: 150;
+}
+
+/* ── center sections ─────────────────────────────────────────────────────── */
+
+.project-hub-scroll {
+    -fx-background-color: transparent;
+    -fx-background: transparent;
+}
+
+.project-hub-sections {
+    -fx-padding: 16;
+    -fx-spacing: 20;
+}
+
+.project-hub-section {
+    -fx-spacing: 8;
+}
+
+.project-hub-grid {
+    -fx-hgap: 12;
+    -fx-vgap: 12;
+}
+
+/* ── detail strip (the §1.4 fix) ─────────────────────────────────────────── */
+
+.project-hub-detail {
+    -fx-background-color: -surface-1;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1 0 0 0;
+    -fx-padding: 12 16 12 16;
+    -fx-spacing: 4;
+}
+
+.project-hub-detail-header {
+    -fx-spacing: 12;
+    -fx-padding: 0 0 4 0;
+}
+
+.project-hub-detail-heading {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+.project-hub-detail-actions {
+    -fx-spacing: 8;
+}
+
+.project-hub-detail-row {
+    -fx-spacing: 8;
+}
+
+.project-hub-detail-key {
+    -fx-text-fill: -text-mute;
+    -fx-min-width: 110;
+}
+
+.project-hub-detail-value {
+    -fx-text-fill: -text;
+}
+
+.project-hub-detail-placeholder {
+    -fx-text-fill: -text-mute;
+    -fx-font-style: italic;
+}

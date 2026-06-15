@@ -1,5 +1,9 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.hub.ProjectHealthScanner;
+import com.benesquivelmusic.daw.app.ui.hub.ProjectHubView;
+import com.benesquivelmusic.daw.app.ui.hub.WelcomeView;
+import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
@@ -20,6 +24,8 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.session.SessionExportResult;
 import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
+import javafx.scene.Parent;
+import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.VBox;
@@ -126,6 +132,45 @@ final class ProjectLifecycleController {
      */
     private final FxDispatcher fxDispatcher;
 
+    /**
+     * Story 296 — supplies the destination <em>parent</em> directory for a
+     * brand-new project, replacing the §8/§1.1 silent
+     * {@code Files.createTempDirectory} first-save. The default
+     * ({@link #promptNewProjectLocation()}) prompts once via a
+     * {@link DirectoryChooser} rooted at the §3.1 workspace ({@code ~/DAW
+     * Projects}); a {@code null} return means the user cancelled, so no project
+     * is created on disk. Tests inject a stub via
+     * {@link #setNewProjectLocationPrompt(Supplier)}.
+     */
+    private Supplier<Path> newProjectLocationPrompt = this::promptNewProjectLocation;
+
+    /**
+     * Story 296 — presents the §4.2 Project Hub built by
+     * {@link #buildProjectHub()}. The default ({@link #presentProjectHub(ProjectHubView)})
+     * opens it in its own themed {@link Stage}; tests inject a capturing
+     * presenter via {@link #setProjectHubPresenter(Consumer)} so the headless
+     * {@code RecentMenuOpensHubTest} can assert the hub was opened (rather than a
+     * filename {@code ContextMenu} built).
+     */
+    private Consumer<ProjectHubView> projectHubPresenter = this::presentProjectHub;
+
+    /**
+     * Story 296 — presents the §4.1 Welcome screen built by
+     * {@link #buildWelcomeView()}. The default
+     * ({@link #presentWelcome(WelcomeView)}) opens it in its own themed
+     * {@link Stage}; tests inject a capturing presenter via
+     * {@link #setWelcomePresenter(Consumer)}.
+     */
+    private Consumer<WelcomeView> welcomePresenter = this::presentWelcome;
+
+    /**
+     * Story 296 — the single auxiliary window currently hosting a Hub / Welcome
+     * surface (opened by {@link #showInOwnedStage(String, Parent)}), or
+     * {@code null} when none is open. Tracked so a repeat "Project Hub…" closes
+     * the prior window instead of stacking a second orphan over it.
+     */
+    private Stage auxiliaryStage;
+
     ProjectLifecycleController(ProjectManager projectManager,
                                SessionInterchangeController sessionInterchangeController,
                                NotificationBar notificationBar,
@@ -185,8 +230,16 @@ final class ProjectLifecycleController {
     private boolean trySaveProject() {
         try {
             if (projectManager.getCurrentProject() == null) {
-                Path tempDir = Files.createTempDirectory("daw-project-");
-                projectManager.createProject(deps.project().get().getName(), tempDir);
+                // §8 / §1.1 — a brand-new project that has never been saved
+                // prompts for a real destination once instead of the silent
+                // Files.createTempDirectory into the system temp dir (which the
+                // next reboot can wipe). A null return means the user cancelled
+                // the location prompt, so nothing is saved — but no /tmp leak.
+                Path parentDirectory = newProjectLocationPrompt.get();
+                if (parentDirectory == null) {
+                    return false;
+                }
+                projectManager.createProject(deps.project().get().getName(), parentDirectory);
             }
             // Story 282 — capture the live layout state into the project
             // model before serialisation. {@code null} from the supplier
@@ -220,19 +273,51 @@ final class ProjectLifecycleController {
         if (!confirmDiscardUnsavedChanges()) {
             return;
         }
+        // §8 / §1.1 — prompt for a real destination once, then write the project
+        // there immediately. A null return means the user cancelled, so we do
+        // NOT silently create an Untitled project that would later first-save
+        // into the system temp directory (the §8 rejection of "silent first-save
+        // into /tmp"). createProject() writes project.daw, acquires the lock and
+        // starts the heartbeat/autosave on the chosen directory.
+        Path parentDirectory = newProjectLocationPrompt.get();
+        if (parentDirectory == null) {
+            return;
+        }
         resetProjectState();
-        deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
+        DawProject newProject = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
+        deps.setProject().accept(newProject);
         deps.setUndoManager().accept(new UndoManager());
         deps.rebuildHistoryPanel().run();
         deps.resetTrackCounters().run();
-        deps.project().get().markClean();
+        boolean createdOnDisk = false;
+        try {
+            projectManager.createProject(newProject.getName(), parentDirectory);
+            // Persist the full initial state (createProject writes a metadata-only
+            // file first); saveDawProject marks the project clean itself, then we
+            // flash the Saved cell.
+            newProject.setLayoutJson(null);
+            projectManager.saveDawProject(newProject);
+            progress.recordSaveSucceeded(Instant.now(), ProjectOperationProgress.SaveScope.FULL);
+            createdOnDisk = true;
+        } catch (IOException e) {
+            // The on-disk create failed (e.g. permissions); keep the in-memory
+            // project so the UI is still usable and surface the error.
+            progress.recordSaveFailed();
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Could not create project: " + e.getMessage());
+            LOG.log(Level.WARNING, "Failed to create new project on disk", e);
+        }
         rebuildUI();
         // Story 282 — Reset layouts to the built-in Default so that a
         // previously opened project's saved layouts don't leak into the
         // new project.
         deps.applyLayoutJson().accept(null);
-        notificationBar.show(NotificationLevel.SUCCESS, "New project created");
-        LOG.info("Created new project");
+        // Only confirm success when the project actually reached disk — the
+        // catch above already surfaced the failure, so don't contradict it.
+        if (createdOnDisk) {
+            notificationBar.show(NotificationLevel.SUCCESS, "New project created");
+            LOG.info("Created new project");
+        }
     }
 
     void onOpenProject() {
@@ -249,35 +334,16 @@ final class ProjectLifecycleController {
         loadProjectFromPath(selected.toPath());
     }
 
+    /**
+     * Opens the §4.2 Project Hub — the replacement for the old filename
+     * {@code ContextMenu} of recent projects (§1.4; §8 "a Recent Projects menu
+     * that is just filenames"). Appendix A: "menu retains a 'Project Hub…'
+     * item". The File-menu entry now opens this full-window browser, which
+     * surfaces last-opened, size-on-disk, a health badge, search, and a
+     * per-project detail strip instead of bare filenames.
+     */
     void onRecentProjects() {
-        List<Path> recentPaths = projectManager.getRecentProjectPaths();
-        ContextMenu menu = new ContextMenu();
-        if (recentPaths.isEmpty()) {
-            MenuItem emptyItem = new MenuItem("No recent projects");
-            emptyItem.setDisable(true);
-            menu.getItems().add(emptyItem);
-        } else {
-            for (Path path : recentPaths) {
-                MenuItem item = new MenuItem(path.getFileName().toString());
-                item.setOnAction(_ -> {
-                    if (confirmDiscardUnsavedChanges()) {
-                        loadProjectFromPath(path);
-                    }
-                });
-                menu.getItems().add(item);
-            }
-            menu.getItems().add(new SeparatorMenuItem());
-            MenuItem clearItem = new MenuItem("Clear Recent Projects");
-            clearItem.setOnAction(_ -> {
-                RecentProjectsStore store = projectManager.getRecentProjectsStore();
-                if (store != null) {
-                    store.clear();
-                }
-                notificationBar.show(NotificationLevel.SUCCESS, "Recent projects cleared");
-            });
-            menu.getItems().add(clearItem);
-        }
-        menu.show(rootPane.getScene().getWindow());
+        projectHubPresenter.accept(buildProjectHub());
     }
 
     // ── Session Import/Export ────────────────────────────────────────────────
@@ -811,5 +877,252 @@ final class ProjectLifecycleController {
         trackListPanel.getChildren().add(header);
         MixerView newMixerView = new MixerView(deps.project().get(), deps.undoManager().get(), fxDispatcher);
         deps.onProjectUIRebuild().accept(newMixerView);
+    }
+
+    // ── Project Hub / Welcome (story 296) ─────────────────────────────────────
+
+    /**
+     * Builds the §4.2 Project Hub bound to this manager's recent projects, a
+     * fresh {@link ProjectHealthScanner}, and the open / reveal actions. Each
+     * card's size + health is scanned on a background virtual thread and
+     * marshalled to the FX thread through the {@link FxDispatcher} (§2.1) — the
+     * FX thread never walks a project tree.
+     *
+     * @return a new Project Hub view
+     */
+    ProjectHubView buildProjectHub() {
+        FxDispatcher d = resolveDispatcher();
+        // Self-reference so "Open" can dismiss the Hub window before loading;
+        // "Reveal" is a side action and leaves the Hub open.
+        ProjectHubView[] ref = new ProjectHubView[1];
+        ProjectHubView hub = new ProjectHubView(
+                projectManager.getRecentProjectPaths(),
+                new ProjectHealthScanner(d),
+                projectDir -> {
+                    if (projectDir != null && confirmDiscardUnsavedChanges()) {
+                        dismiss(ref[0]);
+                        loadProjectFromPath(projectDir);
+                    }
+                },
+                this::revealInFileBrowser,
+                this::clearRecentProjects);
+        ref[0] = hub;
+        return hub;
+    }
+
+    /**
+     * Clears the recent-projects list (the Hub's §1.4 "Clear Recent" action,
+     * carried over from the retired recent-projects {@code ContextMenu}).
+     */
+    private void clearRecentProjects() {
+        RecentProjectsStore store = projectManager.getRecentProjectsStore();
+        if (store != null) {
+            store.clear();
+        }
+        notificationBar.show(NotificationLevel.SUCCESS, "Recent projects cleared");
+    }
+
+    /**
+     * Builds the §4.1 Welcome screen (Recover → Continue → Start) bound to this
+     * manager's recent projects. The four Start tiles route to the existing
+     * lifecycle flows; "Recover" / a Continue card route through
+     * {@link #openProjectFromHub(Path)} (the Stage-2 surface only lists recover
+     * candidates and opens them — the journal-replay recovery dialog is story
+     * 298).
+     *
+     * @return a new Welcome view
+     */
+    WelcomeView buildWelcomeView() {
+        FxDispatcher d = resolveDispatcher();
+        // Self-reference so every Welcome action dismisses the launch window
+        // first, then runs the chosen flow over the main window.
+        WelcomeView[] ref = new WelcomeView[1];
+        WelcomeView view = new WelcomeView(
+                projectManager.getRecentProjectPaths(),
+                new ProjectHealthScanner(d),
+                d,
+                () -> { dismiss(ref[0]); onNewProject(); },
+                projectDir -> { dismiss(ref[0]); openProjectFromHub(projectDir); },
+                () -> { dismiss(ref[0]); onOpenProject(); },
+                () -> { dismiss(ref[0]); onRestoreFromArchive(); },
+                () -> { dismiss(ref[0]); onImportSession(); });
+        ref[0] = view;
+        return view;
+    }
+
+    /** Hides the window hosting {@code surface} (a Hub / Welcome launch surface), if shown. */
+    private static void dismiss(javafx.scene.Node surface) {
+        if (surface != null && surface.getScene() != null && surface.getScene().getWindow() != null) {
+            surface.getScene().getWindow().hide();
+        }
+    }
+
+    /**
+     * Presents the §4.1 Welcome screen (shown on launch when no project is
+     * open). Routed through the {@link #welcomePresenter} seam so a test can
+     * capture it without opening a window.
+     */
+    void showWelcome() {
+        welcomePresenter.accept(buildWelcomeView());
+    }
+
+    /** Confirms any unsaved changes, then opens {@code projectDir} (Hub / Welcome action). */
+    private void openProjectFromHub(Path projectDir) {
+        if (projectDir != null && confirmDiscardUnsavedChanges()) {
+            loadProjectFromPath(projectDir);
+        }
+    }
+
+    // ── Seam defaults (overridable for tests / custom wiring) ─────────────────
+
+    /**
+     * Default {@link #newProjectLocationPrompt}: a {@link DirectoryChooser}
+     * rooted at the §3.1 workspace ({@code ~/DAW Projects}). Returns the chosen
+     * parent directory, or {@code null} if the user cancelled.
+     */
+    private Path promptNewProjectLocation() {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Choose a location for the new project");
+        Path workspace = workspaceRoot();
+        if (workspace != null && Files.isDirectory(workspace)) {
+            chooser.setInitialDirectory(workspace.toFile());
+        }
+        Window owner = rootPane.getScene() != null ? rootPane.getScene().getWindow() : null;
+        java.io.File chosen = chooser.showDialog(owner);
+        return chosen == null ? null : chosen.toPath();
+    }
+
+    /** The §3.1 default workspace root ({@code ~/DAW Projects}); {@code null} if no home. */
+    private static Path workspaceRoot() {
+        String home = System.getProperty("user.home");
+        if (home == null || home.isBlank()) {
+            return null;
+        }
+        return Path.of(home, "DAW Projects");
+    }
+
+    /** Default {@link #projectHubPresenter}: open the Hub in its own themed Stage. */
+    private void presentProjectHub(ProjectHubView hub) {
+        showInOwnedStage("Project Hub", hub);
+    }
+
+    /** Default {@link #welcomePresenter}: open the Welcome screen in its own themed Stage. */
+    private void presentWelcome(WelcomeView welcome) {
+        showInOwnedStage("Welcome", welcome);
+    }
+
+    /**
+     * Shows {@code content} as the root of a new {@link Stage} owned by the main
+     * window, themed exactly like the primary scene (the ordered
+     * {@link ThemeManager} stylesheets + the {@link DensityManager} density
+     * class) so role tokens resolve and a theme/density switch reaches it.
+     */
+    private void showInOwnedStage(String title, Parent content) {
+        if (!content.getStyleClass().contains("root-pane")) {
+            content.getStyleClass().add("root-pane");
+        }
+        Scene scene = new Scene(content, 1100, 720);
+        ThemeManager.getDefault().applyTo(scene);
+        DensityManager.getDefault().applyTo(scene);
+        Stage stage = new Stage();
+        stage.setTitle(title);
+        Window owner = rootPane.getScene() != null ? rootPane.getScene().getWindow() : null;
+        if (owner != null) {
+            stage.initOwner(owner);
+        }
+        stage.setScene(scene);
+        // Only ever one auxiliary Hub/Welcome window at a time: close any prior one
+        // so a repeated "Project Hub…" replaces rather than stacks orphan windows
+        // (each running its own background scans). The hidden-handler clears the
+        // reference when the user closes the window themselves.
+        if (auxiliaryStage != null && auxiliaryStage.isShowing()) {
+            auxiliaryStage.close();
+        }
+        auxiliaryStage = stage;
+        stage.setOnHidden(_ -> {
+            if (auxiliaryStage == stage) {
+                auxiliaryStage = null;
+            }
+        });
+        stage.show();
+    }
+
+    /**
+     * Reveals {@code projectDir} in the OS file browser (the Hub's "Reveal"
+     * action). Runs the launch on a background virtual thread so a slow shell
+     * never stalls the FX thread; errors are marshalled back to the
+     * notification bar.
+     */
+    private void revealInFileBrowser(Path projectDir) {
+        if (projectDir == null) {
+            return;
+        }
+        Thread.ofVirtual().name("daw-reveal").start(() -> {
+            try {
+                if (java.awt.Desktop.isDesktopSupported()
+                        && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN)) {
+                    Path toOpen = Files.isDirectory(projectDir) ? projectDir : projectDir.getParent();
+                    if (toOpen == null) {
+                        postFx(() -> notificationBar.show(NotificationLevel.ERROR,
+                                "Could not reveal project: no parent directory"));
+                        return;
+                    }
+                    java.awt.Desktop.getDesktop().open(toOpen.toFile());
+                } else {
+                    postFx(() -> notificationBar.show(NotificationLevel.ERROR,
+                            "Reveal is not supported on this platform"));
+                }
+            } catch (IOException | RuntimeException e) {
+                postFx(() -> notificationBar.show(NotificationLevel.ERROR,
+                        "Could not reveal project: " + e.getMessage()));
+                LOG.log(Level.WARNING, "Failed to reveal project directory", e);
+            }
+        });
+    }
+
+    /**
+     * Resolves a non-{@code null} {@link FxDispatcher} for the scanner / views:
+     * the injected one, else the app-scoped default, else a fresh instance (the
+     * scanner only uses {@link FxDispatcher#onFx(Runnable)}, which works without
+     * {@code start()}).
+     */
+    private FxDispatcher resolveDispatcher() {
+        if (fxDispatcher != null) {
+            return fxDispatcher;
+        }
+        FxDispatcher def = FxDispatcher.getDefault();
+        return def != null ? def : new FxDispatcher();
+    }
+
+    // ── Seam overrides (story 296) ────────────────────────────────────────────
+
+    /**
+     * Overrides the new-project location prompt (the §8 "kill the /tmp
+     * first-save" seam). Tests inject a stub returning a fixed directory.
+     *
+     * @param prompt supplies the destination parent directory, or {@code null}
+     *               to cancel; must not be {@code null}
+     */
+    void setNewProjectLocationPrompt(Supplier<Path> prompt) {
+        this.newProjectLocationPrompt = Objects.requireNonNull(prompt, "prompt must not be null");
+    }
+
+    /**
+     * Overrides the Project Hub presenter. Tests inject a capturing consumer to
+     * assert the Hub was opened without showing a window.
+     *
+     * @param presenter the hub presenter; must not be {@code null}
+     */
+    void setProjectHubPresenter(Consumer<ProjectHubView> presenter) {
+        this.projectHubPresenter = Objects.requireNonNull(presenter, "presenter must not be null");
+    }
+
+    /**
+     * Overrides the Welcome-screen presenter. Tests inject a capturing consumer.
+     *
+     * @param presenter the welcome presenter; must not be {@code null}
+     */
+    void setWelcomePresenter(Consumer<WelcomeView> presenter) {
+        this.welcomePresenter = Objects.requireNonNull(presenter, "presenter must not be null");
     }
 }
