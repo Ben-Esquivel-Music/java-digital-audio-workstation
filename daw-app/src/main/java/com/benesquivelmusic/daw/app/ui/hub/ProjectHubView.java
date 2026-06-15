@@ -260,7 +260,12 @@ public final class ProjectHubView extends BorderPane {
         // relayout the grids when the mode flips.
         viewGroup.selectedToggleProperty().addListener((_, old, now) -> {
             if (now == null) {
-                gridToggle.setSelected(old == gridToggle);
+                if (old != null) {
+                    old.setSelected(true);
+                } else {
+                    gridToggle.setSelected(true);
+                }
+                return;
             }
             applyViewMode();
         });
