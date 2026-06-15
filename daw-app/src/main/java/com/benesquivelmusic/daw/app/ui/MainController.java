@@ -361,6 +361,24 @@ public final class MainController {
      */
     private SessionManagerDock sessionManagerDock;
     /**
+     * Single shared {@link com.benesquivelmusic.daw.core.session.SessionManager}
+     * instance — reused across project opens to avoid constructing a new store on
+     * every history refresh.
+     */
+    private final com.benesquivelmusic.daw.core.session.SessionManager sessionManager =
+            new com.benesquivelmusic.daw.core.session.SessionManager();
+    /**
+     * The currently open {@link com.benesquivelmusic.daw.core.session.WorkingSession};
+     * {@code null} until the first project with an on-disk directory is loaded.
+     * Written and read on the FX thread only (set inside {@code postFx}).
+     */
+    private com.benesquivelmusic.daw.core.session.WorkingSession activeSession;
+    /**
+     * The project directory that owns {@link #activeSession}.
+     * Written and read on the FX thread only (set inside {@code postFx}).
+     */
+    private java.nio.file.Path activeSessionProjectDir;
+    /**
      * Story 287 — single eager {@link TelemetryView}. Its
      * {@code getSetupPanel()} is registered as {@code PANEL_TELEMETRY} and
      * the whole view is the mounted node for both {@code PANEL_TELEMETRY}
@@ -975,6 +993,25 @@ public final class MainController {
                         // displays + telemetry view we now own (FX thread;
                         // GpuCanvasView.dispose() is idempotent).
                         disposeVisualizationDisplays();
+                        // Project Manager Design Book §3.3 — seal the active
+                        // working session on clean shutdown. The write is I/O,
+                        // so it runs on a virtual thread; fire-and-forget is
+                        // acceptable because JVM shutdown will wait for daemon
+                        // threads that are already running (the Platform exits
+                        // immediately after this handler returns).
+                        com.benesquivelmusic.daw.core.session.WorkingSession sessionToClose = activeSession;
+                        java.nio.file.Path sessionDir = activeSessionProjectDir;
+                        if (sessionToClose != null && sessionDir != null) {
+                            Thread.ofVirtual().name("daw-session-close").start(() -> {
+                                try {
+                                    sessionManager.closeSession(sessionDir, sessionToClose,
+                                            java.time.Instant.now());
+                                } catch (java.io.IOException e) {
+                                    LOG.log(Level.WARNING,
+                                            "Failed to close working session on shutdown", e);
+                                }
+                            });
+                        }
                     });
                 }
             }
@@ -1260,18 +1297,24 @@ public final class MainController {
         if (snapshotsController != null) {
             snapshotsController.registerCurrentProjectDirectory();
         }
-        refreshSessionManager();
+        refreshSessionManager(true);
     }
 
     /**
-     * Project Manager Design Book §3.3/§4.3 — opens (or continues) the working
-     * session for the just-loaded project and repopulates the Session Manager
-     * dock with its history. The manifest read/write is I/O, so it runs on a
-     * virtual thread (JEP 444) and marshals the result back to the FX thread
-     * through {@link #postFx(Runnable)}. No-ops for unsaved (in-memory)
-     * projects that have no on-disk directory yet.
+     * Project Manager Design Book §3.3/§4.3 — optionally opens (or continues)
+     * the working session for the just-loaded project, then repopulates the
+     * Session Manager dock with its history. The manifest read/write is I/O, so
+     * it runs on a virtual thread (JEP 444) and marshals the result back to the
+     * FX thread through {@link #postFx(Runnable)}. No-ops for unsaved
+     * (in-memory) projects that have no on-disk directory yet.
+     *
+     * @param openSession {@code true} when called from a project-load path —
+     *                    causes {@link com.benesquivelmusic.daw.core.session.SessionManager#openSession}
+     *                    to be invoked so a manifest is written; {@code false}
+     *                    for display-only refreshes (e.g. toggling the dock)
+     *                    that must not mutate session state.
      */
-    private void refreshSessionManager() {
+    private void refreshSessionManager(boolean openSession) {
         if (sessionManagerDock == null) {
             return;
         }
@@ -1285,16 +1328,26 @@ public final class MainController {
         }
         java.nio.file.Path projectDir = current.projectPath();
         Thread.ofVirtual().name("daw-session-manager").start(() -> {
+            com.benesquivelmusic.daw.core.session.WorkingSession opened = null;
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> history;
             try {
-                var manager = new com.benesquivelmusic.daw.core.session.SessionManager();
-                history = manager.history(projectDir);
+                if (openSession) {
+                    com.benesquivelmusic.daw.core.session.SessionManager.SessionOpenResult result =
+                            sessionManager.openSession(projectDir, java.time.Instant.now());
+                    opened = result.current();
+                }
+                history = sessionManager.history(projectDir);
             } catch (java.io.IOException e) {
                 LOG.log(Level.WARNING, "Failed to load session history for " + projectDir, e);
                 history = java.util.List.of();
             }
+            final com.benesquivelmusic.daw.core.session.WorkingSession newActiveSession = opened;
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> result = history;
             postFx(() -> {
+                if (newActiveSession != null) {
+                    activeSession = newActiveSession;
+                    activeSessionProjectDir = projectDir;
+                }
                 sessionManagerDock.setProjectName(projectName);
                 sessionManagerDock.setSessions(result);
             });
@@ -1517,7 +1570,7 @@ public final class MainController {
             if (dockManifestModel != null) {
                 dockManifestModel.focusPanel(DefaultWorkspaces.PANEL_SESSION_MANAGER);
             }
-            refreshSessionManager();
+            refreshSessionManager(false);
         }
     }
 
