@@ -105,6 +105,7 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.project.edit;
     exports com.benesquivelmusic.daw.core.recording;
     exports com.benesquivelmusic.daw.core.reference;
+    exports com.benesquivelmusic.daw.core.session;
     exports com.benesquivelmusic.daw.core.session.dawproject;
     exports com.benesquivelmusic.daw.core.snapshot;
     exports com.benesquivelmusic.daw.core.spatial.ambisonics;
