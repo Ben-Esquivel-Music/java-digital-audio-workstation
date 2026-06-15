@@ -295,7 +295,7 @@ final class ProjectLifecycleController {
             // Persist the full initial state (createProject writes a metadata-only
             // file first); saveDawProject marks the project clean itself, then we
             // flash the Saved cell.
-            newProject.setLayoutJson(deps.captureLayoutJson().get());
+            newProject.setLayoutJson(null);
             projectManager.saveDawProject(newProject);
             progress.recordSaveSucceeded(Instant.now(), ProjectOperationProgress.SaveScope.FULL);
             createdOnDisk = true;
