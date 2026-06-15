@@ -461,6 +461,8 @@ public final class ProjectHubView extends BorderPane {
             detailStrip.showPlaceholder();
         }
         for (ProjectCard card : recent) {
+            card.prefWidthProperty().unbind(); // in case List mode bound it to grid width
+            card.setPrefWidth(Region.USE_COMPUTED_SIZE);
             pathByCard.remove(card);
             usageByCard.remove(card);
         }
