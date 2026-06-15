@@ -899,7 +899,12 @@ final class ProjectLifecycleController {
                 projectManager.getRecentProjectPaths(),
                 new ProjectHealthScanner(d),
                 d,
-                projectDir -> { dismiss(ref[0]); openProjectFromHub(projectDir); },
+                projectDir -> {
+                    if (projectDir != null && confirmDiscardUnsavedChanges()) {
+                        dismiss(ref[0]);
+                        loadProjectFromPath(projectDir);
+                    }
+                },
                 this::revealInFileBrowser,
                 this::clearRecentProjects);
         ref[0] = hub;
