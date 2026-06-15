@@ -218,7 +218,6 @@ public final class ProjectHealthScanner {
                     versionOfNewest = parseVersion(matcher.group(1));
                 }
             }
-        }
         } catch (IOException | RuntimeException e) {
             return -1; // unreadable directory — no backup info
         }
