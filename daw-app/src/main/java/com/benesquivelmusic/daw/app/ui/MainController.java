@@ -116,7 +116,6 @@ public final class MainController {
     @FXML private Label timeDisplay;
     @FXML private Label projectInfoLabel;
     @FXML private Label monitoringLabel;
-    @FXML private Label checkpointLabel;
     @FXML private Label statusBarLabel;
     @FXML private Label arrangementPlaceholder;
     @FXML private Label arrangementPanelHeader;
@@ -137,6 +136,10 @@ public final class MainController {
     @FXML private Label dskLabel;
     @FXML private Label recIndicator;
     @FXML private HBox notificationBarContainer;
+    /** Story 295 — bottom container that hosts the notification bar, the legacy
+     *  status bar, and (mounted by {@link #createSessionStatusStrip()}) the
+     *  Session Status Strip. */
+    @FXML private VBox bottomBar;
     @FXML private HBox transportGroup;
     @FXML private HBox trackGroup;
     @FXML private HBox undoRedoGroup;
@@ -148,7 +151,14 @@ public final class MainController {
     private final Button browserButton = new Button("Library");
     private final Button historyButton = new Button("History");
 
-    private DawProject project;
+    /**
+     * The in-memory project. {@code volatile} because it is reassigned on the FX
+     * thread (init / open / restore) yet read off the FX thread by the §1.8
+     * disk-scan {@code audioFormat} supplier on the scan virtual thread (story
+     * 295); the {@code volatile} gives that background read a happens-before view
+     * of each reassignment so a project switch is reflected on the next scan.
+     */
+    private volatile DawProject project;
     private PluginRegistry pluginRegistry;
     private ProjectManager projectManager;
     private UndoManager undoManager;
@@ -217,6 +227,16 @@ public final class MainController {
     private HistoryControlBinder historyBinder;
     private TransportVM transportVM;
     private ProjectVM projectVM;
+
+    // ── Story 295: Session Status Strip + the ProjectOperationProgress model ──
+    /** The single §5.5 source of project-status truth the strip binds to. */
+    private com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress projectOperationProgress;
+    /** The §4.4 status strip, mounted into {@link #bottomBar}. */
+    private com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip sessionStatusStrip;
+    /** The §1.8 disk-space scan (30 s, virtual thread) feeding the model. */
+    private com.benesquivelmusic.daw.app.ui.status.SessionStatusDiskScanner diskScanner;
+    /** Start of the current working session (since project open/new); §3.3, drives the Session cell elapsed. */
+    private java.time.Instant sessionStartInstant;
     /** Disposers for the current VM generation (binders + VM unregistration); run on rebuild + hide. */
     private final java.util.List<Runnable> vmDisposers = new java.util.ArrayList<>();
     private ToolbarStateStore toolbarStateStore;
@@ -501,6 +521,14 @@ public final class MainController {
         // rebuild — against the stale outgoing VM — which left Save enablement one
         // project-load behind after Open / New / snapshot-restore.
         syncMenuStateIfPresent();
+
+        // Story 295 — (re)publish the facts the Session Status Strip binds to for
+        // this VM generation: bind the model's dirty bit to the FRESH ProjectVM,
+        // start a new working session, and seed schema / lock / session /
+        // next-checkpoint. Done AFTER the VMs are rebuilt so the dirty bind
+        // targets the live ProjectVM (mirrors syncMenuStateIfPresent above).
+        sessionStartInstant = java.time.Instant.now();
+        publishProjectStatusToModel();
     }
 
     /** Routes an undo/redo intent (button, menu, or shortcut) to the existing handlers (§2.8). */
@@ -520,6 +548,157 @@ public final class MainController {
     private void syncMenuStateIfPresent() {
         if (menuBarController != null) {
             menuBarController.syncMenuState();
+        }
+    }
+
+    // ── Story 295: Session Status Strip wiring ───────────────────────────────
+
+    /**
+     * Builds the {@link com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress}
+     * model, the {@link com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip}
+     * (mounted into {@link #bottomBar}), the §1.8 disk scan, and the checkpoint
+     * listener that surfaces every autosave on the model. Called once in
+     * {@link #initialize()} after the {@link ProjectManager} exists and before
+     * the lifecycle controller (which now reports save status through the model).
+     */
+    private void createSessionStatusStrip() {
+        projectOperationProgress =
+                new com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress(dispatcher());
+        // §3.1 default workspace name; the switchable Project Hub is story 296.
+        projectOperationProgress.setWorkspaceName("Personal");
+        sessionStatusStrip = new com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip(
+                projectOperationProgress, MotionManager.getDefault());
+        if (bottomBar != null) {
+            bottomBar.getChildren().add(sessionStatusStrip);
+        }
+
+        // §1.8 disk-space contract — scan every 30 s on a virtual thread; the FX
+        // thread never touches FileStore. The project dir / format are read live
+        // so a project open / close is reflected on the next scan.
+        diskScanner = new com.benesquivelmusic.daw.app.ui.status.SessionStatusDiskScanner(
+                projectOperationProgress,
+                () -> {
+                    // Read the current project ONCE: this supplier runs on the
+                    // scan virtual thread, and a concurrent FX-thread
+                    // close/abandon could otherwise null currentProject between a
+                    // two-call check and dereference (TOCTOU NPE).
+                    if (projectManager == null) {
+                        return null;
+                    }
+                    var meta = projectManager.getCurrentProject();
+                    return meta != null ? meta.projectPath() : null;
+                },
+                () -> {
+                    // Read the volatile project reference ONCE on the scan
+                    // virtual thread: a concurrent FX-thread open/new/restore
+                    // could otherwise reassign (or, defensively, null) it
+                    // between the check and the deref (the same TOCTOU the
+                    // projectPath supplier above guards against).
+                    var current = project;
+                    return current != null ? current.getFormat() : null;
+                });
+        diskScanner.start();
+
+        // §1.2 checkpoint visibility — every autosave updates the Saved cell and
+        // re-arms the countdown. The listener fires on the checkpoint virtual
+        // thread; the model marshals each write onto the FX thread (story 289).
+        projectManager.getCheckpointManager().addListener(
+                new com.benesquivelmusic.daw.sdk.event.AutoSaveListener() {
+                    @Override public void onBeforeCheckpoint(String checkpointId) {
+                        // no-op: a fast checkpoint shows only the Saved-cell flash
+                    }
+
+                    @Override public void onAfterCheckpoint(String checkpointId) {
+                        java.time.Duration interval = projectManager.getCheckpointManager()
+                                .getConfig().autoSaveInterval();
+                        projectOperationProgress.recordSaveSucceeded(java.time.Instant.now(),
+                                com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress
+                                        .SaveScope.FULL);
+                        projectOperationProgress.setNextCheckpoint(
+                                java.time.Instant.now().plus(interval), interval);
+                    }
+
+                    @Override public void onCheckpointFailed(String checkpointId, Throwable cause) {
+                        projectOperationProgress.recordSaveFailed();
+                    }
+                });
+    }
+
+    /**
+     * Publishes the project-status facts the strip binds to after a project
+     * load / new (called from {@link #rebuildViewModels()}): binds the model's
+     * dirty bit to the live {@link ProjectVM}, seeds the schema versions from the
+     * last migration report, arms the next-checkpoint countdown, and refreshes
+     * the session / lock facts.
+     */
+    private void publishProjectStatusToModel() {
+        if (projectOperationProgress == null) {
+            return;
+        }
+        if (projectVM != null) {
+            projectOperationProgress.bindDirtyTo(projectVM.dirtyProperty());
+        }
+        // Schema (§1.6): current registry version + the pre-migration backup
+        // version when the just-loaded project was migrated.
+        int current = com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION;
+        int backup = com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress.UNKNOWN_VERSION;
+        if (projectManager != null) {
+            var report = projectManager.getLastMigrationReport();
+            if (report != null && report.wasMigrated()) {
+                backup = report.fromVersion();
+            }
+        }
+        projectOperationProgress.setSchema(current, backup);
+        // Next checkpoint (§6): arm the countdown when autosave is running.
+        if (projectManager != null) {
+            java.time.Duration interval = projectManager.getCheckpointManager()
+                    .getConfig().autoSaveInterval();
+            projectOperationProgress.setNextCheckpoint(
+                    projectManager.getCheckpointManager().isRunning()
+                            ? java.time.Instant.now().plus(interval) : null,
+                    interval);
+        }
+        refreshStripDynamicState();
+    }
+
+    /**
+     * Refreshes the time-varying strip facts (session elapsed, lock freshness)
+     * that have no push source. Called from {@link #publishProjectStatusToModel()}
+     * and the 5 s lock timeline.
+     */
+    private void refreshStripDynamicState() {
+        if (projectOperationProgress == null) {
+            return;
+        }
+        String name = project != null ? project.getName() : "";
+        java.time.Duration elapsed = sessionStartInstant != null
+                ? java.time.Duration.between(sessionStartInstant, java.time.Instant.now())
+                : java.time.Duration.ZERO;
+        projectOperationProgress.setSession(name, elapsed);
+        publishLockToModel();
+    }
+
+    /** Publishes the §1.3 lock holder + freshness onto the model. */
+    private void publishLockToModel() {
+        if (projectOperationProgress == null || projectManager == null) {
+            return;
+        }
+        com.benesquivelmusic.daw.core.persistence.LockStatus status =
+                projectManager.getLockManager().status();
+        if (status == com.benesquivelmusic.daw.core.persistence.LockStatus.HELD) {
+            var lock = projectManager.getLockManager().currentLock();
+            String holder = lock.map(l -> "you @ " + l.hostname()).orElse("you");
+            boolean fresh = lock
+                    .map(l -> !com.benesquivelmusic.daw.core.persistence.ProjectLockManager
+                            .isStale(l, java.time.Instant.now()))
+                    .orElse(true);
+            projectOperationProgress.setLock(holder, fresh);
+        } else if (status == com.benesquivelmusic.daw.core.persistence.LockStatus.READ_ONLY) {
+            projectOperationProgress.setLock("read-only", true);
+        } else if (status == com.benesquivelmusic.daw.core.persistence.LockStatus.STOLEN) {
+            projectOperationProgress.setLock("taken over", false);
+        } else {
+            projectOperationProgress.setLock("", true);
         }
     }
 
@@ -635,6 +814,10 @@ public final class MainController {
         createTransportController();
         mountPreRollPostRollControls();
         createMetronomeController(prefs);
+        // Story 295 — build the ProjectOperationProgress model + Session Status
+        // Strip + disk scan + checkpoint listener BEFORE the lifecycle
+        // controller, which now reports save status through the model.
+        createSessionStatusStrip();
         createProjectLifecycleController();
         createAnimationController();
         createViewNavigationController();
@@ -655,10 +838,9 @@ public final class MainController {
         transportController.syncLoopButtonState();
         applyProjectInfoLabels();
         mountLockStatusIndicator();
-        // Story 293 — static autosave/IO chrome, inlined from the deleted
-        // updateCheckpointStatus() (§274). ProjectVM.checkpoint has no producer until
-        // stories 295-299, so binding it would blank the cell — keep the static text.
-        checkpointLabel.setText(MESSAGES.getString("statusbar.autosave.on"));
+        // Story 295 — the old static "Auto-save: ON" checkpointLabel was retired;
+        // autosave / last-save / next-checkpoint are now live cells of the
+        // Session Status Strip (bound to ProjectOperationProgress).
         ioRoutingLabel.setText(MESSAGES.getString("statusbar.io.initializing"));
         initializeStatusBarPlaceholders();
         rebuildViewModels();
@@ -775,6 +957,10 @@ public final class MainController {
                             lockIndicatorTimeline.stop();
                             lockIndicatorTimeline = null;
                         }
+                        // Story 295 — release the disk-scan scheduler thread.
+                        if (diskScanner != null) {
+                            diskScanner.stop();
+                        }
                         if (dockManifestModel != null) {
                             dockManifestModel.dispose();
                         }
@@ -821,7 +1007,7 @@ public final class MainController {
                 new ToolbarAppearanceController.AppearanceLabels(
                         statusLabel, timeDisplay, tracksPanelHeader,
                         arrangementPanelHeader, arrangementPlaceholder,
-                        monitoringLabel, checkpointLabel, statusBarLabel,
+                        monitoringLabel, statusBarLabel,
                         ioRoutingLabel, recIndicator),
                 new ToolbarAppearanceController.OverflowGroups(
                         utilityGroup, undoRedoGroup),
@@ -957,7 +1143,7 @@ public final class MainController {
     private void createProjectLifecycleController() {
         projectLifecycleController = new ProjectLifecycleController(
                 projectManager, sessionInterchangeController, notificationBar,
-                statusBarLabel, checkpointLabel, rootPane, trackListPanel,
+                projectOperationProgress, rootPane, trackListPanel,
                 // Story 294 — direct functional deps replace the callback-up
                 // ProjectLifecycleController.Host (§4.2/§9). The swappable
                 // project / undo manager are live Suppliers (a load is reflected
@@ -3856,7 +4042,12 @@ public final class MainController {
         // so a low-frequency 5 s poll is the cheapest way to surface a
         // stolen lock or a take-over without changing the core API.
         lockIndicatorTimeline = new Timeline(
-                new KeyFrame(Duration.seconds(5), _ -> repaintLockIndicator()));
+                new KeyFrame(Duration.seconds(5), _ -> {
+                    repaintLockIndicator();
+                    // Story 295 — piggyback the strip's time-varying facts
+                    // (session elapsed, lock freshness) on the same 5 s poll.
+                    refreshStripDynamicState();
+                }));
         lockIndicatorTimeline.setCycleCount(Timeline.INDEFINITE);
         lockIndicatorTimeline.play();
     }

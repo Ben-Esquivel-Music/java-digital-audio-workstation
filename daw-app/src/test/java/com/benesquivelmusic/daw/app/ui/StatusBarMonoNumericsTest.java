@@ -36,7 +36,7 @@ final class StatusBarMonoNumericsTest {
      * The status-bar cells whose displayed value is a number per §5.11
      * (sample-rate / bit-depth / channels live in projectInfoLabel; the
      * kHz I/O figure in ioRoutingLabel; the CPU/MEM/DSK placeholders).
-     * The prose cells — monitoringLabel, checkpointLabel, statusBarLabel,
+     * The prose cells — monitoringLabel, statusBarLabel,
      * rippleBannerLabel — are NOT numeric and carry {@code .body} only.
      */
     private static final List<String> NUMERIC_CELL_IDS = List.of(

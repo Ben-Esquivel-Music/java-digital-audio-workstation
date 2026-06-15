@@ -49,7 +49,7 @@ final class ToolbarAppearanceController {
     record AppearanceLabels(Label status, Label timeDisplay,
                             Label tracksPanelHeader, Label arrangementPanelHeader,
                             Label arrangementPlaceholder,
-                            Label monitoringLabel, Label checkpointLabel,
+                            Label monitoringLabel,
                             Label statusBarLabel, Label ioRoutingLabel,
                             Label recIndicator) {}
 
@@ -137,7 +137,6 @@ final class ToolbarAppearanceController {
         clearGraphic(labels.tracksPanelHeader);
         clearGraphic(labels.arrangementPanelHeader);
         clearGraphic(labels.monitoringLabel);
-        clearGraphic(labels.checkpointLabel);
         clearGraphic(labels.statusBarLabel);
         clearGraphic(labels.ioRoutingLabel);
 

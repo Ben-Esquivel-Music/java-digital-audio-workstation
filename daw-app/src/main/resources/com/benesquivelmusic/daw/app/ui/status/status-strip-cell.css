@@ -1,0 +1,17 @@
+/* Story 295 — Session Status Strip cell. Consumes -ssc-* tokens forwarded by
+   styles.css (author origin); never references raw role tokens here
+   (feedback_control_css_role_token_forwarding). */
+.status-strip-cell {
+    -fx-padding: 0 0 0 0;
+}
+.status-strip-cell .status-strip-cell-text {
+    -fx-text-fill: -ssc-text;
+    -fx-font-size: 12px;
+    -fx-font-weight: 500;
+}
+.status-strip-cell.status-cell-warn .status-strip-cell-text {
+    -fx-text-fill: -ssc-warn;
+}
+.status-strip-cell.status-cell-critical .status-strip-cell-text {
+    -fx-text-fill: -ssc-critical;
+}

@@ -1,8 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
-import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -34,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -102,8 +102,16 @@ final class ProjectLifecycleController {
     private final ProjectManager projectManager;
     private final SessionInterchangeController sessionInterchangeController;
     private final NotificationBar notificationBar;
-    private final Label statusBarLabel;
-    private final Label checkpointLabel;
+    /**
+     * Story 295 — the single §5.5 project-status model. Save / autosave /
+     * archive paths report through this; the {@code statusBarLabel} and
+     * {@code checkpointLabel} this controller used to poke are gone (the §8
+     * rejection of "status text in {@code Label.setText}"). The Session Status
+     * Strip binds to this model. Transient action confirmations and errors
+     * still go through {@link #notificationBar} (§8: the notification bar is
+     * for things the user must see — errors, takeovers, migrations).
+     */
+    private final ProjectOperationProgress progress;
     private final BorderPane rootPane;
     private final VBox trackListPanel;
     private final Deps deps;
@@ -121,22 +129,20 @@ final class ProjectLifecycleController {
     ProjectLifecycleController(ProjectManager projectManager,
                                SessionInterchangeController sessionInterchangeController,
                                NotificationBar notificationBar,
-                               Label statusBarLabel,
-                               Label checkpointLabel,
+                               ProjectOperationProgress progress,
                                BorderPane rootPane,
                                VBox trackListPanel,
                                Deps deps,
                                ProjectArchiver projectArchiver) {
         this(projectManager, sessionInterchangeController, notificationBar,
-                statusBarLabel, checkpointLabel, rootPane, trackListPanel, deps,
+                progress, rootPane, trackListPanel, deps,
                 projectArchiver, FxDispatcher.getDefault());
     }
 
     ProjectLifecycleController(ProjectManager projectManager,
                                SessionInterchangeController sessionInterchangeController,
                                NotificationBar notificationBar,
-                               Label statusBarLabel,
-                               Label checkpointLabel,
+                               ProjectOperationProgress progress,
                                BorderPane rootPane,
                                VBox trackListPanel,
                                Deps deps,
@@ -146,8 +152,7 @@ final class ProjectLifecycleController {
         this.sessionInterchangeController = Objects.requireNonNull(sessionInterchangeController,
                 "sessionInterchangeController must not be null");
         this.notificationBar = Objects.requireNonNull(notificationBar, "notificationBar must not be null");
-        this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
-        this.checkpointLabel = Objects.requireNonNull(checkpointLabel, "checkpointLabel must not be null");
+        this.progress = Objects.requireNonNull(progress, "progress must not be null");
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.trackListPanel = Objects.requireNonNull(trackListPanel, "trackListPanel must not be null");
         this.deps = Objects.requireNonNull(deps, "deps must not be null");
@@ -191,17 +196,20 @@ final class ProjectLifecycleController {
             projectManager.saveDawProject(deps.project().get());
             projectManager.saveProject();
             deps.project().get().markClean();
-            int count = projectManager.getCheckpointManager().getCheckpointCount();
-            checkpointLabel.setText("Saved (checkpoint #" + count + ")");
-            checkpointLabel.setGraphic(IconNode.of(DawIcon.SUCCESS, 12));
-            statusBarLabel.setText("Project saved");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
-            notificationBar.show(NotificationLevel.SUCCESS, "Project saved");
+            // Story 295 — the Saved cell flashing for ~600 ms is the success
+            // signal for a fast save (§4.5). The old "Project saved" notification
+            // and the statusBarLabel / checkpointLabel "Saved (checkpoint #N)"
+            // pokes are retired (Appendix A). The autosave checkpoint listener
+            // also re-arms the countdown; this explicit record keeps the
+            // manual-save outcome exact even if no checkpoint fired.
+            progress.recordSaveSucceeded(Instant.now(), ProjectOperationProgress.SaveScope.FULL);
             LOG.info("Project saved successfully");
             return true;
         } catch (IOException e) {
-            statusBarLabel.setText("Save failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            // §4.5 — a save failure persists in the Saved cell (it does not
+            // auto-dismiss) and is also surfaced as an error notification the
+            // user must act on.
+            progress.recordSaveFailed();
             notificationBar.show(NotificationLevel.ERROR, "Save failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to save project", e);
             return false;
@@ -223,8 +231,6 @@ final class ProjectLifecycleController {
         // previously opened project's saved layouts don't leak into the
         // new project.
         deps.applyLayoutJson().accept(null);
-        statusBarLabel.setText("New project created");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
         notificationBar.show(NotificationLevel.SUCCESS, "New project created");
         LOG.info("Created new project");
     }
@@ -267,8 +273,7 @@ final class ProjectLifecycleController {
                 if (store != null) {
                     store.clear();
                 }
-                statusBarLabel.setText("Recent projects cleared");
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.DELETE, 12));
+                notificationBar.show(NotificationLevel.SUCCESS, "Recent projects cleared");
             });
             menu.getItems().add(clearItem);
         }
@@ -309,14 +314,10 @@ final class ProjectLifecycleController {
             ThemeManager.getDefault().applyTo(summaryDialog.getDialogPane());
             summaryDialog.showAndWait();
 
-            statusBarLabel.setText("Imported session: " + result.sessionData().projectName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.DOWNLOAD, 12));
             notificationBar.show(NotificationLevel.SUCCESS,
                     "Imported session: " + result.sessionData().projectName());
             LOG.info("Imported DAWproject session from " + selected.toPath());
         } catch (IOException e) {
-            statusBarLabel.setText("Import failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             notificationBar.show(NotificationLevel.ERROR,
                     "Import failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to import session", e);
@@ -339,8 +340,6 @@ final class ProjectLifecycleController {
             if (!result.warnings().isEmpty()) {
                 message += " (" + result.warnings().size() + " warnings)";
             }
-            statusBarLabel.setText(message);
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
             notificationBar.show(NotificationLevel.SUCCESS, message);
 
             if (!result.warnings().isEmpty()) {
@@ -358,8 +357,6 @@ final class ProjectLifecycleController {
 
             LOG.info("Exported DAWproject session to " + result.outputPath());
         } catch (IOException e) {
-            statusBarLabel.setText("Export failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             notificationBar.show(NotificationLevel.ERROR,
                     "Export failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to export session", e);
@@ -412,20 +409,24 @@ final class ProjectLifecycleController {
         // ProjectArchiver, so this dialog is purely informational.
         List<String> missing = collectMissingAssetPaths(current);
         if (!missing.isEmpty() && !ArchiveSummaryDialog.confirmMissingAssets(missing)) {
-            statusBarLabel.setText("Archive cancelled");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             return;
         }
 
         // Run the potentially expensive ZIP I/O on a background virtual
         // thread so the JavaFX application thread stays responsive.
-        // Progress is surfaced through a modeless TaskProgressIndicator
-        // following the same pattern used by TrackFreezeController.
+        // Progress is surfaced through a modeless TaskProgressIndicator and,
+        // per story 295, registered as a named operation on the
+        // ProjectOperationProgress model (\u00a75.5) so the strip's saving state
+        // reflects the in-flight archive.
         Window owner = rootPane.getScene().getWindow();
-        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Archiving project\u2026", fxDispatcher);
-        progress.hideCancelButton();
-        progress.show();
-        progress.update(-1.0, "Writing archive\u2026");
+        TaskProgressIndicator archiveProgress =
+                new TaskProgressIndicator(owner, "Archiving project\u2026", fxDispatcher);
+        archiveProgress.hideCancelButton();
+        archiveProgress.show();
+        archiveProgress.update(-1.0, "Writing archive\u2026");
+        ProjectOperationProgress.NamedOperation archiveOp =
+                new ProjectOperationProgress.NamedOperation("Archiving project\u2026");
+        progress.addOperation(archiveOp);
 
         Path finalArchivePath = archivePath;
         Thread.ofVirtual()
@@ -436,9 +437,8 @@ final class ProjectLifecycleController {
                                 current, finalArchivePath);
                         String headline = ArchiveSummaryDialog.formatHeadline(summary);
                         postFx(() -> {
-                            progress.close();
-                            statusBarLabel.setText(headline);
-                            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
+                            progress.removeOperation(archiveOp);
+                            archiveProgress.close();
                             notificationBar.show(NotificationLevel.SUCCESS,
                                     headline + " \u2014 "
                                             + ArchiveSummaryDialog.archivePathDisplay(finalArchivePath));
@@ -449,9 +449,8 @@ final class ProjectLifecycleController {
                                 + summary.totalAssetBytes() + " bytes)");
                     } catch (IOException | IllegalArgumentException e) {
                         postFx(() -> {
-                            progress.close();
-                            statusBarLabel.setText("Archive failed: " + e.getMessage());
-                            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+                            progress.removeOperation(archiveOp);
+                            archiveProgress.close();
                             notificationBar.show(NotificationLevel.ERROR,
                                     "Archive failed: " + e.getMessage());
                         });
@@ -511,10 +510,14 @@ final class ProjectLifecycleController {
         // onto the FX thread via the FxDispatcher seam (story 289) once
         // extraction is complete.
         Window owner = rootPane.getScene().getWindow();
-        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Restoring archive\u2026", fxDispatcher);
-        progress.hideCancelButton();
-        progress.show();
-        progress.update(-1.0, "Extracting archive\u2026");
+        TaskProgressIndicator restoreProgress =
+                new TaskProgressIndicator(owner, "Restoring archive\u2026", fxDispatcher);
+        restoreProgress.hideCancelButton();
+        restoreProgress.show();
+        restoreProgress.update(-1.0, "Extracting archive\u2026");
+        ProjectOperationProgress.NamedOperation restoreOp =
+                new ProjectOperationProgress.NamedOperation("Restoring archive\u2026");
+        progress.addOperation(restoreOp);
 
         Thread.ofVirtual()
                 .name("daw-restore-worker")
@@ -539,7 +542,8 @@ final class ProjectLifecycleController {
                         // Load the restored project on the FX thread; only
                         // show the success notification if loading succeeded.
                         postFx(() -> {
-                            progress.close();
+                            progress.removeOperation(restoreOp);
+                            restoreProgress.close();
                             boolean loaded = loadProjectFromPath(destination);
                             if (loaded) {
                                 String message = "Restored archive: " + projectName
@@ -555,9 +559,8 @@ final class ProjectLifecycleController {
                                 + " into " + destination);
                     } catch (IOException e) {
                         postFx(() -> {
-                            progress.close();
-                            statusBarLabel.setText("Restore failed: " + e.getMessage());
-                            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+                            progress.removeOperation(restoreOp);
+                            restoreProgress.close();
                             notificationBar.show(NotificationLevel.ERROR,
                                     "Restore failed: " + e.getMessage());
                         });
@@ -678,8 +681,6 @@ final class ProjectLifecycleController {
             // legacy projects, in which case the layout manager falls
             // back to the Default built-in).
             deps.applyLayoutJson().accept(dawProject.getLayoutJson());
-            statusBarLabel.setText("Opened: " + projectDir.getFileName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
             notificationBar.show(NotificationLevel.SUCCESS,
                     "Opened project: " + projectDir.getFileName());
             LOG.info("Opened project from " + projectDir);
@@ -693,15 +694,11 @@ final class ProjectLifecycleController {
             // Unmapped or broken migration chain — surface as an error
             // notification rather than letting the runtime exception
             // bubble out of the menu/action handler.
-            statusBarLabel.setText("Migration failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             notificationBar.show(NotificationLevel.ERROR,
                     "Migration failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to migrate project on open", e);
             return false;
         } catch (IOException e) {
-            statusBarLabel.setText("Open failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             notificationBar.show(NotificationLevel.ERROR,
                     "Open failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to open project", e);
@@ -766,16 +763,12 @@ final class ProjectLifecycleController {
                 deps.resetTrackCounters().run();
                 deps.project().get().markClean();
                 rebuildUI();
-                statusBarLabel.setText("Rolled back: discarded migrated project");
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
                 notificationBar.show(NotificationLevel.SUCCESS,
                         "Discarded in-memory migration; the on-disk file is "
                                 + "still the original (v" + report.fromVersion() + ")");
                 LOG.info("Rolled back migration by abandoning in-memory project (no .bak yet)");
             }
         } catch (IOException e) {
-            statusBarLabel.setText("Roll back failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             notificationBar.show(NotificationLevel.ERROR,
                     "Roll back failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to roll back migration", e);

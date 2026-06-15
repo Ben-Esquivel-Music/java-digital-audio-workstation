@@ -48,7 +48,7 @@ final class StatusBarFxmlTest {
      * {@link MainController#mountLockStatusIndicator()} (HBox index + 1
      * after {@code projectInfoLabel}), not declared in the FXML.
      *
-     * <p>9 cells + 1 spacer {@code <Region>} = 10 direct children:
+     * <p>8 cells + 1 spacer {@code <Region>} = 9 direct children:
      * <ol>
      *   <li>projectInfoLabel  (project name + format — first cell, no dot)
      *   <li>monitoringLabel   (mono/stereo/surround prose)
@@ -57,23 +57,24 @@ final class StatusBarFxmlTest {
      *   <li>memLabel          (static placeholder, numeric)
      *   <li>dskLabel          (static placeholder, numeric)
      *   <li><Region hgrow=ALWAYS>  (the single spacer)
-     *   <li>checkpointLabel   (live last-save / autosave cell —
-     *       {@code <StatusCellLabel>}: written from ~30 dynamic sites, so
-     *       the type is the seam that guarantees its leading "· ")
      *   <li>rippleBannerLabel (plain Label; visible/managed false — a
      *       special banner, NOT a dot cell)
-     *   <li>statusBarLabel    (transport status — {@code <StatusCellLabel>}
-     *       for the same reason as checkpointLabel)
+     *   <li>statusBarLabel    (transport/metronome status — {@code
+     *       <StatusCellLabel>}: written from many dynamic sites, so the type
+     *       is the seam that guarantees its leading "· ")
      * </ol>
      * A "cell" is any direct child that is not the {@code <Region>} spacer:
-     * {@code <Label>} or {@code <StatusCellLabel>}. Exactly two cells are
+     * {@code <Label>} or {@code <StatusCellLabel>}. Exactly one cell is a
      * {@code <StatusCellLabel>} — locking in the story-274 dot seam so a
      * regression back to plain {@code <Label>} (which would drop the
      * separator on the first runtime status update) fails this test.
+     * (Story 295 retired the sibling checkpointLabel: last-save / checkpoint
+     * are now cells of the SessionStatusStrip, mounted at runtime below the
+     * legacy status bar and not declared in this FXML.)
      */
-    private static final int EXPECTED_CELL_CHILDREN = 9;
+    private static final int EXPECTED_CELL_CHILDREN = 8;
     private static final int EXPECTED_SPACER_CHILDREN = 1;
-    private static final int EXPECTED_STATUS_CELL_LABELS = 2;
+    private static final int EXPECTED_STATUS_CELL_LABELS = 1;
     private static final int EXPECTED_TOTAL_CHILDREN =
             EXPECTED_CELL_CHILDREN + EXPECTED_SPACER_CHILDREN;
 
@@ -117,13 +118,14 @@ final class StatusBarFxmlTest {
                 .isEqualTo(EXPECTED_CELL_CHILDREN);
 
         assertThat(statusCellLabels)
-                .as("checkpointLabel and statusBarLabel must be "
-                        + "<StatusCellLabel> (not plain <Label>): they are "
-                        + "written from ~30 dynamic sites, so the type is the "
-                        + "single seam that keeps their leading \"· \" "
+                .as("statusBarLabel must be a "
+                        + "<StatusCellLabel> (not plain <Label>): it is "
+                        + "written from many dynamic sites, so the type is the "
+                        + "single seam that keeps its leading \"· \" "
                         + "separator (story 274 S1). A regression to <Label> "
                         + "would silently drop the dot on the first runtime "
-                        + "status update.")
+                        + "status update. (checkpointLabel was retired by "
+                        + "story 295.)")
                 .isEqualTo(EXPECTED_STATUS_CELL_LABELS);
 
         assertThat(directChildren.size())
