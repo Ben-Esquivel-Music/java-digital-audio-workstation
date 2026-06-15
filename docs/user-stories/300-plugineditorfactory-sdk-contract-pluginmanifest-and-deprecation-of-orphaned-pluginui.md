@@ -18,7 +18,7 @@ This is **Phase 1 of the §8 migration path** — *SDK additions, no removals* (
 ## Goals
 
 - **New package `com.benesquivelmusic.daw.sdk.editor`** (§4.1) so the contract does not collide with the existing `daw-sdk/.../ui` package (which keeps `PluginUI`, `PanelState`, `Rectangle2D`, `Workspace`). The package contains, per the §4.1 table:
-  - `PluginEditorFactory` — a **sealed interface** with exactly three permitted subtypes, one per §2.1 mode.
+  - `PluginEditorFactory` — a **sealed interface**. Three of its permitted subtypes are the §2.1 modes (`Declarative` / `Panel` / `Canvas`); a fourth, `Faulted` (below), is an internal variant the host swaps in — **four permitted subtypes in total**, which is what `PluginEditorFactorySealedTest` asserts.
   - `PluginEditorFactory.Declarative` — a **record** carrying `List<PluginParameter>` plus an `EditorHints` layout hint ("no GUI, just my parameter list").
   - `PluginEditorFactory.Panel` — an **interface** with one method `javafx.scene.layout.Region createPanel(EditorContext)` (**not** `Object` — see Non-Goals and §9 rejection #3).
   - `PluginEditorFactory.Canvas` — an **interface** with `attach(CanvasSurface)`, `render(RenderTick)`, `detach()`.
