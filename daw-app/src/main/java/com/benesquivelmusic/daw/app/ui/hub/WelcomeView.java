@@ -324,6 +324,7 @@ public final class WelcomeView extends BorderPane {
         Button button = new Button();
         button.getStyleClass().add("tile");
         button.setGraphic(content);
+        button.setAccessibleText(title + " — " + subtitle);
         button.setMaxWidth(Double.MAX_VALUE);
         button.setOnAction(_ -> action.run());
         return button;
