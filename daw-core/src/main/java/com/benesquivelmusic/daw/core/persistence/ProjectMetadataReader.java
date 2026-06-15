@@ -9,6 +9,7 @@ import org.xml.sax.SAXException;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -50,6 +51,13 @@ public final class ProjectMetadataReader {
 
     private static final String PROJECT_FILE_NAME = "project.daw";
 
+    /**
+     * Maximum number of characters to read from project.daw. The metadata block
+     * is always near the top of the file, so 8 KB is more than sufficient to
+     * capture it without loading the potentially large full project graph.
+     */
+    private static final int READ_LIMIT = 8192;
+
     private ProjectMetadataReader() {
         // Static utility — no instances.
     }
@@ -59,6 +67,10 @@ public final class ProjectMetadataReader {
      * side effect. Returns the parsed {@link ProjectMetadata} (with
      * {@code projectPath} set to {@code projectDir}), or {@link Optional#empty()}
      * when {@code project.daw} is missing or unreadable.
+     *
+     * <p>Only the first {@value #READ_LIMIT} characters of the file are read —
+     * enough to capture the {@code <metadata>} block (or legacy header) without
+     * allocating the full project graph into memory.</p>
      *
      * <p>The returned metadata's {@code name} falls back to the directory's
      * file name when the file carries no usable name; {@code createdAt} /
@@ -79,7 +91,7 @@ public final class ProjectMetadataReader {
         }
         String content;
         try {
-            content = Files.readString(projectFile);
+            content = readPrefix(projectFile);
         } catch (IOException | RuntimeException e) {
             // Unreadable / undecodable — treated as "no metadata available".
             return Optional.empty();
@@ -100,6 +112,25 @@ public final class ProjectMetadataReader {
         Instant createdAt = firstNonNull(parsed.createdAt, fileModified);
         Instant lastModified = firstNonNull(parsed.lastModified, fileModified);
         return Optional.of(new ProjectMetadata(name, createdAt, lastModified, projectDir));
+    }
+
+    /**
+     * Reads at most {@link #READ_LIMIT} characters from the beginning of the
+     * file — enough to capture the metadata header without loading the full
+     * project graph.
+     */
+    private static String readPrefix(Path file) throws IOException {
+        char[] buffer = new char[READ_LIMIT];
+        int totalRead;
+        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            totalRead = 0;
+            int n;
+            while (totalRead < READ_LIMIT
+                    && (n = reader.read(buffer, totalRead, READ_LIMIT - totalRead)) != -1) {
+                totalRead += n;
+            }
+        }
+        return new String(buffer, 0, totalRead);
     }
 
     /** Best-effort parse holder — any field may be {@code null} (use a fallback). */
