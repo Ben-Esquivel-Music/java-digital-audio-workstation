@@ -60,9 +60,9 @@ import java.util.function.Consumer;
  *
  * <p>Each project-directory card is populated by a background virtual-thread
  * {@link ProjectHealthScanner#scan(Path, Consumer) scan} whose result is
- * marshalled back to the FX thread via {@code Platform.runLater};
+ * marshalled back to the FX thread via
+ * {@link com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher#onFx(Runnable)};
  * the FX thread never walks a project tree. The scan threads are collected into
- * {@link #pendingScans()} so a test can join them. Archive {@code .dawz} entries
  * are files (not directories): they are populated directly on the FX thread
  * (name = file name, size = file length) without a directory scan.</p>
  *
