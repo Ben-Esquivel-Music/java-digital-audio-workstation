@@ -133,17 +133,43 @@ public final class SessionManifestStore {
      * @return the path of the written manifest
      * @throws IOException if an I/O or serialization error occurs
      */
-    public Path write(Path projectDir, WorkingSession session) throws IOException {
-        Objects.requireNonNull(projectDir, "projectDir must not be null");
-        Objects.requireNonNull(session, "session must not be null");
-        Path dir = sessionsDirectory(projectDir);
-        Files.createDirectories(dir);
-        Path file = dir.resolve(manifestFileName(session));
-        try (OutputStream out = Files.newOutputStream(file)) {
-            serialize(session, out);
+public Path write(Path projectDir, WorkingSession session) throws IOException {
+    Objects.requireNonNull(projectDir, "projectDir must not be null");
+    Objects.requireNonNull(session, "session must not be null");
+    Path dir = sessionsDirectory(projectDir);
+    Files.createDirectories(dir);
+
+    Path target = dir.resolve(manifestFileName(session));
+
+    // If the session was renamed, the slug (and thus file name) changes; avoid leaving stale manifests behind.
+    List<Path> staleForId = new ArrayList<>();
+    String idSuffix = "-" + session.id() + MANIFEST_SUFFIX;
+    try (DirectoryStream<Path> matches = Files.newDirectoryStream(dir, "*" + idSuffix)) {
+        for (Path match : matches) {
+            if (!match.equals(target)) {
+                staleForId.add(match);
+            }
         }
-        return file;
     }
+
+    Path tmp = target.resolveSibling(target.getFileName().toString() + ".tmp");
+    try (OutputStream out = Files.newOutputStream(tmp)) {
+        serialize(session, out);
+    }
+    try {
+        Files.move(tmp, target,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+        Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    for (Path stale : staleForId) {
+        Files.deleteIfExists(stale);
+    }
+
+    return target;
+}
 
     /**
      * Reads a single session manifest.
