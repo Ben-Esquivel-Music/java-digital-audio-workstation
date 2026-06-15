@@ -101,7 +101,8 @@ public final class ProjectCardSkin extends SkinBase<ProjectCard> {
             }
             case MISSING_ASSETS -> {
                 int missing = card.getMissingAssetCount();
-                yield "⚠ " + missing + " missing assets";
+                String noun = missing == 1 ? "asset" : "assets";
+                yield "⚠ " + missing + " missing " + noun;
             }
         };
     }
