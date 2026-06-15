@@ -1105,6 +1105,25 @@
     -fx-effect: -elevation-2;
 }
 
+/* ── Project Hub / Welcome screen — ProjectCard (story 296) ──
+ * Forward role tokens onto ProjectCard local -pc-* names so project-card.css
+ * (USER_AGENT origin) consumes them without a raw role token
+ * (feedback_control_css_role_token_forwarding). The forwards use distinct
+ * source/target names so they are NOT circular looked-up colours; a theme can
+ * re-tint the cards just by overriding the role tokens on .root-pane. */
+.project-card {
+    -pc-surface:      -surface-1;
+    -pc-line:         -line-soft;
+    -pc-line-strong:  -line-strong;
+    -pc-accent:       -accent;
+    -pc-accent-soft:  -accent-soft;
+    -pc-text-hi:      -text-hi;
+    -pc-text-mute:    -text-mute;
+    -pc-ok:           -ok;
+    -pc-warn:         -warn;
+    -pc-danger:       -danger;
+}
+
 /* ── Separator ── */
 .separator > .line {
     -fx-border-color: -line-soft;

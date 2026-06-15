@@ -49,6 +49,29 @@ class ProjectManagerTest {
     }
 
     @Test
+    void createProjectWithDuplicateNameDoesNotOverwriteExisting() throws IOException {
+        ProjectManager manager = createProjectManager();
+
+        ProjectMetadata first = manager.createProject("Untitled Project", tempDir);
+        Path firstDir = first.projectPath();
+        Files.writeString(firstDir.resolve("marker.txt"), "first project's data");
+        manager.abandonProject(); // release the lock so a second create can run
+
+        ProjectMetadata second = manager.createProject("Untitled Project", tempDir);
+        Path secondDir = second.projectPath();
+
+        assertThat(secondDir)
+                .as("a second same-named new project gets its own directory, never "
+                        + "silently overwriting the first")
+                .isNotEqualTo(firstDir);
+        assertThat(firstDir).isDirectory();
+        assertThat(firstDir.resolve("marker.txt"))
+                .as("the first project's contents are left intact")
+                .exists();
+        assertThat(secondDir.resolve("project.daw")).exists();
+    }
+
+    @Test
     void shouldHaveCurrentProjectAfterCreate() throws IOException {
         ProjectManager manager = createProjectManager();
 

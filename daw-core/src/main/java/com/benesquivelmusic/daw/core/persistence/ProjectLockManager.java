@@ -317,6 +317,26 @@ public final class ProjectLockManager implements AutoCloseable {
         return Duration.between(lock.lastSeenAt(), now).compareTo(STALE_THRESHOLD) > 0;
     }
 
+    /**
+     * Reads the {@code .project.lock} sidecar in {@code projectDir} WITHOUT
+     * acquiring, writing, or modifying anything (unlike {@link #tryAcquire}).
+     * Returns the parsed holder lock, or empty when no lock file is present or
+     * it cannot be parsed. The story-296 Welcome/Hub recover-scan uses this +
+     * {@link #isStale(ProjectLock, Instant)} to classify "did not exit cleanly"
+     * without the side effect of {@code tryAcquire}.
+     *
+     * @param projectDir the project directory whose lock sidecar to peek
+     * @return the on-disk holder lock, or empty when absent / unparseable
+     */
+    public static Optional<ProjectLock> peekLock(Path projectDir) {
+        Objects.requireNonNull(projectDir, "projectDir must not be null");
+        try {
+            return Optional.ofNullable(readLock(projectDir.resolve(LOCK_FILE_NAME)));
+        } catch (IOException e) {
+            return Optional.empty();
+        }
+    }
+
     /** Reads and parses a lock file, returning {@code null} if it cannot be parsed. */
     static ProjectLock readLock(Path lockFile) throws IOException {
         if (!Files.exists(lockFile)) {

@@ -1,0 +1,117 @@
+/* Story 296 — WelcomeView (§4.1 launch screen). A scene-loaded stylesheet, so
+   it consumes the app's role tokens (-surface-1, -line-soft, -text*, -accent,
+   -warn) directly — they are defined on .root in styles.css. No literal hex. */
+
+.welcome-view {
+    -fx-background-color: -surface-1;
+}
+
+.welcome-sections {
+    -fx-spacing: 24;
+    -fx-padding: 24 28 24 28;
+}
+
+/* Section headers: small, spaced, muted caps ("RECOVER" / "CONTINUE" / "START"). */
+.welcome-section-header {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+    -fx-padding: 0 0 6 2;
+}
+
+/* ── Recover ───────────────────────────────────────────────────────────────── */
+
+.welcome-recover {
+    -fx-spacing: 8;
+}
+
+.welcome-recover-row {
+    -fx-background-color: -surface-1;
+    -fx-border-color: -warn;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 10 12 10 12;
+    -fx-spacing: 12;
+}
+
+.welcome-recover-actions {
+    -fx-spacing: 8;
+}
+
+/* ── Continue ──────────────────────────────────────────────────────────────── */
+
+.welcome-continue {
+    -fx-spacing: 8;
+}
+
+.welcome-grid {
+    -fx-hgap: 12;
+    -fx-vgap: 12;
+}
+
+/* ── Start tiles ───────────────────────────────────────────────────────────── */
+
+.welcome-start {
+    -fx-spacing: 8;
+}
+
+.welcome-tiles {
+    -fx-hgap: 12;
+    -fx-vgap: 12;
+}
+
+.tile {
+    -fx-background-color: -surface-1;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 14 16 14 16;
+    -fx-min-width: 200;
+    -fx-pref-width: 240;
+    -fx-cursor: hand;
+}
+
+.tile:hover {
+    -fx-border-color: -accent;
+}
+
+.tile:focused {
+    -fx-border-color: -accent;
+}
+
+.welcome-tile-content {
+    -fx-spacing: 2;
+}
+
+.welcome-tile-title {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 14px;
+    -fx-font-weight: 600;
+}
+
+.welcome-tile-subtitle {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 12px;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────────── */
+
+.welcome-footer {
+    -fx-background-color: -surface-1;
+    -fx-border-color: -line-soft transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+    -fx-padding: 8 28 8 28;
+    -fx-spacing: 16;
+}
+
+.welcome-workspace {
+    -fx-text-fill: -text;
+    -fx-font-size: 12px;
+}
+
+.welcome-disk-line {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 12px;
+}
