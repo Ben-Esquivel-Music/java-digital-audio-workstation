@@ -356,9 +356,20 @@ public final class ProjectHubView extends BorderPane {
         card.setSizeOnDiskBytes(fileSizeOf(archive));
         wireSelection(card);
         card.setOnMouseClicked(e -> {
+            if (e.getButton() != javafx.scene.input.MouseButton.PRIMARY) {
+                return;
+            }
             select(card);
             if (e.getClickCount() >= 2) {
                 onRestoreArchive.accept(archive);
+            }
+        });
+        card.setOnKeyPressed(e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.ENTER
+                    || e.getCode() == javafx.scene.input.KeyCode.SPACE) {
+                select(card);
+                onRestoreArchive.accept(archive);
+                e.consume();
             }
         });
 
