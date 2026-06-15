@@ -1,6 +1,6 @@
 /* Story 296 — WelcomeView (§4.1 launch screen). A scene-loaded stylesheet, so
    it consumes the app's role tokens (-surface-1, -line-soft, -text*, -accent,
-   -warn) directly — they are defined on .root in styles.css. No literal hex. */
+   -warn) directly — they are defined on .root-pane in styles.css. No literal hex. */
 
 .welcome-view {
     -fx-background-color: -surface-1;
