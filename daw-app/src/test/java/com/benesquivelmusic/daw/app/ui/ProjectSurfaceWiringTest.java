@@ -94,7 +94,8 @@ class ProjectSurfaceWiringTest {
             // Build the lifecycle surface wired to this project, then Save.
             ProjectLifecycleController controller = callOnFx(() -> new ProjectLifecycleController(
                     pm, new SessionInterchangeController(), new NotificationBar(),
-                    new Label(), new Label(), new BorderPane(), new VBox(),
+                    new com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress(new FxDispatcher()),
+                    new BorderPane(), new VBox(),
                     depsFor(project), new ProjectArchiver()));
             callOnFx(() -> {
                 controller.onSaveProject();

@@ -1047,6 +1047,64 @@
     -fx-font-weight: 500;
 }
 
+/* ── Session Status Strip (story 295, Project Manager Design Book §4.4) ──
+ * A persistent two-row strip that surfaces the §2.2 invisible signals
+ * (save / checkpoint / journal / lock / disk / session / schema /
+ * workspace), bound to the single ProjectOperationProgress model. The strip
+ * itself is app chrome styled here (author origin), matching .status-bar
+ * above. The per-cell colour tokens are FORWARDED to the cells' user-agent
+ * stylesheets via local -ssc-* / -ccd-* names so those UA sheets never
+ * reference raw role tokens
+ * (feedback_control_css_role_token_forwarding). */
+.session-status-strip {
+    -fx-background-color: -surface-1;
+    -fx-border-color: -line-soft transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+}
+.session-status-strip .status-strip-rows {
+    -fx-spacing: 2;
+    -fx-padding: 4 16 4 16;
+}
+.session-status-strip .status-strip-row {
+    -fx-spacing: 16;
+    -fx-alignment: CENTER_LEFT;
+}
+
+/* Forward role tokens onto the status-strip cells as local -ssc-* names so
+ * status-strip-cell.css (USER_AGENT origin) consumes them without a raw
+ * role-token reference or a circular looked-up-colour drop. */
+.status-strip-cell {
+    -ssc-text: -text;
+    -ssc-warn: -warn;
+    -ssc-critical: -danger;
+}
+
+/* Forward role tokens onto the checkpoint-countdown canvas; its Java draw
+ * code reads the resolved -ccd-* StyleableObjectProperty values. */
+.checkpoint-countdown {
+    -ccd-text: -text;
+    -ccd-track: -surface-3;
+    -ccd-fill: -accent;
+}
+
+/* Trailing "⋯" overflow button + its popover of collapsed cells (§4.4). */
+.session-status-strip .status-strip-overflow {
+    -fx-background-color: transparent;
+    -fx-text-fill: -text-mute;
+    -fx-padding: 0 4 0 4;
+}
+.session-status-strip .status-strip-overflow:hover {
+    -fx-text-fill: -text;
+}
+.status-strip-overflow-popover {
+    -fx-background-color: -surface-2;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1;
+    -fx-spacing: 4;
+    -fx-padding: 8;
+    -fx-effect: -elevation-2;
+}
+
 /* ── Separator ── */
 .separator > .line {
     -fx-border-color: -line-soft;

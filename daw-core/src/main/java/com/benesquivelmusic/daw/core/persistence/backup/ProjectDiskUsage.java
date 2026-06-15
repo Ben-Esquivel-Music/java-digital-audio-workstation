@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence.backup;
 
 import java.io.IOException;
+import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -59,6 +60,38 @@ public record ProjectDiskUsage(long autosavesBytes, long archivesBytes, long ass
         long total = sizeOf(projectDirectory);
         long assets = Math.max(0L, total - autosaves - archives);
         return new ProjectDiskUsage(autosaves, archives, assets);
+    }
+
+    /**
+     * Returns the usable bytes on the file store backing {@code directory} —
+     * the §1.8 disk-space contract input for the Session Status Strip (story
+     * 295). A "plain value" the JavaFX-free core supplies; the UI's 30&nbsp;s
+     * background disk scan calls this off the FX thread (the FX thread must
+     * never call {@link FileStore#getUsableSpace()} —
+     * {@code javafx-application-design} §11).
+     *
+     * <p>When {@code directory} does not exist yet (e.g. a not-yet-saved
+     * project) the nearest existing ancestor's file store is measured, so a
+     * fresh project still reports a meaningful free-space figure. Returns
+     * {@code -1} when no ancestor exists or the store cannot be queried.</p>
+     *
+     * @param directory the directory whose file store to measure
+     * @return usable bytes on that file store, or {@code -1} if unknown
+     */
+    public static long usableSpaceBytes(Path directory) {
+        Objects.requireNonNull(directory, "directory must not be null");
+        Path probe = directory.toAbsolutePath();
+        while (probe != null && !Files.exists(probe)) {
+            probe = probe.getParent();
+        }
+        if (probe == null) {
+            return -1L;
+        }
+        try {
+            return Files.getFileStore(probe).getUsableSpace();
+        } catch (IOException e) {
+            return -1L;
+        }
     }
 
     private static long sizeOf(Path root) throws IOException {

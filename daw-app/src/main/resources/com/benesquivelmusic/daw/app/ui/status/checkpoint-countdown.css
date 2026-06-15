@@ -1,0 +1,5 @@
+/* Story 295 — checkpoint countdown cell. Colours are drawn in Java from the
+   -ccd-* StyleableObjectProperty tokens (forwarded by styles.css). */
+.checkpoint-countdown {
+    -fx-padding: 0;
+}

@@ -167,7 +167,7 @@
 
     <!-- Bottom: Notification Bar + Status Bar -->
     <bottom>
-        <VBox>
+        <VBox fx:id="bottomBar">
             <Separator/>
             <HBox fx:id="notificationBarContainer"/>
             <!-- Story 274 — Status bar: one row of dot-separated cells, ZERO
@@ -175,10 +175,12 @@
                  from the 16 px gap, not drawn lines. The "· " separator is
                  part of each non-first cell's text because JavaFX CSS has no
                  :first-child (Skill §15). projectInfoLabel is the first cell →
-                 no leading dot. checkpointLabel/statusBarLabel are written
-                 from ~30 dynamic sites (Transport/ProjectLifecycle), so they
-                 are StatusCellLabel — the single seam that guarantees their
-                 leading "· " for every writer (idempotent). Padding stays a
+                 no leading dot. statusBarLabel is written from many dynamic
+                 sites (Transport/Metronome/…), so it is a StatusCellLabel — the
+                 single seam that guarantees its leading "· " for every writer
+                 (idempotent). (Story 295 retired the sibling checkpointLabel:
+                 last-save / checkpoint are now SessionStatusStrip cells.)
+                 Padding stays a
                  numeric <Insets 4/16/4/16> (= -spacing-xs/-lg, §5.11's 24 px
                  height) because JavaFX CSS has no looked-up numeric values;
                  TokenValidationTest + MainViewFxmlSpacingTest guard it. The
@@ -202,8 +204,11 @@
                 <Label fx:id="dskLabel" text="· DSK --"
                        styleClass="body, numeric-value"/>
                 <Region HBox.hgrow="ALWAYS"/>
-                <StatusCellLabel fx:id="checkpointLabel" text="· Auto-save: ON"
-                       styleClass="body"/>
+                <!-- Story 295 — the old checkpointLabel ("Auto-save: ON" /
+                     "Saved (checkpoint #N)") was retired here: the last-save and
+                     next-checkpoint facts are now first-class cells of the
+                     SessionStatusStrip (mounted into this VBox by MainController),
+                     bound to ProjectOperationProgress. -->
                 <!-- Ripple-mode red banner (visible only when ripple is active) -->
                 <Label fx:id="rippleBannerLabel" text="" styleClass="ripple-banner"
                        visible="false" managed="false"/>

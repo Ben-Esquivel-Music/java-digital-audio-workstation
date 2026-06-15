@@ -42,7 +42,7 @@ class ProjectLifecycleControllerTest {
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         null, dummySessionInterchange(), dummyNotificationBar(),
-                        dummyLabel(), dummyLabel(), dummyBorderPane(),
+                        dummyProgress(),dummyBorderPane(),
                         dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("projectManager"));
     }
@@ -53,7 +53,7 @@ class ProjectLifecycleControllerTest {
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), null, dummyNotificationBar(),
-                        dummyLabel(), dummyLabel(), dummyBorderPane(),
+                        dummyProgress(),dummyBorderPane(),
                         dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("sessionInterchangeController"));
     }
@@ -64,31 +64,20 @@ class ProjectLifecycleControllerTest {
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), null,
-                        dummyLabel(), dummyLabel(), dummyBorderPane(),
+                        dummyProgress(),dummyBorderPane(),
                         dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("notificationBar"));
     }
 
     @Test
-    void constructorRejectsNullStatusBarLabel() throws Exception {
+    void constructorRejectsNullProgress() throws Exception {
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
-                        null, dummyLabel(), dummyBorderPane(),
+                        null, dummyBorderPane(),
                         dummyVBox(), dummyDeps(), dummyArchiver()))
-                .withMessageContaining("statusBarLabel"));
-    }
-
-    @Test
-    void constructorRejectsNullCheckpointLabel() throws Exception {
-        runOnFxThread(() ->
-            assertThatNullPointerException()
-                .isThrownBy(() -> new ProjectLifecycleController(
-                        dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
-                        dummyLabel(), null, dummyBorderPane(),
-                        dummyVBox(), dummyDeps(), dummyArchiver()))
-                .withMessageContaining("checkpointLabel"));
+                .withMessageContaining("progress"));
     }
 
     @Test
@@ -97,7 +86,7 @@ class ProjectLifecycleControllerTest {
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
-                        dummyLabel(), dummyLabel(), null,
+                        dummyProgress(),null,
                         dummyVBox(), dummyDeps(), dummyArchiver()))
                 .withMessageContaining("rootPane"));
     }
@@ -108,7 +97,7 @@ class ProjectLifecycleControllerTest {
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
-                        dummyLabel(), dummyLabel(), dummyBorderPane(),
+                        dummyProgress(),dummyBorderPane(),
                         null, dummyDeps(), dummyArchiver()))
                 .withMessageContaining("trackListPanel"));
     }
@@ -119,7 +108,7 @@ class ProjectLifecycleControllerTest {
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
-                        dummyLabel(), dummyLabel(), dummyBorderPane(),
+                        dummyProgress(),dummyBorderPane(),
                         dummyVBox(), null, dummyArchiver()))
                 .withMessageContaining("deps"));
     }
@@ -130,7 +119,7 @@ class ProjectLifecycleControllerTest {
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
-                        dummyLabel(), dummyLabel(), dummyBorderPane(),
+                        dummyProgress(),dummyBorderPane(),
                         dummyVBox(), dummyDeps(), null))
                 .withMessageContaining("projectArchiver"));
     }
@@ -147,7 +136,7 @@ class ProjectLifecycleControllerTest {
         AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
-                dummyLabel(), dummyLabel(), dummyBorderPane(),
+                dummyProgress(),dummyBorderPane(),
                 dummyVBox(), dummyDeps(), dummyArchiver())));
 
         ref.get().resetProjectState();
@@ -162,7 +151,7 @@ class ProjectLifecycleControllerTest {
         AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
-                dummyLabel(), dummyLabel(), dummyBorderPane(),
+                dummyProgress(),dummyBorderPane(),
                 dummyVBox(), dummyDeps(), dummyArchiver())));
 
         ref.get().resetProjectState();
@@ -204,7 +193,7 @@ class ProjectLifecycleControllerTest {
         runOnFxThread(() -> {
             ref.set(new ProjectLifecycleController(
                     pm, dummySessionInterchange(), dummyNotificationBar(),
-                    dummyLabel(), dummyLabel(), dummyBorderPane(),
+                    dummyProgress(),dummyBorderPane(),
                     dummyVBox(), dummyDeps(), dummyArchiver()));
             loaded.set(ref.get().loadProjectFromPath(metadata.projectPath()));
         });
@@ -245,7 +234,7 @@ class ProjectLifecycleControllerTest {
         AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
-                dummyLabel(), dummyLabel(), dummyBorderPane(),
+                dummyProgress(),dummyBorderPane(),
                 dummyVBox(), dummyDeps(), dummyArchiver())));
 
         // Confirm a .bak exists pre-rollback.
@@ -285,7 +274,7 @@ class ProjectLifecycleControllerTest {
         AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
-                dummyLabel(), dummyLabel(), dummyBorderPane(),
+                dummyProgress(),dummyBorderPane(),
                 dummyVBox(), dummyDeps(), dummyArchiver())));
 
         runOnFxThread(() -> ref.get().rollbackMigration(metadata.projectPath(), report));
@@ -355,8 +344,9 @@ class ProjectLifecycleControllerTest {
         return new NotificationBar();
     }
 
-    private static javafx.scene.control.Label dummyLabel() {
-        return new javafx.scene.control.Label();
+    private static com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress dummyProgress() {
+        return new com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress(
+                new com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher());
     }
 
     private static javafx.scene.layout.BorderPane dummyBorderPane() {
