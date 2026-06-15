@@ -190,7 +190,8 @@ public final class ProjectHealthScanner {
      * long-lived project carries backups from more than one schema version.</p>
      */
     private static int newestBackupSchemaVersion(Path projectDir) {
-        String newestStamp = null;
+        String newestTime = null;
+        int newestCollision = -1;
         int versionOfNewest = -1;
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(projectDir)) {
             for (Path entry : stream) {
@@ -203,11 +204,21 @@ public final class ProjectHealthScanner {
                     continue;
                 }
                 String stamp = matcher.group(2);
-                if (newestStamp == null || stamp.compareTo(newestStamp) > 0) {
-                    newestStamp = stamp;
+                String time = stamp;
+                int collision = 0;
+                int suffixIndex = stamp.indexOf('-', 15); // "yyyyMMdd-HHmmss" is 15 chars
+                if (suffixIndex > 0) {
+                    time = stamp.substring(0, suffixIndex);
+                    collision = parseVersion(stamp.substring(suffixIndex + 1));
+                }
+                if (newestTime == null || time.compareTo(newestTime) > 0
+                        || (time.equals(newestTime) && collision > newestCollision)) {
+                    newestTime = time;
+                    newestCollision = collision;
                     versionOfNewest = parseVersion(matcher.group(1));
                 }
             }
+        }
         } catch (IOException | RuntimeException e) {
             return -1; // unreadable directory — no backup info
         }
