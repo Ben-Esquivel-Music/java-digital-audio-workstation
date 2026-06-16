@@ -89,6 +89,35 @@ public final class ProjectOperationProgress {
     }
 
     /**
+     * The §6.3 write-ahead-journal back-pressure level surfaced on the Journal
+     * cell (story 298). It mirrors the daw-core
+     * {@code com.benesquivelmusic.daw.core.persistence.journal.Backpressure}
+     * enum without depending on it (the SDK/UI seam keeps the JavaFX status model
+     * free of a direct core enum import):
+     *
+     * <ul>
+     *   <li>{@link #NORMAL} — the hand-off queue is keeping up; the Journal cell
+     *       renders neutrally.</li>
+     *   <li>{@link #SLOW} — the bounded queue filled and records are buffering in
+     *       memory ("disk is slow — events buffering"); the cell goes amber
+     *       ({@link StatusStripCell.Severity#WARN}).</li>
+     *   <li>{@link #UNRESPONSIVE} — the overflow byte budget was exceeded ("disk
+     *       unresponsive"); the cell goes red
+     *       ({@link StatusStripCell.Severity#CRITICAL}) and the controller also
+     *       raises an error notification. Records are still buffered, never
+     *       dropped.</li>
+     * </ul>
+     */
+    public enum JournalBackpressure {
+        /** Queue keeping up; Journal cell neutral. */
+        NORMAL,
+        /** Disk slow — events buffering in memory; Journal cell amber. */
+        SLOW,
+        /** Disk unresponsive — overflow budget exceeded; Journal cell red. */
+        UNRESPONSIVE
+    }
+
+    /**
      * Coalescing keys — one per logical fact group. N rapid mutations under one
      * key within a single {@link FxDispatcher#pulse() frame} collapse to the
      * latest (story 295 binding-test contract). Distinct facts use distinct keys
@@ -118,6 +147,8 @@ public final class ProjectOperationProgress {
             new ReadOnlyObjectWrapper<>(this, "checkpointInterval", Duration.ofMinutes(5));
     private final ReadOnlyIntegerWrapper journalEventsQueued =
             new ReadOnlyIntegerWrapper(this, "journalEventsQueued", 0);
+    private final ReadOnlyObjectWrapper<JournalBackpressure> journalBackpressure =
+            new ReadOnlyObjectWrapper<>(this, "journalBackpressure", JournalBackpressure.NORMAL);
 
     private final ReadOnlyStringWrapper lockHolderLabel =
             new ReadOnlyStringWrapper(this, "lockHolderLabel", "");
@@ -238,6 +269,24 @@ public final class ProjectOperationProgress {
      */
     public void setJournalEventsQueued(int count) {
         publish(Key.JOURNAL, () -> journalEventsQueued.set(count));
+    }
+
+    /**
+     * Publishes the §6.3 write-ahead-journal back-pressure level (story 298).
+     * Sourced off the FX thread from the journal writer's virtual-thread
+     * {@code JournalListener.onBackpressure(...)} callback; the strip's Journal
+     * cell goes amber on {@link JournalBackpressure#SLOW} and red on
+     * {@link JournalBackpressure#UNRESPONSIVE}. Travels under the same
+     * {@link Key#JOURNAL} coalescing key as the queued count (both are facets of
+     * the one Journal cell), so a {@code null} is coerced to
+     * {@link JournalBackpressure#NORMAL} to keep the cell well-formed.
+     *
+     * @param level the back-pressure level; a {@code null} becomes
+     *              {@link JournalBackpressure#NORMAL}
+     */
+    public void setJournalBackpressure(JournalBackpressure level) {
+        JournalBackpressure resolved = level == null ? JournalBackpressure.NORMAL : level;
+        publish(Key.JOURNAL, () -> journalBackpressure.set(resolved));
     }
 
     /**
@@ -393,6 +442,11 @@ public final class ProjectOperationProgress {
     public ReadOnlyIntegerProperty journalEventsQueuedProperty() { return journalEventsQueued.getReadOnlyProperty(); }
     /** @return the queued journal-event count. */
     public int getJournalEventsQueued() { return journalEventsQueued.get(); }
+
+    /** @return the §6.3 journal back-pressure level (story 298; default {@link JournalBackpressure#NORMAL}). */
+    public ReadOnlyObjectProperty<JournalBackpressure> journalBackpressureProperty() { return journalBackpressure.getReadOnlyProperty(); }
+    /** @return the current journal back-pressure level (never {@code null}). */
+    public JournalBackpressure getJournalBackpressure() { return journalBackpressure.get(); }
 
     /** @return the lock-holder label (§1.3). */
     public ReadOnlyStringProperty lockHolderLabelProperty() { return lockHolderLabel.getReadOnlyProperty(); }

@@ -84,6 +84,8 @@ class WelcomeViewInteractionTest {
                 InstantSource.fixed(T0.plus(20, ChronoUnit.MINUTES)),
                 () -> {},               // onNewProject
                 opened::set,            // onOpenProject — capture the opened path
+                _ -> {},                // onRecoverProject (story 298)
+                _ -> {},                // onDiscardRecovery (story 298)
                 () -> {},               // onOpenFromDisk
                 () -> {},               // onRestoreArchive
                 () -> {})));            // onImportDawproject
@@ -129,7 +131,7 @@ class WelcomeViewInteractionTest {
                 new ProjectHealthScanner(dispatcher),
                 dispatcher,
                 clock,
-                () -> {}, _ -> {}, () -> {}, () -> {}, () -> {})));
+                () -> {}, _ -> {}, _ -> {}, _ -> {}, () -> {}, () -> {}, () -> {})));
 
         WelcomeView view = viewRef.get();
         assertThat(view).isNotNull();

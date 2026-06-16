@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
+import com.benesquivelmusic.daw.app.ui.dialogs.RecoveryChoice;
+import com.benesquivelmusic.daw.app.ui.dialogs.RecoveryDialog;
 import com.benesquivelmusic.daw.app.ui.hub.ProjectHealthScanner;
 import com.benesquivelmusic.daw.app.ui.hub.ProjectHubView;
 import com.benesquivelmusic.daw.app.ui.hub.WelcomeView;
@@ -7,6 +10,12 @@ import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalRecoveryException;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalReplayer;
+import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
+import com.benesquivelmusic.daw.core.persistence.journal.RecoveryResult;
+import com.benesquivelmusic.daw.core.persistence.journal.RecoveryScanner;
+import com.benesquivelmusic.daw.core.persistence.journal.RecoverySummary;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
@@ -66,6 +75,9 @@ import java.util.stream.Stream;
 final class ProjectLifecycleController {
 
     private static final Logger LOG = Logger.getLogger(ProjectLifecycleController.class.getName());
+
+    /** Filename-safe local timestamp stamp shared by the archive-restore and recovery-backup paths. */
+    private static final DateTimeFormatter BACKUP_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     /**
      * The functional dependencies the composition root supplies — story 294
@@ -162,6 +174,31 @@ final class ProjectLifecycleController {
      * {@link #setWelcomePresenter(Consumer)}.
      */
     private Consumer<WelcomeView> welcomePresenter = this::presentWelcome;
+
+    /**
+     * Story 298 — the crash-recovery entry point invoked from the Welcome
+     * screen's {@code [Recover session ▸]} button. The default
+     * ({@link #beginRecovery(Path)}) scans the project off the FX thread and, if
+     * a journal is present, shows the {@link RecoveryDialog}; tests inject a
+     * capturing consumer via {@link #setRecoverAction(Consumer)}. Field + setter,
+     * no ctor change (the story-296 seam shape).
+     */
+    private Consumer<Path> recoverAction = this::beginRecovery;
+
+    /**
+     * Story 298 — the discard-recovery action invoked from the Welcome screen's
+     * {@code [Discard recovery]} button. The default
+     * ({@link #discardRecovery(Path)}) confirms, then deletes the project's
+     * {@code journal/} directory off the FX thread.
+     */
+    private Consumer<Path> discardAction = this::discardRecovery;
+
+    /**
+     * Story 298 — opens the per-project write-ahead journal after a successful
+     * load (set by {@code MainController}); a {@code null} value (the pure-unit
+     * default) skips journal wiring.
+     */
+    private Consumer<Path> journalOpenHook;
 
     /**
      * Story 296 — the single auxiliary window currently hosting a Hub / Welcome
@@ -317,6 +354,12 @@ final class ProjectLifecycleController {
         if (createdOnDisk) {
             notificationBar.show(NotificationLevel.SUCCESS, "New project created");
             LOG.info("Created new project");
+            // Story 298 — open the write-ahead journal for the freshly-created
+            // project directory (no-op when journaled persistence is disabled).
+            var created = projectManager.getCurrentProject();
+            if (created != null && created.projectPath() != null) {
+                notifyJournalOpen(created.projectPath());
+            }
         }
     }
 
@@ -568,7 +611,7 @@ final class ProjectLifecycleController {
         if (stem.toLowerCase(java.util.Locale.ROOT).endsWith(ProjectArchiver.ARCHIVE_EXTENSION)) {
             stem = stem.substring(0, stem.length() - ProjectArchiver.ARCHIVE_EXTENSION.length());
         }
-        String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        String stamp = LocalDateTime.now().format(BACKUP_STAMP);
         Path destination = parentDir.toPath().resolve(stem + "-" + stamp);
 
         // Run the potentially expensive ZIP extraction on a background
@@ -755,6 +798,11 @@ final class ProjectLifecycleController {
             // dialog itself short-circuits when the user has already
             // chosen "Don't show again" for this project.
             maybeShowMigrationReport(projectDir);
+            // Story 298 — open the write-ahead journal for the just-loaded
+            // project (no-op when journaled persistence is disabled). The hook
+            // is set by MainController, which owns the journal coordinator
+            // alongside the checkpoint manager + session it must seal.
+            notifyJournalOpen(projectDir);
             return true;
         } catch (MigrationException e) {
             // Unmapped or broken migration chain — surface as an error
@@ -941,8 +989,15 @@ final class ProjectLifecycleController {
                 projectManager.getRecentProjectPaths(),
                 new ProjectHealthScanner(d),
                 d,
+                java.time.InstantSource.system(),
                 () -> { dismiss(ref[0]); onNewProject(); },
                 projectDir -> { dismiss(ref[0]); openProjectFromHub(projectDir); },
+                // Story 298 — Recover dismisses the launch window, then runs the
+                // crash-recovery flow (scan → RecoveryDialog → replay) over the
+                // main window via the overridable seam.
+                projectDir -> { dismiss(ref[0]); recoverAction.accept(projectDir); },
+                // Discard dismisses, then confirm-deletes the journal/ dir.
+                projectDir -> { dismiss(ref[0]); discardAction.accept(projectDir); },
                 () -> { dismiss(ref[0]); onOpenProject(); },
                 () -> { dismiss(ref[0]); onRestoreFromArchive(); },
                 () -> { dismiss(ref[0]); onImportSession(); });
@@ -970,6 +1025,247 @@ final class ProjectLifecycleController {
     private void openProjectFromHub(Path projectDir) {
         if (projectDir != null && confirmDiscardUnsavedChanges()) {
             loadProjectFromPath(projectDir);
+        }
+    }
+
+    // ── Crash recovery (story 298, Project Manager Design Book §4.6.1) ─────────
+
+    /**
+     * The §4.6.1 crash-recovery entry point. Scans {@code projectDir} for a
+     * recoverable checkpoint + journal on a virtual thread (the FX thread never
+     * does scan I/O), then marshals back:
+     *
+     * <ul>
+     *   <li>no summary / no journal → just open the project normally;</li>
+     *   <li>otherwise show the {@link RecoveryDialog} and branch on the
+     *       {@link RecoveryChoice}: {@code REPLAY_ALL} replays the journal onto
+     *       the newest checkpoint and opens the recovered state;
+     *       {@code CHECKPOINT_ONLY} opens the project as-is; {@code INSPECT_EVENTS}
+     *       lists the captured event types and leaves the project unopened;
+     *       {@code CANCEL} does nothing.</li>
+     * </ul>
+     *
+     * <p>Package-private so a test can drive it directly.</p>
+     *
+     * @param projectDir the project to recover; {@code null} is ignored
+     */
+    void beginRecovery(Path projectDir) {
+        if (projectDir == null) {
+            return;
+        }
+        ProjectContext ctx = ProjectContext.forProject(projectDir);
+        Thread.ofVirtual().name("daw-recovery-scan").start(() -> {
+            Optional<RecoverySummary> summary;
+            try {
+                summary = new RecoveryScanner().scan(ctx);
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "Recovery scan failed for " + projectDir, e);
+                postFx(() -> loadProjectFromPath(projectDir));
+                return;
+            }
+            postFx(() -> presentRecovery(projectDir, summary.orElse(null)));
+        });
+    }
+
+    /** FX-thread: show the recovery dialog (or open directly when nothing to recover). */
+    private void presentRecovery(Path projectDir, RecoverySummary summary) {
+        if (summary == null || !summary.hasJournal()) {
+            // Nothing to replay — open the last clean state normally.
+            loadProjectFromPath(projectDir);
+            return;
+        }
+        RecoveryChoice choice = new RecoveryDialog(summary).showAndWait().orElse(RecoveryChoice.CANCEL);
+        switch (choice) {
+            case REPLAY_ALL -> replayThenOpen(projectDir);
+            // "discards the captured changes" per the dialog — delete the journal
+            // before opening so the next launch does not re-offer recovery.
+            case CHECKPOINT_ONLY -> discardJournalThenLoad(projectDir);
+            // Inspect / Cancel do not open a project. The Recover action already
+            // dismissed the Welcome launch window, so re-present it rather than
+            // strand the user on the empty main window (story 298 review).
+            case INSPECT_EVENTS -> {
+                showInspectEvents(summary);
+                reshowWelcomeAfterRecovery();
+            }
+            case CANCEL -> reshowWelcomeAfterRecovery();
+        }
+    }
+
+    /**
+     * Re-presents the Welcome launch screen after a recovery outcome that did
+     * not open a project (Inspect / Cancel / Discard). The Recover and Discard
+     * actions dismiss the launch window up-front; without re-presenting it the
+     * user would be stranded on the empty main window with no way back to the
+     * recover candidates (story 298 review).
+     */
+    private void reshowWelcomeAfterRecovery() {
+        showWelcome();
+    }
+
+    /**
+     * Discards the project's journal off the FX thread, then opens the last
+     * clean save. Used by the {@code CHECKPOINT_ONLY} recovery choice so the
+     * journal the user chose to discard is not re-offered on the next launch.
+     */
+    private void discardJournalThenLoad(Path projectDir) {
+        Path journalDir = ProjectContext.forProject(projectDir).journalDirectory();
+        Thread.ofVirtual().name("daw-recovery-checkpoint-only").start(() -> {
+            deleteJournalDirectory(journalDir);
+            postFx(() -> loadProjectFromPath(projectDir));
+        });
+    }
+
+    /**
+     * Replays the journal onto the newest checkpoint on a virtual thread, then —
+     * on the FX thread — makes the recovered state the live opened project by
+     * atomically rewriting {@code project.daw} (backing up the prior file first,
+     * mirroring {@code ProjectManager.writeMigrationBackup}'s {@code .bak}
+     * naming) and reusing the normal {@link #loadProjectFromPath(Path)} path. A
+     * {@link JournalRecoveryException} surfaces a red notification and falls back
+     * to opening the un-replayed project.
+     */
+    private void replayThenOpen(Path projectDir) {
+        ProjectContext ctx = ProjectContext.forProject(projectDir);
+        Thread.ofVirtual().name("daw-recovery-replay").start(() -> {
+            try {
+                RecoveryResult result = new JournalReplayer().recover(ctx);
+                String xml = new ProjectSerializer().serialize(result.recoveredProject());
+                writeRecoveredProjectFile(ctx.projectFile(), xml);
+                // The replayed records are now folded into project.daw, so the
+                // journal that produced them is subsumed — clear it so the next
+                // launch does not re-offer (and re-replay) the same changes. A
+                // fresh journal opens when loadProjectFromPath reopens below.
+                deleteJournalDirectory(ctx.journalDirectory());
+                int applied = result.appliedRecordCount();
+                postFx(() -> {
+                    if (loadProjectFromPath(projectDir)) {
+                        notificationBar.show(NotificationLevel.SUCCESS,
+                                "Recovered " + applied + " change"
+                                        + (applied == 1 ? "" : "s") + " from the journal");
+                    }
+                });
+            } catch (JournalRecoveryException e) {
+                LOG.log(Level.WARNING, "Journal recovery rolled back for " + projectDir, e);
+                postFx(() -> {
+                    notificationBar.show(NotificationLevel.ERROR,
+                            "Recovery failed (" + e.getMessage()
+                                    + "); opened the last clean save instead");
+                    loadProjectFromPath(projectDir);
+                });
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "Failed to persist recovered project for " + projectDir, e);
+                postFx(() -> {
+                    notificationBar.show(NotificationLevel.ERROR,
+                            "Could not write recovered project: " + e.getMessage());
+                    loadProjectFromPath(projectDir);
+                });
+            }
+        });
+    }
+
+    /**
+     * Atomically replaces {@code projectFile} with {@code xml}, backing up the
+     * prior file first to a sibling {@code project.daw.recovered.<stamp>.bak}
+     * (mirroring the {@code ProjectManager.writeMigrationBackup} {@code .bak}
+     * naming) so the pre-recovery file is never lost. Runs off the FX thread.
+     */
+    private static void writeRecoveredProjectFile(Path projectFile, String xml) throws IOException {
+        if (Files.exists(projectFile)) {
+            String stamp = LocalDateTime.now().format(BACKUP_STAMP);
+            Path backup = projectFile.resolveSibling(
+                    projectFile.getFileName() + ".recovered." + stamp + ".bak");
+            int n = 1;
+            while (Files.exists(backup)) {
+                backup = projectFile.resolveSibling(
+                        projectFile.getFileName() + ".recovered." + stamp + "-" + n + ".bak");
+                n++;
+            }
+            Files.copy(projectFile, backup, StandardCopyOption.COPY_ATTRIBUTES);
+        }
+        Path tmp = projectFile.resolveSibling(projectFile.getFileName() + ".recovering.tmp");
+        Files.writeString(tmp, xml);
+        try {
+            Files.move(tmp, projectFile,
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(tmp, projectFile, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /**
+     * Minimal {@code INSPECT_EVENTS} surface (story 298): an informational dialog
+     * listing the distinct event types and the replayable record count, leaving
+     * the project unopened so the user can decide their next step.
+     */
+    private void showInspectEvents(RecoverySummary summary) {
+        StringBuilder body = new StringBuilder();
+        body.append(summary.replayableEventCount())
+                .append(" replayable record(s) across ")
+                .append(summary.segmentFileNames().size())
+                .append(" segment(s).\n\nEvent types:\n");
+        if (summary.eventTypes().isEmpty()) {
+            body.append("  (none)");
+        } else {
+            for (String type : summary.eventTypes()) {
+                body.append("  • ").append(type).append('\n');
+            }
+        }
+        DawgDialog.info("Captured events", body.toString()).showAndWait();
+    }
+
+    /**
+     * The {@code [Discard recovery]} action: confirms, then deletes the
+     * project's {@code journal/} directory off the FX thread so the next open is
+     * a plain checkpoint open. Package-private so a test can drive it.
+     *
+     * @param projectDir the project whose journal should be discarded
+     */
+    void discardRecovery(Path projectDir) {
+        if (projectDir == null) {
+            return;
+        }
+        DawgDialog<javafx.scene.control.ButtonType> confirm = DawgDialog.confirm(
+                "Discard recovery",
+                "Discard the unsaved changes captured since the last clean save? "
+                        + "This deletes the journal and cannot be undone.",
+                "Discard");
+        var result = confirm.showAndWait();
+        boolean discard = result.isPresent()
+                && result.get().getButtonData() == javafx.scene.control.ButtonBar.ButtonData.OK_DONE;
+        if (!discard) {
+            // User backed out — the Welcome launch window was dismissed when the
+            // Discard action fired, so bring it back rather than strand them.
+            reshowWelcomeAfterRecovery();
+            return;
+        }
+        Path journalDir = ProjectContext.forProject(projectDir).journalDirectory();
+        Thread.ofVirtual().name("daw-recovery-discard").start(() -> {
+            boolean deleted = deleteJournalDirectory(journalDir);
+            postFx(() -> {
+                notificationBar.show(
+                        deleted ? NotificationLevel.SUCCESS : NotificationLevel.WARNING,
+                        deleted ? "Discarded recovery journal"
+                                : "No recovery journal to discard");
+                // Return to the launch screen (now without this project's recover
+                // row) instead of leaving the user on the empty main window.
+                reshowWelcomeAfterRecovery();
+            });
+        });
+    }
+
+    /** Recursively deletes {@code journalDir}; returns {@code true} if it existed and was removed. */
+    private static boolean deleteJournalDirectory(Path journalDir) {
+        if (journalDir == null || !Files.isDirectory(journalDir)) {
+            return false;
+        }
+        try {
+            // Reuse the shared recursive-delete helper rather than hand-rolling
+            // a Files.walk traversal (story 298 review).
+            ProjectArchiver.deleteRecursively(journalDir);
+            return !Files.exists(journalDir);
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to delete journal directory " + journalDir, e);
+            return false;
         }
     }
 
@@ -1124,5 +1420,46 @@ final class ProjectLifecycleController {
      */
     void setWelcomePresenter(Consumer<WelcomeView> presenter) {
         this.welcomePresenter = Objects.requireNonNull(presenter, "presenter must not be null");
+    }
+
+    /**
+     * Overrides the story-298 crash-recovery action (the Welcome screen's
+     * {@code [Recover session ▸]} target). Tests inject a capturing consumer to
+     * assert the recovery flow was triggered without scanning / showing a dialog.
+     *
+     * @param action the recovery action; must not be {@code null}
+     */
+    void setRecoverAction(Consumer<Path> action) {
+        this.recoverAction = Objects.requireNonNull(action, "action must not be null");
+    }
+
+    /**
+     * Overrides the story-298 discard-recovery action (the Welcome screen's
+     * {@code [Discard recovery]} target).
+     *
+     * @param action the discard action; must not be {@code null}
+     */
+    void setDiscardAction(Consumer<Path> action) {
+        this.discardAction = Objects.requireNonNull(action, "action must not be null");
+    }
+
+    /**
+     * Sets the story-298 journal-open hook, invoked with a project directory
+     * after a successful open / new so {@code MainController}'s
+     * {@code ProjectJournalCoordinator} can start the write-ahead journal. A
+     * {@code null} hook (the default) skips journal wiring.
+     *
+     * @param hook the journal-open hook, or {@code null} to disable
+     */
+    void setJournalOpenHook(Consumer<Path> hook) {
+        this.journalOpenHook = hook;
+    }
+
+    /** Invokes the journal-open hook when one is installed (story 298). */
+    private void notifyJournalOpen(Path projectDir) {
+        Consumer<Path> hook = this.journalOpenHook;
+        if (hook != null && projectDir != null) {
+            hook.accept(projectDir);
+        }
     }
 }

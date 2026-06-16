@@ -35,6 +35,7 @@ public final class SettingsModel {
     // ── Project keys ─────────────────────────────────────────────────────────
     private static final String KEY_AUTO_SAVE_INTERVAL_SECONDS = "project.autoSaveIntervalSeconds";
     private static final String KEY_DEFAULT_TEMPO = "project.defaultTempo";
+    private static final String KEY_USE_JOURNALED_PERSISTENCE = "project.useJournaledPersistence";
 
     // ── Appearance keys ──────────────────────────────────────────────────────
     private static final String KEY_UI_SCALE = "appearance.uiScale";
@@ -58,6 +59,13 @@ public final class SettingsModel {
     static final MixPrecision DEFAULT_MIX_PRECISION = MixPrecision.DOUBLE_64;
     static final int DEFAULT_AUTO_SAVE_INTERVAL_SECONDS = 120;
     static final double DEFAULT_TEMPO = 120.0;
+    /**
+     * Default for the "Use journaled persistence" toggle (story 298). {@code false}
+     * — the write-ahead journal & crash recovery ship behind a preference for one
+     * release (§7 Stage&nbsp;4) before becoming the default. When off, no
+     * {@code journal/} directory is created and no events are journaled.
+     */
+    static final boolean DEFAULT_USE_JOURNALED_PERSISTENCE = false;
     static final double DEFAULT_UI_SCALE = 1.0;
     /**
      * Default active theme id. Matches
@@ -128,6 +136,7 @@ public final class SettingsModel {
     private MixPrecision mixPrecision;
     private int autoSaveIntervalSeconds;
     private double defaultTempo;
+    private boolean useJournaledPersistence;
     private double uiScale;
     private String themeId;
     private String pluginScanPaths;
@@ -166,6 +175,8 @@ public final class SettingsModel {
         autoSaveIntervalSeconds = prefs.getInt(KEY_AUTO_SAVE_INTERVAL_SECONDS,
                 DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
         defaultTempo = prefs.getDouble(KEY_DEFAULT_TEMPO, DEFAULT_TEMPO);
+        useJournaledPersistence = prefs.getBoolean(
+                KEY_USE_JOURNALED_PERSISTENCE, DEFAULT_USE_JOURNALED_PERSISTENCE);
         uiScale = prefs.getDouble(KEY_UI_SCALE, DEFAULT_UI_SCALE);
         themeId = prefs.get(KEY_THEME_ID, DEFAULT_THEME_ID);
         pluginScanPaths = prefs.get(KEY_PLUGIN_SCAN_PATHS, DEFAULT_PLUGIN_SCAN_PATHS);
@@ -504,6 +515,31 @@ public final class SettingsModel {
         prefs.putDouble(KEY_DEFAULT_TEMPO, tempo);
     }
 
+    /**
+     * Returns whether the write-ahead journal &amp; crash recovery (story 298)
+     * are enabled — the "Use journaled persistence" toggle in the Settings
+     * dialog's Project pane. Defaults to {@code false} (§7 Stage&nbsp;4 "ships
+     * behind a preference for one release").
+     *
+     * @return {@code true} when journaled persistence is enabled
+     */
+    public boolean isUseJournaledPersistence() {
+        return useJournaledPersistence;
+    }
+
+    /**
+     * Sets the journaled-persistence toggle and persists the change. The
+     * coordinator reads this flag when a project opens, so the change takes
+     * effect on the next project open.
+     *
+     * @param use {@code true} to enable the write-ahead journal &amp; crash
+     *            recovery
+     */
+    public void setUseJournaledPersistence(boolean use) {
+        this.useJournaledPersistence = use;
+        prefs.putBoolean(KEY_USE_JOURNALED_PERSISTENCE, use);
+    }
+
     // ── Appearance ───────────────────────────────────────────────────────────
 
     /** Returns the UI scale factor. */
@@ -594,6 +630,7 @@ public final class SettingsModel {
         setMixPrecision(DEFAULT_MIX_PRECISION);
         setAutoSaveIntervalSeconds(DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
         setDefaultTempo(DEFAULT_TEMPO);
+        setUseJournaledPersistence(DEFAULT_USE_JOURNALED_PERSISTENCE);
         setUiScale(DEFAULT_UI_SCALE);
         setThemeId(DEFAULT_THEME_ID);
         setPluginScanPaths(DEFAULT_PLUGIN_SCAN_PATHS);

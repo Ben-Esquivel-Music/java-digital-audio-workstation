@@ -104,7 +104,14 @@ public final class WelcomeView extends BorderPane {
      *                          inject a fixed clock); must not be {@code null}
      * @param onNewProject      invoked by the Start "New project" tile; must not be {@code null}
      * @param onOpenProject     invoked with a project directory to open a recent
-     *                          card or route a {@code [Recover session ▸]}; must not be {@code null}
+     *                          card; must not be {@code null}
+     * @param onRecoverProject  invoked with a project directory when the user
+     *                          presses {@code [Recover session ▸]} — story 298
+     *                          routes this to the crash-recovery dialog; must
+     *                          not be {@code null}
+     * @param onDiscardRecovery invoked with a project directory when the user
+     *                          presses {@code [Discard recovery]}; must not be
+     *                          {@code null}
      * @param onOpenFromDisk    invoked by the Start "Open project…" tile; must not be {@code null}
      * @param onRestoreArchive  invoked by the Start "Restore archive…" tile; must not be {@code null}
      * @param onImportDawproject invoked by the Start "Import DAWproject" tile; must not be {@code null}
@@ -115,6 +122,8 @@ public final class WelcomeView extends BorderPane {
                        InstantSource clock,
                        Runnable onNewProject,
                        Consumer<Path> onOpenProject,
+                       Consumer<Path> onRecoverProject,
+                       Consumer<Path> onDiscardRecovery,
                        Runnable onOpenFromDisk,
                        Runnable onRestoreArchive,
                        Runnable onImportDawproject) {
@@ -123,6 +132,8 @@ public final class WelcomeView extends BorderPane {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         Objects.requireNonNull(onNewProject, "onNewProject must not be null");
         Objects.requireNonNull(onOpenProject, "onOpenProject must not be null");
+        Objects.requireNonNull(onRecoverProject, "onRecoverProject must not be null");
+        Objects.requireNonNull(onDiscardRecovery, "onDiscardRecovery must not be null");
         Objects.requireNonNull(onOpenFromDisk, "onOpenFromDisk must not be null");
         Objects.requireNonNull(onRestoreArchive, "onRestoreArchive must not be null");
         Objects.requireNonNull(onImportDawproject, "onImportDawproject must not be null");
@@ -134,7 +145,7 @@ public final class WelcomeView extends BorderPane {
 
         classify(recentPaths == null ? List.of() : recentPaths);
 
-        buildRecoverSection(onOpenProject);
+        buildRecoverSection(onRecoverProject, onDiscardRecovery);
         buildContinueSection(onOpenProject);
         VBox startSection = buildStartSection(
                 onNewProject, onOpenFromDisk, onRestoreArchive, onImportDawproject);
@@ -152,7 +163,9 @@ public final class WelcomeView extends BorderPane {
 
     /**
      * Convenience constructor using the {@linkplain InstantSource#system() system
-     * clock} for the stale-lock classification.
+     * clock} for the stale-lock classification and defaulting the story-298
+     * recovery actions: Recover routes to {@code onOpenProject} (the Stage-2
+     * behaviour — open the candidate) and Discard is a no-op.
      */
     public WelcomeView(List<Path> recentPaths,
                        ProjectHealthScanner scanner,
@@ -163,7 +176,8 @@ public final class WelcomeView extends BorderPane {
                        Runnable onRestoreArchive,
                        Runnable onImportDawproject) {
         this(recentPaths, scanner, dispatcher, InstantSource.system(),
-                onNewProject, onOpenProject, onOpenFromDisk, onRestoreArchive, onImportDawproject);
+                onNewProject, onOpenProject, onOpenProject, _ -> { },
+                onOpenFromDisk, onRestoreArchive, onImportDawproject);
     }
 
     // ── classification ─────────────────────────────────────────────────────────
@@ -188,7 +202,7 @@ public final class WelcomeView extends BorderPane {
 
     // ── Recover region ───────────────────────────────────────────────────────
 
-    private void buildRecoverSection(Consumer<Path> onOpenProject) {
+    private void buildRecoverSection(Consumer<Path> onRecoverProject, Consumer<Path> onDiscardRecovery) {
         recoverSection.getStyleClass().add("welcome-recover");
         Label header = new Label("RECOVER");
         header.getStyleClass().add("welcome-section-header");
@@ -200,7 +214,8 @@ public final class WelcomeView extends BorderPane {
         // arbitrary project rather than the top one.
         boolean first = true;
         for (Path path : recoverPaths) {
-            recoverSection.getChildren().add(buildRecoverRow(path, onOpenProject, first));
+            recoverSection.getChildren().add(
+                    buildRecoverRow(path, onRecoverProject, onDiscardRecovery, first));
             first = false;
         }
 
@@ -211,7 +226,8 @@ public final class WelcomeView extends BorderPane {
         recoverSection.setManaged(hasRecoverable);
     }
 
-    private HBox buildRecoverRow(Path path, Consumer<Path> onOpenProject, boolean makeDefault) {
+    private HBox buildRecoverRow(Path path, Consumer<Path> onRecoverProject,
+                                 Consumer<Path> onDiscardRecovery, boolean makeDefault) {
         HBox row = new HBox();
         row.getStyleClass().add("welcome-recover-row");
         row.setAlignment(Pos.CENTER_LEFT);
@@ -228,16 +244,16 @@ public final class WelcomeView extends BorderPane {
 
         Button discard = new Button("Discard recovery");
         discard.getStyleClass().add("welcome-recover-discard");
-        // Stage-2 stub: the destructive discard-recovery flow is owned by the
-        // story-298 recovery dialog; here it is inert so the row reads correctly.
-        discard.setDisable(true);
+        // Story 298 — discard now drives the controller's confirm-then-delete
+        // of the journal/ directory (no longer inert).
+        discard.setOnAction(_ -> onDiscardRecovery.accept(path));
 
         Button recover = new Button("Recover session ▸");
         recover.getStyleClass().add("welcome-recover-action");
         recover.setDefaultButton(makeDefault);
-        // Stage 2 only routes the candidate into the open flow; the real recovery
-        // dialog + journal replay is story 298.
-        recover.setOnAction(_ -> onOpenProject.accept(path));
+        // Story 298 — routes to the crash-recovery dialog (scan summary →
+        // RecoveryDialog → journal replay), not a bare open.
+        recover.setOnAction(_ -> onRecoverProject.accept(path));
 
         actions.getChildren().addAll(discard, recover);
         row.getChildren().addAll(card, spacer, actions);

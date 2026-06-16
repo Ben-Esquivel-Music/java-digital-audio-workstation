@@ -95,6 +95,12 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.persistence;
     exports com.benesquivelmusic.daw.core.persistence.archive;
     exports com.benesquivelmusic.daw.core.persistence.backup;
+    // Story 298 — write-ahead journal + crash-recovery engine. daw.app
+    // consumes RecoverySummary/RecoveryResult/ProjectContext (dialog,
+    // status strip) and wires JournalWriter to the "Use journaled
+    // persistence" preference; JournalReplayer's DawScope usage stays
+    // internal to this module.
+    exports com.benesquivelmusic.daw.core.persistence.journal;
     exports com.benesquivelmusic.daw.core.persistence.migration;
     exports com.benesquivelmusic.daw.core.plugin;
     exports com.benesquivelmusic.daw.core.plugin.builtin.midi;

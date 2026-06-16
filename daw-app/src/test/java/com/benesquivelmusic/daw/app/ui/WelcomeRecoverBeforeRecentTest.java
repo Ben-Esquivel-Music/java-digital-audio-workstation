@@ -86,6 +86,8 @@ class WelcomeRecoverBeforeRecentTest {
                 clock,
                 () -> {},          // onNewProject
                 _ -> {},           // onOpenProject
+                _ -> {},           // onRecoverProject (story 298)
+                _ -> {},           // onDiscardRecovery (story 298)
                 () -> {},          // onOpenFromDisk
                 () -> {},          // onRestoreArchive
                 () -> {})));       // onImportDawproject

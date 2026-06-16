@@ -110,6 +110,15 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private final MotionManager motionManager;
     private final CheckBox reduceMotionCheck;
 
+    // ── Project tab controls ─────────────────────────────────────────────────
+    /**
+     * Story 298 — "Use journaled persistence (write-ahead journal &amp; crash
+     * recovery)". Mirrors the {@code reduceMotionCheck} idiom: a single checkbox
+     * seeded from + written to the {@link SettingsModel}. Default OFF (§7
+     * Stage&nbsp;4 "ships behind a preference for one release").
+     */
+    private final CheckBox journaledPersistenceCheck;
+
     // ── Plugins tab controls ─────────────────────────────────────────────────
     private final TextField pluginScanPathsField;
 
@@ -152,6 +161,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
         autoSaveCombo.setValue(String.valueOf(model.getAutoSaveIntervalSeconds()));
 
         tempoField = new TextField(String.format("%.1f", model.getDefaultTempo()));
+
+        // Story 298 — journaled persistence toggle, seeded from the model.
+        journaledPersistenceCheck = new CheckBox(
+                "Use journaled persistence (write-ahead journal & crash recovery)");
+        journaledPersistenceCheck.setSelected(model.isUseJournaledPersistence());
 
         Tab projectTab = new Tab("Project", buildProjectPane());
         projectTab.setGraphic(IconNode.of(DawIcon.FOLDER, TAB_ICON_SIZE));
@@ -347,6 +361,18 @@ public final class SettingsDialog extends DawgDialog<Void> {
         grid.add(autoSaveCombo, 1, 2);
         grid.add(new Label("Default Tempo (BPM):"), 0, 3);
         grid.add(tempoField, 1, 3);
+
+        // Story 298 — journaled persistence toggle + a one-line §7-Stage-4
+        // caption ("ships behind a preference for one release"), following the
+        // header/separator/field grid idiom used above.
+        grid.add(new Separator(), 0, 4, 2, 1);
+        grid.add(journaledPersistenceCheck, 0, 5, 2, 1);
+        Label journalCaption = new Label(
+                "Captures every change to a write-ahead journal so unsaved work "
+                        + "survives a crash. Ships behind this preference for one release.");
+        journalCaption.setWrapText(true);
+        journalCaption.setStyle("-fx-text-fill: #808080; -fx-font-size: 10px;");
+        grid.add(journalCaption, 0, 6, 2, 1);
 
         return grid;
     }
@@ -606,6 +632,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 model.setDefaultTempo(tempo);
             }
         }
+
+        // Story 298 — journaled persistence toggle.
+        model.setUseJournaledPersistence(journaledPersistenceCheck.isSelected());
 
         // Appearance
         model.setUiScale(uiScaleSlider.getValue());
