@@ -379,6 +379,15 @@ public final class MainController {
      */
     private java.nio.file.Path activeSessionProjectDir;
     /**
+     * Story 298 — owns the per-project write-ahead-journal lifecycle (writer +
+     * event recorder + checkpoint rotation listener + telemetry → status model).
+     * Constructed in {@link #createSessionStatusStrip()} (where the checkpoint
+     * manager and status model are reachable), reads the live {@link #activeSession}
+     * to seal it, and is reachable from {@link ProjectLifecycleController} via the
+     * journal-open hook.
+     */
+    private com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator projectJournalCoordinator;
+    /**
      * Story 287 — single eager {@link TelemetryView}. Its
      * {@code getSetupPanel()} is registered as {@code PANEL_TELEMETRY} and
      * the whole view is the mounted node for both {@code PANEL_TELEMETRY}
@@ -646,6 +655,32 @@ public final class MainController {
                         projectOperationProgress.recordSaveFailed();
                     }
                 });
+
+        // Story 298 — the write-ahead-journal coordinator. Reads the "Use
+        // journaled persistence" preference at open time (default OFF), the live
+        // EventBus as the change source, registers its checkpoint-rotation
+        // listener, and seals the journal segments into the manifest on close
+        // (the session to seal is captured on the FX thread and handed to the
+        // coordinator — see the journal-open hook + shutdown below). Telemetry
+        // (queued count + back-pressure) flows onto the status model the Journal
+        // cell binds to.
+        projectJournalCoordinator =
+                new com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator(
+                        projectOperationProgress,
+                        notificationBar,
+                        dispatcher(),
+                        () -> settingsModel != null && settingsModel.isUseJournaledPersistence(),
+                        com.benesquivelmusic.daw.core.event.EventBusPublisher::getDefault,
+                        projectManager.getCheckpointManager(),
+                        sessionManager,
+                        java.time.InstantSource.system());
+        projectJournalCoordinator.setSessionSealedSink((dir, sealed) -> postFx(() -> {
+            // Keep the controller's session reference current after a seal so a
+            // later shutdown does not re-seal a stale snapshot.
+            if (java.util.Objects.equals(dir, activeSessionProjectDir)) {
+                activeSession = sealed;
+            }
+        }));
     }
 
     /**
@@ -993,15 +1028,35 @@ public final class MainController {
                         // displays + telemetry view we now own (FX thread;
                         // GpuCanvasView.dispose() is idempotent).
                         disposeVisualizationDisplays();
+                        // Story 298 — close the write-ahead journal on shutdown,
+                        // BEFORE the EventBus closes (DawApplication's WINDOW_HIDDEN
+                        // handler closes the bus). Detach the recorder from the bus
+                        // synchronously here on the FX thread so no event is offered
+                        // after the bus tears down; the writer drain + session seal
+                        // (folding in the journal segments) is I/O, so it runs on a
+                        // virtual thread.
+                        boolean journalSealing = projectJournalCoordinator != null
+                                && projectJournalCoordinator.isOpen();
+                        if (journalSealing) {
+                            projectJournalCoordinator.detachFromBus();
+                            // Capture the session to seal on the FX thread; the
+                            // coordinator folds the journal segments into it.
+                            com.benesquivelmusic.daw.core.session.WorkingSession journalSession = activeSession;
+                            Thread.ofVirtual().name("daw-journal-close")
+                                    .start(() -> projectJournalCoordinator.closeCurrent(journalSession));
+                        }
                         // Project Manager Design Book §3.3 — seal the active
                         // working session on clean shutdown. The write is I/O,
                         // so it runs on a virtual thread; fire-and-forget is
                         // acceptable because JVM shutdown will wait for daemon
                         // threads that are already running (the Platform exits
-                        // immediately after this handler returns).
+                        // immediately after this handler returns). When the
+                        // journal coordinator is sealing (above) it already folds
+                        // the segments in and closes the session, so this plain
+                        // seal only runs when no journal was open.
                         com.benesquivelmusic.daw.core.session.WorkingSession sessionToClose = activeSession;
                         java.nio.file.Path sessionDir = activeSessionProjectDir;
-                        if (sessionToClose != null && sessionDir != null) {
+                        if (!journalSealing && sessionToClose != null && sessionDir != null) {
                             Thread.ofVirtual().name("daw-session-close").start(() -> {
                                 try {
                                     sessionManager.closeSession(sessionDir, sessionToClose,
@@ -1205,6 +1260,23 @@ public final class MainController {
                         json -> { if (layoutManager != null) { layoutManager.fromJson(json); } }),
                 new ProjectArchiver(),
                 dispatcher());
+        // Story 298 — the journal-open hook: on every open / new, atomically
+        // close the prior project's journal (sealing its segments into the
+        // outgoing session) then open the new one — all off the FX thread on a
+        // single virtual thread, with the coordinator serialising the
+        // close-then-open so fast successive opens cannot interleave. The
+        // outgoing session is captured HERE, synchronously on the FX thread,
+        // because the hook fires at the end of the project load BEFORE
+        // refreshSessionManager's queued postFx swaps activeSession to the new
+        // project; passing the captured value avoids reading activeSession from
+        // a background thread. A no-op when journaled persistence is disabled.
+        if (projectJournalCoordinator != null && projectLifecycleController != null) {
+            projectLifecycleController.setJournalOpenHook(projectDir -> {
+                com.benesquivelmusic.daw.core.session.WorkingSession outgoing = activeSession;
+                Thread.ofVirtual().name("daw-journal-reopen")
+                        .start(() -> projectJournalCoordinator.reopenFor(projectDir, outgoing));
+            });
+        }
     }
 
     /**

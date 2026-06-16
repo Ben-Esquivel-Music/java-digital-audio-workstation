@@ -162,9 +162,26 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         journalCell.textProperty().bind(Bindings.createStringBinding(
                 () -> {
                     int n = model.getJournalEventsQueued();
-                    return "Journal: " + n + (n == 1 ? " event queued" : " events queued");
+                    String base = "Journal: " + n + (n == 1 ? " event queued" : " events queued");
+                    // §6.3 — surface the back-pressure cause inline on non-NORMAL
+                    // so the amber/red cell also says *why* (story 298).
+                    return switch (model.getJournalBackpressure()) {
+                        case SLOW -> base + " · disk slow";
+                        case UNRESPONSIVE -> base + " · disk unresponsive";
+                        case NORMAL -> base;
+                    };
                 },
-                model.journalEventsQueuedProperty()));
+                model.journalEventsQueuedProperty(), model.journalBackpressureProperty()));
+        // §6.3 — NORMAL→neutral, SLOW→amber (WARN), UNRESPONSIVE→red (CRITICAL).
+        // Severity flips style classes on the cell itself, so it is correct even
+        // in a headless, unrealized-skin test (story 298).
+        journalCell.severityProperty().bind(Bindings.createObjectBinding(
+                () -> switch (model.getJournalBackpressure()) {
+                    case NORMAL -> Severity.NORMAL;
+                    case SLOW -> Severity.WARN;
+                    case UNRESPONSIVE -> Severity.CRITICAL;
+                },
+                model.journalBackpressureProperty()));
 
         diskCell.textProperty().bind(Bindings.createStringBinding(
                 () -> {
@@ -436,6 +453,7 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         savedCell.textProperty().unbind();
         savedCell.severityProperty().unbind();
         journalCell.textProperty().unbind();
+        journalCell.severityProperty().unbind();
         diskCell.textProperty().unbind();
         diskCell.severityProperty().unbind();
         lockCell.textProperty().unbind();
