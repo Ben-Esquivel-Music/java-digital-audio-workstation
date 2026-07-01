@@ -17,7 +17,7 @@ package com.benesquivelmusic.daw.sdk.ui;
  * @see com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory
  * @see com.benesquivelmusic.daw.sdk.plugin.DawPlugin#editorFactory()
  */
-@Deprecated(since = "<next>", forRemoval = true)
+@Deprecated(forRemoval = true)
 public interface PluginUI {
 
     /**
