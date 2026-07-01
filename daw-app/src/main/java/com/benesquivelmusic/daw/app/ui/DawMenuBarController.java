@@ -70,6 +70,8 @@ public final class DawMenuBarController {
         // Story 190 — Snapshot History Browser
         /** Open the snapshot history browser dialog. Default no-op for tests. */
         default void onOpenSnapshots() { }
+        /** Capture a durable user-named copy of the current project file. Default no-op for tests. */
+        default void onCreateNamedSnapshot() { }
         /** Capture an explicit user checkpoint of the current project. Default no-op for tests. */
         default void onCreateCheckpoint() { }
 

@@ -102,6 +102,7 @@ module daw.core {
     // internal to this module.
     exports com.benesquivelmusic.daw.core.persistence.journal;
     exports com.benesquivelmusic.daw.core.persistence.migration;
+    exports com.benesquivelmusic.daw.core.persistence.snapshot;
     exports com.benesquivelmusic.daw.core.plugin;
     exports com.benesquivelmusic.daw.core.plugin.builtin.midi;
     exports com.benesquivelmusic.daw.core.plugin.clap;

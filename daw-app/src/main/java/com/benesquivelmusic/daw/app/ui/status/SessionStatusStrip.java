@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui.status;
 
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
+import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.SimpleObjectProperty;
 import javafx.scene.AccessibleRole;
 import javafx.scene.control.Button;
 import javafx.scene.control.Control;
@@ -68,6 +70,8 @@ public final class SessionStatusStrip extends Control {
 
     private final ProjectOperationProgress progress;
     private final MotionManager motionManager;
+    private final ObjectProperty<Runnable> schemaAction =
+            new SimpleObjectProperty<>(this, "schemaAction", () -> {});
 
     /**
      * Creates a strip bound to {@code progress}, using the app-wide
@@ -103,6 +107,21 @@ public final class SessionStatusStrip extends Control {
     /** @return the reduce-motion source (read by the skin to gate the countdown). */
     public MotionManager motionManager() {
         return motionManager;
+    }
+
+    /** @return action invoked when the Schema cell is activated. */
+    public ObjectProperty<Runnable> schemaActionProperty() {
+        return schemaAction;
+    }
+
+    /** Sets the action invoked when the Schema cell is activated. */
+    public void setOnSchemaAction(Runnable action) {
+        schemaAction.set(action == null ? () -> {} : action);
+    }
+
+    /** @return the current Schema-cell activation action. */
+    public Runnable getOnSchemaAction() {
+        return schemaAction.get();
     }
 
     @Override

@@ -17,6 +17,7 @@ import javafx.scene.control.ListView;
 import javafx.scene.layout.VBox;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -89,12 +90,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
         intro.setWrapText(true);
         intro.setMaxWidth(480);
 
-        ListView<String> migrationList = new ListView<>();
-        report.applied().stream()
-                .map(m -> "v" + m.fromVersion() + " \u2192 v" + m.toVersion() + "  \u2014  " + m.description())
-                .forEach(migrationList.getItems()::add);
-        migrationList.setPrefHeight(Math.min(220, 28 * report.applied().size() + 24));
-        migrationList.setPrefWidth(480);
+        ListView<String> migrationList = createMigrationList(report);
 
         suppressFutureCheckbox = new CheckBox("Don't show again for this project");
         suppressFutureCheckbox.setDisable(projectDirectory == null);
@@ -128,6 +124,39 @@ public final class MigrationReportDialog extends Dialog<Void> {
             }
             return null;
         });
+    }
+
+    /**
+     * Creates the standard migration-step list used by the modal dialog and
+     * historical migration rows.
+     */
+    static ListView<String> createMigrationList(MigrationReport report) {
+        ListView<String> migrationList = new ListView<>();
+        migrationList.getItems().setAll(formatAppliedMigrations(report));
+        migrationList.setPrefHeight(Math.min(220, 28 * report.applied().size() + 24));
+        migrationList.setPrefWidth(480);
+        return migrationList;
+    }
+
+    /**
+     * Formats every applied migration row in the same presentation style the
+     * report dialog has always used.
+     */
+    static List<String> formatAppliedMigrations(MigrationReport report) {
+        if (report == null) {
+            return List.of();
+        }
+        return report.applied().stream()
+                .map(MigrationReportDialog::formatAppliedMigration)
+                .toList();
+    }
+
+    /**
+     * Formats one migration step as a compact row label.
+     */
+    static String formatAppliedMigration(MigrationReport.AppliedMigration migration) {
+        return "v" + migration.fromVersion() + " \u2192 v" + migration.toVersion()
+                + "  \u2014  " + migration.description();
     }
 
     /**

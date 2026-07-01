@@ -21,6 +21,8 @@ package com.benesquivelmusic.daw.core.snapshot;
 public enum SnapshotKind {
     /** A snapshot produced automatically by the auto-save / checkpoint scheduler. */
     AUTOSAVE,
+    /** A durable user-named copy of project.daw under snapshots/. */
+    NAMED_SNAPSHOT,
     /** A snapshot the user requested explicitly. */
     USER_CHECKPOINT,
     /** A snapshot tied to an entry in the undo history. */

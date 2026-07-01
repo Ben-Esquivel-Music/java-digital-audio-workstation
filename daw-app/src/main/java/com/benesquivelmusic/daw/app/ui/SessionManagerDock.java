@@ -3,10 +3,15 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.core.session.WorkingSession;
+import com.benesquivelmusic.daw.core.snapshot.SnapshotEntry;
 
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.event.Event;
+import javafx.event.EventTarget;
+import javafx.event.EventType;
 import javafx.geometry.Pos;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
@@ -17,6 +22,8 @@ import javafx.scene.layout.VBox;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
 
@@ -40,6 +47,10 @@ public final class SessionManagerDock extends VBox implements Dockable {
     private final Label emptyLabel = new Label("No sessions yet \u2014 they appear as you work.");
     private final ListView<WorkingSession> sessionList = new ListView<>();
     private final ObservableList<WorkingSession> sessions = FXCollections.observableArrayList();
+    private final Label snapshotsLabel = new Label("Named snapshots");
+    private final Button snapshotButton = new Button("+ Snapshot\u2026");
+    private final ListView<SnapshotEntry> snapshotList = new ListView<>();
+    private final ObservableList<SnapshotEntry> namedSnapshots = FXCollections.observableArrayList();
 
     /** Constructs an empty Session Manager dock. */
     public SessionManagerDock() {
@@ -57,7 +68,20 @@ public final class SessionManagerDock extends VBox implements Dockable {
         sessionList.setCellFactory(view -> new SessionCell());
         VBox.setVgrow(sessionList, Priority.ALWAYS);
 
-        getChildren().addAll(titleLabel, sessionList);
+        snapshotsLabel.getStyleClass().add("session-manager-title");
+        snapshotButton.getStyleClass().add("session-manager-action");
+        snapshotButton.setOnAction(_ -> fireEvent(
+                new SnapshotDockEvent(SnapshotDockEvent.CREATE_REQUESTED, null)));
+        HBox snapshotHeader = new HBox(8, snapshotsLabel, spacer(), snapshotButton);
+        snapshotHeader.setAlignment(Pos.CENTER_LEFT);
+
+        snapshotList.getStyleClass().add("session-manager-list");
+        snapshotList.setItems(namedSnapshots);
+        snapshotList.setPlaceholder(new Label("No named snapshots yet"));
+        snapshotList.setCellFactory(view -> new SnapshotCell());
+        snapshotList.setPrefHeight(180);
+
+        getChildren().addAll(titleLabel, sessionList, snapshotHeader, snapshotList);
     }
 
     /**
@@ -86,6 +110,55 @@ public final class SessionManagerDock extends VBox implements Dockable {
     /** {@return an unmodifiable view of the sessions shown by the dock} */
     public ObservableList<WorkingSession> getSessions() {
         return FXCollections.unmodifiableObservableList(sessions);
+    }
+
+    public void setNamedSnapshots(List<SnapshotEntry> snapshots) {
+        Objects.requireNonNull(snapshots, "snapshots must not be null");
+        namedSnapshots.setAll(snapshots);
+    }
+
+    public ObservableList<SnapshotEntry> getNamedSnapshots() {
+        return FXCollections.unmodifiableObservableList(namedSnapshots);
+    }
+
+    public Button getSnapshotButton() {
+        return snapshotButton;
+    }
+
+    public ListView<SnapshotEntry> getSnapshotListView() {
+        return snapshotList;
+    }
+
+    public static final class SnapshotDockEvent extends Event {
+
+        private static final long serialVersionUID = 20260621L;
+
+        public static final EventType<SnapshotDockEvent> CREATE_REQUESTED =
+                new EventType<>(Event.ANY, "SESSION_DOCK_SNAPSHOT_CREATE_REQUESTED");
+        public static final EventType<SnapshotDockEvent> RESTORE_REQUESTED =
+                new EventType<>(Event.ANY, "SESSION_DOCK_SNAPSHOT_RESTORE_REQUESTED");
+        public static final EventType<SnapshotDockEvent> COMPARE_REQUESTED =
+                new EventType<>(Event.ANY, "SESSION_DOCK_SNAPSHOT_COMPARE_REQUESTED");
+
+        private final SnapshotEntry entry;
+
+        public SnapshotDockEvent(EventType<? extends SnapshotDockEvent> eventType,
+                                 SnapshotEntry entry) {
+            super(eventType);
+            this.entry = entry;
+        }
+
+        public SnapshotDockEvent(Object source,
+                                 EventTarget target,
+                                 EventType<? extends SnapshotDockEvent> eventType,
+                                 SnapshotEntry entry) {
+            super(source, target, eventType);
+            this.entry = entry;
+        }
+
+        public SnapshotEntry getEntry() {
+            return entry;
+        }
     }
 
     // ── Dockable contract ────────────────────────────────────────────────────
@@ -125,6 +198,64 @@ public final class SessionManagerDock extends VBox implements Dockable {
             statusLabel.setText(describe(session));
             setGraphic(row);
         }
+    }
+
+    private final class SnapshotCell extends ListCell<SnapshotEntry> {
+
+        private static final DateTimeFormatter WHEN =
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+                        .withZone(ZoneId.systemDefault());
+
+        private final Label nameLabel = new Label();
+        private final Label statusLabel = new Label();
+        private final Button restoreButton = new Button("Restore");
+        private final Button compareButton = new Button("Compare");
+        private final HBox row = new HBox(8);
+
+        SnapshotCell() {
+            getStyleClass().add("session-manager-cell");
+            nameLabel.getStyleClass().add("session-manager-cell-name");
+            statusLabel.getStyleClass().add("session-manager-cell-status");
+            restoreButton.getStyleClass().add("session-manager-action");
+            compareButton.getStyleClass().add("session-manager-action");
+            restoreButton.setOnAction(_ -> {
+                SnapshotEntry entry = getItem();
+                if (entry != null) {
+                    SessionManagerDock.this.fireEvent(new SnapshotDockEvent(
+                            SnapshotDockEvent.RESTORE_REQUESTED, entry));
+                }
+            });
+            compareButton.setOnAction(_ -> {
+                SnapshotEntry entry = getItem();
+                if (entry != null) {
+                    SessionManagerDock.this.fireEvent(new SnapshotDockEvent(
+                            SnapshotDockEvent.COMPARE_REQUESTED, entry));
+                }
+            });
+            Region spacer = new Region();
+            HBox.setHgrow(spacer, Priority.ALWAYS);
+            row.setAlignment(Pos.CENTER_LEFT);
+            row.getChildren().addAll(nameLabel, statusLabel, spacer, restoreButton, compareButton);
+        }
+
+        @Override
+        protected void updateItem(SnapshotEntry item, boolean empty) {
+            super.updateItem(item, empty);
+            if (empty || item == null) {
+                setText(null);
+                setGraphic(null);
+                return;
+            }
+            nameLabel.setText(item.label());
+            statusLabel.setText(WHEN.format(item.timestamp()));
+            setGraphic(row);
+        }
+    }
+
+    private static Region spacer() {
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        return spacer;
     }
 
     /**

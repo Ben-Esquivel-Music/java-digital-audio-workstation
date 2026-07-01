@@ -139,6 +139,8 @@ final class MenuConstructionService {
                 DawAction.IMPORT_SESSION, host::onImportSession);
 
         // Story 190 — Snapshot History Browser
+        MenuItem createSnapshot = menuItem("Snapshot\u2026", DawIcon.HISTORY,
+                null, host::onCreateNamedSnapshot);
         MenuItem snapshots = menuItem("Snapshots\u2026", DawIcon.HISTORY,
                 null, host::onOpenSnapshots);
         MenuItem createCheckpoint = menuItem("Create Checkpoint\u2026", DawIcon.HISTORY,
@@ -154,7 +156,7 @@ final class MenuConstructionService {
                 newProject, openProject, recentProjects,
                 new SeparatorMenuItem(),
                 saveItem,
-                createCheckpoint, snapshots,
+                createSnapshot, createCheckpoint, snapshots,
                 new SeparatorMenuItem(),
                 importSession, exportSessionItem,
                 renderQueueItem,

@@ -101,6 +101,7 @@ final class SnapshotsController {
     /** The last project checkpoint directory registered with the service,
      *  tracked so it can be removed when a different project is opened. */
     private Path lastRegisteredDirectory;
+    private Path lastRegisteredNamedSnapshotDirectory;
     private Stage browserStage;
     private SnapshotBrowser browserView;
 
@@ -157,6 +158,10 @@ final class SnapshotsController {
             service.removeAutosaveDirectory(lastRegisteredDirectory);
             lastRegisteredDirectory = null;
         }
+        if (lastRegisteredNamedSnapshotDirectory != null) {
+            service.removeNamedSnapshotDirectory(lastRegisteredNamedSnapshotDirectory);
+            lastRegisteredNamedSnapshotDirectory = null;
+        }
         // Clear in-memory snapshots belonging to the old project.
         service.clearSession();
 
@@ -167,6 +172,9 @@ final class SnapshotsController {
         Path dir = current.projectPath().resolve("checkpoints");
         service.addAutosaveDirectory(dir);
         lastRegisteredDirectory = dir;
+        Path snapshotsDir = current.projectPath().resolve("snapshots");
+        service.addNamedSnapshotDirectory(snapshotsDir);
+        lastRegisteredNamedSnapshotDirectory = snapshotsDir;
         if (browserView != null) {
             browserView.refresh();
         }
@@ -198,6 +206,13 @@ final class SnapshotsController {
         browserView.refresh();
         browserStage.show();
         browserStage.toFront();
+    }
+
+    /** Refreshes the visible browser after an external producer writes a snapshot. */
+    void refreshBrowser() {
+        if (browserView != null) {
+            browserView.refresh();
+        }
     }
 
     /**
@@ -259,6 +274,14 @@ final class SnapshotsController {
             browserView.refresh();
         }
         return entry;
+    }
+
+    void restoreEntry(SnapshotEntry entry) {
+        restore(entry);
+    }
+
+    void compareEntry(SnapshotEntry entry) {
+        compare(entry);
     }
 
     private void restore(SnapshotEntry entry) {

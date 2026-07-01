@@ -19,15 +19,18 @@ import com.benesquivelmusic.daw.core.persistence.journal.RecoverySummary;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationException;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchivedProject;
+import com.benesquivelmusic.daw.core.persistence.archive.ArchiveOptions;
 import com.benesquivelmusic.daw.core.persistence.archive.MissingAssetResolver;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiveSummary;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
+import com.benesquivelmusic.daw.core.persistence.snapshot.SnapshotStore;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -135,6 +138,8 @@ final class ProjectLifecycleController {
     private final Deps deps;
     /** Story 189 — engine for {@code .dawz} archive save/restore. */
     private final ProjectArchiver projectArchiver;
+    /** Story 299 — durable user-named copies of the current project document. */
+    private final SnapshotStore snapshotStore = new SnapshotStore();
     /**
      * The FX-thread marshalling seam (story 289), injected on the production
      * path and threaded into the modeless {@link TaskProgressIndicator}s and
@@ -192,6 +197,9 @@ final class ProjectLifecycleController {
      * {@code journal/} directory off the FX thread.
      */
     private Consumer<Path> discardAction = this::discardRecovery;
+
+    /** Invoked after a background named snapshot write completes. */
+    private Runnable namedSnapshotCreatedHook = () -> {};
 
     /**
      * Story 298 — opens the per-project write-ahead journal after a successful
@@ -257,6 +265,70 @@ final class ProjectLifecycleController {
 
     void onSaveProject() {
         trySaveProject();
+    }
+
+    /**
+     * Prompts for a durable named snapshot and copies the current saved
+     * {@code project.daw} into {@code snapshots/} on a virtual thread.
+     */
+    void onCreateNamedSnapshot() {
+        TextInputDialog dialog = new TextInputDialog("");
+        dialog.setTitle("Snapshot");
+        dialog.setHeaderText("Create a named snapshot of the current project.");
+        dialog.setContentText("Name:");
+        Window owner = rootPane.getScene() == null ? null : rootPane.getScene().getWindow();
+        if (owner != null) {
+            dialog.initOwner(owner);
+        }
+        ThemeManager.getDefault().applyTo(dialog.getDialogPane());
+        Optional<String> result = dialog.showAndWait();
+        if (result.isEmpty()) {
+            return;
+        }
+        createNamedSnapshot(result.get());
+    }
+
+    /**
+     * Testable/action seam for named snapshot creation. Saves first so the
+     * snapshot is exactly a copy of the project document the user would reopen.
+     */
+    void createNamedSnapshot(String name) {
+        if (!trySaveProject()) {
+            return;
+        }
+        ProjectMetadata metadata = projectManager.getCurrentProject();
+        if (metadata == null || metadata.projectPath() == null) {
+            notificationBar.show(NotificationLevel.ERROR, "No project file to snapshot");
+            return;
+        }
+        Path projectDir = metadata.projectPath();
+        String snapshotName = name == null || name.trim().isEmpty()
+                ? "Snapshot"
+                : name.trim();
+        ProjectOperationProgress.NamedOperation snapshotOp =
+                new ProjectOperationProgress.NamedOperation("Creating snapshot\u2026");
+        progress.addOperation(snapshotOp);
+
+        Thread.ofVirtual().name("daw-named-snapshot").start(() -> {
+            try {
+                SnapshotStore.Snapshot snapshot =
+                        snapshotStore.createSnapshot(projectDir, snapshotName);
+                postFx(() -> {
+                    progress.removeOperation(snapshotOp);
+                    namedSnapshotCreatedHook.run();
+                    notificationBar.show(NotificationLevel.SUCCESS,
+                            "Snapshot saved: " + snapshot.name());
+                });
+                LOG.info(() -> "Created named snapshot " + snapshot.path());
+            } catch (IOException | RuntimeException e) {
+                postFx(() -> {
+                    progress.removeOperation(snapshotOp);
+                    notificationBar.show(NotificationLevel.ERROR,
+                            "Snapshot failed: " + e.getMessage());
+                });
+                LOG.log(Level.WARNING, "Failed to create named snapshot", e);
+            }
+        });
     }
 
     /**
@@ -480,13 +552,9 @@ final class ProjectLifecycleController {
      * {@code .dawz} ZIP at a user-chosen location.
      *
      * <p>Walks every {@link AudioClip} and {@link SoundFontAssignment}
-     * referenced by the project to detect missing asset files. If any
-     * are missing, asks the user whether to abort or proceed with those
-     * assets simply omitted from the archive. The ZIP I/O runs on a
-     * background virtual thread with a modeless
-     * {@link TaskProgressIndicator} so the UI stays responsive. On
-     * success, surfaces a notification with the asset count and total
-     * size.</p>
+     * referenced by the project to detect missing asset files, asks for
+     * per-asset decisions, then runs the ZIP I/O on a background virtual
+     * thread. Progress is published to the status strip, not a modal.</p>
      */
     void onArchiveProject() {
         DawProject current = deps.project().get();
@@ -513,26 +581,18 @@ final class ProjectLifecycleController {
                     archivePath.getFileName() + ProjectArchiver.ARCHIVE_EXTENSION);
         }
 
-        // Pre-archive plan: detect missing referenced assets and let the
-        // user abort or continue. Missing assets are simply omitted by
-        // ProjectArchiver, so this dialog is purely informational.
+        long estimatedAssetBytes = estimateArchiveAssetBytes(current, ArchiveOptions.defaults());
         List<String> missing = collectMissingAssetPaths(current);
-        if (!missing.isEmpty() && !ArchiveSummaryDialog.confirmMissingAssets(missing)) {
+        Window owner = rootPane.getScene().getWindow();
+        Optional<ArchiveSummaryDialog.ArchivePlan> plan =
+                ArchiveSummaryDialog.chooseArchivePlan(missing, estimatedAssetBytes, owner);
+        if (plan.isEmpty()) {
             return;
         }
 
-        // Run the potentially expensive ZIP I/O on a background virtual
-        // thread so the JavaFX application thread stays responsive.
-        // Progress is surfaced through a modeless TaskProgressIndicator and,
-        // per story 295, registered as a named operation on the
-        // ProjectOperationProgress model (\u00a75.5) so the strip's saving state
-        // reflects the in-flight archive.
-        Window owner = rootPane.getScene().getWindow();
-        TaskProgressIndicator archiveProgress =
-                new TaskProgressIndicator(owner, "Archiving project\u2026", fxDispatcher);
-        archiveProgress.hideCancelButton();
-        archiveProgress.show();
-        archiveProgress.update(-1.0, "Writing archive\u2026");
+        // Run the potentially expensive ZIP I/O on a background virtual thread
+        // and surface progress through the strip's ProjectOperationProgress
+        // model only; the preflight dialog has already dismissed.
         ProjectOperationProgress.NamedOperation archiveOp =
                 new ProjectOperationProgress.NamedOperation("Archiving project\u2026");
         progress.addOperation(archiveOp);
@@ -543,15 +603,15 @@ final class ProjectLifecycleController {
                 .start(() -> {
                     try {
                         ProjectArchiveSummary summary = projectArchiver.saveAsArchive(
-                                current, finalArchivePath);
+                                current, finalArchivePath,
+                                plan.get().options(),
+                                plan.get().missingAssetDecisions());
                         String headline = ArchiveSummaryDialog.formatHeadline(summary);
                         postFx(() -> {
                             progress.removeOperation(archiveOp);
-                            archiveProgress.close();
                             notificationBar.show(NotificationLevel.SUCCESS,
                                     headline + " \u2014 "
                                             + ArchiveSummaryDialog.archivePathDisplay(finalArchivePath));
-                            ArchiveSummaryDialog.showSummary(summary);
                         });
                         LOG.info(() -> "Archived project to " + summary.outputPath()
                                 + " (" + summary.uniqueAssetCount() + " assets, "
@@ -559,7 +619,6 @@ final class ProjectLifecycleController {
                     } catch (IOException | IllegalArgumentException e) {
                         postFx(() -> {
                             progress.removeOperation(archiveOp);
-                            archiveProgress.close();
                             notificationBar.show(NotificationLevel.ERROR,
                                     "Archive failed: " + e.getMessage());
                         });
@@ -706,6 +765,19 @@ final class ProjectLifecycleController {
         return missing;
     }
 
+    private long estimateArchiveAssetBytes(DawProject project, ArchiveOptions options) {
+        try {
+            return projectArchiver.previewAssetSizes(project, options)
+                    .values()
+                    .stream()
+                    .mapToLong(Long::longValue)
+                    .sum();
+        } catch (IOException | RuntimeException e) {
+            LOG.log(Level.FINE, "Could not estimate archive asset bytes", e);
+            return 0L;
+        }
+    }
+
     private static boolean isRegularFile(String path) {
         try {
             return Files.isRegularFile(Paths.get(path));
@@ -841,6 +913,29 @@ final class ProjectLifecycleController {
                 () -> rollbackMigration(projectDir, report));
     }
 
+    void showMigrationHistoryForCurrentProject() {
+        ProjectMetadata current = projectManager.getCurrentProject();
+        if (current == null || current.projectPath() == null) {
+            notificationBar.show(NotificationLevel.WARNING, "No project history to show");
+            return;
+        }
+        showMigrationHistory(current.projectPath());
+    }
+
+    void showMigrationHistory(Path projectDir) {
+        if (projectDir == null) {
+            notificationBar.show(NotificationLevel.WARNING, "No project history to show");
+            return;
+        }
+        MigrationHistoryView view = new MigrationHistoryView();
+        view.setOnDiffRequested(event ->
+                showMigrationDiff(projectDir, event.getEntry()));
+        view.setOnRollbackRequested(event ->
+                rollbackMigration(projectDir, reportFor(event.getEntry()), event.getBackupPath()));
+        view.refreshFromProjectDirectory(projectDir);
+        showInOwnedStage("Migration History", view);
+    }
+
     /**
      * Rolls back to the pre-migration version. If a sibling
      * {@code project.daw.v<fromVersion>.*.bak} exists, the newest one
@@ -851,14 +946,18 @@ final class ProjectLifecycleController {
      * the original file on disk has not been overwritten yet.
      */
     void rollbackMigration(Path projectDir, MigrationReport report) {
-        Path projectFile = projectDir.resolve("project.daw");
         Optional<Path> newestBackup = findNewestBackup(projectDir, report.fromVersion());
+        rollbackMigration(projectDir, report, newestBackup.orElse(null));
+    }
+
+    void rollbackMigration(Path projectDir, MigrationReport report, Path selectedBackup) {
+        Path projectFile = projectDir.resolve("project.daw");
         try {
-            if (newestBackup.isPresent()) {
-                Files.copy(newestBackup.get(), projectFile,
+            if (selectedBackup != null && Files.isRegularFile(selectedBackup)) {
+                Files.copy(selectedBackup, projectFile,
                         StandardCopyOption.REPLACE_EXISTING,
                         StandardCopyOption.COPY_ATTRIBUTES);
-                LOG.info("Rolled back migration: restored " + newestBackup.get()
+                LOG.info("Rolled back migration: restored " + selectedBackup
                         + " over " + projectFile);
                 if (loadProjectFromPath(projectDir)) {
                     notificationBar.show(NotificationLevel.SUCCESS,
@@ -871,7 +970,7 @@ final class ProjectLifecycleController {
                 // memory, so abandoning is a complete rollback.
                 resetProjectState();
                 deps.setProject().accept(new DawProject("Untitled Project",
-                        AudioFormat.STUDIO_QUALITY));
+                    AudioFormat.STUDIO_QUALITY));
                 deps.setUndoManager().accept(new UndoManager());
                 deps.rebuildHistoryPanel().run();
                 deps.resetTrackCounters().run();
@@ -887,6 +986,102 @@ final class ProjectLifecycleController {
                     "Roll back failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to roll back migration", e);
         }
+    }
+
+    private void showMigrationDiff(Path projectDir,
+                                   MigrationHistoryView.MigrationHistoryEntry entry) {
+        Path current = projectDir.resolve("project.daw");
+        Path backup = entry.backupPath();
+        Thread.ofVirtual().name("daw-migration-diff").start(() -> {
+            try {
+                String currentText = Files.readString(current);
+                String backupText = Files.readString(backup);
+                String diff = diffText(current, backup, currentText, backupText);
+                postFx(() -> showModelessStage("Migration Diff", diffView(diff), 860, 560));
+            } catch (IOException | RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to diff migration backup " + backup, e);
+                postFx(() -> notificationBar.show(NotificationLevel.ERROR,
+                        "Diff failed: " + e.getMessage()));
+            }
+        });
+    }
+
+    private static Parent diffView(String diff) {
+        TextArea text = new TextArea(diff);
+        text.setEditable(false);
+        text.setWrapText(false);
+        text.getStyleClass().add("snapshot-preview");
+        VBox box = new VBox(8, text);
+        box.setPrefSize(860, 560);
+        VBox.setVgrow(text, javafx.scene.layout.Priority.ALWAYS);
+        return box;
+    }
+
+    private void showModelessStage(String title, Parent content, double width, double height) {
+        if (!content.getStyleClass().contains("root-pane")) {
+            content.getStyleClass().add("root-pane");
+        }
+        Scene scene = new Scene(content, width, height);
+        ThemeManager.getDefault().applyTo(scene);
+        DensityManager.getDefault().applyTo(scene);
+        Stage stage = new Stage();
+        stage.setTitle(title);
+        Window owner = rootPane.getScene() != null ? rootPane.getScene().getWindow() : null;
+        if (owner != null) {
+            stage.initOwner(owner);
+        }
+        stage.setScene(scene);
+        stage.show();
+    }
+
+    private static String diffText(Path current,
+                                   Path backup,
+                                   String currentText,
+                                   String backupText) {
+        StringBuilder out = new StringBuilder();
+        out.append("Current: ").append(current).append('\n');
+        out.append("Backup : ").append(backup).append("\n\n");
+        if (Objects.equals(currentText, backupText)) {
+            out.append("No textual differences.");
+            return out.toString();
+        }
+        List<String> currentLines = currentText.lines().toList();
+        List<String> backupLines = backupText.lines().toList();
+        int max = Math.max(currentLines.size(), backupLines.size());
+        int shown = 0;
+        for (int i = 0; i < max && shown < 200; i++) {
+            String oldLine = i < backupLines.size() ? backupLines.get(i) : "";
+            String newLine = i < currentLines.size() ? currentLines.get(i) : "";
+            if (Objects.equals(oldLine, newLine)) {
+                continue;
+            }
+            out.append("@@ line ").append(i + 1).append(" @@\n")
+                    .append("- ").append(truncateLine(oldLine)).append('\n')
+                    .append("+ ").append(truncateLine(newLine)).append("\n\n");
+            shown++;
+        }
+        if (shown >= 200) {
+            out.append("... additional differences omitted ...\n");
+        }
+        return out.toString();
+    }
+
+    private static String truncateLine(String line) {
+        return line.length() <= 240 ? line : line.substring(0, 240) + "...";
+    }
+
+    private static MigrationReport reportFor(MigrationHistoryView.MigrationHistoryEntry entry) {
+        String description = entry.bullets().isEmpty()
+                ? "historical migration"
+                : String.join("; ", entry.bullets());
+        return new MigrationReport(
+                entry.fromSchemaVersion(),
+                entry.toSchemaVersion(),
+                List.of(new MigrationReport.AppliedMigration(
+                        entry.fromSchemaVersion(),
+                        entry.toSchemaVersion(),
+                        description)),
+                entry.timestamp());
     }
 
     /**
@@ -954,6 +1149,7 @@ final class ProjectLifecycleController {
                 },
                 this::revealInFileBrowser,
                 this::clearRecentProjects);
+        hub.setOnMigrationHistory(this::showMigrationHistory);
         ref[0] = hub;
         return hub;
     }
@@ -1441,6 +1637,16 @@ final class ProjectLifecycleController {
      */
     void setDiscardAction(Consumer<Path> action) {
         this.discardAction = Objects.requireNonNull(action, "action must not be null");
+    }
+
+    /**
+     * Sets the post-write hook used by the snapshot browser to refresh after a
+     * named snapshot is created. Tests may inject a latch/spy here.
+     *
+     * @param hook hook to run on the FX thread after a successful snapshot
+     */
+    void setNamedSnapshotCreatedHook(Runnable hook) {
+        this.namedSnapshotCreatedHook = Objects.requireNonNull(hook, "hook must not be null");
     }
 
     /**

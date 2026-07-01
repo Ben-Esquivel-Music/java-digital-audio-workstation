@@ -601,6 +601,11 @@ public final class MainController {
         projectOperationProgress.setWorkspaceName("Personal");
         sessionStatusStrip = new com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip(
                 projectOperationProgress, MotionManager.getDefault());
+        sessionStatusStrip.setOnSchemaAction(() -> {
+            if (projectLifecycleController != null) {
+                projectLifecycleController.showMigrationHistoryForCurrentProject();
+            }
+        });
         if (bottomBar != null) {
             bottomBar.getChildren().add(sessionStatusStrip);
         }
@@ -1277,6 +1282,12 @@ public final class MainController {
                         .start(() -> projectJournalCoordinator.reopenFor(projectDir, outgoing));
             });
         }
+        if (snapshotsController != null && projectLifecycleController != null) {
+            projectLifecycleController.setNamedSnapshotCreatedHook(() -> {
+                snapshotsController.refreshBrowser();
+                refreshSessionManager(false);
+            });
+        }
     }
 
     /**
@@ -1396,12 +1407,14 @@ public final class MainController {
         if (current == null || current.projectPath() == null) {
             sessionManagerDock.setProjectName(projectName);
             sessionManagerDock.setSessions(java.util.List.of());
+            sessionManagerDock.setNamedSnapshots(java.util.List.of());
             return;
         }
         java.nio.file.Path projectDir = current.projectPath();
         Thread.ofVirtual().name("daw-session-manager").start(() -> {
             com.benesquivelmusic.daw.core.session.WorkingSession opened = null;
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> history;
+            java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshots;
             try {
                 if (openSession) {
                     com.benesquivelmusic.daw.core.session.SessionManager.SessionOpenResult result =
@@ -1413,8 +1426,20 @@ public final class MainController {
                 LOG.log(Level.WARNING, "Failed to load session history for " + projectDir, e);
                 history = java.util.List.of();
             }
+            try {
+                snapshots = snapshotsController == null
+                        ? java.util.List.of()
+                        : snapshotsController.service().getEntries().stream()
+                        .filter(entry -> entry.kind()
+                                == com.benesquivelmusic.daw.core.snapshot.SnapshotKind.NAMED_SNAPSHOT)
+                        .toList();
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to load named snapshots for " + projectDir, e);
+                snapshots = java.util.List.of();
+            }
             final com.benesquivelmusic.daw.core.session.WorkingSession newActiveSession = opened;
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> result = history;
+            java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshotResult = snapshots;
             postFx(() -> {
                 if (newActiveSession != null) {
                     activeSession = newActiveSession;
@@ -1422,6 +1447,7 @@ public final class MainController {
                 }
                 sessionManagerDock.setProjectName(projectName);
                 sessionManagerDock.setSessions(result);
+                sessionManagerDock.setNamedSnapshots(snapshotResult);
             });
         });
     }
@@ -2276,6 +2302,9 @@ public final class MainController {
                     @Override public void onOpenSnapshots() {
                         if (snapshotsController != null) snapshotsController.openBrowser();
                     }
+                    @Override public void onCreateNamedSnapshot() {
+                        projectLifecycleController.onCreateNamedSnapshot();
+                    }
                     @Override public void onCreateCheckpoint() {
                         if (snapshotsController != null) snapshotsController.createCheckpoint();
                     }
@@ -2496,6 +2525,23 @@ public final class MainController {
         // §4.3 — Session Manager dock. Registered on the RIGHT edge; starts
         // hidden and is populated on project open (refreshSessionManager()).
         sessionManagerDock = new SessionManagerDock();
+        sessionManagerDock.addEventHandler(
+                SessionManagerDock.SnapshotDockEvent.CREATE_REQUESTED,
+                _ -> projectLifecycleController.onCreateNamedSnapshot());
+        sessionManagerDock.addEventHandler(
+                SessionManagerDock.SnapshotDockEvent.RESTORE_REQUESTED,
+                event -> {
+                    if (snapshotsController != null) {
+                        snapshotsController.restoreEntry(event.getEntry());
+                    }
+                });
+        sessionManagerDock.addEventHandler(
+                SessionManagerDock.SnapshotDockEvent.COMPARE_REQUESTED,
+                event -> {
+                    if (snapshotsController != null) {
+                        snapshotsController.compareEntry(event.getEntry());
+                    }
+                });
         dockManager.register(sessionManagerDock);
         // Story 287 — register the eight visualization dockables.
         registerVisualizationDockables();

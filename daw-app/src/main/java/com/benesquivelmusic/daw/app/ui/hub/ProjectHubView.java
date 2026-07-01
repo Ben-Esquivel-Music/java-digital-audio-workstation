@@ -99,6 +99,7 @@ public final class ProjectHubView extends BorderPane {
     private final Consumer<Path> onReveal;
     private final Consumer<Path> onRestoreArchive;
     private final Runnable onClearRecent;
+    private Consumer<Path> onMigrationHistory = _ -> {};
 
     /** Display-order model lists (independent of the search filter). */
     private final List<ProjectCard> pinned = new ArrayList<>();
@@ -625,6 +626,10 @@ public final class ProjectHubView extends BorderPane {
         return clearRecentButton;
     }
 
+    public void setOnMigrationHistory(Consumer<Path> action) {
+        this.onMigrationHistory = Objects.requireNonNull(action, "action must not be null");
+    }
+
     /**
      * The §1.4 detail strip: the selected project's facts plus Reveal / Open.
      * A nested {@link Region} so the Hub can keep its label fields private while
@@ -640,6 +645,7 @@ public final class ProjectHubView extends BorderPane {
         private final Label sampleRateValue = newValue();
         private final Label lockValue = newValue();
         private final Button revealButton = new Button("Reveal");
+        private final Button migrationHistoryButton = new Button("Migration history");
         private final Button openButton = new Button("Open ▸");
         private final Label placeholder = new Label("Select a project");
 
@@ -650,11 +656,13 @@ public final class ProjectHubView extends BorderPane {
             placeholder.getStyleClass().add("project-hub-detail-placeholder");
 
             revealButton.getStyleClass().add("project-hub-detail-action");
+            migrationHistoryButton.getStyleClass().add("project-hub-detail-action");
             openButton.getStyleClass().add("project-hub-detail-action");
             revealButton.setOnAction(_ -> fireAction(onReveal));
+            migrationHistoryButton.setOnAction(_ -> fireAction(onMigrationHistory));
             openButton.setOnAction(_ -> fireAction(onOpen));
 
-            HBox actions = new HBox(revealButton, openButton);
+            HBox actions = new HBox(revealButton, migrationHistoryButton, openButton);
             actions.getStyleClass().add("project-hub-detail-actions");
             actions.setAlignment(Pos.CENTER_LEFT);
 
@@ -689,6 +697,7 @@ public final class ProjectHubView extends BorderPane {
             placeholder.setVisible(true);
             placeholder.setManaged(true);
             revealButton.setDisable(true);
+            migrationHistoryButton.setDisable(true);
             openButton.setDisable(true);
         }
 
@@ -707,6 +716,7 @@ public final class ProjectHubView extends BorderPane {
             placeholder.setManaged(false);
             boolean isArchive = dir != null && dir.toString().toLowerCase(Locale.ROOT).endsWith(".dawz");
             revealButton.setDisable(dir == null);
+            migrationHistoryButton.setDisable(dir == null || isArchive);
             openButton.setDisable(dir == null || isArchive);
         }
 

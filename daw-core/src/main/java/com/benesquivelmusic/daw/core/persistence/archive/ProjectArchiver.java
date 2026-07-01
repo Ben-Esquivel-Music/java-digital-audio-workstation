@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.persistence.archive;
 
+import com.benesquivelmusic.daw.core.concurrent.DawScope;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
@@ -10,7 +11,9 @@ import com.benesquivelmusic.daw.core.track.Track;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.ExecutionException;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -137,9 +141,26 @@ public final class ProjectArchiver {
     public ProjectArchiveSummary saveAsArchive(DawProject project,
                                                 Path archiveFile,
                                                 ArchiveOptions options) throws IOException {
+        return saveAsArchive(project, archiveFile, options, List.of());
+    }
+
+    /**
+     * Writes the given project and every referenced asset to a {@code .dawz}
+     * archive, applying explicit decisions for missing assets.
+     *
+     * <p>Each decision is matched by the original path string stored in the
+     * project. Missing assets without a decision are skipped, preserving the
+     * legacy behaviour.</p>
+     */
+    public ProjectArchiveSummary saveAsArchive(DawProject project,
+                                                Path archiveFile,
+                                                ArchiveOptions options,
+                                                List<ArchiveAssetDecision> missingAssetDecisions)
+            throws IOException {
         Objects.requireNonNull(project, "project");
         Objects.requireNonNull(archiveFile, "archiveFile");
         Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(missingAssetDecisions, "missingAssetDecisions");
         if (!archiveFile.getFileName().toString().toLowerCase(Locale.ROOT)
                 .endsWith(ARCHIVE_EXTENSION)) {
             throw new IllegalArgumentException(
@@ -147,7 +168,7 @@ public final class ProjectArchiver {
         }
 
         // 1. Collect all unique assets, keyed by content hash.
-        AssetPlan plan = collectAssets(project, options);
+        AssetPlan plan = collectAssets(project, options, decisionsByPath(missingAssetDecisions));
 
         // 2. Rewrite the project's asset paths to archive-relative form, save
         //    originals so we can restore them after writing.
@@ -157,7 +178,20 @@ public final class ProjectArchiver {
             // 3. Serialize project document with rewritten paths.
             String xml = serializer.serialize(project);
             byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
-            String sha = sha256Hex(xmlBytes);
+            String sha;
+            long totalAssetBytes;
+            try (var scope = DawScope.openShutdownOnFailure("archive-pack")) {
+                var projectSha = scope.fork("checksum-project", () -> sha256Hex(xmlBytes));
+                var assetBytes = scope.fork("measure-assets", plan::totalAssetBytes);
+                scope.joinAll();
+                sha = projectSha.resultNow();
+                totalAssetBytes = assetBytes.resultNow();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while preparing archive", e);
+            } catch (ExecutionException e) {
+                throw asIOException("Failed to prepare archive", e.getCause());
+            }
 
             // 4. Determine "original root" for the header.
             String originalRoot = project.getMetadata() != null
@@ -174,30 +208,30 @@ public final class ProjectArchiver {
                     sha
             );
 
-            // 5. Write the ZIP.
+            // 5. Write the ZIP to a sibling temp file, then publish with a move
+            //    so a failed pack never leaves a partial .dawz at the target.
             Path parent = archiveFile.toAbsolutePath().getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            long totalAssetBytes = 0L;
-            try (OutputStream out = Files.newOutputStream(archiveFile);
+            Path tmpArchive = tempArchivePath(archiveFile);
+            try (OutputStream out = Files.newOutputStream(tmpArchive);
                  ZipOutputStream zip = new ZipOutputStream(out)) {
 
                 writeStringEntry(zip, ArchiveHeader.FILE_NAME, headerToProperties(header));
                 writeBytesEntry(zip, ArchiveHeader.PROJECT_DOC_NAME, xmlBytes);
 
-                for (Map.Entry<String, Path> e : plan.archiveNameToSource().entrySet()) {
+                for (Map.Entry<String, ArchivePayload> e : plan.archiveNameToSource().entrySet()) {
                     String entryName = ArchiveHeader.ASSETS_DIR + "/" + e.getKey();
-                    Path src = e.getValue();
-                    long size = Files.size(src);
-                    totalAssetBytes += size;
                     zip.putNextEntry(new ZipEntry(entryName));
-                    try (InputStream in = Files.newInputStream(src)) {
-                        copy(in, zip);
-                    }
+                    e.getValue().writeTo(zip);
                     zip.closeEntry();
                 }
+            } catch (IOException | RuntimeException e) {
+                Files.deleteIfExists(tmpArchive);
+                throw e;
             }
+            moveArchiveIntoPlace(tmpArchive, archiveFile);
 
             return new ProjectArchiveSummary(
                     archiveFile, plan.uniqueAssetCount(), totalAssetBytes, xmlBytes.length);
@@ -231,34 +265,64 @@ public final class ProjectArchiver {
             resolver = MissingAssetResolver.none();
         }
 
-        Files.createDirectories(targetDir);
-        extractZip(archiveFile, targetDir);
+        boolean useStaging = !Files.exists(targetDir);
+        Path extractDir = useStaging ? restoreStagingDir(targetDir) : targetDir;
+        try {
+            Files.createDirectories(extractDir);
+            extractZip(archiveFile, extractDir);
 
-        Path headerFile = targetDir.resolve(ArchiveHeader.FILE_NAME);
-        if (!Files.isRegularFile(headerFile)) {
-            throw new IOException("Archive missing " + ArchiveHeader.FILE_NAME + ": " + archiveFile);
+            Path headerFile = extractDir.resolve(ArchiveHeader.FILE_NAME);
+            Path projectDoc = extractDir.resolve(ArchiveHeader.PROJECT_DOC_NAME);
+            if (!Files.isRegularFile(headerFile)) {
+                throw new IOException("Archive missing " + ArchiveHeader.FILE_NAME + ": " + archiveFile);
+            }
+            if (!Files.isRegularFile(projectDoc)) {
+                throw new IOException("Archive missing " + ArchiveHeader.PROJECT_DOC_NAME
+                        + ": " + archiveFile);
+            }
+
+            ArchiveHeader header;
+            byte[] docBytes;
+            String actualSha;
+            try (var scope = DawScope.openShutdownOnFailure("archive-restore")) {
+                var headerTask = scope.fork("read-header",
+                        () -> headerFromProperties(Files.readString(headerFile)));
+                var docTask = scope.fork("read-project",
+                        () -> Files.readAllBytes(projectDoc));
+                scope.joinAll();
+                header = headerTask.resultNow();
+                docBytes = docTask.resultNow();
+                actualSha = sha256Hex(docBytes);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while restoring archive", e);
+            } catch (ExecutionException e) {
+                throw asIOException("Failed to restore archive", e.getCause());
+            }
+
+            if (header.projectDocSha256() != null && !header.projectDocSha256().isBlank()
+                    && !header.projectDocSha256().equalsIgnoreCase(actualSha)) {
+                throw new IOException("Archive integrity check failed: project document SHA-256 mismatch");
+            }
+
+            if (useStaging) {
+                moveRestoreIntoPlace(extractDir, targetDir);
+                extractDir = targetDir;
+            }
+
+            DawProject project = deserializer.deserialize(new String(docBytes, StandardCharsets.UTF_8));
+
+            // Resolve relative asset paths against the extracted directory; for
+            // anything missing, give the resolver a chance to relocate it.
+            List<String> missing = resolveAssetPaths(project, extractDir, header, resolver);
+
+            return new ArchivedProject(project, extractDir, header, missing);
+        } catch (IOException | RuntimeException e) {
+            if (useStaging) {
+                deleteRecursively(extractDir);
+            }
+            throw e;
         }
-        ArchiveHeader header = headerFromProperties(Files.readString(headerFile));
-
-        Path projectDoc = targetDir.resolve(ArchiveHeader.PROJECT_DOC_NAME);
-        if (!Files.isRegularFile(projectDoc)) {
-            throw new IOException("Archive missing " + ArchiveHeader.PROJECT_DOC_NAME
-                    + ": " + archiveFile);
-        }
-        byte[] docBytes = Files.readAllBytes(projectDoc);
-        String actualSha = sha256Hex(docBytes);
-        if (header.projectDocSha256() != null && !header.projectDocSha256().isBlank()
-                && !header.projectDocSha256().equalsIgnoreCase(actualSha)) {
-            throw new IOException("Archive integrity check failed: project document SHA-256 mismatch");
-        }
-
-        DawProject project = deserializer.deserialize(new String(docBytes, StandardCharsets.UTF_8));
-
-        // Resolve relative asset paths against the extracted directory; for
-        // anything missing, give the resolver a chance to relocate it.
-        List<String> missing = resolveAssetPaths(project, targetDir, header, resolver);
-
-        return new ArchivedProject(project, targetDir, header, missing);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -347,29 +411,73 @@ public final class ProjectArchiver {
     }
 
     /** Plan stage: hash assets, deduplicate, and assign archive-relative names. */
-    private AssetPlan collectAssets(DawProject project, ArchiveOptions options) throws IOException {
+    private AssetPlan collectAssets(DawProject project,
+                                    ArchiveOptions options,
+                                    Map<String, ArchiveAssetDecision> missingDecisions)
+            throws IOException {
         List<AssetRef> refs = collectRefs(project, options);
         Map<String, String> hashToArchiveName = new LinkedHashMap<>();
-        Map<String, Path> archiveNameToSource = new LinkedHashMap<>();
+        Map<String, ArchivePayload> archiveNameToSource = new LinkedHashMap<>();
         Map<AssetRef, String> refToArchivePath = new LinkedHashMap<>();
 
         for (AssetRef ref : refs) {
             Path abs = ref.absolutePath();
-            if (abs == null || !Files.isRegularFile(abs)) {
+            if (abs != null && Files.isRegularFile(abs)) {
+                includeFilePayload(ref, abs, hashToArchiveName,
+                        archiveNameToSource, refToArchivePath);
+                continue;
+            }
+
+            ArchiveAssetDecision decision = missingDecisions.get(ref.currentPath());
+            if (decision == null || decision.action() == ArchiveAssetDecision.Action.SKIP) {
                 // Unresolvable on disk — keep its existing path verbatim;
                 // openArchive will hand it to the missing-asset resolver.
                 continue;
             }
-            String hash = sha256Hex(abs);
-            String archiveName = hashToArchiveName.get(hash);
-            if (archiveName == null) {
-                archiveName = hash + "_" + sanitize(abs.getFileName().toString());
-                hashToArchiveName.put(hash, archiveName);
-                archiveNameToSource.put(archiveName, abs);
+            switch (decision.action()) {
+                case LOCATE -> {
+                    Path located = decision.locatedPath();
+                    if (!Files.isRegularFile(located)) {
+                        throw new IOException("Located asset does not exist: " + located);
+                    }
+                    includeFilePayload(ref, located, hashToArchiveName,
+                            archiveNameToSource, refToArchivePath);
+                }
+                case USE_STUB -> includeStubPayload(ref,
+                        archiveNameToSource, refToArchivePath);
+                case SKIP -> {
+                    // handled above
+                }
             }
-            refToArchivePath.put(ref, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
         }
         return new AssetPlan(hashToArchiveName, archiveNameToSource, refToArchivePath);
+    }
+
+    private static void includeFilePayload(AssetRef ref,
+                                           Path source,
+                                           Map<String, String> hashToArchiveName,
+                                           Map<String, ArchivePayload> archiveNameToSource,
+                                           Map<AssetRef, String> refToArchivePath)
+            throws IOException {
+        String hash = sha256Hex(source);
+        String archiveName = hashToArchiveName.get(hash);
+        if (archiveName == null) {
+            archiveName = hash + "_" + sanitize(source.getFileName().toString());
+            hashToArchiveName.put(hash, archiveName);
+            archiveNameToSource.put(archiveName, new FilePayload(source));
+        }
+        refToArchivePath.put(ref, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
+    }
+
+    private static void includeStubPayload(AssetRef ref,
+                                           Map<String, ArchivePayload> archiveNameToSource,
+                                           Map<AssetRef, String> refToArchivePath) {
+        String original = ref.currentPath();
+        byte[] bytes = stubBytes(original);
+        String hash = sha256Hex(bytes);
+        String archiveName = hash + "_" + sanitize(basename(original));
+        archiveNameToSource.putIfAbsent(archiveName, new BytesPayload(bytes));
+        refToArchivePath.put(ref, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
     }
 
     private Map<AssetRef, String> applyArchivePaths(DawProject project, AssetPlan plan) {
@@ -598,6 +706,79 @@ public final class ProjectArchiver {
         return name.replaceAll("[^a-zA-Z0-9._\\-]", "_");
     }
 
+    private static String basename(String path) {
+        if (path == null || path.isBlank()) {
+            return "missing-asset.stub";
+        }
+        try {
+            Path p = Paths.get(path);
+            Path name = p.getFileName();
+            return name == null ? "missing-asset.stub" : name.toString();
+        } catch (RuntimeException e) {
+            return "missing-asset.stub";
+        }
+    }
+
+    private static byte[] stubBytes(String originalPath) {
+        String original = originalPath == null ? "" : originalPath;
+        return ("DAW missing asset stub\noriginal=" + original + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static Map<String, ArchiveAssetDecision> decisionsByPath(
+            List<ArchiveAssetDecision> decisions) {
+        Map<String, ArchiveAssetDecision> byPath = new LinkedHashMap<>();
+        for (ArchiveAssetDecision decision : decisions) {
+            byPath.put(decision.originalPath(), decision);
+        }
+        return byPath;
+    }
+
+    private static Path tempArchivePath(Path archiveFile) {
+        Path fileName = archiveFile.getFileName();
+        String base = fileName == null ? "archive" : fileName.toString();
+        return archiveFile.resolveSibling("." + base + ".tmp");
+    }
+
+    private static void moveArchiveIntoPlace(Path tmpArchive, Path archiveFile) throws IOException {
+        try {
+            Files.move(tmpArchive, archiveFile,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tmpArchive, archiveFile, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static Path restoreStagingDir(Path targetDir) throws IOException {
+        Path parent = targetDir.toAbsolutePath().getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Path name = targetDir.getFileName();
+        String base = name == null ? "restore" : name.toString();
+        Path staging = (parent == null ? Path.of(".") : parent)
+                .resolve("." + base + ".restoring.tmp");
+        if (Files.exists(staging)) {
+            deleteRecursively(staging);
+        }
+        return staging;
+    }
+
+    private static void moveRestoreIntoPlace(Path stagingDir, Path targetDir) throws IOException {
+        try {
+            Files.move(stagingDir, targetDir, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(stagingDir, targetDir);
+        }
+    }
+
+    private static IOException asIOException(String message, Throwable cause) {
+        return cause instanceof IOException io
+                ? io
+                : new IOException(message + ": " + cause.getMessage(), cause);
+    }
+
     /**
      * Given an archive-relative path of the form
      * {@code assets/<sha256>_<originalName>}, returns the original basename
@@ -684,12 +865,62 @@ public final class ProjectArchiver {
         }
     }
 
+    private interface ArchivePayload {
+        long size() throws IOException;
+        void writeTo(OutputStream out) throws IOException;
+    }
+
+    private record FilePayload(Path path) implements ArchivePayload {
+        private FilePayload {
+            Objects.requireNonNull(path, "path must not be null");
+        }
+
+        @Override
+        public long size() throws IOException {
+            return Files.size(path);
+        }
+
+        @Override
+        public void writeTo(OutputStream out) throws IOException {
+            try (InputStream in = Files.newInputStream(path)) {
+                copy(in, out);
+            }
+        }
+    }
+
+    private record BytesPayload(byte[] bytes) implements ArchivePayload {
+        private BytesPayload {
+            Objects.requireNonNull(bytes, "bytes must not be null");
+            bytes = bytes.clone();
+        }
+
+        @Override
+        public long size() {
+            return bytes.length;
+        }
+
+        @Override
+        public void writeTo(OutputStream out) throws IOException {
+            try (InputStream in = new ByteArrayInputStream(bytes)) {
+                copy(in, out);
+            }
+        }
+    }
+
     private record AssetPlan(
             Map<String, String> hashToArchiveName,
-            Map<String, Path> archiveNameToSource,
+            Map<String, ArchivePayload> archiveNameToSource,
             Map<AssetRef, String> refToArchivePath
     ) {
         int uniqueAssetCount() { return archiveNameToSource.size(); }
+
+        long totalAssetBytes() throws IOException {
+            long total = 0L;
+            for (ArchivePayload payload : archiveNameToSource.values()) {
+                total += payload.size();
+            }
+            return total;
+        }
     }
 
     // Exposed for tests — listing assets without committing the archive.

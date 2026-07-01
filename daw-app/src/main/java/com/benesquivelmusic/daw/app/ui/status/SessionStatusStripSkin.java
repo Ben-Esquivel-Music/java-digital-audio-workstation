@@ -106,6 +106,8 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         overflowPopup.getContent().add(overflowContent);
         overflowPopup.setAutoHide(true);
         overflowButton.setOnAction(_ -> toggleOverflowPopup());
+        schemaCell.setFocusTraversable(true);
+        schemaCell.setOnMouseClicked(_ -> getSkinnable().getOnSchemaAction().run());
 
         bindCells();
         installTooltips();

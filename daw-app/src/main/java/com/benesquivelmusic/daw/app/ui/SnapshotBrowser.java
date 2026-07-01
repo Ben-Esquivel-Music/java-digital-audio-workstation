@@ -289,6 +289,7 @@ public final class SnapshotBrowser extends VBox {
     private static String iconLabel(SnapshotKind kind) {
         return switch (kind) {
             case AUTOSAVE -> "AUTO";
+            case NAMED_SNAPSHOT -> "SNAP";
             case USER_CHECKPOINT -> "USER";
             case UNDO_POINT -> "UNDO";
         };
@@ -321,6 +322,7 @@ public final class SnapshotBrowser extends VBox {
         private static DawIcon iconFor(SnapshotKind kind) {
             return switch (kind) {
                 case AUTOSAVE -> DawIcon.CLOCK;
+                case NAMED_SNAPSHOT -> DawIcon.HISTORY;
                 case USER_CHECKPOINT -> DawIcon.HISTORY;
                 case UNDO_POINT -> DawIcon.TIMER;
             };

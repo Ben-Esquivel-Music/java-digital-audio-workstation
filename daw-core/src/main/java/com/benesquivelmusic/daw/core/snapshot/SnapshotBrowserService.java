@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.snapshot;
 
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.snapshot.SnapshotStore;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
@@ -63,8 +64,10 @@ public final class SnapshotBrowserService {
     private final List<SnapshotEntry> userCheckpoints = new ArrayList<>();
     private final List<SnapshotEntry> undoSnapshots = new ArrayList<>();
     private final List<Path> autosaveDirectories = new CopyOnWriteArrayList<>();
+    private final List<Path> namedSnapshotDirectories = new CopyOnWriteArrayList<>();
     private final Duration autosaveRetention;
     private final Clock clock;
+    private final SnapshotStore snapshotStore;
 
     /** Creates a service with the default 7-day autosave retention. */
     public SnapshotBrowserService() {
@@ -81,6 +84,7 @@ public final class SnapshotBrowserService {
         this.autosaveRetention = Objects.requireNonNull(autosaveRetention,
                 "autosaveRetention must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.snapshotStore = new SnapshotStore(clock);
         if (autosaveRetention.isNegative() || autosaveRetention.isZero()) {
             throw new IllegalArgumentException(
                     "autosaveRetention must be positive: " + autosaveRetention);
@@ -109,6 +113,30 @@ public final class SnapshotBrowserService {
     /** Returns the registered autosave directories. */
     public List<Path> getAutosaveDirectories() {
         return List.copyOf(autosaveDirectories);
+    }
+
+    /**
+     * Registers a directory whose {@code *.daw} files are durable, user-named
+     * snapshots created by {@link SnapshotStore}. Named snapshots are never
+     * touched by autosave purge operations.
+     *
+     * @param directory the snapshot directory to watch
+     */
+    public void addNamedSnapshotDirectory(Path directory) {
+        Objects.requireNonNull(directory, "directory must not be null");
+        if (!namedSnapshotDirectories.contains(directory)) {
+            namedSnapshotDirectories.add(directory);
+        }
+    }
+
+    /** Removes a previously registered named-snapshot directory. */
+    public void removeNamedSnapshotDirectory(Path directory) {
+        namedSnapshotDirectories.remove(directory);
+    }
+
+    /** Returns the registered named-snapshot directories. */
+    public List<Path> getNamedSnapshotDirectories() {
+        return List.copyOf(namedSnapshotDirectories);
     }
 
     /**
@@ -260,6 +288,7 @@ public final class SnapshotBrowserService {
         all.addAll(userCheckpoints);
         all.addAll(undoSnapshots);
         all.addAll(loadAutosaves());
+        all.addAll(loadNamedSnapshots());
         all.sort(Comparator.comparing(SnapshotEntry::timestamp));
         return Collections.unmodifiableList(all);
     }
@@ -302,6 +331,37 @@ public final class SnapshotBrowserService {
                 }
             } catch (IOException ignored) {
                 // best-effort listing
+            }
+        }
+        return list;
+    }
+
+    private List<SnapshotEntry> loadNamedSnapshots() {
+        List<SnapshotEntry> list = new ArrayList<>();
+        for (Path dir : namedSnapshotDirectories) {
+            List<SnapshotStore.Snapshot> snapshots;
+            try {
+                snapshots = snapshotStore.listSnapshotDirectory(dir);
+            } catch (IOException e) {
+                continue;
+            }
+            for (SnapshotStore.Snapshot snapshot : snapshots) {
+                Path filePath = snapshot.path();
+                String idSuffix = Integer.toHexString(
+                        filePath.toAbsolutePath().toString().hashCode());
+                list.add(new SnapshotEntry(
+                        "named-" + idSuffix + "-" + filePath.getFileName(),
+                        snapshot.timestamp(),
+                        SnapshotKind.NAMED_SNAPSHOT,
+                        snapshot.name(),
+                        filePath.getFileName() + " (" + snapshot.sizeBytes() + " bytes)",
+                        () -> {
+                            try {
+                                return Files.readString(filePath);
+                            } catch (IOException e) {
+                                throw new UncheckedIOException(e);
+                            }
+                        }));
             }
         }
         return list;
