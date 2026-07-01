@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.persistence.migration.ProjectMigration;
@@ -73,9 +74,31 @@ public final class MigrationHistoryView extends VBox {
     private final ObservableList<MigrationHistoryEntry> items =
             FXCollections.observableArrayList();
     private final ListView<MigrationHistoryEntry> listView = new ListView<>(items);
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path. May be {@code null} in a pure-unit context (the compatibility
+     * constructors default it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
 
     /** Creates an empty migration history view. */
     public MigrationHistoryView() {
+        this(FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates an empty migration history view with an explicit FX-thread
+     * marshalling seam (story 289).
+     *
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public MigrationHistoryView(FxDispatcher fxDispatcher) {
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
+
         getStyleClass().addAll("browser-panel", "migration-history-view");
         setAccessibleRoleDescription("Migration history");
         setPrefWidth(DEFAULT_WIDTH);
@@ -97,7 +120,21 @@ public final class MigrationHistoryView extends VBox {
 
     /** Creates a migration history view seeded with the supplied entries. */
     public MigrationHistoryView(List<MigrationHistoryEntry> entries) {
-        this();
+        this(entries, FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a migration history view seeded with the supplied entries and an
+     * explicit FX-thread marshalling seam (story 289).
+     *
+     * @param entries      initial entries to display
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public MigrationHistoryView(
+            List<MigrationHistoryEntry> entries,
+            FxDispatcher fxDispatcher) {
+        this(fxDispatcher);
         setEntries(entries);
     }
 
@@ -121,8 +158,16 @@ public final class MigrationHistoryView extends VBox {
         if (Platform.isFxApplicationThread()) {
             doSetEntries(copy);
         } else {
-            Platform.runLater(() -> doSetEntries(copy));
+            postFx(() -> doSetEntries(copy));
         }
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam.
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     /**

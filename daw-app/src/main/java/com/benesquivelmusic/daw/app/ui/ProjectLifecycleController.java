@@ -927,7 +927,7 @@ final class ProjectLifecycleController {
             notificationBar.show(NotificationLevel.WARNING, "No project history to show");
             return;
         }
-        MigrationHistoryView view = new MigrationHistoryView();
+        MigrationHistoryView view = new MigrationHistoryView(fxDispatcher);
         view.setOnDiffRequested(event ->
                 showMigrationDiff(projectDir, event.getEntry()));
         view.setOnRollbackRequested(event ->
