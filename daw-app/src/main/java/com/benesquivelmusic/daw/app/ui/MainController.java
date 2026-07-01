@@ -1615,6 +1615,10 @@ public final class MainController {
         // Story 294 — direct functional deps replace PluginViewController.Host (§4.2/§9).
         // project/sampleRate/bufferSize read the swappable project field live; dirty
         // routes through DawProject.markDirty() (the §1.2 "one dirty bit").
+        // Story 301 — the three contract-editor services: the Workshop pane
+        // host, a live supervisor read (pluginSupervisor is constructed after
+        // this controller in initializePluginFaultIsolation), and the fault-log
+        // opener behind the §6.6 banner's [ⓘ] action.
         pluginViewController = new PluginViewController(new PluginViewController.Deps(
                 () -> project.getFormat().sampleRate(),
                 () -> project.getFormat().bufferSize(),
@@ -1623,7 +1627,14 @@ public final class MainController {
                 () -> viewNavigationController.switchView(DawView.MASTERING),
                 this::status,
                 (level, message) -> notificationBar.show(level, message),
-                this::showTelemetryPanel));
+                this::showTelemetryPanel,
+                (segments, node) -> viewNavigationController.showEditorInWorkshopPane(segments, node),
+                () -> pluginSupervisor,
+                () -> {
+                    if (pluginFaultUiController != null) {
+                        pluginFaultUiController.openFaultLog();
+                    }
+                }));
     }
 
     /**
@@ -2324,6 +2335,35 @@ public final class MainController {
                     @Override public void onOpenBackupSettings() { MainController.this.onOpenBackupSettings(); }
                     @Override public void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass) {
                         pluginViewController.onActivateBuiltInPlugin(pluginClass);
+                    }
+                    // Story 301 §8.2.1 — Plugins ▸ External submenu: list the
+                    // registry's loaded third-party plugins and route an
+                    // activation into the contract-driven editor path.
+                    @Override public List<ExternalPluginMenuItem> externalPluginMenuItems() {
+                        var items = new java.util.ArrayList<ExternalPluginMenuItem>();
+                        for (var loaded : pluginRegistry.getLoadedPlugins().entrySet()) {
+                            String displayName;
+                            try {
+                                displayName = loaded.getValue().getDescriptor().name();
+                            } catch (RuntimeException e) {
+                                // Defensive — a third-party descriptor read can
+                                // throw; the menu must still build.
+                                displayName = loaded.getKey().className();
+                            }
+                            items.add(new ExternalPluginMenuItem(loaded.getKey(), displayName));
+                        }
+                        return items;
+                    }
+                    @Override public void onActivateExternalPlugin(
+                            com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry entry) {
+                        com.benesquivelmusic.daw.sdk.plugin.DawPlugin plugin =
+                                pluginRegistry.getPlugin(entry);
+                        if (plugin == null) {
+                            notificationBar.show(NotificationLevel.ERROR,
+                                    "Plugin is not loaded: " + entry.className());
+                            return;
+                        }
+                        pluginViewController.onActivateExternalPlugin(plugin);
                     }
                     @Override public void onSwitchView(DawView view) { viewNavigationController.switchView(view); }
                     @Override public void onToggleBrowser() {

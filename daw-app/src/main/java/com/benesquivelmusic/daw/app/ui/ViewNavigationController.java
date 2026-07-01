@@ -15,6 +15,7 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.layout.BorderPane;
 
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.logging.Logger;
@@ -337,6 +338,33 @@ final class ViewNavigationController {
             onViewChanged.run();
         }
         LOG.fine(() -> "Switched to view: " + view);
+    }
+
+    /**
+     * Story 301 §8.2.2 — hosts a contract-driven plugin editor in the
+     * Workshop right pane's stable-identity {@code PluginViewContainer}
+     * (the story-281 invariant: switching the focused plugin swaps the
+     * container's inner content, never the container itself). A non-null
+     * {@code editorNode} first switches to (and lazily builds) the Workshop
+     * view so the editor is visible immediately; clearing ({@code null})
+     * only empties the focused-plugin slot and does <em>not</em> force a
+     * view switch — closing an editor from another view must not yank the
+     * user into Workshop.
+     *
+     * @param segments   the §6.1 breadcrumb segments (e.g. vendor ▸ plugin
+     *                   name); may be {@code null}/empty to clear the crumb
+     * @param editorNode the framed editor to focus, or {@code null} to clear
+     *                   the pane back to its empty placeholder
+     */
+    public void showEditorInWorkshopPane(List<String> segments, Node editorNode) {
+        if (editorNode == null) {
+            if (workshopView != null) {
+                workshopView.clearFocusedPlugin();
+            }
+            return;
+        }
+        switchView(DawView.WORKSHOP);
+        workshopView.setFocusedPlugin(segments, editorNode);
     }
 
     /**

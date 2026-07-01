@@ -6,8 +6,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
 /**
@@ -16,7 +18,11 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
  * Design Book §4.6). It is the enforcement seam behind Principle §2.6: a
  * plugin's editor cannot reach its {@code AudioProcessor} directly — both the
  * FX side (a knob turn) and the audio side (an internal envelope follower)
- * talk only to this store.
+ * talk only to this store. Alongside parameter values the store also carries
+ * the plugin's audio-side meter snapshot (§6.4): the processor
+ * {@linkplain #publishMeters(PluginMeterSnapshot) publishes} its instantaneous
+ * reading and the host taps it via {@link #meters()} to drive the always-on
+ * I/O meters in the editor chrome.
  *
  * <h2>Coherence and threading (§4.7)</h2>
  * <ul>
@@ -31,6 +37,12 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
  *       {@link RealTimeSafe}: it clamps and publishes, then posts onto a
  *       <em>separate</em> ring the FX thread drains via
  *       {@link #drainToUi(IndexConsumer)} for display update.</li>
+ *   <li>The audio-side meter snapshot (§6.4) is a single
+ *       {@link AtomicReference} the audio thread {@linkplain
+ *       #publishMeters(PluginMeterSnapshot) publishes} into and the FX thread
+ *       reads via {@link #meters()}. Latest-wins with no ring: meters are a
+ *       continuously refreshed level, so a missed intermediate frame carries
+ *       no information.</li>
  * </ul>
  *
  * <p>The rings carry only the changed parameter <em>index</em>; the value is
@@ -64,6 +76,8 @@ public final class PluginParameterStore {
     private final AtomicLongArray values;
     private final IntRing uiToAudio;
     private final IntRing audioToUi;
+    private final AtomicReference<PluginMeterSnapshot> meterSnapshot =
+            new AtomicReference<>(PluginMeterSnapshot.SILENT);
 
     /**
      * Creates a store for the given ordered parameter list. Each parameter's
@@ -233,6 +247,35 @@ public final class PluginParameterStore {
      */
     public int drainToUi(IndexConsumer sink) {
         return audioToUi.drain(sink);
+    }
+
+    /**
+     * Audio-thread publish of the plugin's instantaneous meter reading (§6.4).
+     * The plugin's processor allocates the immutable
+     * {@link PluginMeterSnapshot}; the store only publishes the reference — no
+     * locking, no blocking, no allocation inside the store. Latest-wins and
+     * there is no ring: meters are a continuously refreshed level, so a missed
+     * intermediate frame is meaningless — the FX side always reads the newest
+     * snapshot via {@link #meters()}.
+     *
+     * @param snapshot the instantaneous meter reading; must not be {@code null}
+     */
+    @RealTimeSafe
+    public void publishMeters(PluginMeterSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot must not be null");
+        meterSnapshot.set(snapshot);
+    }
+
+    /**
+     * FX-side read of the latest audio-side meter snapshot (§6.4). The host
+     * taps this to drive the always-on I/O meters in the editor chrome.
+     *
+     * @return the latest published snapshot; never {@code null} —
+     *         {@link PluginMeterSnapshot#SILENT} until the first
+     *         {@link #publishMeters(PluginMeterSnapshot)}
+     */
+    public PluginMeterSnapshot meters() {
+        return meterSnapshot.get();
     }
 
     @RealTimeSafe
