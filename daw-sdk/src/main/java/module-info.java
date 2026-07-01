@@ -34,8 +34,8 @@ module daw.sdk {
     // JavaFX dependency: Panel#createPanel returns a javafx.scene.layout.Region,
     // Theme exposes javafx.scene.paint.Color, CanvasSurface a GraphicsContext,
     // EditorContext a javafx.beans ObservableValue (Plugin View Design Book §9
-    // rejection #3). Non-transitive on purpose so daw-core stays JavaFX-free.
-    requires javafx.graphics;
+    // rejection #3). Non-transitive so downstream modules do not automatically
+    // read `javafx.graphics`; it is still required to resolve daw.sdk at runtime.
 
     // ---------------------------------------------------------------------
     // Public API + SPI exports
