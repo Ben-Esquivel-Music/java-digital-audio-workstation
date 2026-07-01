@@ -265,6 +265,10 @@ public final class PluginManifestReader {
                         default -> throw new IllegalArgumentException("bad escape \\" + e);
                     }
                 } else {
+                    if (c < 0x20) {
+                        throw new IllegalArgumentException(
+                                "unescaped control character in string at index " + (i - 1));
+                    }
                     sb.append(c);
                 }
             }
