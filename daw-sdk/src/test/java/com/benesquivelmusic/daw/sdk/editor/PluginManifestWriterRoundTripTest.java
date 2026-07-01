@@ -46,6 +46,20 @@ class PluginManifestWriterRoundTripTest {
     }
 
     @Test
+    void omitsIconHintKeyForWhitespaceOnlyHint() {
+        PluginManifest manifest = new PluginManifest(
+                "com.acme.SynthPlugin",
+                new PluginDescriptor(
+                        "com.acme.synth", "Acme Synth", "1.0.0", "Acme Audio",
+                        PluginType.INSTRUMENT, PluginCategory.UTILITY, "  \t"));
+
+        String json = writer.toJson(manifest);
+
+        assertThat(json).doesNotContain("iconHint");
+        assertThat(reader.parse(json).manifest().orElseThrow().descriptor().iconHint()).isEmpty();
+    }
+
+    @Test
     void escapesSpecialCharacters() {
         PluginManifest manifest = new PluginManifest(
                 "com.acme.WeirdPlugin",

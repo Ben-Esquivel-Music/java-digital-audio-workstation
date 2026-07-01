@@ -17,7 +17,8 @@ import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
  *                 constructor
  * @param iconHint a stable iconographic hint the host maps to its own icon pack
  *                 (e.g. {@code "compressor"}, {@code "reverb"}); the empty string
- *                 when the plugin declares none (§4.4)
+ *                 when the plugin declares none (§4.4). A blank or whitespace-only
+ *                 hint is normalised to the empty string.
  */
 public record PluginDescriptor(
         String id,
@@ -36,6 +37,10 @@ public record PluginDescriptor(
         Objects.requireNonNull(type, "type must not be null");
         Objects.requireNonNull(category, "category must not be null");
         Objects.requireNonNull(iconHint, "iconHint must not be null");
+
+        if (iconHint.isBlank()) {
+            iconHint = "";
+        }
 
         if (id.isBlank()) {
             throw new IllegalArgumentException("id must not be blank");
