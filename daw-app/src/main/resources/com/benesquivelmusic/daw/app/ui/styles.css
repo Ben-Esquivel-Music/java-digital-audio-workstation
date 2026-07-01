@@ -2484,15 +2484,17 @@
     -fx-alignment: CENTER;
 }
 
-/* Parameter name above the knob — muted small-caps feel (§6.2). */
-.parameter-grid-cell-name {
+/* Parameter name above the knob — muted small-caps feel (§6.2).
+ * Scoped under .parameter-grid: PluginParameterEditorPanel reuses the
+ * bare parameter-name/parameter-value classes and must not pick this up. */
+.parameter-grid .parameter-name {
     -fx-text-fill: -text-mute;
     -fx-font-size: 10px;
     -fx-font-weight: bold;
 }
 
 /* Formatted value beneath the knob (§6.2). */
-.parameter-grid-cell-value {
+.parameter-grid .parameter-value {
     -fx-text-fill: -text-hi;
     -fx-font-size: 11px;
 }
