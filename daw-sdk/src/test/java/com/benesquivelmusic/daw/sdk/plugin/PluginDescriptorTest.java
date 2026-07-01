@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.sdk.plugin;
 
 import org.junit.jupiter.api.Test;
 
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -74,6 +76,14 @@ class PluginDescriptorTest {
             PluginDescriptor descriptor = new PluginDescriptor("id", "Test", "1.0", "Vendor", type);
             assertThat(descriptor.type()).isEqualTo(type);
         }
+    }
+
+    @Test
+    void shouldNormalizeWhitespaceOnlyIconHintToEmpty() {
+        PluginDescriptor descriptor = new PluginDescriptor(
+                "id", "Name", "1.0", "Vendor", PluginType.EFFECT, PluginCategory.UTILITY, "  \t");
+
+        assertThat(descriptor.iconHint()).isEmpty();
     }
 
     @Test

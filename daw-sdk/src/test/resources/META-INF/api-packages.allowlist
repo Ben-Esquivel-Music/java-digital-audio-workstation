@@ -14,6 +14,7 @@ com.benesquivelmusic.daw.sdk.annotation
 com.benesquivelmusic.daw.sdk.audio
 com.benesquivelmusic.daw.sdk.audio.performance
 com.benesquivelmusic.daw.sdk.edit
+com.benesquivelmusic.daw.sdk.editor
 com.benesquivelmusic.daw.sdk.event
 com.benesquivelmusic.daw.sdk.export
 com.benesquivelmusic.daw.sdk.mastering
