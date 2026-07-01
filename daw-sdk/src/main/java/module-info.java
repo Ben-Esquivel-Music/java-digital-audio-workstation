@@ -36,6 +36,7 @@ module daw.sdk {
     // EditorContext a javafx.beans ObservableValue (Plugin View Design Book §9
     // rejection #3). Non-transitive so downstream modules do not automatically
     // read `javafx.graphics`; it is still required to resolve daw.sdk at runtime.
+    requires javafx.graphics;
 
     // ---------------------------------------------------------------------
     // Public API + SPI exports
