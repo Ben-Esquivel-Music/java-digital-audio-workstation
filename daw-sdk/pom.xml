@@ -16,4 +16,13 @@
 
     <name>DAW SDK</name>
     <description>Public SDK for developing plugins for the Digital Audio Workstation</description>
+
+    <dependencies>
+        <!-- The editor SDK package returns/consumes JavaFX types (Region, Color,
+             GraphicsContext, ObservableValue). Version managed by daw-parent. -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-graphics</artifactId>
+        </dependency>
+    </dependencies>
 </project>

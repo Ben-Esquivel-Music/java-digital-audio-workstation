@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.sdk.plugin;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.EditorHints;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 
 import java.util.List;
 import java.util.Optional;
@@ -93,6 +95,36 @@ public interface DawPlugin {
      */
     default List<PluginParameter> getParameters() {
         return List.of();
+    }
+
+    /**
+     * Returns the factory that produces this plugin's editor surface (Plugin
+     * View Design Book §2.1, §4.2). The host calls this on the JavaFX
+     * Application Thread when the user focuses the plugin, and frames the result
+     * in its own chrome (breadcrumb, A/B, preset bar, meters, fault banner) — the
+     * plugin owns only the surface between them (§2.2).
+     *
+     * <p>The default is <em>backwards-compatible</em>: a plugin that overrides
+     * only {@link #getParameters()} gets a host-generated parameter-grid editor
+     * ({@link PluginEditorFactory.Declarative}) for free; a plugin that overrides
+     * nothing gets an empty declarative editor (still better than the silence of
+     * the pre-{@code editorFactory} SDK). A plugin that wants a custom GUI
+     * overrides this method to return a {@link PluginEditorFactory.Panel} (ship a
+     * {@link javafx.scene.layout.Region}) or a {@link PluginEditorFactory.Canvas}
+     * (draw into a host-owned surface).</p>
+     *
+     * <p><strong>Threading (§4.7):</strong> this method and the panel/canvas
+     * callbacks it leads to run on the FX thread, each inside the host's fault
+     * harness (§2.7) — a factory that throws degrades to a recoverable
+     * {@link PluginEditorFactory.Faulted} editor rather than crashing the host.
+     * The editor never touches the {@code AudioProcessor} directly; it reads and
+     * writes parameters through the host's real-time-safe
+     * {@link com.benesquivelmusic.daw.sdk.editor.PluginParameterStore} (§2.6).</p>
+     *
+     * @return this plugin's editor factory, never {@code null}
+     */
+    default PluginEditorFactory editorFactory() {
+        return new PluginEditorFactory.Declarative(getParameters(), EditorHints.compact());
     }
 
     /**

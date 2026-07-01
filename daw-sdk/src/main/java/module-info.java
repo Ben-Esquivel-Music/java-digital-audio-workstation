@@ -30,6 +30,13 @@ module daw.sdk {
     requires transitive java.desktop;
     requires java.logging;
 
+    // The editor package (com.benesquivelmusic.daw.sdk.editor) takes a hard
+    // JavaFX dependency: Panel#createPanel returns a javafx.scene.layout.Region,
+    // Theme exposes javafx.scene.paint.Color, CanvasSurface a GraphicsContext,
+    // EditorContext a javafx.beans ObservableValue (Plugin View Design Book §9
+    // rejection #3). Non-transitive on purpose so daw-core stays JavaFX-free.
+    requires javafx.graphics;
+
     // ---------------------------------------------------------------------
     // Public API + SPI exports
     //
@@ -48,6 +55,7 @@ module daw.sdk {
     exports com.benesquivelmusic.daw.sdk.audio;
     exports com.benesquivelmusic.daw.sdk.audio.performance;
     exports com.benesquivelmusic.daw.sdk.edit;
+    exports com.benesquivelmusic.daw.sdk.editor;
     exports com.benesquivelmusic.daw.sdk.event;
     exports com.benesquivelmusic.daw.sdk.export;
     exports com.benesquivelmusic.daw.sdk.mastering;
