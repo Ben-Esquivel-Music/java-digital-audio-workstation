@@ -36,9 +36,9 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
  * <p>The rings carry only the changed parameter <em>index</em>; the value is
  * read back from the coherent atomic array by the draining side. Both rings are
  * fixed-capacity and non-blocking: if a producer outruns its consumer the
- * oldest pending notification is dropped, never blocked — the atomic array
- * still holds the latest value, so a dropped notification only delays a
- * downstream apply / repaint until the next change. This keeps the audio-thread
+ * incoming notification is dropped, never blocked — the atomic array still
+ * holds the latest value, so a dropped notification only delays a downstream
+ * apply / repaint until the next change. This keeps the audio-thread
  * path free of allocation, locking and unbounded work.</p>
  *
  * <p>Indices are dense ({@code 0 .. parameterCount()-1}) in the order the store
