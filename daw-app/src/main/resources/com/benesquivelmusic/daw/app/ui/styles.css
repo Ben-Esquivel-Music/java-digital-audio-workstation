@@ -2355,3 +2355,146 @@
     -fx-text-fill: -text-mute;
     -fx-font-size: 12px;
 }
+
+/* ── Plugin editor frame (story 301, Plugin View Design Book §5.A/§5.D, §6) ──
+ * Host-owned chrome around every contract-driven plugin editor: the §6.1
+ * breadcrumb header, §6.5 A/B compare bar, §6.6 fault banner, clipped §6.3
+ * body host and §6.4 preset/meter footer. All spacing on the 4 px grid;
+ * pure token references — no inline colours (TokenValidationTest).
+ *
+ * THIS RULE also forwards the documented .root-pane role tokens into the
+ * frame's -editor-frame-* styleable colour properties (the Knob/LevelMeter
+ * convention). The forwards use distinct source/target names so they are
+ * NOT circular looked-up colours. The host reads the RESOLVED values
+ * (EditorFrame#getEditorBackground() et al.) to build the SDK Theme handed
+ * to Canvas plugins — colours derive from resolved CSS, never a mirrored
+ * hex literal (feedback_control_css_role_token_forwarding); the Java-side
+ * defaults are only the SDK's neutral Theme.neutral() fallback. A theme
+ * re-tints the frame (and every canvas plugin) just by overriding the role
+ * tokens on .root-pane — no per-control duplication needed. */
+.editor-frame {
+    -fx-background-color: -surface-1;
+    -editor-frame-background: -surface-1;
+    -editor-frame-foreground: -text;
+    -editor-frame-accent:     -accent;
+    -editor-frame-meter-safe: -meter-low;
+    -editor-frame-meter-warn: -meter-hi;
+    -editor-frame-meter-clip: -meter-clip;
+}
+
+/* §6.1 breadcrumb header — single line, never wraps; the four host
+ * actions sit right of the growing spacer. */
+.editor-frame-header {
+    -fx-background-color: -surface-2;
+    -fx-padding: 8;
+    -fx-spacing: 8;
+    -fx-border-color: transparent transparent -line-soft transparent;
+    -fx-border-width: 0 0 1 0;
+}
+
+/* The header breadcrumb reuses .breadcrumb-bar (story 281); zero its own
+ * padding so the header's 8 px padding governs the row. */
+.editor-frame-breadcrumb {
+    -fx-padding: 0;
+}
+
+/* §6.5 A/B compare bar — revealed by the header [A|B] toggle; subtle
+ * second-surface strip under the header. */
+.editor-ab-bar {
+    -fx-background-color: -surface-2;
+    -fx-padding: 4 8 4 8;
+    -fx-spacing: 8;
+    -fx-border-color: transparent transparent -line-soft transparent;
+    -fx-border-width: 0 0 1 0;
+}
+
+.editor-ab-slot {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+}
+
+/* Added to the ACTIVE slot label only (single accent, §2.1). */
+.editor-ab-active {
+    -fx-text-fill: -accent;
+}
+
+/* §6.6 fault banner — inline above the body, never modal, never
+ * auto-hidden by the immersive retraction. -warn border carries the
+ * severity; background stays a quiet surface. */
+.editor-fault-banner {
+    -fx-background-color: -surface-2;
+    -fx-border-color: -warn;
+    -fx-border-width: 1;
+    -fx-padding: 8;
+    -fx-spacing: 8;
+}
+
+.editor-fault-message {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 12px;
+}
+
+/* §6.3 body host — plugin-owned pixels, clipped in code so a misbehaving
+ * plugin cannot paint over the breadcrumb or footer. */
+.editor-frame-body {
+    -fx-background-color: -surface-1;
+}
+
+/* §6.4 footer: preset bar + always-present IN/OUT meters. */
+.editor-frame-footer {
+    -fx-background-color: -surface-2;
+    -fx-padding: 8;
+    -fx-spacing: 8;
+    -fx-border-color: -line-soft transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+}
+
+.editor-frame-preset {
+    -fx-pref-width: 160;
+}
+
+.editor-frame-preset-label,
+.editor-frame-meter-caption {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+}
+
+/* Compact horizontal footer meters (dimensions only — the lit-segment
+ * palette forwards via the story-267 .level-meter rule above). */
+.editor-frame-meter-in,
+.editor-frame-meter-out {
+    -fx-pref-width: 72;
+    -fx-pref-height: 8;
+    -fx-min-width: 40;
+    -fx-min-height: 8;
+}
+
+/* §6.2 declarative parameter grid — the host-generated 96 px knob grid
+ * rendered for PluginEditorFactory.Declarative editors. The 16 px gaps
+ * and the 96 px cell column are set in code (ParameterGrid); CSS carries
+ * alignment and text colours only. Grid background transparent so the
+ * .editor-frame-body surface shows through. */
+.parameter-grid {
+    -fx-background-color: transparent;
+}
+
+.parameter-grid-cell {
+    -fx-alignment: CENTER;
+}
+
+/* Parameter name above the knob — muted small-caps feel (§6.2).
+ * Scoped under .parameter-grid: PluginParameterEditorPanel reuses the
+ * bare parameter-name/parameter-value classes and must not pick this up. */
+.parameter-grid .parameter-name {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+}
+
+/* Formatted value beneath the knob (§6.2). */
+.parameter-grid .parameter-value {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 11px;
+}

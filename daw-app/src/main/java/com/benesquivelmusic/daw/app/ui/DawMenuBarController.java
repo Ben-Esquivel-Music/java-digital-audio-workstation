@@ -1,8 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import javafx.scene.control.MenuBar;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
@@ -110,6 +112,40 @@ public final class DawMenuBarController {
          */
         default void onOpenBackupSettings() { }
         void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass);
+
+        /**
+         * Story 301 §8.2.1 — one entry in the Plugins ▸ External submenu: a
+         * loaded third-party plugin the user can activate into the
+         * contract-driven editor frame.
+         *
+         * @param entry       the registry entry identifying the plugin
+         * @param displayName the label shown in the menu (the descriptor
+         *                    name, or a defensive fallback when the
+         *                    descriptor read throws)
+         */
+        record ExternalPluginMenuItem(ExternalPluginEntry entry, String displayName) {
+        }
+
+        /**
+         * Story 301 §8.2.1 — the loaded external plugins to list in the
+         * Plugins ▸ External submenu, re-read every time the Plugins menu is
+         * shown so the list tracks the registry. Default empty for tests /
+         * hosts without a plugin registry.
+         *
+         * @return the current external-plugin menu entries, never {@code null}
+         */
+        default List<ExternalPluginMenuItem> externalPluginMenuItems() {
+            return List.of();
+        }
+
+        /**
+         * Story 301 §8.2.1 — activate a loaded external plugin and open its
+         * contract-driven editor. Default no-op for tests.
+         *
+         * @param entry the registry entry the user picked
+         */
+        default void onActivateExternalPlugin(ExternalPluginEntry entry) {
+        }
 
         // Window actions
         void onSwitchView(DawView view);

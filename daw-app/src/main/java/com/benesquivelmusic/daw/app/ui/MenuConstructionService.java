@@ -12,9 +12,12 @@ import javafx.scene.input.KeyCombination;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.ResourceBundle;
 
 /**
  * Builds the JavaFX menu hierarchy (File, Edit, Tracks, Plugins, Window,
@@ -37,6 +40,15 @@ final class MenuConstructionService {
 
     /** Icon size for menu-item graphics. */
     static final double MENU_ICON_SIZE = DawMenuBarController.MENU_ICON_SIZE;
+
+    /**
+     * Chrome strings for the story-301 External submenu (Skill §14) —
+     * {@code Locale.ROOT}, the EditorFrameSkin idiom. The legacy menu labels
+     * predate the bundle and stay inline; new user-facing strings flow
+     * through here.
+     */
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 
     private final DawMenuBarController.MenuActions host;
     private final KeyBindingManager keyBindingManager;
@@ -305,11 +317,61 @@ final class MenuConstructionService {
             pluginsMenu.getItems().add(new SeparatorMenuItem());
         }
 
+        // Story 301 \u00a78.2.1 \u2014 External submenu: the user-visible activation
+        // path for loaded third-party plugins (routed to editorFactory() and
+        // the contract-driven editor frame). The registry contents change at
+        // runtime (Plugin Manager loads/unloads JARs), so this one submenu
+        // repopulates on every Plugins-menu showing; everything else in the
+        // menu stays one-shot construction.
+        Menu externalMenu = new Menu(msg("menu.plugins.external"));
+        externalMenu.getStyleClass().add("daw-menu");
+        externalMenu.setGraphic(IconNode.of(DawIcon.KNOB, MENU_ICON_SIZE));
+        populateExternalPluginsMenu(externalMenu);
+        pluginsMenu.setOnShowing(_ -> populateExternalPluginsMenu(externalMenu));
+        // No extra separator: External shares the trailing plugin-management
+        // block with Plugin Manager\u2026, preserving the documented separator
+        // structure (one per category group + one before this block).
+        pluginsMenu.getItems().add(externalMenu);
+
         MenuItem managePlugins = menuItem("Plugin Manager\u2026", DawIcon.EQ,
                 null, host::onManagePlugins);
         pluginsMenu.getItems().add(managePlugins);
 
         return pluginsMenu;
+    }
+
+    /**
+     * (Re)populates the Plugins \u25b8 External submenu from
+     * {@link DawMenuBarController.MenuActions#externalPluginMenuItems()} \u2014
+     * one item per loaded third-party plugin, or a single disabled
+     * placeholder when none are installed (story 301 \u00a78.2.1).
+     */
+    private void populateExternalPluginsMenu(Menu externalMenu) {
+        externalMenu.getItems().clear();
+        List<DawMenuBarController.MenuActions.ExternalPluginMenuItem> items =
+                host.externalPluginMenuItems();
+        if (items.isEmpty()) {
+            MenuItem none = new MenuItem(msg("menu.plugins.external.none"));
+            none.setDisable(true);
+            externalMenu.getItems().add(none);
+            return;
+        }
+        for (var item : items) {
+            externalMenu.getItems().add(menuItem(item.displayName(), null,
+                    null, () -> host.onActivateExternalPlugin(item.entry())));
+        }
+    }
+
+    /**
+     * Resolves a chrome string from the shared bundle, falling back to the
+     * raw key if absent (mirrors {@code EditorFrameSkin#msg(String)}).
+     */
+    private static String msg(String key) {
+        try {
+            return MESSAGES.getString(key);
+        } catch (MissingResourceException e) {
+            return key;
+        }
     }
 
     // ── Window Menu ──────────────────────────────────────────────────────────

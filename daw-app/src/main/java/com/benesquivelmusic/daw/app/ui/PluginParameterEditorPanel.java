@@ -28,6 +28,16 @@ import java.util.function.BiConsumer;
  *
  * <p>Parameter changes are reported via the {@code onParameterChanged}
  * callback, allowing real-time wiring to the effects chain.</p>
+ *
+ * <p><strong>Superseded for contract-driven editors</strong> (story 301,
+ * Plugin View Design Book §6.2): the host-generated body for a
+ * {@code PluginEditorFactory.Declarative} editor is now
+ * {@link com.benesquivelmusic.daw.app.ui.plugin.ParameterGridPanel}, rendered
+ * inside the standard {@code EditorFrame} chrome with the single-writer
+ * binding discipline. This class remains the built-in insert-effect path
+ * ({@code InsertEffectRack} / {@code WorkshopSelectionHostController} /
+ * {@code InnerChainEditor}) until the built-ins migrate onto the contract in
+ * story 302.</p>
  */
 public final class PluginParameterEditorPanel extends VBox {
 

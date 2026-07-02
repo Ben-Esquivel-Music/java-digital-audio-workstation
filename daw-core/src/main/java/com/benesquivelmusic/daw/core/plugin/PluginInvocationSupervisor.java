@@ -57,7 +57,7 @@ public final class PluginInvocationSupervisor {
     public static final int QUARANTINE_THRESHOLD = 3;
 
     /** Sentinel pushed into the work queue to signal shutdown to the drain thread. */
-    private static final PendingFault SHUTDOWN = new PendingFault(null, null, null);
+    private static final PendingFault SHUTDOWN = new PendingFault(null, null, null, false);
 
     private final SubmissionPublisher<PluginFault> publisher = new SubmissionPublisher<>();
     private final Map<String, AtomicInteger> faultCounts = new ConcurrentHashMap<>();
@@ -111,6 +111,31 @@ public final class PluginInvocationSupervisor {
         Objects.requireNonNull(delegate, "delegate must not be null");
         SupervisedProcessor wrapper = new SupervisedProcessor(slot, delegate);
         return wrapper;
+    }
+
+    /**
+     * Reports a fault raised by a plugin's <em>editor</em> (FX-thread UI code)
+     * rather than its supervised audio processor — story 301's editor fault
+     * harness (Plugin View Design Book §2.7, §6.6). The fault is formatted,
+     * appended to the fault log and published to {@link #publisher()} exactly
+     * like an audio-side fault, but it does <strong>not</strong> increment the
+     * plugin's session fault count and can never quarantine the slot: only the
+     * editor is disabled, the audio processor keeps running (§6.6).
+     *
+     * <p>Safe to call from any thread; the heavy formatting and I/O run on the
+     * supervisor's drain thread. A no-op after {@link #close()}.</p>
+     *
+     * @param pluginId  stable identifier for the plugin whose editor faulted;
+     *                  must not be {@code null}
+     * @param throwable the throwable the editor raised; must not be {@code null}
+     */
+    public void reportUiFault(String pluginId, Throwable throwable) {
+        Objects.requireNonNull(pluginId, "pluginId must not be null");
+        Objects.requireNonNull(throwable, "throwable must not be null");
+        if (!running) {
+            return; // closed — the drain thread is gone, nothing would consume it
+        }
+        faultQueue.offer(new PendingFault(pluginId, throwable, Instant.now(), true));
     }
 
     /** Returns the fault count recorded for {@code pluginId} in this session. */
@@ -222,10 +247,21 @@ public final class PluginInvocationSupervisor {
         String stack = sw.toString();
 
         AtomicInteger counter = faultCounts.computeIfAbsent(pending.pluginId, _ -> new AtomicInteger());
-        int count = counter.incrementAndGet();
-        boolean isQuarantined = count > QUARANTINE_THRESHOLD;
-        if (isQuarantined) {
-            quarantined.put(pending.pluginId, Boolean.TRUE);
+        int count;
+        boolean isQuarantined;
+        if (pending.uiSourced()) {
+            // Editor-side fault (§6.6): report the current audio-slot state
+            // read-only — never increment the session count, never insert
+            // into the quarantined map. Only the editor is disabled; the
+            // audio processor keeps running.
+            count = counter.get();
+            isQuarantined = isQuarantined(pending.pluginId);
+        } else {
+            count = counter.incrementAndGet();
+            isQuarantined = count > QUARANTINE_THRESHOLD;
+            if (isQuarantined) {
+                quarantined.put(pending.pluginId, Boolean.TRUE);
+            }
         }
 
         return new PluginFault(
@@ -312,8 +348,11 @@ public final class PluginInvocationSupervisor {
     }
 
     // Pre-allocated, minimal-allocation record of the raw fault. Captured on
-    // the audio thread; materialized off-thread into the public PluginFault.
-    private record PendingFault(String pluginId, Throwable throwable, Instant clock) {
+    // the audio thread (uiSourced = false) or handed over from the editor's
+    // fault harness via reportUiFault (uiSourced = true); materialized
+    // off-thread into the public PluginFault. UI-sourced faults never count
+    // toward quarantine (§6.6).
+    private record PendingFault(String pluginId, Throwable throwable, Instant clock, boolean uiSourced) {
     }
 
     // ── Supervised wrapper ──────────────────────────────────────────────────
@@ -414,7 +453,7 @@ public final class PluginInvocationSupervisor {
             // LinkedBlockingQueue.offer allocates one Node wrapper; the
             // Instant.now() and PendingFault allocations are unavoidable but
             // tiny and only occur on the exception path, not the hot path.
-            faultQueue.offer(new PendingFault(pluginId, t, Instant.now()));
+            faultQueue.offer(new PendingFault(pluginId, t, Instant.now(), false));
         }
 
         private void logJvmError(Error err) {

@@ -74,6 +74,22 @@ public interface EditorContext {
     void requestRender();
 
     /**
+     * Asks the host to drive a continuous animation loop for this editor at
+     * (approximately) the given frame rate. Only meaningful for a
+     * {@link PluginEditorFactory.Canvas} editor: the host then calls
+     * {@link PluginEditorFactory.Canvas#render(RenderTick) render(RenderTick)}
+     * on an animation tick in addition to the event-driven repaints (parameter
+     * change, resize, theme change) it already performs (§6.3). The host clamps
+     * the requested rate to a sensible range; a value {@code <= 0} cancels a
+     * previously requested timer, returning the editor to purely event-driven
+     * rendering.
+     *
+     * @param framesPerSecond the requested animation rate in frames per
+     *                        second; {@code <= 0} cancels the animation timer
+     */
+    void requestAnimationTimer(double framesPerSecond);
+
+    /**
      * Reports a recoverable fault from the plugin. The host routes it to the
      * in-surface fault banner (§6.6) and the plugin fault log, without tearing
      * the editor down. Use this for problems the plugin catches itself; faults
