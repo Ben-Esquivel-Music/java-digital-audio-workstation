@@ -41,8 +41,9 @@ import java.util.Set;
  *   <li><strong>No manifest</strong> — the de-emphasised legacy fallback: a
  *       class-name {@link TextField} and an "Add" button (story 304 removes this
  *       fallback later).</li>
- *   <li><strong>Manifest present but invalid</strong> — the reader's error lines
- *       above the same de-emphasised class-name fallback.</li>
+ *   <li><strong>Manifest present but invalid, or JAR unreadable</strong> — the
+ *       reader's error lines above the same de-emphasised class-name fallback,
+ *       so an I/O failure is never misreported as a missing manifest.</li>
  * </ul>
  */
 public final class PluginInstallPanel extends VBox {
@@ -79,8 +80,9 @@ public final class PluginInstallPanel extends VBox {
             this.classNameField = null;
             this.primaryButton = buildManifestPath(inspection, registry, onInstalled, jarName);
         } else {
-            // No manifest, or a manifest that failed to parse/validate: both land
-            // on the de-emphasised class-name fallback (story 304 removes it).
+            // No manifest, a manifest that failed to parse/validate, or an
+            // unreadable JAR: all land on the de-emphasised class-name fallback
+            // (story 304 removes it).
             this.classNameField = new TextField();
             this.primaryButton = buildFallbackPath(inspection, registry, onInstalled, jarName);
         }
@@ -186,15 +188,20 @@ public final class PluginInstallPanel extends VBox {
 
         getChildren().add(title);
 
-        if (inspection.manifestPresent()
-                && inspection.manifests() instanceof PluginManifestReader.BundleResult.Invalid invalid) {
+        // Surface the reader's errors both for a manifest that failed to
+        // parse/validate AND for a JAR that could not be read at all — only a
+        // readable JAR genuinely lacking a manifest gets the "no manifest" copy.
+        if (inspection.manifests() instanceof PluginManifestReader.BundleResult.Invalid invalid
+                && (inspection.manifestPresent() || !inspection.jarReadable())) {
             for (String error : invalid.errors()) {
                 Label errorLabel = new Label(error);
                 errorLabel.setWrapText(true);
                 errorLabel.getStyleClass().add("plugin-manager-notice");
                 getChildren().add(errorLabel);
             }
-            getChildren().add(info("This JAR's manifest could not be read. "
+            getChildren().add(info((inspection.jarReadable()
+                    ? "This JAR's manifest could not be read. "
+                    : "This JAR could not be read. ")
                     + "Install by class name instead:"));
         } else {
             getChildren().add(info("This JAR has no daw-plugin.json manifest. "

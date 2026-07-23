@@ -69,7 +69,7 @@ class NonBlockingScanShowsRowSpinnerTest {
 
         Path jar = tempDir.resolve("blocking.jar"); // path unused — inspector is injected
         CountDownLatch inspectorLatch = new CountDownLatch(1);
-        JarInspection canned = new JarInspection(jar, false,
+        JarInspection canned = new JarInspection(jar, true, false,
                 new PluginManifestReader.BundleResult.Invalid(List.of("no manifest")), 0, 0, 0);
         Function<Path, JarInspection> blockingInspector = path -> {
             try {

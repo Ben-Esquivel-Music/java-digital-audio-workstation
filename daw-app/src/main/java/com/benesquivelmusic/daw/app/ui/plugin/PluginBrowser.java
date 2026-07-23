@@ -312,31 +312,66 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
         PluginJarScanner scanner = new PluginJarScanner(fxDispatcher);
         Thread.ofVirtual().name("daw-plugin-folder-scan").start(() -> {
             List<JarInspection> manifestBearing = new ArrayList<>();
-            List<String> skipped = new ArrayList<>();
+            List<JarInspection> rejected = new ArrayList<>();
             try (DirectoryStream<Path> jars = Files.newDirectoryStream(folder, "*.jar")) {
                 for (Path jar : jars) {
                     JarInspection inspection = scanner.scanBlocking(jar);
                     if (inspection.manifests().isValid()) {
                         manifestBearing.add(inspection);
                     } else {
-                        skipped.add(jarName(jar));
+                        rejected.add(inspection);
                     }
                 }
             } catch (IOException | RuntimeException e) {
                 // Best-effort — an unreadable folder yields no installs.
             }
+            String skippedSummary = skippedSummary(rejected);
             FxDispatcher.runOnFx(fxDispatcher, () -> {
                 hideBusyRow();
                 for (JarInspection inspection : manifestBearing) {
                     openInstallDialog(inspection);
                 }
-                if (!skipped.isEmpty()) {
-                    DawgDialog.info("Install plugins",
-                            "Skipped " + skipped.size() + " JAR(s) with no manifest:\n"
-                                    + String.join("\n", skipped)).showAndWait();
+                if (skippedSummary != null) {
+                    DawgDialog.info("Install plugins", skippedSummary).showAndWait();
                 }
             });
         });
+    }
+
+    /**
+     * The skipped-JARs dialog body for a folder install, one section per skip
+     * reason so an unreadable JAR (or one whose manifest failed to parse) is
+     * never misreported as manifest-less; {@code null} when nothing was skipped.
+     * Package-private for tests.
+     */
+    static String skippedSummary(List<JarInspection> rejected) {
+        List<String> unreadable = new ArrayList<>();
+        List<String> invalidManifest = new ArrayList<>();
+        List<String> noManifest = new ArrayList<>();
+        for (JarInspection inspection : rejected) {
+            String name = jarName(inspection.jar());
+            if (!inspection.jarReadable()) {
+                unreadable.add(name);
+            } else if (inspection.manifestPresent()) {
+                invalidManifest.add(name);
+            } else {
+                noManifest.add(name);
+            }
+        }
+        List<String> sections = new ArrayList<>();
+        if (!unreadable.isEmpty()) {
+            sections.add("Skipped " + unreadable.size() + " JAR(s) that could not be read:\n"
+                    + String.join("\n", unreadable));
+        }
+        if (!invalidManifest.isEmpty()) {
+            sections.add("Skipped " + invalidManifest.size() + " JAR(s) with an invalid manifest:\n"
+                    + String.join("\n", invalidManifest));
+        }
+        if (!noManifest.isEmpty()) {
+            sections.add("Skipped " + noManifest.size() + " JAR(s) with no manifest:\n"
+                    + String.join("\n", noManifest));
+        }
+        return sections.isEmpty() ? null : String.join("\n\n", sections);
     }
 
     private void installDragDrop(Region content) {

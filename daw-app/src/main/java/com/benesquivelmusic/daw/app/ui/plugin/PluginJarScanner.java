@@ -36,6 +36,11 @@ public final class PluginJarScanner {
      * The result of inspecting a plugin JAR.
      *
      * @param jar             the inspected JAR
+     * @param jarReadable     whether the JAR could be opened and enumerated at
+     *                        all; {@code false} for a missing, corrupt or
+     *                        otherwise unreadable file — in which case
+     *                        {@code manifestPresent} says nothing about the JAR's
+     *                        actual content
      * @param manifestPresent whether the JAR carries a {@code META-INF/daw-plugin.json} entry
      * @param manifests       every plugin the manifest declares (or the reader's
      *                        validation errors); {@link PluginManifestReader.BundleResult.Invalid}
@@ -47,6 +52,7 @@ public final class PluginJarScanner {
      */
     public record JarInspection(
             Path jar,
+            boolean jarReadable,
             boolean manifestPresent,
             PluginManifestReader.BundleResult manifests,
             int classFiles,
@@ -83,7 +89,8 @@ public final class PluginJarScanner {
 
     /**
      * Inspects {@code jar} on the <strong>calling</strong> thread (all I/O; never
-     * touches JavaFX). Robust: an unreadable JAR yields a zero footprint plus an
+     * touches JavaFX). Robust: an unreadable JAR yields a zero footprint with
+     * {@code jarReadable=false} plus an
      * {@link PluginManifestReader.BundleResult.Invalid} rather than throwing.
      *
      * @param jar the JAR to inspect; must not be {@code null}
@@ -91,6 +98,7 @@ public final class PluginJarScanner {
      */
     public JarInspection scanBlocking(Path jar) {
         Objects.requireNonNull(jar, "jar must not be null");
+        boolean jarReadable = true;
         boolean manifestPresent = false;
         int classFiles = 0;
         int resourceFiles = 0;
@@ -117,11 +125,12 @@ public final class PluginJarScanner {
         } catch (IOException | RuntimeException e) {
             // Unreadable JAR — report an empty footprint; readAllFromJar below
             // reports the same problem as a BundleResult.Invalid (never throws).
+            jarReadable = false;
         }
         PluginManifestReader.BundleResult manifests =
                 new PluginManifestReader().readAllFromJar(jar);
         return new JarInspection(
-                jar, manifestPresent, manifests, classFiles, resourceFiles, nativeLibs);
+                jar, jarReadable, manifestPresent, manifests, classFiles, resourceFiles, nativeLibs);
     }
 
     /**

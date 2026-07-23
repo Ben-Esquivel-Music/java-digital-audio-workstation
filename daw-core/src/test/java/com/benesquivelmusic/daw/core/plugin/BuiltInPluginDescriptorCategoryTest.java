@@ -5,8 +5,7 @@ import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.lang.reflect.Field;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -18,6 +17,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a future built-in plugin cannot skip declaring one, and each descriptor's
  * {@code iconHint} is cross-checked reflectively against the plugin's
  * {@link BuiltInPlugin} annotation {@code icon()}.
+ *
+ * <p>Descriptors are read from each plugin's static {@code DESCRIPTOR} constant
+ * — the instance its {@code getDescriptor()} returns — rather than by
+ * instantiating the plugin, because a no-arg construction that probes an audio
+ * backend can fail headlessly and the mapping must be verified everywhere.</p>
  */
 class BuiltInPluginDescriptorCategoryTest {
 
@@ -67,7 +71,6 @@ class BuiltInPluginDescriptorCategoryTest {
 
     @Test
     void everyDescriptorCategoryAndIconHintMustMatchTheAnnotation() {
-        List<String> skipped = new ArrayList<>();
         for (Map.Entry<Class<?>, PluginCategory> expected : EXPECTED.entrySet()) {
             Class<?> clazz = expected.getKey();
             BuiltInPlugin annotation = clazz.getAnnotation(BuiltInPlugin.class);
@@ -75,17 +78,7 @@ class BuiltInPluginDescriptorCategoryTest {
                     .as("%s must be annotated with @BuiltInPlugin", clazz.getSimpleName())
                     .isNotNull();
 
-            PluginDescriptor descriptor;
-            try {
-                BuiltInDawPlugin plugin = (BuiltInDawPlugin) clazz.getConstructor().newInstance();
-                descriptor = plugin.getDescriptor();
-            } catch (Throwable t) {
-                // Descriptors are plain records needing no JavaFX toolkit, but a
-                // plugin whose no-arg construction probes an audio backend can
-                // fail headlessly; skip only that plugin's descriptor assertions.
-                skipped.add(clazz.getSimpleName() + " (" + t + ")");
-                continue;
-            }
+            PluginDescriptor descriptor = staticDescriptor(clazz);
 
             assertThat(descriptor.category())
                     .as("%s descriptor category", clazz.getSimpleName())
@@ -95,9 +88,22 @@ class BuiltInPluginDescriptorCategoryTest {
                     .isNotBlank()
                     .isEqualTo(annotation.icon());
         }
-        if (!skipped.isEmpty()) {
-            System.out.println("BuiltInPluginDescriptorCategoryTest skipped "
-                    + "headless-unconstructable plugins: " + skipped);
+    }
+
+    /**
+     * Reads {@code clazz}'s static {@code DESCRIPTOR} constant — the instance
+     * its {@code getDescriptor()} returns — without instantiating the plugin,
+     * so the mapping assertions can never be skipped by a construction failure.
+     */
+    private static PluginDescriptor staticDescriptor(Class<?> clazz) {
+        try {
+            Field field = clazz.getDeclaredField("DESCRIPTOR");
+            field.setAccessible(true);
+            return (PluginDescriptor) field.get(null);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(clazz.getSimpleName()
+                    + " must expose its descriptor as a static DESCRIPTOR constant"
+                    + " so this test can verify it without instantiating the plugin", e);
         }
     }
 }
