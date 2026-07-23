@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -50,7 +51,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "CHIRP_PEAK_REDUCER", displayName = "Chirp Peak Reducer")
+@InsertEffect(type = "CHIRP_PEAK_REDUCER", displayName = "Chirp Peak Reducer", category = PluginCategory.DYNAMICS)
 public final class ChirpPeakReducer implements AudioProcessor {
 
     /** Minimum allowed threshold in dB. */

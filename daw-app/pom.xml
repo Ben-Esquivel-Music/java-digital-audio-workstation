@@ -173,7 +173,8 @@
                         -Dprism.order=sw
                         -Dprism.lcdtext=false
                         -Dprism.text=t2k
-                        -Djava.awt.headless=true</argLine>
+                        -Djava.awt.headless=true
+                        --add-opens=daw.app/com.benesquivelmusic.daw.app.ui.plugin.fixtures=daw.core</argLine>
                     <systemPropertyVariables>
                         <!-- Built-in headless Glass platform (JavaFX 26,
                              JDK-8364687). Retained in addition to the -D

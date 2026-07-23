@@ -2498,3 +2498,72 @@
     -fx-text-fill: -text-hi;
     -fx-font-size: 11px;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+ * Plugin browser + drag-a-JAR install flow (story 303)
+ * Plugin View Design Book §6.7 (categorical browser), §6.8 (inspect-and-
+ * install), §8.4. Tokens only (Palette A on .root-pane) — no literal hex,
+ * no literal dropshadow. Structural spacing/padding is set in Java; these
+ * rules carry only tokenized colour / border / font.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* §6.7 browser dialog body. */
+.plugin-browser {
+    -fx-background-color: -surface-1;
+}
+
+/* The one shared, searchable tree (Built-in + Installed groups). */
+.plugin-browser-tree {
+    -fx-background-color: -surface-bg;
+    -fx-border-color: -line-soft;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+/* Group header rows (Built-in / category / vendor) — muted small label. */
+.plugin-browser-group {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+}
+
+/* Selectable plugin leaf rows. */
+.plugin-browser-row {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 12px;
+}
+
+/* §6.8 busy row shown while a dropped/picked JAR is scanned off-thread. */
+.plugin-row-busy {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+
+/* §6.8 inspect-and-install panel body. */
+.plugin-install-panel {
+    -fx-background-color: -surface-1;
+}
+
+/* Bold-ish title line in the install panel. */
+.plugin-install-title {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
+/* Shared row (plugin row in the install panel, install-action bar). */
+.plugin-install-row {
+    -fx-text-fill: -text;
+}
+
+/* De-emphasised helper text (drop hint, missing-manifest hint). */
+.plugin-manager-info {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+
+/* Truthful session notice — warn hue, not an error (§8.4). */
+.plugin-manager-notice {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
+}

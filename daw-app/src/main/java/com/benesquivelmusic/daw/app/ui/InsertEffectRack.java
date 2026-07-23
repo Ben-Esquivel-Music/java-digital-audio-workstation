@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
@@ -425,62 +426,30 @@ public final class InsertEffectRack extends VBox {
     // ── Effect picker ───────────────────────────────────────────────────────
 
     /**
-     * A choice in the effect picker dialog — either a built-in effect type or
-     * an external plugin entry. Using a sealed interface avoids reliance on
-     * string-based {@code indexOf} matching, which breaks on duplicate names.
+     * Opens the §6.7 categorical {@link PluginBrowser} for the empty slot at
+     * {@code slotIndex} and applies the user's choice: a built-in effect goes
+     * through the existing {@link InsertEffectFactory#createSlot} path, an
+     * external plugin through {@link #loadAndInsertExternalPlugin}. The browser
+     * itself applies the Stereo-Imager stereo rule and the EFFECT-type filter,
+     * and offers the drag-a-JAR install flow (story 303).
      */
-    private sealed interface EffectChoice {
-        String displayName();
-    }
-
-    private record BuiltInChoice(InsertEffectType type) implements EffectChoice {
-        @Override public String displayName() { return type.getDisplayName(); }
-        @Override public String toString() { return displayName(); }
-    }
-
-    private record ExternalChoice(ExternalPluginEntry entry, String name) implements EffectChoice {
-        @Override public String displayName() { return "[ext] " + name; }
-        @Override public String toString() { return displayName(); }
-    }
-
     private void showEffectPicker(int slotIndex) {
-        List<EffectChoice> choices = new ArrayList<>();
+        String channelName = channel.getName();
+        String targetLabel = (channelName == null || channelName.isBlank())
+                ? "Insert " + (slotIndex + 1)
+                : channelName + " / Insert " + (slotIndex + 1);
 
-        // Built-in effects
-        InsertEffectFactory.availableTypes().stream()
-                .filter(t -> t != InsertEffectType.STEREO_IMAGER || audioChannels == 2)
-                .forEach(t -> choices.add(new BuiltInChoice(t)));
-
-        // Registered external plugins that process audio (EFFECT type)
-        if (pluginRegistry != null) {
-            for (var mapEntry : pluginRegistry.getLoadedPlugins().entrySet()) {
-                DawPlugin plugin = mapEntry.getValue();
-                if (plugin.getDescriptor().type() == PluginType.EFFECT) {
-                    choices.add(new ExternalChoice(
-                            mapEntry.getKey(), plugin.getDescriptor().name()));
-                }
-            }
-        }
-
-        if (choices.isEmpty()) {
-            return;
-        }
-
-        ChoiceDialog<EffectChoice> dialog = new ChoiceDialog<>(choices.getFirst(), choices);
-        dialog.setTitle("Add Insert Effect");
-        dialog.setHeaderText("Select an effect for slot " + (slotIndex + 1));
-        dialog.setContentText("Effect:");
-
-        Optional<EffectChoice> result = dialog.showAndWait();
-        result.ifPresent(selected -> {
-            switch (selected) {
-                case BuiltInChoice b -> {
+        PluginBrowser browser = new PluginBrowser(pluginRegistry, audioChannels == 2, targetLabel);
+        browser.setFxDispatcher(fxDispatcher);
+        browser.showAndWait().ifPresent(selection -> {
+            switch (selection) {
+                case PluginBrowser.BuiltInSelection builtIn -> {
                     InsertSlot slot = InsertEffectFactory.createSlot(
-                            b.type(), audioChannels, sampleRate);
+                            builtIn.type(), audioChannels, sampleRate);
                     addEffect(slotIndex, slot);
                 }
-                case ExternalChoice ext ->
-                        loadAndInsertExternalPlugin(slotIndex, ext.entry());
+                case PluginBrowser.ExternalSelection external ->
+                        loadAndInsertExternalPlugin(slotIndex, external.entry());
             }
         });
     }

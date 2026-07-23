@@ -13,8 +13,10 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
  * class name (§1.4, §6.8).
  *
  * <p>Read with {@link PluginManifestReader}, written with
- * {@link PluginManifestWriter}. This Phase-1 story defines and round-trips the
- * manifest; the install UX that consumes it is Phase 4 (story 303).</p>
+ * {@link PluginManifestWriter}. A JAR may carry a single manifest object or a
+ * top-level array of them — a <em>bundle</em> declaring several plugins that the
+ * §6.8 install flow registers together (story 303). Either form round-trips
+ * through the reader/writer to equal manifests.</p>
  *
  * @param pluginClass the fully-qualified class name of the {@code DawPlugin}
  *                    implementation (never {@code null} or blank)

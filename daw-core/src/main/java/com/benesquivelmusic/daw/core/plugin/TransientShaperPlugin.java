@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.dsp.dynamics.TransientShaperProcessor;
 import com.benesquivelmusic.daw.core.plugin.editor.TransientShaperEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -33,7 +34,9 @@ public final class TransientShaperPlugin implements BuiltInDawPlugin {
             "Transient Shaper",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.DYNAMICS,
+            "compressor"
     );
 
     private TransientShaperProcessor processor;

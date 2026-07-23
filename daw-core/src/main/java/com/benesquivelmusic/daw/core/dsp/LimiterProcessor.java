@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.mastering.TruePeakCeilingPreset;
 
 import java.util.Arrays;
@@ -27,7 +28,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "LIMITER", displayName = "Limiter")
+@InsertEffect(type = "LIMITER", displayName = "Limiter", category = PluginCategory.DYNAMICS)
 public final class LimiterProcessor implements AudioProcessor, GainReductionProvider {
 
     private static final double MIN_LOOK_AHEAD_MS = 1.0;

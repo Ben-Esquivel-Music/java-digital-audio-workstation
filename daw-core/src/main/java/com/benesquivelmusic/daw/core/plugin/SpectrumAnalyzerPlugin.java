@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.analysis.SpectrumAnalyzer;
 import com.benesquivelmusic.daw.core.plugin.editor.SpectrumAnalyzerEditor;
 import com.benesquivelmusic.daw.sdk.analysis.WindowType;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -43,7 +44,9 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
             "Spectrum Analyzer",
             "1.0.0",
             "DAW Built-in",
-            PluginType.ANALYZER
+            PluginType.ANALYZER,
+            PluginCategory.ANALYZER,
+            "spectrum"
     );
 
     private PluginContext context;

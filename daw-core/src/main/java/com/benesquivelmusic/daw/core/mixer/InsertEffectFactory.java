@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.mixer;
 import com.benesquivelmusic.daw.core.dsp.*;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.event.PluginEvent;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -294,6 +295,20 @@ public final class InsertEffectFactory {
      */
     public static List<InsertEffectType> availableTypes() {
         return ProcessorRegistry.getInstance().availableTypes();
+    }
+
+    /**
+     * Returns the {@link PluginCategory} declared for the given built-in effect
+     * type, used to group effects in the §6.7 plugin browser.
+     *
+     * @param type the built-in effect type
+     * @return the declared category
+     * @throws IllegalArgumentException if {@code type} is not a registered
+     *                                  built-in effect (e.g. {@link InsertEffectType#CLAP_PLUGIN})
+     */
+    public static PluginCategory getCategory(InsertEffectType type) {
+        Objects.requireNonNull(type, "type must not be null");
+        return ProcessorRegistry.getInstance().categoryOf(type);
     }
 
     /**

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
@@ -28,7 +29,9 @@ public final class ReverbPlugin implements BuiltInDawPlugin {
             "Reverb",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.REVERB_AND_DELAY,
+            "reverb"
     );
 
     private ReverbProcessor processor;

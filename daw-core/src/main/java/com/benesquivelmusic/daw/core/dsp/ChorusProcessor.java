@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -26,7 +27,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "CHORUS", displayName = "Chorus")
+@InsertEffect(type = "CHORUS", displayName = "Chorus", category = PluginCategory.MODULATION)
 public final class ChorusProcessor implements AudioProcessor {
 
     private static final double MAX_DELAY_MS = 50.0;

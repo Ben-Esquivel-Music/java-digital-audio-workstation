@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.dsp.saturation.ExciterProcessor;
 import com.benesquivelmusic.daw.core.plugin.editor.ExciterEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -33,7 +34,9 @@ public final class ExciterPlugin implements BuiltInDawPlugin {
             "Harmonic Exciter",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.UTILITY,
+            "exciter"
     );
 
     private ExciterProcessor processor;

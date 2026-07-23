@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import java.util.List;
@@ -36,7 +37,7 @@ import java.util.Objects;
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
 @RealTimeSafe
-@InsertEffect(type = "WAVESHAPER", displayName = "Waveshaper")
+@InsertEffect(type = "WAVESHAPER", displayName = "Waveshaper", category = PluginCategory.UTILITY)
 public final class WaveshaperProcessor implements AudioProcessor {
 
     /** Minimum drive in dB accepted by {@link #setDriveDb(double)}. */

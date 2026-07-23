@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 import com.benesquivelmusic.daw.core.audio.StretchQuality;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -30,7 +31,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "TIME_STRETCH", displayName = "Time Stretch")
+@InsertEffect(type = "TIME_STRETCH", displayName = "Time Stretch", category = PluginCategory.UTILITY)
 public final class TimeStretchProcessor implements AudioProcessor {
 
     private final int channels;

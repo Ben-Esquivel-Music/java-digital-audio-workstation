@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.dsp.MultibandCompressorProcessor;
 import com.benesquivelmusic.daw.core.plugin.editor.MultibandCompressorEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.AutomatableParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
@@ -61,7 +62,9 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
             "Multiband Compressor",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.DYNAMICS,
+            "compressor"
     );
 
     private MultibandCompressorProcessor processor;

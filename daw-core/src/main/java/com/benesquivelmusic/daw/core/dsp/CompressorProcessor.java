@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.dsp;
 import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
@@ -26,7 +27,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  * This enables classic sidechain compression techniques such as kick-driven
  * bass ducking and dialogue ducking.</p>
  */
-@InsertEffect(type = "COMPRESSOR", displayName = "Compressor")
+@InsertEffect(type = "COMPRESSOR", displayName = "Compressor", category = PluginCategory.DYNAMICS)
 public final class CompressorProcessor implements SidechainAwareProcessor, GainReductionProvider {
 
     /** Detection mode for the compressor. */

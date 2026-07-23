@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -64,7 +65,7 @@ import java.util.Objects;
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
 @RealTimeSafe
-@InsertEffect(type = "HEARING_LOSS_SIMULATOR", displayName = "Hearing Loss Simulator")
+@InsertEffect(type = "HEARING_LOSS_SIMULATOR", displayName = "Hearing Loss Simulator", category = PluginCategory.UTILITY)
 public final class HearingLossSimulator implements AudioProcessor {
 
     /** ISO octave-band audiogram center frequencies (Hz), 250 Hz – 8 kHz. */
