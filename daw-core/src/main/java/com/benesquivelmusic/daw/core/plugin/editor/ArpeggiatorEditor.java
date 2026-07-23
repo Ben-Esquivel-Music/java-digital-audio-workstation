@@ -39,10 +39,11 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  * sliders, and a latch toggle — plus a 16-cell step-sequence indicator
  * {@link javafx.scene.canvas.Canvas Canvas} that lights the currently-firing
  * step, driven by a
- * scene-gated {@link AnimationTimer} polling
- * {@link ArpeggiatorPlugin#getStepIndex()} (a {@code Panel} has no dispose
- * hook, so the timer starts when the panel enters a scene and stops when it
- * leaves, re-attachable both ways).</p>
+ * showing-window-gated ({@link ShowingWindowGate}) {@link AnimationTimer}
+ * polling {@link ArpeggiatorPlugin#getStepIndex()} (a {@code Panel} has no
+ * dispose hook, so the timer runs while the panel sits in a scene whose
+ * window is showing and stops when the panel leaves the scene or the window
+ * hides, re-attachable both ways).</p>
  *
  * <p>This class is a reference example of the {@code Panel} contract.
  * Indicator painting reads the resolved {@link Theme} tokens from
@@ -226,16 +227,15 @@ public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
                 }
             };
 
-            // Scene-gated lifecycle (a Panel has no dispose hook): poll while
-            // in a scene, stop when removed, re-attachable both ways.
-            sceneProperty().addListener((_, _, newScene) -> {
-                if (newScene != null) {
-                    drawIndicator(lastStep);
-                    timer.start();
-                } else {
-                    timer.stop();
-                }
-            });
+            // Showing-window-gated lifecycle (a Panel has no dispose hook):
+            // poll while visibly on screen, stop when the panel leaves the
+            // scene or its window hides, re-attachable both ways.
+            ShowingWindowGate.install(this,
+                    () -> {
+                        drawIndicator(lastStep);
+                        timer.start();
+                    },
+                    timer::stop);
 
             // Repaint the indicator with the new palette on theme change.
             context.themeProperty().addListener((_, _, _) -> drawIndicator(lastStep));

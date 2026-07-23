@@ -13,7 +13,10 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 
+import javafx.scene.Scene;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.layout.StackPane;
+import javafx.stage.Stage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -37,7 +40,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The render pass also pins the hidden-editor guard: off-scene, a canvas
  * editor must NOT self-schedule another frame through
  * {@link CanvasSurface#requestRender()} (the hidden-stage animation-leak
- * discipline — the backing canvas here is never placed in a {@code Scene}).</p>
+ * discipline — the backing canvas here is never placed in a {@code Scene}).
+ * A second test pins the window half of that guard: in a scene on a hidden
+ * {@link Stage} the loop must stay stopped — a hidden stage keeps its scene
+ * attached, so scene presence alone is not enough — resuming only while the
+ * stage is showing.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 final class BuiltInImmersiveCanvasEditorsTest {
@@ -69,16 +76,7 @@ final class BuiltInImmersiveCanvasEditorsTest {
                 AtomicInteger renderRequests = new AtomicInteger();
                 runOnFxThread(() -> {
                     javafx.scene.canvas.Canvas backing = new javafx.scene.canvas.Canvas(400, 300);
-                    CanvasSurface surface = new CanvasSurface() {
-                        @Override public double width() { return backing.getWidth(); }
-                        @Override public double height() { return backing.getHeight(); }
-                        @Override public GraphicsContext graphicsContext() {
-                            return backing.getGraphicsContext2D();
-                        }
-                        @Override public void requestRender() {
-                            renderRequests.incrementAndGet();
-                        }
-                    };
+                    CanvasSurface surface = surfaceOver(backing, renderRequests);
                     canvasFactory.attach(surface);
                     canvasFactory.render(new RenderTick(0.0, 0, Theme.neutral()));
                     canvasFactory.render(new RenderTick(1.0 / 60.0, 1, Theme.neutral()));
@@ -94,6 +92,79 @@ final class BuiltInImmersiveCanvasEditorsTest {
                 plugin.dispose();
             }
         }
+    }
+
+    /**
+     * The window half of the hidden-editor guard (story 302 review follow-up):
+     * a canvas editor in a scene whose {@link Stage} is hidden must NOT
+     * self-schedule — a hidden stage keeps its scene attached, so scene
+     * presence alone must never gate the loop — and must resume while the
+     * stage is showing, stopping again when it hides.
+     */
+    @Test
+    void eachCanvasBuiltInSelfSchedulesOnlyWhileItsWindowIsShowing() {
+        for (Supplier<DawPlugin> constructor : CANVAS_BUILT_INS) {
+            DawPlugin plugin = constructor.get();
+            plugin.initialize(stubContext());
+            String name = plugin.getClass().getSimpleName();
+            try {
+                PluginEditorFactory.Canvas canvasFactory =
+                        (PluginEditorFactory.Canvas) plugin.editorFactory();
+                AtomicInteger renderRequests = new AtomicInteger();
+                runOnFxThread(() -> {
+                    javafx.scene.canvas.Canvas backing = new javafx.scene.canvas.Canvas(400, 300);
+                    CanvasSurface surface = surfaceOver(backing, renderRequests);
+                    Stage stage = new Stage();
+                    try {
+                        stage.setScene(new Scene(new StackPane(backing), 400, 300));
+                        canvasFactory.attach(surface);
+
+                        canvasFactory.render(new RenderTick(0.0, 0, Theme.neutral()));
+                        assertThat(renderRequests.get())
+                                .as("%s must not self-schedule renders while its "
+                                        + "stage is hidden (a hidden stage keeps "
+                                        + "the scene attached)", name)
+                                .isZero();
+
+                        stage.show();
+                        canvasFactory.render(new RenderTick(1.0 / 60.0, 1, Theme.neutral()));
+                        assertThat(renderRequests.get())
+                                .as("%s must resume self-scheduling while its "
+                                        + "window is showing", name)
+                                .isEqualTo(1);
+
+                        stage.hide();
+                        canvasFactory.render(new RenderTick(2.0 / 60.0, 2, Theme.neutral()));
+                        assertThat(renderRequests.get())
+                                .as("%s must stop self-scheduling once its "
+                                        + "window is hidden again", name)
+                                .isEqualTo(1);
+
+                        canvasFactory.detach();
+                    } finally {
+                        stage.hide();
+                    }
+                    return null;
+                });
+            } finally {
+                plugin.dispose();
+            }
+        }
+    }
+
+    /** Host-shaped surface over {@code backing} counting self-schedule requests. */
+    private static CanvasSurface surfaceOver(javafx.scene.canvas.Canvas backing,
+            AtomicInteger renderRequests) {
+        return new CanvasSurface() {
+            @Override public double width() { return backing.getWidth(); }
+            @Override public double height() { return backing.getHeight(); }
+            @Override public GraphicsContext graphicsContext() {
+                return backing.getGraphicsContext2D();
+            }
+            @Override public void requestRender() {
+                renderRequests.incrementAndGet();
+            }
+        };
     }
 
     private static PluginContext stubContext() {

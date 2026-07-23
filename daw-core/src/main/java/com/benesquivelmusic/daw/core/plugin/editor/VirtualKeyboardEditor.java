@@ -55,10 +55,10 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  * clipping. Keyboard-canvas painting reads the resolved {@link Theme} tokens
  * from {@link EditorContext#theme()} and repaints when
  * {@link EditorContext#themeProperty()} changes. The playback-advancing
- * {@link AnimationTimer} and the processor listener are gated on the panel's
- * {@code sceneProperty()} — attached when the panel enters a scene, released
- * when it leaves, re-attachable both ways — because a {@code Panel} has no
- * dispose hook.</p>
+ * {@link AnimationTimer} and the processor listener are gated by
+ * {@link ShowingWindowGate} — attached while the panel sits in a scene whose
+ * window is showing, released when it leaves the scene or the window hides,
+ * re-attachable both ways — because a {@code Panel} has no dispose hook.</p>
  *
  * <p>The {@code VirtualKeyboardPlugin} exposes no
  * {@code PluginParameter}-backed state, so every control talks to the
@@ -346,16 +346,12 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
                 }
             };
 
-            // Scene-gated lifecycle (a Panel has no dispose hook): attach the
-            // processor listener and resume any running playback advancement
-            // when the panel enters a scene; release both when it leaves.
-            sceneProperty().addListener((_, _, newScene) -> {
-                if (newScene != null) {
-                    attachToProcessor();
-                } else {
-                    detachFromProcessor();
-                }
-            });
+            // Showing-window-gated lifecycle (a Panel has no dispose hook):
+            // attach the processor listener and resume any running playback
+            // advancement when the panel becomes visibly on screen; release
+            // both when it leaves the scene or its window hides.
+            ShowingWindowGate.install(this,
+                    this::attachToProcessor, this::detachFromProcessor);
 
             // Repaint the canvas with the new palette when the theme changes.
             context.themeProperty().addListener((_, _, _) -> paintKeyboard());
@@ -366,7 +362,7 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
             paintKeyboard();
         }
 
-        // ── Scene-gated lifecycle ──────────────────────────────────────────
+        // ── Showing-window-gated lifecycle ─────────────────────────────────
 
         private void attachToProcessor() {
             if (!processorListenerAttached) {

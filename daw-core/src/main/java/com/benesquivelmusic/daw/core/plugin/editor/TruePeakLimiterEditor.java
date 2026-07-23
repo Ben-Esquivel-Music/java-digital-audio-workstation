@@ -45,8 +45,10 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
  *
  * <p>Scene detachment is the only teardown hook a {@code Panel} receives —
  * the contract has no dispose callback — so the single meter
- * {@link AnimationTimer} is gated on the panel root's {@code sceneProperty()}:
- * started when the panel enters a scene, stopped when it leaves.</p>
+ * {@link AnimationTimer} is gated by {@link ShowingWindowGate}: started when
+ * the panel sits in a scene whose window is showing, stopped when it leaves
+ * the scene or the window hides (a hidden stage keeps its scene attached, so
+ * scene presence alone would leave the timer spinning invisibly).</p>
  */
 public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
 
@@ -170,8 +172,8 @@ public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
         context.themeProperty().addListener((_, _, theme) ->
                 drawMeters(grCanvas, inCanvas, outCanvas, processor.getMeterSnapshot(), theme));
 
-        // One scene-gated meter timer (see class Javadoc: scene detachment is
-        // the only teardown hook the Panel contract provides).
+        // One showing-window-gated meter timer (see class Javadoc: the Panel
+        // contract has no dispose callback, so visibility is the lifecycle).
         AnimationTimer meterTimer = new AnimationTimer() {
             @Override
             public void handle(long now) {
@@ -180,16 +182,7 @@ public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
                 drawMeters(grCanvas, inCanvas, outCanvas, snapshot, context.theme());
             }
         };
-        root.sceneProperty().addListener((_, _, scene) -> {
-            if (scene != null) {
-                meterTimer.start();
-            } else {
-                meterTimer.stop();
-            }
-        });
-        if (root.getScene() != null) {
-            meterTimer.start();
-        }
+        ShowingWindowGate.install(root, meterTimer::start, meterTimer::stop);
         return root;
     }
 

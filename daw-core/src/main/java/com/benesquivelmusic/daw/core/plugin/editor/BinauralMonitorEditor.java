@@ -75,9 +75,10 @@ public final class BinauralMonitorEditor implements PluginEditorFactory.Canvas {
      *
      * <p>Self-scheduled continuous repaint (so wet-level changes coming from
      * automation show live): at the end of each frame the editor re-requests a
-     * render only while the backing canvas is still in a scene, so a hidden or
-     * torn-down editor never spins the loop — the host's scene-entry repaint
-     * restarts it.</p>
+     * render only while the backing canvas is in a scene whose window is
+     * showing ({@link ShowingWindowGate} — a hidden stage keeps its scene
+     * attached), so a hidden or torn-down editor never spins the loop — the
+     * host's scene-entry / re-show repaint restarts it.</p>
      */
     @Override
     public void render(RenderTick tick) {
@@ -102,7 +103,7 @@ public final class BinauralMonitorEditor implements PluginEditorFactory.Canvas {
         drawHeadphoneGlyph(gc, w, h, tokens);
         drawStateAndWetBar(gc, w, h, tokens);
 
-        if (surface.graphicsContext().getCanvas().getScene() != null) {
+        if (ShowingWindowGate.isShowing(surface.graphicsContext().getCanvas())) {
             surface.requestRender();
         }
     }

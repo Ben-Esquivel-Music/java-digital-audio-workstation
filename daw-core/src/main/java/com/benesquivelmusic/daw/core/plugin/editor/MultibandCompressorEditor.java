@@ -51,8 +51,10 @@ import com.benesquivelmusic.daw.sdk.visualization.MultibandCompressorData;
  *
  * <p>Scene detachment is the only teardown hook a {@code Panel} receives —
  * the contract has no dispose callback — so the single per-band meter
- * {@link AnimationTimer} is gated on the panel root's {@code sceneProperty()}:
- * started when the panel enters a scene, stopped when it leaves.</p>
+ * {@link AnimationTimer} is gated by {@link ShowingWindowGate}: started when
+ * the panel sits in a scene whose window is showing, stopped when it leaves
+ * the scene or the window hides (a hidden stage keeps its scene attached, so
+ * scene presence alone would leave the timer spinning invisibly).</p>
  */
 public final class MultibandCompressorEditor implements PluginEditorFactory.Panel {
 
@@ -189,25 +191,16 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
                 repaintBandMeters();
             });
 
-            // One scene-gated per-band GR meter timer (see class Javadoc:
-            // scene detachment is the only teardown hook the Panel contract
-            // provides).
+            // One showing-window-gated per-band GR meter timer (see class
+            // Javadoc: the Panel contract has no dispose callback, so
+            // visibility is the lifecycle).
             AnimationTimer meterTimer = new AnimationTimer() {
                 @Override
                 public void handle(long now) {
                     repaintBandMeters();
                 }
             };
-            sceneProperty().addListener((_, _, scene) -> {
-                if (scene != null) {
-                    meterTimer.start();
-                } else {
-                    meterTimer.stop();
-                }
-            });
-            if (getScene() != null) {
-                meterTimer.start();
-            }
+            ShowingWindowGate.install(this, meterTimer::start, meterTimer::stop);
         }
 
         private void repaintBandMeters() {

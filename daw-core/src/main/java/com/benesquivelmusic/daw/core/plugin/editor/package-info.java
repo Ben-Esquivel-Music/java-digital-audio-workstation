@@ -31,12 +31,14 @@
  *       direct writes. Editors never call {@code store.drainToUi(...)} — the
  *       host session owns that single-consumer ring.</li>
  *   <li><strong>Timers:</strong> a panel that polls (meters, step indicators)
- *       owns one {@link javafx.animation.AnimationTimer} gated on its root's
- *       {@code sceneProperty()} — started when the editor enters a scene,
- *       stopped when it leaves — so a torn-down or hidden editor never spins a
- *       frame loop. Canvas editors that self-schedule via
- *       {@code CanvasSurface#requestRender()} gate the re-request on the
- *       backing canvas still being in a scene for the same reason.</li>
+ *       owns one {@link javafx.animation.AnimationTimer} gated by
+ *       {@code ShowingWindowGate} — running only while the editor sits in a
+ *       scene whose window is showing — so a torn-down or hidden editor never
+ *       spins a frame loop. Scene presence alone is not enough: a hidden
+ *       {@code Stage} keeps its scene attached, so a scene-gated loop would
+ *       keep spinning invisibly. Canvas editors that self-schedule via
+ *       {@code CanvasSurface#requestRender()} gate the re-request on
+ *       {@code ShowingWindowGate#isShowing} for the same reason.</li>
  *   <li><strong>Threading (§4.7):</strong> every contract callback runs on the
  *       JavaFX Application Thread; off-thread completions marshal back with
  *       {@link javafx.application.Platform#runLater(Runnable)}.</li>

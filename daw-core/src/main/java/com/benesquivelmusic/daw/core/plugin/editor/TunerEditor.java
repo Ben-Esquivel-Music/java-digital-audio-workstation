@@ -45,10 +45,12 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  * resolved {@link Theme} tokens from {@link EditorContext#theme()} — the
  * needle uses the accent token while in tune and {@code meterWarn} otherwise —
  * and repaints when {@link EditorContext#themeProperty()} changes. A
- * scene-gated {@link AnimationTimer} polls {@code getLastResult()} each frame
- * and refreshes the readout only when the result reference changed; a
- * {@code Panel} has no dispose hook, so the timer starts when the panel
- * enters a scene and stops when it leaves (re-attachable both ways).</p>
+ * showing-window-gated ({@link ShowingWindowGate}) {@link AnimationTimer}
+ * polls {@code getLastResult()} each frame and refreshes the readout only
+ * when the result reference changed; a {@code Panel} has no dispose hook, so
+ * the timer runs while the panel sits in a scene whose window is showing and
+ * stops when the panel leaves the scene or the window hides (re-attachable
+ * both ways).</p>
  *
  * <p>The {@code TunerPlugin} exposes no {@code PluginParameter}-backed state,
  * so the spinner commits through the plugin's own
@@ -180,16 +182,15 @@ public final class TunerEditor implements PluginEditorFactory.Panel {
                 }
             };
 
-            // Scene-gated lifecycle (a Panel has no dispose hook): poll while
-            // in a scene, stop when removed, re-attachable both ways.
-            sceneProperty().addListener((_, _, newScene) -> {
-                if (newScene != null) {
-                    refreshReadout();
-                    poller.start();
-                } else {
-                    poller.stop();
-                }
-            });
+            // Showing-window-gated lifecycle (a Panel has no dispose hook):
+            // poll while visibly on screen, stop when the panel leaves the
+            // scene or its window hides, re-attachable both ways.
+            ShowingWindowGate.install(this,
+                    () -> {
+                        refreshReadout();
+                        poller.start();
+                    },
+                    poller::stop);
 
             // Repaint the deviation bar with the new palette on theme change.
             context.themeProperty().addListener((_, _, _) -> paintCentsBar(lastSeen));

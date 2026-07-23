@@ -34,6 +34,7 @@ import javafx.scene.control.TextInputDialog;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.stage.Window;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -231,6 +232,24 @@ public final class PluginEditorSession {
         }
     };
     private final ChangeListener<Scene> sceneListener = this::onSceneChanged;
+    private final ChangeListener<Window> windowListener =
+            (obs, was, window) -> trackWindow(window);
+    /**
+     * Restart kick for self-scheduling canvas editors (§5.D): they stop
+     * re-requesting frames while their window is hidden (a hidden stage keeps
+     * its scene attached — the dock layer hides floating stages rather than
+     * closing them), so when the window shows again the host schedules one
+     * repaint to resume the loop — the window-side counterpart of the
+     * scene-entry repaint in {@link #onSceneChanged}.
+     */
+    private final ChangeListener<Boolean> windowShowingListener =
+            (obs, was, showing) -> {
+                if (!this.disposed && showing) {
+                    scheduleRender();
+                }
+            };
+    /** The window whose {@code showingProperty} the session tracks. */
+    private Window trackedWindow;
     private final ChangeListener<Boolean> bypassListener =
             (obs, was, now) -> this.bypassed = now;
 
@@ -393,6 +412,10 @@ public final class PluginEditorSession {
         timer.stop();
         teardownCanvas();
         grid = null;
+        if (frame.getScene() != null) {
+            frame.getScene().windowProperty().removeListener(windowListener);
+        }
+        trackWindow(null);
         frame.sceneProperty().removeListener(sceneListener);
         frame.bypassedProperty().removeListener(bypassListener);
         frame.editorBackgroundProperty().removeListener(themeTokensListener);
@@ -947,19 +970,51 @@ public final class PluginEditorSession {
      * with the token listeners per the resolved-CSS discipline) so the first
      * theme read is resolved rather than the neutral fallback, then starts
      * the per-editor timer; leaving the scene stops it, so a hidden editor
-     * never spins a frame loop.
+     * never spins a frame loop. The scene's window is tracked alongside
+     * ({@link #trackWindow}) so a canvas editor's self-scheduled loop — which
+     * stops itself while the window is hidden — is kicked back to life when
+     * the window shows again.
      */
     private void onSceneChanged(ObservableValue<? extends Scene> observable,
             Scene oldScene, Scene newScene) {
         if (disposed) {
             return;
         }
+        if (oldScene != null) {
+            oldScene.windowProperty().removeListener(windowListener);
+        }
         if (newScene != null) {
+            newScene.windowProperty().addListener(windowListener);
+            trackWindow(newScene.getWindow());
             frame.applyCss();
             rebuildTheme();
             timer.start();
         } else {
+            trackWindow(null);
             timer.stop();
+        }
+    }
+
+    /**
+     * Retargets {@link #windowShowingListener} at the scene's current window
+     * (detaching it from the previously remembered one — never a re-read of
+     * a possibly-changed supplier), and, mirroring the listener itself,
+     * schedules a repaint when the new window is already showing so a canvas
+     * editor moved into a live window resumes its self-scheduled loop.
+     */
+    private void trackWindow(Window window) {
+        if (trackedWindow == window) {
+            return;
+        }
+        if (trackedWindow != null) {
+            trackedWindow.showingProperty().removeListener(windowShowingListener);
+        }
+        trackedWindow = window;
+        if (window != null) {
+            window.showingProperty().addListener(windowShowingListener);
+            if (window.isShowing()) {
+                scheduleRender();
+            }
         }
     }
 
