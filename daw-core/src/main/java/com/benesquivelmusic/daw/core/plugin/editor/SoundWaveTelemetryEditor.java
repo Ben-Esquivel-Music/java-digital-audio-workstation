@@ -173,7 +173,7 @@ public final class SoundWaveTelemetryEditor implements PluginEditorFactory.Canva
     }
 
     private void refreshPalette(Theme tokens) {
-        if (tokens == cachedTokens) {
+        if (Objects.equals(tokens, cachedTokens)) {
             return;
         }
         cachedTokens = tokens;

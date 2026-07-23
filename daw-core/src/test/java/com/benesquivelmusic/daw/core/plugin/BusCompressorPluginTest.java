@@ -98,6 +98,18 @@ class BusCompressorPluginTest {
     }
 
     @Test
+    void automationShouldClampOutOfRangeValues() {
+        var plugin = new BusCompressorPlugin();
+        plugin.initialize(stubContext());
+
+        plugin.setAutomatableParameter(0, 999.0);   // threshold, above [-40, 0]
+        plugin.setAutomatableParameter(5, -1.0);    // mix, below [0, 1]
+
+        assertThat(plugin.getProcessor().getThresholdDb()).isEqualTo(0.0);
+        assertThat(plugin.getProcessor().getMix()).isEqualTo(0.0);
+    }
+
+    @Test
     void automationWritesBeforeInitializeAreIgnored() {
         var plugin = new BusCompressorPlugin();
         plugin.setAutomatableParameter(0, -22.0);

@@ -109,8 +109,11 @@ public final class BusCompressorPlugin implements BuiltInDawPlugin {
 
     /**
      * Routes an automation value to the underlying
-     * {@link BusCompressorProcessor}. Toggle parameters treat values
-     * {@code >= 0.5} as on. Allocation-free and real-time safe.
+     * {@link BusCompressorProcessor}. Values are clamped to the ranges
+     * declared by {@link #getParameters()} because the processor setters
+     * reject out-of-range input — an unclamped write from a misbehaving
+     * caller would otherwise throw on the audio thread. Toggle parameters
+     * treat values {@code >= 0.5} as on. Allocation-free and real-time safe.
      *
      * <p>Added by story 302: the plugin advertised automatable parameters via
      * the {@code getAutomatableParameters()} default but inherited the no-op
@@ -123,15 +126,19 @@ public final class BusCompressorPlugin implements BuiltInDawPlugin {
             return;
         }
         switch (parameterId) {
-            case 0 -> processor.setThresholdDb(value);
-            case 1 -> processor.setRatio(value);
-            case 2 -> processor.setAttackMs(value);
-            case 3 -> processor.setReleaseS(value);
-            case 4 -> processor.setMakeupGainDb(value);
-            case 5 -> processor.setMix(value);
+            case 0 -> processor.setThresholdDb(clamp(value, -40.0, 0.0));
+            case 1 -> processor.setRatio(clamp(value, 1.5, 10.0));
+            case 2 -> processor.setAttackMs(clamp(value, 0.1, 30.0));
+            case 3 -> processor.setReleaseS(clamp(value, 0.1, 1.2));
+            case 4 -> processor.setMakeupGainDb(clamp(value, 0.0, 24.0));
+            case 5 -> processor.setMix(clamp(value, 0.0, 1.0));
             case 6 -> processor.setReleaseAuto(value >= 0.5);
             case 7 -> processor.setDrive(value >= 0.5);
             default -> { /* unknown parameter id */ }
         }
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return Math.min(hi, Math.max(lo, v));
     }
 }

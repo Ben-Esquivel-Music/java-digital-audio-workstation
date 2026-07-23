@@ -212,7 +212,7 @@ public final class SpectrumAnalyzerEditor implements PluginEditorFactory.Canvas 
     }
 
     private void refreshPalette(Theme tokens) {
-        if (tokens == cachedTokens) {
+        if (Objects.equals(tokens, cachedTokens)) {
             return;
         }
         cachedTokens = tokens;
