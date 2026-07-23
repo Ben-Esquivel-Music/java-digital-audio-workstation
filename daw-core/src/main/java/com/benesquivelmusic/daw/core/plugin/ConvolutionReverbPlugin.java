@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.dsp.reverb.ConvolutionReverbProcessor;
+import com.benesquivelmusic.daw.core.plugin.editor.ConvolutionReverbEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -97,5 +99,18 @@ public final class ConvolutionReverbPlugin implements BuiltInDawPlugin {
                 new PluginParameter(6, "Width",      0.0,    2.0,   1.0),
                 new PluginParameter(7, "Trim Start", 0.0,    1.0,   0.0),
                 new PluginParameter(8, "Trim End",   0.0,    1.0,   1.0));
+    }
+
+    /**
+     * Returns a fresh {@link ConvolutionReverbEditor} — the custom
+     * {@link PluginEditorFactory.Panel} that replaced the retired daw-app
+     * {@code ConvolutionReverbPluginView} (story 302 §8.3). A new editor is
+     * constructed on every call: the host re-invokes this factory on Reload,
+     * and each editor instance carries per-session UI state (trim markers,
+     * waveform cache).
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new ConvolutionReverbEditor(this);
     }
 }

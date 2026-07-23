@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.plugin.editor.BinauralMonitorEditor;
 import com.benesquivelmusic.daw.core.spatial.binaural.BinauralMonitoringProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -78,10 +80,29 @@ public final class BinauralMonitorPlugin implements BuiltInDawPlugin {
      */
     public BinauralMonitoringProcessor getProcessor() { return processor; }
 
+    /** Returns whether the plugin is currently active (between activate/deactivate). */
+    public boolean isActive() { return active; }
+
     /** Parameter ids: {@code 0 = wet level}. */
     @Override
     public List<PluginParameter> getParameters() {
         return List.of(
                 new PluginParameter(0, "Wet Level", 0.0, 1.0, 0.5));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Story 302 (Plugin View Design Book §8.3 item 5 — the design book
+     * prescribes the immersive canvas for this built-in): returns the
+     * {@link BinauralMonitorEditor} monitoring status surface. HRTF profile
+     * selection and its per-project persistence deliberately live in the
+     * host's "Manage HRTF Profiles…" dialog path now, not in the editor; the
+     * wet-level parameter (id 0) stays automatable via
+     * {@link #getParameters()}.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new BinauralMonitorEditor(this);
     }
 }

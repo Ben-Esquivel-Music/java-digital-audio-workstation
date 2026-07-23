@@ -86,7 +86,13 @@ public final class BusCompressorPlugin implements BuiltInDawPlugin {
      * Returns the parameter descriptors for this bus compressor plugin.
      *
      * <p>Parameter ids correspond to: 0=threshold (dB), 1=ratio,
-     * 2=attack (ms), 3=release (s), 4=makeup gain (dB), 5=mix.</p>
+     * 2=attack (ms), 3=release (s), 4=makeup gain (dB), 5=mix,
+     * 6=auto release (toggle), 7=drive (toggle).</p>
+     *
+     * <p>Ids 6 and 7 were added by story 302: the retired bespoke view
+     * offered AUTO and DRIVE as checkboxes, so the declarative grid that
+     * replaced it (Plugin View Design Book §6.2) must carry them as
+     * {@code *Toggle} parameters to keep the editing surface complete.</p>
      */
     @Override
     public List<PluginParameter> getParameters() {
@@ -96,6 +102,43 @@ public final class BusCompressorPlugin implements BuiltInDawPlugin {
                 new PluginParameter(2, "Attack (ms)",       0.1, 30.0,  10.0),
                 new PluginParameter(3, "Release (s)",       0.1,  1.2,   0.6),
                 new PluginParameter(4, "Makeup Gain (dB)",  0.0, 24.0,   0.0),
-                new PluginParameter(5, "Mix",               0.0,  1.0,   1.0));
+                new PluginParameter(5, "Mix",               0.0,  1.0,   1.0),
+                new PluginParameter(6, "Auto Release Toggle", 0.0, 1.0,  0.0),
+                new PluginParameter(7, "Drive Toggle",        0.0, 1.0,  0.0));
+    }
+
+    /**
+     * Routes an automation value to the underlying
+     * {@link BusCompressorProcessor}. Values are clamped to the ranges
+     * declared by {@link #getParameters()} because the processor setters
+     * reject out-of-range input — an unclamped write from a misbehaving
+     * caller would otherwise throw on the audio thread. Toggle parameters
+     * treat values {@code >= 0.5} as on. Allocation-free and real-time safe.
+     *
+     * <p>Added by story 302: the plugin advertised automatable parameters via
+     * the {@code getAutomatableParameters()} default but inherited the no-op
+     * {@code setAutomatableParameter}, so automation writes were silently
+     * dropped. Routing mirrors {@link NoiseGatePlugin}'s pattern.</p>
+     */
+    @Override
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (processor == null) {
+            return;
+        }
+        switch (parameterId) {
+            case 0 -> processor.setThresholdDb(clamp(value, -40.0, 0.0));
+            case 1 -> processor.setRatio(clamp(value, 1.5, 10.0));
+            case 2 -> processor.setAttackMs(clamp(value, 0.1, 30.0));
+            case 3 -> processor.setReleaseS(clamp(value, 0.1, 1.2));
+            case 4 -> processor.setMakeupGainDb(clamp(value, 0.0, 24.0));
+            case 5 -> processor.setMix(clamp(value, 0.0, 1.0));
+            case 6 -> processor.setReleaseAuto(value >= 0.5);
+            case 7 -> processor.setDrive(value >= 0.5);
+            default -> { /* unknown parameter id */ }
+        }
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return Math.min(hi, Math.max(lo, v));
     }
 }

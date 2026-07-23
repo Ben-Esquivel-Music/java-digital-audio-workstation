@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.analysis.PitchDetector;
+import com.benesquivelmusic.daw.core.plugin.editor.TunerEditor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
@@ -216,6 +218,19 @@ public final class TunerPlugin implements BuiltInDawPlugin {
      */
     public boolean isActive() {
         return active;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns the {@link TunerEditor} panel — the story 302 (§8.3)
+     * replacement for the retired {@code daw-app} {@code TunerDisplayWindow}
+     * wrapper: reference-pitch spinner plus a note / cents / frequency
+     * readout, framed with minimal chrome.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new TunerEditor(this);
     }
 
     // ── Pitch-to-note conversion ────────────────────────────────────────

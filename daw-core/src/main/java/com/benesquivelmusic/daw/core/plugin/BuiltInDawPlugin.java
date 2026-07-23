@@ -109,6 +109,26 @@ public interface BuiltInDawPlugin extends DawPlugin {
     }
 
     /**
+     * Returns whether activating this plugin surfaces it in the host's
+     * mastering view instead of opening a plugin editor.
+     *
+     * <p>A handful of built-ins ({@code ParametricEqPlugin},
+     * {@code CompressorPlugin}, {@code ReverbPlugin}) have no editor of their
+     * own — they are stages of the mastering chain and their UI <em>is</em>
+     * the mastering view. The plugin declares that routing itself so the host
+     * never dispatches on a plugin id (Plugin View Design Book §9 rejection
+     * #5: the only place an id may drive behaviour is the registry; story 302
+     * replaces the last {@code switch} arms with this declarative flag).</p>
+     *
+     * @return {@code true} when activation should route to the mastering
+     *         view; {@code false} (the default) when the plugin opens an
+     *         editor through {@code editorFactory()}
+     */
+    default boolean routesToMasteringView() {
+        return false;
+    }
+
+    /**
      * Returns lightweight metadata entries for all permitted built-in plugins,
      * suitable for constructing menu items without retaining (or even creating)
      * live plugin instances.

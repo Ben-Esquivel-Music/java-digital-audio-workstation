@@ -160,7 +160,6 @@ final class FocusedEditorDoesNotRebuildContainerTest {
                 () -> { },
                 (status, icon) -> { },
                 (level, message) -> { },
-                () -> { },
                 showEditorInWorkshopPane,
                 () -> null,
                 () -> { });

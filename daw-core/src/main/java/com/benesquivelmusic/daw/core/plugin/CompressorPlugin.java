@@ -73,6 +73,19 @@ public final class CompressorPlugin implements BuiltInDawPlugin {
     }
 
     /**
+     * {@inheritDoc}
+     *
+     * <p>The compressor is a mastering-chain stage: its UI is the mastering
+     * view, so activation routes there instead of opening a plugin editor
+     * (story 302 — the declarative replacement for the deleted {@code switch}
+     * arm).</p>
+     */
+    @Override
+    public boolean routesToMasteringView() {
+        return true;
+    }
+
+    /**
      * Returns the underlying {@link CompressorProcessor}, or {@code null} if
      * the plugin has not been initialized or has been disposed.
      *

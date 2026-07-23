@@ -4,8 +4,10 @@ import com.benesquivelmusic.daw.core.audioimport.AudioReadResult;
 import com.benesquivelmusic.daw.core.audioimport.ReferenceFileLoader;
 import com.benesquivelmusic.daw.core.dsp.eq.MatchEqProcessor;
 import com.benesquivelmusic.daw.core.export.SampleRateConverter;
+import com.benesquivelmusic.daw.core.plugin.editor.MatchEqEditor;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -160,5 +162,20 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     /** Returns whether the plugin is currently active (between activate/deactivate). */
     public boolean isActive() {
         return active;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Story 302 (Plugin View Design Book §8.3 item 5): returns the
+     * immersive {@link MatchEqEditor} canvas — the source/reference/target
+     * spectrum plot — replacing this plugin's previous implicit
+     * {@code Declarative} default as its visual surface. The four
+     * {@link #getParameters()} entries remain the declarative data automation
+     * binds to; the canvas is the visual surface.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new MatchEqEditor(this);
     }
 }

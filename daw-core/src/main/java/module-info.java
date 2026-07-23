@@ -35,6 +35,13 @@ module daw.core {
     requires transitive daw.sdk;
     requires daw.acoustics;
 
+    // Story 302 — built-in plugins implement their own editor surfaces
+    // (PluginEditorFactory.Panel returns a javafx.scene.layout.Region;
+    // PluginEditorFactory.Canvas draws through a GraphicsContext). daw.sdk's
+    // `requires javafx.graphics` is non-transitive, so both are named here.
+    requires javafx.graphics;
+    requires javafx.controls;
+
     // javax.xml.parsers / javax.xml.transform — DAWproject + session XML I/O.
     requires java.xml;
     requires java.logging;

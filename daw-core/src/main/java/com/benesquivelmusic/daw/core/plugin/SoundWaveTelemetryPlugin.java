@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.plugin.editor.SoundWaveTelemetryEditor;
 import com.benesquivelmusic.daw.core.telemetry.ArmedTrackSourceProvider;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
@@ -123,6 +125,20 @@ public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
      */
     public boolean isSubscribedToArmedTrackSourceProvider() {
         return armedTrackListener != null;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Story 302 (Plugin View Design Book §8.3 item 5): returns the
+     * immersive {@link SoundWaveTelemetryEditor} canvas — a status surface,
+     * not a duplicate renderer. The rich room-telemetry display remains the
+     * story-287 docked {@code TelemetryView} (daw-app), which this plugin
+     * holds no data for; see the editor's class Javadoc.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new SoundWaveTelemetryEditor(this);
     }
 
     private void subscribeToProvider() {

@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.midi.KeyboardPreset;
 import com.benesquivelmusic.daw.core.midi.KeyboardProcessor;
 import com.benesquivelmusic.daw.core.midi.javasound.JavaSoundRenderer;
+import com.benesquivelmusic.daw.core.plugin.editor.VirtualKeyboardEditor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -105,5 +107,19 @@ public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
      */
     public KeyboardProcessor getProcessor() {
         return processor;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns the {@link VirtualKeyboardEditor} panel — the story 302
+     * (§8.3) replacement for the retired {@code daw-app}
+     * {@code KeyboardProcessorView}: interactive piano canvas, preset /
+     * velocity / curve / transpose controls, and MIDI record-play transport,
+     * framed with minimal chrome.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new VirtualKeyboardEditor(this);
     }
 }

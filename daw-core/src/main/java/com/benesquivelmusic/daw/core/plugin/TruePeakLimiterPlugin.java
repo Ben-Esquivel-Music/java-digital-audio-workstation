@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.dsp.dynamics.TruePeakLimiterProcessor;
+import com.benesquivelmusic.daw.core.plugin.editor.TruePeakLimiterEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -106,6 +108,18 @@ public final class TruePeakLimiterPlugin implements BuiltInDawPlugin {
                 new PluginParameter(2, "Lookahead (ms)",    1.0,   10.0,    5.0),
                 new PluginParameter(3, "ISR",               2.0,    8.0,    4.0),
                 new PluginParameter(4, "Channel Link (%)",  0.0,  100.0,  100.0));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Story 302 (Plugin View Design Book §8.3): returns the limiter's
+     * bespoke {@link PluginEditorFactory.Panel} editor. A fresh editor is
+     * created on every call — the host asks again on Reload.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new TruePeakLimiterEditor(this);
     }
 
     /**

@@ -1627,7 +1627,6 @@ public final class MainController {
                 () -> viewNavigationController.switchView(DawView.MASTERING),
                 this::status,
                 (level, message) -> notificationBar.show(level, message),
-                this::showTelemetryPanel,
                 (segments, node) -> viewNavigationController.showEditorInWorkshopPane(segments, node),
                 () -> pluginSupervisor,
                 () -> {
@@ -1635,30 +1634,6 @@ public final class MainController {
                         pluginFaultUiController.openFaultLog();
                     }
                 }));
-    }
-
-    /**
-     * Story 287 — shows / focuses the docked Sound Wave Telemetry panel
-     * (the shared {@link #telemetryView}). Replaces the old standalone
-     * telemetry {@code Stage}. If the panel is floating, its window is
-     * brought to front; otherwise it is made visible (and focused) via
-     * the dock manifest's focus semantics.
-     */
-    private void showTelemetryPanel() {
-        if (dockManager == null) return;
-        DockEntry entry = dockManager.layout().entry(DefaultWorkspaces.PANEL_TELEMETRY).orElse(null);
-        if (entry != null && entry.zone() == DockZone.FLOATING) {
-            dockManager.setVisible(DefaultWorkspaces.PANEL_TELEMETRY, true);
-            Stage stage = floatingStages.get(DefaultWorkspaces.PANEL_TELEMETRY);
-            if (stage != null) stage.toFront();
-        } else if (dockManifestModel != null) {
-            // focusPanel makes it visible + moves it to the end of its zone
-            // strip (becoming the selected tab) — the same path the manifest
-            // bar button uses.
-            dockManifestModel.focusPanel(DefaultWorkspaces.PANEL_TELEMETRY);
-        } else {
-            dockManager.setVisible(DefaultWorkspaces.PANEL_TELEMETRY, true);
-        }
     }
 
     /**

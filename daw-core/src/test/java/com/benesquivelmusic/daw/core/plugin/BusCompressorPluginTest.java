@@ -61,12 +61,59 @@ class BusCompressorPluginTest {
     }
 
     @Test
-    void shouldExposeSixParameterDescriptors() {
+    void shouldExposeEightParameterDescriptors() {
         var plugin = new BusCompressorPlugin();
-        assertThat(plugin.getParameters()).hasSize(6);
+        assertThat(plugin.getParameters()).hasSize(8);
         assertThat(plugin.getParameters().stream().map(p -> p.name()))
                 .containsExactly("Threshold (dB)", "Ratio", "Attack (ms)",
-                        "Release (s)", "Makeup Gain (dB)", "Mix");
+                        "Release (s)", "Makeup Gain (dB)", "Mix",
+                        "Auto Release Toggle", "Drive Toggle");
+    }
+
+    @Test
+    void shouldRouteAutomationValuesToProcessor() {
+        var plugin = new BusCompressorPlugin();
+        plugin.initialize(stubContext());
+        var processor = plugin.getProcessor();
+
+        plugin.setAutomatableParameter(0, -22.0);
+        // Ratio / attack / release snap to the processor's SSL steps, so
+        // automation is exercised with step-exact values here.
+        plugin.setAutomatableParameter(1, 10.0);
+        plugin.setAutomatableParameter(2, 3.0);
+        plugin.setAutomatableParameter(3, 0.3);
+        plugin.setAutomatableParameter(4, 6.0);
+        plugin.setAutomatableParameter(5, 0.5);
+        plugin.setAutomatableParameter(6, 1.0);
+        plugin.setAutomatableParameter(7, 1.0);
+
+        assertThat(processor.getThresholdDb()).isEqualTo(-22.0);
+        assertThat(processor.getRatio()).isEqualTo(10.0);
+        assertThat(processor.getAttackMs()).isEqualTo(3.0);
+        assertThat(processor.getReleaseS()).isEqualTo(0.3);
+        assertThat(processor.getMakeupGainDb()).isEqualTo(6.0);
+        assertThat(processor.getMix()).isEqualTo(0.5);
+        assertThat(processor.isReleaseAuto()).isTrue();
+        assertThat(processor.isDrive()).isTrue();
+    }
+
+    @Test
+    void automationShouldClampOutOfRangeValues() {
+        var plugin = new BusCompressorPlugin();
+        plugin.initialize(stubContext());
+
+        plugin.setAutomatableParameter(0, 999.0);   // threshold, above [-40, 0]
+        plugin.setAutomatableParameter(5, -1.0);    // mix, below [0, 1]
+
+        assertThat(plugin.getProcessor().getThresholdDb()).isEqualTo(0.0);
+        assertThat(plugin.getProcessor().getMix()).isEqualTo(0.0);
+    }
+
+    @Test
+    void automationWritesBeforeInitializeAreIgnored() {
+        var plugin = new BusCompressorPlugin();
+        plugin.setAutomatableParameter(0, -22.0);
+        assertThat(plugin.getProcessor()).isNull();
     }
 
     @Test
