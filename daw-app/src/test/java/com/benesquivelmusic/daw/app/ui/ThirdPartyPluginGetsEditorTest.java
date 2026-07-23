@@ -154,7 +154,6 @@ final class ThirdPartyPluginGetsEditorTest {
                 () -> { },
                 (status, icon) -> { },
                 (level, message) -> notificationLog.add(level + ": " + message),
-                () -> { },
                 showEditorInWorkshopPane,
                 () -> null,
                 () -> { });

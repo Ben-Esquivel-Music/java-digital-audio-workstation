@@ -26,6 +26,17 @@
             <groupId>com.benesquivelmusic</groupId>
             <artifactId>daw-acoustics</artifactId>
         </dependency>
+        <!-- Story 302 — built-in plugins own their editor surfaces
+             (PluginEditorFactory.Panel/Canvas return and draw JavaFX types).
+             Version managed by daw-parent. -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-graphics</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+        </dependency>
     </dependencies>
 
     <properties>

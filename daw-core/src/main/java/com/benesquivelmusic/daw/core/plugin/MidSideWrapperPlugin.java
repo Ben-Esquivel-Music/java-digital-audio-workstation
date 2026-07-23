@@ -5,7 +5,9 @@ import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.dsp.GainStagingProcessor;
 import com.benesquivelmusic.daw.core.dsp.MidSideWrapperProcessor;
 import com.benesquivelmusic.daw.core.dsp.ParametricEqProcessor;
+import com.benesquivelmusic.daw.core.plugin.editor.MidSideWrapperEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -210,6 +212,22 @@ public final class MidSideWrapperPlugin implements BuiltInDawPlugin {
         // The wrapper itself exposes no automatable parameters — automation
         // targets the inner plugins directly through the standard UI.
         return List.of();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns the wrapper's dedicated {@link MidSideWrapperEditor} panel
+     * (story 302 §8.3 item 4). Because {@link #getParameters()} is
+     * deliberately empty — automation targets the inner plugins, not the
+     * wrapper — the inherited declarative default would render an empty
+     * parameter grid, so this {@code Panel} override is mandatory. It carries
+     * forward story 232's view requirements: preset combo, two labelled
+     * inner-chain editors, and the bypass toggle.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new MidSideWrapperEditor(this);
     }
 
     private void initAndWire(DawPlugin plugin, List<AudioProcessor> dspChain) {

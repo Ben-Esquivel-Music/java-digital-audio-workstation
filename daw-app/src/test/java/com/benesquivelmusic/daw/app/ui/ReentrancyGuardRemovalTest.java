@@ -25,12 +25,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * across {@code daw-app/.../ui}, replaced by a stateless echo-guard or explicit
  * single-writer listener management ("the guards are deleted, not replaced", §4.4).
  *
- * <p>Exactly one guard survives by design: {@code suppressNotification} in
- * {@link BinauralMonitorPluginView}, which is NOT a control&harr;model cascade guard
- * but a programmatic-vs-user discriminator for an <em>outbound</em> host callback /
- * project-dirty side effect (the story's "where a flag has a genuinely live
- * non-cascade use, flag it and keep narrowly"). The test asserts it is the only
- * surviving flag and that its file documents the justification.</p>
+ * <p>Through story 301 exactly one guard survived by design:
+ * {@code suppressNotification} in the bespoke {@code BinauralMonitorPluginView} —
+ * not a control&harr;model cascade guard but a programmatic-vs-user discriminator
+ * for an <em>outbound</em> host callback / project-dirty side effect. Story 302
+ * deleted that view (the Binaural Monitor is a contract-driven canvas editor in
+ * {@code daw-core} now, and the HRTF-profile persistence moved to the profile
+ * dialog's close-time result, which needs no discriminator), so the pattern is
+ * fully retired: this test now asserts the survivor flag is gone too.</p>
  *
  * <p>Comments and string literals are stripped before matching so a flag named only
  * in a "(was {@code suppressChangeEvents})" Javadoc note does not false-fail; a
@@ -41,11 +43,11 @@ final class ReentrancyGuardRemovalTest {
     private static final List<String> REMOVED_GUARDS = List.of(
             "suppressChangeEvents", "updatingControls", "programmaticDimensionUpdate", "updating");
 
-    private static final String SURVIVOR_FLAG = "suppressNotification";
-    private static final String SURVIVOR_FILE = "BinauralMonitorPluginView.java";
+    /** Story 293's justified survivor — retired with its view in story 302. */
+    private static final String RETIRED_SURVIVOR_FLAG = "suppressNotification";
 
     @Test
-    void theFourCascadeGuardsAreGoneAppWideAndOnlyTheJustifiedSurvivorRemains()
+    void theFourCascadeGuardsAndTheRetiredSurvivorAreGoneAppWide()
             throws IOException {
         Path uiRoot = locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui");
@@ -54,7 +56,6 @@ final class ReentrancyGuardRemovalTest {
 
         List<String> guardOffenders = new ArrayList<>();
         List<String> survivorFiles = new ArrayList<>();
-        List<String> survivorJustificationGaps = new ArrayList<>();
         List<Path> scanned = new ArrayList<>();
 
         Files.walkFileTree(uiRoot, new SimpleFileVisitor<>() {
@@ -76,13 +77,9 @@ final class ReentrancyGuardRemovalTest {
                         guardOffenders.add(name + " — references removed guard '" + guard + "'");
                     }
                 }
-                if (Pattern.compile("\\b" + Pattern.quote(SURVIVOR_FLAG) + "\\b").matcher(code).find()) {
+                if (Pattern.compile("\\b" + Pattern.quote(RETIRED_SURVIVOR_FLAG) + "\\b")
+                        .matcher(code).find()) {
                     survivorFiles.add(name);
-                    // The survivor must carry an explicit justification in its source
-                    // (a SOURCE-level marker, checked against the RAW text incl. comments).
-                    if (!raw.contains("justified survivor")) {
-                        survivorJustificationGaps.add(name);
-                    }
                 }
                 return FileVisitResult.CONTINUE;
             }
@@ -100,14 +97,10 @@ final class ReentrancyGuardRemovalTest {
                 .isEmpty();
 
         assertThat(survivorFiles)
-                .as("Story 293 — the only surviving re-entrancy flag must be the justified "
-                        + "'%s' in %s (an outbound-side-effect discriminator, not a self-cascade). "
-                        + "Found in: %s", SURVIVOR_FLAG, SURVIVOR_FILE, survivorFiles)
-                .containsExactly(SURVIVOR_FILE);
-
-        assertThat(survivorJustificationGaps)
-                .as("Story 293 — the surviving '%s' flag must document why it is kept "
-                        + "(a 'justified survivor' note in its source).", SURVIVOR_FLAG)
+                .as("Story 302 — story 293's one justified survivor ('%s' in the bespoke "
+                        + "BinauralMonitorPluginView) retired with that view; no re-entrancy "
+                        + "flag of this family may remain. Found in: %s",
+                        RETIRED_SURVIVOR_FLAG, survivorFiles)
                 .isEmpty();
     }
 

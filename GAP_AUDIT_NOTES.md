@@ -148,3 +148,44 @@ the deferred **plugin** `DetachPluginRequestedEvent` stub (held-off item above).
   folded into story 287** as `PANEL_TELEMETRY` / `DockZone.RIGHT`, with the
   ownership caveat that it is the setup-state child of `TelemetryView` (register
   a single shared instance). No longer "left for the user".
+
+---
+
+# Story 302 adjacent issues — 2026-07-01
+
+Flagged during the story-302 migration (built-ins onto the editor contract),
+held off per the scope-fix discipline. Not filed as stories yet; the user
+adjudicates.
+
+## Held off — pre-existing, orthogonal to 302
+
+### Dead automation routing on three built-ins
+- **Observed:** `ConvolutionReverbPlugin` (9 params), `BinauralMonitorPlugin`
+  (1), and `MatchEqPlugin` (4) override `getParameters()` but not
+  `setAutomatableParameter`, so the default `getAutomatableParameters()`
+  advertises automation lanes whose writes hit the `DawPlugin` no-op.
+- **Why held off:** pre-existing (the bespoke views edited processors
+  directly, masking it); the editor migration neither caused nor fixes it.
+  Story 302 fixed the same gap for `BusCompressorPlugin` only because its
+  parameter list was being extended anyway. Fix shape: mirror
+  `NoiseGatePlugin`'s routing switch in each plugin.
+
+### Panel-mode editors don't echo A/B / preset pushes
+- **Observed:** `PluginEditorSession.pushStateToStoreAndGrid` echoes only the
+  Declarative grid; a Panel editor's controls keep stale positions after an
+  A/B toggle or preset load (the store updates, the panel doesn't hear it —
+  the audio→UI drain ring is host-owned/single-consumer).
+- **Why held off:** story-301 architecture, inherited by every Panel editor
+  (third-party included), not a 302 regression. A fix needs a contract-level
+  refresh channel (e.g. a store UI-side change listener) — SDK evolution, not
+  a built-in migration concern.
+
+### Telemetry / spectrum plugin instances receive no live audio
+- **Observed:** `SpectrumAnalyzerPlugin.getAnalyzer()` and
+  `TunerPlugin.process(...)` have no production feeder;
+  `SoundWaveTelemetryPlugin` holds no telemetry data (the docked TelemetryView
+  computes from project `RoomConfiguration` app-side). Their new canvas/panel
+  editors honestly render idle/status surfaces until something feeds them.
+- **Why held off:** pre-existing shells (the old windows had the same dead
+  feeds); wiring live taps is engine plumbing beyond the §8.3 migration, and
+  surfacing `RoomTelemetryData` through the SDK needs a new contract channel.

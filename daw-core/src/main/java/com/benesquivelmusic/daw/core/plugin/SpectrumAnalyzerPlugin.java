@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.analysis.SpectrumAnalyzer;
+import com.benesquivelmusic.daw.core.plugin.editor.SpectrumAnalyzerEditor;
 import com.benesquivelmusic.daw.sdk.analysis.WindowType;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
@@ -135,5 +137,25 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
      */
     public boolean isActive() {
         return active;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Story 302 (Plugin View Design Book §8.3 item 5): returns the
+     * immersive {@link SpectrumAnalyzerEditor} canvas, replacing the legacy
+     * {@code SpectrumDisplayWindow} route. The old window's FFT-size /
+     * window-type toolbar is intentionally not part of the immersive surface
+     * (§5.D — the canvas owns every pixel);
+     * {@link #reconfigure(int, WindowType)} remains available to automation
+     * and future stories. The docked spectrum panel ({@code PANEL_SPECTRUM},
+     * the app-side {@code SpectrumDisplay} fed by the app's metering pipeline)
+     * is a separate app-side surface — the editor renders this plugin's own
+     * {@link SpectrumAnalyzer}, so no renderer is duplicated across the module
+     * boundary.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new SpectrumAnalyzerEditor(this);
     }
 }

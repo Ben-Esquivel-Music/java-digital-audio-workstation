@@ -34,10 +34,11 @@ import java.util.function.BiConsumer;
  * {@code PluginEditorFactory.Declarative} editor is now
  * {@link com.benesquivelmusic.daw.app.ui.plugin.ParameterGridPanel}, rendered
  * inside the standard {@code EditorFrame} chrome with the single-writer
- * binding discipline. This class remains the built-in insert-effect path
+ * binding discipline, and story 302 migrated the built-ins' own editors onto
+ * that contract. This class remains only the insert-effect path
  * ({@code InsertEffectRack} / {@code WorkshopSelectionHostController} /
- * {@code InnerChainEditor}) until the built-ins migrate onto the contract in
- * story 302.</p>
+ * {@code InsertsSection}); its retirement is story-304 territory alongside
+ * the deprecated {@code PluginUI}.</p>
  */
 public final class PluginParameterEditorPanel extends VBox {
 

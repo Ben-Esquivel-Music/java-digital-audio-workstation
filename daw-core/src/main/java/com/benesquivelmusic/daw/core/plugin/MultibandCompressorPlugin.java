@@ -2,7 +2,9 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.dsp.MultibandCompressorProcessor;
+import com.benesquivelmusic.daw.core.plugin.editor.MultibandCompressorEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.AutomatableParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -245,6 +247,18 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
             params.add(new PluginParameter(b + 7, prefix + "Solo Toggle",       0.0,    1.0,   0.0));
         }
         return List.copyOf(params);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Story 302 (Plugin View Design Book §8.3): returns the multiband
+     * compressor's bespoke {@link PluginEditorFactory.Panel} editor. A fresh
+     * editor is created on every call — the host asks again on Reload.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new MultibandCompressorEditor(this);
     }
 
     /**

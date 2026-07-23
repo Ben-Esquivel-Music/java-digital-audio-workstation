@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.dsp.saturation.ExciterProcessor;
+import com.benesquivelmusic.daw.core.plugin.editor.ExciterEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -112,6 +114,17 @@ public final class ExciterPlugin implements BuiltInDawPlugin {
                         0.0),
                 new PluginParameter(4, "Mode", 0.0, modeMax,
                         ExciterProcessor.Mode.CLASS_A_TUBE.ordinal()));
+    }
+
+    /**
+     * Returns a fresh {@link ExciterEditor} — the custom
+     * {@link PluginEditorFactory.Panel} that replaced the retired daw-app
+     * {@code ExciterPluginView} (story 302 §8.3). A new editor is constructed
+     * on every call because the host re-invokes this factory on Reload.
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new ExciterEditor(this);
     }
 
     /**

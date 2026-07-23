@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.core.plugin.builtin.midi;
 import com.benesquivelmusic.daw.core.plugin.BuiltInPlugin;
 import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
+import com.benesquivelmusic.daw.core.plugin.editor.ArpeggiatorEditor;
+import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -232,6 +234,20 @@ public final class ArpeggiatorPlugin implements MidiEffectPlugin {
     /** Returns the current step index — used by the UI to drive the step indicator. */
     public int getStepIndex() {
         return stepIndex;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns the {@link ArpeggiatorEditor} panel — story 302 (§8.3
+     * item 7) folds the orphaned {@code daw-app}
+     * {@code ArpeggiatorPluginView} (which no host view switch ever reached)
+     * onto the SDK editor contract: rate / pattern dropdowns, octave / gate /
+     * swing sliders, latch toggle and the 16-cell step indicator.</p>
+     */
+    @Override
+    public PluginEditorFactory editorFactory() {
+        return new ArpeggiatorEditor(this);
     }
 
     // ── Core processing ───────────────────────────────────────────────────────
