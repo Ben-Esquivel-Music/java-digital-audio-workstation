@@ -192,6 +192,14 @@ class DefaultAudioEngineControllerTest {
         waitFor(() -> controller.engineState() == EngineState.STOPPED);
 
         assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+        // The SubmissionPublisher delivers events asynchronously, so the
+        // subscriber may observe the STOPPED transition slightly after the
+        // controller's state field flips — wait for delivery before asserting.
+        waitFor(() -> {
+            synchronized (seen) {
+                return seen.contains(EngineState.STOPPED);
+            }
+        });
         synchronized (seen) {
             assertThat(seen).contains(EngineState.DEVICE_LOST, EngineState.STOPPED);
         }
