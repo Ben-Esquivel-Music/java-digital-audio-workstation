@@ -37,8 +37,7 @@ import java.util.function.BiConsumer;
  * binding discipline, and story 302 migrated the built-ins' own editors onto
  * that contract. This class remains only the insert-effect path
  * ({@code InsertEffectRack} / {@code WorkshopSelectionHostController} /
- * {@code InsertsSection}); its retirement is story-304 territory alongside
- * the deprecated {@code PluginUI}.</p>
+ * {@code InsertsSection}); its retirement is deferred to a future story.</p>
  */
 public final class PluginParameterEditorPanel extends VBox {
 

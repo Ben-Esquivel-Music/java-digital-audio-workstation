@@ -14,7 +14,6 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
-import javafx.scene.control.TextField;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
@@ -27,9 +26,10 @@ import java.util.Set;
 
 /**
  * The §6.8 inspect-and-install content for a single dropped / picked JAR (Plugin
- * View Design Book §6.8, §8.4). Built from a {@link JarInspection}, it presents
- * one of three faces and installs every plugin without the user ever typing or
- * seeing a class name on the manifest path:
+ * View Design Book §6.8, §8.4, §8.5.2). Built from a {@link JarInspection}, it
+ * renders the manifest path only — story 304 removed the legacy class-name
+ * fallback, so a JAR has exactly two outcomes and no class-name input exists
+ * anywhere:
  *
  * <ul>
  *   <li><strong>Valid manifest</strong> — a header, the common vendor (or
@@ -38,12 +38,11 @@ import java.util.Set;
  *       install button whose label reflects the count ("Install" / "Install both"
  *       / "Install N plugins"). Installing registers <em>every</em> declared
  *       plugin. There is no class-name field anywhere on this path.</li>
- *   <li><strong>No manifest</strong> — the de-emphasised legacy fallback: a
- *       class-name {@link TextField} and an "Add" button (story 304 removes this
- *       fallback later).</li>
- *   <li><strong>Manifest present but invalid, or JAR unreadable</strong> — the
- *       reader's error lines above the same de-emphasised class-name fallback,
- *       so an I/O failure is never misreported as a missing manifest.</li>
+ *   <li><strong>Anything else</strong> — no manifest, a manifest that failed to
+ *       parse/validate, or an unreadable JAR — is rejected by {@link #showDialog}
+ *       via {@code DawgDialog.error(...)} with the case-specific
+ *       {@link #rejectionMessage} copy (story 304, §8.5.2); the panel itself is
+ *       never constructed for an invalid inspection.</li>
  * </ul>
  */
 public final class PluginInstallPanel extends VBox {
@@ -54,49 +53,55 @@ public final class PluginInstallPanel extends VBox {
     private static final double ICON_SIZE = 16;
 
     private final Button primaryButton;
-    private final TextField classNameField;
     private Runnable onCloseRequest;
 
     /**
      * Builds the install content for {@code inspection}.
      *
-     * @param inspection  the JAR inspection; must not be {@code null}
+     * @param inspection  the JAR inspection; must carry a valid manifest bundle
+     *                    and must not be {@code null}
      * @param registry    the registry to install into; must not be {@code null}
      * @param onInstalled run after a successful install (e.g. refresh a list);
      *                    must not be {@code null}
+     * @throws IllegalArgumentException if {@code inspection} does not carry a
+     *                                  valid manifest bundle
      */
     public PluginInstallPanel(JarInspection inspection, PluginRegistry registry, Runnable onInstalled) {
         Objects.requireNonNull(inspection, "inspection must not be null");
         Objects.requireNonNull(registry, "registry must not be null");
         Objects.requireNonNull(onInstalled, "onInstalled must not be null");
+        if (!inspection.manifests().isValid()) {
+            throw new IllegalArgumentException(
+                    "PluginInstallPanel only renders valid manifest bundles; invalid "
+                    + "inspections are rejected via showDialog / rejection messaging (story 304)");
+        }
 
         setSpacing(CONTENT_SPACING);
         setPadding(new Insets(CONTENT_PADDING));
         getStyleClass().add("plugin-install-panel");
 
-        String jarName = jarName(inspection.jar());
-
-        if (inspection.manifests().isValid()) {
-            this.classNameField = null;
-            this.primaryButton = buildManifestPath(inspection, registry, onInstalled, jarName);
-        } else {
-            // No manifest, a manifest that failed to parse/validate, or an
-            // unreadable JAR: all land on the de-emphasised class-name fallback
-            // (story 304 removes it).
-            this.classNameField = new TextField();
-            this.primaryButton = buildFallbackPath(inspection, registry, onInstalled, jarName);
-        }
+        this.primaryButton =
+                buildManifestPath(inspection, registry, onInstalled, jarName(inspection.jar()));
     }
 
     /**
      * Wraps a {@code PluginInstallPanel} in a MEDIUM {@link DawgDialog} titled
      * "Install plugin"; the panel's own Cancel / install buttons drive the close.
+     * An inspection without a valid manifest bundle never opens the panel: it is
+     * rejected with a {@code DawgDialog.error(...)} carrying the case-specific
+     * {@link #rejectionMessage} copy (story 304, §8.5.2).
      *
      * @param inspection  the JAR inspection; must not be {@code null}
      * @param registry    the registry to install into; must not be {@code null}
      * @param onInstalled run after a successful install; must not be {@code null}
      */
     public static void showDialog(JarInspection inspection, PluginRegistry registry, Runnable onInstalled) {
+        if (!inspection.manifests().isValid()) {
+            // story 276 — the same DawgDialog.error(...) chrome idiom as
+            // installAll's partial-failure dialog.
+            DawgDialog.error("Install plugin", rejectionMessage(inspection)).showAndWait();
+            return;
+        }
         DawgDialog<Void> dialog = new DawgDialog<>();
         dialog.setTitle("Install plugin");
         dialog.setHeaderText("Install plugin");
@@ -112,14 +117,9 @@ public final class PluginInstallPanel extends VBox {
         this.onCloseRequest = onCloseRequest;
     }
 
-    /** The primary action button (install on the manifest path, Add on the fallback). */
+    /** The primary install button. */
     Button primaryButtonForTest() {
         return primaryButton;
-    }
-
-    /** The class-name field, or {@code null} on the manifest (no-typing) path. */
-    TextField classNameFieldForTest() {
-        return classNameField;
     }
 
     // ── Manifest path ─────────────────────────────────────────────────────────
@@ -179,61 +179,47 @@ public final class PluginInstallPanel extends VBox {
         requestClose();
     }
 
-    // ── Fallback (no / invalid manifest) path ─────────────────────────────────
+    // ── Rejection copy (no / invalid manifest, unreadable JAR) ────────────────
 
-    private Button buildFallbackPath(JarInspection inspection, PluginRegistry registry,
-                                     Runnable onInstalled, String jarName) {
-        Label title = new Label(jarName);
-        title.getStyleClass().add("plugin-install-title");
-
-        getChildren().add(title);
-
-        // Surface the reader's errors both for a manifest that failed to
-        // parse/validate AND for a JAR that could not be read at all — only a
-        // readable JAR genuinely lacking a manifest gets the "no manifest" copy.
-        if (inspection.manifests() instanceof PluginManifestReader.BundleResult.Invalid invalid
-                && (inspection.manifestPresent() || !inspection.jarReadable())) {
-            for (String error : invalid.errors()) {
-                Label errorLabel = new Label(error);
-                errorLabel.setWrapText(true);
-                errorLabel.getStyleClass().add("plugin-manager-notice");
-                getChildren().add(errorLabel);
-            }
-            getChildren().add(info((inspection.jarReadable()
-                    ? "This JAR's manifest could not be read. "
-                    : "This JAR could not be read. ")
-                    + "Install by class name instead:"));
+    /**
+     * The §8.5.2 rejection copy for a JAR that cannot be installed, one case per
+     * failure mode — preserving story 303's discipline that an I/O failure is
+     * never misreported as a missing manifest:
+     *
+     * <ul>
+     *   <li><strong>Unreadable JAR</strong> — a could-not-be-read headline plus
+     *       the reader's error lines; no vendor-rebuild copy, because the failure
+     *       is I/O, not format era.</li>
+     *   <li><strong>Manifest present but invalid</strong> — the reader's
+     *       validation errors under an invalid-manifest headline, closing with a
+     *       request for a corrected vendor build against the current SDK.</li>
+     *   <li><strong>No manifest</strong> — names the missing
+     *       {@code META-INF/daw-plugin.json} requirement with the story-304
+     *       predates-the-manifest-format copy.</li>
+     * </ul>
+     *
+     * <p>Package-private + {@code static} for tests.</p>
+     */
+    static String rejectionMessage(JarInspection inspection) {
+        String jarName = jarName(inspection.jar());
+        List<String> errors =
+                inspection.manifests() instanceof PluginManifestReader.BundleResult.Invalid invalid
+                        ? invalid.errors() : List.of();
+        List<String> lines = new ArrayList<>();
+        if (!inspection.jarReadable()) {
+            lines.add(jarName + " could not be read.");
+            lines.addAll(errors);
+        } else if (inspection.manifestPresent()) {
+            lines.add(jarName + "'s daw-plugin.json manifest could not be read:");
+            lines.addAll(errors);
+            lines.add("Ask the vendor for a corrected build against the current SDK.");
         } else {
-            getChildren().add(info("This JAR has no daw-plugin.json manifest. "
-                    + "Enter the plugin's fully-qualified class name to install it:"));
+            lines.add(jarName + " has no META-INF/daw-plugin.json manifest, "
+                    + "so it cannot be installed.");
+            lines.add("This plugin predates the manifest format — "
+                    + "ask the vendor to rebuild against the current SDK.");
         }
-
-        classNameField.setPromptText("e.g. com.example.MyReverbPlugin");
-
-        Button add = new Button("Add");
-        add.getStyleClass().addAll("dawg-button", "size-default", "primary");
-        add.setOnAction(_ -> addByClassName(inspection.jar(), registry, onInstalled));
-
-        getChildren().addAll(classNameField, footer(add));
-        return add;
-    }
-
-    private void addByClassName(Path jar, PluginRegistry registry, Runnable onInstalled) {
-        String className = classNameField.getText();
-        if (className == null || className.isBlank()) {
-            DawgDialog.error("Install plugin",
-                    "Please enter the plugin's fully-qualified class name.").showAndWait();
-            return;
-        }
-        try {
-            registry.register(new ExternalPluginEntry(jar, className.strip()));
-        } catch (PluginLoadException e) {
-            DawgDialog.error("Install plugin",
-                    "Failed to load plugin:\n" + e.getMessage()).showAndWait();
-            return;
-        }
-        onInstalled.run();
-        requestClose();
+        return String.join("\n", lines);
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────
@@ -246,13 +232,6 @@ public final class PluginInstallPanel extends VBox {
         footer.setAlignment(Pos.CENTER_RIGHT);
         footer.getStyleClass().add("plugin-install-row");
         return footer;
-    }
-
-    private static Label info(String text) {
-        Label label = new Label(text);
-        label.setWrapText(true);
-        label.getStyleClass().add("plugin-manager-info");
-        return label;
     }
 
     private void requestClose() {

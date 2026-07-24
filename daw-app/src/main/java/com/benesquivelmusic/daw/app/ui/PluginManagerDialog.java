@@ -33,11 +33,12 @@ import java.util.Locale;
  * <p>Lists the registry's plugins with descriptor-driven icons (via
  * {@link PluginIcons}), lets the user install a plugin by dropping / picking a
  * JAR — the DAW reads the JAR's {@code META-INF/daw-plugin.json} manifest and
- * installs every plugin it declares, so the user never types a class name (a
- * manifest-less JAR falls back to the class-name form inside the install flow) —
- * and removes a selected plugin. The class-name / JAR-path text fields the legacy
- * dialog showed at all times are gone; icons come from the descriptor category /
- * {@code iconHint} rather than the retired keyword-sniffing heuristic.</p>
+ * installs every plugin it declares, so the user never types a class name (a JAR
+ * must carry that manifest; otherwise the install flow rejects it with a clear
+ * error — story 304, §8.5.2) — and removes a selected plugin. The class-name /
+ * JAR-path text fields the legacy dialog showed at all times are gone; icons come
+ * from the descriptor category / {@code iconHint} rather than the retired
+ * keyword-sniffing heuristic.</p>
  *
  * <p>Uses the {@link DawIcon} icon pack for all button graphics.</p>
  */

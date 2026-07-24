@@ -10,16 +10,20 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Story 303 review follow-up — a JAR the scanner cannot read at all (corrupt /
- * not a zip) must surface the reader's "could not read" error in the §6.8
- * fallback panel instead of being misreported as a JAR that merely has no
- * {@code daw-plugin.json} manifest.
+ * Story 304 (Plugin View Design Book §8.5.2), keeping story 303's discipline —
+ * a JAR the scanner cannot read at all (corrupt / not a zip) must surface the
+ * reader's "could not read" error in the rejection copy (the
+ * {@code !jarReadable} arm of the {@link PluginInstallPanel#rejectionMessage}
+ * predicate) with no vendor-rebuild copy — an I/O failure is not a format-era
+ * problem and is never misreported as a missing or invalid manifest. With the
+ * class-name fallback removed, the §6.8 panel refuses to render the invalid
+ * inspection at all.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class UnreadableJarShowsReadErrorTest {
@@ -39,24 +43,32 @@ class UnreadableJarShowsReadErrorTest {
         assertThat(inspection.manifests().isValid())
                 .as("the reader reports the same problem as Invalid").isFalse();
 
+        String message = PluginInstallPanel.rejectionMessage(inspection);
+        assertThat(message)
+                .as("the unreadable-JAR headline is shown")
+                .contains("corrupt.jar could not be read.");
+        assertThat(message)
+                .as("the reader's read error is surfaced")
+                .contains("could not read");
+        assertThat(message)
+                .as("an unreadable JAR is not misreported as an invalid manifest")
+                .doesNotContain("manifest could not be read");
+        assertThat(message)
+                .as("an unreadable JAR is not misreported as manifest-less, and an "
+                        + "I/O failure gets no vendor-rebuild copy")
+                .doesNotContain("predates the manifest format")
+                .doesNotContain("has no META-INF/daw-plugin.json manifest")
+                .doesNotContain("current SDK");
+        assertThat(message)
+                .as("story 304 — no class-name input is offered anywhere")
+                .doesNotContain("class name");
+
         PluginRegistry registry = new PluginRegistry();
         try {
-            PluginInstallPanel panel = runOnFxThread(() ->
-                    new PluginInstallPanel(inspection, registry, () -> { }));
-
-            List<String> labels = PluginNodes.labelTexts(panel);
-            assertThat(labels)
-                    .as("the reader's read error is surfaced")
-                    .anySatisfy(text -> assertThat(text).contains("could not read"));
-            assertThat(labels)
-                    .as("the unreadable-JAR copy is shown, not the invalid-manifest copy")
-                    .anySatisfy(text -> assertThat(text).contains("This JAR could not be read."))
-                    .noneSatisfy(text ->
-                            assertThat(text).contains("This JAR's manifest could not be read"));
-            assertThat(labels)
-                    .as("an unreadable JAR is not misreported as manifest-less")
-                    .noneSatisfy(text ->
-                            assertThat(text).contains("has no daw-plugin.json manifest"));
+            assertThatThrownBy(() -> runOnFxThread(() ->
+                    new PluginInstallPanel(inspection, registry, () -> { })))
+                    .as("the panel refuses to render an invalid inspection")
+                    .isInstanceOf(IllegalArgumentException.class);
         } finally {
             registry.disposeAll();
         }
