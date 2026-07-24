@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.dsp.reverb.ConvolutionReverbProcessor;
 import com.benesquivelmusic.daw.core.plugin.editor.ConvolutionReverbEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -35,7 +36,9 @@ public final class ConvolutionReverbPlugin implements BuiltInDawPlugin {
             "Convolution Reverb",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.REVERB_AND_DELAY,
+            "reverb"
     );
 
     private ConvolutionReverbProcessor processor;

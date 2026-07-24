@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
+
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -24,6 +26,10 @@ import java.lang.annotation.Target;
  * with {@code @InsertEffect}, and register the class in the
  * {@link ProcessorRegistry} known-classes list. No changes are required to
  * {@link InsertEffectFactory}.</p>
+ *
+ * <p>The {@link #category()} attribute declares the {@link PluginCategory}
+ * under which the effect is grouped by the §6.7 plugin browser; it defaults
+ * to {@link PluginCategory#UTILITY}.</p>
  *
  * <p>Example:</p>
  * <pre>{@code
@@ -52,4 +58,11 @@ public @interface InsertEffect {
      * constructor.
      */
     boolean stereoOnly() default false;
+
+    /**
+     * The {@link PluginCategory} used to group this built-in insert effect in
+     * the §6.7 plugin browser. Effects that do not declare a category default
+     * to {@link PluginCategory#UTILITY}.
+     */
+    PluginCategory category() default PluginCategory.UTILITY;
 }

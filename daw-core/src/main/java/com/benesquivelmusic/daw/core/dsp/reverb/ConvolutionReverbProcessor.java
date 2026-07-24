@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -52,7 +53,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * non-realtime and is dispatched onto a virtual thread by
  * {@link #setImpulseResponseAsync}.</p>
  */
-@InsertEffect(type = "CONVOLUTION_REVERB", displayName = "Convolution Reverb")
+@InsertEffect(type = "CONVOLUTION_REVERB", displayName = "Convolution Reverb", category = PluginCategory.REVERB_AND_DELAY)
 public final class ConvolutionReverbProcessor implements AudioProcessor {
 
     /** Partition / block size — power of two; FFT length is twice this. */

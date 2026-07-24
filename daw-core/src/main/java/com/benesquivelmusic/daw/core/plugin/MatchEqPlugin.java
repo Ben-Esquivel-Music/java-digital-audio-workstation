@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.export.SampleRateConverter;
 import com.benesquivelmusic.daw.core.plugin.editor.MatchEqEditor;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -44,7 +45,9 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
             "Match EQ",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.EQ_AND_FILTER,
+            "eq"
     );
 
     private MatchEqProcessor processor;

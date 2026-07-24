@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
@@ -58,7 +59,9 @@ public final class MetronomePlugin implements BuiltInDawPlugin {
             "Metronome",
             "1.0.0",
             "DAW Built-in",
-            PluginType.MIDI_EFFECT
+            PluginType.MIDI_EFFECT,
+            PluginCategory.UTILITY,
+            "metronome"
     );
 
     private PluginContext context;

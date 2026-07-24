@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
@@ -74,7 +75,9 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin {
             "Signal Generator",
             "1.0.0",
             "DAW Built-in",
-            PluginType.INSTRUMENT
+            PluginType.INSTRUMENT,
+            PluginCategory.UTILITY,
+            "waveform"
     );
 
     /**

@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -31,7 +32,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "SPRING_REVERB", displayName = "Spring Reverb")
+@InsertEffect(type = "SPRING_REVERB", displayName = "Spring Reverb", category = PluginCategory.REVERB_AND_DELAY)
 public final class SpringReverbProcessor implements AudioProcessor {
 
     private static final int NUM_ALLPASS_STAGES = 8;

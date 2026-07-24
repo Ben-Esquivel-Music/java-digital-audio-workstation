@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.dsp.MidSideWrapperProcessor;
 import com.benesquivelmusic.daw.core.dsp.ParametricEqProcessor;
 import com.benesquivelmusic.daw.core.plugin.editor.MidSideWrapperEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
@@ -69,7 +70,9 @@ public final class MidSideWrapperPlugin implements BuiltInDawPlugin {
             "Mid/Side Wrapper",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.SPATIAL,
+            "stereo"
     );
 
     private final List<DawPlugin> midChain  = new ArrayList<>();

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.plugin.editor.SoundWaveTelemetryEditor;
 import com.benesquivelmusic.daw.core.telemetry.ArmedTrackSourceProvider;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -40,7 +41,9 @@ public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
             "Sound Wave Telemetry",
             "1.0.0",
             "DAW Built-in",
-            PluginType.ANALYZER
+            PluginType.ANALYZER,
+            PluginCategory.ANALYZER,
+            "surround"
     );
 
     private PluginContext context;

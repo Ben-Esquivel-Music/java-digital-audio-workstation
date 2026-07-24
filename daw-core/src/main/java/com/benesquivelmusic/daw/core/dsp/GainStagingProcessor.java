@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
@@ -15,7 +16,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "GAIN_STAGING", displayName = "Gain Staging")
+@InsertEffect(type = "GAIN_STAGING", displayName = "Gain Staging", category = PluginCategory.UTILITY)
 public final class GainStagingProcessor implements AudioProcessor {
 
     private final int channels;

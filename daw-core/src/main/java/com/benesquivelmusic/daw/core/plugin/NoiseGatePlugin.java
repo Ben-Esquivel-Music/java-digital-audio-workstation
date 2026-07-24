@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.dsp.dynamics.NoiseGateProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
@@ -38,7 +39,9 @@ public final class NoiseGatePlugin implements BuiltInDawPlugin {
             "Noise Gate",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.DYNAMICS,
+            "compressor"
     );
 
     private NoiseGateProcessor processor;

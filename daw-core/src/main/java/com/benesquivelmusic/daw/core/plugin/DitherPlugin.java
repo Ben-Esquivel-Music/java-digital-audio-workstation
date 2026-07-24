@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.dsp.mastering.DitherProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
@@ -48,7 +49,9 @@ public final class DitherPlugin implements BuiltInDawPlugin {
             "Dither",
             "1.0.0",
             "DAW Built-in",
-            PluginType.EFFECT
+            PluginType.EFFECT,
+            PluginCategory.UTILITY,
+            "dither"
     );
 
     /** Cached enum arrays — avoids the allocation of {@code Enum.values()} on every call. */

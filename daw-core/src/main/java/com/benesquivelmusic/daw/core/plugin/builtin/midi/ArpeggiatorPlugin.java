@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.plugin.BuiltInPlugin;
 import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
 import com.benesquivelmusic.daw.core.plugin.editor.ArpeggiatorEditor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -51,7 +52,9 @@ public final class ArpeggiatorPlugin implements MidiEffectPlugin {
             "Arpeggiator",
             "1.0.0",
             "DAW Built-in",
-            PluginType.MIDI_EFFECT
+            PluginType.MIDI_EFFECT,
+            PluginCategory.MIDI_EFFECT,
+            "arpeggiator"
     );
 
     /** Step note value, expressed as a fraction of a whole note. */

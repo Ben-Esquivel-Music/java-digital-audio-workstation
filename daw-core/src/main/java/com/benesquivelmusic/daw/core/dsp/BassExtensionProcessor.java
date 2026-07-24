@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
@@ -46,7 +47,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "BASS_EXTENSION", displayName = "Bass Extension")
+@InsertEffect(type = "BASS_EXTENSION", displayName = "Bass Extension", category = PluginCategory.EQ_AND_FILTER)
 public final class BassExtensionProcessor implements AudioProcessor {
 
     /** Minimum allowed crossover frequency in Hz. */

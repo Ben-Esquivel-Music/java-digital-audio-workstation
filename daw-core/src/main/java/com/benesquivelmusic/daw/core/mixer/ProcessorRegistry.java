@@ -22,6 +22,7 @@ import com.benesquivelmusic.daw.core.dsp.VelvetNoiseReverbProcessor;
 import com.benesquivelmusic.daw.core.dsp.WaveshaperProcessor;
 import com.benesquivelmusic.daw.core.dsp.reverb.ConvolutionReverbProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -252,6 +253,27 @@ public final class ProcessorRegistry {
         return byType.containsKey(type);
     }
 
+    /**
+     * Returns the {@link PluginCategory} declared by the {@link InsertEffect}
+     * annotation on the processor registered for the given type. The §6.7
+     * plugin browser uses this to group built-in insert effects.
+     *
+     * @param type the built-in effect type
+     * @return the declared category
+     * @throws IllegalArgumentException if the type is not registered
+     *                                  (e.g. {@link InsertEffectType#CLAP_PLUGIN})
+     */
+    public PluginCategory categoryOf(InsertEffectType type) {
+        Objects.requireNonNull(type, "type must not be null");
+        Entry entry = byType.get(type);
+        if (entry == null) {
+            throw new IllegalArgumentException(
+                    "No registered processor for " + type
+                            + " (CLAP plugins must be loaded via ClapPluginManager)");
+        }
+        return entry.category;
+    }
+
     // ── Constructor resolution ──────────────────────────────────────────────
 
     private static MethodHandle resolveConstructor(MethodHandles.Lookup lookup,
@@ -305,6 +327,7 @@ public final class ProcessorRegistry {
         final InsertEffect annotation;
         final MethodHandle handle;
         final InvocationKind invocationKind;
+        final PluginCategory category;
 
         Entry(Class<? extends AudioProcessor> processorClass,
               InsertEffect annotation,
@@ -312,6 +335,7 @@ public final class ProcessorRegistry {
             this.processorClass = processorClass;
             this.annotation = annotation;
             this.handle = handle;
+            this.category = annotation.category();
             // Detect kind from handle's parameter list: constructors are
             // adapted to return the class; static factories return AudioProcessor.
             MethodType type = handle.type();

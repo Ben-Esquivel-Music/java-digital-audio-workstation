@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import java.util.Random;
@@ -39,7 +40,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-@InsertEffect(type = "VELVET_NOISE_REVERB", displayName = "Velvet Noise Reverb")
+@InsertEffect(type = "VELVET_NOISE_REVERB", displayName = "Velvet Noise Reverb", category = PluginCategory.REVERB_AND_DELAY)
 public final class VelvetNoiseReverbProcessor implements AudioProcessor {
 
     private static final double MIN_DECAY_SECONDS = 0.1;
