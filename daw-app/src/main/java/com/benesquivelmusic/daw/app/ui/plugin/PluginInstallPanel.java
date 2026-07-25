@@ -72,8 +72,8 @@ public final class PluginInstallPanel extends VBox {
         Objects.requireNonNull(onInstalled, "onInstalled must not be null");
         if (!inspection.manifests().isValid()) {
             throw new IllegalArgumentException(
-                    "PluginInstallPanel only renders valid manifest bundles; invalid "
-                    + "inspections are rejected via showDialog / rejection messaging (story 304)");
+                    "PluginInstallPanel requires a valid manifest bundle. "
+                    + "Use PluginInstallPanel.showDialog(...) to reject invalid inspections with a user-facing message.");
         }
 
         setSpacing(CONTENT_SPACING);
