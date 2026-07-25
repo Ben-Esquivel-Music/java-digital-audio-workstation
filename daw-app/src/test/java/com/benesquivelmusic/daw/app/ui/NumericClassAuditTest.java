@@ -14,7 +14,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
@@ -203,7 +202,7 @@ final class NumericClassAuditTest {
 
     @Test
     void everyJavaConstructedNumericLabelGetsANumericClass() throws IOException {
-        Path moduleRoot = locateDawAppModule();
+        Path moduleRoot = SourceScanSupport.locateDawAppModule();
         Path srcRoot = moduleRoot.resolve("src/main/java");
         assertThat(Files.isDirectory(srcRoot))
                 .as("Java sources must live under %s", srcRoot)
@@ -295,35 +294,5 @@ final class NumericClassAuditTest {
             if (p.matcher(source).find()) return true;
         }
         return false;
-    }
-
-    /**
-     * Locate the {@code daw-app} module root. Surefire normally sets the
-     * working directory to the module itself; as a fallback we also check
-     * for a {@code daw-app} child directory (covers invocations from the
-     * repo root such as {@code mvn -pl daw-app test}).
-     */
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-
-        if (isDawAppModule(cwd)) return cwd;
-
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) return child;
-
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) return candidate;
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) return nested;
-            candidate = candidate.getParent();
-        }
-
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
     }
 }

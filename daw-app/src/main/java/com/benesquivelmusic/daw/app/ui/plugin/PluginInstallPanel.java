@@ -96,6 +96,9 @@ public final class PluginInstallPanel extends VBox {
      * @param onInstalled run after a successful install; must not be {@code null}
      */
     public static void showDialog(JarInspection inspection, PluginRegistry registry, Runnable onInstalled) {
+        Objects.requireNonNull(inspection, "inspection must not be null");
+        Objects.requireNonNull(registry, "registry must not be null");
+        Objects.requireNonNull(onInstalled, "onInstalled must not be null");
         if (!inspection.manifests().isValid()) {
             // story 276 — the same DawgDialog.error(...) chrome idiom as
             // installAll's partial-failure dialog.
@@ -201,6 +204,7 @@ public final class PluginInstallPanel extends VBox {
      * <p>Package-private + {@code static} for tests.</p>
      */
     static String rejectionMessage(JarInspection inspection) {
+        Objects.requireNonNull(inspection, "inspection must not be null");
         String jarName = jarName(inspection.jar());
         List<String> errors =
                 inspection.manifests() instanceof PluginManifestReader.BundleResult.Invalid invalid

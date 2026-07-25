@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
@@ -27,7 +26,7 @@ final class ArpeggiatorOrphanViewRetiredTest {
 
     @Test
     void theOrphanedViewClassIsDeletedFromDawApp() throws IOException {
-        Path mainSources = locateDawAppModule().resolve("src/main/java");
+        Path mainSources = SourceScanSupport.locateDawAppModule().resolve("src/main/java");
         assertThat(Files.isDirectory(mainSources))
                 .as("daw-app main sources must live under %s", mainSources).isTrue();
 
@@ -54,33 +53,5 @@ final class ArpeggiatorOrphanViewRetiredTest {
     void theArpeggiatorNowYieldsAPanelEditor() {
         assertThat(new ArpeggiatorPlugin().editorFactory())
                 .isInstanceOf(PluginEditorFactory.Panel.class);
-    }
-
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
     }
 }

@@ -11,14 +11,12 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,7 +57,7 @@ final class HostCallbackRemovalTest {
 
     @Test
     void theElevenCascadeHostsAreRemovedAndTheFourFrameworkHostsRemain() throws IOException {
-        Path uiRoot = locateDawAppModule()
+        Path uiRoot = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui");
         assertThat(Files.isDirectory(uiRoot)).as("ui root must exist at %s", uiRoot).isTrue();
 
@@ -67,7 +65,7 @@ final class HostCallbackRemovalTest {
         for (String relPath : CASCADE_HOST_FILES) {
             Path file = uiRoot.resolve(relPath);
             assertThat(Files.isRegularFile(file)).as("%s must still exist", relPath).isTrue();
-            String code = stripComments(Files.readString(file, StandardCharsets.UTF_8));
+            String code = SourceScanSupport.stripComments(Files.readString(file, StandardCharsets.UTF_8));
             if (INTERFACE_HOST.matcher(code).find()) {
                 stragglers.add(relPath + " — still declares a nested 'interface Host'");
             }
@@ -82,7 +80,7 @@ final class HostCallbackRemovalTest {
         for (String relPath : FRAMEWORK_HOST_FILES) {
             Path file = uiRoot.resolve(relPath);
             assertThat(Files.isRegularFile(file)).as("%s must exist", relPath).isTrue();
-            String code = stripComments(Files.readString(file, StandardCharsets.UTF_8));
+            String code = SourceScanSupport.stripComments(Files.readString(file, StandardCharsets.UTF_8));
             if (!INTERFACE_HOST.matcher(code).find()) {
                 missingFramework.add(relPath + " — its framework 'interface Host' was wrongly removed");
             }
@@ -122,51 +120,4 @@ final class HostCallbackRemovalTest {
         }
     }
 
-    // ── source pre-processing + module location (mirrors RunLaterConsolidationTest) ──
-
-    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
-            "\"\"\"[\\s\\S]*?\"\"\""
-            + "|\"(?:\\\\.|[^\"\\\\])*\""
-            + "|//[^\\n]*"
-            + "|/\\*[\\s\\S]*?\\*/");
-
-    private static String stripComments(String source) {
-        Matcher m = COMMENT_OR_STRING.matcher(source);
-        StringBuilder out = new StringBuilder(source.length());
-        while (m.find()) {
-            String token = m.group();
-            m.appendReplacement(out, token.charAt(0) == '"'
-                    ? Matcher.quoteReplacement(token) : " ");
-        }
-        m.appendTail(out);
-        return out.toString();
-    }
-
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
-    }
 }

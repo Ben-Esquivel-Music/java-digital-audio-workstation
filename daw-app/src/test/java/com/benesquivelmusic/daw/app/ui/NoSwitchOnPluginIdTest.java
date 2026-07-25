@@ -7,12 +7,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,14 +48,14 @@ final class NoSwitchOnPluginIdTest {
 
     @Test
     void thePluginViewControllerSwitchAndItsDispatcherAreGone() throws IOException {
-        Path controller = locateDawAppModule()
+        Path controller = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui")
                 .resolve(CONTROLLER_FILE);
         assertThat(Files.isRegularFile(controller))
                 .as("%s must exist at %s", CONTROLLER_FILE, controller).isTrue();
 
         String raw = Files.readString(controller, StandardCharsets.UTF_8);
-        String code = stripComments(raw);
+        String code = SourceScanSupport.stripComments(raw);
         assertThat(code.length())
                 .as("the stripped controller source must be non-trivial "
                         + "(a broken read cannot vacuously pass)")
@@ -81,7 +79,7 @@ final class NoSwitchOnPluginIdTest {
 
     @Test
     void noUiSourceSwitchesOverAPluginId() throws IOException {
-        Path uiRoot = locateDawAppModule()
+        Path uiRoot = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui");
         assertThat(Files.isDirectory(uiRoot))
                 .as("daw-app ui sources must live under %s", uiRoot).isTrue();
@@ -97,7 +95,8 @@ final class NoSwitchOnPluginIdTest {
                     return FileVisitResult.CONTINUE;
                 }
                 scanned.add(file);
-                String code = stripComments(Files.readString(file, StandardCharsets.UTF_8));
+                String code = SourceScanSupport.stripComments(
+                        Files.readString(file, StandardCharsets.UTF_8));
                 if (CASE_ON_PLUGIN_ID.matcher(code).find()
                         || SWITCH_ON_PLUGIN_ID.matcher(code).find()) {
                     offenders.add(name);
@@ -114,53 +113,5 @@ final class NoSwitchOnPluginIdTest {
                 .as("§9 rejection #5 — no daw-app ui source may switch over a plugin id. "
                         + "Offenders: %s", offenders)
                 .isEmpty();
-    }
-
-    // ── source pre-processing + module location (mirrors NoSurfaceHostInterfaceRemainsTest) ──
-
-    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
-            "\"\"\"[\\s\\S]*?\"\"\""
-            + "|\"(?:\\\\.|[^\"\\\\])*\""
-            + "|//[^\\n]*"
-            + "|/\\*[\\s\\S]*?\\*/");
-
-    private static String stripComments(String source) {
-        Matcher m = COMMENT_OR_STRING.matcher(source);
-        StringBuilder out = new StringBuilder(source.length());
-        while (m.find()) {
-            String token = m.group();
-            m.appendReplacement(out, token.charAt(0) == '"'
-                    ? Matcher.quoteReplacement(token) : " ");
-        }
-        m.appendTail(out);
-        return out.toString();
-    }
-
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
     }
 }

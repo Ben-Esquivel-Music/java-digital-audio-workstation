@@ -7,12 +7,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,7 +47,7 @@ final class ReentrancyGuardRemovalTest {
     @Test
     void theFourCascadeGuardsAndTheRetiredSurvivorAreGoneAppWide()
             throws IOException {
-        Path uiRoot = locateDawAppModule()
+        Path uiRoot = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui");
         assertThat(Files.isDirectory(uiRoot))
                 .as("daw-app ui sources must live under %s", uiRoot).isTrue();
@@ -70,7 +68,8 @@ final class ReentrancyGuardRemovalTest {
                 }
                 scanned.add(file);
                 String raw = Files.readString(file, StandardCharsets.UTF_8);
-                String code = stripStringLiterals(stripComments(raw));
+                String code = SourceScanSupport.stripStringLiterals(
+                        SourceScanSupport.stripComments(raw));
 
                 for (String guard : REMOVED_GUARDS) {
                     if (Pattern.compile("\\b" + Pattern.quote(guard) + "\\b").matcher(code).find()) {
@@ -102,59 +101,5 @@ final class ReentrancyGuardRemovalTest {
                         + "flag of this family may remain. Found in: %s",
                         RETIRED_SURVIVOR_FLAG, survivorFiles)
                 .isEmpty();
-    }
-
-    // ── source pre-processing + module location (mirrors RunLaterConsolidationTest) ──
-
-    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
-            "\"\"\"[\\s\\S]*?\"\"\""
-            + "|\"(?:\\\\.|[^\"\\\\])*\""
-            + "|//[^\\n]*"
-            + "|/\\*[\\s\\S]*?\\*/");
-
-    private static String stripComments(String source) {
-        Matcher m = COMMENT_OR_STRING.matcher(source);
-        StringBuilder out = new StringBuilder(source.length());
-        while (m.find()) {
-            String token = m.group();
-            m.appendReplacement(out, token.charAt(0) == '"'
-                    ? Matcher.quoteReplacement(token) : " ");
-        }
-        m.appendTail(out);
-        return out.toString();
-    }
-
-    private static String stripStringLiterals(String code) {
-        return code
-                .replaceAll("\"\"\"[\\s\\S]*?\"\"\"", "\"\"")
-                .replaceAll("\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");
-    }
-
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
     }
 }
