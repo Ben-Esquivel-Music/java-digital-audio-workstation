@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.settings.SettingsCatalogue;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.sdk.event.UiEvent;
@@ -76,6 +77,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
     private final SettingsModel model;
 
+    // Story 305 — the dialog resolves label / default / validator metadata
+    // through the settings catalogue (Settings View Design Book §7 Stage 1)
+    // instead of inline literals; SettingsModel stays the write path.
+    private final SettingsCatalogue catalogue;
+
     // ── Callback ─────────────────────────────────────────────────────────────
     private SettingsChangeListener settingsChangeListener;
     private AudioEngineController audioEngineController;
@@ -133,6 +139,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
      */
     public SettingsDialog(SettingsModel model) {
         this.model = model;
+        catalogue = SettingsCatalogue.create();
 
         setTitle("Settings");
         setHeaderText("Application Preferences");
@@ -164,7 +171,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         // Story 298 — journaled persistence toggle, seeded from the model.
         journaledPersistenceCheck = new CheckBox(
-                "Use journaled persistence (write-ahead journal & crash recovery)");
+                settingLabel("project.useJournaledPersistence"));
         journaledPersistenceCheck.setSelected(model.isUseJournaledPersistence());
 
         Tab projectTab = new Tab("Project", buildProjectPane());
@@ -232,7 +239,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
         // applied in applySettings(). A tooltip restates the WCAG 2.3.3
         // intent (cut transitions, keep real-time meters).
         motionManager = MotionManager.getDefault();
-        reduceMotionCheck = new CheckBox(msg("appearance.reduceMotion.label"));
+        reduceMotionCheck = new CheckBox(settingLabel(MotionManager.PREF_KEY));
         reduceMotionCheck.setSelected(motionManager.isReduceMotion());
         reduceMotionCheck.setTooltip(
                 new Tooltip(msg("appearance.reduceMotion.tooltip")));
@@ -313,11 +320,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         grid.add(header, 0, 0, 2, 1);
         grid.add(new Separator(), 0, 1, 2, 1);
-        grid.add(new Label("Sample Rate (Hz):"), 0, 2);
+        grid.add(new Label(settingLabel("audio.sampleRate") + ":"), 0, 2);
         grid.add(sampleRateCombo, 1, 2);
-        grid.add(new Label("Bit Depth:"), 0, 3);
+        grid.add(new Label(settingLabel("audio.bitDepth") + ":"), 0, 3);
         grid.add(bitDepthCombo, 1, 3);
-        grid.add(new Label("Buffer Size (frames):"), 0, 4);
+        grid.add(new Label(settingLabel("audio.bufferSize") + ":"), 0, 4);
         grid.add(bufferSizeCombo, 1, 4);
 
         openAudioDeviceDialogButton = new Button("Audio Device Settings\u2026");
@@ -357,9 +364,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         grid.add(header, 0, 0, 2, 1);
         grid.add(new Separator(), 0, 1, 2, 1);
-        grid.add(new Label("Auto-Save Interval (seconds):"), 0, 2);
+        grid.add(new Label(settingLabel("project.autoSaveIntervalSeconds") + ":"), 0, 2);
         grid.add(autoSaveCombo, 1, 2);
-        grid.add(new Label("Default Tempo (BPM):"), 0, 3);
+        grid.add(new Label(settingLabel("project.defaultTempo") + ":"), 0, 3);
         grid.add(tempoField, 1, 3);
 
         // Story 298 — journaled persistence toggle + a one-line §7-Stage-4
@@ -386,14 +393,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         grid.add(header, 0, 0, 2, 1);
         grid.add(new Separator(), 0, 1, 2, 1);
-        grid.add(new Label(msg("appearance.theme.label") + ":"), 0, 2);
+        grid.add(new Label(settingLabel(ThemeManager.PREF_KEY) + ":"), 0, 2);
         grid.add(themeCombo, 1, 2);
         // Visual separator between the theme chooser (the prominent new
         // affordance) and the UI-scale row keeps the grouping clear —
         // mirrors the header/separator/fields pattern used elsewhere in
         // this dialog.
         grid.add(new Separator(), 0, 3, 2, 1);
-        grid.add(new Label("UI Scale:"), 0, 4);
+        grid.add(new Label(settingLabel("appearance.uiScale") + ":"), 0, 4);
         grid.add(uiScaleSlider, 1, 4);
         grid.add(uiScaleValueLabel, 2, 4);
 
@@ -401,7 +408,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
         // label + the three radios laid out horizontally, following the
         // header/separator/field grid idiom used above.
         grid.add(new Separator(), 0, 5, 2, 1);
-        grid.add(new Label(msg("appearance.density.label") + ":"), 0, 6);
+        grid.add(new Label(settingLabel(DensityManager.PREF_KEY) + ":"), 0, 6);
         HBox densityBox = new HBox(12,
                 densityButtons.get(DensityMode.COMPACT),
                 densityButtons.get(DensityMode.COMFORTABLE),
@@ -468,7 +475,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 row = 0;
             }
 
-            Label nameLabel = new Label(action.displayName() + ":");
+            Label nameLabel = new Label(settingLabel("keybinding." + action.name()) + ":");
             TextField field = new TextField();
             field.setEditable(false);
             field.setPrefWidth(180);
@@ -586,7 +593,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         grid.add(header, 0, 0, 2, 1);
         grid.add(new Separator(), 0, 1, 2, 1);
-        grid.add(new Label("Plugin Scan Paths:"), 0, 2);
+        grid.add(new Label(settingLabel("plugins.scanPaths") + ":"), 0, 2);
         grid.add(pluginScanPathsField, 1, 2);
 
         Label hint = new Label("Separate multiple paths with semicolons (;).");
@@ -628,7 +635,12 @@ public final class SettingsDialog extends DawgDialog<Void> {
         String tempoText = tempoField.getText();
         if (tempoText != null && !tempoText.isBlank()) {
             double tempo = Double.parseDouble(tempoText);
-            if (tempo >= 20.0 && tempo <= 999.0) {
+            // Story 305 — the descriptor validator delegates to the setter
+            // guard, whose range comparisons cannot express NaN rejection
+            // (both are false for NaN), so the call site keeps the pre-305
+            // inline check's silent drop for NaN explicitly.
+            if (!Double.isNaN(tempo)
+                    && catalogue.byId("project.defaultTempo").orElseThrow().accepts(tempo)) {
                 model.setDefaultTempo(tempo);
             }
         }
@@ -724,6 +736,20 @@ public final class SettingsDialog extends DawgDialog<Void> {
         } catch (MissingResourceException e) {
             return key;
         }
+    }
+
+    /**
+     * Resolves a control's label text through its {@link SettingsCatalogue}
+     * descriptor, so the descriptor — not the call site — owns the string.
+     *
+     * @param id the descriptor id (the {@code Preferences} key)
+     * @return the descriptor's resolved label
+     * @throws IllegalStateException if no descriptor exists for the id
+     */
+    private String settingLabel(String id) {
+        return catalogue.byId(id)
+                .orElseThrow(() -> new IllegalStateException("No descriptor for setting: " + id))
+                .label();
     }
 
     /**
