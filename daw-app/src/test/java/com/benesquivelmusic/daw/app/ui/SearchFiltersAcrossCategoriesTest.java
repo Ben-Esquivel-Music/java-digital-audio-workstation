@@ -322,4 +322,30 @@ class SearchFiltersAcrossCategoriesTest {
                 .isNotEmpty()
                 .containsExactlyElementsOf(index.search("latency"));
     }
+
+    @Test
+    void indexShouldStripSurroundingWhitespaceFromQuery() {
+        SettingsCatalogue catalogue = SettingsCatalogue.create();
+        SettingsSearchIndex index = SettingsSearchIndex.of(catalogue);
+
+        // Pasted-with-spaces query filters exactly like the bare query —
+        // and therefore agrees with SettingRowSkin's stripped highlight.
+        assertThat(index.search(" latency "))
+                .as("\" latency \" (pasted with spaces) matches what \"latency\" matches")
+                .isNotEmpty()
+                .containsExactlyElementsOf(index.search("latency"));
+        assertThat(index.matchCountsByCategory("\tlatency \n"))
+                .as("rail counts agree for the padded query")
+                .isEqualTo(index.matchCountsByCategory("latency"));
+
+        // Padding must not demote an exact-label hit out of LABEL_EXACT.
+        SettingDescriptor<?> bufferSize = catalogue.byId("audio.bufferSize")
+                .orElseThrow(() -> new AssertionError("audio.bufferSize not catalogued"));
+        List<SettingsSearchIndex.Match> matches =
+                index.search(" " + bufferSize.label() + " ");
+        assertThat(matches).isNotEmpty();
+        assertThat(matches.get(0).descriptor().id()).isEqualTo("audio.bufferSize");
+        assertThat(matches.get(0).field())
+                .isEqualTo(SettingsSearchIndex.MatchField.LABEL_EXACT);
+    }
 }

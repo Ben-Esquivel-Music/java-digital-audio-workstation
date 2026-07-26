@@ -19,8 +19,10 @@ import java.util.regex.Pattern;
  * and the titles of the group and category it lives in — is normalized
  * once at build time: Unicode NFD decomposition, combining marks
  * ({@code \p{M}}) stripped, lower-cased in {@link Locale#ROOT}. Queries
- * are normalized identically, so matching is case- and
- * diacritic-insensitive on both sides ("LÁTENCY" finds "latency").
+ * are normalized identically (after stripping leading/trailing
+ * whitespace), so matching is case- and diacritic-insensitive on both
+ * sides ("LÁTENCY" finds "latency") and a pasted {@code " latency "}
+ * finds what {@code "latency"} finds.
  * Because the index is built from the catalogue, a newly catalogued
  * descriptor is searchable with no extra wiring (§6.1).</p>
  *
@@ -102,11 +104,15 @@ public final class SettingsSearchIndex {
      * then catalogue order within a tier. Blank/empty (or {@code null})
      * query — including a query that is blank <em>after</em>
      * normalization, e.g. bare combining marks — returns an empty list.
-     * Matching is case-insensitive and diacritic-insensitive on both
-     * sides ({@link Normalizer} NFD + strip {@code \p{M}} +
-     * {@code toLowerCase(Locale.ROOT)}). A descriptor appears at most
-     * once, under its strongest field: {@code LABEL_EXACT} = normalized
-     * query equals normalized label; {@code LABEL} = label contains
+     * Leading/trailing whitespace is stripped before matching, so a
+     * pasted {@code " latency "} matches exactly what {@code "latency"}
+     * does and filtering agrees with the row skin's highlight range,
+     * which strips identically. Matching is case-insensitive and
+     * diacritic-insensitive on both sides ({@link Normalizer} NFD +
+     * strip {@code \p{M}} + {@code toLowerCase(Locale.ROOT)}). A
+     * descriptor appears at most once, under its strongest field:
+     * {@code LABEL_EXACT} = normalized query equals normalized label;
+     * {@code LABEL} = label contains
      * query; {@code SYNONYM} = any synonym contains query;
      * {@code DESCRIPTION} = description contains query; {@code TITLE} =
      * the descriptor's group or category title contains query.
@@ -119,7 +125,7 @@ public final class SettingsSearchIndex {
         if (query == null || query.isBlank()) {
             return List.of();
         }
-        String normalizedQuery = normalize(query);
+        String normalizedQuery = normalize(query.strip());
         if (normalizedQuery.isBlank()) {
             return List.of();
         }
