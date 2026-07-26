@@ -7,7 +7,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
@@ -44,8 +43,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * *\/} comments before matching (so a {@code Platform.runLater} mention in
  * Javadoc does not false-match), blanks string / text-block literals before the
  * {@code Platform.runLater} scan, and captures the {@code @FxAnimationTimerAllowed}
- * {@code value()} literal to assert it is <em>non-blank</em> — exactly the
- * preprocessing {@code LegacyHardcodedColorAuditTest} performs. {@code
+ * {@code value()} literal to assert it is <em>non-blank</em> — the
+ * preprocessing provided by the shared {@link SourceScanSupport} harness. {@code
  * FxDispatcher.java} (which owns the one legitimate seam timer and the two
  * permitted {@code Platform.runLater} call sites) and the {@code
  * FxAnimationTimerAllowed.java} annotation type's own source are excluded by
@@ -79,18 +78,6 @@ final class RunLaterConsolidationTest {
     private static final Pattern ANIMATION_TIMER_SENTINEL = Pattern.compile(
             "@FxAnimationTimerAllowed\\s*\\(\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 
-    /**
-     * One Java comment or one string / text-block literal. Alternation order
-     * matters: a literal is matched before {@code //} and {@code /*} so a
-     * delimiter inside a string is not mistaken for a comment, and a quote
-     * inside a comment is consumed as part of the comment.
-     */
-    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
-            "\"\"\"[\\s\\S]*?\"\"\""        // text block
-            + "|\"(?:\\\\.|[^\"\\\\])*\""   // string literal
-            + "|//[^\\n]*"                  // line comment
-            + "|/\\*[\\s\\S]*?\\*/");       // block comment
-
     /** The seam itself — owns the one timer and the only {@code Platform.runLater} calls. */
     private static final String DISPATCHER_FILE = "FxDispatcher.java";
 
@@ -102,7 +89,7 @@ final class RunLaterConsolidationTest {
     @Test
     void noDawAppSourceOutsideFxDispatcherHopsThreadsOrOwnsAnUnsanctionedTimer()
             throws IOException {
-        Path appSrcRoot = locateDawAppModule()
+        Path appSrcRoot = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app");
         assertThat(Files.isDirectory(appSrcRoot))
                 .as("daw-app Java sources must live under %s", appSrcRoot)
@@ -129,18 +116,20 @@ final class RunLaterConsolidationTest {
                 // survives for the non-blank check; then blank strings for the
                 // Platform.runLater scan so a mention inside a string is not a
                 // false match.
-                String code = stripComments(
+                String code = SourceScanSupport.stripComments(
                         Files.readString(file, StandardCharsets.UTF_8));
                 String relPath = appSrcRoot.relativize(file).toString()
                         .replace('\\', '/');
 
-                if (PLATFORM_RUN_LATER.matcher(stripStringLiterals(code)).find()) {
+                if (PLATFORM_RUN_LATER.matcher(
+                        SourceScanSupport.stripStringLiterals(code)).find()) {
                     runLaterOffenders.add(relPath
                             + "  — references Platform.runLater (route it through "
                             + "FxDispatcher instead)");
                 }
 
-                if (ANIMATION_TIMER.matcher(stripStringLiterals(code)).find()) {
+                if (ANIMATION_TIMER.matcher(
+                        SourceScanSupport.stripStringLiterals(code)).find()) {
                     Matcher sentinel = ANIMATION_TIMER_SENTINEL.matcher(code);
                     if (!sentinel.find()) {
                         timerOffenders.add(relPath
@@ -184,70 +173,5 @@ final class RunLaterConsolidationTest {
                         + "277's @HardcodedColorAllowed). Offending files:%n  %s",
                         String.join("\n  ", timerOffenders))
                 .isEmpty();
-    }
-
-    /**
-     * Locate the {@code daw-app} module root. Surefire normally sets the working
-     * directory to the module itself; the fallbacks cover invocations from the
-     * repo root (e.g. {@code mvn -pl daw-app test}). Mirrors
-     * {@code LegacyHardcodedColorAuditTest#locateDawAppModule()}.
-     */
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(
-                        dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
-    }
-
-    // ── source pre-processing (mirrors LegacyHardcodedColorAuditTest) ─────────
-
-    /**
-     * Removes {@code //} and {@code /* *\/} comments while preserving string /
-     * text-block literals (so a real {@code @FxAnimationTimerAllowed("...")}
-     * survives the strip but a {@code Platform.runLater} written inside Javadoc
-     * does not).
-     */
-    private static String stripComments(String source) {
-        Matcher m = COMMENT_OR_STRING.matcher(source);
-        StringBuilder out = new StringBuilder(source.length());
-        while (m.find()) {
-            String token = m.group();
-            // A string / text block (starts with a quote) is code — keep it
-            // verbatim; anything else the alternation matched is a comment and
-            // is replaced with a single space.
-            m.appendReplacement(out, token.charAt(0) == '"'
-                    ? Matcher.quoteReplacement(token) : " ");
-        }
-        m.appendTail(out);
-        return out.toString();
-    }
-
-    /** Blanks string / text-block literals out of already comment-free code. */
-    private static String stripStringLiterals(String code) {
-        return code
-                .replaceAll("\"\"\"[\\s\\S]*?\"\"\"", "\"\"")
-                .replaceAll("\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");
     }
 }

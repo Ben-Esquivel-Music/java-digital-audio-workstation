@@ -6,10 +6,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,7 +47,7 @@ final class MainControllerShrinkTest {
     @Test
     void mainControllerNeitherDeclaresTheRetiredRefreshMethodsNorReferencesARemovedHost()
             throws IOException {
-        Path file = locateDawAppModule()
+        Path file = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui/MainController.java");
         assertThat(Files.isRegularFile(file))
                 .as("MainController source must exist at %s", file).isTrue();
@@ -60,7 +58,8 @@ final class MainControllerShrinkTest {
         assertThat(raw.length())
                 .as("the MainController source read must be non-trivial").isGreaterThan(50_000);
 
-        String code = stripStringLiterals(stripComments(raw));
+        String code = SourceScanSupport.stripStringLiterals(
+                SourceScanSupport.stripComments(raw));
 
         List<String> survivingMethods = new ArrayList<>();
         for (String method : RETIRED_REFRESH_METHODS) {
@@ -93,59 +92,5 @@ final class MainControllerShrinkTest {
                         + "Host interface (§4.2/§9 — facts now travel as typed events / VM bindings). "
                         + "Still referenced:%n  %s", String.join("\n  ", survivingHosts))
                 .isEmpty();
-    }
-
-    // ── source pre-processing + module location (mirrors RunLaterConsolidationTest) ──
-
-    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
-            "\"\"\"[\\s\\S]*?\"\"\""
-            + "|\"(?:\\\\.|[^\"\\\\])*\""
-            + "|//[^\\n]*"
-            + "|/\\*[\\s\\S]*?\\*/");
-
-    private static String stripComments(String source) {
-        Matcher m = COMMENT_OR_STRING.matcher(source);
-        StringBuilder out = new StringBuilder(source.length());
-        while (m.find()) {
-            String token = m.group();
-            m.appendReplacement(out, token.charAt(0) == '"'
-                    ? Matcher.quoteReplacement(token) : " ");
-        }
-        m.appendTail(out);
-        return out.toString();
-    }
-
-    private static String stripStringLiterals(String code) {
-        return code
-                .replaceAll("\"\"\"[\\s\\S]*?\"\"\"", "\"\"")
-                .replaceAll("\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");
-    }
-
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
     }
 }

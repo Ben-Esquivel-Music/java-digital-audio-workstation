@@ -6,10 +6,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -69,7 +67,7 @@ final class NoSurfaceHostInterfaceRemainsTest {
     @Test
     void migratedSurfaceHostsAreGoneAndOnlyFrameworkAndDocumentedNonCascadeHostsRemain()
             throws IOException {
-        Path uiRoot = locateDawAppModule()
+        Path uiRoot = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui");
         assertThat(Files.isDirectory(uiRoot)).as("ui root must exist at %s", uiRoot).isTrue();
 
@@ -78,7 +76,7 @@ final class NoSurfaceHostInterfaceRemainsTest {
         for (String rel : MIGRATED_SURFACE_HOSTS) {
             Path file = uiRoot.resolve(rel);
             assertThat(Files.isRegularFile(file)).as("%s must still exist", rel).isTrue();
-            String code = stripComments(Files.readString(file, StandardCharsets.UTF_8));
+            String code = SourceScanSupport.stripComments(Files.readString(file, StandardCharsets.UTF_8));
             if (INTERFACE_HOST.matcher(code).find()) {
                 survivingSurfaceHosts.add(rel);
             }
@@ -94,7 +92,7 @@ final class NoSurfaceHostInterfaceRemainsTest {
         for (String rel : FRAMEWORK_HOSTS) {
             Path file = uiRoot.resolve(rel);
             assertThat(Files.isRegularFile(file)).as("%s must exist", rel).isTrue();
-            if (!INTERFACE_HOST.matcher(stripComments(Files.readString(file, StandardCharsets.UTF_8))).find()) {
+            if (!INTERFACE_HOST.matcher(SourceScanSupport.stripComments(Files.readString(file, StandardCharsets.UTF_8))).find()) {
                 damagedFramework.add(rel + " — its framework 'interface Host' was wrongly removed");
             }
         }
@@ -116,7 +114,7 @@ final class NoSurfaceHostInterfaceRemainsTest {
             for (Path file : (Iterable<Path>) tree
                     .filter(p -> p.toString().endsWith(".java"))::iterator) {
                 scanned++;
-                String code = stripComments(Files.readString(file, StandardCharsets.UTF_8));
+                String code = SourceScanSupport.stripComments(Files.readString(file, StandardCharsets.UTF_8));
                 if (INTERFACE_HOST.matcher(code).find()) {
                     declaringHostFiles.add(uiRoot.relativize(file).toString().replace('\\', '/'));
                 }
@@ -133,53 +131,5 @@ final class NoSurfaceHostInterfaceRemainsTest {
                         + "non-cascade exemptions (intent routing / factory DI / state read). Any "
                         + "other surface Host is a control-sync-cascade regression.")
                 .containsExactlyInAnyOrderElementsOf(allowed);
-    }
-
-    // ── source pre-processing + module location (mirrors HostCallbackRemovalTest) ──
-
-    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
-            "\"\"\"[\\s\\S]*?\"\"\""
-            + "|\"(?:\\\\.|[^\"\\\\])*\""
-            + "|//[^\\n]*"
-            + "|/\\*[\\s\\S]*?\\*/");
-
-    private static String stripComments(String source) {
-        Matcher m = COMMENT_OR_STRING.matcher(source);
-        StringBuilder out = new StringBuilder(source.length());
-        while (m.find()) {
-            String token = m.group();
-            m.appendReplacement(out, token.charAt(0) == '"'
-                    ? Matcher.quoteReplacement(token) : " ");
-        }
-        m.appendTail(out);
-        return out.toString();
-    }
-
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
     }
 }

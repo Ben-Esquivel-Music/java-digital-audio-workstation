@@ -7,7 +7,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
@@ -62,8 +61,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * captures the annotation's {@code value()} literal to assert it is
  * <em>non-blank</em>. The annotation type's own source is excluded by
  * name, exactly as {@code EveryDialogConformsTest} skips the
- * {@code @LegacyDialog} annotation type. Path resolution mirrors
- * {@code NumericClassAuditTest}.</p>
+ * {@code @LegacyDialog} annotation type. Path resolution and source
+ * pre-processing come from the shared {@link SourceScanSupport} harness.</p>
  */
 final class LegacyHardcodedColorAuditTest {
 
@@ -81,18 +80,6 @@ final class LegacyHardcodedColorAuditTest {
     private static final Pattern ANNOTATION_WITH_VALUE = Pattern.compile(
             "@HardcodedColorAllowed\\s*\\(\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 
-    /**
-     * One Java comment or one string / text-block literal. Alternation
-     * order matters: a literal is matched before {@code //} and {@code
-     * /*} so a delimiter inside a string is not mistaken for a comment,
-     * and a quote inside a comment is consumed as part of the comment.
-     */
-    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
-            "\"\"\"[\\s\\S]*?\"\"\""        // text block
-            + "|\"(?:\\\\.|[^\"\\\\])*\""   // string literal
-            + "|//[^\\n]*"                  // line comment
-            + "|/\\*[\\s\\S]*?\\*/");       // block comment
-
     /** {@code daw-app}'s {@code @HardcodedColorAllowed} source — the
      *  annotation type whose own Javadoc necessarily names the calls it
      *  guards; excluded exactly as {@code EveryDialogConformsTest} skips
@@ -101,7 +88,7 @@ final class LegacyHardcodedColorAuditTest {
 
     @Test
     void everyHardcodedColorSourceCarriesTheSentinelAnnotation() throws IOException {
-        Path uiSrcRoot = locateDawAppModule()
+        Path uiSrcRoot = SourceScanSupport.locateDawAppModule()
                 .resolve("src/main/java/com/benesquivelmusic/daw/app/ui");
         assertThat(Files.isDirectory(uiSrcRoot))
                 .as("UI Java sources must live under %s", uiSrcRoot)
@@ -125,9 +112,10 @@ final class LegacyHardcodedColorAuditTest {
                 // real @HardcodedColorAllowed("...") survives for the
                 // non-blank check; then blank strings for the paint scan
                 // so a Color.web( inside a string is not a false match.
-                String code = stripComments(
+                String code = SourceScanSupport.stripComments(
                         Files.readString(file, StandardCharsets.UTF_8));
-                if (!HARDCODED_COLOR.matcher(stripStringLiterals(code)).find()) {
+                if (!HARDCODED_COLOR.matcher(
+                        SourceScanSupport.stripStringLiterals(code)).find()) {
                     return FileVisitResult.CONTINUE;
                 }
 
@@ -166,72 +154,5 @@ final class LegacyHardcodedColorAuditTest {
                         + "paint.",
                         String.join("\n  ", offenders))
                 .isEmpty();
-    }
-
-    /**
-     * Locate the {@code daw-app} module root. Surefire normally sets the
-     * working directory to the module itself; the fallbacks cover
-     * invocations from the repo root (e.g. {@code mvn -pl daw-app test}).
-     * Mirrors {@code NumericClassAuditTest#locateDawAppModule()}.
-     */
-    private static Path locateDawAppModule() {
-        Path cwd = Paths.get("").toAbsolutePath();
-        if (isDawAppModule(cwd)) {
-            return cwd;
-        }
-        Path child = cwd.resolve("daw-app");
-        if (isDawAppModule(child)) {
-            return child;
-        }
-        Path candidate = cwd.getParent();
-        for (int i = 0; i < 5 && candidate != null; i++) {
-            if (isDawAppModule(candidate)) {
-                return candidate;
-            }
-            Path nested = candidate.resolve("daw-app");
-            if (isDawAppModule(nested)) {
-                return nested;
-            }
-            candidate = candidate.getParent();
-        }
-        return cwd;
-    }
-
-    private static boolean isDawAppModule(Path dir) {
-        return Files.isRegularFile(dir.resolve("pom.xml"))
-                && Files.isDirectory(
-                        dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
-    }
-
-    // ── source pre-processing ────────────────────────────────────────────────
-
-    /**
-     * Removes {@code //} and {@code /* *\/} comments while preserving
-     * string / text-block literals (so a real {@code
-     * @HardcodedColorAllowed("...")} survives the strip but a {@code
-     * Color.web(...)} written inside Javadoc does not). Mirrors the
-     * DOTALL comment-stripping {@code TokenValidationTest} already does,
-     * generalised to skip over string literals.
-     */
-    private static String stripComments(String source) {
-        Matcher m = COMMENT_OR_STRING.matcher(source);
-        StringBuilder out = new StringBuilder(source.length());
-        while (m.find()) {
-            String token = m.group();
-            // A string / text block (starts with a quote) is code — keep
-            // it verbatim; anything else the alternation matched is a
-            // comment and is replaced with a single space.
-            m.appendReplacement(out, token.charAt(0) == '"'
-                    ? Matcher.quoteReplacement(token) : " ");
-        }
-        m.appendTail(out);
-        return out.toString();
-    }
-
-    /** Blanks string / text-block literals out of already comment-free code. */
-    private static String stripStringLiterals(String code) {
-        return code
-                .replaceAll("\"\"\"[\\s\\S]*?\"\"\"", "\"\"")
-                .replaceAll("\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");
     }
 }
