@@ -39,6 +39,7 @@ import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
 
+import java.text.MessageFormat;
 import java.time.Instant;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -733,13 +734,13 @@ public final class SettingsDialog extends DawgDialog<Void> {
         } finally {
             refreshingClockSources = false;
         }
-        logCapabilityFallback("input device", previousInput,
+        logCapabilityFallback(msg("audio.inputDevice.label"), previousInput,
                 shell.settingRow("audio.inputDevice").orElseThrow().getValue());
-        logCapabilityFallback("output device", previousOutput,
+        logCapabilityFallback(msg("audio.outputDevice.label"), previousOutput,
                 shell.settingRow("audio.outputDevice").orElseThrow().getValue());
-        logCapabilityFallback("sample rate", previousRate,
+        logCapabilityFallback(msg("audio.sampleRate.label"), previousRate,
                 shell.settingRow("audio.sampleRate").orElseThrow().getValue());
-        logCapabilityFallback("buffer size", previousBuffer,
+        logCapabilityFallback(msg("audio.bufferSize.label"), previousBuffer,
                 shell.settingRow("audio.bufferSize").orElseThrow().getValue());
         refreshLatencyReadout();
         refreshAudioTelemetry();
@@ -747,9 +748,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
     private void logCapabilityFallback(String setting, Object previous, Object replacement) {
         if (!Objects.equals(previous, replacement)) {
-            String message = "Persisted " + setting + " " + previous
-                    + " is unavailable for the selected device; falling back to "
-                    + replacement + ".";
+            String message = formatMessage(
+                    "settings.audio.capabilityFallback", setting, previous, replacement);
             LOG.warning(message);
             shell.showOperationNotice(message);
         }
@@ -1677,6 +1677,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
         } catch (MissingResourceException e) {
             return key;
         }
+    }
+
+    private static String formatMessage(String key, Object... arguments) {
+        return new MessageFormat(msg(key), MESSAGES.getLocale()).format(arguments);
     }
 
     /**
