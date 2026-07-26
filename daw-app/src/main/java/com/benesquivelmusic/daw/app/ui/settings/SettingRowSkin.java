@@ -34,7 +34,9 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.MissingResourceException;
 import java.util.Objects;
+import java.util.ResourceBundle;
 import java.util.function.Supplier;
 
 /**
@@ -83,6 +85,8 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
     static final double LABEL_COLUMN_WIDTH = 180;
 
     private static final PseudoClass ARMED = PseudoClass.getPseudoClass("armed");
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 
     private final GridPane grid = new GridPane();
     private final Label label = new Label();
@@ -239,7 +243,7 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
                 boolean unavailable = row.unavailableChoiceOptions().contains(item);
                 setDisable(unavailable);
                 setTooltip(unavailable
-                        ? new Tooltip("Not supported by the current audio device") : null);
+                        ? new Tooltip(msg("settings.choice.unavailable")) : null);
             }
         });
         combo.setValue(row.getValue());
@@ -259,6 +263,14 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
             combo.setValue(v);
         }));
         return combo;
+    }
+
+    private static String msg(String key) {
+        try {
+            return MESSAGES.getString(key);
+        } catch (MissingResourceException missing) {
+            return key;
+        }
     }
 
     /** SLIDER — a {@link Slider} over the hint bounds plus a numeric value label. */

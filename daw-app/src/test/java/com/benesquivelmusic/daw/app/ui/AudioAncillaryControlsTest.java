@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioFormat;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
+import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -14,6 +15,7 @@ import javafx.scene.control.ComboBox;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -74,10 +76,16 @@ class AudioAncillaryControlsTest {
             assertThat(dialog.getCpuLoadValue().getText()).isEqualTo("CPU: 42.5%");
             assertThat(dialog.getThreadsInUseValue().getText()).isEqualTo("Threads: 3 / 8");
             dialog.getTestToneButton().fire();
-            dialog.getControlPanelButton().fire();
             return null;
         });
         assertThat(controller.testTonePlayed.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(Story307TestSupport.awaitFxValue(
+                () -> !dialogRef.get().getControlPanelButton().isDisable(),
+                true, 5, TimeUnit.SECONDS)).isTrue();
+        Story307TestSupport.onFx(() -> {
+            dialogRef.get().getControlPanelButton().fire();
+            return null;
+        });
         assertThat(controller.controlPanelOpened.await(5, TimeUnit.SECONDS)).isTrue();
 
         assertThat(Story307TestSupport.awaitFxValue(
@@ -143,6 +151,115 @@ class AudioAncillaryControlsTest {
         assertThat(controller.maxConcurrentNativeOperations.get()).isEqualTo(1);
         Story307TestSupport.onFx(() -> {
             dialogRef.get().setAudioEngineController(null);
+            return null;
+        });
+    }
+
+    @Test
+    void testToneRunsOnAVirtualNonFxThreadAndSerializesWithReconfiguration()
+            throws Exception {
+        Story307TestSupport.StubController controller =
+                new Story307TestSupport.StubController();
+        controller.blockTestTone = true;
+        controller.releaseTestTone = new CountDownLatch(1);
+        SettingsModel model = Story307TestSupport.model("audioSerializedTestTone");
+        AtomicReference<SettingsDialog> dialogRef = new AtomicReference<>();
+
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = new SettingsDialog(model);
+            dialogRef.set(dialog);
+            dialog.setAudioEngineController(controller);
+            dialog.getTestToneButton().fire();
+            return null;
+        });
+        assertThat(controller.testToneEntered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(controller.testToneThread.get().isVirtual()).isTrue();
+        assertThat(controller.testToneOnFxThread).isFalse();
+
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = dialogRef.get();
+            assertThat(dialog.getTestToneButton().isDisable()).isTrue();
+            int replacement = model.getBufferSize() == 256 ? 512 : 256;
+            dialog.getShell().settingRow("audio.bufferSize").orElseThrow()
+                    .setValue(replacement);
+            dialog.applySettings();
+            return null;
+        });
+        assertThat(controller.configurationCount).hasValue(0);
+
+        controller.releaseTestTone.countDown();
+        assertThat(controller.testTonePlayed.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(controller.configurationApplied.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(controller.maxConcurrentNativeOperations).hasValue(1);
+        assertThat(Story307TestSupport.awaitFxValue(
+                () -> dialogRef.get().getTestToneButton().isDisable(),
+                false, 5, TimeUnit.SECONDS)).isTrue();
+        Story307TestSupport.onFx(() -> {
+            dialogRef.get().setAudioEngineController(null);
+            return null;
+        });
+    }
+
+    @Test
+    void testToneFailureIsMarshalledToTheVisibleOperationNotice() throws Exception {
+        Story307TestSupport.StubController controller =
+                new Story307TestSupport.StubController();
+        controller.failTestTone = true;
+        SettingsModel model = Story307TestSupport.model("audioTestToneFailure");
+        AtomicReference<SettingsDialog> dialogRef = new AtomicReference<>();
+
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = new SettingsDialog(model);
+            dialogRef.set(dialog);
+            dialog.setAudioEngineController(controller);
+            dialog.getTestToneButton().fire();
+            return null;
+        });
+
+        assertThat(controller.testToneEntered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(Story307TestSupport.awaitFxValue(
+                () -> dialogRef.get().getShell().isOperationNoticeVisible(),
+                true, 5, TimeUnit.SECONDS)).isTrue();
+        Story307TestSupport.onFx(() -> {
+            assertThat(dialogRef.get().getShell().operationNoticeText())
+                    .isEqualTo("Could not play the test tone: test tone failed");
+            return null;
+        });
+        assertThat(Story307TestSupport.awaitFxValue(
+                () -> dialogRef.get().getTestToneButton().isDisable(),
+                false, 5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void latencyReadoutUsesDriverReportedRoundTripFrames() throws Exception {
+        Story307TestSupport.StubController controller =
+                new Story307TestSupport.StubController();
+        controller.reportedLatency = new RoundTripLatency(300, 400, 77);
+        SettingsModel model = Story307TestSupport.model("audioDriverLatencyFrames");
+
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = new SettingsDialog(model);
+            dialog.setAudioEngineController(controller);
+            assertThat(dialog.getLatencyValue().getText())
+                    .startsWith("777 frames · ");
+            dialog.setAudioEngineController(null);
+            return null;
+        });
+    }
+
+    @Test
+    void latencyReadoutFallsBackToSelectedBufferFrames() throws Exception {
+        Story307TestSupport.StubController controller =
+                new Story307TestSupport.StubController();
+        SettingsModel model = Story307TestSupport.model("audioFallbackLatencyFrames");
+        model.setBufferSize(1_024);
+
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = new SettingsDialog(model);
+            dialog.setAudioEngineController(controller);
+            assertThat(dialog.getLatencyValue().getText())
+                    .startsWith("1024 frames · ");
+            dialog.setAudioEngineController(null);
             return null;
         });
     }

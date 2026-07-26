@@ -377,13 +377,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
         }
         String output = Objects.toString(shell.settingRow("audio.outputDevice")
                 .map(SettingRow::getValue).orElse(""), "");
-        try {
-            controller.playTestTone(output);
-        } catch (RuntimeException failure) {
-            LOG.log(Level.WARNING, "Test tone playback failed", failure);
-            shell.showOperationNotice("Could not play the test tone: "
-                    + failureMessage(failure));
-        }
+        startSerializedAudioUtilityOperation(
+                "settings-audio-test-tone",
+                "Test tone playback failed",
+                msg("audio.utility.testTone.failure") + " ",
+                () -> controller.playTestTone(output));
     }
 
     private void openDriverControlPanel() {
@@ -463,6 +461,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
         boolean busy = outstandingAudioUtilityOperations.get() > 0
                 || outstandingAudioReconfigures.get() > 0;
         AudioEngineController controller = audioEngineController;
+        testToneButton.setDisable(busy || controller == null);
         controlPanelButton.setDisable(busy || controller == null
                 || controller.openControlPanel().isEmpty());
         clockSourceCombo.setDisable(busy || currentClockSources.isEmpty());
@@ -525,17 +524,21 @@ public final class SettingsDialog extends DawgDialog<Void> {
             latencyValue.setText(msg("audio.utility.unavailable"));
             return;
         }
-        double milliseconds;
         AudioEngineController controller = audioEngineController;
-        int driverFrames = controller == null ? 0 : controller.reportedLatency().totalFrames();
+        var reportedLatency = controller == null
+                ? com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN
+                : controller.reportedLatency();
+        int driverFrames = reportedLatency.totalFrames();
+        double milliseconds;
         if (driverFrames > 0) {
-            milliseconds = controller.reportedLatency().totalMillis(rate.doubleValue());
+            milliseconds = reportedLatency.totalMillis(rate.doubleValue());
         } else {
             milliseconds = buffer.doubleValue() * 2_000.0 / rate.doubleValue();
         }
+        int displayedFrames = driverFrames > 0 ? driverFrames : buffer.intValue();
         latencyValue.setText(String.format(Locale.ROOT,
                 "%d frames · %.1f ms round-trip @ %.1f kHz",
-                buffer.intValue(), milliseconds, rate.doubleValue() / 1_000.0));
+                displayedFrames, milliseconds, rate.doubleValue() / 1_000.0));
     }
 
     /**

@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
+import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
 
 import javafx.application.Platform;
@@ -79,6 +80,8 @@ final class Story307TestSupport {
         final AtomicReference<MixPrecision> lastMixPrecision = new AtomicReference<>();
         final AtomicReference<QualityTier> lastSrcQuality = new AtomicReference<>();
         final AtomicReference<String> testToneOutput = new AtomicReference<>();
+        final AtomicReference<Thread> testToneThread = new AtomicReference<>();
+        final AtomicBoolean testToneOnFxThread = new AtomicBoolean();
         final AtomicInteger selectedClockSource = new AtomicInteger(-1);
         final AtomicBoolean enumeratingDevices = new AtomicBoolean();
         final AtomicBoolean reconfiguredWhileEnumerating = new AtomicBoolean();
@@ -100,6 +103,8 @@ final class Story307TestSupport {
         volatile CountDownLatch deviceEnumerationEntered = new CountDownLatch(1);
         volatile CountDownLatch releaseDeviceEnumeration = new CountDownLatch(0);
         volatile CountDownLatch testTonePlayed = new CountDownLatch(1);
+        volatile CountDownLatch testToneEntered = new CountDownLatch(1);
+        volatile CountDownLatch releaseTestTone = new CountDownLatch(0);
         volatile CountDownLatch controlPanelOpened = new CountDownLatch(1);
         volatile CountDownLatch releaseControlPanel = new CountDownLatch(0);
         volatile CountDownLatch clockSourceSelected = new CountDownLatch(1);
@@ -110,11 +115,14 @@ final class Story307TestSupport {
         volatile boolean failNextConfiguration;
         volatile boolean exposeControlPanel;
         volatile boolean blockControlPanel;
+        volatile boolean blockTestTone;
+        volatile boolean failTestTone;
         volatile List<ClockSource> clockSources = List.of();
         volatile double cpuLoadPercent = 42.5;
         volatile int activeThreadCount = 3;
         volatile int workerPoolSize = 8;
         volatile Flow.Publisher<AudioDeviceEvent> deviceEventPublisher;
+        volatile RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
         volatile boolean rejectSampleRate;
         volatile String activeBackend = "Java Sound";
 
@@ -213,8 +221,32 @@ final class Story307TestSupport {
 
         @Override
         public void playTestTone(String outputDeviceName) {
-            testToneOutput.set(outputDeviceName);
-            testTonePlayed.countDown();
+            enterNativeOperation();
+            try {
+                testToneThread.set(Thread.currentThread());
+                testToneOnFxThread.set(Platform.isFxApplicationThread());
+                testToneEntered.countDown();
+                if (blockTestTone) {
+                    try {
+                        releaseTestTone.await();
+                    } catch (InterruptedException cancelled) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("test tone interrupted", cancelled);
+                    }
+                }
+                if (failTestTone) {
+                    throw new IllegalStateException("test tone failed");
+                }
+                testToneOutput.set(outputDeviceName);
+                testTonePlayed.countDown();
+            } finally {
+                exitNativeOperation();
+            }
+        }
+
+        @Override
+        public RoundTripLatency reportedLatency() {
+            return reportedLatency;
         }
 
         @Override
