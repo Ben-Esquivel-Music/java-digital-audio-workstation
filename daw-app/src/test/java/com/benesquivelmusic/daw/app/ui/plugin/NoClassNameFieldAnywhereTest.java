@@ -117,7 +117,7 @@ final class NoClassNameFieldAnywhereTest {
         // audit vacuously pass.
         assertThat(scanned)
                 .as("the scan must visit the install-flow and browser sources")
-                .contains(REQUIRED_SCANNED_FILES.toArray(String[]::new))
+                .containsAll(REQUIRED_SCANNED_FILES)
                 .hasSizeGreaterThanOrEqualTo(REQUIRED_SCANNED_FILES.size() + 1);
 
         classNameFieldOffenders.sort(String::compareTo);
