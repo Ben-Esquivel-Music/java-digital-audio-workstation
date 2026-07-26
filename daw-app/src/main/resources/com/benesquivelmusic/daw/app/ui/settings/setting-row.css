@@ -1,0 +1,89 @@
+/*
+ * Story 306 — SettingRow user-agent stylesheet (Rail & Pane settings shell,
+ * Settings View Design Book §5.4).
+ *
+ * Returned by SettingRow#getUserAgentStylesheet(). Self-contained (mirrors
+ * project-card.css, story 296): the local -srw-* tokens carry literal
+ * Palette-A defaults here so a row renders correctly with NO application
+ * stylesheet loaded (e.g. an isolated control test). The author-origin forward
+ * block in styles.css (`.setting-row { -srw-text: -text; -srw-text-mute:
+ * -text-mute; -srw-warn: -warn; -srw-accent: -accent; -srw-accent-soft:
+ * -accent-soft; }`) RE-declares the same tokens from role tokens and WINS by
+ * CSS origin (AUTHOR > USER_AGENT), so a theme overlay re-tints the rows for
+ * free (feedback_control_css_role_token_forwarding,
+ * feedback_css_author_overrides_useragent_duplication). The literal values
+ * below match Palette A in styles.css; TokenValidationTest scans only
+ * styles.css / theme overlays, not control UA sheets, so these literals are by
+ * design.
+ */
+.setting-row {
+    -srw-text:        #B7BCC7;  /* -text        */
+    -srw-text-mute:   #7A808C;  /* -text-mute   */
+    -srw-warn:        #E6B450;  /* -warn        */
+    -srw-accent:      #7C8CFF;  /* -accent      */
+    -srw-accent-soft: rgba(124, 140, 255, 0.14);  /* -accent-soft */
+
+    -fx-padding: 4 0 4 0;
+}
+
+.setting-row .setting-row-grid {
+    -fx-hgap: 8;
+    -fx-vgap: 2;
+}
+
+/* §5.4: fixed-width label column, right-aligned to the control gutter
+   (width is the LABEL_COLUMN_WIDTH layout constant in SettingRowSkin). */
+.setting-row .setting-row-label {
+    -fx-text-fill: -srw-text;
+    -fx-font-size: 12px;
+}
+
+/* Text spans inside the §6.1 highlight TextFlow (Label text-fill does not
+   reach graphic Text nodes — they take -fx-fill directly). */
+.setting-row .setting-row-label-text {
+    -fx-fill: -srw-text;
+    -fx-font-size: 12px;
+}
+
+/* The matching span of the search highlight (§5.2/§6.1). */
+.setting-row .setting-row-highlight {
+    -fx-fill: -srw-accent;
+}
+
+/* One muted description line beneath the control (§5.4). */
+.setting-row .setting-row-description {
+    -fx-text-fill: -srw-text-mute;
+    -fx-font-size: 11px;
+}
+
+/* Apply-class badge (§6.4) — omitted entirely for LIVE by the skin. */
+.setting-row .setting-row-badge {
+    -fx-font-size: 10px;
+}
+.setting-row .setting-row-badge.badge-engine {
+    -fx-text-fill: -srw-text-mute;
+}
+.setting-row .setting-row-badge.badge-restart {
+    -fx-text-fill: -srw-warn;
+}
+
+/* Slider value readout — default fill; the app's .numeric-value (AUTHOR)
+   supplies the mono type scale when styles.css is loaded. */
+.setting-row .numeric-value {
+    -fx-text-fill: -srw-text;
+}
+
+.setting-row .setting-row-slider-box,
+.setting-row .setting-row-path-box {
+    -fx-spacing: 8;
+}
+
+/* Armed key-capture field (§6.5): accent border + accent-soft wash while the
+   row is explicitly armed; disarmed fields are indistinguishable from a plain
+   read-only field (rejection #7 — capture is never ambient). */
+.setting-row .key-capture:armed {
+    -fx-background-color: -srw-accent-soft;
+    -fx-border-color: -srw-accent;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+}

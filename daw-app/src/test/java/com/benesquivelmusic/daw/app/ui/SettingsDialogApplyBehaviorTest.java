@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+import com.benesquivelmusic.daw.app.ui.settings.SettingRow;
+import com.benesquivelmusic.daw.app.ui.settings.SettingsShell;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
@@ -13,16 +15,13 @@ import com.benesquivelmusic.daw.sdk.event.UiEvent;
 import javafx.application.Platform;
 import javafx.scene.Node;
 import javafx.scene.Parent;
-import javafx.scene.control.Labeled;
 import javafx.scene.control.ScrollPane;
-import javafx.scene.control.Tab;
-import javafx.scene.control.TabPane;
-import javafx.scene.control.TextField;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -36,16 +35,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * Story 305 — the no-UI-change guard. Backing {@code SettingsDialog}'s
- * labels and the tempo validator with {@code SettingsCatalogue}
- * descriptors must be invisible: the five tabs keep their exact titles,
- * every pinned label string still renders byte-identical, Apply still
- * writes the {@code SettingsModel} with the old silent-drop tempo
- * semantics, and the well-formed {@link UiEvent.SettingsApplied} publish
- * (story 294) still fires. If anything here changes, the story is wrong.
+ * Story 306 — the behavioural survivors of the retired
+ * {@code SettingsDialogUnchangedTest} (the story-305 "no visible change"
+ * guard). Story 306 IS the visible change, so the tab-title and pinned
+ * label-string tests died with the {@code TabPane}; what must NOT change
+ * is the Apply write path, re-proven here over the Rail &amp; Pane shell:
+ * an editless Apply round-trips the canonical model defaults, the tempo
+ * TEXT row keeps the old silent-drop semantics (out-of-range and NaN
+ * never reach the model, in-range text is written), and the story-294
+ * {@link UiEvent.SettingsApplied} publish stays well-formed.
+ *
+ * <p>The old dialog re-wrote its seeded combo values on every Apply;
+ * under the §6.2 write-on-dirty contract an untouched dialog writes
+ * nothing at all — the defaults round-trip assertion now pins that an
+ * editless Apply cannot corrupt the model. The tempo edits go through
+ * the generic {@code project.defaultTempo} {@link SettingRow} (whose TEXT
+ * editor delivers raw Strings), replacing the old Project-tab
+ * {@code TextField} traversal.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
-class SettingsDialogUnchangedTest {
+class SettingsDialogApplyBehaviorTest {
+
+    private static final String TEMPO_ID = "project.defaultTempo";
 
     private <T> T runOnFxThread(Callable<T> callable) throws Exception {
         AtomicReference<T> ref = new AtomicReference<>();
@@ -77,33 +88,15 @@ class SettingsDialogUnchangedTest {
 
     private static SettingsModel newModel() {
         Preferences prefs = Preferences.userRoot()
-                .node("settingsDialogUnchangedTest_" + System.nanoTime());
+                .node("settingsDialogApplyBehaviorTest_" + System.nanoTime());
         return new SettingsModel(prefs);
     }
 
     /**
-     * Walks a tab-content graph collecting every {@link Labeled} text
-     * (covers both {@code Label} and {@code CheckBox}). {@code ScrollPane}
-     * content is not a child until a skin attaches, so it is followed
-     * explicitly.
+     * Walks a node graph collecting instances of {@code type}.
+     * {@code ScrollPane} content is not a child until a skin attaches, so
+     * it is followed explicitly (headless — no skins are realized).
      */
-    private static void collectLabeledTexts(Node node, List<String> into) {
-        if (node == null) {
-            return;
-        }
-        if (node instanceof Labeled labeled && labeled.getText() != null) {
-            into.add(labeled.getText());
-        }
-        if (node instanceof ScrollPane scrollPane) {
-            collectLabeledTexts(scrollPane.getContent(), into);
-        }
-        if (node instanceof Parent parent) {
-            for (Node child : parent.getChildrenUnmodifiable()) {
-                collectLabeledTexts(child, into);
-            }
-        }
-    }
-
     private static <T extends Node> void collectInstances(Node node, Class<T> type, List<T> into) {
         if (node == null) {
             return;
@@ -121,62 +114,33 @@ class SettingsDialogUnchangedTest {
         }
     }
 
-    /** The Project tab carries exactly one {@code TextField}: the tempo field. */
-    private static TextField tempoField(SettingsDialog dialog) {
-        TabPane tabPane = (TabPane) dialog.getDialogPane().getContent();
-        Tab projectTab = tabPane.getTabs().stream()
-                .filter(tab -> "Project".equals(tab.getText()))
+    /**
+     * Selects {@code categoryId} on the rail (attaching its pane to the
+     * center scroll graph) and returns the {@link SettingRow} rendering
+     * {@code settingId}.
+     */
+    private static SettingRow settingRow(SettingsDialog dialog, String categoryId,
+                                         String settingId) {
+        SettingsShell shell = dialog.getShell();
+        shell.navRail().setSelectedCategoryId(categoryId);
+        List<SettingRow> rows = new ArrayList<>();
+        collectInstances(shell, SettingRow.class, rows);
+        return rows.stream()
+                .filter(row -> settingId.equals(row.descriptor().id()))
                 .findFirst()
-                .orElseThrow(() -> new AssertionError("No Project tab"));
-        List<TextField> fields = new ArrayList<>();
-        collectInstances(projectTab.getContent(), TextField.class, fields);
-        assertThat(fields).as("the Project tab's only TextField is the tempo field").hasSize(1);
-        return fields.get(0);
+                .orElseThrow(() -> new AssertionError("No row for " + settingId));
+    }
+
+    /**
+     * The generic row rendering {@code project.defaultTempo} — the
+     * replacement for the old "the Project tab's only TextField" helper.
+     */
+    private static SettingRow tempoRow(SettingsDialog dialog) {
+        return settingRow(dialog, "project", TEMPO_ID);
     }
 
     @Test
-    void fiveTabsShouldKeepTheirExactTitlesInOrder() throws Exception {
-        List<String> titles = runOnFxThread(() -> {
-            SettingsDialog dialog = new SettingsDialog(newModel());
-            TabPane tabPane = (TabPane) dialog.getDialogPane().getContent();
-            return tabPane.getTabs().stream().map(Tab::getText).toList();
-        });
-
-        assertThat(titles).containsExactly(
-                "Audio", "Project", "Appearance", "Key Bindings", "Plugins");
-    }
-
-    @Test
-    void pinnedLabelStringsShouldStillRenderByteIdentical() throws Exception {
-        List<String> texts = runOnFxThread(() -> {
-            SettingsDialog dialog = new SettingsDialog(newModel());
-            TabPane tabPane = (TabPane) dialog.getDialogPane().getContent();
-            List<String> collected = new ArrayList<>();
-            for (Tab tab : tabPane.getTabs()) {
-                collectLabeledTexts(tab.getContent(), collected);
-            }
-            return collected;
-        });
-
-        assertThat(texts).contains(
-                "Sample Rate (Hz):",
-                "Bit Depth:",
-                "Buffer Size (frames):",
-                "Auto-Save Interval (seconds):",
-                "Default Tempo (BPM):",
-                "Use journaled persistence (write-ahead journal & crash recovery)",
-                "Theme:",
-                "UI Scale:",
-                "Density:",
-                "Reduce Motion",
-                "Plugin Scan Paths:",
-                // The untouched blanket hint — replacing it with per-setting
-                // apply-class truth on screen is story 306/307, not 305.
-                "Changes to audio settings may require a restart.");
-    }
-
-    @Test
-    void applyWithUntouchedControlsShouldKeepModelDefaults() throws Exception {
+    void applyWithUntouchedRowsShouldKeepModelDefaults() throws Exception {
         SettingsModel model = runOnFxThread(() -> {
             SettingsModel m = newModel();
             SettingsDialog dialog = new SettingsDialog(m);
@@ -184,9 +148,10 @@ class SettingsDialogUnchangedTest {
             return m;
         });
 
-        // The controls seed from the live model, so applying without edits
+        // The rows seed from the live model, so applying without edits
         // must round-trip the canonical defaults (compared against a fresh
-        // model over an empty node, never literals).
+        // model over an empty node, never literals). Under write-on-dirty
+        // nothing is written here — this pins exactly that.
         SettingsModel defaults = newModel();
         assertThat(model.getSampleRate()).isEqualTo(defaults.getSampleRate());
         assertThat(model.getBitDepth()).isEqualTo(defaults.getBitDepth());
@@ -202,42 +167,45 @@ class SettingsDialogUnchangedTest {
     }
 
     @Test
-    void applyShouldStillSilentlyDropOutOfRangeTempo() throws Exception {
+    void applyShouldSilentlyDropOutOfRangeTempo() throws Exception {
         SettingsModel model = runOnFxThread(() -> {
             SettingsModel m = newModel();
             SettingsDialog dialog = new SettingsDialog(m);
-            tempoField(dialog).setText("1000");
+            tempoRow(dialog).setValue("1000");
             dialog.applySettings();
             return m;
         });
 
-        // The descriptor-validator swap must keep the old semantics: an
-        // out-of-range tempo is dropped silently, the model keeps 120.0.
-        assertThat(model.getDefaultTempo()).isCloseTo(120.0, within(0.01));
+        // The descriptor-validator delegation must keep the old semantics:
+        // an out-of-range tempo is dropped silently, the model keeps its
+        // default (120.0).
+        assertThat(model.getDefaultTempo())
+                .isCloseTo(newModel().getDefaultTempo(), within(0.01));
     }
 
     @Test
-    void applyShouldStillSilentlyDropNaNTempo() throws Exception {
+    void applyShouldSilentlyDropNaNTempo() throws Exception {
         SettingsModel model = runOnFxThread(() -> {
             SettingsModel m = newModel();
             SettingsDialog dialog = new SettingsDialog(m);
-            tempoField(dialog).setText("NaN");
+            tempoRow(dialog).setValue("NaN");
             dialog.applySettings();
             return m;
         });
 
         // The setter guard's range comparisons are both false for NaN, so
         // it cannot reject it — the call site must. Pre-305 the inline
-        // range check dropped NaN silently; the model keeps 120.0.
-        assertThat(model.getDefaultTempo()).isCloseTo(120.0, within(0.01));
+        // range check dropped NaN silently; the model keeps its default.
+        assertThat(model.getDefaultTempo())
+                .isCloseTo(newModel().getDefaultTempo(), within(0.01));
     }
 
     @Test
-    void applyShouldStillWriteInRangeTempo() throws Exception {
+    void applyShouldWriteInRangeTempo() throws Exception {
         SettingsModel model = runOnFxThread(() -> {
             SettingsModel m = newModel();
             SettingsDialog dialog = new SettingsDialog(m);
-            tempoField(dialog).setText("150");
+            tempoRow(dialog).setValue("150");
             dialog.applySettings();
             return m;
         });
@@ -246,13 +214,13 @@ class SettingsDialogUnchangedTest {
     }
 
     /**
-     * The story-294 producer contract must survive the label wiring: Apply
+     * The story-294 producer contract must survive the shell swap: Apply
      * still publishes one well-formed {@link UiEvent.SettingsApplied} with
      * the manager-seeded values (the EventBus-swap capture idiom from
      * {@code SettingsDialogTest#applySettingsPublishesWellFormedSettingsAppliedEvent}).
      */
     @Test
-    void applyShouldStillPublishWellFormedSettingsAppliedEvent() throws Exception {
+    void applyShouldPublishWellFormedSettingsAppliedEvent() throws Exception {
         EventBus previous = EventBusPublisher.getDefault();
         // ON_UI_THREAD subscribers run inline on the publish thread — no
         // toolkit needed for the capture.
@@ -266,7 +234,7 @@ class SettingsDialogUnchangedTest {
         AtomicBoolean expectedMotion = new AtomicBoolean();
         try {
             runOnFxThread(() -> {
-                // The dialog seeds its controls from the live managers;
+                // The shell seeds its rows from the live managers;
                 // capture those exact values so the assertions can't drift.
                 expectedTheme.set(ThemeManager.getDefault().getActiveTheme().name());
                 expectedDensity.set(DensityManager.getDefault().getActiveDensity().name());
@@ -295,6 +263,61 @@ class SettingsDialogUnchangedTest {
             EventBusPublisher.setDefault(previous);
             bus.close();
         }
+    }
+
+    /**
+     * Regression (story-306 fix): the {@link UiEvent.SettingsApplied}
+     * publish is delivered asynchronously (the managers subscribe
+     * {@code ON_UI_THREAD} — a later FX pulse), so the synchronous
+     * post-apply {@code refreshFromPersisted()} must NOT re-seed the
+     * appearance rows from the still-stale managers. The rows keep the
+     * values the Apply just published, the shell reads clean against
+     * them, and re-selecting the applied value stays clean. No bus is
+     * installed here, so the managers never see the publish at all —
+     * exactly the mid-flight window the last-applied overlay covers.
+     */
+    @Test
+    void applyShouldKeepEditedAppearanceRowsAtTheirAppliedValues() throws Exception {
+        runOnFxThread(() -> {
+            SettingsDialog dialog = new SettingsDialog(newModel());
+            SettingsShell shell = dialog.getShell();
+            SettingRow themeRow = settingRow(dialog, "appearance", ThemeManager.PREF_KEY);
+            SettingRow motionRow = settingRow(dialog, "appearance", MotionManager.PREF_KEY);
+
+            ThemeManager.Theme before = ThemeManager.getDefault().getActiveTheme();
+            ThemeManager.Theme edited = Arrays.stream(ThemeManager.Theme.values())
+                    .filter(theme -> theme != before)
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("Need at least two themes"));
+            boolean motionEdited = !MotionManager.getDefault().isReduceMotion();
+
+            themeRow.setValue(edited);
+            motionRow.setValue(motionEdited);
+            dialog.applySettings();
+
+            assertThat(themeRow.getValue())
+                    .as("theme row keeps the just-applied value (no snap-back "
+                            + "to the not-yet-updated manager)")
+                    .isEqualTo(edited);
+            assertThat(motionRow.getValue())
+                    .as("reduce-motion row keeps the just-applied value")
+                    .isEqualTo(motionEdited);
+            assertThat(shell.dirtyProperty().get())
+                    .as("shell is clean against the applied values")
+                    .isFalse();
+
+            // The applied value is the new diff baseline: moving away is
+            // dirty, re-selecting it is clean — never the stale manager value.
+            themeRow.setValue(before);
+            assertThat(shell.dirtyProperty().get())
+                    .as("editing away from the applied theme is dirty")
+                    .isTrue();
+            themeRow.setValue(edited);
+            assertThat(shell.dirtyProperty().get())
+                    .as("re-selecting the applied theme is clean")
+                    .isFalse();
+            return null;
+        });
     }
 
     /** Polls {@code condition} up to five seconds; returns as soon as it holds. */
