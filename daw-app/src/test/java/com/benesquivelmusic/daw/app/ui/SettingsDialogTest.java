@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+import com.benesquivelmusic.daw.app.ui.settings.SettingRow;
+import com.benesquivelmusic.daw.app.ui.settings.SettingsShell;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
@@ -11,10 +13,16 @@ import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.UiEvent;
 
 import javafx.application.Platform;
+import javafx.scene.Node;
+import javafx.scene.Parent;
+import javafx.scene.control.ScrollPane;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -23,27 +31,91 @@ import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * {@code SettingsDialog.applySettings()} contract over the story-306
+ * Rail &amp; Pane shell: the {@code SettingsChangeListener} is notified
+ * after every apply, values edited through the shell's generic
+ * {@link SettingRow}s are persisted to {@link SettingsModel} <em>before</em>
+ * the listener runs, and the story-294 {@link UiEvent.SettingsApplied}
+ * publish stays well-formed. Pre-306 these tests leaned on the old
+ * dialog's unconditional re-write of its seeded combo values; under the
+ * §6.2 write-on-dirty contract each write assertion drives a real shell
+ * row edit instead.
+ */
 @ExtendWith(JavaFxToolkitExtension.class)
 class SettingsDialogTest {
 
-    private <T> T runOnFxThread(java.util.concurrent.Callable<T> callable) throws Exception {
+    private <T> T runOnFxThread(Callable<T> callable) throws Exception {
         AtomicReference<T> ref = new AtomicReference<>();
-        AtomicReference<Exception> error = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ref.set(callable.call());
-            } catch (Exception e) {
-                error.set(e);
+            } catch (Throwable t) {
+                // Capture AssertionError too — an FX-thread assertion must
+                // fail the test, not vanish into the FX exception handler.
+                error.set(t);
             } finally {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
-        if (error.get() != null) {
-            throw error.get();
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX task completed within the timeout")
+                .isTrue();
+        Throwable thrown = error.get();
+        if (thrown instanceof Error e) {
+            throw e;
+        }
+        if (thrown instanceof Exception e) {
+            throw e;
         }
         return ref.get();
+    }
+
+    private static SettingsModel newModel() {
+        Preferences prefs = Preferences.userRoot()
+                .node("settingsDialogTest_" + System.nanoTime());
+        return new SettingsModel(prefs);
+    }
+
+    /**
+     * Walks a node graph collecting instances of {@code type}.
+     * {@code ScrollPane} content is not a child until a skin attaches, so
+     * it is followed explicitly (headless — no skins are realized).
+     */
+    private static <T extends Node> void collectInstances(Node node, Class<T> type, List<T> into) {
+        if (node == null) {
+            return;
+        }
+        if (type.isInstance(node)) {
+            into.add(type.cast(node));
+        }
+        if (node instanceof ScrollPane scrollPane) {
+            collectInstances(scrollPane.getContent(), type, into);
+        }
+        if (node instanceof Parent parent) {
+            for (Node child : parent.getChildrenUnmodifiable()) {
+                collectInstances(child, type, into);
+            }
+        }
+    }
+
+    /**
+     * Selects {@code categoryId} on the rail (attaching its pane to the
+     * center scroll graph) and returns the {@link SettingRow} rendering
+     * {@code settingId}.
+     */
+    private static SettingRow settingRow(SettingsDialog dialog, String categoryId,
+                                         String settingId) {
+        SettingsShell shell = dialog.getShell();
+        shell.navRail().setSelectedCategoryId(categoryId);
+        List<SettingRow> rows = new ArrayList<>();
+        collectInstances(shell, SettingRow.class, rows);
+        return rows.stream()
+                .filter(row -> settingId.equals(row.descriptor().id()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No row for " + settingId));
     }
 
     @Test
@@ -51,32 +123,38 @@ class SettingsDialogTest {
         AtomicBoolean listenerInvoked = new AtomicBoolean(false);
         AtomicReference<SettingsModel> receivedModel = new AtomicReference<>();
 
-        runOnFxThread(() -> {
-            Preferences prefs = Preferences.userRoot().node("settingsDialogTest_" + System.nanoTime());
-            SettingsModel model = new SettingsModel(prefs);
-            SettingsDialog dialog = new SettingsDialog(model);
-            dialog.setSettingsChangeListener(m -> {
+        SettingsModel model = runOnFxThread(() -> {
+            SettingsModel m = newModel();
+            SettingsDialog dialog = new SettingsDialog(m);
+            dialog.setSettingsChangeListener(received -> {
                 listenerInvoked.set(true);
-                receivedModel.set(m);
+                receivedModel.set(received);
             });
+            settingRow(dialog, "audio", "audio.applyLatencyCompensation")
+                    .setValue(!m.isApplyLatencyCompensation());
             dialog.applySettings();
-            return null;
+            return m;
         });
 
         assertThat(listenerInvoked.get()).isTrue();
         assertThat(receivedModel.get()).isNotNull();
+        assertThat(receivedModel.get()).isSameAs(model);
     }
 
     @Test
     void applySettingsShouldNotFailWithoutListener() throws Exception {
-
-        runOnFxThread(() -> {
-            Preferences prefs = Preferences.userRoot().node("settingsDialogTest_" + System.nanoTime());
-            SettingsModel model = new SettingsModel(prefs);
-            SettingsDialog dialog = new SettingsDialog(model);
+        SettingsModel model = runOnFxThread(() -> {
+            SettingsModel m = newModel();
+            SettingsDialog dialog = new SettingsDialog(m);
+            boolean edited = !m.isApplyLatencyCompensation();
+            settingRow(dialog, "audio", "audio.applyLatencyCompensation").setValue(edited);
             dialog.applySettings();
-            return null;
+            return m;
         });
+
+        // No listener registered — the whole write path must still run.
+        assertThat(model.isApplyLatencyCompensation())
+                .isNotEqualTo(newModel().isApplyLatencyCompensation());
     }
 
     @Test
@@ -84,16 +162,18 @@ class SettingsDialogTest {
         AtomicReference<Double> tempoAtCallback = new AtomicReference<>();
 
         runOnFxThread(() -> {
-            Preferences prefs = Preferences.userRoot().node("settingsDialogTest_" + System.nanoTime());
-            SettingsModel model = new SettingsModel(prefs);
-            SettingsDialog dialog = new SettingsDialog(model);
+            SettingsDialog dialog = new SettingsDialog(newModel());
             dialog.setSettingsChangeListener(m -> tempoAtCallback.set(m.getDefaultTempo()));
+            // The TEXT row delivers a raw String; the pending 150 must be
+            // written to the model BEFORE the listener observes it.
+            settingRow(dialog, "project", "project.defaultTempo").setValue("150");
             dialog.applySettings();
             return null;
         });
 
         assertThat(tempoAtCallback.get()).isNotNull();
-        assertThat(tempoAtCallback.get()).isCloseTo(120.0, org.assertj.core.data.Offset.offset(0.01));
+        assertThat(tempoAtCallback.get())
+                .isCloseTo(150.0, org.assertj.core.data.Offset.offset(0.01));
     }
 
     @Test
@@ -101,15 +181,17 @@ class SettingsDialogTest {
         AtomicReference<Double> scaleAtCallback = new AtomicReference<>();
 
         runOnFxThread(() -> {
-            Preferences prefs = Preferences.userRoot().node("settingsDialogTest_" + System.nanoTime());
-            SettingsModel model = new SettingsModel(prefs);
-            SettingsDialog dialog = new SettingsDialog(model);
+            SettingsDialog dialog = new SettingsDialog(newModel());
             dialog.setSettingsChangeListener(m -> scaleAtCallback.set(m.getUiScale()));
+            // SLIDER rows carry Double pending values (§6.2 write-on-dirty).
+            settingRow(dialog, "appearance", "appearance.uiScale").setValue(1.5);
             dialog.applySettings();
             return null;
         });
 
         assertThat(scaleAtCallback.get()).isNotNull();
+        assertThat(scaleAtCallback.get())
+                .isCloseTo(1.5, org.assertj.core.data.Offset.offset(0.01));
     }
 
     /**
@@ -124,8 +206,10 @@ class SettingsDialogTest {
      * must round-trip through {@link ThemeManager.Theme#valueOf} and
      * {@code densityId} through {@link DensityMode#valueOf}, so swapping the two
      * (a {@code DensityMode} name landing in {@code themeId}) would fail. The
-     * expected values are the manager defaults the dialog seeds its controls from,
-     * captured on the FX thread immediately before the apply so they cannot drift.</p>
+     * expected values are the live-manager values the story-306 shell seeds its
+     * appearance rows from, captured on the FX thread immediately before the
+     * apply so they cannot drift — with zero pending edits the publish is
+     * unconditional and carries the managers' current values.</p>
      */
     @Test
     void applySettingsPublishesWellFormedSettingsAppliedEvent() throws Exception {
@@ -142,15 +226,13 @@ class SettingsDialogTest {
         AtomicBoolean expectedMotion = new AtomicBoolean();
         try {
             runOnFxThread(() -> {
-                // The dialog seeds its controls from the live managers; capture
+                // The shell seeds its rows from the live managers; capture
                 // those exact values so the assertions can't drift from the seed.
                 expectedTheme.set(ThemeManager.getDefault().getActiveTheme().name());
                 expectedDensity.set(DensityManager.getDefault().getActiveDensity().name());
                 expectedMotion.set(MotionManager.getDefault().isReduceMotion());
 
-                Preferences prefs = Preferences.userRoot().node("settingsDialogTest_" + System.nanoTime());
-                SettingsModel model = new SettingsModel(prefs);
-                SettingsDialog dialog = new SettingsDialog(model);
+                SettingsDialog dialog = new SettingsDialog(newModel());
                 dialog.applySettings();
                 return null;
             });

@@ -349,7 +349,7 @@ public final class DawgIcon extends Region {
     /**
      * Process-wide cache of parsed icon blueprints. Lucide SVGs are
      * immutable bundled resources, so this map can grow only to the
-     * size of the {@code icons.allowed.txt} whitelist (currently 37
+     * size of the {@code icons.allowed.txt} whitelist (currently 42
      * entries). Concurrent reads are safe.
      */
     private static final ConcurrentHashMap<String, IconBlueprint> BLUEPRINTS =

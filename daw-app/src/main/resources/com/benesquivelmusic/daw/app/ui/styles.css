@@ -2567,3 +2567,191 @@
     -fx-text-fill: -warn;
     -fx-font-size: 11px;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+ * Settings shell — Rail & Pane (story 306)
+ * Settings View Design Book §4.A (shell), §5.1–§5.5 (rail / search /
+ * rows / footer), §6.1 (search), §6.4 (badges), §6.5 (keyboard).
+ * Tokens only (Palette A on .root-pane) — no literal hex, 4 px grid.
+ *
+ * Two-layer control CSS (the ProjectCard precedent): SettingsNavRail
+ * and SettingRow ship self-contained USER_AGENT sheets
+ * (settings-nav-rail.css / setting-row.css) consuming LOCAL -snr-* /
+ * -srw-* tokens with literal Palette-A defaults. The forward blocks
+ * below RE-declare those local tokens from role tokens at AUTHOR
+ * origin (source and target names differ — never a circular lookup),
+ * so a theme overlay re-tints both controls by overriding the role
+ * tokens alone.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Role-token forwards for the rail's USER_AGENT sheet. */
+.settings-nav-rail {
+    -snr-surface:       -surface-2;
+    -snr-surface-hover: -surface-3;
+    -snr-accent:        -accent;
+    -snr-text:          -text;
+    -snr-text-hi:       -text-hi;
+    -snr-text-mute:     -text-mute;
+    -snr-focus-ring:    -focus-ring;
+
+    -fx-pref-width: 176;
+    -fx-min-width: 144;
+}
+
+/* Role-token forwards for the row's USER_AGENT sheet. */
+.setting-row {
+    -srw-text:        -text;
+    -srw-text-mute:   -text-mute;
+    -srw-warn:        -warn;
+    -srw-accent:      -accent;
+    -srw-accent-soft: -accent-soft;
+}
+
+/* AUTHOR-origin re-statements of the label fills/sizes the UA sheets
+ * carry: the global `.dialog-pane .label` rule above (12 px, -text-hi)
+ * beats any USER_AGENT rule by origin, so every settings label the
+ * design book sizes/tints differently must be re-declared here at
+ * equal-or-higher specificity + later cascade. */
+.settings-nav-cell .settings-nav-title {
+    -fx-text-fill: -text;
+}
+.settings-nav-cell:selected .settings-nav-title {
+    -fx-text-fill: -text-hi;
+}
+.settings-nav-cell .settings-nav-count {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+}
+.settings-nav-cell .settings-nav-dirty {
+    -fx-text-fill: -accent;
+}
+
+/* Rail icons follow the title fill, brightening with selection (the UA
+ * sheet's §5.1 re-tint) — restated here because the global `.dawg-icon`
+ * -text-hi rule above is AUTHOR origin and beats any USER_AGENT rule
+ * regardless of specificity (the .dock-grip re-tint precedent). */
+.settings-nav-cell .dawg-icon {
+    -fx-icon-color: -text;
+}
+.settings-nav-cell:selected .dawg-icon {
+    -fx-icon-color: -text-hi;
+}
+
+/* The rail's inner ScrollPane is chrome only — keep the global
+ * `.scroll-pane` -surface-1 fill from painting over the rail's
+ * -surface-2 (the UA sheet's transparency loses to AUTHOR origin). */
+.settings-nav-rail .scroll-pane,
+.settings-nav-rail .scroll-pane > .viewport {
+    -fx-background-color: transparent;
+    -fx-background: transparent;
+}
+
+/* §5.4 row label / description / badge type — sizes per the UI-book
+ * scale (Body 12, Caption 11, Label-small 10). */
+.setting-row .setting-row-label {
+    -fx-text-fill: -text;
+    -fx-font-size: 12px;
+}
+.setting-row .setting-row-description {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+.setting-row .setting-row-badge {
+    -fx-font-size: 10px;
+}
+.setting-row .setting-row-badge.badge-engine {
+    -fx-text-fill: -text-mute;
+}
+.setting-row .setting-row-badge.badge-restart {
+    -fx-text-fill: -warn;
+}
+
+/* §6.1 highlight spans are Text nodes in the label's graphic TextFlow —
+ * they take -fx-fill (never -fx-text-fill); `.label` rules cannot reach
+ * them, so these mirror the UA sheet with role tokens directly. */
+.setting-row .setting-row-label-text {
+    -fx-fill: -text;
+}
+.setting-row .setting-row-highlight {
+    -fx-fill: -accent;
+}
+
+/* §6.5 armed key-capture field: accent ring + accent-soft wash while
+ * explicitly armed. Re-stated at AUTHOR origin because the global
+ * `.text-field` border rules would beat the UA sheet's :armed rule. */
+.setting-row .key-capture:armed {
+    -fx-background-color: -accent-soft;
+    -fx-border-color: -accent;
+}
+
+/* ── Shell assembly (§4.A) ── */
+.settings-shell {
+    -fx-background-color: -surface-1;
+    -fx-pref-height: 560;
+}
+
+/* §5.2 always-on search bar. */
+.settings-search-bar {
+    -fx-padding: 8 12 8 12;
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+    -fx-background-color: -surface-1;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 0 0 1 0;
+}
+.settings-search-field {
+    -fx-background-color: -surface-2;
+}
+.settings-search-clear {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+}
+
+/* §5.3 the scrolling settings pane. */
+.settings-pane,
+.settings-pane > .viewport {
+    -fx-background-color: -surface-1;
+    -fx-background: -surface-1;
+}
+
+.settings-category-pane,
+.settings-search-results {
+    -fx-padding: 16 24 24 24;
+    -fx-spacing: 12;
+}
+.settings-search-section {
+    -fx-spacing: 12;
+}
+
+/* §5.3 pane header — H2 13/600, PLAIN -text-hi: NEVER an accent fill or
+ * accent text-fill (UI Design Book rejection §6). Two-selector form so
+ * it beats `.dialog-pane .label` on equal specificity + later cascade
+ * (the .dawg-dialog-section-header idiom above). */
+.dialog-pane .settings-category-title,
+.settings-category-title {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 13px;
+    -fx-font-weight: 600;
+}
+
+/* Group headers (browse groups and search "Category · Group" headers) —
+ * label-small 10/600 -text-mute, mirroring .dawg-dialog-section-header.
+ * Uppercase is realised in code (DawgDialog.sectionHeaderText idiom;
+ * JavaFX CSS has no -fx-text-transform). */
+.dialog-pane .settings-group-title,
+.settings-group-title {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+    -fx-font-weight: 600;
+}
+
+/* §5.5 footer — exactly Cancel / Apply / OK (the status note and the
+ * restart banner are story 307). */
+.settings-footer {
+    -fx-padding: 8 16 8 16;
+    -fx-spacing: 8;
+    -fx-alignment: center-right;
+    -fx-background-color: -surface-bg;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1 0 0 0;
+}
