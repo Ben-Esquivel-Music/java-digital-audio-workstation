@@ -63,10 +63,11 @@ import java.util.Set;
  * pane of the {@link SettingsSearchIndex} hits in rank order, grouped
  * under "Category · Group" headers in first-appearance order. The row
  * <em>nodes are reused</em> (moved into the results pane), so pending
- * state never resets; leaving search restores each category pane's
- * remembered child list, re-parenting the rows back. Rail items get
- * per-category match counts and no-match dimming; matched rows get the
- * query as their highlight.</p>
+ * state never resets; every query change and leaving search restore each
+ * category pane's remembered child list first, re-parenting the rows
+ * back — only the current results container ever borrows rows. Rail
+ * items get per-category match counts and no-match dimming; matched rows
+ * get the query as their highlight.</p>
  *
  * <h2>Keyboard (§6.5, rejection #7)</h2>
  *
@@ -124,8 +125,9 @@ public final class SettingsShell extends BorderPane {
     /**
      * Each category pane's permanent child list (title, group headers,
      * rows, trailing node). Search mode MOVES row nodes into the results
-     * pane; leaving search restores these lists, re-parenting the rows
-     * back — row nodes are reused so pending state never resets (§6.1).
+     * pane; every query change and leaving search restore these lists,
+     * re-parenting the rows back — row nodes are reused so pending state
+     * never resets (§6.1).
      */
     private final Map<String, List<Node>> categoryPaneChildren = new HashMap<>();
     private final Map<String, SettingsNavRail.NavItem> navItemsByCategory =
@@ -459,6 +461,12 @@ public final class SettingsShell extends BorderPane {
     private void enterSearchMode(String query) {
         searchMode = true;
 
+        // Re-parent every row home BEFORE building the next results pane:
+        // a row that drops out of the match set would otherwise stay
+        // parented to the previous (now detached) results container,
+        // keeping a growing chain of orphan containers reachable while
+        // the user types.
+        restoreCategoryPaneChildren();
         for (SettingRow row : rowsById.values()) {
             row.highlightQueryProperty().set("");
         }
@@ -510,11 +518,19 @@ public final class SettingsShell extends BorderPane {
             item.matchCountProperty().set(-1);
             item.dimmedProperty().set(false);
         }
+        restoreCategoryPaneChildren();
+        showCategory(navRail.getSelectedCategoryId());
+    }
+
+    /**
+     * Restores every category pane's permanent child list, re-parenting
+     * any row a results pane borrowed back to its home pane.
+     */
+    private void restoreCategoryPaneChildren() {
         for (Map.Entry<String, VBox> entry : categoryPanes.entrySet()) {
             entry.getValue().getChildren()
                     .setAll(categoryPaneChildren.get(entry.getKey()));
         }
-        showCategory(navRail.getSelectedCategoryId());
     }
 
     private void showCategory(String categoryId) {

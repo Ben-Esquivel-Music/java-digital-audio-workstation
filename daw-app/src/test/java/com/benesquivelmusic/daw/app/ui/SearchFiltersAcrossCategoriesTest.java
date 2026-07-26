@@ -265,6 +265,42 @@ class SearchFiltersAcrossCategoriesTest {
     }
 
     @Test
+    void queryChangeShouldReparentDroppedRowsBackToTheirCategoryPane() throws Exception {
+        runOnFxThread(() -> {
+            SettingsShell shell = newShell(SettingsCatalogue.create());
+            showInScene(shell);
+            TextField field = searchField(shell);
+
+            field.setText("latency");
+            Set<Node> nodes = new LinkedHashSet<>();
+            collectDeep(shell, nodes);
+            SettingRow compensation = nodes.stream()
+                    .filter(node -> node instanceof SettingRow row
+                            && "audio.applyLatencyCompensation".equals(row.descriptor().id()))
+                    .map(SettingRow.class::cast)
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "\"latency\" did not surface audio.applyLatencyCompensation"));
+
+            // Narrow to a no-match query while STAYING in search mode: the
+            // row drops out of the match set and must be re-parented to
+            // its home category pane — not left pinned to the previous
+            // (now detached) results container.
+            field.setText("zzzqqq");
+
+            Parent parent = compensation.getParent();
+            assertThat(parent)
+                    .as("the dropped-out row was re-parented somewhere")
+                    .isNotNull();
+            assertThat(parent.getStyleClass())
+                    .as("the dropped-out row is back in its home category pane, "
+                            + "not a stale detached results container")
+                    .contains("settings-category-pane");
+            return null;
+        });
+    }
+
+    @Test
     void exactLabelQueryShouldRankThatDescriptorFirst() {
         SettingsCatalogue catalogue = SettingsCatalogue.create();
         SettingsSearchIndex index = SettingsSearchIndex.of(catalogue);
