@@ -2723,6 +2723,66 @@
     -fx-spacing: 12;
 }
 
+.settings-center {
+    -fx-background-color: -surface-1;
+}
+
+.settings-restart-banner {
+    -fx-padding: 8 12 8 12;
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+    -fx-background-color: -surface-2;
+    -fx-border-color: -warn;
+    -fx-border-width: 0 0 1 0;
+}
+.settings-restart-banner .dawg-icon {
+    -fx-icon-color: -warn;
+}
+.dialog-pane .settings-restart-banner-text,
+.settings-restart-banner-text {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
+}
+
+.settings-operation-notice {
+    -fx-background-color: -surface-1;
+    -fx-padding: 8 12 8 12;
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+    -fx-border-color: -danger;
+    -fx-border-width: 0 0 1 0;
+}
+.settings-operation-notice .dawg-icon {
+    -fx-icon-color: -danger;
+}
+.dialog-pane .settings-operation-notice-text,
+.settings-operation-notice-text {
+    -fx-text-fill: -danger;
+    -fx-font-size: 11px;
+}
+
+.settings-audio-utilities {
+    -fx-background-color: -surface-2;
+    -fx-padding: 12;
+    -fx-spacing: 8;
+}
+.settings-audio-utility-line,
+.settings-audio-actions,
+.settings-audio-telemetry {
+    -fx-spacing: 12;
+    -fx-alignment: center-left;
+}
+.dialog-pane .settings-audio-utility-label,
+.settings-audio-utility-label {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+    -fx-min-width: 112px;
+}
+.settings-audio-telemetry {
+    -fx-background-color: -surface-2;
+    -fx-padding: 8 12 8 12;
+}
+
 /* §5.3 pane header — H2 13/600, PLAIN -text-hi: NEVER an accent fill or
  * accent text-fill (UI Design Book rejection §6). Two-selector form so
  * it beats `.dialog-pane .label` on equal specificity + later cascade
@@ -2745,6 +2805,26 @@
     -fx-font-weight: 600;
 }
 
+.settings-group-header {
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+}
+.dialog-pane .settings-group-progress,
+.settings-group-progress {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+}
+.settings-group-reset {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+    -fx-padding: 2 4 2 4;
+}
+.settings-group-reset:hover {
+    -fx-text-fill: -text;
+}
+
 /* §5.5 footer — exactly Cancel / Apply / OK (the status note and the
  * restart banner are story 307). */
 .settings-footer {
@@ -2754,4 +2834,9 @@
     -fx-background-color: -surface-bg;
     -fx-border-color: -line-soft;
     -fx-border-width: 1 0 0 0;
+}
+.dialog-pane .settings-footer-status,
+.settings-footer-status {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
 }

@@ -202,14 +202,14 @@ public final class SettingsCatalogue {
                         List.of("bits", "resolution"),
                         ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
                         defaultBitDepth, scratch::setBitDepth),
+                modelDescriptor(messages, "audio.bufferSize",
+                        List.of("latency", "frames", "block size"),
+                        ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
+                        defaultBufferSize, scratch::setBufferSize),
                 modelDescriptor(messages, "audio.mixPrecision",
                         List.of("double", "float", "64-bit"),
                         ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
-                        defaultMixPrecision, scratch::setMixPrecision),
-                modelDescriptor(messages, "audio.srcQuality",
-                        List.of("resampling", "conversion"),
-                        ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
-                        defaultSrcQuality, scratch::setSrcQuality)));
+                        defaultMixPrecision, scratch::setMixPrecision)));
 
         Group audioDevice = new Group("device",
                 msg(messages, "settings.group.audio.device"), List.of(
@@ -228,10 +228,6 @@ public final class SettingsCatalogue {
                         List.of("latency", "device", "interface"),
                         ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
                         defaultOutputDevice, scratch::setAudioOutputDevice),
-                modelDescriptor(messages, "audio.bufferSize",
-                        List.of("latency", "frames", "block size"),
-                        ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
-                        defaultBufferSize, scratch::setBufferSize),
                 // LIVE: the flag is read per-take by the recording
                 // pipeline — no engine re-arm involved.
                 modelDescriptor(messages, "audio.applyLatencyCompensation",
@@ -242,6 +238,10 @@ public final class SettingsCatalogue {
 
         Group audioPerformance = new Group("performance",
                 msg(messages, "settings.group.audio.performance"), List.of(
+                modelDescriptor(messages, "audio.srcQuality",
+                        List.of("resampling", "conversion"),
+                        ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
+                        defaultSrcQuality, scratch::setSrcQuality),
                 modelDescriptor(messages, "audio.workerPoolSize",
                         List.of("threads", "cores", "multicore"),
                         ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,

@@ -73,6 +73,7 @@ import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.ResourceBundle;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -783,6 +784,9 @@ public final class MainController {
             }
         });
 
+        SettingsModel startupSettings = new SettingsModel(
+                Preferences.userNodeForPackage(SettingsModel.class));
+        this.settingsModel = startupSettings;
         audioEngine = new AudioEngine(project.getFormat());
         // Story 137: bind the input-level-monitor registry so the engine
         // taps the raw input signal per armed track before any processing.
@@ -793,20 +797,20 @@ public final class MainController {
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to create audio backend; playback will use UI timer only", e);
         }
-        audioEngineController = new DefaultAudioEngineController(audioEngine, () -> {
-            applyProjectInfoLabels();
-            // Story 129 (UI): reinstall the per-track CPU budget enforcer
-            // whenever the engine is reconfigured (sample rate / buffer size
-            // change in AudioSettingsDialog → applyConfiguration) so the
-            // enforcer's blockBudgetNanos stays in sync with the live format.
-            installTrackCpuBudgetEnforcer();
-        });
+        audioEngineController = new DefaultAudioEngineController(audioEngine, () ->
+                postFx(() -> {
+                    applyProjectInfoLabels();
+                    // Story 129 (UI): reinstall the per-track CPU budget enforcer
+                    // whenever the engine is reconfigured (sample rate / buffer size
+                    // change in SettingsDialog → applyConfiguration) so the
+                    // enforcer's blockBudgetNanos stays in sync with the live format.
+                    installTrackCpuBudgetEnforcer();
+                }));
+        applyStartupAudioSettings(startupSettings, audioEngineController);
 
         // Apply the persisted mix precision from user preferences to the
         // project's mixer so that a previously-saved FLOAT_32 choice is
         // honoured on restart rather than silently reverting to the default.
-        SettingsModel startupSettings = new SettingsModel(Preferences.userNodeForPackage(SettingsModel.class));
-        this.settingsModel = startupSettings;
         project.getMixer().setMixPrecision(startupSettings.getMixPrecision());
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
@@ -1097,6 +1101,35 @@ public final class MainController {
         if (inspectorDrawer != null && rootPane != null) {
             inspectorDrawer.installSourceEventForwarding(rootPane);
         }
+    }
+
+    /** Applies restart-scoped persisted audio preferences away from the FX thread. */
+    static Thread applyStartupAudioSettings(
+            SettingsModel settings, AudioEngineController controller) {
+        Objects.requireNonNull(settings, "settings must not be null");
+        Objects.requireNonNull(controller, "controller must not be null");
+        Thread worker = Thread.ofVirtual().name("daw-startup-audio-configuration").unstarted(() -> {
+            try {
+                String persistedBackend = settings.getAudioBackend();
+                String backend = persistedBackend.isBlank()
+                        ? controller.getActiveBackendName() : persistedBackend;
+                controller.applyConfiguration(new AudioEngineController.Request(
+                        backend,
+                        settings.getAudioInputDevice(),
+                        settings.getAudioOutputDevice(),
+                        com.benesquivelmusic.daw.sdk.audio.SampleRate.fromHz(
+                                (int) settings.getSampleRate()),
+                        settings.getBufferSize(),
+                        settings.getBitDepth(),
+                        settings.getWorkerPoolSize()));
+                controller.applySrcQuality(settings.getSrcQuality());
+            } catch (RuntimeException failure) {
+                LOG.log(Level.WARNING,
+                        "Failed to apply persisted audio configuration at startup", failure);
+            }
+        });
+        worker.start();
+        return worker;
     }
 
     private void createToolbarAppearanceController() {
@@ -3731,21 +3764,26 @@ public final class MainController {
 
     @FXML private void onOpenSettings() {
         status("Opening settings...", DawIcon.SETTINGS);
-        SettingsModel settingsModel = new SettingsModel(Preferences.userNodeForPackage(SettingsModel.class));
-        String previousPluginPaths = settingsModel.getPluginScanPaths();
-        SettingsDialog dialog = new SettingsDialog(settingsModel);
-        dialog.setAudioEngineController(audioEngineController);
-        dialog.setSettingsChangeListener(model -> applyLiveSettings(model, previousPluginPaths));
+        SettingsDialog dialog = createSettingsDialog();
         dialog.showAndWait();
         status("Settings closed", DawIcon.STATUS);
     }
 
     void onOpenAudioSettings() {
         status("Opening audio settings...", DawIcon.HEADPHONES);
-        SettingsModel settingsModel = new SettingsModel(Preferences.userNodeForPackage(SettingsModel.class));
-        AudioSettingsDialog dialog = new AudioSettingsDialog(settingsModel, audioEngineController);
+        SettingsDialog dialog = createSettingsDialog();
+        dialog.selectCategory("audio");
         dialog.showAndWait();
         status("Audio settings closed", DawIcon.STATUS);
+    }
+
+    /** Builds Settings over the one model shared by live runtime consumers. */
+    SettingsDialog createSettingsDialog() {
+        String previousPluginPaths = settingsModel.getPluginScanPaths();
+        SettingsDialog dialog = new SettingsDialog(settingsModel);
+        dialog.setAudioEngineController(audioEngineController);
+        dialog.setSettingsChangeListener(model -> applyLiveSettings(model, previousPluginPaths));
+        return dialog;
     }
 
     /**

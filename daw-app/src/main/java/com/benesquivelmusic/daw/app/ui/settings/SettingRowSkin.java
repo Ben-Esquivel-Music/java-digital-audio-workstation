@@ -10,10 +10,12 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
 import javafx.scene.control.SkinBase;
 import javafx.scene.control.Slider;
 import javafx.scene.control.Spinner;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
@@ -218,30 +220,38 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
      */
     private Node buildChoice(SettingRow row) {
         ComboBox<Object> combo = new ComboBox<>();
-        List<Object> options = new ArrayList<>();
-        if (row.hints().choiceOptions() != null) {
-            options.addAll(row.hints().choiceOptions());
-        }
-        Object current = row.getValue();
-        if (options.isEmpty()) {
-            if (current != null) {
-                options.add(current);
-            }
-            Object defaultValue = row.descriptor().defaultValue();
-            if (defaultValue != null && !Objects.equals(defaultValue, current)) {
-                options.add(defaultValue);
-            }
-        } else if (current != null && !options.contains(current)) {
-            options.add(0, current);
-        }
-        combo.getItems().setAll(options);
+        combo.getItems().setAll(row.choiceOptions());
         if (row.hints().converter() != null) {
             combo.setConverter(row.hints().converter());
         }
-        combo.setValue(current);
+        combo.setCellFactory(_ -> new ListCell<>() {
+            @Override
+            protected void updateItem(Object item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setTooltip(null);
+                    setDisable(false);
+                    return;
+                }
+                setText(row.hints().converter() == null
+                        ? item.toString() : row.hints().converter().toString(item));
+                boolean unavailable = row.unavailableChoiceOptions().contains(item);
+                setDisable(unavailable);
+                setTooltip(unavailable
+                        ? new Tooltip("Not supported by the current audio device") : null);
+            }
+        });
+        combo.setValue(row.getValue());
         ChangeListener<Object> comboListener = (_, _, v) -> setRowValueFromControl(v);
         combo.valueProperty().addListener(comboListener);
         detachers.add(() -> combo.valueProperty().removeListener(comboListener));
+        ChangeListener<List<Object>> optionsListener = (_, _, options) -> runGuarded(() -> {
+            combo.getItems().setAll(options);
+            combo.setValue(row.getValue());
+        });
+        row.choiceOptionsProperty().addListener(optionsListener);
+        detachers.add(() -> row.choiceOptionsProperty().removeListener(optionsListener));
         attachRowValueListener(row, (_, _, v) -> runGuarded(() -> {
             if (v != null && !combo.getItems().contains(v)) {
                 combo.getItems().add(0, v);

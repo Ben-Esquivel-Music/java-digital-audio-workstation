@@ -17,6 +17,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -86,6 +91,66 @@ class DefaultAudioEngineControllerTest {
         assertThat(updated.bitDepth()).isEqualTo(16);
         assertThat(updated.channels()).isEqualTo(AudioFormat.CD_QUALITY.channels());
         assertThat(callbackHits.get()).isEqualTo(1);
+    }
+
+    @Test
+    void startupAndInteractiveConfigurationsCannotOverlap() throws Exception {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        CountDownLatch startupInCallback = new CountDownLatch(1);
+        CountDownLatch releaseStartup = new CountDownLatch(1);
+        CountDownLatch interactiveCompleted = new CountDownLatch(1);
+        AtomicInteger callbackCount = new AtomicInteger();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, () -> {
+                    if (callbackCount.incrementAndGet() == 1) {
+                        startupInCallback.countDown();
+                        try {
+                            releaseStartup.await();
+                        } catch (InterruptedException cancelled) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(cancelled);
+                        }
+                    } else {
+                        interactiveCompleted.countDown();
+                    }
+                });
+        var startupRequest = new AudioEngineController.Request(
+                AudioEngineController.BACKEND_NONE, "", "",
+                SampleRate.HZ_48000, 256, 24);
+        var interactiveRequest = new AudioEngineController.Request(
+                AudioEngineController.BACKEND_NONE, "", "",
+                SampleRate.HZ_44100, 512, 16);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread startup = Thread.ofVirtual().name("test-startup-audio").start(() -> {
+            try {
+                controller.applyConfiguration(startupRequest);
+            } catch (Throwable problem) {
+                failure.compareAndSet(null, problem);
+            }
+        });
+        assertThat(startupInCallback.await(5, TimeUnit.SECONDS)).isTrue();
+        Thread interactive = Thread.ofVirtual().name("test-settings-audio").start(() -> {
+            try {
+                controller.applyConfiguration(interactiveRequest);
+            } catch (Throwable problem) {
+                failure.compareAndSet(null, problem);
+            }
+        });
+
+        assertThat(interactiveCompleted.await(250, TimeUnit.MILLISECONDS))
+                .as("interactive configuration waits for startup configuration")
+                .isFalse();
+        assertThat(engine.getFormat().bufferSize()).isEqualTo(256);
+        releaseStartup.countDown();
+        assertThat(interactiveCompleted.await(5, TimeUnit.SECONDS)).isTrue();
+        startup.join();
+        interactive.join();
+
+        assertThat(failure.get()).isNull();
+        assertThat(callbackCount).hasValue(2);
+        assertThat(engine.getFormat().bufferSize()).isEqualTo(512);
+        controller.shutdown();
     }
 
     @Test
@@ -429,6 +494,146 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
+    void activeSdkBackendDrivesUtilitiesCapabilitiesAndForwardedEvents(
+            @TempDir Path projectRoot) throws Exception {
+        MockAudioBackend backend = new MockAudioBackend();
+        var range = new com.benesquivelmusic.daw.sdk.audio.BufferSizeRange(64, 512, 128, 64);
+        backend.setBufferSizeRange(range);
+        backend.setSupportedSampleRates(Set.of(48_000, 96_000));
+        var internal = new com.benesquivelmusic.daw.sdk.audio.ClockSource(
+                1, "Internal", true,
+                new com.benesquivelmusic.daw.sdk.audio.ClockKind.Internal());
+        var wordClock = new com.benesquivelmusic.daw.sdk.audio.ClockSource(
+                2, "Word Clock", false,
+                new com.benesquivelmusic.daw.sdk.audio.ClockKind.WordClock());
+        backend.setClockSources(List.of(internal, wordClock));
+        var selector = new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                java.util.Map.of(MockAudioBackend.NAME, () -> backend));
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        controller.applyBackendByName(MockAudioBackend.NAME);
+        DeviceId device = new DeviceId(MockAudioBackend.NAME, "Mock Device");
+        controller.bindBackendDeviceEvents(backend, device);
+
+        assertThat(controller.getActiveBackendName()).isEqualTo(MockAudioBackend.NAME);
+        assertThat(controller.listDevices()).extracting("name").containsExactly("Mock Device");
+        assertThat(controller.bufferSizeRange(MockAudioBackend.NAME, "Mock Device"))
+                .isEqualTo(range);
+        assertThat(controller.supportedSampleRates(MockAudioBackend.NAME, "Mock Device"))
+                .containsExactlyInAnyOrder(48_000, 96_000);
+        assertThat(controller.clockSources(MockAudioBackend.NAME, "Mock Device"))
+                .containsExactly(internal, wordClock);
+        controller.selectClockSource(MockAudioBackend.NAME, "Mock Device", 2);
+        assertThat(backend.recordedClockSourceSelections()).containsExactly(2);
+        controller.openControlPanel().orElseThrow().run();
+        assertThat(backend.controlPanelInvocationCount()).isEqualTo(1);
+
+        CountDownLatch eventForwarded = new CountDownLatch(1);
+        AtomicReference<com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent> forwarded =
+                new AtomicReference<>();
+        controller.deviceEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+            @Override public void onNext(
+                    com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent event) {
+                forwarded.set(event);
+                eventForwarded.countDown();
+            }
+            @Override public void onError(Throwable failure) { }
+            @Override public void onComplete() { }
+        });
+        backend.simulateDeviceFormatChanged(
+                device, com.benesquivelmusic.daw.sdk.audio.AudioFormat.STUDIO_QUALITY_48K);
+
+        assertThat(eventForwarded.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(forwarded.get())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                        .DeviceFormatChanged.class);
+        controller.shutdown();
+    }
+
+    @Test
+    void lateBackendSubscriptionsCannotReplaceCurrentGenerationOrLeakAfterShutdown(
+            @TempDir Path projectRoot) throws Exception {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        MockAudioBackend backendA = new MockAudioBackend();
+        MockAudioBackend backendB = new MockAudioBackend();
+        DeviceId deviceA = new DeviceId(MockAudioBackend.NAME, "Device A");
+        DeviceId deviceB = new DeviceId(MockAudioBackend.NAME, "Device B");
+        DelayedDeviceEventPublisher eventsA = new DelayedDeviceEventPublisher();
+        DelayedDeviceEventPublisher eventsB = new DelayedDeviceEventPublisher();
+        CountDownLatch forwarded = new CountDownLatch(1);
+        AtomicReference<com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent> seen =
+                new AtomicReference<>();
+        controller.deviceEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+            @Override public void onNext(
+                    com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent event) {
+                seen.set(event);
+                forwarded.countDown();
+            }
+            @Override public void onError(Throwable failure) { }
+            @Override public void onComplete() { }
+        });
+
+        controller.bindBackendDeviceEvents(backendA, deviceA, eventsA);
+        controller.bindBackendDeviceEvents(backendB, deviceB, eventsB);
+        eventsB.connect();
+        eventsA.connect();
+
+        assertThat(eventsA.cancelled).isTrue();
+        assertThat(eventsB.cancelled).isFalse();
+        eventsA.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                .DeviceRemoved(deviceA));
+        assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+        assertThat(seen.get()).isNull();
+        var currentEvent = new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                .DeviceFormatChanged(
+                        deviceB,
+                        com.benesquivelmusic.daw.sdk.audio.AudioFormat.STUDIO_QUALITY_48K);
+        eventsB.emit(currentEvent);
+        assertThat(forwarded.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(seen.get()).isEqualTo(currentEvent);
+
+        DelayedDeviceEventPublisher afterShutdown = new DelayedDeviceEventPublisher();
+        controller.bindBackendDeviceEvents(backendB, deviceB, afterShutdown);
+        controller.shutdown();
+        afterShutdown.connect();
+        assertThat(afterShutdown.cancelled).isTrue();
+    }
+
+    @Test
+    void wasapiExclusiveNameCreatesExclusiveBackendOrExplicitlyFallsBack(
+            @TempDir Path projectRoot) {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+
+        controller.applyBackendByName("WASAPI (Exclusive)");
+
+        if (new com.benesquivelmusic.daw.sdk.audio.WasapiBackend(true).isAvailable()) {
+            assertThat(engine.getBackend())
+                    .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.WasapiBackend.class);
+            assertThat(((com.benesquivelmusic.daw.sdk.audio.WasapiBackend) engine.getBackend())
+                    .isExclusive()).isTrue();
+            assertThat(controller.getActiveBackendName()).isEqualTo("WASAPI (Exclusive)");
+        } else {
+            assertThat(engine.getBackend()).isNull();
+            assertThat(engine.getAudioBackend().getBackendName()).isEqualTo("Java Sound");
+        }
+        controller.shutdown();
+    }
+
+    @Test
     void applyBackendByNameWithUnavailablePlatformBackendFallsBackAndNotifies(
             @TempDir Path projectRoot) {
         // Register a deterministic test-only unavailable backend under the
@@ -535,5 +740,30 @@ class DefaultAudioEngineControllerTest {
         controller.setSampleRate("", "", 48_000.0);
         controller.setSampleRate("Java Sound", "", 48_000.0);
         controller.setSampleRate("PortAudio", "", 48_000.0);
+    }
+
+    private static final class DelayedDeviceEventPublisher
+            implements Flow.Publisher<com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent> {
+        private final AtomicReference<Flow.Subscriber<? super
+                com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent>> subscriber =
+                new AtomicReference<>();
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super
+                com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent> newSubscriber) {
+            subscriber.set(newSubscriber);
+        }
+
+        private void connect() {
+            subscriber.get().onSubscribe(new Flow.Subscription() {
+                @Override public void request(long count) { }
+                @Override public void cancel() { cancelled.set(true); }
+            });
+        }
+
+        private void emit(com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent event) {
+            subscriber.get().onNext(event);
+        }
     }
 }

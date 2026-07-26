@@ -65,6 +65,7 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.audio.javasound;
     exports com.benesquivelmusic.daw.core.audio.performance;
     exports com.benesquivelmusic.daw.core.audio.portaudio;
+    exports com.benesquivelmusic.daw.core.concurrent;
     exports com.benesquivelmusic.daw.core.audioimport;
     exports com.benesquivelmusic.daw.core.automation;
     // Sample preview engine — surfaced to daw.app's BrowserPanel per-row
