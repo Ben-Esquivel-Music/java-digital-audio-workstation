@@ -16,7 +16,7 @@ import java.util.Set;
 import java.util.concurrent.Flow;
 
 /**
- * Application-layer abstraction that the {@link AudioSettingsDialog} uses
+ * Application-layer abstraction that the {@link SettingsDialog} uses
  * to query and mutate audio engine state without depending on the full
  * {@link com.benesquivelmusic.daw.core.audio.AudioEngine} wiring.
  *
@@ -209,8 +209,8 @@ public interface AudioEngineController {
      * active backend has no native panel (for example {@code JACK} or
      * the test {@code Mock} backend).
      *
-     * <p>{@link AudioSettingsDialog} uses this to enable or disable
-     * the "Open Driver Control Panel" button. The returned runnable
+     * <p>Audio surfaces use this to enable or disable an
+     * "Open Driver Control Panel" action. The returned runnable
      * may throw {@link RuntimeException} (typically
      * {@link com.benesquivelmusic.daw.sdk.audio.AudioBackendException})
      * when the panel cannot be launched; callers should surface the
@@ -533,7 +533,7 @@ public interface AudioEngineController {
     /**
      * Returns a {@link Flow.Publisher} that re-emits the active
      * backend's {@link AudioBackend#deviceEvents()} stream so UI
-     * components (notably {@link AudioSettingsDialog}) can react to
+     * components can react to
      * driver-initiated capability changes without depending on the
      * concrete backend wiring.
      *

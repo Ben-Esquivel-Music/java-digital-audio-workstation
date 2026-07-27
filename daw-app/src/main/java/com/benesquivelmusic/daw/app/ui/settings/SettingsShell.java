@@ -19,6 +19,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 
+import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -29,6 +30,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.MissingResourceException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.Set;
 
@@ -119,6 +121,10 @@ public final class SettingsShell extends BorderPane {
 
     // ── Row / taxonomy indexes (built once, catalogue order) ─────────────────
     private final Map<String, SettingRow> rowsById = new LinkedHashMap<>();
+    private final Map<String, SettingDescriptor<?>> descriptorsById =
+            new LinkedHashMap<>();
+    private final Map<String, List<SettingRow>> rowsByGroup = new HashMap<>();
+    private final Map<String, Label> progressByGroup = new HashMap<>();
     private final Map<String, String> categoryByRowId = new HashMap<>();
     private final List<SettingRow> keyCaptureRows = new ArrayList<>();
     private final Map<String, VBox> categoryPanes = new LinkedHashMap<>();
@@ -146,6 +152,11 @@ public final class SettingsShell extends BorderPane {
     private final ScrollPane paneScroll = new ScrollPane();
     private final VBox paneHost = new VBox();
     private final TextField searchField = new TextField();
+    private final Label restartBannerText = new Label();
+    private final HBox restartBanner = new HBox();
+    private final Label operationNoticeText = new Label();
+    private final HBox operationNotice = new HBox();
+    private final Label footerStatus = new Label();
 
     /** {@code true} while the center shows search results (§6.1). */
     private boolean searchMode;
@@ -169,15 +180,27 @@ public final class SettingsShell extends BorderPane {
      * @param hints                 per-descriptor render hints by id; may be
      *                              {@code null}/partial (missing ids fall back
      *                              to {@link SettingRow.ControlHints#none()})
-     * @param categoryTrailingNodes extra node appended to a category's pane,
-     *                              by category id (e.g. {@code "audio"} → the
-     *                              Audio Device Settings… button); may be
-     *                              {@code null}
+     * @param categoryTrailingNodes optional extension node appended to a
+     *                              category's pane, keyed by category id; may
+     *                              be {@code null}
      */
     public SettingsShell(SettingsCatalogue catalogue,
                          ValueAccess persisted,
                          Map<String, SettingRow.ControlHints> hints,
                          Map<String, Node> categoryTrailingNodes) {
+        this(catalogue, persisted, hints, categoryTrailingNodes, Map.of());
+    }
+
+    /**
+     * Builds the shell with optional non-persisted group utilities, keyed as
+     * {@code categoryId/groupId}. These nodes supplement, never replace, the
+     * descriptor-backed setting rows.
+     */
+    public SettingsShell(SettingsCatalogue catalogue,
+                         ValueAccess persisted,
+                         Map<String, SettingRow.ControlHints> hints,
+                         Map<String, Node> categoryTrailingNodes,
+                         Map<String, Node> groupAncillaryNodes) {
         Objects.requireNonNull(catalogue, "catalogue must not be null");
         this.persisted = Objects.requireNonNull(persisted, "persisted must not be null");
         this.searchIndex = SettingsSearchIndex.of(catalogue);
@@ -187,9 +210,11 @@ public final class SettingsShell extends BorderPane {
                 hints == null ? Map.of() : hints;
         Map<String, Node> trailing =
                 categoryTrailingNodes == null ? Map.of() : categoryTrailingNodes;
+        Map<String, Node> groupAncillary =
+                groupAncillaryNodes == null ? Map.of() : groupAncillaryNodes;
 
         buildRows(catalogue, hintsById);
-        buildCategoryPanes(catalogue, trailing);
+        buildCategoryPanes(catalogue, trailing, groupAncillary);
         buildNavRail(catalogue);
 
         setTop(buildSearchBar());
@@ -226,6 +251,9 @@ public final class SettingsShell extends BorderPane {
                     SettingRow row = new SettingRow(descriptor,
                             persisted.currentValue(id), hintsById.get(id));
                     rowsById.put(id, row);
+                    descriptorsById.put(id, descriptor);
+                    rowsByGroup.computeIfAbsent(groupKey(category.id(), group.id()),
+                            _ -> new ArrayList<>()).add(row);
                     categoryByRowId.put(id, category.id());
                     if (descriptor.controlKind() == ControlKind.KEY_CAPTURE) {
                         keyCaptureRows.add(row);
@@ -244,7 +272,8 @@ public final class SettingsShell extends BorderPane {
      * header + its rows, then the category's trailing node if present.
      */
     private void buildCategoryPanes(SettingsCatalogue catalogue,
-                                    Map<String, Node> trailing) {
+                                    Map<String, Node> trailing,
+                                    Map<String, Node> groupAncillary) {
         for (SettingsCatalogue.Category category : catalogue.categories()) {
             List<Node> children = new ArrayList<>();
             Label title = new Label(category.title());
@@ -254,9 +283,13 @@ public final class SettingsShell extends BorderPane {
                 if (group.settings().isEmpty()) {
                     continue; // placeholder taxonomy slots (story 308)
                 }
-                children.add(groupHeader(group.title()));
+                children.add(groupHeader(category.id(), group));
                 for (SettingDescriptor<?> descriptor : group.settings()) {
                     children.add(rowsById.get(descriptor.id()));
+                }
+                Node ancillary = groupAncillary.get(groupKey(category.id(), group.id()));
+                if (ancillary != null) {
+                    children.add(ancillary);
                 }
             }
             Node trailingNode = trailing.get(category.id());
@@ -329,7 +362,28 @@ public final class SettingsShell extends BorderPane {
         paneScroll.setContent(paneHost);
         paneScroll.setFitToWidth(true);
         paneScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        return paneScroll;
+
+        restartBanner.getStyleClass().add("settings-restart-banner");
+        restartBanner.setId("settings-restart-banner");
+        restartBanner.setManaged(false);
+        restartBanner.setVisible(false);
+        restartBannerText.getStyleClass().add("settings-restart-banner-text");
+        restartBannerText.setWrapText(true);
+        restartBanner.getChildren().addAll(
+                DawgIcon.of("rotate-ccw", DawgIcon.Size.SIZE_16), restartBannerText);
+
+        operationNotice.getStyleClass().add("settings-operation-notice");
+        operationNotice.setManaged(false);
+        operationNotice.setVisible(false);
+        operationNoticeText.getStyleClass().add("settings-operation-notice-text");
+        operationNoticeText.setWrapText(true);
+        operationNotice.getChildren().addAll(
+                DawgIcon.of("alert-triangle", DawgIcon.Size.SIZE_16), operationNoticeText);
+
+        VBox center = new VBox(operationNotice, restartBanner, paneScroll);
+        center.getStyleClass().add("settings-center");
+        VBox.setVgrow(paneScroll, Priority.ALWAYS);
+        return center;
     }
 
     /**
@@ -358,7 +412,10 @@ public final class SettingsShell extends BorderPane {
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        footer.getChildren().addAll(spacer, cancel, apply, ok);
+        footerStatus.getStyleClass().add("settings-footer-status");
+        footerStatus.setManaged(false);
+        footerStatus.setVisible(false);
+        footer.getChildren().addAll(footerStatus, spacer, cancel, apply, ok);
         return footer;
     }
 
@@ -440,6 +497,39 @@ public final class SettingsShell extends BorderPane {
         for (SettingsNavRail.NavItem item : navItemsByCategory.values()) {
             item.dirtyProperty().set(dirtyCategories.contains(item.categoryId()));
         }
+        updateApplyContext();
+    }
+
+    /** Keeps the footer note and restart banner truthful to pending metadata. */
+    private void updateApplyContext() {
+        List<String> restartLabels = pending.keySet().stream()
+                .map(descriptorsById::get)
+                .filter(Objects::nonNull)
+                .filter(descriptor -> descriptor.applyClass() == ApplyClass.RESTART_REQUIRED)
+                .map(SettingDescriptor::label)
+                .toList();
+        boolean hasEngineReconfigure = pending.keySet().stream()
+                .map(descriptorsById::get)
+                .filter(Objects::nonNull)
+                .anyMatch(descriptor ->
+                        descriptor.applyClass() == ApplyClass.ENGINE_RECONFIGURE);
+        boolean hasRestart = !restartLabels.isEmpty();
+
+        restartBanner.setManaged(hasRestart);
+        restartBanner.setVisible(hasRestart);
+        if (hasRestart) {
+            restartBannerText.setText(MessageFormat.format(
+                    msg("settings.restartBanner"), String.join(", ", restartLabels)));
+        }
+
+        boolean showFooterStatus = hasEngineReconfigure || hasRestart;
+        footerStatus.setManaged(showFooterStatus);
+        footerStatus.setVisible(showFooterStatus);
+        if (showFooterStatus) {
+            footerStatus.setText(msg(hasEngineReconfigure
+                    ? "settings.footer.engineReconfigure"
+                    : "settings.footer.restartRequired"));
+        }
     }
 
     // ── Search (§6.1 / §5.2) ─────────────────────────────────────────────────
@@ -484,7 +574,7 @@ public final class SettingsShell extends BorderPane {
             VBox section = sections.computeIfAbsent(key, k -> {
                 VBox s = new VBox();
                 s.getStyleClass().add("settings-search-section");
-                s.getChildren().add(groupHeader(
+                s.getChildren().add(searchGroupHeader(
                         categoryTitleById.getOrDefault(match.categoryId(), match.categoryId())
                                 + " · "
                                 + groupTitleByKey.getOrDefault(k, match.groupId())));
@@ -577,6 +667,22 @@ public final class SettingsShell extends BorderPane {
         updateDirtyMarkers();
     }
 
+    /** Re-seeds one row without discarding unrelated pending edits. */
+    public void refreshSettingFromPersisted(String settingId) {
+        SettingRow row = rowsById.get(settingId);
+        if (row == null) {
+            throw new IllegalArgumentException("Unknown setting: " + settingId);
+        }
+        refreshing = true;
+        try {
+            row.setValue(persisted.currentValue(settingId));
+        } finally {
+            refreshing = false;
+        }
+        pending.remove(settingId);
+        updateDirtyMarkers();
+    }
+
     /** @param r footer Apply action (may be {@code null}) */
     public void setOnApply(Runnable r) {
         this.onApply = r;
@@ -600,6 +706,115 @@ public final class SettingsShell extends BorderPane {
     /** @return the navigation rail (tests / keyboard glue) */
     public SettingsNavRail navRail() {
         return navRail;
+    }
+
+    /** Selects a category explicitly (used by live deep-link entry points). */
+    public void selectCategory(String categoryId) {
+        if (!categoryPanes.containsKey(categoryId)) {
+            throw new IllegalArgumentException("Unknown settings category: " + categoryId);
+        }
+        searchField.clear();
+        navRail.setSelectedCategoryId(categoryId);
+        showCategory(categoryId);
+    }
+
+    /** Finds the one generic row for a descriptor id. */
+    public Optional<SettingRow> settingRow(String settingId) {
+        return Optional.ofNullable(rowsById.get(settingId));
+    }
+
+    /** Replaces an asynchronously discovered CHOICE row's options. */
+    public void replaceChoiceOptions(String settingId, List<?> options) {
+        SettingRow row = rowsById.get(settingId);
+        if (row == null) {
+            throw new IllegalArgumentException("Unknown setting: " + settingId);
+        }
+        row.replaceChoiceOptions(options);
+    }
+
+    /** Replaces options and falls back when a backend-specific value vanished. */
+    public void replaceChoiceOptions(String settingId, List<?> options, Object fallback) {
+        SettingRow row = rowsById.get(settingId);
+        if (row == null) {
+            throw new IllegalArgumentException("Unknown setting: " + settingId);
+        }
+        row.replaceChoiceOptions(options, fallback);
+    }
+
+    /** Replaces options while retaining visibly disabled unavailable choices. */
+    public void replaceChoiceOptions(String settingId,
+                                     List<?> options,
+                                     Object fallback,
+                                     List<?> unavailableOptions) {
+        SettingRow row = rowsById.get(settingId);
+        if (row == null) {
+            throw new IllegalArgumentException("Unknown setting: " + settingId);
+        }
+        row.replaceChoiceOptions(options, fallback, unavailableOptions);
+    }
+
+    /** Shows or hides the small progress affordance in a permanent group header. */
+    public void setGroupBusy(String categoryId, String groupId, boolean busy) {
+        Label progress = progressByGroup.get(groupKey(categoryId, groupId));
+        if (progress == null) {
+            return;
+        }
+        progress.setManaged(busy);
+        progress.setVisible(busy);
+    }
+
+    /** Resets every row in one group to its descriptor default. */
+    public void resetGroup(String categoryId, String groupId) {
+        List<SettingRow> rows = rowsByGroup.get(groupKey(categoryId, groupId));
+        if (rows == null) {
+            throw new IllegalArgumentException(
+                    "Unknown settings group: " + categoryId + "/" + groupId);
+        }
+        rows.forEach(SettingRow::resetToDefault);
+    }
+
+    /** @return whether the pending-only restart banner is currently visible */
+    public boolean isRestartBannerVisible() {
+        return restartBanner.isVisible();
+    }
+
+    /** @return whether the contextual footer warning is visible */
+    public boolean isFooterStatusVisible() {
+        return footerStatus.isVisible();
+    }
+
+    /** @return current contextual footer warning text */
+    public String footerStatusText() {
+        return footerStatus.getText();
+    }
+
+    /** @return current restart-banner text */
+    public String restartBannerText() {
+        return restartBannerText.getText();
+    }
+
+    /** Shows a persistent, user-visible warning for a failed Settings operation. */
+    public void showOperationNotice(String message) {
+        operationNoticeText.setText(Objects.requireNonNull(message, "message must not be null"));
+        operationNotice.setManaged(true);
+        operationNotice.setVisible(true);
+    }
+
+    /** Clears the previous operation warning when the user retries Apply. */
+    public void clearOperationNotice() {
+        operationNotice.setManaged(false);
+        operationNotice.setVisible(false);
+        operationNoticeText.setText("");
+    }
+
+    /** @return whether a failed-operation notice is visible */
+    public boolean isOperationNoticeVisible() {
+        return operationNotice.isVisible();
+    }
+
+    /** @return current failed-operation notice text */
+    public String operationNoticeText() {
+        return operationNoticeText.getText();
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -655,7 +870,35 @@ public final class SettingsShell extends BorderPane {
      * {@code DawgDialog.sectionHeaderText} realises the §3.2 uppercase
      * rule (JavaFX CSS has no {@code -fx-text-transform}).
      */
-    private static Label groupHeader(String title) {
+    private Node groupHeader(String categoryId, SettingsCatalogue.Group group) {
+        HBox header = new HBox();
+        header.getStyleClass().add("settings-group-header");
+        header.setId("settings-group-" + categoryId + "-" + group.id());
+
+        Label title = searchGroupHeader(group.title());
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        header.getChildren().addAll(title, spacer);
+
+        if ("audio".equals(categoryId) && "device".equals(group.id())) {
+            Label progress = new Label(msg("settings.group.recomputing"));
+            progress.getStyleClass().add("settings-group-progress");
+            progress.setManaged(false);
+            progress.setVisible(false);
+            progressByGroup.put(groupKey(categoryId, group.id()), progress);
+            header.getChildren().add(progress);
+        }
+        if ("audio".equals(categoryId)) {
+            Button reset = new Button(msg("settings.group.reset"));
+            reset.getStyleClass().addAll("dawg-button", "settings-group-reset");
+            reset.setId("reset-group-" + categoryId + "-" + group.id());
+            reset.setOnAction(_ -> resetGroup(categoryId, group.id()));
+            header.getChildren().add(reset);
+        }
+        return header;
+    }
+
+    private static Label searchGroupHeader(String title) {
         Label header = new Label(title.toUpperCase(Locale.ROOT));
         header.getStyleClass().add("settings-group-title");
         return header;

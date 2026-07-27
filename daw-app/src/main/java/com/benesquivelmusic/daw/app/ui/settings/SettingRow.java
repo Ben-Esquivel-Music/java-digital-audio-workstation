@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui.settings;
 
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.ReadOnlyObjectProperty;
+import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.SimpleBooleanProperty;
@@ -13,6 +15,7 @@ import javafx.scene.control.Control;
 import javafx.scene.control.Skin;
 import javafx.util.StringConverter;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -112,6 +115,12 @@ public final class SettingRow extends Control {
 
     private final ObjectProperty<Object> value;
 
+    /** Options for a CHOICE editor, replaceable after background discovery. */
+    private final ReadOnlyObjectWrapper<List<Object>> choiceOptions =
+            new ReadOnlyObjectWrapper<>(this, "choiceOptions", List.of());
+    private final ReadOnlyObjectWrapper<List<Object>> unavailableChoiceOptions =
+            new ReadOnlyObjectWrapper<>(this, "unavailableChoiceOptions", List.of());
+
     private final StringProperty highlightQuery =
             new SimpleStringProperty(this, "highlightQuery", "");
 
@@ -145,6 +154,7 @@ public final class SettingRow extends Control {
         modified.set(!Objects.equals(
                 canonicalComparisonValue(descriptor, initialValue),
                 descriptor.defaultValue()));
+        replaceChoiceOptions(this.hints.choiceOptions());
         getStyleClass().add(DEFAULT_STYLE_CLASS);
         // §6.5: the row itself is not a Tab stop — its inner editor is.
         setFocusTraversable(false);
@@ -191,6 +201,91 @@ public final class SettingRow extends Control {
     /** Resets the pending value to {@link SettingDescriptor#defaultValue()}. */
     public void resetToDefault() {
         setValue(descriptor.defaultValue());
+    }
+
+    /**
+     * Replaces a choice row's options while preserving its current and default
+     * values. Call on the FX thread once a skin is attached.
+     *
+     * @param options newly discovered options; {@code null} means no options
+     */
+    public void replaceChoiceOptions(List<?> options) {
+        if (descriptor.controlKind() != ControlKind.CHOICE) {
+            return;
+        }
+        List<Object> normalized = new ArrayList<>();
+        if (options != null) {
+            for (Object option : options) {
+                if (option != null && !normalized.contains(option)) {
+                    normalized.add(option);
+                }
+            }
+        }
+        Object current = getValue();
+        if (current != null && !normalized.contains(current)) {
+            normalized.addFirst(current);
+        }
+        Object defaultValue = descriptor.defaultValue();
+        if (defaultValue != null && !normalized.contains(defaultValue)) {
+            normalized.add(defaultValue);
+        }
+        choiceOptions.set(List.copyOf(normalized));
+    }
+
+    /**
+     * Replaces a choice row's options and selects {@code fallback} when the
+     * current value is unavailable. Unlike {@link #replaceChoiceOptions(List)},
+     * this deliberately does not retain an invalid backend-specific value.
+     */
+    public void replaceChoiceOptions(List<?> options, Object fallback) {
+        replaceChoiceOptions(options, fallback, List.of());
+    }
+
+    /** Replaces options, fallback, and choices displayed as unavailable. */
+    public void replaceChoiceOptions(List<?> options,
+                                     Object fallback,
+                                     List<?> unavailableOptions) {
+        if (descriptor.controlKind() != ControlKind.CHOICE) {
+            return;
+        }
+        List<Object> normalized = new ArrayList<>();
+        if (options != null) {
+            for (Object option : options) {
+                if (option != null && !normalized.contains(option)) {
+                    normalized.add(option);
+                }
+            }
+        }
+        List<Object> unavailable = new ArrayList<>();
+        if (unavailableOptions != null) {
+            for (Object option : unavailableOptions) {
+                if (normalized.contains(option) && !unavailable.contains(option)) {
+                    unavailable.add(option);
+                }
+            }
+        }
+        unavailableChoiceOptions.set(List.copyOf(unavailable));
+        choiceOptions.set(List.copyOf(normalized));
+        if (!normalized.contains(getValue()) || unavailable.contains(getValue())) {
+            Object replacement = normalized.contains(fallback)
+                    ? fallback : normalized.isEmpty() ? null : normalized.getFirst();
+            setValue(replacement);
+        }
+    }
+
+    /** @return the immutable option snapshot for a CHOICE editor */
+    public ReadOnlyObjectProperty<List<Object>> choiceOptionsProperty() {
+        return choiceOptions.getReadOnlyProperty();
+    }
+
+    /** @return the current immutable option snapshot */
+    public List<Object> choiceOptions() {
+        return choiceOptions.get();
+    }
+
+    /** @return choices shown but disabled for the current device */
+    public List<Object> unavailableChoiceOptions() {
+        return unavailableChoiceOptions.get();
     }
 
     /**

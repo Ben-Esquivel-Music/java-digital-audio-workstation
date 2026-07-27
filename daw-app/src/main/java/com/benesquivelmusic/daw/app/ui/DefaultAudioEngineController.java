@@ -14,10 +14,12 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
+import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.WasapiBackend;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.nio.file.Paths;
@@ -31,7 +33,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -64,14 +68,18 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     private final AudioBackendSelector backendSelector;
     private final SubmissionPublisher<EngineState> engineStatePublisher = new SubmissionPublisher<>();
+    private final SubmissionPublisher<AudioDeviceEvent> deviceEventPublisher =
+            new SubmissionPublisher<>();
     private volatile XrunDetector xrunDetector;
     private volatile EngineState engineState = EngineState.STOPPED;
     /** Backend whose deviceEvents() we are currently subscribed to. */
     private final AtomicReference<AudioBackend> boundBackend = new AtomicReference<>();
     /** Currently-opened device — if it disappears we transition to DEVICE_LOST. */
     private final AtomicReference<DeviceId> activeDevice = new AtomicReference<>();
-    /** Subscription to the bound backend's device-event publisher. */
-    private final AtomicReference<Flow.Subscription> deviceEventSubscription = new AtomicReference<>();
+    /** Lifecycle-owned subscriber for the currently bound backend generation. */
+    private final AtomicReference<DeviceEventSubscriber> deviceEventSubscriber =
+            new AtomicReference<>();
+    private final AtomicBoolean controllerClosed = new AtomicBoolean();
 
     /**
      * Per-device calibration overrides (in sample frames) accepted by
@@ -173,13 +181,17 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
-    public String getActiveBackendName() {
+    public synchronized String getActiveBackendName() {
+        AudioBackend sdkBackend = audioEngine.getBackend();
+        if (sdkBackend != null) {
+            return sdkBackend.name();
+        }
         NativeAudioBackend backend = audioEngine.getAudioBackend();
         return backend == null ? BACKEND_NONE : backend.getBackendName();
     }
 
     @Override
-    public List<String> getAvailableBackendNames() {
+    public synchronized List<String> getAvailableBackendNames() {
         // Preserve the historical NativeAudioBackend names (PortAudio + the
         // daw-core JavaSoundBackend) — those drive the live engine I/O
         // path today — and union them with the SDK sealed-hierarchy names
@@ -200,7 +212,16 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
-    public List<AudioDeviceInfo> listDevices() {
+    public synchronized List<AudioDeviceInfo> listDevices() {
+        AudioBackend sdkBackend = audioEngine.getBackend();
+        if (sdkBackend != null) {
+            try {
+                return sdkBackend.listDevices();
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to list SDK audio devices", e);
+                return List.of();
+            }
+        }
         NativeAudioBackend backend = audioEngine.getAudioBackend();
         if (backend == null) {
             return List.of();
@@ -215,7 +236,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
-    public List<AudioDeviceInfo> listDevices(String backendName) {
+    public synchronized List<AudioDeviceInfo> listDevices(String backendName) {
         if (backendName == null || backendName.isBlank() || BACKEND_NONE.equals(backendName)) {
             return List.of();
         }
@@ -230,7 +251,17 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // device-enumeration mismatches between the SDK JavaxSoundBackend
         // and the daw-core JavaSoundBackend (they enumerate differently).
         if (!"PortAudio".equals(backendName) && !"Java Sound".equals(backendName)) {
-            try (AudioBackend sdkProbe = backendSelector.selectByName(backendName)) {
+            AudioBackend activeSdk = audioEngine.getBackend();
+            if (activeSdk != null && backendName.equals(activeSdk.name())) {
+                try {
+                    return activeSdk.listDevices();
+                } catch (RuntimeException e) {
+                    LOG.log(Level.WARNING,
+                            "Failed to enumerate active " + backendName + " devices", e);
+                    return List.of();
+                }
+            }
+            try (AudioBackend sdkProbe = createSdkBackendByName(backendName)) {
                 if (sdkProbe != null) {
                     return sdkProbe.listDevices();
                 }
@@ -268,6 +299,37 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
+    public synchronized BufferSizeRange bufferSizeRange(
+            String backendName, String outputDeviceName) {
+        return withSdkBackend(backendName, backend -> backend.bufferSizeRange(
+                deviceId(backendName, outputDeviceName)), BufferSizeRange.DEFAULT_RANGE);
+    }
+
+    @Override
+    public synchronized Set<Integer> supportedSampleRates(
+            String backendName, String outputDeviceName) {
+        return withSdkBackend(backendName, backend -> backend.supportedSampleRates(
+                deviceId(backendName, outputDeviceName)),
+                Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000));
+    }
+
+    @Override
+    public synchronized List<ClockSource> clockSources(
+            String backendName, String outputDeviceName) {
+        return withSdkBackend(backendName, backend -> backend.clockSources(
+                deviceId(backendName, outputDeviceName)), List.of());
+    }
+
+    @Override
+    public synchronized void selectClockSource(
+            String backendName, String outputDeviceName, int sourceId) {
+        withSdkBackend(backendName, backend -> {
+            backend.selectClockSource(deviceId(backendName, outputDeviceName), sourceId);
+            return null;
+        }, null);
+    }
+
+    @Override
     public int getActiveThreadCount() {
         return audioEngine.getActiveThreadCount();
     }
@@ -278,7 +340,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
-    public void applyConfiguration(Request request) {
+    public synchronized void applyConfiguration(Request request) {
         Objects.requireNonNull(request, "request must not be null");
         LOG.info("Applying audio configuration: " + request);
 
@@ -340,6 +402,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
             applyBackendByName(request.backendName());
         }
 
+        AudioBackend selectedSdkBackend = audioEngine.getBackend();
+        if (selectedSdkBackend != null) {
+            bindBackendDeviceEvents(selectedSdkBackend,
+                    deviceId(request.backendName(), request.outputDeviceName()));
+        } else {
+            clearBoundBackendDeviceEvents();
+        }
+
         int outputDeviceIndex = resolveDeviceIndex(
                 audioEngine.getAudioBackend(),
                 request.outputDeviceName(),
@@ -363,12 +433,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
-    public void playTestTone(String outputDeviceName) {
+    public synchronized void playTestTone(String outputDeviceName) {
         tonePlayer.play(outputDeviceName == null ? "" : outputDeviceName);
     }
 
     @Override
-    public void applyMixPrecision(MixPrecision precision) {
+    public synchronized void applyMixPrecision(MixPrecision precision) {
         Objects.requireNonNull(precision, "precision must not be null");
         Mixer mixer = audioEngine.getMixer();
         if (mixer != null) {
@@ -378,7 +448,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
-    public void applySrcQuality(
+    public synchronized void applySrcQuality(
             com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier tier) {
         Objects.requireNonNull(tier, "tier must not be null");
         var previous = audioEngine.getSrcQualityTier();
@@ -395,6 +465,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public Flow.Publisher<XrunEvent> xrunEvents() {
         return xrunDetector.xrunEvents();
+    }
+
+    @Override
+    public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return deviceEventPublisher;
     }
 
     @Override
@@ -484,16 +559,41 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * backend; the previous subscription is cancelled.</p>
      */
     @Override
-    public void bindBackendDeviceEvents(AudioBackend backend, DeviceId activeDevice) {
+    public synchronized void bindBackendDeviceEvents(
+            AudioBackend backend, DeviceId activeDevice) {
         Objects.requireNonNull(backend, "backend must not be null");
         Objects.requireNonNull(activeDevice, "activeDevice must not be null");
-        Flow.Subscription previous = deviceEventSubscription.getAndSet(null);
+        bindBackendDeviceEvents(backend, activeDevice, backend.deviceEvents());
+    }
+
+    synchronized void bindBackendDeviceEvents(
+            AudioBackend backend,
+            DeviceId activeDevice,
+            Flow.Publisher<AudioDeviceEvent> events) {
+        Objects.requireNonNull(backend, "backend must not be null");
+        Objects.requireNonNull(activeDevice, "activeDevice must not be null");
+        Objects.requireNonNull(events, "events must not be null");
+        DeviceEventSubscriber next = new DeviceEventSubscriber();
+        DeviceEventSubscriber previous = deviceEventSubscriber.getAndSet(next);
         if (previous != null) {
-            try { previous.cancel(); } catch (RuntimeException ignored) { /* best-effort */ }
+            previous.close();
         }
         boundBackend.set(backend);
         this.activeDevice.set(activeDevice);
-        backend.deviceEvents().subscribe(new DeviceEventSubscriber());
+        if (controllerClosed.get()) {
+            clearBoundBackendDeviceEvents();
+            return;
+        }
+        events.subscribe(next);
+    }
+
+    private void clearBoundBackendDeviceEvents() {
+        DeviceEventSubscriber previous = deviceEventSubscriber.getAndSet(null);
+        if (previous != null) {
+            previous.close();
+        }
+        boundBackend.set(null);
+        activeDevice.set(null);
     }
 
     /**
@@ -514,7 +614,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * surface a notification, matching the issue's contract.</p>
      */
     @Override
-    public void setSampleRate(String backendName, String outputDeviceName, double rate) {
+    public synchronized void setSampleRate(
+            String backendName, String outputDeviceName, double rate) {
         if (backendName == null || backendName.isBlank() || BACKEND_NONE.equals(backendName)) {
             return;
         }
@@ -524,7 +625,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if ("PortAudio".equals(backendName) || "Java Sound".equals(backendName)) {
             return;
         }
-        try (AudioBackend sdk = backendSelector.selectByName(backendName)) {
+        try (AudioBackend sdk = createSdkBackendByName(backendName)) {
             if (sdk == null) {
                 return;
             }
@@ -572,7 +673,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         LOG.info("Engine state " + previous + " -> " + newState);
     }
 
-    private void onDeviceRemoved(DeviceId removed) {
+    private synchronized void onDeviceRemoved(DeviceId removed) {
         DeviceId active = activeDevice.get();
         if (active == null || !matches(active, removed)) {
             // Some other device went away — nothing to do.
@@ -607,7 +708,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
     }
 
-    private void onDeviceArrived(DeviceId arrived) {
+    private synchronized void onDeviceArrived(DeviceId arrived) {
         if (engineState != EngineState.DEVICE_LOST) {
             return;
         }
@@ -724,8 +825,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
     }
 
-    private void performFormatChangeReopen(DeviceId active,
-                                           AudioDeviceEvent.FormatChangeRequested requested) {
+    private synchronized void performFormatChangeReopen(
+            DeviceId active, AudioDeviceEvent.FormatChangeRequested requested) {
         AudioBackend backend = boundBackend.get();
         AudioFormat currentFormat = audioEngine.getFormat();
 
@@ -935,15 +1036,38 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return active.name().equals(other.name());
     }
 
-    private final class DeviceEventSubscriber implements Flow.Subscriber<AudioDeviceEvent> {
+    private final class DeviceEventSubscriber
+            implements Flow.Subscriber<AudioDeviceEvent>, AutoCloseable {
+        private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
+        private final AtomicBoolean closed = new AtomicBoolean();
+
         @Override
-        public void onSubscribe(Flow.Subscription subscription) {
-            deviceEventSubscription.set(subscription);
-            subscription.request(Long.MAX_VALUE);
+        public void onSubscribe(Flow.Subscription newSubscription) {
+            Objects.requireNonNull(newSubscription, "subscription must not be null");
+            if (closed.get() || controllerClosed.get()
+                    || deviceEventSubscriber.get() != this
+                    || !subscription.compareAndSet(null, newSubscription)) {
+                newSubscription.cancel();
+                return;
+            }
+            if ((closed.get() || controllerClosed.get()
+                    || deviceEventSubscriber.get() != this)
+                    && subscription.compareAndSet(newSubscription, null)) {
+                newSubscription.cancel();
+                return;
+            }
+            newSubscription.request(Long.MAX_VALUE);
         }
 
         @Override
         public void onNext(AudioDeviceEvent event) {
+            if (closed.get() || controllerClosed.get()
+                    || deviceEventSubscriber.get() != this) {
+                return;
+            }
+            if (!deviceEventPublisher.isClosed()) {
+                deviceEventPublisher.offer(event, (subscriber, dropped) -> false);
+            }
             // Switch on sealed AudioDeviceEvent — exhaustive over the four
             // permitted records. JEP 441 (final, JDK 21).
             switch (event) {
@@ -958,25 +1082,44 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
         @Override
         public void onError(Throwable throwable) {
-            LOG.log(Level.WARNING, "Device-event publisher error", throwable);
+            if (!closed.get()) {
+                LOG.log(Level.WARNING, "Device-event publisher error", throwable);
+            }
         }
 
         @Override
         public void onComplete() {
-            // Backend closed; no further events expected.
+            close();
+        }
+
+        @Override
+        public void close() {
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
+            Flow.Subscription current = subscription.getAndSet(null);
+            if (current != null) {
+                try {
+                    current.cancel();
+                } catch (RuntimeException ignored) {
+                    // best-effort cancellation
+                }
+            }
         }
     }
 
-    /**
-     * The production audio engine uses {@link NativeAudioBackend}
-     * (PortAudio or Java Sound), neither of which exposes a native
-     * control panel. When ASIO/WASAPI/CoreAudio support is added to
-     * the engine, this method should delegate to the active backend's
-     * panel action.
-     */
+    /** Returns the active SDK backend's serialized native control-panel action. */
     @Override
-    public Optional<Runnable> openControlPanel() {
-        return Optional.empty();
+    public synchronized Optional<Runnable> openControlPanel() {
+        AudioBackend backend = audioEngine.getBackend();
+        if (backend == null) {
+            return Optional.empty();
+        }
+        return backend.openControlPanel().map(action -> () -> {
+            synchronized (DefaultAudioEngineController.this) {
+                action.run();
+            }
+        });
     }
 
     /**
@@ -988,13 +1131,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     /** Closes background resources owned by this controller. */
-    void shutdown() {
+    synchronized void shutdown() {
+        controllerClosed.set(true);
         tonePlayer.close();
-        Flow.Subscription sub = deviceEventSubscription.getAndSet(null);
-        if (sub != null) {
-            try { sub.cancel(); } catch (RuntimeException ignored) { /* best-effort */ }
-        }
+        clearBoundBackendDeviceEvents();
         engineStatePublisher.close();
+        deviceEventPublisher.close();
         ScheduledFuture<?> pending = pendingFormatChange.getAndSet(null);
         if (pending != null) {
             pending.cancel(false);
@@ -1043,7 +1185,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      *             clears any installed SDK backend and is a no-op for the
      *             legacy slot
      */
-    void applyBackendByName(String name) {
+    synchronized void applyBackendByName(String name) {
         if (name == null || name.isBlank() || BACKEND_NONE.equals(name)) {
             closePreviousSdkBackend();
             audioEngine.setBackend(null);
@@ -1061,7 +1203,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return;
         }
         // SDK sealed-hierarchy names route through the selector.
-        AudioBackend sdk = backendSelector.selectByName(name);
+        AudioBackend sdk = createSdkBackendByName(name);
         if (sdk == null) {
             // Unknown name — preserve historical behaviour: fall back to
             // AudioBackendFactory.createDefault() on the legacy slot.
@@ -1140,6 +1282,41 @@ final class DefaultAudioEngineController implements AudioEngineController {
             case "Java Sound" -> new JavaSoundBackend();
             default -> null;
         };
+    }
+
+    private AudioBackend createSdkBackendByName(String name) {
+        if (WasapiBackend.NAME.concat(" (Exclusive)").equals(name)) {
+            return new WasapiBackend(true);
+        }
+        return backendSelector.selectByName(name);
+    }
+
+    private <T> T withSdkBackend(
+            String backendName, Function<AudioBackend, T> operation, T fallback) {
+        if (backendName == null || backendName.isBlank()
+                || "PortAudio".equals(backendName) || "Java Sound".equals(backendName)) {
+            return fallback;
+        }
+        AudioBackend active = audioEngine.getBackend();
+        if (active != null && backendName.equals(active.name())) {
+            return operation.apply(active);
+        }
+        AudioBackend probe = createSdkBackendByName(backendName);
+        if (probe == null) {
+            return fallback;
+        }
+        try (probe) {
+            return operation.apply(probe);
+        }
+    }
+
+    private static DeviceId deviceId(String backendName, String deviceName) {
+        String normalizedBackend = WasapiBackend.NAME.concat(" (Exclusive)").equals(backendName)
+                ? WasapiBackend.NAME : backendName;
+        if (deviceName == null || deviceName.isBlank()) {
+            return DeviceId.defaultFor(normalizedBackend);
+        }
+        return new DeviceId(normalizedBackend, deviceName);
     }
 
     private static int resolveDeviceIndex(NativeAudioBackend backend, String deviceName, boolean outputRequired) {
