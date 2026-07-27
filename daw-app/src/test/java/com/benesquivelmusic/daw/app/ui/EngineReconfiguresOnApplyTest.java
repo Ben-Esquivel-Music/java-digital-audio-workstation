@@ -146,11 +146,17 @@ class EngineReconfiguresOnApplyTest {
         MixPrecision changedPrecision = model.getMixPrecision() == MixPrecision.DOUBLE_64
                 ? MixPrecision.FLOAT_32 : MixPrecision.DOUBLE_64;
         AtomicReference<SettingsDialog> dialogRef = new AtomicReference<>();
+        AtomicInteger committedApplyCount = new AtomicInteger();
+        CountDownLatch committedApplies = new CountDownLatch(3);
 
         Story307TestSupport.onFx(() -> {
             SettingsDialog dialog = new SettingsDialog(model);
             dialogRef.set(dialog);
             dialog.setAudioEngineController(controller);
+            dialog.setSettingsChangeListener(_ -> {
+                committedApplyCount.incrementAndGet();
+                committedApplies.countDown();
+            });
             dialog.getShell().settingRow("audio.bitDepth").orElseThrow()
                     .setValue(changedBitDepth);
             dialog.applySettings();
@@ -174,6 +180,8 @@ class EngineReconfiguresOnApplyTest {
         controller.releaseFirstConfiguration.countDown();
         assertThat(controller.expectedConfigurations.await(10, TimeUnit.SECONDS)).isTrue();
         assertThat(controller.mixPrecisionApplied.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(committedApplies.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(committedApplyCount).hasValue(3);
         assertThat(model.getSampleRate()).isEqualTo(changedRate);
         assertThat(model.getMixPrecision()).isEqualTo(changedPrecision);
         assertThat(model.getBufferSize()).isEqualTo(changedBuffer);
