@@ -88,6 +88,17 @@ class AsioDriverShim implements AutoCloseable {
         unloadDriver = unload;
     }
 
+    AsioDriverShim(MethodHandle loadDriver, MethodHandle unloadDriver) {
+        arena = Arena.ofShared();
+        listDrivers = null;
+        this.loadDriver = Objects.requireNonNull(loadDriver,
+                "loadDriver must not be null");
+        getDriverName = null;
+        getDriverInfo = null;
+        this.unloadDriver = Objects.requireNonNull(unloadDriver,
+                "unloadDriver must not be null");
+    }
+
     private static MethodHandle resolve(Linker linker, SymbolLookup lookup,
                                         String symbol, FunctionDescriptor descriptor) {
         return lookup.find(symbol)
@@ -151,14 +162,23 @@ class AsioDriverShim implements AutoCloseable {
                     }
                 });
                 if (status != SHIM_OK) {
+                    clearOwnershipAfterFailedLoad();
                     return false;
                 }
                 activeOwner = this;
                 ownsActiveDriver = true;
                 return true;
             } catch (Throwable ignored) {
+                clearOwnershipAfterFailedLoad();
                 return false;
             }
+        }
+    }
+
+    private void clearOwnershipAfterFailedLoad() {
+        ownsActiveDriver = false;
+        if (activeOwner == this) {
+            activeOwner = null;
         }
     }
 

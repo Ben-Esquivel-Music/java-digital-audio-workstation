@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -79,11 +82,82 @@ class AsioDriverShimTest {
         assertThat(AsioDriverShim.isDriverLoaded()).isFalse();
     }
 
+    @Test
+    void failedReplacementLoadReleasesStaleOwnership() {
+        LifecycleStub ownerLifecycle = new LifecycleStub();
+        LifecycleStub nextLifecycle = new LifecycleStub();
+        try (AsioDriverShim owner = lifecycleShim(ownerLifecycle);
+             AsioDriverShim next = lifecycleShim(nextLifecycle)) {
+            assertThat(owner.loadDriver("First ASIO Driver")).isTrue();
+
+            ownerLifecycle.loadStatus = 0;
+            assertThat(owner.loadDriver("Missing ASIO Driver")).isFalse();
+
+            assertThat(AsioDriverShim.isDriverLoaded()).isFalse();
+            assertThat(next.loadDriver("Next ASIO Driver")).isTrue();
+        }
+        assertThat(AsioDriverShim.isDriverLoaded()).isFalse();
+    }
+
+    @Test
+    void exceptionalReplacementLoadReleasesStaleOwnership() {
+        LifecycleStub ownerLifecycle = new LifecycleStub();
+        LifecycleStub nextLifecycle = new LifecycleStub();
+        try (AsioDriverShim owner = lifecycleShim(ownerLifecycle);
+             AsioDriverShim next = lifecycleShim(nextLifecycle)) {
+            assertThat(owner.loadDriver("First ASIO Driver")).isTrue();
+
+            ownerLifecycle.throwOnLoad = true;
+            assertThat(owner.loadDriver("Broken ASIO Driver")).isFalse();
+
+            assertThat(AsioDriverShim.isDriverLoaded()).isFalse();
+            assertThat(next.loadDriver("Next ASIO Driver")).isTrue();
+        }
+        assertThat(AsioDriverShim.isDriverLoaded()).isFalse();
+    }
+
     private static void putAscii(MemorySegment target, long offset, String value) {
         byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
         for (int index = 0; index < bytes.length; index++) {
             target.set(ValueLayout.JAVA_BYTE, offset + index, bytes[index]);
         }
         target.set(ValueLayout.JAVA_BYTE, offset + bytes.length, (byte) 0);
+    }
+
+    private static AsioDriverShim lifecycleShim(LifecycleStub lifecycle) {
+        try {
+            MethodHandles.Lookup lookup = MethodHandles.lookup();
+            MethodHandle loadDriver = lookup.findVirtual(
+                    LifecycleStub.class,
+                    "loadDriver",
+                    MethodType.methodType(int.class, MemorySegment.class))
+                    .bindTo(lifecycle);
+            MethodHandle unloadDriver = lookup.findVirtual(
+                    LifecycleStub.class,
+                    "unloadDriver",
+                    MethodType.methodType(void.class))
+                    .bindTo(lifecycle);
+            return new AsioDriverShim(loadDriver, unloadDriver);
+        } catch (NoSuchMethodException | IllegalAccessException failure) {
+            throw new AssertionError("Could not create ASIO lifecycle test handles", failure);
+        }
+    }
+
+    private static final class LifecycleStub {
+        private volatile int loadStatus = 1;
+        private volatile boolean throwOnLoad;
+
+        @SuppressWarnings("unused")
+        private int loadDriver(MemorySegment ignored) {
+            if (throwOnLoad) {
+                throw new IllegalStateException("simulated native load failure");
+            }
+            return loadStatus;
+        }
+
+        @SuppressWarnings("unused")
+        private void unloadDriver() {
+            // The ownership transition is the behavior under test.
+        }
     }
 }

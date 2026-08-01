@@ -220,8 +220,14 @@ ASIOSHIM_EXPORT int asioshim_loadDriver(const char* driverName) {
                               static_cast<long>(DRIVER_CAPACITY));
         for (long index = 0; index < count; ++index) {
             std::array<char, DRIVER_NAME_BYTES> installedName{};
-            if (driverList().nameAt(index, installedName.data(), DRIVER_NAME_BYTES)
-                    && std::strcmp(installedName.data(), mutableName.data()) == 0) {
+            if (!driverList().nameAt(index, installedName.data(), DRIVER_NAME_BYTES)) {
+                continue;
+            }
+            std::array<char, DRIVER_NAME_BYTES> installedAscii{};
+            copyFixedAscii(
+                    reinterpret_cast<unsigned char*>(installedAscii.data()),
+                    installedAscii.size(), installedName.data(), installedName.size());
+            if (std::strcmp(installedAscii.data(), mutableName.data()) == 0) {
                 matchingIndex = index;
                 break;
             }
