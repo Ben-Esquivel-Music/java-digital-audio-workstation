@@ -22,6 +22,7 @@
     -srw-warn:        #E6B450;  /* -warn        */
     -srw-accent:      #7C8CFF;  /* -accent      */
     -srw-accent-soft: rgba(124, 140, 255, 0.14);  /* -accent-soft */
+    -srw-line-soft:   #22242C;  /* -line-soft   */
 
     -fx-padding: 4 0 4 0;
 }
@@ -54,6 +55,31 @@
 .setting-row .setting-row-description {
     -fx-text-fill: -srw-text-mute;
     -fx-font-size: 11px;
+}
+
+/* Story 309 §5.3 — trailing column pairing the per-row scope-override
+   chip with the apply-class badge. */
+.setting-row .setting-row-trailing {
+    -fx-spacing: 4;
+}
+
+/* Story 309 §5.3 — the per-row scope-override chip: muted text in a
+   soft-line outline, never a coloured fill (the notification-pill
+   restraint; UI Design Book §7.2 one-accent rule). */
+.setting-row .setting-row-scope-chip {
+    -fx-text-fill: -srw-text-mute;
+    -fx-font-size: 10px;
+    -fx-border-color: -srw-line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+    -fx-padding: 0 8 0 8;
+}
+
+/* Story 309 §3.2 — the muted "applies to…" reach cue under the
+   description (keyed off Scope only; text pre-localized by the shell). */
+.setting-row .setting-row-scope-cue {
+    -fx-text-fill: -srw-text-mute;
+    -fx-font-size: 10px;
 }
 
 /* Apply-class badge (§6.4) — omitted entirely for LIVE by the skin. */

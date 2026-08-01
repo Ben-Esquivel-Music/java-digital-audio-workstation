@@ -55,6 +55,8 @@ import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.layout.BuiltInLayouts;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.settings.BackupSettingsAccess;
+import com.benesquivelmusic.daw.app.ui.settings.FirstRunWizard;
+import com.benesquivelmusic.daw.app.ui.settings.SettingsCatalogue;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import javafx.animation.FadeTransition;
@@ -1346,10 +1348,89 @@ public final class MainController {
      * lists recent projects; Start offers New / Open / Restore / Import.
      */
     public void showWelcomeIfNoProjectOpen() {
+        // Story 309 §4.D — the first-run wizard auto-shows exactly once,
+        // before the Welcome flow (its showAndWait completes first).
+        maybeShowFirstRunWizard();
         if (projectManager != null
                 && projectManager.getCurrentProject() == null
                 && projectLifecycleController != null) {
             projectLifecycleController.showWelcome();
+        }
+    }
+
+    /**
+     * Story 309 §4.D — auto-shows the first-run wizard when the
+     * {@link SettingsModel} first-run flag is unset (the pure
+     * {@link FirstRunWizard#shouldAutoShow} seam decides). Completing or
+     * skipping sets the flag, so this fires at most once per install.
+     */
+    private void maybeShowFirstRunWizard() {
+        if (settingsModel != null && FirstRunWizard.shouldAutoShow(settingsModel)) {
+            showSetupWizard();
+        }
+    }
+
+    /**
+     * Story 309 §4.D — shows the first-run wizard (auto-show at startup,
+     * and re-openable from Settings ▸ General ▸ Startup via the
+     * {@code setOnRunSetupWizard} seam). The wizard is a thin linear
+     * sequencer over the catalogue descriptors; Finish routes the
+     * collected values through {@link #applyWizardEdits} — the settings
+     * dialog's existing Apply path — while Skip applies nothing.
+     */
+    void showSetupWizard() {
+        FirstRunWizard wizard = new FirstRunWizard(
+                SettingsCatalogue.create(), settingsModel, audioEngineController);
+        var host = new com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog<Void>();
+        host.setTitle(wizard.title());
+        host.setHeaderText(wizard.title());
+        host.getDialogPane().setContent(wizard);
+        host.setResultConverter(_ -> null);
+        if (rootPane != null && rootPane.getScene() != null) {
+            host.initOwner(rootPane.getScene().getWindow());
+        }
+        Runnable closeHost = () -> {
+            // Showing-guarded: the abnormal-close Skip below runs AFTER
+            // the host is already hidden ([X] / the header close glyph).
+            if (host.isShowing()) {
+                host.setResult(null);
+                host.hide();
+            }
+        };
+        wizard.setOnFinished(edits -> {
+            applyWizardEdits(edits);
+            closeHost.run();
+        });
+        wizard.setOnSkipped(closeHost);
+        host.showAndWait();
+        // Story 309 — an abnormal close ([X] or the header close glyph)
+        // triggers neither Finish nor Skip; treat the dismissal as Skip so
+        // the first-run flag is still set and the wizard never auto-nags
+        // on later launches (it stays re-openable from General ▸ Startup).
+        wizard.skipIfNoOutcome();
+        wizard.close(); // idempotent — belt-and-braces teardown
+    }
+
+    /**
+     * Story 309 §4.D — bulk-applies the wizard's collected values through
+     * the SAME Apply path as manual edits: seed a fully wired settings
+     * dialog's shell rows as pending edits, then {@code applySettings()}
+     * (persistence + the SettingsApplied publish + engine-reconfigure +
+     * {@link LiveSettingsApplier} all ride along; values identical to the
+     * persisted ones stay non-pending and write nothing). The dialog is
+     * never shown; detaching its audio controller afterwards tears down
+     * the discovery its wiring started (an in-flight engine-reconfigure
+     * keeps its own captured references and completes normally).
+     */
+    private void applyWizardEdits(java.util.Map<String, Object> edits) {
+        SettingsDialog dialog = createSettingsDialog();
+        try {
+            var shell = dialog.getShell();
+            edits.forEach((id, value) ->
+                    shell.settingRow(id).ifPresent(row -> row.setValue(value)));
+            dialog.applySettings();
+        } finally {
+            dialog.setAudioEngineController(null);
         }
     }
 
@@ -3808,6 +3889,9 @@ public final class MainController {
             dialog.setBackupSettingsAccess(backupAccess);
         }
         dialog.setSettingsChangeListener(model -> applyLiveSettings(model, previousPluginPaths));
+        // Story 309 §4.D — General ▸ Startup's "Run setup wizard…" re-opens
+        // the first-run wizard on demand.
+        dialog.setOnRunSetupWizard(this::showSetupWizard);
         return dialog;
     }
 

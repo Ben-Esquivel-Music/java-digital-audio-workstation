@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.app.ui.settings.RecordingSettingsAccess;
 import com.benesquivelmusic.daw.app.ui.settings.SettingDescriptor;
 import com.benesquivelmusic.daw.app.ui.settings.SettingRow;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsCatalogue;
+import com.benesquivelmusic.daw.app.ui.settings.SettingsProfileSheet;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsShell;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
@@ -46,6 +47,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
@@ -226,6 +228,27 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private Supplier<DirtyChoice> dirtyClosePrompt = this::promptDirtyClose;
 
     /**
+     * Story 309 §5.7 tier 4 — the guard before "Restore all defaults",
+     * the single guarded bulk action (every other reset tier stays
+     * unguarded and pending-only). Defaults to a real
+     * {@link DawgDialog#confirm} modal; headless tests inject a stub via
+     * {@link #setRestoreAllConfirm(Supplier)} (the
+     * {@code setDirtyClosePrompt} seam pattern).
+     */
+    private Supplier<Boolean> restoreAllConfirm = this::promptRestoreAllConfirm;
+
+    /**
+     * Story 309 — the dialog body host: the shell plus the §5.9 profile
+     * sheet overlay (an in-surface scrim, never a nested modal —
+     * rejection #1).
+     */
+    private final StackPane contentStack = new StackPane();
+    /** Lazily built §5.9 import/export sheet (story 309). */
+    private SettingsProfileSheet profileSheet;
+    /** Story 309 §4.D — re-open seam for the first-run wizard (General ▸ Startup). */
+    private Runnable onRunSetupWizard;
+
+    /**
      * The appearance values the last {@link #applySettings()} published.
      * The story-294 {@link UiEvent.SettingsApplied} publish is delivered
      * asynchronously (the managers subscribe {@code ON_UI_THREAD}, i.e. a
@@ -280,7 +303,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 Map.of(
                         "audio/device", buildAudioDeviceUtilities(),
                         "audio/performance", buildAudioPerformanceTelemetry(),
-                        "backups/diskUsage", buildDiskUsageVisual()));
+                        "backups/diskUsage", buildDiskUsageVisual(),
+                        // Story 309 — General gains its two ancillary
+                        // groups; its taxonomy slots stay descriptor-empty.
+                        "general/startup", buildGeneralStartupNode(),
+                        "general/resetProfiles", buildResetProfilesNode()));
         shell.settingRow("audio.backend").orElseThrow().valueProperty()
                 .addListener((_, _, backend) -> {
                     refreshWasapiMode(backend);
@@ -303,7 +330,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
             }
         });
 
-        getDialogPane().setContent(shell);
+        // Story 309 — the shell sits in a StackPane so the §5.9 profile
+        // sheet can overlay it in-surface (never a nested modal).
+        contentStack.getChildren().add(shell);
+        getDialogPane().setContent(contentStack);
         // story 276 §5.9 width bands — the shell needs the LARGE band
         // (800); its pref height rides on .settings-shell in styles.css.
         sized(DawgDialog.Size.LARGE);
@@ -402,6 +432,124 @@ public final class SettingsDialog extends DawgDialog<Void> {
         diskUsagePie.setLabelsVisible(false);
         diskUsagePie.setPrefSize(260, 200);
         return diskUsagePie;
+    }
+
+    /**
+     * Story 309 §4.D — General ▸ Startup: the "Run setup wizard…"
+     * re-open affordance, routed through the {@link #setOnRunSetupWizard}
+     * seam ({@code MainController} wires it to show the wizard). A no-op
+     * until a seam is attached (bare test dialogs).
+     */
+    private Node buildGeneralStartupNode() {
+        Button runWizard = new Button(msg("settings.general.runWizard"));
+        runWizard.getStyleClass().addAll("dawg-button", "size-default");
+        runWizard.setId("settings-run-setup-wizard");
+        runWizard.setOnAction(_ -> {
+            Runnable seam = onRunSetupWizard;
+            if (seam != null) {
+                seam.run();
+            }
+        });
+        HBox box = new HBox(runWizard);
+        box.getStyleClass().add("settings-general-startup");
+        return box;
+    }
+
+    /**
+     * Story 309 §5.7/§5.9 — General ▸ Reset &amp; profiles: the profile
+     * sheet opener and the tier-4 guarded "Restore all defaults".
+     */
+    private Node buildResetProfilesNode() {
+        Button openSheet = new Button(msg("settings.profile.open"));
+        openSheet.getStyleClass().addAll("dawg-button", "size-default");
+        openSheet.setId("settings-open-profile-sheet");
+        openSheet.setOnAction(_ -> showProfileSheet());
+
+        Button restoreAll = new Button(msg("settings.restoreAll.button"));
+        restoreAll.getStyleClass().addAll("dawg-button", "size-default", "secondary");
+        restoreAll.setId("settings-restore-all-defaults");
+        restoreAll.setOnAction(_ -> restoreAllDefaults());
+
+        HBox box = new HBox(openSheet, restoreAll);
+        box.getStyleClass().add("settings-reset-profiles");
+        return box;
+    }
+
+    /**
+     * Story 309 §5.7 tier 4 — the single guarded bulk action: confirm
+     * (injectable — {@link #setRestoreAllConfirm}), then reset EVERY row
+     * to its descriptor default and drive the SAME Apply path as manual
+     * edits ({@link #applySettings()}), so live managers re-theme and the
+     * engine re-arms exactly as individual edits do (the Control-Sync
+     * cross-reference). Cancel changes nothing — not even pending state.
+     */
+    void restoreAllDefaults() {
+        if (!Boolean.TRUE.equals(restoreAllConfirm.get())) {
+            return;
+        }
+        shell.resetAll();
+        applySettings();
+    }
+
+    /** The production tier-4 confirm — a real {@link DawgDialog#confirm} modal. */
+    private boolean promptRestoreAllConfirm() {
+        DawgDialog<ButtonType> prompt = DawgDialog.confirm(
+                msg("settings.restoreAll.title"),
+                msg("settings.restoreAll.message"),
+                msg("settings.restoreAll.confirm"));
+        prompt.initOwner(getDialogPane().getScene() != null
+                ? getDialogPane().getScene().getWindow() : null);
+        return prompt.showAndWait()
+                .map(pressed -> pressed.getButtonData() == ButtonBar.ButtonData.OK_DONE)
+                .orElse(false);
+    }
+
+    /**
+     * Injects a headless-test replacement for the restore-all confirm
+     * (the {@link #setDirtyClosePrompt(Supplier)} seam pattern).
+     *
+     * @param confirm the stub confirm (must not be {@code null})
+     */
+    void setRestoreAllConfirm(Supplier<Boolean> confirm) {
+        this.restoreAllConfirm = Objects.requireNonNull(confirm, "confirm must not be null");
+    }
+
+    /**
+     * Story 309 §4.D — attaches the "Run setup wizard…" action General ▸
+     * Startup routes through ({@code MainController} shows the wizard).
+     *
+     * @param action the wizard opener, or {@code null} to detach
+     */
+    public void setOnRunSetupWizard(Runnable action) {
+        this.onRunSetupWizard = action;
+    }
+
+    /**
+     * Story 309 §5.9 — mounts the profile sheet over the shell. Applied
+     * imports seed the SHELL rows as pending edits and run
+     * {@link #applySettings()} — the one Apply path, never a parallel one.
+     */
+    void showProfileSheet() {
+        if (profileSheet == null) {
+            profileSheet = new SettingsProfileSheet(catalogue,
+                    this::currentPersistedValue,
+                    applied -> {
+                        applied.forEach((id, value) -> shell.settingRow(id)
+                                .ifPresent(row -> row.setValue(value)));
+                        applySettings();
+                    },
+                    this::hideProfileSheet);
+        }
+        if (!contentStack.getChildren().contains(profileSheet)) {
+            contentStack.getChildren().add(profileSheet);
+        }
+    }
+
+    /** Unmounts the §5.9 profile sheet (its I/O task stays reusable). */
+    void hideProfileSheet() {
+        if (profileSheet != null) {
+            contentStack.getChildren().remove(profileSheet);
+        }
     }
 
     private static HBox utilityLine(String labelText, Node value) {
@@ -910,6 +1058,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
     private void closeBackgroundWork() {
         backgroundWorkClosed = true;
+        // Story 309 §2.7 — closing the surface tears down any in-flight
+        // profile import/export; a late result is discarded, never applied.
+        if (profileSheet != null) {
+            profileSheet.dispose();
+        }
         cancelDeviceEventSubscription();
         DeviceEnumerationTask task = deviceEnumerationTask;
         deviceEnumerationTask = null;

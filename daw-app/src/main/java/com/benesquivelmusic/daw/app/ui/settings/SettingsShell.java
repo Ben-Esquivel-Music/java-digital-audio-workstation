@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanWrapper;
+import javafx.css.PseudoClass;
 import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.control.Button;
@@ -76,11 +77,14 @@ import java.util.Set;
  * <h2>Keyboard (§6.5, rejection #7)</h2>
  *
  * <p>The shell filters exactly one key: Ctrl/Cmd-F →
- * {@link #focusSearch()}. UP/DOWN/ENTER/RIGHT are rail-owned (the rail's
- * activate-pane action focuses the pane's first row editor), Tab
+ * {@link #focusSearch()}, which also enters the story-309 §4.C
+ * search-focus mode (the rail dims until Esc or focus loss restores it —
+ * Concept C as a mode of A). UP/DOWN/ENTER/RIGHT are rail-owned (the
+ * rail's activate-pane action focuses the pane's first row editor), Tab
  * traversal is native, and Esc is consumed only by the search field —
- * and only while it has text (an empty-field Esc must reach the dialog's
- * close semantics). Nothing else is globally swallowed.</p>
+ * and only while it has text (an empty-field Esc still restores the rail
+ * but must reach the dialog's close semantics). Nothing else is globally
+ * swallowed.</p>
  *
  * <h2>Key-binding conflict guard</h2>
  *
@@ -99,6 +103,17 @@ public final class SettingsShell extends BorderPane {
 
     /** Stable style class — selectable as {@code .settings-shell}. */
     public static final String DEFAULT_STYLE_CLASS = "settings-shell";
+
+    /**
+     * Story 309 §4.C — the rail-level search-focus dim (Concept C as a
+     * mode of A). Applied to the nav rail while search focus mode is
+     * active; {@code settings-nav-rail.css} gives every cell the same
+     * 0.4-opacity treatment as no-match dimming. Rail-level (not per
+     * {@code NavItem}) so it composes with the §5.2 per-category
+     * match-count dimming without either source fighting the other.
+     */
+    private static final PseudoClass SEARCH_FOCUS_PSEUDO_CLASS =
+            PseudoClass.getPseudoClass("search-focus");
 
     /**
      * Shared bundle for shell chrome strings ({@code Locale.ROOT}, the
@@ -162,6 +177,8 @@ public final class SettingsShell extends BorderPane {
 
     /** {@code true} while the center shows search results (§6.1). */
     private boolean searchMode;
+    /** Story 309 §4.C — {@code true} while the search-focus rail dim is active. */
+    private boolean searchFocusMode;
     /** Reentrancy flag for the key-binding conflict revert. */
     private boolean conflictRevertInFlight;
     /** {@code true} while {@link #refreshFromPersisted()} re-seeds rows. */
@@ -246,12 +263,22 @@ public final class SettingsShell extends BorderPane {
                            Map<String, SettingRow.ControlHints> hintsById) {
         for (SettingsCatalogue.Category category : catalogue.categories()) {
             categoryTitleById.put(category.id(), category.title());
+            Scope categoryModalScope = modalScope(category).orElse(null);
             for (SettingsCatalogue.Group group : category.groups()) {
                 groupTitleByKey.put(groupKey(category.id(), group.id()), group.title());
                 for (SettingDescriptor<?> descriptor : group.settings()) {
                     String id = descriptor.id();
                     SettingRow row = new SettingRow(descriptor,
                             persisted.currentValue(id), hintsById.get(id));
+                    // Story 309 §5.3/§3.2 — per-row scope override chip
+                    // (scope differs from the category's modal scope) and
+                    // the "applies to…" cue, both resolved HERE: the row
+                    // never touches the bundle (the badgeText contract).
+                    if (categoryModalScope != null
+                            && descriptor.scope() != categoryModalScope) {
+                        row.setScopeChipText(scopeDisplayName(descriptor.scope()));
+                    }
+                    row.setScopeCueText(scopeCueText(descriptor.scope()));
                     rowsById.put(id, row);
                     descriptorsById.put(id, descriptor);
                     rowsByGroup.computeIfAbsent(groupKey(category.id(), group.id()),
@@ -286,7 +313,10 @@ public final class SettingsShell extends BorderPane {
             for (SettingsCatalogue.Group group : category.groups()) {
                 Node ancillary = groupAncillary.get(groupKey(category.id(), group.id()));
                 if (group.settings().isEmpty() && ancillary == null) {
-                    continue; // placeholder taxonomy slots (story 309 areas)
+                    // Placeholder taxonomy slots (general/language today —
+                    // story 309 filled startup/resetProfiles with group
+                    // ancillary visuals, never descriptors).
+                    continue;
                 }
                 children.add(groupHeader(category.id(), group));
                 for (SettingDescriptor<?> descriptor : group.settings()) {
@@ -309,9 +339,15 @@ public final class SettingsShell extends BorderPane {
     }
 
     /**
-     * §5.3 pane header: the plain title label plus the uniform §5.7
+     * §5.3 pane header: the plain title label, the story-309 "Scope: …"
+     * chip naming the category's modal scope, plus the uniform §5.7
      * tier-3 ⋯ menu carrying "Reset {category} to defaults" (story 308).
      * The title keeps the {@code settings-category-title} style class.
+     *
+     * <p>The chip derives from the category's descriptors — never a
+     * hard-coded category map (§1.8 fix, rejection #8). A descriptor-less
+     * category (General) has no scope to derive, so it renders no chip —
+     * the documented story-309 choice.</p>
      */
     private Node categoryHeader(SettingsCatalogue.Category category) {
         Label title = new Label(category.title());
@@ -330,9 +366,66 @@ public final class SettingsShell extends BorderPane {
         reset.setOnAction(_ -> resetCategory(category.id()));
         menu.getItems().add(reset);
 
-        HBox header = new HBox(title, spacer, menu);
+        HBox header = new HBox(title);
+        modalScope(category).ifPresent(scope -> {
+            Label chip = new Label(MessageFormat.format(
+                    msg("settings.scope.prefix"), scopeDisplayName(scope)));
+            chip.getStyleClass().add("settings-scope-chip");
+            chip.setId("settings-scope-chip-" + category.id());
+            header.getChildren().add(chip);
+        });
+        header.getChildren().addAll(spacer, menu);
         header.getStyleClass().add("settings-category-header");
         return header;
+    }
+
+    /**
+     * Story 309 §5.3 — the category's <em>modal</em> (most frequent)
+     * descriptor scope, ties broken deterministically toward the
+     * first-encountered scope in catalogue order. Empty for a category
+     * with zero descriptors (General).
+     */
+    private static Optional<Scope> modalScope(SettingsCatalogue.Category category) {
+        Map<Scope, Integer> counts = new LinkedHashMap<>();
+        for (SettingsCatalogue.Group group : category.groups()) {
+            for (SettingDescriptor<?> descriptor : group.settings()) {
+                counts.merge(descriptor.scope(), 1, Integer::sum);
+            }
+        }
+        Scope modal = null;
+        int best = 0;
+        for (Map.Entry<Scope, Integer> entry : counts.entrySet()) {
+            // Strictly-greater keeps the FIRST-encountered scope on ties
+            // (LinkedHashMap preserves catalogue encounter order).
+            if (entry.getValue() > best) {
+                modal = entry.getKey();
+                best = entry.getValue();
+            }
+        }
+        return Optional.ofNullable(modal);
+    }
+
+    /** The canonical §3.2 scope display names ({@code research-daw} §4). */
+    private static String scopeDisplayName(Scope scope) {
+        return msg(switch (scope) {
+            case APPLICATION -> "settings.scope.application";
+            case PROJECT_DEFAULTS -> "settings.scope.projectDefaults";
+            case THIS_PROJECT -> "settings.scope.thisProject";
+            case AUDIO_DEVICE -> "settings.scope.audioDevice";
+        });
+    }
+
+    /**
+     * The §3.2 "applies to…" cue — keyed off {@link Scope} only:
+     * PROJECT_DEFAULTS reads "applies to new projects", THIS_PROJECT
+     * "applies to the open project"; the other scopes carry no cue.
+     */
+    private static String scopeCueText(Scope scope) {
+        return switch (scope) {
+            case PROJECT_DEFAULTS -> msg("settings.scope.cue.projectDefaults");
+            case THIS_PROJECT -> msg("settings.scope.cue.thisProject");
+            case APPLICATION, AUDIO_DEVICE -> null;
+        };
     }
 
     /** Rail items in catalogue order; selection swaps the browse pane. */
@@ -366,11 +459,22 @@ public final class SettingsShell extends BorderPane {
         searchField.textProperty().addListener((_, _, text) -> handleSearchChanged(text));
         // §6.5 Esc: clear + consume ONLY while the field has text; an
         // empty-field Esc must propagate so the dialog's close semantics
-        // (dirty prompt included) still work.
+        // (dirty prompt included) still work. Story 309 §4.C: any Esc in
+        // the field also restores the rail from search-focus dim —
+        // WITHOUT changing what is consumed.
         searchField.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
-            if (event.getCode() == KeyCode.ESCAPE && !searchField.getText().isEmpty()) {
-                searchField.clear();
-                event.consume();
+            if (event.getCode() == KeyCode.ESCAPE) {
+                exitSearchFocusMode();
+                if (!searchField.getText().isEmpty()) {
+                    searchField.clear();
+                    event.consume();
+                }
+            }
+        });
+        // Story 309 §4.C — leaving the field restores the rail too.
+        searchField.focusedProperty().addListener((_, _, focused) -> {
+            if (!focused) {
+                exitSearchFocusMode();
             }
         });
 
@@ -729,9 +833,29 @@ public final class SettingsShell extends BorderPane {
         this.onCancel = r;
     }
 
-    /** Focuses the search field (the §6.5 Ctrl/Cmd-F target). */
+    /**
+     * Focuses the search field (the §6.5 Ctrl/Cmd-F target) and enters
+     * the story-309 §4.C search-focus mode: the rail dims (Concept C as
+     * a mode of A) until Esc or focus loss restores it.
+     */
     public void focusSearch() {
         searchField.requestFocus();
+        enterSearchFocusMode();
+    }
+
+    /** @return whether the §4.C search-focus rail dim is active (story 309) */
+    public boolean isSearchFocusDimActive() {
+        return searchFocusMode;
+    }
+
+    private void enterSearchFocusMode() {
+        searchFocusMode = true;
+        navRail.pseudoClassStateChanged(SEARCH_FOCUS_PSEUDO_CLASS, true);
+    }
+
+    private void exitSearchFocusMode() {
+        searchFocusMode = false;
+        navRail.pseudoClassStateChanged(SEARCH_FOCUS_PSEUDO_CLASS, false);
     }
 
     /** @return the navigation rail (tests / keyboard glue) */
@@ -823,6 +947,23 @@ public final class SettingsShell extends BorderPane {
                 entry.getValue().forEach(SettingRow::resetToDefault);
             }
         }
+    }
+
+    /**
+     * §5.7 tier 4 (story 309): resets every row of every category to its
+     * descriptor default. Pending-only, exactly like tiers 1–3 — nothing
+     * is persisted until the caller drives Apply. The confirm guard lives
+     * with the caller ({@code SettingsDialog}'s "Restore all defaults"),
+     * not here: the shell stays write-free.
+     */
+    public void resetAll() {
+        // Clear every key-capture row FIRST: the per-row conflict guard
+        // reverts a value another key row currently holds, so two
+        // swapped bindings could otherwise veto each other's defaults.
+        // The interim nulls are plain pending edits the default-reset
+        // below immediately overwrites.
+        keyCaptureRows.forEach(row -> row.setValue(null));
+        rowsById.values().forEach(SettingRow::resetToDefault);
     }
 
     /** @return whether the pending-only restart banner is currently visible */
