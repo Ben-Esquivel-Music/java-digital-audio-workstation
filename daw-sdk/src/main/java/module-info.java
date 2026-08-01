@@ -23,6 +23,12 @@
  * {@code META-INF/api-packages.allowlist} on the test classpath. The
  * {@code ModuleExportsAllowlistTest} fails if the two ever drift, so adding
  * or removing an export is always a deliberate, reviewed change.
+ *
+ * <h2>Native access</h2>
+ * The optional ASIO backend uses the Foreign Function &amp; Memory API
+ * (JEP 454, final in Java 22) to call {@code asioshim}. Restricted native
+ * access for this named module must therefore be granted with
+ * {@code --enable-native-access=daw.sdk} in tests and packaged launchers.
  */
 module daw.sdk {
     // java.desktop is required for java.awt.geom.Rectangle2D and javax.sound.sampled

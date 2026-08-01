@@ -17,9 +17,10 @@ import java.util.logging.Logger;
  * Windows ASIO backend — Steinberg's low-latency driver model, the de-facto
  * standard for professional audio work on Windows.
  *
- * <p>Bindings are generated with {@code jextract} against the Steinberg
- * ASIO SDK's {@code asio.h} and are loaded from the native shim under
- * {@code daw-core/native/asio/}. The shim must be built opt-in
+ * <p>The backend calls a small, normalized C ABI exposed by the native shim
+ * through the Foreign Function &amp; Memory API (JEP 454, final in Java 22).
+ * The shim is compiled against the Steinberg ASIO SDK headers under
+ * {@code daw-core/native/asio/} and must be built opt-in
  * (the Steinberg licence forbids redistributing the SDK headers) — when
  * it is absent the backend simply reports {@link #isAvailable()} = false
  * and {@link AudioBackendSelector} will fall back to
@@ -54,6 +55,16 @@ public final class AsioBackend implements AudioBackend {
     private static volatile Supplier<AsioCapabilityShim> capabilityShimFactory =
             AsioCapabilityShim::new;
 
+    /** Factory for the optional ASIO enumeration/lifecycle FFM binding. */
+    private static volatile Supplier<AsioDriverShim> driverShimFactory =
+            AsioDriverShim::new;
+
+    /** Serializes the Steinberg SDK's process-wide single-driver lifecycle. */
+    private static final Object DRIVER_LIFECYCLE_LOCK = new Object();
+
+    /** Backend instance that currently owns the single process-wide driver. */
+    private static AsioBackend activeBackend;
+
     /**
      * Whether the "ASIO capability shim is unavailable; using fallback"
      * INFO has already been logged in this JVM. Story 213 explicitly
@@ -61,12 +72,9 @@ public final class AsioBackend implements AudioBackend {
      */
     private static final AtomicBoolean FALLBACK_LOGGED = new AtomicBoolean(false);
 
-    private static final boolean AVAILABLE =
-            "Windows".equalsIgnoreCase(osFamily())
-                    && AudioBackendSupport.nativeLibraryAvailable("asio", "asiosdk");
-
     private final AudioBackendSupport support = new AudioBackendSupport();
     private volatile AsioFormatChangeShim formatChangeShim;
+    private volatile AsioDriverShim driverShim;
 
     /** Creates a new ASIO backend (no native resources allocated until {@link #open}). */
     public AsioBackend() {
@@ -79,31 +87,101 @@ public final class AsioBackend implements AudioBackend {
 
     @Override
     public boolean isAvailable() {
-        return AVAILABLE;
+        try (AsioDriverShim shim = driverShimFactory.get()) {
+            return shim.isEnumerationAvailable() && shim.isLifecycleAvailable();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     @Override
     public List<AudioDeviceInfo> listDevices() {
-        return List.of();
+        try (AsioDriverShim shim = driverShimFactory.get()) {
+            List<AsioDriverShim.DriverDescriptor> drivers = shim.listDrivers();
+            if (drivers.isEmpty()) {
+                return List.of();
+            }
+            List<AudioDeviceInfo> devices = new java.util.ArrayList<>(drivers.size());
+            for (int index = 0; index < drivers.size(); index++) {
+                AsioDriverShim.DriverDescriptor driver = drivers.get(index);
+                devices.add(new AudioDeviceInfo(
+                        index, driver.name(), NAME,
+                        0, 0, 0.0, List.of(), 0.0, 0.0));
+            }
+            return List.copyOf(devices);
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
     }
 
     @Override
     public void open(DeviceId device, AudioFormat format, int bufferFrames) {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
-        if (!AVAILABLE) {
-            throw new AudioBackendException(
-                    "ASIO is not available on this host. Install an ASIO driver "
-                            + "(e.g. ASIO4ALL) and rebuild daw-core with the ASIO shim.");
+        if (bufferFrames <= 0) {
+            throw new IllegalArgumentException(
+                    "bufferFrames must be positive: " + bufferFrames);
         }
-        support.markOpen(format, bufferFrames);
-        // Story 218: install the FFM upcall that translates ASIO's
-        // asioMessage host-callback into publishFormatChangeRequested(...).
-        // Construction always succeeds; the actual native registration is
-        // a no-op if the asioshim library is not present on this host.
-        this.formatChangeShim = new AsioFormatChangeShim(this, support, device);
-        // Native ASIO buffer-switch wiring lives in the implementation layer
-        // that ships the Steinberg ASIO SDK shim; see daw-core/native/asio/.
+        synchronized (DRIVER_LIFECYCLE_LOCK) {
+            if (support.isOpen()) {
+                throw new IllegalStateException("backend already has an open stream");
+            }
+            if (activeBackend != null && activeBackend != this) {
+                throw new IllegalStateException(
+                        "another ASIO backend already owns the process-wide driver");
+            }
+
+            AsioDriverShim candidate = driverShimFactory.get();
+            if (!candidate.isLifecycleAvailable()) {
+                candidate.close();
+                throw unavailableException();
+            }
+            String driverName;
+            try {
+                driverName = resolveDriverName(candidate, device);
+            } catch (RuntimeException | Error failure) {
+                candidate.close();
+                throw failure;
+            }
+            if (!candidate.loadDriver(driverName)) {
+                candidate.close();
+                throw new AudioBackendException(
+                        "Could not load and initialize ASIO driver: " + driverName);
+            }
+
+            try {
+                // ASIOInit succeeded before the backend is marked open. This
+                // ordering prevents every capability wrapper from reaching an
+                // uninitialized SDK global.
+                support.markOpen(format, bufferFrames);
+                AsioFormatChangeShim callback =
+                        new AsioFormatChangeShim(this, support, new DeviceId(NAME, driverName));
+                driverShim = candidate;
+                formatChangeShim = callback;
+                activeBackend = this;
+            } catch (RuntimeException | Error failure) {
+                candidate.close();
+                support.markClosed();
+                throw failure;
+            }
+        }
+    }
+
+    private static String resolveDriverName(AsioDriverShim shim, DeviceId device) {
+        if (!device.isDefault()) {
+            return device.name();
+        }
+        return shim.listDrivers().stream()
+                .findFirst()
+                .map(AsioDriverShim.DriverDescriptor::name)
+                .orElseThrow(() -> new AudioBackendException(
+                        "No installed ASIO driver is available for the default device"));
+    }
+
+    private static AudioBackendException unavailableException() {
+        return new AudioBackendException(
+                "ASIO is not available on this host. Install an ASIO driver "
+                        + "(e.g. ASIO4ALL) and bundle daw-core/native/asio/asioshim.dll.");
     }
 
     @Override
@@ -281,12 +359,22 @@ public final class AsioBackend implements AudioBackend {
 
     @Override
     public void close() {
-        AsioFormatChangeShim shim = this.formatChangeShim;
-        this.formatChangeShim = null;
-        if (shim != null) {
-            shim.close();
+        synchronized (DRIVER_LIFECYCLE_LOCK) {
+            AsioFormatChangeShim callback = formatChangeShim;
+            formatChangeShim = null;
+            if (callback != null) {
+                callback.close();
+            }
+            AsioDriverShim lifecycle = driverShim;
+            driverShim = null;
+            if (lifecycle != null) {
+                lifecycle.close();
+            }
+            if (activeBackend == this) {
+                activeBackend = null;
+            }
+            support.close();
         }
-        support.close();
     }
 
     /**
@@ -305,9 +393,8 @@ public final class AsioBackend implements AudioBackend {
      * {@link BufferSizeRange#DEFAULT_RANGE} and logs the absence at
      * {@code INFO} exactly once per process.</p>
      *
-     * <p>The downcall runs on the calling thread (typically the
-     * JavaFX thread when the Audio Settings dialog opens), never on
-     * the audio render thread.</p>
+     * <p>The downcall is serialized on the dedicated
+     * {@link AsioControlThread}, never on the JavaFX or audio render thread.</p>
      */
     @Override
     public BufferSizeRange bufferSizeRange(DeviceId device) {
@@ -406,6 +493,37 @@ public final class AsioBackend implements AudioBackend {
         FALLBACK_LOGGED.set(false);
     }
 
+    /** Test seam for enumeration and lifecycle paths without a native SDK. */
+    static void setDriverShimFactory(Supplier<AsioDriverShim> factory) {
+        driverShimFactory = Objects.requireNonNull(factory, "factory");
+    }
+
+    /** Restores the production ASIO driver shim factory. */
+    static void resetDriverShimFactory() {
+        driverShimFactory = AsioDriverShim::new;
+    }
+
+    /**
+     * Returns display metadata captured from {@code ASIOInit} for the active
+     * driver, or empty while this backend has no initialized driver.
+     */
+    public Optional<AsioDriverInfo> activeDriverInfo() {
+        AsioDriverShim lifecycle = driverShim;
+        if (lifecycle == null) {
+            return Optional.empty();
+        }
+        return lifecycle.getDriverInfo().flatMap(info -> {
+            String name = info.name().isBlank()
+                    ? lifecycle.getDriverName().orElse("") : info.name();
+            if (name.isBlank()) {
+                return Optional.empty();
+            }
+            return Optional.of(new AsioDriverInfo(
+                    name, info.asioVersion(), info.driverVersion(),
+                    info.errorMessage()));
+        });
+    }
+
     /**
      * Reports the hardware clock sources the ASIO driver exposes.
      * Calls {@code ASIOGetClockSources(ASIOClockSource[], int* numSources)}
@@ -423,9 +541,8 @@ public final class AsioBackend implements AudioBackend {
      * disabled combo with a tooltip explaining that the native shim is
      * required.</p>
      *
-     * <p>The downcall runs on the calling thread (typically the JavaFX
-     * thread when the Audio Settings dialog opens), never on the audio
-     * render thread.</p>
+     * <p>The downcall is serialized on the dedicated
+     * {@link AsioControlThread}, never on the JavaFX or audio render thread.</p>
      */
     @Override
     public List<ClockSource> clockSources(DeviceId device) {
@@ -740,10 +857,4 @@ public final class AsioBackend implements AudioBackend {
         };
     }
 
-    private static String osFamily() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.contains("win")) return "Windows";
-        if (os.contains("mac") || os.contains("darwin")) return "macOS";
-        return "Other";
-    }
 }

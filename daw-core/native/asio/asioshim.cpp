@@ -5,72 +5,37 @@
 // Story 130 / 213 — Driver-Reported Buffer Size and Sample-Rate
 // Enumeration. Story 218 — Format-change host-callback bridge.
 //
-// Threading: all symbols are called from the JVM thread that holds the
-// Audio Settings dialog (typically the JavaFX thread). They must never
-// be called from the audio render thread.
+// Threading: all host downcalls are serialized by the JVM's dedicated
+// `asio-control` platform thread. They must never be called from the audio
+// render thread. The only cross-thread entrypoint is the driver-owned
+// format-change callback trampoline at the bottom of this file.
 
-#if defined(_WIN32)
-#  define ASIOSHIM_EXPORT extern "C" __declspec(dllexport)
-#else
-#  define ASIOSHIM_EXPORT extern "C" __attribute__((visibility("default")))
-#endif
+#define ASIOSHIM_EXPORTS
+#include "asioshim.h"
+#include "asiosys.h"
+#include "asio.h"
+#include "asiodrivers.h"
 
+#include <windows.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <atomic>
+#include <memory>
+#include <mutex>
+#include <string>
 
-// The Steinberg ASIO SDK headers live under ${ASIO_SDK_DIR}/common.
-// We forward-declare the few entry points we use so this translation
-// unit compiles without the SDK on disk; CMake links the actual
-// implementations from the SDK's host glue (asio.cpp / asiodrivers.cpp).
-//
-// The Steinberg SDK uses the type ASIOError (an int) and ASIOSampleRate
-// (a double).
-typedef long ASIOError;
-typedef double ASIOSampleRate;
+#define ASIOSHIM_EXPORT ASIOSHIM_API
 
-extern "C" ASIOError ASIOGetBufferSize(long* minSize, long* maxSize,
-                                       long* preferredSize, long* granularity);
-extern "C" ASIOError ASIOCanSampleRate(ASIOSampleRate sampleRate);
-extern "C" ASIOError ASIOGetSampleRate(ASIOSampleRate* sampleRate);
-extern "C" ASIOError ASIOSetSampleRate(ASIOSampleRate sampleRate);
-extern "C" ASIOError ASIOControlPanel(void);
+// Defined by the SDK's common/asio.cpp; the indexed host-glue open path
+// assigns the single process-wide IASIO instance before ASIOInit.
+extern IASIO* theAsioDriver;
 
-// ASIOClockSource as defined in Steinberg's asio.h. The Steinberg
-// declaration uses long (32-bit) integer fields and a 32-byte
-// fixed-length name buffer (ASCII, NUL-terminated). The shim's FFM
-// contract normalises that layout into a fixed 48-byte struct with
-// int32 fields so the Java side does not need to track the SDK's
-// platform-dependent long width.
-struct ASIOClockSource {
-    long index;
-    long associatedChannel;
-    long associatedGroup;
-    long isCurrentSource;
-    char name[32];
-};
-extern "C" ASIOError ASIOGetClockSources(ASIOClockSource* clocks, long* numSources);
-extern "C" ASIOError ASIOSetClockSource(long reference);
-
-// ASIOGetChannels reports the device's input / output channel counts.
-extern "C" ASIOError ASIOGetChannels(long* numInputChannels, long* numOutputChannels);
-
-// ASIOChannelInfo as defined in Steinberg's asio.h. The Steinberg
-// declaration uses long (32-bit on Windows) integer fields, an
-// ASIOSampleType enum (long), and a 32-byte fixed-length name buffer
-// (ASCII, NUL-terminated). The shim's FFM contract normalises that
-// layout into a fixed 56-byte struct with int32 fields so the Java
-// side does not need to track the SDK's platform-dependent long width.
-struct ASIOChannelInfo {
-    long channel;       // on input,  the channel index (0..numInputs-1) or output (0..numOutputs-1)
-    long isInput;       // on input,  1 = input, 0 = output
-    long isActive;      // on output, 1 = enabled in driver
-    long channelGroup;  // on output, driver's stereo-pair / group id
-    long type;          // on output, ASIOSampleType
-    char name[32];      // on output, ASCII NUL-terminated
-};
-extern "C" ASIOError ASIOGetChannelInfo(ASIOChannelInfo* info);
+static_assert(sizeof(long) == 4,
+              "asioshim requires the Windows LLP64 32-bit C long ABI");
 
 // Steinberg's ASE_OK is 0 in the SDK, but the FFM contract documented
 // in AsioCapabilityShim and AsioFormatChangeShim normalises "OK" to 1
@@ -79,21 +44,265 @@ extern "C" ASIOError ASIOGetChannelInfo(ASIOChannelInfo* info);
 namespace {
     constexpr int SHIM_OK = 1;
     constexpr int SHIM_FAIL = 0;
-    constexpr ASIOError ASE_OK = 0;
     // Subset of Steinberg ASIO error codes used at the FFM boundary.
     // Steinberg defines ASE_NotPresent = -1000 in asio.h, but the shim
     // contract documented in AsioBackend / AsioCapabilityShim normalises
     // "driver does not provide a control panel" to 0 so the Java side
     // can treat any negative value as a generic failure without parsing
     // the SDK's full error enum.
-    constexpr ASIOError ASE_NotPresent = -1000;
     constexpr int SHIM_NOT_PRESENT = 0;
     constexpr int SHIM_GENERIC_FAIL = -1;
+
+    constexpr int DRIVER_CAPACITY = 64;
+    constexpr int DRIVER_NAME_BYTES = 128;
+    constexpr int DRIVER_CLSID_BYTES = 40;
+    constexpr int DRIVER_RECORD_STRIDE = DRIVER_NAME_BYTES + DRIVER_CLSID_BYTES;
+    constexpr int DRIVER_INFO_STRIDE = 264;
+
+    std::mutex g_driverMutex;
+    class ShimAsioDrivers final : public AsioDrivers {
+    public:
+        long count() {
+            return asioGetNumDev();
+        }
+
+        bool nameAt(long index, char* name, int capacity) {
+            return asioGetDriverName(index, name, capacity) == 0;
+        }
+
+        bool clsidAt(long index, CLSID* clsid) {
+            return asioGetDriverCLSID(index, clsid) == 0;
+        }
+
+        bool loadAt(long index) {
+            void* driver = nullptr;
+            if (asioOpenDriver(index, &driver) != 0 || !driver) {
+                return false;
+            }
+            theAsioDriver = static_cast<IASIO*>(driver);
+            curIndex = index;
+            return true;
+        }
+    };
+
+    std::unique_ptr<ShimAsioDrivers> g_drivers;
+    bool g_driverLoaded = false;
+    ASIODriverInfo g_driverInfo{};
+    std::array<char, DRIVER_NAME_BYTES> g_activeDriverName{};
+
+    ShimAsioDrivers& driverList() {
+        if (!g_drivers) {
+            g_drivers = std::make_unique<ShimAsioDrivers>();
+        }
+        return *g_drivers;
+    }
+
+    void copyFixedAscii(unsigned char* destination, std::size_t capacity,
+                        const char* source,
+                        std::size_t sourceCapacity = static_cast<std::size_t>(-1)) {
+        std::memset(destination, 0, capacity);
+        if (!source || capacity == 0) {
+            return;
+        }
+        std::size_t count = 0;
+        while (count + 1 < capacity && count < sourceCapacity
+                && source[count] != '\0') {
+            unsigned char value = static_cast<unsigned char>(source[count]);
+            destination[count] = (value >= 0x20 && value <= 0x7e) ? value : '?';
+            ++count;
+        }
+    }
+
+    std::array<char, DRIVER_CLSID_BYTES> formatClsid(const CLSID& value) {
+        std::array<char, DRIVER_CLSID_BYTES> clsid{};
+        wchar_t wide[DRIVER_CLSID_BYTES]{};
+        if (StringFromGUID2(value, wide, DRIVER_CLSID_BYTES) <= 0) {
+            return clsid;
+        }
+        int converted = WideCharToMultiByte(
+                CP_ACP, 0, wide, -1, clsid.data(), DRIVER_CLSID_BYTES,
+                nullptr, nullptr);
+        if (converted <= 0) {
+            clsid.fill('\0');
+        }
+        clsid.back() = '\0';
+        return clsid;
+    }
+
+    void unloadDriverLocked() {
+        if (g_driverLoaded) {
+            ASIOExit();
+        }
+        if (g_drivers) {
+            g_drivers->removeCurrentDriver();
+            g_drivers.reset();
+        }
+        g_driverLoaded = false;
+        g_driverInfo = {};
+        g_activeDriverName.fill('\0');
+    }
+}
+
+// ─── Driver enumeration and lifecycle (story 310) ──────────────────────────
+
+ASIOSHIM_EXPORT int asioshim_listDrivers(void* outArray, int* outCount) {
+    if (!outCount) {
+        return SHIM_FAIL;
+    }
+    int capacity = *outCount;
+    *outCount = 0;
+    if (capacity < 0) {
+        return SHIM_FAIL;
+    }
+    if (capacity == 0) {
+        return SHIM_OK;
+    }
+    if (!outArray) {
+        return SHIM_FAIL;
+    }
+    capacity = std::min(capacity, DRIVER_CAPACITY);
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    try {
+        // Closed-state enumeration is a self-contained COM snapshot. Construct
+        // and destroy it on asio-control rather than retaining CoInitialize
+        // until a later load. While a driver is active, reuse its manager so
+        // the SDK's process-global `asioDrivers` pointer is not disturbed.
+        std::unique_ptr<ShimAsioDrivers> localSnapshot;
+        ShimAsioDrivers* snapshot = nullptr;
+        if (g_driverLoaded && g_drivers) {
+            snapshot = g_drivers.get();
+        } else {
+            localSnapshot = std::make_unique<ShimAsioDrivers>();
+            snapshot = localSnapshot.get();
+        }
+        std::array<std::array<char, DRIVER_NAME_BYTES>, DRIVER_CAPACITY> storage{};
+        long found = snapshot->count();
+        int written = std::min(capacity,
+                static_cast<int>(std::max(0L, found)));
+        auto* bytes = static_cast<unsigned char*>(outArray);
+        for (int index = 0; index < written; ++index) {
+            if (!snapshot->nameAt(index, storage[index].data(), DRIVER_NAME_BYTES)) {
+                storage[index][0] = '\0';
+            }
+            unsigned char* row = bytes + (index * DRIVER_RECORD_STRIDE);
+            copyFixedAscii(row, DRIVER_NAME_BYTES, storage[index].data());
+            CLSID driverClsid{};
+            auto clsid = snapshot->clsidAt(index, &driverClsid)
+                    ? formatClsid(driverClsid)
+                    : std::array<char, DRIVER_CLSID_BYTES>{};
+            copyFixedAscii(row + DRIVER_NAME_BYTES, DRIVER_CLSID_BYTES,
+                           clsid.data());
+        }
+        *outCount = written;
+        return SHIM_OK;
+    } catch (...) {
+        *outCount = 0;
+        return SHIM_FAIL;
+    }
+}
+
+ASIOSHIM_EXPORT int asioshim_loadDriver(const char* driverName) {
+    if (!driverName || driverName[0] == '\0') {
+        return SHIM_FAIL;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    try {
+        // The Steinberg host glue supports one current driver. Re-loading on
+        // the same control thread always exits and releases the old COM object
+        // before attempting the replacement.
+        unloadDriverLocked();
+        std::array<char, DRIVER_NAME_BYTES> mutableName{};
+        copyFixedAscii(reinterpret_cast<unsigned char*>(mutableName.data()),
+                       mutableName.size(), driverName);
+        g_drivers = std::make_unique<ShimAsioDrivers>();
+        long matchingIndex = -1;
+        long count = std::min(driverList().count(),
+                              static_cast<long>(DRIVER_CAPACITY));
+        for (long index = 0; index < count; ++index) {
+            std::array<char, DRIVER_NAME_BYTES> installedName{};
+            if (driverList().nameAt(index, installedName.data(), DRIVER_NAME_BYTES)
+                    && std::strcmp(installedName.data(), mutableName.data()) == 0) {
+                matchingIndex = index;
+                break;
+            }
+        }
+        if (matchingIndex < 0 || !driverList().loadAt(matchingIndex)) {
+            unloadDriverLocked();
+            return SHIM_FAIL;
+        }
+
+        g_driverInfo = {};
+        g_driverInfo.asioVersion = 2;
+        g_driverInfo.sysRef = GetDesktopWindow();
+        ASIOError status = ASIOInit(&g_driverInfo);
+        if (status != ASE_OK) {
+            unloadDriverLocked();
+            return SHIM_FAIL;
+        }
+        g_driverLoaded = true;
+        copyFixedAscii(
+                reinterpret_cast<unsigned char*>(g_activeDriverName.data()),
+                g_activeDriverName.size(), mutableName.data());
+        return SHIM_OK;
+    } catch (...) {
+        unloadDriverLocked();
+        return SHIM_FAIL;
+    }
+}
+
+ASIOSHIM_EXPORT int asioshim_getDriverName(void* outName, int nameCapacity) {
+    if (!outName || nameCapacity <= 0) {
+        return SHIM_FAIL;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    auto* destination = static_cast<unsigned char*>(outName);
+    if (!g_driverLoaded) {
+        destination[0] = '\0';
+        return SHIM_FAIL;
+    }
+    copyFixedAscii(destination, static_cast<std::size_t>(nameCapacity),
+                   g_activeDriverName.data());
+    return SHIM_OK;
+}
+
+ASIOSHIM_EXPORT int asioshim_getDriverInfo(void* outInfo) {
+    if (!outInfo) {
+        return SHIM_FAIL;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    auto* row = static_cast<unsigned char*>(outInfo);
+    std::memset(row, 0, DRIVER_INFO_STRIDE);
+    if (!g_driverLoaded) {
+        return SHIM_FAIL;
+    }
+    int32_t asioVersion = static_cast<int32_t>(g_driverInfo.asioVersion);
+    int32_t driverVersion = static_cast<int32_t>(g_driverInfo.driverVersion);
+    std::memcpy(row, &asioVersion, sizeof(asioVersion));
+    std::memcpy(row + 4, &driverVersion, sizeof(driverVersion));
+    copyFixedAscii(row + 8, DRIVER_NAME_BYTES,
+                   g_driverInfo.name[0] == '\0'
+                           ? g_activeDriverName.data() : g_driverInfo.name,
+                   g_driverInfo.name[0] == '\0'
+                           ? g_activeDriverName.size()
+                           : sizeof(g_driverInfo.name));
+    copyFixedAscii(row + 136, DRIVER_NAME_BYTES, g_driverInfo.errorMessage,
+                   sizeof(g_driverInfo.errorMessage));
+    return SHIM_OK;
+}
+
+ASIOSHIM_EXPORT void asioshim_unloadDriver(void) {
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    unloadDriverLocked();
 }
 
 ASIOSHIM_EXPORT int asioshim_getBufferSize(int* min, int* max,
                                            int* preferred, int* granularity) {
     if (!min || !max || !preferred || !granularity) {
+        return SHIM_FAIL;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        *min = *max = *preferred = *granularity = 0;
         return SHIM_FAIL;
     }
     long mn = 0, mx = 0, pr = 0, gr = 0;
@@ -109,12 +318,21 @@ ASIOSHIM_EXPORT int asioshim_getBufferSize(int* min, int* max,
 }
 
 ASIOSHIM_EXPORT int asioshim_canSampleRate(double rate) {
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        return SHIM_FAIL;
+    }
     return (ASIOCanSampleRate(static_cast<ASIOSampleRate>(rate)) == ASE_OK)
            ? SHIM_OK : SHIM_FAIL;
 }
 
 ASIOSHIM_EXPORT int asioshim_getSampleRate(double* outRate) {
     if (!outRate) {
+        return SHIM_FAIL;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        *outRate = 0.0;
         return SHIM_FAIL;
     }
     ASIOSampleRate sr = 0.0;
@@ -127,6 +345,10 @@ ASIOSHIM_EXPORT int asioshim_getSampleRate(double* outRate) {
 }
 
 ASIOSHIM_EXPORT int asioshim_setSampleRate(double rate) {
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        return SHIM_FAIL;
+    }
     return (ASIOSetSampleRate(static_cast<ASIOSampleRate>(rate)) == ASE_OK)
            ? SHIM_OK : SHIM_FAIL;
 }
@@ -142,6 +364,10 @@ ASIOSHIM_EXPORT int asioshim_setSampleRate(double rate) {
 //   SHIM_NOT_PRESENT (0)   — ASE_NotPresent; driver has no control panel.
 //   SHIM_GENERIC_FAIL (-1) — any other ASIOError; driver-side failure.
 ASIOSHIM_EXPORT int asioshim_openControlPanel(void) {
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        return SHIM_GENERIC_FAIL;
+    }
     ASIOError err = ASIOControlPanel();
     if (err == ASE_OK) {
         return SHIM_OK;
@@ -172,6 +398,11 @@ ASIOSHIM_EXPORT int asioshim_openControlPanel(void) {
 ASIOSHIM_EXPORT int asioshim_getClockSources(void* outArray, int* outCount) {
     if (!outArray || !outCount) {
         if (outCount) *outCount = 0;
+        return SHIM_FAIL;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        *outCount = 0;
         return SHIM_FAIL;
     }
     int capacity = *outCount;
@@ -230,6 +461,10 @@ ASIOSHIM_EXPORT int asioshim_getClockSources(void* outArray, int* outCount) {
 // (ASE_InvalidMode → driver rejects clock change while streaming,
 //  ASE_NotPresent  → unknown clock source id, etc).
 ASIOSHIM_EXPORT int asioshim_setClockSource(int reference) {
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        return static_cast<int>(ASE_NotPresent);
+    }
     return static_cast<int>(ASIOSetClockSource(static_cast<long>(reference)));
 }
 
@@ -245,6 +480,12 @@ ASIOSHIM_EXPORT int asioshim_getChannelCount(int* outInputs, int* outOutputs) {
     if (!outInputs || !outOutputs) {
         if (outInputs) *outInputs = 0;
         if (outOutputs) *outOutputs = 0;
+        return SHIM_FAIL;
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        *outInputs = 0;
+        *outOutputs = 0;
         return SHIM_FAIL;
     }
     long ins = 0, outs = 0;
@@ -281,6 +522,10 @@ ASIOSHIM_EXPORT int asioshim_getChannelInfo(int channelIndex, int isInput,
     if (!outInfo || channelIndex < 0) {
         return SHIM_FAIL;
     }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    if (!g_driverLoaded) {
+        return SHIM_FAIL;
+    }
     ASIOChannelInfo info{};
     info.channel = channelIndex;
     info.isInput = (isInput != 0) ? 1 : 0;
@@ -311,16 +556,14 @@ ASIOSHIM_EXPORT int asioshim_getChannelInfo(int channelIndex, int isInput,
 // ─── Format-change host-callback bridge (story 218) ─────────────────
 //
 // The JVM passes a single function pointer matching ASIO's
-// asioMessage(long, long, void*, double*) -> long signature. We store
-// it in a process-global slot the SDK's installed callback table
+// asioMessage(long, long, void*, double*) -> long signature. Retaining the
+// SDK's native `long` spelling makes the trampoline function-pointer type
+// directly assignable to ASIOCallbacks::asioMessage; the static_assert above
+// guarantees that Java's JAVA_INT descriptor remains ABI-exact. We store it
+// in a process-global slot the SDK's installed callback table
 // reads when the driver fires kAsioResetRequest / kAsioBufferSizeChange
 // / kAsioResyncRequest. The Java upcall is responsible for mapping
 // each selector onto AudioDeviceEvent.FormatChangeRequested.
-
-extern "C" {
-    typedef long (*asio_message_fn)(long selector, long value,
-                                    void* message, double* opt);
-}
 
 namespace {
     std::atomic<asio_message_fn> g_asioMessageCallback{nullptr};
@@ -339,8 +582,8 @@ ASIOSHIM_EXPORT void uninstallAsioMessageCallback() {
 // that the host-side glue (asiodrivers.cpp) routes through this
 // trampoline. The trampoline is referenced from the SDK glue when
 // asioshim is built with -DASIOSHIM_TRAMPOLINE.
-ASIOSHIM_EXPORT long asioshim_messageTrampoline(long selector, long value,
-                                                void* message, double* opt) {
+ASIOSHIM_EXPORT long asioshim_messageTrampoline(
+        long selector, long value, void* message, double* opt) {
     asio_message_fn cb = g_asioMessageCallback.load(std::memory_order_acquire);
     if (cb == nullptr) {
         return 0;

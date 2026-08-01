@@ -134,9 +134,8 @@ class NativeLibraryDetectorTest {
      * Story 224 — when the bundled {@code asioshim.dll} is present on
      * a Windows build, the key symbols required by
      * {@code AsioFormatChangeShim} must be resolvable via FFM so the
-     * shim can install its upcall callback. This test confirms
-     * {@code installAsioMessageCallback} and
-     * {@code uninstallAsioMessageCallback} are exported.
+     * shim can enumerate and own a driver before capability queries begin.
+     * This test confirms both the lifecycle and callback symbol sets.
      */
     @Test
     @EnabledOnOs(OS.WINDOWS)
@@ -150,6 +149,39 @@ class NativeLibraryDetectorTest {
             assertThat(lookup.find("uninstallAsioMessageCallback"))
                     .as("uninstallAsioMessageCallback symbol")
                     .isPresent();
+            for (String symbol : List.of(
+                    "asioshim_listDrivers",
+                    "asioshim_loadDriver",
+                    "asioshim_getDriverName",
+                    "asioshim_getDriverInfo",
+                    "asioshim_unloadDriver")) {
+                assertThat(lookup.find(symbol)).as(symbol).isPresent();
+            }
+
+            var linker = java.lang.foreign.Linker.nativeLinker();
+            var count = arena.allocate(java.lang.foreign.ValueLayout.JAVA_INT);
+            count.set(java.lang.foreign.ValueLayout.JAVA_INT, 0, 0);
+            var listDrivers = linker.downcallHandle(
+                    lookup.find("asioshim_listDrivers").orElseThrow(),
+                    java.lang.foreign.FunctionDescriptor.of(
+                            java.lang.foreign.ValueLayout.JAVA_INT,
+                            java.lang.foreign.ValueLayout.ADDRESS,
+                            java.lang.foreign.ValueLayout.ADDRESS));
+            try {
+                int status = (int) listDrivers.invokeExact(
+                        java.lang.foreign.MemorySegment.NULL, count);
+                assertThat(status).as("zero-capacity list status").isEqualTo(1);
+                assertThat(count.get(java.lang.foreign.ValueLayout.JAVA_INT, 0))
+                        .isZero();
+
+                var unload = linker.downcallHandle(
+                        lookup.find("asioshim_unloadDriver").orElseThrow(),
+                        java.lang.foreign.FunctionDescriptor.ofVoid());
+                unload.invokeExact();
+                unload.invokeExact();
+            } catch (Throwable failure) {
+                throw new AssertionError("asioshim lifecycle smoke call failed", failure);
+            }
         }
     }
 

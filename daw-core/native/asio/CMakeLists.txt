@@ -41,6 +41,12 @@ if(NOT WIN32)
     return()
 endif()
 
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR
+        "asioshim: only Windows x64 is supported (CMAKE_SIZEOF_VOID_P="
+        "${CMAKE_SIZEOF_VOID_P}). Configure the generator with -A x64.")
+endif()
+
 # Fail loudly when ASIO_SDK_DIR is set but does not contain the SDK.
 set(_asio_common "${ASIO_SDK_DIR}/common")
 set(_asio_host   "${ASIO_SDK_DIR}/host")
@@ -52,6 +58,24 @@ foreach(_dir ${_asio_common} ${_asio_host} ${_asio_pc})
             "Steinberg ASIO SDK tree (missing: ${_dir}). Either point "
             "ASIO_SDK_DIR at a real SDK extract or unset it to skip "
             "this target.")
+    endif()
+endforeach()
+
+set(_asio_required_files
+    "${_asio_common}/asio.h"
+    "${_asio_common}/asiosys.h"
+    "${_asio_common}/iasiodrv.h"
+    "${_asio_common}/asio.cpp"
+    "${_asio_host}/asiodrivers.h"
+    "${_asio_host}/asiodrivers.cpp"
+    "${_asio_pc}/asiolist.h"
+    "${_asio_pc}/asiolist.cpp"
+)
+foreach(_file ${_asio_required_files})
+    if(NOT EXISTS "${_file}")
+        message(FATAL_ERROR
+            "asioshim: ASIO_SDK_DIR=${ASIO_SDK_DIR} is missing required "
+            "SDK host-glue file: ${_file}")
     endif()
 endforeach()
 

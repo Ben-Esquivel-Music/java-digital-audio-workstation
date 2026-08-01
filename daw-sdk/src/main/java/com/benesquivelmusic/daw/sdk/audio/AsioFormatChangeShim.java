@@ -14,7 +14,7 @@ import java.util.Optional;
 
 /**
  * FFM (JEP 454) shim that translates the ASIO host-callback's
- * {@code asioMessage(long selector, long value, void* message, double* opt) -> long}
+ * {@code asioMessage(int32 selector, int32 value, void* message, double* opt) -> int32}
  * upcall into {@link AsioBackend#publishFormatChangeRequested(DeviceId,
  * Optional, FormatChangeReason)} invocations (story 218).
  *
@@ -42,15 +42,19 @@ final class AsioFormatChangeShim implements AutoCloseable {
     static final int kAsioBufferSizeChange = 7;
 
     /** ASE_OK — selector handled successfully. */
-    private static final long ASE_OK = 1L;
+    private static final int ASE_OK = 1;
     /** ASE_NotPresent — selector unknown / unhandled. */
-    private static final long ASE_NOT_PRESENT = 0L;
+    private static final int ASE_NOT_PRESENT = 0;
 
-    /** Function descriptor for ASIO's {@code asioMessage(long, long, void*, double*) -> long}. */
+    /**
+     * Windows ASIO callback descriptor. The SDK uses C {@code long}, which is
+     * fixed at 32 bits on Win64 and therefore maps to {@code JAVA_INT}, not
+     * Java's 64-bit {@code long}.
+     */
     private static final FunctionDescriptor ASIO_MESSAGE =
-            FunctionDescriptor.of(ValueLayout.JAVA_LONG,
-                    ValueLayout.JAVA_LONG,
-                    ValueLayout.JAVA_LONG,
+            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_INT,
                     ValueLayout.ADDRESS,
                     ValueLayout.ADDRESS);
 
@@ -80,7 +84,8 @@ final class AsioFormatChangeShim implements AutoCloseable {
         this.backend = Objects.requireNonNull(backend, "backend must not be null");
         this.support = Objects.requireNonNull(support, "support must not be null");
         this.device = Objects.requireNonNull(device, "device must not be null");
-        this.arena = Arena.ofConfined();
+        // The driver invokes this upcall from its own callback thread.
+        this.arena = Arena.ofShared();
         this.upcallStub = buildUpcallStub();
         this.registered = tryRegister();
     }
@@ -90,8 +95,8 @@ final class AsioFormatChangeShim implements AutoCloseable {
             MethodHandle handle = MethodHandles.lookup().findVirtual(
                     AsioFormatChangeShim.class,
                     "asioMessageUpcall",
-                    MethodType.methodType(long.class,
-                            long.class, long.class,
+                    MethodType.methodType(int.class,
+                            int.class, int.class,
                             MemorySegment.class, MemorySegment.class))
                     .bindTo(this);
             return Linker.nativeLinker().upcallStub(handle, ASIO_MESSAGE, arena);
@@ -114,8 +119,10 @@ final class AsioFormatChangeShim implements AutoCloseable {
                             "installAsioMessageCallback not found"));
             MethodHandle handle = Linker.nativeLinker().downcallHandle(
                     install, FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
-            handle.invoke(upcallStub);
-            return true;
+            return AsioControlThread.call(() -> {
+                handle.invoke(upcallStub);
+                return true;
+            });
         } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
             // Library not present on this host — no-op.
             return false;
@@ -132,10 +139,10 @@ final class AsioFormatChangeShim implements AutoCloseable {
      * {@code asioMessage}.
      */
     @SuppressWarnings("unused") // invoked reflectively via the upcall stub
-    private long asioMessageUpcall(long selector, long value,
-                                   MemorySegment message, MemorySegment opt) {
+    private int asioMessageUpcall(int selector, int value,
+                                  MemorySegment message, MemorySegment opt) {
         try {
-            return dispatch(selector, value);
+            return (int) dispatch(selector, value);
         } catch (Throwable t) {
             // Never let an exception propagate back into native code.
             return ASE_NOT_PRESENT;
@@ -242,8 +249,12 @@ final class AsioFormatChangeShim implements AutoCloseable {
                 SymbolLookup lookup = SymbolLookup.libraryLookup("asioshim", arena);
                 lookup.find("uninstallAsioMessageCallback").ifPresent(symbol -> {
                     try {
-                        Linker.nativeLinker().downcallHandle(
-                                symbol, FunctionDescriptor.ofVoid()).invoke();
+                        MethodHandle uninstall = Linker.nativeLinker().downcallHandle(
+                                symbol, FunctionDescriptor.ofVoid());
+                        AsioControlThread.call(() -> {
+                            uninstall.invokeExact();
+                            return null;
+                        });
                     } catch (Throwable ignored) {
                         // Best-effort: never throw from close().
                     }
@@ -253,7 +264,10 @@ final class AsioFormatChangeShim implements AutoCloseable {
             }
         }
         try {
-            arena.close();
+            AsioControlThread.call(() -> {
+                arena.close();
+                return null;
+            });
         } catch (Throwable ignored) {
             // Already closed by something else — idempotent.
         }
