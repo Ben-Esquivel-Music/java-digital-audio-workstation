@@ -26,13 +26,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and one key-binding descriptor per {@link DawAction} must all be
  * present in {@link SettingsCatalogue}, under the pinned §3.3 taxonomy.
  *
- * <p>The single documented exclusion is {@code appearance.themeId} — a
- * dead legacy key whose live replacement is
- * {@link ThemeManager#PREF_KEY} (see the catalogue's Javadoc).</p>
+ * <p>Two documented exclusions: {@code appearance.themeId} — a dead
+ * legacy key whose live replacement is {@link ThemeManager#PREF_KEY}
+ * (see the catalogue's Javadoc) — and the story-309
+ * {@code general.firstRunWizardCompleted} first-run wizard flag, which
+ * is internal application state, not a user-facing setting (Settings
+ * View Design Book rejection #5): it gets NO descriptor and NO row.</p>
  */
 class SettingsCatalogueCompletenessTest {
 
     private static final String EXCLUDED_DEAD_THEME_KEY = "appearance.themeId";
+    /**
+     * Story 309 — the first-run wizard flag ({@code SettingsModel
+     * .KEY_FIRST_RUN_WIZARD}): internal state written by completing or
+     * skipping the wizard, never rendered as a setting (rejection #5).
+     */
+    private static final String EXCLUDED_FIRST_RUN_WIZARD_KEY =
+            "general.firstRunWizardCompleted";
 
     private final SettingsCatalogue catalogue = SettingsCatalogue.create();
 
@@ -84,7 +94,12 @@ class SettingsCatalogueCompletenessTest {
         // Non-empty guard: an accidental rename of the KEY_ convention must
         // not let this test pass vacuously.
         assertThat(reflectedKeys).isNotEmpty();
+        // Prove the excluded keys actually exist before excluding them —
+        // a silent rename must fail here, not vacuously pass below.
+        assertThat(reflectedKeys)
+                .contains(EXCLUDED_DEAD_THEME_KEY, EXCLUDED_FIRST_RUN_WIZARD_KEY);
         reflectedKeys.remove(EXCLUDED_DEAD_THEME_KEY);
+        reflectedKeys.remove(EXCLUDED_FIRST_RUN_WIZARD_KEY);
 
         Set<String> modelBackedIds = catalogue.descriptors().stream()
                 .map(SettingDescriptor::id)
@@ -190,7 +205,9 @@ class SettingsCatalogueCompletenessTest {
                 .containsExactly("startup", "language", "resetProfiles");
         for (SettingsCatalogue.Group group : general.groups()) {
             assertThat(group.settings())
-                    .as("placeholder group general.%s stays empty (story-309 territory)",
+                    .as("general.%s stays descriptor-empty by design — story 309 "
+                            + "mounts ancillary visuals (wizard button, reset & "
+                            + "profile actions) there, never descriptors",
                             group.id())
                     .isEmpty();
         }

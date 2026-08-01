@@ -128,6 +128,23 @@ public final class SettingRow extends Control {
             new SimpleBooleanProperty(this, "armed", false);
 
     /**
+     * Story 309 §5.3/§5.4 — pre-localized per-row scope-override chip text,
+     * set once by the shell BEFORE the skin attaches when this row's
+     * {@link SettingDescriptor#scope() scope} differs from its category's
+     * modal scope. {@code null} (the default) renders no chip. Like
+     * {@link ControlHints#badgeText()}, the text arrives resolved — the
+     * row deliberately never touches the {@code Messages} bundle.
+     */
+    private String scopeChipText;
+
+    /**
+     * Story 309 §3.2 — pre-localized "applies to…" cue text, set once by
+     * the shell BEFORE the skin attaches for {@code PROJECT_DEFAULTS} /
+     * {@code THIS_PROJECT} rows. {@code null} (the default) renders no cue.
+     */
+    private String scopeCueText;
+
+    /**
      * Creates a row for {@code descriptor} seeded with the persisted
      * {@code initialValue}. The editor kind is chosen once, from
      * {@link SettingDescriptor#controlKind()}, when the skin is built.
@@ -168,6 +185,36 @@ public final class SettingRow extends Control {
     /** @return the render hints (never {@code null}) — read by the skin */
     ControlHints hints() {
         return hints;
+    }
+
+    /**
+     * One-shot pre-skin setter for the §5.3 per-row scope-override chip
+     * (story 309). Call before the skin attaches; the skin reads it once.
+     *
+     * @param text the resolved scope display name, or {@code null} for none
+     */
+    void setScopeChipText(String text) {
+        this.scopeChipText = text;
+    }
+
+    /** @return the resolved scope-chip text, or {@code null} — read by the skin */
+    String scopeChipText() {
+        return scopeChipText;
+    }
+
+    /**
+     * One-shot pre-skin setter for the §3.2 "applies to…" cue (story 309).
+     * Call before the skin attaches; the skin reads it once.
+     *
+     * @param text the resolved cue text, or {@code null} for none
+     */
+    void setScopeCueText(String text) {
+        this.scopeCueText = text;
+    }
+
+    /** @return the resolved cue text, or {@code null} — read by the skin */
+    String scopeCueText() {
+        return scopeCueText;
     }
 
     /**

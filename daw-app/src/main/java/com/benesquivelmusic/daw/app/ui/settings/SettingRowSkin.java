@@ -132,9 +132,22 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
         grid.add(label, 0, 0);
         grid.add(buildEditor(row), 1, 0);
 
+        // Story 309 §5.3/§5.4 — the trailing column pairs the per-row
+        // scope-override chip (when the shell set one) with the §6.4
+        // apply-class badge. Both are static labels: nothing to detach.
+        Label scopeChip = buildScopeChip(row);
         Label badge = buildBadge(row);
-        if (badge != null) {
-            grid.add(badge, 2, 0);
+        if (scopeChip != null || badge != null) {
+            HBox trailing = new HBox();
+            trailing.getStyleClass().add("setting-row-trailing");
+            trailing.setAlignment(Pos.CENTER_LEFT);
+            if (scopeChip != null) {
+                trailing.getChildren().add(scopeChip);
+            }
+            if (badge != null) {
+                trailing.getChildren().add(badge);
+            }
+            grid.add(trailing, 2, 0);
         }
 
         buildResetButton(row);
@@ -146,6 +159,16 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
             descriptionLabel.getStyleClass().add("setting-row-description");
             descriptionLabel.setWrapText(true);
             grid.add(descriptionLabel, 1, 1, 3, 1);
+        }
+
+        // Story 309 §3.2 — the muted "applies to…" cue under the
+        // description (pre-localized by the shell, keyed off Scope only).
+        String cue = row.scopeCueText();
+        if (cue != null && !cue.isBlank()) {
+            Label cueLabel = new Label(cue);
+            cueLabel.getStyleClass().add("setting-row-scope-cue");
+            cueLabel.setWrapText(true);
+            grid.add(cueLabel, 1, 2, 3, 1);
         }
 
         getChildren().add(grid);
@@ -486,6 +509,23 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
     }
 
     // ── Badge + reset ─────────────────────────────────────────────────────────
+
+    /**
+     * Story 309 §5.3 — the per-row scope-override chip, rendered only when
+     * the shell resolved chip text (this row's scope differs from its
+     * category's modal scope). Text arrives pre-localized via
+     * {@link SettingRow#scopeChipText()}; a {@code null} text renders
+     * nothing.
+     */
+    private Label buildScopeChip(SettingRow row) {
+        String text = row.scopeChipText();
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        Label chip = new Label(text);
+        chip.getStyleClass().add("setting-row-scope-chip");
+        return chip;
+    }
 
     /**
      * The trailing apply-class badge — omitted entirely for

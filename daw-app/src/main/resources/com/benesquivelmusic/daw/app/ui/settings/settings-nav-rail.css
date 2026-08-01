@@ -68,6 +68,15 @@
     -fx-opacity: 0.4;
 }
 
+/* Story 309 §4.C — search-focus mode (Concept C as a mode of A): while
+   the search field owns focus the WHOLE rail dims with the same 0.4
+   treatment. Rail-level pseudo-class (set by the shell) so it composes
+   with per-cell :dimmed above — both target the same opacity value, so
+   the two dim sources never fight. */
+.settings-nav-rail:search-focus .settings-nav-cell {
+    -fx-opacity: 0.4;
+}
+
 /* ── Accent bar — a drawn Region, ALWAYS in the graph, transparent unless
    its cell is selected (rejection §6). ── */
 .settings-nav-accent-bar {

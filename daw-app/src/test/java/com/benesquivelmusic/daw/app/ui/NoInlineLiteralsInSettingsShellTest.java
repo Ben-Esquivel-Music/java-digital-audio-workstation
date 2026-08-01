@@ -59,7 +59,11 @@ final class NoInlineLiteralsInSettingsShellTest {
             "SettingsShell.java",
             "SettingsNavRail.java",
             "SettingRow.java",
-            "SettingsSearchIndex.java");
+            "SettingsSearchIndex.java",
+            // Story 309 additions — profile I/O + sheet and the wizard.
+            "SettingsProfileIO.java",
+            "SettingsProfileSheet.java",
+            "FirstRunWizard.java");
 
     @Test
     void settingsShellSourcesCarryNoInlineStyleLiterals() throws IOException {

@@ -44,6 +44,16 @@ public final class SettingsModel {
     // ── Plugin keys ──────────────────────────────────────────────────────────
     private static final String KEY_PLUGIN_SCAN_PATHS = "plugins.scanPaths";
 
+    // ── General keys ─────────────────────────────────────────────────────────
+    /**
+     * Story 309 §4.D — the first-run wizard flag. Internal application
+     * state, not a user-facing setting (Settings View Design Book
+     * rejection #5): it has NO catalogue descriptor and renders NO row —
+     * see the documented exclusion in
+     * {@code SettingsCatalogueCompletenessTest}.
+     */
+    private static final String KEY_FIRST_RUN_WIZARD = "general.firstRunWizardCompleted";
+
     // ── Defaults ─────────────────────────────────────────────────────────────
     static final double DEFAULT_SAMPLE_RATE = 96_000.0;
     static final int DEFAULT_BIT_DEPTH = 24;
@@ -76,6 +86,12 @@ public final class SettingsModel {
      */
     static final String DEFAULT_THEME_ID = "dark-accessible";
     static final String DEFAULT_PLUGIN_SCAN_PATHS = "";
+    /**
+     * Default for the story-309 first-run wizard flag: {@code false} on a
+     * fresh preferences node, so the wizard auto-shows exactly once and
+     * never again after completion or skip.
+     */
+    static final boolean DEFAULT_FIRST_RUN_WIZARD_COMPLETED = false;
     /** Empty backend name means "auto-select best available". */
     static final String DEFAULT_AUDIO_BACKEND = "";
     /** Empty device name means "use default device". */
@@ -148,6 +164,7 @@ public final class SettingsModel {
     private int workerPoolSize;
     private double masterCpuBudgetFraction;
     private DegradationPolicy masterCpuBudgetPolicy;
+    private boolean firstRunWizardCompleted;
     private KeyBindingManager keyBindingManager;
 
     /**
@@ -207,6 +224,8 @@ public final class SettingsModel {
         masterCpuBudgetFraction = storedMasterFraction;
         masterCpuBudgetPolicy = parsePolicy(
                 prefs.get(KEY_MASTER_CPU_BUDGET_POLICY, DEFAULT_MASTER_CPU_BUDGET_POLICY));
+        firstRunWizardCompleted = prefs.getBoolean(
+                KEY_FIRST_RUN_WIZARD, DEFAULT_FIRST_RUN_WIZARD_COMPLETED);
     }
 
     /** Parses a persisted policy short-name into a {@link DegradationPolicy}. Forward compatible. */
@@ -602,6 +621,31 @@ public final class SettingsModel {
         prefs.put(KEY_PLUGIN_SCAN_PATHS, paths);
     }
 
+    // ── General ──────────────────────────────────────────────────────────────
+
+    /**
+     * Returns whether the story-309 first-run wizard has already run
+     * (completed <em>or</em> skipped). Internal application state, not a
+     * user-facing setting — no catalogue descriptor renders it.
+     *
+     * @return {@code true} once the wizard has run; {@code false} on a
+     *         fresh install (the wizard auto-shows exactly once)
+     */
+    public boolean isFirstRunWizardCompleted() {
+        return firstRunWizardCompleted;
+    }
+
+    /**
+     * Marks the first-run wizard as run (completed or skipped) and
+     * persists the change so it never auto-shows again.
+     *
+     * @param completed {@code true} once the wizard has run
+     */
+    public void setFirstRunWizardCompleted(boolean completed) {
+        this.firstRunWizardCompleted = completed;
+        prefs.putBoolean(KEY_FIRST_RUN_WIZARD, completed);
+    }
+
     // ── Key Bindings ────────────────────────────────────────────────────────
 
     /**
@@ -622,6 +666,10 @@ public final class SettingsModel {
 
     /**
      * Resets all settings to their default values and persists the changes.
+     *
+     * <p>The story-309 first-run wizard flag is deliberately excluded —
+     * it is internal state, not a setting, and restoring defaults must
+     * never re-trigger the wizard's auto-show.</p>
      */
     public void resetToDefaults() {
         setSampleRate(DEFAULT_SAMPLE_RATE);

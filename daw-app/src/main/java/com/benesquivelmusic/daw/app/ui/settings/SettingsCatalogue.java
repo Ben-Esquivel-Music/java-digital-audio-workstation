@@ -132,7 +132,15 @@ public final class SettingsCatalogue {
     private final List<SettingDescriptor<?>> descriptors;
     private final Map<String, SettingDescriptor<?>> descriptorsById;
 
-    private SettingsCatalogue(List<Category> categories) {
+    /**
+     * Package-private (not {@code private}) as a story-309 test seam:
+     * scope-chip tests build a SYNTHETIC catalogue whose category id
+     * collides with a real category name while carrying deliberately
+     * different descriptor scopes — the by-construction proof that scope
+     * chips derive from descriptors, never a category-name map.
+     * Production always goes through {@link #create()}.
+     */
+    SettingsCatalogue(List<Category> categories) {
         this.categories = List.copyOf(categories);
         List<SettingDescriptor<?>> flattened = new ArrayList<>();
         Map<String, SettingDescriptor<?>> index = new LinkedHashMap<>();
@@ -673,7 +681,9 @@ public final class SettingsCatalogue {
     }
 
     /**
-     * An empty §3.3 taxonomy slot — General (story-309 territory), the
+     * An empty §3.3 taxonomy slot — the General groups (story 309 fills
+     * startup/resetProfiles with group-level ancillary visuals — wizard
+     * button, reset &amp; profile actions — never descriptors), the
      * Plugins "Manager" slot, and the Backups "Disk usage" slot, which
      * story 308 fills with a group-level visual rather than descriptors.
      */

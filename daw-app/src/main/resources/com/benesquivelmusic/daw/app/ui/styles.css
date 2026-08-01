@@ -2613,6 +2613,7 @@
     -srw-warn:        -warn;
     -srw-accent:      -accent;
     -srw-accent-soft: -accent-soft;
+    -srw-line-soft:   -line-soft;
 }
 
 /* AUTHOR-origin re-statements of the label fills/sizes the UA sheets
@@ -2672,6 +2673,20 @@
 }
 .setting-row .setting-row-badge.badge-restart {
     -fx-text-fill: -warn;
+}
+
+/* Story 309 §5.3/§3.2 — per-row scope chip and "applies to…" cue.
+ * Restated at AUTHOR because the global `.dialog-pane .label` rule
+ * (12 px, -text-hi) beats the UA sheet by origin (two-selector idiom). */
+.dialog-pane .setting-row-scope-chip,
+.setting-row-scope-chip {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+}
+.dialog-pane .setting-row-scope-cue,
+.setting-row-scope-cue {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
 }
 
 /* §6.1 highlight spans are Text nodes in the label's graphic TextFlow —
@@ -2887,4 +2902,134 @@
 .settings-footer-status {
     -fx-text-fill: -warn;
     -fx-font-size: 11px;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * Story 309 — scope chips, Reset & profiles, profile sheet, wizard
+ * (Settings View Design Book §2.3/§5.3 scope labels, §5.7 tier 4,
+ * §5.9/§6.3 import/export, §4.D first-run wizard). Tokens only, 4 px
+ * grid; two-selector idiom wherever `.dialog-pane .label` competes.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* §5.3 pane-header "Scope: …" chip — muted text in a soft outline on
+ * surface-2, never a coloured fill (the one-accent rule §7.2). */
+.dialog-pane .settings-scope-chip,
+.settings-scope-chip {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+    -fx-background-color: -surface-2;
+    -fx-background-radius: 8;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+    -fx-padding: 2 8 2 8;
+}
+
+/* General ▸ Startup / Reset & profiles ancillary rows. */
+.settings-general-startup,
+.settings-reset-profiles {
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+}
+
+/* §5.9 profile sheet — in-surface overlay, never a nested modal
+ * (rejection #1; PerformanceStageView scrim precedent: the dimming
+ * lives on a dedicated backdrop so the panel stays opaque). */
+.settings-profile-sheet-backdrop {
+    -fx-background-color: -surface-overlay;
+    -fx-opacity: 0.82;
+}
+.settings-profile-sheet {
+    -fx-background-color: -surface-1;
+    -fx-background-radius: 8;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+    -fx-padding: 16;
+    -fx-spacing: 12;
+    -fx-min-width: 360;
+}
+.dialog-pane .settings-profile-sheet-title,
+.settings-profile-sheet-title {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 13px;
+    -fx-font-weight: 600;
+}
+.settings-profile-scopes {
+    -fx-spacing: 4;
+}
+.settings-profile-actions {
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+}
+.dialog-pane .settings-profile-progress,
+.settings-profile-progress {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+.dialog-pane .settings-profile-status,
+.settings-profile-status {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+/* §6.3 reject report — severity tokens: -warn for a validator reject
+ * (understood but out of range), -danger for an unknown / unparseable
+ * entry (the profile itself is damaged). */
+.settings-profile-rejects {
+    -fx-spacing: 4;
+}
+.dialog-pane .settings-profile-rejects-header,
+.settings-profile-rejects-header {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
+}
+.dialog-pane .settings-profile-reject-warn,
+.settings-profile-reject-warn {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
+}
+.dialog-pane .settings-profile-reject-danger,
+.settings-profile-reject-danger {
+    -fx-text-fill: -danger;
+    -fx-font-size: 11px;
+}
+
+/* §4.D first-run wizard — plain label step titles (rejection #6), no
+ * accent fills, no animation (instant / Reduce-Motion-safe). */
+.first-run-wizard {
+    -fx-background-color: -surface-1;
+    -fx-padding: 16;
+}
+.first-run-wizard-header {
+    -fx-spacing: 4;
+    -fx-padding: 0 0 8 0;
+}
+.dialog-pane .first-run-wizard-title,
+.first-run-wizard-title {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 13px;
+    -fx-font-weight: 600;
+}
+.dialog-pane .first-run-wizard-caption,
+.first-run-wizard-caption {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+.first-run-wizard-rows {
+    -fx-spacing: 12;
+}
+.dialog-pane .first-run-wizard-done,
+.first-run-wizard-done {
+    -fx-text-fill: -text;
+    -fx-font-size: 12px;
+}
+.dialog-pane .first-run-wizard-progress,
+.first-run-wizard-progress {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+}
+.first-run-wizard-buttons {
+    -fx-spacing: 8;
+    -fx-alignment: center-right;
+    -fx-padding: 8 0 0 0;
 }
