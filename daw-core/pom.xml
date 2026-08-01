@@ -210,11 +210,11 @@
                          native libraries (must be in argLine, not systemPropertyVariables,
                          because java.library.path is read at JVM bootstrap).
 
-                         daw.core is now a named JPMS module, so native access
-                         is granted to it by module name; ALL-UNNAMED is kept
-                         for any test-only code that still runs on the unnamed
-                         classpath. -->
-                    <argLine>--enable-native-access=daw.core,ALL-UNNAMED -Djava.library.path=${native.libs.dir}</argLine>
+                         daw.core and daw.sdk are named JPMS modules, so native
+                         access is granted to both by module name: daw.core owns
+                         the engine bindings and daw.sdk owns the ASIO bindings.
+                         ALL-UNNAMED is kept for test-only classpath code. -->
+                    <argLine>--enable-native-access=daw.core,daw.sdk,ALL-UNNAMED -Djava.library.path=${native.libs.dir}</argLine>
                 </configuration>
             </plugin>
 

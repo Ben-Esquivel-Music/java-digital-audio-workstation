@@ -169,14 +169,14 @@
 					<configuration>
 						<!-- Native (FFM / JEP 454) access. Every project module
 						     is now a named JPMS module, so ALL-UNNAMED no longer
-						     covers them: grant it to daw.core, which owns the
-						     PortAudio/FluidSynth/CLAP/codec bindings. ALL-UNNAMED
+						     covers them: grant daw.core for its engine bindings and
+						     daw.sdk for its ASIO bindings. ALL-UNNAMED
 						     is kept too for test-only helpers that may still run
 						     on the unnamed classpath (e.g. patched test code
 						     before module resolution). Per-module surefire
 						     <configuration> blocks (daw-core, daw-app) replace
 						     this argLine, so they repeat the flag. -->
-						<argLine>--enable-native-access=daw.core,ALL-UNNAMED</argLine>
+						<argLine>--enable-native-access=daw.core,daw.sdk,ALL-UNNAMED</argLine>
 					</configuration>
                 </plugin>
                 <plugin>

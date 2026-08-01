@@ -33,6 +33,26 @@
 // ──────────────────────────────────────────────────────────────────
 // Pointer ABIs
 // ──────────────────────────────────────────────────────────────────
+// All capability and control-panel exports require a successfully loaded
+// driver. Callers must use asioshim_loadDriver first; unloaded calls fail
+// without entering the Steinberg SDK. None of these lifecycle/capability
+// exports may be invoked on the audio render thread.
+//
+// `asioshim_listDrivers` writes a fixed 168-byte struct per entry:
+//   offset   0..128  char name[128]   ASCII, NUL-terminated
+//   offset 128..168  char clsid[40]   canonical GUID string, NUL-terminated
+// `*outCount` is capacity-in / actual-written-out. Actual is always capped
+// at the input capacity. Capacity zero is a successful no-op; negative
+// capacity or a null output buffer with positive capacity fails. Driver names
+// are the canonical load keys and device ids; CLSIDs are diagnostic metadata.
+//
+// `asioshim_getDriverInfo` writes a fixed 264-byte normalized record:
+//   offset   0..4    int32 asioVersion
+//   offset   4..8    int32 driverVersion
+//   offset   8..136  char name[128]          ASCII, NUL-terminated
+//   offset 136..264  char errorMessage[128]  ASCII, NUL-terminated
+// This is deliberately not the native ASIODriverInfo memory layout.
+//
 // `asioshim_getClockSources` writes a fixed 48-byte struct per entry:
 //   offset 0..32   char name[32]    ASCII, NUL-terminated
 //   offset 32..36  int32 index
@@ -56,6 +76,8 @@
 #ifndef ASIOSHIM_H_
 #define ASIOSHIM_H_
 
+#include <stdint.h>
+
 #if defined(_WIN32)
 #  if defined(ASIOSHIM_EXPORTS)
 #    define ASIOSHIM_DECL __declspec(dllexport)
@@ -71,6 +93,13 @@
 #else
 #  define ASIOSHIM_API ASIOSHIM_DECL
 #endif
+
+// ── Driver discovery and lifecycle (story 310) ────────────────────
+ASIOSHIM_API int  asioshim_listDrivers(void* outArray, int* outCount);
+ASIOSHIM_API int  asioshim_loadDriver(const char* driverName);
+ASIOSHIM_API int  asioshim_getDriverName(void* outName, int nameCapacity);
+ASIOSHIM_API int  asioshim_getDriverInfo(void* outInfo);
+ASIOSHIM_API void asioshim_unloadDriver(void);
 
 // ── Capability queries (story 130 / 213) ──────────────────────────
 ASIOSHIM_API int  asioshim_getBufferSize(int* min, int* max,
@@ -94,10 +123,14 @@ ASIOSHIM_API int  asioshim_getChannelInfo(int channelIndex, int isInput,
 // ── Format-change host-callback bridge (story 218) ────────────────
 // Signature for the upcall pointer the JVM hands to
 // `installAsioMessageCallback`. Matches Steinberg's `asioMessage`:
+// Keep the native spelling as `long` so this function-pointer type is exactly
+// compatible with Steinberg's ASIOCallbacks::asioMessage declaration. Windows
+// uses LLP64, so `long` remains 32 bits on x64 and maps to JAVA_INT at the Java
+// FFM boundary (enforced by a static_assert in asioshim.cpp).
 //   long asioMessage(long selector, long value,
 //                    void* message, double* opt);
 typedef long (*asio_message_fn)(long selector, long value,
-                                 void* message, double* opt);
+                                void* message, double* opt);
 
 ASIOSHIM_API void installAsioMessageCallback(void* callback);
 ASIOSHIM_API void uninstallAsioMessageCallback(void);
@@ -106,7 +139,7 @@ ASIOSHIM_API void uninstallAsioMessageCallback(void);
 // by the SDK glue when asioshim is built with
 // `-DASIOSHIM_TRAMPOLINE`; loads the callback installed by the JVM and
 // forwards the selector / value / message / opt arguments verbatim.
-ASIOSHIM_API long asioshim_messageTrampoline(long selector, long value,
-                                              void* message, double* opt);
+ASIOSHIM_API long asioshim_messageTrampoline(
+        long selector, long value, void* message, double* opt);
 
 #endif  // ASIOSHIM_H_

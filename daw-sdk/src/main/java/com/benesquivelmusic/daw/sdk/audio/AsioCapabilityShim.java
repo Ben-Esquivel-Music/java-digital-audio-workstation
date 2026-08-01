@@ -10,7 +10,7 @@ import java.lang.invoke.MethodHandle;
 import java.util.Optional;
 
 /**
- * FFM (JEP 454) shim that bridges the four Steinberg ASIO SDK symbols
+ * FFM (JEP 454) shim that bridges Steinberg ASIO SDK capability symbols
  * needed to populate the Audio Settings dialog with driver-allowed
  * buffer sizes and sample rates (story 130 / story 213). The native
  * counterpart lives under {@code daw-core/native/asio/} and is built
@@ -43,9 +43,10 @@ import java.util.Optional;
  * library lookup itself is platform-conditional; the rest of the class
  * is portable Java.</p>
  *
- * <p>FFM downcalls run on the calling thread (typically the JavaFX
- * thread when the Audio Settings dialog opens), never on the audio
- * render thread. Mid-stream rate changes route through
+ * <p>FFM downcalls are serialized on {@link AsioControlThread}, never on the
+ * JavaFX or audio render thread. Every operation also verifies that
+ * {@link AsioDriverShim} owns an initialized driver before entering native
+ * code. Mid-stream rate changes route through
  * {@link AsioFormatChangeShim}'s reset path, not these capability
  * queries.</p>
  */
@@ -97,12 +98,12 @@ class AsioCapabilityShim implements AutoCloseable {
     private boolean closed;
 
     /**
-     * Loads the {@code asioshim} library and resolves the four entry
+     * Loads the {@code asioshim} library and resolves the core entry
      * points. Any failure is captured silently — the resulting shim is
      * simply {@link #isAvailable() unavailable}.
      */
     AsioCapabilityShim() {
-        this.arena = Arena.ofConfined();
+        this.arena = Arena.ofShared();
         boolean ok = false;
         MethodHandle gbs = null;
         MethodHandle csr = null;
@@ -220,7 +221,7 @@ class AsioCapabilityShim implements AutoCloseable {
         this.getChannelInfo = gci;
     }
 
-    /** Returns {@code true} when all four entry points were resolved. */
+    /** Returns {@code true} when all core capability entry points resolved. */
     boolean isAvailable() {
         return available && !closed;
     }
@@ -233,29 +234,32 @@ class AsioCapabilityShim implements AutoCloseable {
      * any FFM error) returns {@link Optional#empty()}.
      */
     Optional<BufferSizeRange> getBufferSize() {
-        if (!isAvailable()) {
+        if (!isAvailable() || !AsioDriverShim.isDriverLoaded()) {
             return Optional.empty();
         }
-        try (Arena call = Arena.ofConfined()) {
-            MemorySegment min = call.allocate(ValueLayout.JAVA_INT);
-            MemorySegment max = call.allocate(ValueLayout.JAVA_INT);
-            MemorySegment preferred = call.allocate(ValueLayout.JAVA_INT);
-            MemorySegment granularity = call.allocate(ValueLayout.JAVA_INT);
-            int rc = (int) getBufferSize.invokeExact(min, max, preferred, granularity);
-            if (rc != ASE_OK) {
-                return Optional.empty();
-            }
-            int gran = granularity.get(ValueLayout.JAVA_INT, 0);
-            // ASIO uses any negative granularity as a sentinel meaning the
-            // driver accepts power-of-two buffer sizes between min and max.
-            // Normalize to BufferSizeRange.POWER_OF_TWO_GRANULARITY (-1)
-            // so expandedSizes() / accepts() expand the correct ladder.
-            int safeGran = gran < 0 ? BufferSizeRange.POWER_OF_TWO_GRANULARITY : gran;
-            return Optional.of(new BufferSizeRange(
-                    min.get(ValueLayout.JAVA_INT, 0),
-                    max.get(ValueLayout.JAVA_INT, 0),
-                    preferred.get(ValueLayout.JAVA_INT, 0),
-                    safeGran));
+        try {
+            return AsioControlThread.call(() -> {
+                try (Arena call = Arena.ofConfined()) {
+                    MemorySegment min = call.allocate(ValueLayout.JAVA_INT);
+                    MemorySegment max = call.allocate(ValueLayout.JAVA_INT);
+                    MemorySegment preferred = call.allocate(ValueLayout.JAVA_INT);
+                    MemorySegment granularity = call.allocate(ValueLayout.JAVA_INT);
+                    int rc = (int) getBufferSize.invokeExact(
+                            min, max, preferred, granularity);
+                    if (rc != ASE_OK) {
+                        return Optional.empty();
+                    }
+                    int gran = granularity.get(ValueLayout.JAVA_INT, 0);
+                    // Any negative value is the SDK's power-of-two sentinel.
+                    int safeGran = gran < 0
+                            ? BufferSizeRange.POWER_OF_TWO_GRANULARITY : gran;
+                    return Optional.of(new BufferSizeRange(
+                            min.get(ValueLayout.JAVA_INT, 0),
+                            max.get(ValueLayout.JAVA_INT, 0),
+                            preferred.get(ValueLayout.JAVA_INT, 0),
+                            safeGran));
+                }
+            });
         } catch (RuntimeException ignored) {
             return Optional.empty();
         } catch (Throwable ignored) {
@@ -269,11 +273,12 @@ class AsioCapabilityShim implements AutoCloseable {
      * the shim is unavailable or any error occurred.
      */
     boolean canSampleRate(double rate) {
-        if (!isAvailable()) {
+        if (!isAvailable() || !AsioDriverShim.isDriverLoaded()) {
             return false;
         }
         try {
-            int rc = (int) canSampleRate.invokeExact(rate);
+            int rc = AsioControlThread.call(
+                    () -> (int) canSampleRate.invokeExact(rate));
             return rc == ASE_OK;
         } catch (Throwable ignored) {
             return false;
@@ -286,16 +291,20 @@ class AsioCapabilityShim implements AutoCloseable {
      * controller after a driver-initiated reset (story 218).
      */
     Optional<Double> getSampleRate() {
-        if (!isAvailable()) {
+        if (!isAvailable() || !AsioDriverShim.isDriverLoaded()) {
             return Optional.empty();
         }
-        try (Arena call = Arena.ofConfined()) {
-            MemorySegment out = call.allocate(ValueLayout.JAVA_DOUBLE);
-            int rc = (int) getSampleRate.invokeExact(out);
-            if (rc != ASE_OK) {
-                return Optional.empty();
-            }
-            return Optional.of(out.get(ValueLayout.JAVA_DOUBLE, 0));
+        try {
+            return AsioControlThread.call(() -> {
+                try (Arena call = Arena.ofConfined()) {
+                    MemorySegment out = call.allocate(ValueLayout.JAVA_DOUBLE);
+                    int rc = (int) getSampleRate.invokeExact(out);
+                    if (rc != ASE_OK) {
+                        return Optional.empty();
+                    }
+                    return Optional.of(out.get(ValueLayout.JAVA_DOUBLE, 0));
+                }
+            });
         } catch (Throwable ignored) {
             return Optional.empty();
         }
@@ -306,11 +315,12 @@ class AsioCapabilityShim implements AutoCloseable {
      * {@code true} on {@code ASE_OK}, {@code false} otherwise.
      */
     boolean setSampleRate(double rate) {
-        if (!isAvailable()) {
+        if (!isAvailable() || !AsioDriverShim.isDriverLoaded()) {
             return false;
         }
         try {
-            int rc = (int) setSampleRate.invokeExact(rate);
+            int rc = AsioControlThread.call(
+                    () -> (int) setSampleRate.invokeExact(rate));
             return rc == ASE_OK;
         } catch (Throwable ignored) {
             return false;
@@ -325,7 +335,8 @@ class AsioCapabilityShim implements AutoCloseable {
      * {@code isControlPanelAvailable()} returns {@code false}.
      */
     boolean isControlPanelAvailable() {
-        return isAvailable() && openControlPanel != null;
+        return isAvailable() && AsioDriverShim.isDriverLoaded()
+                && openControlPanel != null;
     }
 
     /**
@@ -338,10 +349,9 @@ class AsioCapabilityShim implements AutoCloseable {
      *   <li>negative — any other {@code ASIOError} (driver-side failure).</li>
      * </ul>
      *
-     * <p>The native call blocks the calling thread until the user
-     * closes the modal panel; callers must therefore invoke this on a
-     * dedicated platform thread, never on the JavaFX thread or the
-     * audio render thread.</p>
+     * <p>The native call blocks the dedicated {@code asio-control} platform
+     * thread until the user closes the modal panel. Callers should still invoke
+     * the supervising action off JavaFX because it waits for that result.</p>
      *
      * <p>If the shim or the {@code openControlPanel} symbol is
      * unavailable, returns a generic failure (negative). FFM-level
@@ -355,7 +365,8 @@ class AsioCapabilityShim implements AutoCloseable {
             return -1;
         }
         try {
-            return (int) openControlPanel.invokeExact();
+            return AsioControlThread.call(
+                    () -> (int) openControlPanel.invokeExact());
         } catch (Throwable ignored) {
             return -1;
         }
@@ -370,7 +381,8 @@ class AsioCapabilityShim implements AutoCloseable {
      * returns {@code false}.
      */
     boolean isClockSourceAvailable() {
-        return isAvailable() && getClockSources != null && setClockSource != null;
+        return isAvailable() && AsioDriverShim.isDriverLoaded()
+                && getClockSources != null && setClockSource != null;
     }
 
     /**
@@ -406,33 +418,33 @@ class AsioCapabilityShim implements AutoCloseable {
         if (!isClockSourceAvailable()) {
             return java.util.List.of();
         }
-        try (Arena call = Arena.ofConfined()) {
-            MemorySegment array = call.allocate((long) CLOCK_SOURCE_STRIDE
-                    * CLOCK_SOURCE_CAPACITY);
-            MemorySegment count = call.allocate(ValueLayout.JAVA_INT);
-            count.set(ValueLayout.JAVA_INT, 0, CLOCK_SOURCE_CAPACITY);
-            int rc = (int) getClockSources.invokeExact(array, count);
-            if (rc != ASE_OK) {
-                return java.util.List.of();
-            }
-            int n = count.get(ValueLayout.JAVA_INT, 0);
-            if (n <= 0) {
-                return java.util.List.of();
-            }
-            if (n > CLOCK_SOURCE_CAPACITY) {
-                n = CLOCK_SOURCE_CAPACITY;
-            }
-            java.util.List<RawClockSource> rows = new java.util.ArrayList<>(n);
-            for (int i = 0; i < n; i++) {
-                long base = (long) i * CLOCK_SOURCE_STRIDE;
-                String name = decodeAsciiName(array, base, 32);
-                int idx       = array.get(ValueLayout.JAVA_INT, base + 32);
-                int chan      = array.get(ValueLayout.JAVA_INT, base + 36);
-                int group     = array.get(ValueLayout.JAVA_INT, base + 40);
-                int isCurrent = array.get(ValueLayout.JAVA_INT, base + 44);
-                rows.add(new RawClockSource(idx, name, chan, group, isCurrent != 0));
-            }
-            return java.util.List.copyOf(rows);
+        try {
+            return AsioControlThread.call(() -> {
+                try (Arena call = Arena.ofConfined()) {
+                    MemorySegment array = call.allocate((long) CLOCK_SOURCE_STRIDE
+                            * CLOCK_SOURCE_CAPACITY);
+                    MemorySegment count = call.allocate(ValueLayout.JAVA_INT);
+                    count.set(ValueLayout.JAVA_INT, 0, CLOCK_SOURCE_CAPACITY);
+                    int rc = (int) getClockSources.invokeExact(array, count);
+                    if (rc != ASE_OK) {
+                        return java.util.List.of();
+                    }
+                    int n = Math.clamp(count.get(ValueLayout.JAVA_INT, 0),
+                            0, CLOCK_SOURCE_CAPACITY);
+                    java.util.List<RawClockSource> rows = new java.util.ArrayList<>(n);
+                    for (int i = 0; i < n; i++) {
+                        long base = (long) i * CLOCK_SOURCE_STRIDE;
+                        String name = decodeAsciiName(array, base, 32);
+                        int idx = array.get(ValueLayout.JAVA_INT, base + 32);
+                        int chan = array.get(ValueLayout.JAVA_INT, base + 36);
+                        int group = array.get(ValueLayout.JAVA_INT, base + 40);
+                        int isCurrent = array.get(ValueLayout.JAVA_INT, base + 44);
+                        rows.add(new RawClockSource(
+                                idx, name, chan, group, isCurrent != 0));
+                    }
+                    return java.util.List.copyOf(rows);
+                }
+            });
         } catch (RuntimeException ignored) {
             return java.util.List.of();
         } catch (Throwable ignored) {
@@ -457,7 +469,8 @@ class AsioCapabilityShim implements AutoCloseable {
             return -1000;
         }
         try {
-            return (int) setClockSource.invokeExact(reference);
+            return AsioControlThread.call(
+                    () -> (int) setClockSource.invokeExact(reference));
         } catch (Throwable ignored) {
             return -1000;
         }
@@ -480,7 +493,8 @@ class AsioCapabilityShim implements AutoCloseable {
      * resolved at construction (story 215).
      */
     boolean isChannelInfoAvailable() {
-        return isAvailable() && getChannelCount != null && getChannelInfo != null;
+        return isAvailable() && AsioDriverShim.isDriverLoaded()
+                && getChannelCount != null && getChannelInfo != null;
     }
 
     /**
@@ -493,16 +507,20 @@ class AsioCapabilityShim implements AutoCloseable {
         if (!isChannelInfoAvailable()) {
             return Optional.empty();
         }
-        try (Arena call = Arena.ofConfined()) {
-            MemorySegment ins = call.allocate(ValueLayout.JAVA_INT);
-            MemorySegment outs = call.allocate(ValueLayout.JAVA_INT);
-            int rc = (int) getChannelCount.invokeExact(ins, outs);
-            if (rc != ASE_OK) {
-                return Optional.empty();
-            }
-            return Optional.of(new int[] {
-                    ins.get(ValueLayout.JAVA_INT, 0),
-                    outs.get(ValueLayout.JAVA_INT, 0)
+        try {
+            return AsioControlThread.call(() -> {
+                try (Arena call = Arena.ofConfined()) {
+                    MemorySegment ins = call.allocate(ValueLayout.JAVA_INT);
+                    MemorySegment outs = call.allocate(ValueLayout.JAVA_INT);
+                    int rc = (int) getChannelCount.invokeExact(ins, outs);
+                    if (rc != ASE_OK) {
+                        return Optional.empty();
+                    }
+                    return Optional.of(new int[] {
+                            ins.get(ValueLayout.JAVA_INT, 0),
+                            outs.get(ValueLayout.JAVA_INT, 0)
+                    });
+                }
             });
         } catch (RuntimeException ignored) {
             return Optional.empty();
@@ -524,21 +542,25 @@ class AsioCapabilityShim implements AutoCloseable {
         if (channelIndex < 0) {
             return Optional.empty();
         }
-        try (Arena call = Arena.ofConfined()) {
-            MemorySegment row = call.allocate(CHANNEL_INFO_STRIDE);
-            int rc = (int) getChannelInfo.invokeExact(channelIndex,
-                    isInput ? 1 : 0, row);
-            if (rc != ASE_OK) {
-                return Optional.empty();
-            }
-            int idx    = row.get(ValueLayout.JAVA_INT, 0);
-            int isIn   = row.get(ValueLayout.JAVA_INT, 4);
-            int active = row.get(ValueLayout.JAVA_INT, 8);
-            int group  = row.get(ValueLayout.JAVA_INT, 12);
-            int type   = row.get(ValueLayout.JAVA_INT, 16);
-            String name = decodeAsciiName(row, 24, 32);
-            return Optional.of(new RawChannelInfo(idx, isIn != 0, active != 0,
-                    group, type, name));
+        try {
+            return AsioControlThread.call(() -> {
+                try (Arena call = Arena.ofConfined()) {
+                    MemorySegment row = call.allocate(CHANNEL_INFO_STRIDE);
+                    int rc = (int) getChannelInfo.invokeExact(
+                            channelIndex, isInput ? 1 : 0, row);
+                    if (rc != ASE_OK) {
+                        return Optional.empty();
+                    }
+                    int idx = row.get(ValueLayout.JAVA_INT, 0);
+                    int isIn = row.get(ValueLayout.JAVA_INT, 4);
+                    int active = row.get(ValueLayout.JAVA_INT, 8);
+                    int group = row.get(ValueLayout.JAVA_INT, 12);
+                    int type = row.get(ValueLayout.JAVA_INT, 16);
+                    String name = decodeAsciiName(row, 24, 32);
+                    return Optional.of(new RawChannelInfo(
+                            idx, isIn != 0, active != 0, group, type, name));
+                }
+            });
         } catch (RuntimeException ignored) {
             return Optional.empty();
         } catch (Throwable ignored) {
@@ -574,7 +596,10 @@ class AsioCapabilityShim implements AutoCloseable {
         }
         closed = true;
         try {
-            arena.close();
+            AsioControlThread.call(() -> {
+                arena.close();
+                return null;
+            });
         } catch (Throwable ignored) {
             // Already closed elsewhere — idempotent.
         }

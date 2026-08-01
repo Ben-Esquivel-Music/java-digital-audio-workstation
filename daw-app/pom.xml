@@ -159,15 +159,15 @@
                          This <configuration> replaces (does not merge with)
                          the parent pluginManagement argLine, so the parent's
                          enable-native-access flag is repeated here to preserve
-                         native access for the daw.core FFM bindings (granted by
-                         module name now that daw.core is a named module) and
-                         the headless backend's native code paths. daw.app is
+                         native access for the named daw.core engine bindings,
+                         the daw.sdk ASIO bindings, and the headless backend's
+                         native code paths. daw.app is
                          granted too (story 279): MotionManager's
                          PlatformMotionHint performs an FFM downcall to
                          user32!SystemParametersInfoW for OS reduce-motion
                          detection. ALL-UNNAMED is retained for test-only code
                          on the unnamed classpath. -->
-                    <argLine>--enable-native-access=daw.core,daw.app,ALL-UNNAMED
+                    <argLine>--enable-native-access=daw.core,daw.sdk,daw.app,ALL-UNNAMED
                         -Dglass.platform=Headless
                         -Dmonocle.platform=Headless
                         -Dprism.order=sw
@@ -337,8 +337,9 @@
                                 <argument>${project.build.directory}/daw-runtime</argument>
                                 <argument>--module</argument>
                                 <argument>daw.app/com.benesquivelmusic.daw.app.DawLauncher</argument>
-                                <!-- Grant restricted native access to the two
+                                <!-- Grant restricted native access to the three
                                      named modules that perform FFM downcalls:
+                                     daw.sdk (ASIO),
                                      daw.core (PortAudio/FluidSynth/CLAP/codec
                                      bindings) and daw.app (story 279 —
                                      MotionManager's user32!SystemParametersInfoW
@@ -347,7 +348,7 @@
                                      module on first downcall; in a future JDK
                                      the warning becomes a hard error. -->
                                 <argument>--java-options</argument>
-                                <argument>--enable-native-access=daw.core,daw.app</argument>
+                                <argument>--enable-native-access=daw.core,daw.sdk,daw.app</argument>
                                 <argument>--dest</argument>
                                 <argument>${project.build.directory}/dist/app-image</argument>
                                 <!-- Ship the CMake-built native libraries

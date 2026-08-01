@@ -111,7 +111,7 @@ The resulting DLL is written to:
 Even on Windows, you can force the asioshim build off:
 
 ```bash
-cmake -S lib -B target/build -DBUILD_ASIOSHIM=OFF
+cmake -S lib -B target/build -DBUILD_ASIO_SHIM=OFF
 ```
 
 This is useful when you have an SDK extract on disk but want to

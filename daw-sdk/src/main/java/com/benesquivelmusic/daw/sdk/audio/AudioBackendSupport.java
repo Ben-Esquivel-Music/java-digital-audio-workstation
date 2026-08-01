@@ -19,19 +19,30 @@ import java.util.concurrent.SubmissionPublisher;
  */
 final class AudioBackendSupport implements AutoCloseable {
 
-    private final SubmissionPublisher<AudioBlock> publisher = new SubmissionPublisher<>();
-    private final SubmissionPublisher<AudioDeviceEvent> devicePublisher = new SubmissionPublisher<>();
+    private volatile SubmissionPublisher<AudioBlock> publisher = new SubmissionPublisher<>();
+    private volatile SubmissionPublisher<AudioDeviceEvent> devicePublisher =
+            new SubmissionPublisher<>();
     private volatile boolean open;
     private volatile AudioFormat format;
     private volatile int bufferFrames;
 
-    void markOpen(AudioFormat format, int bufferFrames) {
+    synchronized void markOpen(AudioFormat format, int bufferFrames) {
         Objects.requireNonNull(format, "format must not be null");
         if (bufferFrames <= 0) {
             throw new IllegalArgumentException("bufferFrames must be positive: " + bufferFrames);
         }
         if (open) {
             throw new IllegalStateException("backend already has an open stream");
+        }
+        // close() completes a stream's publishers, as required by
+        // AudioBackend. A later close-then-open starts a fresh stream and must
+        // therefore expose fresh publishers rather than silently discard ASIO
+        // callbacks on the already-completed instances.
+        if (publisher.isClosed()) {
+            publisher = new SubmissionPublisher<>();
+        }
+        if (devicePublisher.isClosed()) {
+            devicePublisher = new SubmissionPublisher<>();
         }
         this.format = format;
         this.bufferFrames = bufferFrames;
@@ -48,6 +59,13 @@ final class AudioBackendSupport implements AutoCloseable {
 
     int bufferFrames() {
         return bufferFrames;
+    }
+
+    /** Clears stream state after a native open rolled back. */
+    void markClosed() {
+        open = false;
+        format = null;
+        bufferFrames = 0;
     }
 
     Flow.Publisher<AudioBlock> inputBlocks() {
@@ -91,8 +109,8 @@ final class AudioBackendSupport implements AutoCloseable {
     }
 
     @Override
-    public void close() {
-        open = false;
+    public synchronized void close() {
+        markClosed();
         publisher.close();
         devicePublisher.close();
     }

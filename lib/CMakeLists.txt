@@ -32,7 +32,17 @@ option(BUILD_LIBVORBIS      "Build libvorbis shared library"      ON)
 # Steinberg licence forbids us from redistributing the SDK source, so
 # the default build path skips this target and the Java layer falls
 # back to BufferSizeRange.DEFAULT_RANGE / the canonical sample-rate set.
-option(BUILD_ASIOSHIM       "Build asioshim FFM bridge (requires ASIO_SDK_DIR)" ON)
+if(DEFINED BUILD_ASIOSHIM)
+    set(_build_asio_shim_default "${BUILD_ASIOSHIM}")
+else()
+    set(_build_asio_shim_default ON)
+endif()
+option(BUILD_ASIO_SHIM     "Build asioshim FFM bridge (requires ASIO_SDK_DIR)"
+                           ${_build_asio_shim_default})
+# Compatibility alias for build scripts written before story 310 normalized
+# the option spelling. BUILD_ASIO_SHIM is the canonical public switch.
+set(BUILD_ASIOSHIM "${BUILD_ASIO_SHIM}" CACHE BOOL
+    "Deprecated alias for BUILD_ASIO_SHIM" FORCE)
 
 # ── 1. PortAudio ───────────────────────────────────────────────────
 if(BUILD_PORTAUDIO)
@@ -254,7 +264,7 @@ endif()
 # subdirectory's own CMakeLists silently returns when ASIO_SDK_DIR is
 # unset or when the host is not Windows, so this add_subdirectory call
 # is safe on every platform / fresh checkout.
-if(BUILD_ASIOSHIM)
+if(BUILD_ASIO_SHIM)
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../daw-core/native/asio"
                      "${CMAKE_CURRENT_BINARY_DIR}/asioshim"
                      EXCLUDE_FROM_ALL)

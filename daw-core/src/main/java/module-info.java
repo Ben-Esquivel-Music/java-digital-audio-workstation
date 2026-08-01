@@ -28,8 +28,9 @@
  * The PortAudio / FluidSynth / CLAP / codec bindings use the Foreign Function
  * &amp; Memory API. Restricted native access for this <em>named</em> module is
  * granted with {@code --enable-native-access=daw.core} (Surefire argLine and
- * the packaged launcher); the legacy {@code ALL-UNNAMED} grant no longer
- * applies once the module is named.
+ * the packaged launcher). Those launch paths separately grant
+ * {@code daw.sdk} for its ASIO bindings; the legacy {@code ALL-UNNAMED} grant
+ * does not cover either named module.
  */
 module daw.core {
     requires transitive daw.sdk;
