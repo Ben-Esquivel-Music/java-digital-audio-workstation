@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.channels.SeekableByteChannel;
@@ -32,6 +33,7 @@ import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -282,7 +284,9 @@ class ProfileIoOffFxThreadTest {
      * via {@code path.getFileSystem().provider()} and only calls
      * {@code newByteChannel} (which receives the UNWRAPPED delegate so
      * the platform provider works normally); every other provider /
-     * file-system operation fails fast so any unexpected access is loud.
+     * file-system operation — including {@code toFile()}, which would
+     * bypass the provider entirely — fails fast so any unexpected
+     * access is loud.
      */
     private static Path readThreadRecordingPath(Path delegate,
                                                 AtomicReference<Thread> readThread) {
@@ -526,6 +530,19 @@ class ProfileIoOffFxThreadTest {
             @Override
             public Path toRealPath(LinkOption... options) throws IOException {
                 return delegate.toRealPath(options);
+            }
+
+            @Override
+            public File toFile() {
+                // Deliberately not delegated: a File hands callers a way to read
+                // the profile without the recording provider observing the open.
+                throw new UnsupportedOperationException(
+                        "toFile() would bypass the thread-recording provider");
+            }
+
+            @Override
+            public Iterator<Path> iterator() {
+                return delegate.iterator();
             }
 
             @Override
