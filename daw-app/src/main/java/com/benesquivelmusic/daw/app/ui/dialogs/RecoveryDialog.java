@@ -42,8 +42,8 @@ import java.util.Objects;
  * {@link javafx.scene.control.DialogPane#setExpandableContent(Node)} and
  * collapsed by default.</p>
  *
- * <p>Built with the §5.9 {@link DawgDialog} chrome (Pattern A, like
- * {@code BackupSettingsDialog}): {@code setTitle} / {@code setHeaderText} /
+ * <p>Built with the §5.9 {@link DawgDialog} chrome (Pattern A):
+ * {@code setTitle} / {@code setHeaderText} /
  * {@code getDialogPane().setContent(...)} / {@code addAll(buttonTypes)} /
  * {@code setResultConverter(...)} / {@code sized(MEDIUM)}. The result converter
  * maps each {@link ButtonType} to its {@link RecoveryChoice}, so a caller's

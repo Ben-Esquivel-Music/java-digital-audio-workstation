@@ -17,16 +17,15 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Story 191 — wires the {@link BackupSettingsDialog} into the application,
- * runs the persisted {@link BackupRetentionPolicy} against the global
- * autosaves directory ({@code ~/.daw/autosaves/}) on startup, and schedules
- * a periodic prune so backups created during long sessions are rotated
- * without manual intervention.
+ * Story 191 — runs the persisted {@link BackupRetentionPolicy} against the
+ * global autosaves directory ({@code ~/.daw/autosaves/}) on startup and
+ * schedules a periodic prune so backups created during long sessions are
+ * rotated without manual intervention.
  *
  * <p>Lifecycle:</p>
  * <ol>
  *   <li>{@link #applyNow()} — runs the policy against {@link #autosavesDirectory()}
- *       once. Called on startup and on Apply from {@link BackupSettingsDialog}.</li>
+ *       once. Called on startup and by the periodic task.</li>
  *   <li>{@link #start()} — registers a hourly periodic task on a single
  *       daemon scheduled thread (per the daw-app conventions for
  *       infrequent I/O-bound work).</li>
@@ -34,11 +33,12 @@ import java.util.logging.Logger;
  *       host on window-hidden so the JVM can exit cleanly.</li>
  * </ol>
  *
- * <p>The "open dialog" entry point ({@link #openDialog(javafx.stage.Window, Path)})
- * constructs a {@link BackupSettingsDialog} pre-populated from the
- * currently-persisted policy. On Apply the new policy is saved through the
- * store and {@link #applyNow()} is invoked so the change takes effect
- * immediately without a restart.</p>
+ * <p>Since story 308 the retention policy is edited in the Settings
+ * surface's Backups category (the standalone {@code BackupSettingsDialog}
+ * was absorbed); the surface applies edits through
+ * {@link #saveAndApplyAsync(BackupRetentionPolicy)}, which persists the
+ * policy and prunes immediately on the scheduler's daemon thread so the
+ * FX thread is never blocked by filesystem I/O.</p>
  */
 public final class BackupRetentionController {
 
@@ -192,32 +192,21 @@ public final class BackupRetentionController {
     }
 
     /**
-     * Opens the {@link BackupSettingsDialog} as a modal dialog, blocking
-     * until the user clicks Apply or Cancel. On Apply the new policy is
-     * persisted and applied on a background thread so the FX thread is
-     * never blocked by filesystem I/O.
+     * Story 308 — the Settings surface's Backups apply path: offloads
+     * {@link #saveAndApply(BackupRetentionPolicy)} to the scheduler's
+     * daemon thread so the FX application thread is never blocked by
+     * filesystem I/O (exactly the absorbed dialog's Apply semantics).
      *
-     * @param owner            the owning window for modal placement, may be null
-     * @param projectDirectory the active project directory (used by the
-     *                         dialog for the disk-usage pie chart), may be null
+     * @param policy the edited policy; must not be {@code null}
      */
-    public void openDialog(javafx.stage.Window owner, Path projectDirectory) {
-        BackupRetentionPolicy current = currentPolicy();
-        BackupSettingsDialog dialog =
-                new BackupSettingsDialog(current, projectDirectory, autosavesDirectory);
-        if (owner != null) {
-            dialog.initOwner(owner);
-        }
-        dialog.showAndWait().ifPresent(updated -> {
-            // Offload save + prune to the scheduler's daemon thread so the
-            // FX application thread is never blocked by filesystem I/O.
-            scheduler.execute(() -> {
-                try {
-                    saveAndApply(updated);
-                } catch (IOException e) {
-                    LOG.log(Level.WARNING, "Failed to save backup retention policy", e);
-                }
-            });
+    public void saveAndApplyAsync(BackupRetentionPolicy policy) {
+        Objects.requireNonNull(policy, "policy must not be null");
+        scheduler.execute(() -> {
+            try {
+                saveAndApply(policy);
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "Failed to save backup retention policy", e);
+            }
         });
     }
 }

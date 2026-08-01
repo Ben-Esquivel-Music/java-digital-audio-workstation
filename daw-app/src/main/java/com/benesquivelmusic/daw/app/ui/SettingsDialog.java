@@ -7,13 +7,21 @@ import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.settings.ApplyClass;
+import com.benesquivelmusic.daw.app.ui.settings.BackupSettingsAccess;
 import com.benesquivelmusic.daw.app.ui.settings.DeviceEnumerationTask;
+import com.benesquivelmusic.daw.app.ui.settings.DiskUsageTask;
+import com.benesquivelmusic.daw.app.ui.settings.RecordingSettingsAccess;
 import com.benesquivelmusic.daw.app.ui.settings.SettingDescriptor;
 import com.benesquivelmusic.daw.app.ui.settings.SettingRow;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsCatalogue;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsShell;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.mixer.CueBus;
+import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
+import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
+import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
@@ -22,10 +30,13 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
 import com.benesquivelmusic.daw.sdk.event.UiEvent;
 
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.event.ActionEvent;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.scene.Node;
+import javafx.scene.chart.PieChart;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
@@ -39,8 +50,10 @@ import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
 
+import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
@@ -51,6 +64,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Flow;
@@ -119,6 +133,18 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
     private static final String KEYBINDING_PREFIX = "keybinding.";
     private static final String AUDIO_PREFIX = "audio.";
+    // Story 308 — absorbed Recording/Backups ids (external stores, not
+    // SettingsModel; see the catalogue Javadoc).
+    private static final String METRONOME_PREFIX = "metronome.";
+    private static final String BACKUPS_PREFIX = "backups.";
+    private static final List<String> RECORDING_SETTING_IDS = List.of(
+            "metronome.enabled", "metronome.countIn", "metronome.clickChannel",
+            "metronome.clickGain", "metronome.clickSideOutput",
+            "metronome.clickMainMix", "metronome.clickCueBus");
+    private static final List<String> BACKUP_SETTING_IDS = List.of(
+            "backups.keepRecent", "backups.keepHourly", "backups.keepDaily",
+            "backups.keepWeekly", "backups.maxAgeDays", "backups.maxDiskGiB");
+    private static final long BYTES_PER_GIB = 1024L * 1024L * 1024L;
     private static final Logger LOG = Logger.getLogger(SettingsDialog.class.getName());
 
     /**
@@ -164,6 +190,16 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private SettingsChangeListener settingsChangeListener;
     private AudioEngineController audioEngineController;
     private DeviceEnumerationTask deviceEnumerationTask;
+    // Story 308 — Recording/Backups access seams + the §5.8 disk-usage
+    // group visual. The pie node exists from construction (rendered even
+    // by seam-less test dialogs); the scan starts when a Backups seam is
+    // attached and is cancelled with the rest of the background work.
+    private RecordingSettingsAccess recordingSettingsAccess;
+    private BackupSettingsAccess backupSettingsAccess;
+    private DiskUsageTask diskUsageTask;
+    private final PieChart diskUsagePie = new PieChart();
+    /** UUID-string → "label  (Out A/B)" display for the cue-bus CHOICE row. */
+    private final Map<String, String> cueBusDisplayById = new HashMap<>();
     private final AtomicReference<CapabilityEventSubscriber> deviceEventSubscriber =
             new AtomicReference<>();
     private final Map<String, Object> asynchronousPersistedValues =
@@ -206,6 +242,18 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private Boolean lastAppliedReduceMotion;
 
     /**
+     * Story 308 — the same lastApplied-overlay rule for the absorbed
+     * categories: the retention write runs asynchronously on the
+     * controller's scheduler and the metronome JSON-store save is
+     * fire-and-forget, so the post-apply {@code refreshFromPersisted()}
+     * must read what this dialog just applied, not a possibly-stale
+     * re-read of the stores. The access seams remain the fallback
+     * before the first Apply.
+     */
+    private RecordingSettingsAccess.Snapshot lastAppliedRecording;
+    private BackupRetentionPolicy lastAppliedBackupPolicy;
+
+    /**
      * Creates a new settings dialog backed by the given model.
      *
      * @param model the settings model to read from and write to
@@ -231,7 +279,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 Map.of(),
                 Map.of(
                         "audio/device", buildAudioDeviceUtilities(),
-                        "audio/performance", buildAudioPerformanceTelemetry()));
+                        "audio/performance", buildAudioPerformanceTelemetry(),
+                        "backups/diskUsage", buildDiskUsageVisual()));
         shell.settingRow("audio.backend").orElseThrow().valueProperty()
                 .addListener((_, _, backend) -> {
                     refreshWasapiMode(backend);
@@ -339,6 +388,20 @@ public final class SettingsDialog extends DawgDialog<Void> {
         HBox telemetry = new HBox(cpuLoadValue, threadsInUseValue);
         telemetry.getStyleClass().add("settings-audio-telemetry");
         return telemetry;
+    }
+
+    /**
+     * Story 308 §5.8 — the disk-usage pie is a group-level visual (never
+     * a Control of its own), mounted after the Backups "Disk usage"
+     * group header. Slice/legend colours ride the {@code -chart-series-*}
+     * tokens via the {@code settings-disk-pie} scope in styles.css.
+     */
+    private Node buildDiskUsageVisual() {
+        diskUsagePie.getStyleClass().add("settings-disk-pie");
+        diskUsagePie.setLegendVisible(true);
+        diskUsagePie.setLabelsVisible(false);
+        diskUsagePie.setPrefSize(260, 200);
+        return diskUsagePie;
     }
 
     private static HBox utilityLine(String labelText, Node value) {
@@ -588,6 +651,96 @@ public final class SettingsDialog extends DawgDialog<Void> {
         refreshAudioTelemetry();
     }
 
+    /**
+     * Attaches the Recording (metronome) authorities — story 308. The
+     * seven {@code metronome.*} rows re-seed from the live snapshot and
+     * the "Send click to" options rebuild from the live cue buses.
+     * {@code null} detaches (rows fall back to catalogue defaults).
+     */
+    public void setRecordingSettingsAccess(RecordingSettingsAccess access) {
+        this.recordingSettingsAccess = access;
+        lastAppliedRecording = null;
+        refreshCueBusChoiceOptions();
+        for (String id : RECORDING_SETTING_IDS) {
+            shell.refreshSettingFromPersisted(id);
+        }
+    }
+
+    /**
+     * Attaches the Backups (retention + disk usage) authorities — story
+     * 308. The six {@code backups.*} rows re-seed from the persisted
+     * policy and the §5.8 disk-usage scan starts on a virtual thread
+     * (busy affordance on the "Disk usage" group header). {@code null}
+     * detaches and cancels any in-flight scan.
+     */
+    public void setBackupSettingsAccess(BackupSettingsAccess access) {
+        DiskUsageTask previousTask = diskUsageTask;
+        diskUsageTask = null;
+        if (previousTask != null) {
+            previousTask.cancel();
+        }
+        this.backupSettingsAccess = access;
+        lastAppliedBackupPolicy = null;
+        for (String id : BACKUP_SETTING_IDS) {
+            shell.refreshSettingFromPersisted(id);
+        }
+        if (access == null || backgroundWorkClosed) {
+            return;
+        }
+        Path projectDirectory = access.projectDirectory().orElse(null);
+        diskUsageTask = new DiskUsageTask(
+                () -> projectDirectory == null
+                        ? new ProjectDiskUsage(0, 0, 0)
+                        : ProjectDiskUsage.compute(projectDirectory),
+                this::applyDiskUsageToPie,
+                busy -> shell.setGroupBusy("backups", "diskUsage", busy),
+                failure -> {
+                    // Mirror the absorbed dialog: a failed scan renders
+                    // three zero slices rather than a stale/empty chart.
+                    LOG.log(Level.WARNING, "Project disk-usage scan failed", failure);
+                    applyDiskUsageToPie(new ProjectDiskUsage(0, 0, 0));
+                });
+        diskUsageTask.start();
+    }
+
+    /** FX-thread only — the task marshals results through FxDispatcher. */
+    private void applyDiskUsageToPie(ProjectDiskUsage usage) {
+        ObservableList<PieChart.Data> data = FXCollections.observableArrayList();
+        for (DiskUsageTask.Slice slice : DiskUsageTask.slices(usage)) {
+            data.add(new PieChart.Data(slice.label(), slice.bytes()));
+        }
+        diskUsagePie.setData(data);
+    }
+
+    /**
+     * Rebuilds the "Send click to" options from the live cue buses:
+     * {@code ""} ("Main mix only") plus one UUID-string entry per bus,
+     * displayed as {@code label  (Out A/B)} from the bus's stereo-pair
+     * index — the absorbed dialog's exact format (blank labels render
+     * as "Cue N").
+     */
+    private void refreshCueBusChoiceOptions() {
+        cueBusDisplayById.clear();
+        List<Object> options = new ArrayList<>();
+        options.add("");
+        RecordingSettingsAccess access = recordingSettingsAccess;
+        if (access != null) {
+            int index = 1;
+            for (CueBus bus : access.cueBuses()) {
+                String label = bus.label();
+                if (label == null || label.isBlank()) {
+                    label = "Cue " + index;
+                }
+                int outA = bus.hardwareOutputIndex() * 2;
+                cueBusDisplayById.put(bus.id().toString(),
+                        label + "  (Out " + (outA + 1) + "/" + (outA + 2) + ")");
+                options.add(bus.id().toString());
+                index++;
+            }
+        }
+        shell.replaceChoiceOptions("metronome.clickCueBus", options, "");
+    }
+
     private void subscribeToDeviceCapabilityChanges(AudioEngineController controller) {
         CapabilityEventSubscriber subscriber = new CapabilityEventSubscriber();
         CapabilityEventSubscriber previous = deviceEventSubscriber.getAndSet(subscriber);
@@ -763,6 +916,13 @@ public final class SettingsDialog extends DawgDialog<Void> {
         if (task != null) {
             task.close();
         }
+        // Story 308 §2.7 — closing the surface cancels the disk-usage
+        // scan cleanly; a late result is discarded, never applied.
+        DiskUsageTask usageTask = diskUsageTask;
+        diskUsageTask = null;
+        if (usageTask != null) {
+            usageTask.cancel();
+        }
         for (Thread worker : List.copyOf(audioUtilityWorkers)) {
             worker.interrupt();
         }
@@ -821,11 +981,77 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     ? lastAppliedDensity : densityManager.getActiveDensity();
             case MotionManager.PREF_KEY -> lastAppliedReduceMotion != null
                     ? lastAppliedReduceMotion : motionManager.isReduceMotion();
+            // Story 308 — absorbed Recording/Backups ids read their live
+            // authorities through the access seams, with the lastApplied
+            // overlay bridging the asynchronous store writes (same rule
+            // as the appearance managers above). Seam-less dialogs fall
+            // back to catalogue defaults.
+            case "metronome.enabled" -> recordingSnapshot()
+                    .<Object>map(RecordingSettingsAccess.Snapshot::enabled)
+                    .orElseGet(() -> catalogueDefault(id));
+            case "metronome.countIn" -> recordingSnapshot()
+                    .<Object>map(RecordingSettingsAccess.Snapshot::countIn)
+                    .orElseGet(() -> catalogueDefault(id));
+            case "metronome.clickChannel" -> recordingSnapshot()
+                    .<Object>map(snapshot -> snapshot.clickOutput().hardwareChannelIndex())
+                    .orElseGet(() -> catalogueDefault(id));
+            case "metronome.clickGain" -> recordingSnapshot()
+                    .<Object>map(snapshot -> snapshot.clickOutput().gain())
+                    .orElseGet(() -> catalogueDefault(id));
+            case "metronome.clickSideOutput" -> recordingSnapshot()
+                    .<Object>map(snapshot -> snapshot.clickOutput().sideOutputEnabled())
+                    .orElseGet(() -> catalogueDefault(id));
+            case "metronome.clickMainMix" -> recordingSnapshot()
+                    .<Object>map(snapshot -> snapshot.clickOutput().mainMixEnabled())
+                    .orElseGet(() -> catalogueDefault(id));
+            case "metronome.clickCueBus" -> recordingSnapshot()
+                    .<Object>map(snapshot ->
+                            snapshot.cueBusId().map(UUID::toString).orElse(""))
+                    .orElseGet(() -> catalogueDefault(id));
+            case "backups.keepRecent" -> backupPolicySnapshot()
+                    .<Object>map(BackupRetentionPolicy::keepRecent)
+                    .orElseGet(() -> catalogueDefault(id));
+            case "backups.keepHourly" -> backupPolicySnapshot()
+                    .<Object>map(BackupRetentionPolicy::keepHourly)
+                    .orElseGet(() -> catalogueDefault(id));
+            case "backups.keepDaily" -> backupPolicySnapshot()
+                    .<Object>map(BackupRetentionPolicy::keepDaily)
+                    .orElseGet(() -> catalogueDefault(id));
+            case "backups.keepWeekly" -> backupPolicySnapshot()
+                    .<Object>map(BackupRetentionPolicy::keepWeekly)
+                    .orElseGet(() -> catalogueDefault(id));
+            case "backups.maxAgeDays" -> backupPolicySnapshot()
+                    .<Object>map(policy -> (double) policy.maxAge().toDays())
+                    .orElseGet(() -> catalogueDefault(id));
+            case "backups.maxDiskGiB" -> backupPolicySnapshot()
+                    .<Object>map(policy -> (double) (policy.maxBytes() / BYTES_PER_GIB))
+                    .orElseGet(() -> catalogueDefault(id));
             // Defensive: an id this dialog does not know reads as its
             // catalogue default so the row still renders something sane.
-            default -> catalogue.byId(id)
-                    .map(SettingDescriptor::defaultValue).orElse(null);
+            default -> catalogueDefault(id);
         };
+    }
+
+    private Object catalogueDefault(String id) {
+        return catalogue.byId(id).map(SettingDescriptor::defaultValue).orElse(null);
+    }
+
+    /** lastApplied overlay first, then the live seam, then empty. */
+    private Optional<RecordingSettingsAccess.Snapshot> recordingSnapshot() {
+        if (lastAppliedRecording != null) {
+            return Optional.of(lastAppliedRecording);
+        }
+        RecordingSettingsAccess access = recordingSettingsAccess;
+        return access == null ? Optional.empty() : Optional.of(access.current());
+    }
+
+    /** lastApplied overlay first, then the live seam, then empty. */
+    private Optional<BackupRetentionPolicy> backupPolicySnapshot() {
+        if (lastAppliedBackupPolicy != null) {
+            return Optional.of(lastAppliedBackupPolicy);
+        }
+        BackupSettingsAccess access = backupSettingsAccess;
+        return access == null ? Optional.empty() : Optional.of(access.currentPolicy());
     }
 
     // ── Render hints ─────────────────────────────────────────────────────────
@@ -878,6 +1104,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
             case "project.autoSaveIntervalSeconds" -> List.of(30, 60, 120, 300, 600);
             case ThemeManager.PREF_KEY -> List.of(ThemeManager.Theme.values());
             case DensityManager.PREF_KEY -> List.of(DensityMode.values());
+            case "metronome.countIn" -> List.of(CountInMode.values());
+            // "" = "Main mix only"; the live bus list replaces this when
+            // a Recording access seam attaches (refreshCueBusChoiceOptions).
+            case "metronome.clickCueBus" -> List.of("");
             default -> null;
         };
     }
@@ -907,11 +1137,23 @@ public final class SettingsDialog extends DawgDialog<Void> {
         };
     }
 
-    /** Slider upper bounds — see {@link #sliderMinFor(String)}. */
+    /**
+     * Slider/stepper upper bounds — see {@link #sliderMinFor(String)}.
+     * The story-308 absorbed bounds mirror the deleted dialogs' spinner
+     * and slider ranges (the model authorities only enforce &gt;= 0);
+     * {@code metronome.clickGain} rides the (0, 1) default.
+     */
     private static double sliderMaxFor(String id) {
         return switch (id) {
             case "appearance.uiScale" -> 3.0;
             case "audio.masterCpuBudgetFraction" -> 1.0;
+            case "metronome.clickChannel" -> 63;
+            case "backups.keepRecent" -> 100;
+            case "backups.keepHourly" -> 168;
+            case "backups.keepDaily" -> 60;
+            case "backups.keepWeekly" -> 52;
+            case "backups.maxAgeDays" -> 365;
+            case "backups.maxDiskGiB" -> 64;
             default -> 1;
         };
     }
@@ -942,8 +1184,28 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     value instanceof DensityMode mode
                             ? DensityManager.displayName(mode)
                             : String.valueOf(value));
+            case "metronome.countIn" -> displayConverter(value ->
+                    value instanceof CountInMode mode
+                            ? formatEnumName(mode.name())
+                            : String.valueOf(value));
+            // Clones the 307 audio.inputDevice blank-value pattern: ""
+            // renders as the localized "Main mix only"; a UUID string
+            // renders through the live display map (falling back to the
+            // raw id for a bus that vanished between refreshes).
+            case "metronome.clickCueBus" -> displayConverter(value -> {
+                String text = String.valueOf(value);
+                return text.isBlank()
+                        ? msg("metronome.clickCueBus.mainMixOnly")
+                        : cueBusDisplayById.getOrDefault(text, text);
+            });
             default -> null;
         };
+    }
+
+    /** "ONE_BAR" → "One bar" (the metronome context-menu formatter idiom). */
+    private static String formatEnumName(String name) {
+        String lower = name.toLowerCase(Locale.ROOT).replace('_', ' ');
+        return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
     }
 
     /** Display-only converter — the combos are non-editable, so {@code fromString} never runs. */
@@ -1096,6 +1358,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
         }
 
         applyKeyBindings(pendingEdits);
+        applyRecordingSettings(pendingEdits);
+        applyBackupSettings(pendingEdits);
 
         // Story 294 — appearance changes propagate through the shared
         // EventBus instead of this dialog poking the three managers
@@ -1590,8 +1854,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 }
             }
             default -> {
-                // Theme/density/motion (SettingsApplied publish) and
-                // keybinding.* (applyKeyBindings) are handled elsewhere.
+                // Theme/density/motion (SettingsApplied publish),
+                // keybinding.* (applyKeyBindings) and the story-308
+                // metronome.*/backups.* ids (applyRecordingSettings /
+                // applyBackupSettings) are handled elsewhere.
             }
         }
     }
@@ -1622,6 +1888,108 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 && catalogue.byId("project.defaultTempo").orElseThrow().accepts(tempo)) {
             model.setDefaultTempo(tempo);
         }
+    }
+
+    /**
+     * Story 308 — routes every pending {@code metronome.*} edit into ONE
+     * Recording apply: the edited {@link ClickOutput} is built over the
+     * current snapshot (unedited fields keep their current values), a
+     * blank cue-bus value means "Main mix only". Write-on-dirty: skipped
+     * entirely when no metronome row is dirty or no access seam is
+     * attached (bare test dialogs edit rows without a live authority).
+     */
+    private void applyRecordingSettings(Map<String, Object> pendingEdits) {
+        boolean touched = pendingEdits.keySet().stream()
+                .anyMatch(id -> id.startsWith(METRONOME_PREFIX));
+        RecordingSettingsAccess access = recordingSettingsAccess;
+        if (!touched || access == null) {
+            return;
+        }
+        RecordingSettingsAccess.Snapshot current =
+                recordingSnapshot().orElseGet(access::current);
+        boolean enabled = pendingEdits.get("metronome.enabled") instanceof Boolean b
+                ? b : current.enabled();
+        CountInMode countIn = pendingEdits.get("metronome.countIn") instanceof CountInMode mode
+                ? mode : current.countIn();
+        ClickOutput clickOutput = current.clickOutput();
+        if (pendingEdits.get("metronome.clickChannel") instanceof Number channel) {
+            clickOutput = clickOutput.withHardwareChannelIndex(
+                    Math.max(0, channel.intValue()));
+        }
+        if (pendingEdits.get("metronome.clickGain") instanceof Number gain) {
+            clickOutput = clickOutput.withGain(Math.clamp(gain.doubleValue(), 0.0, 1.0));
+        }
+        if (pendingEdits.get("metronome.clickSideOutput") instanceof Boolean sideOutput) {
+            clickOutput = clickOutput.withSideOutputEnabled(sideOutput);
+        }
+        if (pendingEdits.get("metronome.clickMainMix") instanceof Boolean mainMix) {
+            clickOutput = clickOutput.withMainMixEnabled(mainMix);
+        }
+        Optional<UUID> cueBusId = current.cueBusId();
+        if (pendingEdits.containsKey("metronome.clickCueBus")) {
+            cueBusId = parseCueBusId(pendingEdits.get("metronome.clickCueBus"));
+        }
+        RecordingSettingsAccess.Snapshot edited = new RecordingSettingsAccess.Snapshot(
+                enabled, countIn, clickOutput, cueBusId);
+        // Overlay BEFORE the write: the metronome JSON-store save is
+        // fire-and-forget, and the post-apply refreshFromPersisted()
+        // must re-seed from what was just applied.
+        lastAppliedRecording = edited;
+        access.apply(edited);
+    }
+
+    private static Optional<UUID> parseCueBusId(Object value) {
+        String text = value == null ? "" : value.toString();
+        if (text.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(UUID.fromString(text));
+        } catch (IllegalArgumentException malformed) {
+            return Optional.empty(); // a vanished/garbled bus id = main mix only
+        }
+    }
+
+    /**
+     * Story 308 — routes every pending {@code backups.*} edit into ONE
+     * {@link BackupRetentionPolicy} (days → whole-day Duration, GiB →
+     * bytes; unedited fields keep their current values) and hands it to
+     * the asynchronous controller apply. Write-on-dirty, seam-tolerant —
+     * same contract as {@link #applyRecordingSettings(Map)}.
+     */
+    private void applyBackupSettings(Map<String, Object> pendingEdits) {
+        boolean touched = pendingEdits.keySet().stream()
+                .anyMatch(id -> id.startsWith(BACKUPS_PREFIX));
+        BackupSettingsAccess access = backupSettingsAccess;
+        if (!touched || access == null) {
+            return;
+        }
+        BackupRetentionPolicy policy = backupPolicySnapshot().orElseGet(access::currentPolicy);
+        if (pendingEdits.get("backups.keepRecent") instanceof Number keepRecent) {
+            policy = policy.withKeepRecent(Math.max(0, keepRecent.intValue()));
+        }
+        if (pendingEdits.get("backups.keepHourly") instanceof Number keepHourly) {
+            policy = policy.withKeepHourly(Math.max(0, keepHourly.intValue()));
+        }
+        if (pendingEdits.get("backups.keepDaily") instanceof Number keepDaily) {
+            policy = policy.withKeepDaily(Math.max(0, keepDaily.intValue()));
+        }
+        if (pendingEdits.get("backups.keepWeekly") instanceof Number keepWeekly) {
+            policy = policy.withKeepWeekly(Math.max(0, keepWeekly.intValue()));
+        }
+        if (pendingEdits.get("backups.maxAgeDays") instanceof Number maxAgeDays) {
+            policy = policy.withMaxAge(java.time.Duration.ofDays(
+                    Math.max(0L, Math.round(maxAgeDays.doubleValue()))));
+        }
+        if (pendingEdits.get("backups.maxDiskGiB") instanceof Number maxDiskGib) {
+            policy = policy.withMaxBytes(
+                    Math.max(0L, Math.round(maxDiskGib.doubleValue())) * BYTES_PER_GIB);
+        }
+        // Overlay BEFORE the write: the retention save+prune runs on the
+        // controller's scheduler thread; the synchronous post-apply
+        // re-seed must not re-read the not-yet-written store.
+        lastAppliedBackupPolicy = policy;
+        access.applyPolicy(policy);
     }
 
     /**

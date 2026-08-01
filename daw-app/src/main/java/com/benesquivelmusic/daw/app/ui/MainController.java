@@ -54,6 +54,8 @@ import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.layout.BuiltInLayouts;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+import com.benesquivelmusic.daw.app.ui.settings.BackupSettingsAccess;
+import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
@@ -74,6 +76,7 @@ import java.text.MessageFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -312,8 +315,9 @@ public final class MainController {
     private TrackFreezeController trackFreezeController;
     /**
      * Story 191 — Auto-Backup Rotation. Owns the persisted retention
-     * policy, runs a periodic prune of {@code ~/.daw/autosaves/}, and
-     * surfaces the {@link BackupSettingsDialog} from the Edit menu.
+     * policy and runs a periodic prune of {@code ~/.daw/autosaves/}.
+     * Since story 308 the policy is edited in the Settings surface's
+     * Backups category (the Edit-menu entry deep-links there).
      */
     private BackupRetentionController backupRetentionController;
     /**
@@ -1232,9 +1236,9 @@ public final class MainController {
 
     private void createMetronomeController(Preferences prefs) {
         // Story 135 — share a single MetronomeSideOutputRouter across the app
-        // so the click-to-cue routing chosen in MetronomeSettingsDialog
-        // survives project reloads and is observable by the audio engine
-        // through the same instance.
+        // so the click-to-cue routing chosen in the Recording settings
+        // category survives project reloads and is observable by the audio
+        // engine through the same instance.
         if (metronomeSideOutputRouter == null) {
             metronomeSideOutputRouter =
                     new com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter();
@@ -1257,6 +1261,15 @@ public final class MainController {
                 new MetronomeSettingsStore(),
                 () -> project == null ? null : project.getCueBusManager(),
                 () -> metronomeSideOutputRouter);
+        // Story 308 §7 Stage 4 — "Click Routing…" deep-links into the
+        // Settings surface's Recording category (dialog absorbed).
+        metronomeController.setClickRoutingSettingsOpener(() -> {
+            status("Opening recording settings...", DawIcon.METRONOME);
+            SettingsDialog dialog = createSettingsDialog();
+            dialog.selectCategory("recording");
+            dialog.showAndWait();
+            status("Recording settings closed", DawIcon.STATUS);
+        });
     }
 
     /** Story 135 — shared side-output router; lazily created in
@@ -3777,21 +3790,66 @@ public final class MainController {
         status("Audio settings closed", DawIcon.STATUS);
     }
 
-    /** Builds Settings over the one model shared by live runtime consumers. */
+    /**
+     * Builds Settings over the one model shared by live runtime consumers,
+     * wiring every category's live seam (audio engine controller, the
+     * story-308 Recording and Backups access) so the absorbed categories
+     * are live from EVERY entry point, not just their deep links.
+     */
     SettingsDialog createSettingsDialog() {
         String previousPluginPaths = settingsModel.getPluginScanPaths();
         SettingsDialog dialog = new SettingsDialog(settingsModel);
         dialog.setAudioEngineController(audioEngineController);
+        if (metronomeController != null) {
+            dialog.setRecordingSettingsAccess(metronomeController.recordingSettingsAccess());
+        }
+        BackupSettingsAccess backupAccess = buildBackupSettingsAccess();
+        if (backupAccess != null) {
+            dialog.setBackupSettingsAccess(backupAccess);
+        }
         dialog.setSettingsChangeListener(model -> applyLiveSettings(model, previousPluginPaths));
         return dialog;
     }
 
     /**
-     * Story 191 — opens {@link BackupSettingsDialog} bound to the persisted
-     * {@link com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy}.
-     * On Apply the new policy is saved through
+     * Story 308 — the Backups access seam over the story-191 retention
+     * controller: policy reads/writes stay with the controller (JSON
+     * store + immediate async prune); the project directory feeds the
+     * §5.8 disk-usage pie. {@code null} when no controller exists yet.
+     */
+    private BackupSettingsAccess buildBackupSettingsAccess() {
+        BackupRetentionController controller = backupRetentionController;
+        if (controller == null) {
+            return null;
+        }
+        return new BackupSettingsAccess() {
+            @Override
+            public BackupRetentionPolicy currentPolicy() {
+                return controller.currentPolicy();
+            }
+
+            @Override
+            public Optional<Path> projectDirectory() {
+                if (projectManager == null || projectManager.getCurrentProject() == null) {
+                    return Optional.empty();
+                }
+                return Optional.ofNullable(
+                        projectManager.getCurrentProject().projectPath());
+            }
+
+            @Override
+            public void applyPolicy(BackupRetentionPolicy policy) {
+                controller.saveAndApplyAsync(policy);
+            }
+        };
+    }
+
+    /**
+     * Story 191 / 308 — "Backup Retention…" deep-links into the Settings
+     * surface focused on the Backups category (§7 Stage 4; the standalone
+     * dialog is absorbed). Applying edits still persists through
      * {@link com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore}
-     * and applied immediately to {@code ~/.daw/autosaves/}.
+     * and prunes {@code ~/.daw/autosaves/} immediately.
      */
     void onOpenBackupSettings() {
         status("Opening backup settings...", DawIcon.FOLDER);
@@ -3799,13 +3857,9 @@ public final class MainController {
             // Defensive: should always be created during initialize().
             backupRetentionController = new BackupRetentionController();
         }
-        var owner = rootPane != null && rootPane.getScene() != null
-                ? rootPane.getScene().getWindow() : null;
-        Path projectDir = null;
-        if (projectManager != null && projectManager.getCurrentProject() != null) {
-            projectDir = projectManager.getCurrentProject().projectPath();
-        }
-        backupRetentionController.openDialog(owner, projectDir);
+        SettingsDialog dialog = createSettingsDialog();
+        dialog.selectCategory("backups");
+        dialog.showAndWait();
         status("Backup settings closed", DawIcon.STATUS);
     }
 

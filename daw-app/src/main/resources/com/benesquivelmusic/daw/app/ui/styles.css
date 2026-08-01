@@ -105,6 +105,14 @@
     -meter-hi:        #E6B450;
     -meter-clip:      #E5484D;
 
+    /* §3.1 DATA — categorical chart series (story 308: the Backups
+       disk-usage pie). Data colours encode composition, not state —
+       muted Palette-A-consistent hues so the one-accent rule holds,
+       mirroring the meter-ramp precedent above. */
+    -chart-series-1:  #5C7EC2;
+    -chart-series-2:  #4FAE8D;
+    -chart-series-3:  #B58E5A;
+
     -font-sans:       "Inter", "Segoe UI", "system-ui", sans-serif;
     -font-mono:       "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
 
@@ -2792,6 +2800,46 @@
     -fx-text-fill: -text-hi;
     -fx-font-size: 13px;
     -fx-font-weight: 600;
+}
+
+/* §5.3 / §5.7 tier 3 (story 308) — the pane header row wrapping the
+ * plain title label plus the uniform ⋯ category menu. The MenuButton is
+ * icon-only and flat; the default popup arrow is suppressed (the ⋯
+ * glyph IS the affordance). */
+.settings-category-header {
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+}
+.settings-category-menu {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 2 4 2 4;
+}
+.settings-category-menu > .arrow-button {
+    -fx-padding: 0;
+}
+.settings-category-menu > .arrow-button > .arrow {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+/* §5.8 Backups disk-usage pie (story 308) — a group visual, tokenized.
+ * Slice colours pull the §3.1 DATA chart-series trio; chrome stays flat
+ * on the pane surface and the legend reads muted. All rules are scoped
+ * under .settings-disk-pie so stock charts elsewhere are untouched. */
+.settings-disk-pie .chart-pie.default-color0 { -fx-pie-color: -chart-series-1; }
+.settings-disk-pie .chart-pie.default-color1 { -fx-pie-color: -chart-series-2; }
+.settings-disk-pie .chart-pie.default-color2 { -fx-pie-color: -chart-series-3; }
+.settings-disk-pie .chart-pie {
+    -fx-border-color: transparent;
+}
+.settings-disk-pie > .chart-plot-background,
+.settings-disk-pie .chart-content,
+.settings-disk-pie .chart-legend {
+    -fx-background-color: transparent;
+}
+.settings-disk-pie .chart-legend .chart-legend-item {
+    -fx-text-fill: -text-mute;
 }
 
 /* Group headers (browse groups and search "Category · Group" headers) —

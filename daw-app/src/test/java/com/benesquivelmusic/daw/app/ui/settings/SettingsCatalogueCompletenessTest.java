@@ -59,6 +59,18 @@ class SettingsCatalogueCompletenessTest {
         return Set.of(ThemeManager.PREF_KEY, DensityManager.PREF_KEY, MotionManager.PREF_KEY);
     }
 
+    /**
+     * Story 308 — the absorbed Recording/Backups descriptors persist in
+     * their pre-existing external stores (the {@code MetronomeController}
+     * preferences node, {@code ~/.daw/metronome-settings.json}, the
+     * project XML, and {@code ~/.daw/backup-retention.json}), never in
+     * {@code SettingsModel} — so, like {@link #managerKeys()}, they are
+     * excluded from the reflected-KEY_* equality below.
+     */
+    private static boolean isAbsorbedExternalStoreKey(String id) {
+        return id.startsWith("metronome.") || id.startsWith("backups.");
+    }
+
     private SettingsCatalogue.Category categoryById(String id) {
         return catalogue.categories().stream()
                 .filter(category -> category.id().equals(id))
@@ -78,6 +90,7 @@ class SettingsCatalogueCompletenessTest {
                 .map(SettingDescriptor::id)
                 .filter(id -> !id.startsWith("keybinding."))
                 .filter(id -> !managerKeys().contains(id))
+                .filter(id -> !isAbsorbedExternalStoreKey(id))
                 .collect(Collectors.toCollection(TreeSet::new));
 
         assertThat(modelBackedIds)
@@ -129,9 +142,10 @@ class SettingsCatalogueCompletenessTest {
                 .map(SettingDescriptor::id)
                 .toList();
         assertThat(ids).doesNotHaveDuplicates();
-        // 17 SettingsModel-backed + 3 manager-backed + one per DawAction.
+        // 17 SettingsModel-backed + 3 manager-backed + 13 story-308
+        // absorbed Recording/Backups + one per DawAction.
         assertThat(catalogue.descriptors())
-                .hasSize(20 + DawAction.values().length);
+                .hasSize(33 + DawAction.values().length);
     }
 
     @Test
@@ -143,28 +157,54 @@ class SettingsCatalogueCompletenessTest {
     }
 
     @Test
-    void placeholderCategoriesShouldCarryTheirEmptyGroups() {
+    void recordingAndBackupsCarryTheirAbsorbedDescriptorsAndGeneralStaysPlaceholder() {
+        // Story 308 — the Recording/Backups placeholders are populated;
+        // per-group descriptor id order is pinned (§3.3).
         SettingsCatalogue.Category recording = categoryById("recording");
         assertThat(recording.groups())
                 .extracting(SettingsCatalogue.Group::id)
                 .containsExactly("metronome", "clickRouting", "cueMix");
+        assertThat(groupIds(recording, "metronome"))
+                .containsExactly("metronome.enabled", "metronome.countIn");
+        assertThat(groupIds(recording, "clickRouting"))
+                .containsExactly("metronome.clickChannel", "metronome.clickGain",
+                        "metronome.clickSideOutput");
+        assertThat(groupIds(recording, "cueMix"))
+                .containsExactly("metronome.clickMainMix", "metronome.clickCueBus");
+
         SettingsCatalogue.Category backups = categoryById("backups");
         assertThat(backups.groups())
                 .extracting(SettingsCatalogue.Group::id)
                 .containsExactly("retention", "diskUsage");
+        assertThat(groupIds(backups, "retention"))
+                .containsExactly("backups.keepRecent", "backups.keepHourly",
+                        "backups.keepDaily", "backups.keepWeekly",
+                        "backups.maxAgeDays", "backups.maxDiskGiB");
+        // Disk usage is the §5.8 group VISUAL (the pie), not a setting —
+        // its taxonomy slot stays descriptor-empty by design.
+        assertThat(groupIds(backups, "diskUsage")).isEmpty();
+
         SettingsCatalogue.Category general = categoryById("general");
         assertThat(general.groups())
                 .extracting(SettingsCatalogue.Group::id)
                 .containsExactly("startup", "language", "resetProfiles");
-
-        for (SettingsCatalogue.Category category : List.of(recording, backups, general)) {
-            for (SettingsCatalogue.Group group : category.groups()) {
-                assertThat(group.settings())
-                        .as("placeholder group %s.%s stays empty until story 308",
-                                category.id(), group.id())
-                        .isEmpty();
-            }
+        for (SettingsCatalogue.Group group : general.groups()) {
+            assertThat(group.settings())
+                    .as("placeholder group general.%s stays empty (story-309 territory)",
+                            group.id())
+                    .isEmpty();
         }
+    }
+
+    private static List<String> groupIds(SettingsCatalogue.Category category, String groupId) {
+        return category.groups().stream()
+                .filter(group -> group.id().equals(groupId))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "No group " + groupId + " in " + category.id()))
+                .settings().stream()
+                .map(SettingDescriptor::id)
+                .toList();
     }
 
     @Test
