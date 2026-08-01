@@ -58,6 +58,13 @@
        B/C meter values; the Palette-A green→amber→red ramp reads
        correctly on this dark surface. Inheriting it is intentional. */
 
+    /* §3.1 DATA — categorical chart series (story 308 disk-usage pie).
+       Palette-B-tuned muted hues: slate blue, muted green, warm tan —
+       composition colours, never a second accent. */
+    -chart-series-1:  #6E7A94;
+    -chart-series-2:  #7FA88F;
+    -chart-series-3:  #B08968;
+
     /* Elevation tokens deliberately NOT re-declared. Studio Slate is a
        dark theme like Palette A; the §3.4 black-translucent slab
        shadows read correctly on its dark surfaces. */

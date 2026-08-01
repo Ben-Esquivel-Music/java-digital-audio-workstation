@@ -89,6 +89,7 @@ final class TokenValidationTest {
                 "-accent", "-accent-soft",
                 "-ok", "-warn", "-danger",
                 "-meter-low", "-meter-mid", "-meter-hi", "-meter-clip",
+                "-chart-series-1", "-chart-series-2", "-chart-series-3",
                 "-font-sans", "-font-mono");
 
         for (String token : required) {
@@ -425,7 +426,11 @@ final class TokenValidationTest {
             "-line-soft", "-line-strong", "-focus-ring",
             "-text-hi", "-text", "-text-mute", "-text-on-accent",
             "-accent", "-accent-soft", "-accent-glow", "-drop-target-bg",
-            "-ok", "-warn", "-danger");
+            "-ok", "-warn", "-danger",
+            // Story 308 — the categorical chart-series trio is palette
+            // identity (unlike the magnitude-encoding meter ramp), so
+            // every overlay re-tunes it.
+            "-chart-series-1", "-chart-series-2", "-chart-series-3");
 
     /**
      * Story 277 — each theme overlay re-declares <em>every</em> colour

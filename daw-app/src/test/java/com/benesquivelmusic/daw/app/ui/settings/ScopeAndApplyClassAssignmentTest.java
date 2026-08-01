@@ -68,11 +68,45 @@ class ScopeAndApplyClassAssignmentTest {
     }
 
     @Test
-    void noDescriptorShouldCarryThisProjectScopeYet() {
-        // THIS_PROJECT exists per §3.2 canon; no setting reaches only the
-        // open project today.
-        assertThat(catalogue.descriptors())
-                .noneMatch(descriptor -> descriptor.scope() == Scope.THIS_PROJECT);
+    void onlyMetronomeRoutingDescriptorsCarryThisProjectScope() {
+        // Story 308 — THIS_PROJECT's first use (§3.2 "metronome routing"):
+        // click routing round-trips through the project XML. Exactly the
+        // five routing ids carry the scope; nothing else does.
+        assertThat(catalogue.descriptors().stream()
+                .filter(descriptor -> descriptor.scope() == Scope.THIS_PROJECT)
+                .map(SettingDescriptor::id))
+                .containsExactlyInAnyOrder(
+                        "metronome.clickChannel", "metronome.clickGain",
+                        "metronome.clickSideOutput", "metronome.clickMainMix",
+                        "metronome.clickCueBus");
+    }
+
+    @Test
+    void absorbedRecordingAndBackupsDescriptorsCarryTheirPinnedScopesAllLive() {
+        // Story 308 §3.2 — enabled/count-in are prefs-authoritative at
+        // startup → APPLICATION; retention is the application-wide
+        // ~/.daw/backup-retention.json policy → APPLICATION. Everything
+        // absorbed applies LIVE (no engine re-arm, no restart).
+        assertThat(scopeOf("metronome.enabled")).isEqualTo(Scope.APPLICATION);
+        assertThat(scopeOf("metronome.countIn")).isEqualTo(Scope.APPLICATION);
+        List<String> absorbedIds = List.of(
+                "metronome.enabled", "metronome.countIn", "metronome.clickChannel",
+                "metronome.clickGain", "metronome.clickSideOutput",
+                "metronome.clickMainMix", "metronome.clickCueBus",
+                "backups.keepRecent", "backups.keepHourly", "backups.keepDaily",
+                "backups.keepWeekly", "backups.maxAgeDays", "backups.maxDiskGiB");
+        for (String id : absorbedIds) {
+            assertThat(applyClassOf(id))
+                    .as("apply class of %s", id)
+                    .isEqualTo(ApplyClass.LIVE);
+        }
+        for (String id : List.of("backups.keepRecent", "backups.keepHourly",
+                "backups.keepDaily", "backups.keepWeekly",
+                "backups.maxAgeDays", "backups.maxDiskGiB")) {
+            assertThat(scopeOf(id))
+                    .as("scope of %s", id)
+                    .isEqualTo(Scope.APPLICATION);
+        }
     }
 
     @Test

@@ -5,8 +5,13 @@ import com.benesquivelmusic.daw.app.ui.SettingsModel;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
+import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 
 import javafx.scene.input.KeyCombination;
+
+import java.time.Duration;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,13 +34,14 @@ import java.util.function.Predicate;
  * <p>{@link #create()} registers one {@link SettingDescriptor} per
  * setting the application exposes today, grouped under the §3.3
  * category/group taxonomy (Audio, Appearance, Project, Recording,
- * Backups, Key Bindings, Plugins, General — Recording / Backups /
- * General carry empty placeholder groups that story 308 populates).
+ * Backups, Key Bindings, Plugins, General — the General category and
+ * the Backups "Disk usage" / Plugins "Manager" slots stay empty; disk
+ * usage is a §5.8 group visual, not a descriptor).
  * The catalogue is metadata only — it renders nothing and changes no
  * behaviour — and is the data source for the §6.1 search index
  * (story 306) and the §6.3 import/export profile (story 309).</p>
  *
- * <h2>Descriptor population ({@code 20 + DawAction.values().length})</h2>
+ * <h2>Descriptor population ({@code 33 + DawAction.values().length})</h2>
  * <ul>
  *   <li>17 {@code SettingsModel}-backed descriptors — id = the
  *       {@code Preferences} key. Defaults are read from a scratch
@@ -49,6 +55,15 @@ import java.util.function.Predicate;
  *       and {@link MotionManager#PREF_KEY} (referenced, never
  *       duplicated), the three {@code LIVE} appearance managers of
  *       stories 277/278/279.</li>
+ *   <li>13 absorbed Recording/Backups descriptors (story 308, §7
+ *       Stage 4) — {@code metronome.*} persist through the
+ *       {@code MetronomeController} preferences node,
+ *       {@code ~/.daw/metronome-settings.json} and the project XML;
+ *       {@code backups.*} persist as {@link BackupRetentionPolicy} in
+ *       {@code ~/.daw/backup-retention.json}. None of them is a
+ *       {@code SettingsModel} key. Validators delegate to the real
+ *       authorities ({@link ClickOutput} / {@link BackupRetentionPolicy}
+ *       withers) with the absorbed dialogs' UI bounds layered on top.</li>
  *   <li>One {@code KEY_CAPTURE} descriptor per {@link DawAction} — id
  *       {@code "keybinding." + action.name()} (the
  *       {@code KeyBindingManager} persistence key format), grouped by
@@ -100,6 +115,18 @@ public final class SettingsCatalogue {
 
     private static final String BUNDLE_NAME =
             "com.benesquivelmusic.daw.app.i18n.Messages";
+
+    // ── Story 308 — UI bounds carried over from the absorbed dialogs.
+    // The model authorities only enforce the LOWER bounds (>= 0); the
+    // upper bounds are the old spinner/slider ranges and stay UI policy.
+    private static final int MAX_CLICK_CHANNEL_INDEX = 63;
+    private static final int MAX_KEEP_RECENT = 100;
+    private static final int MAX_KEEP_HOURLY = 168;  // one week of hours
+    private static final int MAX_KEEP_DAILY = 60;    // ~2 months of days
+    private static final int MAX_KEEP_WEEKLY = 52;   // one year of weeks
+    private static final int MAX_AGE_DAYS = 365;
+    private static final int MAX_DISK_GIB = 64;
+    private static final long BYTES_PER_GIB = 1024L * 1024L * 1024L;
 
     private final List<Category> categories;
     private final List<SettingDescriptor<?>> descriptors;
@@ -336,16 +363,142 @@ public final class SettingsCatalogue {
                         defaultJournaledPersistence,
                         scratch::setUseJournaledPersistence)));
 
-        // ── 4./5. Recording & Backups (placeholders — story 308) ─────────
+        // ── 4. Recording (story 308 — absorbs MetronomeSettingsDialog) ───
+        // §3.2: enabled/count-in are prefs-authoritative at startup →
+        // APPLICATION. Click routing round-trips through the project XML
+        // (ProjectSerializer.buildMetronome) → THIS_PROJECT records that
+        // reach; the global JSON store stays the cross-session default.
+        Group recordingMetronome = new Group("metronome",
+                msg(messages, "settings.group.recording.metronome"), List.of(
+                absorbedDescriptor(messages, "metronome.enabled",
+                        List.of("click", "metronome"),
+                        Scope.APPLICATION, ControlKind.TOGGLE,
+                        Boolean.TRUE, _ -> true),
+                absorbedDescriptor(messages, "metronome.countIn",
+                        List.of("count in", "click", "bars"),
+                        Scope.APPLICATION, ControlKind.CHOICE,
+                        CountInMode.OFF, Objects::nonNull)));
+
+        Group recordingClickRouting = new Group("clickRouting",
+                msg(messages, "settings.group.recording.clickRouting"), List.of(
+                absorbedDescriptor(messages, "metronome.clickChannel",
+                        List.of("click", "routing", "output"),
+                        Scope.THIS_PROJECT, ControlKind.STEPPER,
+                        ClickOutput.MAIN_MIX_ONLY.hardwareChannelIndex(),
+                        (Integer value) -> {
+                            if (value == null || value > MAX_CLICK_CHANNEL_INDEX) {
+                                return false;
+                            }
+                            try {
+                                ClickOutput.MAIN_MIX_ONLY.withHardwareChannelIndex(value);
+                                return true;
+                            } catch (IllegalArgumentException rejected) {
+                                return false;
+                            }
+                        }),
+                absorbedDescriptor(messages, "metronome.clickGain",
+                        List.of("click", "gain", "level"),
+                        Scope.THIS_PROJECT, ControlKind.SLIDER,
+                        ClickOutput.MAIN_MIX_ONLY.gain(),
+                        (Double value) -> {
+                            if (value == null) {
+                                return false;
+                            }
+                            try {
+                                ClickOutput.MAIN_MIX_ONLY.withGain(value);
+                                return true;
+                            } catch (IllegalArgumentException rejected) {
+                                return false;
+                            }
+                        }),
+                absorbedDescriptor(messages, "metronome.clickSideOutput",
+                        List.of("click", "routing", "hardware"),
+                        Scope.THIS_PROJECT, ControlKind.TOGGLE,
+                        ClickOutput.MAIN_MIX_ONLY.sideOutputEnabled(), _ -> true)));
+
+        Group recordingCueMix = new Group("cueMix",
+                msg(messages, "settings.group.recording.cueMix"), List.of(
+                absorbedDescriptor(messages, "metronome.clickMainMix",
+                        List.of("click", "cue", "mix"),
+                        Scope.THIS_PROJECT, ControlKind.TOGGLE,
+                        ClickOutput.MAIN_MIX_ONLY.mainMixEnabled(), _ -> true),
+                // Value = the cue-bus UUID as a String; "" = "Main mix only".
+                absorbedDescriptor(messages, "metronome.clickCueBus",
+                        List.of("click", "cue", "headphone"),
+                        Scope.THIS_PROJECT, ControlKind.CHOICE,
+                        "", Objects::nonNull)));
+
         Category recording = new Category("recording",
                 msg(messages, "settings.category.recording"), List.of(
-                placeholderGroup(messages, "recording", "metronome"),
-                placeholderGroup(messages, "recording", "clickRouting"),
-                placeholderGroup(messages, "recording", "cueMix")));
+                recordingMetronome, recordingClickRouting, recordingCueMix));
+
+        // ── 5. Backups (story 308 — absorbs BackupSettingsDialog) ────────
+        // Retention rows render the six REAL BackupRetentionPolicy fields
+        // (§5.8's "min free space" mockup row has no code counterpart).
+        // The diskUsage group stays descriptor-empty: it hosts the pie as
+        // a §5.8 group visual, not a setting.
+        Group backupsRetention = new Group("retention",
+                msg(messages, "settings.group.backups.retention"), List.of(
+                absorbedDescriptor(messages, "backups.keepRecent",
+                        List.of("autosave", "retention", "backup"),
+                        Scope.APPLICATION, ControlKind.STEPPER,
+                        BackupRetentionPolicy.DEFAULT.keepRecent(),
+                        retentionCount(BackupRetentionPolicy.DEFAULT::withKeepRecent,
+                                MAX_KEEP_RECENT)),
+                absorbedDescriptor(messages, "backups.keepHourly",
+                        List.of("autosave", "retention", "backup"),
+                        Scope.APPLICATION, ControlKind.STEPPER,
+                        BackupRetentionPolicy.DEFAULT.keepHourly(),
+                        retentionCount(BackupRetentionPolicy.DEFAULT::withKeepHourly,
+                                MAX_KEEP_HOURLY)),
+                absorbedDescriptor(messages, "backups.keepDaily",
+                        List.of("autosave", "retention", "backup"),
+                        Scope.APPLICATION, ControlKind.STEPPER,
+                        BackupRetentionPolicy.DEFAULT.keepDaily(),
+                        retentionCount(BackupRetentionPolicy.DEFAULT::withKeepDaily,
+                                MAX_KEEP_DAILY)),
+                absorbedDescriptor(messages, "backups.keepWeekly",
+                        List.of("autosave", "retention", "backup"),
+                        Scope.APPLICATION, ControlKind.STEPPER,
+                        BackupRetentionPolicy.DEFAULT.keepWeekly(),
+                        retentionCount(BackupRetentionPolicy.DEFAULT::withKeepWeekly,
+                                MAX_KEEP_WEEKLY)),
+                absorbedDescriptor(messages, "backups.maxAgeDays",
+                        List.of("autosave", "retention", "days", "age"),
+                        Scope.APPLICATION, ControlKind.SLIDER,
+                        (double) BackupRetentionPolicy.DEFAULT.maxAge().toDays(),
+                        (Double value) -> {
+                            if (value == null || value < 0 || value > MAX_AGE_DAYS) {
+                                return false;
+                            }
+                            try {
+                                BackupRetentionPolicy.DEFAULT.withMaxAge(
+                                        Duration.ofDays(Math.round(value)));
+                                return true;
+                            } catch (IllegalArgumentException rejected) {
+                                return false;
+                            }
+                        }),
+                absorbedDescriptor(messages, "backups.maxDiskGiB",
+                        List.of("autosave", "retention", "disk", "pie"),
+                        Scope.APPLICATION, ControlKind.SLIDER,
+                        (double) (BackupRetentionPolicy.DEFAULT.maxBytes() / BYTES_PER_GIB),
+                        (Double value) -> {
+                            if (value == null || value < 0 || value > MAX_DISK_GIB) {
+                                return false;
+                            }
+                            try {
+                                BackupRetentionPolicy.DEFAULT.withMaxBytes(
+                                        Math.round(value) * BYTES_PER_GIB);
+                                return true;
+                            } catch (IllegalArgumentException rejected) {
+                                return false;
+                            }
+                        })));
 
         Category backups = new Category("backups",
                 msg(messages, "settings.category.backups"), List.of(
-                placeholderGroup(messages, "backups", "retention"),
+                backupsRetention,
                 placeholderGroup(messages, "backups", "diskUsage")));
 
         // ── 6. Key Bindings — one group per DawAction.Category ───────────
@@ -481,7 +634,49 @@ public final class SettingsCatalogue {
         };
     }
 
-    /** An empty §3.3 taxonomy slot that a later stage (story 308) populates. */
+    /**
+     * A story-308 absorbed Recording/Backups descriptor: message keys
+     * equal the id, always {@link ApplyClass#LIVE}, and the value
+     * persists in its pre-existing external store (metronome prefs /
+     * {@code metronome-settings.json} / {@code backup-retention.json}),
+     * never in {@code SettingsModel}.
+     */
+    private static <T> SettingDescriptor<T> absorbedDescriptor(
+            ResourceBundle messages, String id, List<String> synonyms,
+            Scope scope, ControlKind controlKind,
+            T defaultValue, Predicate<T> validator) {
+        return new SettingDescriptor<>(id,
+                msg(messages, id + ".label"),
+                msg(messages, id + ".description"),
+                synonyms, scope, ApplyClass.LIVE, controlKind, defaultValue,
+                validator);
+    }
+
+    /**
+     * A retention-bucket validator: delegates the lower bound to the
+     * real {@link BackupRetentionPolicy} wither guard and layers the
+     * absorbed dialog's UI upper bound on top.
+     */
+    private static Predicate<Integer> retentionCount(
+            java.util.function.IntFunction<BackupRetentionPolicy> wither, int uiMax) {
+        return value -> {
+            if (value == null || value > uiMax) {
+                return false;
+            }
+            try {
+                wither.apply(value);
+                return true;
+            } catch (IllegalArgumentException rejected) {
+                return false;
+            }
+        };
+    }
+
+    /**
+     * An empty §3.3 taxonomy slot — General (story-309 territory), the
+     * Plugins "Manager" slot, and the Backups "Disk usage" slot, which
+     * story 308 fills with a group-level visual rather than descriptors.
+     */
     private static Group placeholderGroup(
             ResourceBundle messages, String categoryId, String groupId) {
         return new Group(groupId,

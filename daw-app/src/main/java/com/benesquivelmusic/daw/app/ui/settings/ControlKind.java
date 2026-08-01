@@ -21,8 +21,8 @@ public enum ControlKind {
     SLIDER,
 
     /**
-     * A discrete numeric stepper. No descriptor uses it today — the
-     * constant exists per §3.4 canon for later stages.
+     * A discrete numeric stepper. First used by the story-308 absorbed
+     * Recording/Backups descriptors (click channel, retention buckets).
      */
     STEPPER,
 

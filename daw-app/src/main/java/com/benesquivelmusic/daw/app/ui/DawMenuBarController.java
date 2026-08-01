@@ -105,10 +105,10 @@ public final class DawMenuBarController {
         void onOpenSettings();
         void onOpenAudioSettings();
         /**
-         * Story 191 — Auto-Backup Rotation. Opens
-         * {@code BackupSettingsDialog} bound to the persisted retention
-         * policy and applies it immediately on Apply. Default no-op for
-         * tests.
+         * Story 191 / 308 — Auto-Backup Rotation. Deep-links into the
+         * Settings surface focused on the Backups category (retention
+         * policy + disk usage); applying still persists and prunes
+         * immediately. Default no-op for tests.
          */
         default void onOpenBackupSettings() { }
         void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass);

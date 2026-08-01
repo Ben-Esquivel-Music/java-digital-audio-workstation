@@ -60,6 +60,13 @@
        universal signal-level convention that reads correctly on this
        light surface too. Inheriting it is intentional. */
 
+    /* §3.1 DATA — categorical chart series (story 308 disk-usage pie).
+       Darker muted hues so the slices keep contrast on the warm-white
+       ground; composition colours, never a second accent. */
+    -chart-series-1:  #4A6B9E;
+    -chart-series-2:  #3F8E6F;
+    -chart-series-3:  #9A7440;
+
     /* Elevation tokens softened for a light theme. Palette A's shadows
        are pure black at 35–55 % opacity — designed for near-black
        surfaces. On Atelier's #F4F4F0 / #FFFFFF surfaces a 55 %-black
