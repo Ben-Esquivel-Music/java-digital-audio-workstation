@@ -545,10 +545,17 @@ public final class SettingsDialog extends DawgDialog<Void> {
         }
     }
 
-    /** Unmounts the §5.9 profile sheet (its I/O task stays reusable). */
+    /**
+     * Unmounts the §5.9 profile sheet and tears down its in-flight I/O
+     * (§2.7 — a late result is discarded, never applied). A closed
+     * {@code SettingsProfileIO} never restarts, so the field is nulled
+     * and the next {@link #showProfileSheet()} builds a fresh sheet.
+     */
     void hideProfileSheet() {
         if (profileSheet != null) {
+            profileSheet.dispose();
             contentStack.getChildren().remove(profileSheet);
+            profileSheet = null;
         }
     }
 

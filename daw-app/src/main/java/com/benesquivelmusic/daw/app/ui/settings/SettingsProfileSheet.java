@@ -322,13 +322,17 @@ public final class SettingsProfileSheet extends StackPane {
     }
 
     private void dismiss() {
+        // §2.7 — closing the sheet cancels its in-flight I/O regardless
+        // of how the owner unmounts; disposing again there is a no-op.
+        dispose();
         onClose.run();
     }
 
     /**
      * Tears down in-flight I/O (§2.7 — closing the surface cancels the
-     * work; a late result is discarded, never applied). Called by the
-     * owning dialog when the sheet unmounts or the dialog hides.
+     * work; a late result is discarded, never applied). Called by
+     * {@link #dismiss()} and by the owning dialog when the sheet unmounts
+     * or the dialog hides — idempotent, so both may run.
      */
     public void dispose() {
         io.close();
