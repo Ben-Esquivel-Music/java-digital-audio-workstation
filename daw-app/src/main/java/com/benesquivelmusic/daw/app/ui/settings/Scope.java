@@ -25,9 +25,9 @@ public enum Scope {
     PROJECT_DEFAULTS,
 
     /**
-     * Applies to the currently open project only. No descriptor carries
-     * this scope today — the constant exists per §3.2 canon so later
-     * stages need no vocabulary change.
+     * Applies to the currently open project only. First used by the
+     * story-308 metronome click-routing descriptors, whose values
+     * round-trip through the project XML ({@code ProjectSerializer}).
      */
     THIS_PROJECT,
 

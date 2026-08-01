@@ -196,9 +196,9 @@ final class MenuConstructionService {
                 DawAction.OPEN_SETTINGS, host::onOpenSettings);
         MenuItem audioSettings = menuItem("Audio Settings\u2026", DawIcon.HEADPHONES,
                 null, host::onOpenAudioSettings);
-        // Story 191 — Auto-Backup Rotation. "Backup Retention…" opens the
-        // policy editor; on Apply the new policy is persisted and applied
-        // immediately to ~/.daw/autosaves.
+        // Story 191 / 308 — Auto-Backup Rotation. "Backup Retention…"
+        // deep-links into Settings ▸ Backups; on Apply the new policy is
+        // persisted and applied immediately to ~/.daw/autosaves.
         MenuItem backupSettings = menuItem("Backup Retention\u2026", DawIcon.FOLDER,
                 null, host::onOpenBackupSettings);
 

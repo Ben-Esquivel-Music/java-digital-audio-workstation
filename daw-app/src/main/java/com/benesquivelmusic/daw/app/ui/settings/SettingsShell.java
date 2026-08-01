@@ -8,6 +8,8 @@ import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuButton;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.input.KeyCode;
@@ -267,27 +269,29 @@ public final class SettingsShell extends BorderPane {
     }
 
     /**
-     * One permanent pane per category: title label (§5.3 — a plain label,
-     * NEVER an accent fill, rejection §6), then per non-empty group a
-     * header + its rows, then the category's trailing node if present.
+     * One permanent pane per category: header row (the §5.3 plain title
+     * label — NEVER an accent fill, rejection §6 — plus the §5.7 tier-3
+     * ⋯ menu), then per group a header + its rows + optional ancillary
+     * node, then the category's trailing node if present. A group with
+     * neither descriptors nor an ancillary node renders nothing (a
+     * placeholder taxonomy slot); an ancillary-only group (backups /
+     * diskUsage, story 308) renders its header + the ancillary visual.
      */
     private void buildCategoryPanes(SettingsCatalogue catalogue,
                                     Map<String, Node> trailing,
                                     Map<String, Node> groupAncillary) {
         for (SettingsCatalogue.Category category : catalogue.categories()) {
             List<Node> children = new ArrayList<>();
-            Label title = new Label(category.title());
-            title.getStyleClass().add("settings-category-title");
-            children.add(title);
+            children.add(categoryHeader(category));
             for (SettingsCatalogue.Group group : category.groups()) {
-                if (group.settings().isEmpty()) {
-                    continue; // placeholder taxonomy slots (story 308)
+                Node ancillary = groupAncillary.get(groupKey(category.id(), group.id()));
+                if (group.settings().isEmpty() && ancillary == null) {
+                    continue; // placeholder taxonomy slots (story 309 areas)
                 }
                 children.add(groupHeader(category.id(), group));
                 for (SettingDescriptor<?> descriptor : group.settings()) {
                     children.add(rowsById.get(descriptor.id()));
                 }
-                Node ancillary = groupAncillary.get(groupKey(category.id(), group.id()));
                 if (ancillary != null) {
                     children.add(ancillary);
                 }
@@ -302,6 +306,33 @@ public final class SettingsShell extends BorderPane {
             categoryPanes.put(category.id(), pane);
             categoryPaneChildren.put(category.id(), List.copyOf(children));
         }
+    }
+
+    /**
+     * §5.3 pane header: the plain title label plus the uniform §5.7
+     * tier-3 ⋯ menu carrying "Reset {category} to defaults" (story 308).
+     * The title keeps the {@code settings-category-title} style class.
+     */
+    private Node categoryHeader(SettingsCatalogue.Category category) {
+        Label title = new Label(category.title());
+        title.getStyleClass().add("settings-category-title");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        MenuButton menu = new MenuButton();
+        menu.getStyleClass().addAll("dawg-button", "icon-only", "settings-category-menu");
+        menu.setId("settings-category-menu-" + category.id());
+        menu.setGraphic(DawgIcon.of("ellipsis", DawgIcon.Size.SIZE_16));
+        menu.setAccessibleText(msg("settings.category.menu"));
+        MenuItem reset = new MenuItem(MessageFormat.format(
+                msg("settings.category.reset"), category.title()));
+        reset.setOnAction(_ -> resetCategory(category.id()));
+        menu.getItems().add(reset);
+
+        HBox header = new HBox(title, spacer, menu);
+        header.getStyleClass().add("settings-category-header");
+        return header;
     }
 
     /** Rail items in catalogue order; selection swaps the browse pane. */
@@ -773,6 +804,27 @@ public final class SettingsShell extends BorderPane {
         rows.forEach(SettingRow::resetToDefault);
     }
 
+    /**
+     * §5.7 tier 3 (story 308): resets every row of every group in one
+     * category to its descriptor default. Pending-only, like every other
+     * reset tier — nothing is persisted until Apply.
+     *
+     * @param categoryId a catalogue category id
+     * @throws IllegalArgumentException for an unknown category id
+     */
+    public void resetCategory(String categoryId) {
+        if (!categoryPanes.containsKey(categoryId)) {
+            throw new IllegalArgumentException(
+                    "Unknown settings category: " + categoryId);
+        }
+        String prefix = categoryId + "/";
+        for (Map.Entry<String, List<SettingRow>> entry : rowsByGroup.entrySet()) {
+            if (entry.getKey().startsWith(prefix)) {
+                entry.getValue().forEach(SettingRow::resetToDefault);
+            }
+        }
+    }
+
     /** @return whether the pending-only restart banner is currently visible */
     public boolean isRestartBannerVisible() {
         return restartBanner.isVisible();
@@ -880,15 +932,21 @@ public final class SettingsShell extends BorderPane {
         HBox.setHgrow(spacer, Priority.ALWAYS);
         header.getChildren().addAll(title, spacer);
 
-        if ("audio".equals(categoryId) && "device".equals(group.id())) {
-            Label progress = new Label(msg("settings.group.recomputing"));
-            progress.getStyleClass().add("settings-group-progress");
-            progress.setManaged(false);
-            progress.setVisible(false);
-            progressByGroup.put(groupKey(categoryId, group.id()), progress);
-            header.getChildren().add(progress);
-        }
-        if ("audio".equals(categoryId)) {
+        // §5.8 / §6.6 — every group header carries the hidden progress
+        // affordance so setGroupBusy works for any async group work
+        // (audio/device enumeration, backups/diskUsage scan) with no
+        // per-story gating (story 308 generalised the 307 audio gate).
+        Label progress = new Label(msg("settings.group.recomputing"));
+        progress.getStyleClass().add("settings-group-progress");
+        progress.setManaged(false);
+        progress.setVisible(false);
+        progressByGroup.put(groupKey(categoryId, group.id()), progress);
+        header.getChildren().add(progress);
+
+        // §5.7 tier 2 — reset is a uniform affordance (rejection #6):
+        // every group with at least one row gets it; ancillary-only
+        // groups have nothing to reset.
+        if (!group.settings().isEmpty()) {
             Button reset = new Button(msg("settings.group.reset"));
             reset.getStyleClass().addAll("dawg-button", "settings-group-reset");
             reset.setId("reset-group-" + categoryId + "-" + group.id());
