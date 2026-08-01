@@ -69,6 +69,13 @@ public final class JournalWriter implements AutoCloseable {
     private final ReentrantLock workLock = new ReentrantLock();
     private final Condition workAvailable = workLock.newCondition();
 
+    // Serialises ownership of drained records from dequeue through durable
+    // append. Without this lock, forceFlush() can observe both buffers empty
+    // while the writer thread holds a dequeued batch that has not yet acquired
+    // appendLock. Producers never acquire this lock, so offer() remains
+    // independent of blocking disk I/O.
+    private final ReentrantLock drainLock = new ReentrantLock(true);
+
     // Serialises segment append/rotate so the writer thread and an ad-hoc
     // forceFlush() thread never touch the (non-thread-safe) segment at once.
     // ReentrantLock, NOT synchronized: the section spans blocking fsync I/O on
@@ -308,12 +315,6 @@ public final class JournalWriter implements AutoCloseable {
                 .unstarted(() -> {
                     try {
                         drainUntilEmpty();
-                        // Barrier: if the writer thread grabbed the final batch
-                        // and is still mid-append, block until it releases the
-                        // append lock, then re-drain so nothing is left in flight.
-                        appendLock.lock();
-                        appendLock.unlock();
-                        drainUntilEmpty();
                     } catch (IOException e) {
                         // Surface as unchecked so the joining caller sees it;
                         // a flush failure is exceptional, not routine.
@@ -334,12 +335,9 @@ public final class JournalWriter implements AutoCloseable {
     private void writerLoop() {
         try {
             while (running || hasBufferedWork()) {
-                List<JournalRecord> batch = takeBatch();
-                if (batch.isEmpty()) {
+                if (!appendNextBatch()) {
                     awaitWork();
-                    continue;
                 }
-                appendWithRetry(batch);
             }
         } finally {
             // Drain anything that slipped in during shutdown before exiting.
@@ -348,6 +346,25 @@ public final class JournalWriter implements AutoCloseable {
             } catch (IOException ignored) {
                 // best-effort final drain
             }
+        }
+    }
+
+    /**
+     * Claims and appends one writer batch under the same ownership lock used
+     * by {@link #forceFlush()}, so an empty buffer always means that no writer
+     * batch can still be waiting to append.
+     */
+    private boolean appendNextBatch() {
+        drainLock.lock();
+        try {
+            List<JournalRecord> batch = takeBatch();
+            if (batch.isEmpty()) {
+                return false;
+            }
+            appendWithRetry(batch);
+            return true;
+        } finally {
+            drainLock.unlock();
         }
     }
 
@@ -443,12 +460,17 @@ public final class JournalWriter implements AutoCloseable {
      * the FX thread.
      */
     private void drainUntilEmpty() throws IOException {
-        while (true) {
-            List<JournalRecord> batch = takeBatch();
-            if (batch.isEmpty()) {
-                return;
+        drainLock.lock();
+        try {
+            while (true) {
+                List<JournalRecord> batch = takeBatch();
+                if (batch.isEmpty()) {
+                    return;
+                }
+                appendBatchAndMaybeRotate(batch);
             }
-            appendBatchAndMaybeRotate(batch);
+        } finally {
+            drainLock.unlock();
         }
     }
 
