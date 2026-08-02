@@ -882,8 +882,8 @@ public final class MainController {
         correlationDisplay = new com.benesquivelmusic.daw.app.ui.display.CorrelationDisplay();
         tunerDisplay = new com.benesquivelmusic.daw.app.ui.display.TunerDisplay();
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
-        createTempoEditController();
         initializeNotificationBar();
+        createTempoEditController();
         initializePluginFaultIsolation();
         createTransportController();
         mountPreRollPostRollControls();

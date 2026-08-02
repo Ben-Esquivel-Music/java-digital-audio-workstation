@@ -43,11 +43,16 @@ enforces an allocation-free audio thread through buffer pooling and the
 
 `zgc.conf` is packaged as a classpath resource inside `daw-app` and is
 materialized into the user's settings directory by `DawLauncher` on first
-run. Pass it to the JVM via `@<settings>/zgc.conf`:
+run. Pass it to the `jlink` runtime JVM via `@<settings>/zgc.conf`:
 
 ```bash
-java @$HOME/.config/java-daw/zgc.conf -jar daw-app.jar
+daw-app/target/daw-runtime/bin/java @<settings>/zgc.conf \
+    --enable-native-access=daw.core,daw.sdk,daw.app \
+    -m daw.app/com.benesquivelmusic.daw.app.DawLauncher
 ```
+
+The application JAR is a thin JPMS module and is not directly runnable with
+`java -jar`.
 
 ### Flags and rationale
 
@@ -129,10 +134,12 @@ To reproduce locally:
 ```bash
 # 1. Install Java 26 (see skill file).
 # 2. Launch with the ZGC profile:
-java @target/settings/zgc.conf -jar daw-app/target/daw-app.jar \
+daw-app/target/daw-runtime/bin/java @<settings>/zgc.conf \
+     --enable-native-access=daw.core,daw.sdk,daw.app \
+     -m daw.app/com.benesquivelmusic.daw.app.DawLauncher \
      --benchmark=stress --tracks=64 --inserts=4 --sample-rate=48000 --buffer=64
 # 3. Compare against the baseline (default G1, no buffer pool):
-java -jar daw-app/target/daw-app.jar --benchmark=stress ...
+daw-app/target/daw-runtime/bin/daw --benchmark=stress ...
 ```
 
 JFR (`-XX:StartFlightRecording=duration=60s,filename=stress.jfr`) is the

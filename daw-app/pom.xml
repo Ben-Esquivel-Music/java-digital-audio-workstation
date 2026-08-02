@@ -284,8 +284,9 @@
                 </executions>
             </plugin>
 
-            <!-- Modular main-class manifest entry on the daw-app jar (kept so
-                 the jar is also runnable directly on a module path). -->
+            <!-- Modular main-class entry on the daw-app jar. This is a thin
+                 JPMS artifact, not a standalone fat jar: use the jlink or
+                 jpackage launcher above instead of `java -jar`. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>

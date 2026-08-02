@@ -44,13 +44,22 @@ mvn clean package -DskipTests
 
 ## Running the Application
 
-```bash
-# Run via Maven
-mvn javafx:run -pl daw-app
+The packaged application includes its own Java and JavaFX runtime. On Windows,
+launch the app image produced by `mvn package`:
 
-# Or run the built JAR
-java -jar daw-app/target/daw-app-0.1.0-SNAPSHOT.jar
+```powershell
+& ".\daw-app\target\dist\app-image\DigitalAudioWorkstation\DigitalAudioWorkstation.exe"
 ```
+
+For local development, the generated `jlink` launcher is also available:
+
+```powershell
+& ".\daw-app\target\daw-runtime\bin\daw.bat"
+```
+
+The `daw-app-*.jar` file is a thin JPMS module, not a standalone fat JAR. Do
+not run it with `java -jar`; that omits JavaFX and the other application
+modules from the runtime path.
 
 ## Developing Plugins
 
