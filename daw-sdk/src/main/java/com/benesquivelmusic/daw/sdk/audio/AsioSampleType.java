@@ -516,6 +516,7 @@ enum AsioSampleType {
     @RealTimeSafe
     private static int quantize(float sample, double scale, int limit) {
         float clamped = Math.clamp(sample, -1f, 1f);
-        return Math.clamp(Math.round(clamped * scale), -limit, limit);
+        int rounded = (int) Math.round(clamped * scale);
+        return Math.clamp(rounded, -limit, limit);
     }
 }
