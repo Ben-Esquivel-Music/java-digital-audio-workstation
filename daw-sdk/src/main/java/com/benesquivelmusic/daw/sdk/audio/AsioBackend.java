@@ -7,6 +7,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
@@ -99,6 +100,7 @@ public final class AsioBackend implements AudioBackend {
      */
     private static final AtomicBoolean FALLBACK_LOGGED = new AtomicBoolean(false);
 
+    private final Executor resetTeardownExecutor;
     private final AudioBackendSupport support = new AudioBackendSupport();
     private volatile AsioFormatChangeShim formatChangeShim;
     private volatile AsioDriverShim driverShim;
@@ -124,6 +126,13 @@ public final class AsioBackend implements AudioBackend {
 
     /** Creates a new ASIO backend (no native resources allocated until {@link #open}). */
     public AsioBackend() {
+        this(RESET_TEARDOWN_EXECUTOR);
+    }
+
+    /** Test seam for controlling when an asynchronous reset teardown runs. */
+    AsioBackend(Executor resetTeardownExecutor) {
+        this.resetTeardownExecutor = Objects.requireNonNull(
+                resetTeardownExecutor, "resetTeardownExecutor");
     }
 
     @Override
@@ -857,6 +866,13 @@ public final class AsioBackend implements AudioBackend {
      * frees nothing — the upcall stays installed and the bridge alive — so the
      * refusal is a diagnostic rather than a hazard.</p>
      *
+     * <p>The queued task rechecks that its captured streaming shim is still
+     * current while holding the lifecycle lock. If {@link #close()} and a
+     * subsequent {@link #open(DeviceId, AudioFormat, int)} have already moved
+     * the backend to another stream, the stale task makes no native calls and
+     * logs no refusal. The driver callback itself only quiesces the bridge and
+     * enqueues this work; it never acquires that lock or waits.</p>
+     *
      * <p><strong>The backend stays open.</strong> This does not call
      * {@code markClosed()} — the driver is still loaded, and short-circuiting
      * {@link #close()} would leak the driver shim. {@link #isOpen()} therefore
@@ -883,10 +899,19 @@ public final class AsioBackend implements AudioBackend {
         if (streaming == null) {
             return;
         }
-        RESET_TEARDOWN_EXECUTOR.execute(() -> {
-            boolean stopped = streaming.stop();
-            boolean disposed = streaming.disposeBuffers();
-            warnIfDriverRefusedTeardown(stopped, disposed);
+        resetTeardownExecutor.execute(() -> {
+            synchronized (DRIVER_LIFECYCLE_LOCK) {
+                // close() may have already disposed this shim and open() may
+                // have published its replacement while this task was queued.
+                // Keep the identity check and downcalls in the same lifecycle
+                // critical section so the stream cannot move on between them.
+                if (streamingShim != streaming) {
+                    return;
+                }
+                boolean stopped = streaming.stop();
+                boolean disposed = streaming.disposeBuffers();
+                warnIfDriverRefusedTeardown(stopped, disposed);
+            }
         });
     }
 

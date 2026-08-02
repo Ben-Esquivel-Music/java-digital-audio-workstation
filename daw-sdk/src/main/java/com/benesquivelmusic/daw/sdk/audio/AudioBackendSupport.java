@@ -37,12 +37,23 @@ final class AudioBackendSupport implements AutoCloseable {
     private static final BiPredicate<Flow.Subscriber<? super AudioDeviceEvent>, AudioDeviceEvent>
             DROP_DEVICE_EVENT = (subscriber, droppedEvent) -> false;
 
-    private volatile SubmissionPublisher<AudioBlock> publisher = new SubmissionPublisher<>();
-    private volatile SubmissionPublisher<AudioDeviceEvent> devicePublisher =
-            new SubmissionPublisher<>();
+    private volatile SubmissionPublisher<AudioBlock> publisher;
+    private volatile SubmissionPublisher<AudioDeviceEvent> devicePublisher;
     private volatile boolean open;
     private volatile AudioFormat format;
     private volatile int bufferFrames;
+
+    AudioBackendSupport() {
+        this(new SubmissionPublisher<>(), new SubmissionPublisher<>());
+    }
+
+    /** Test seam for deterministically exercising publisher-close races. */
+    AudioBackendSupport(SubmissionPublisher<AudioBlock> publisher,
+                        SubmissionPublisher<AudioDeviceEvent> devicePublisher) {
+        this.publisher = Objects.requireNonNull(publisher, "publisher must not be null");
+        this.devicePublisher = Objects.requireNonNull(
+                devicePublisher, "devicePublisher must not be null");
+    }
 
     synchronized void markOpen(AudioFormat format, int bufferFrames) {
         Objects.requireNonNull(format, "format must not be null");
@@ -113,7 +124,7 @@ final class AudioBackendSupport implements AutoCloseable {
         // Use offer() with a drop handler instead of submit() to avoid
         // blocking under backpressure — this may be called from a native
         // callback thread (e.g. ASIO's asioMessage) that must not stall.
-        current.offer(event, DROP_DEVICE_EVENT);
+        offerUnlessClosed(current, event, DROP_DEVICE_EVENT);
     }
 
     /**
@@ -130,10 +141,10 @@ final class AudioBackendSupport implements AutoCloseable {
      * a block instead of stalling capture.</p>
      *
      * <p>The guard checks both the open flag <em>and</em> the publisher's
-     * closed state: {@link SubmissionPublisher#offer} throws
-     * {@code IllegalStateException("Closed")} on a closed publisher with no
-     * subscribers, so a publish racing {@link #close()} must be filtered out
-     * here rather than construct an exception.</p>
+     * closed state as a cheap fast path. Because {@link #close()} can still win
+     * between that check and {@link SubmissionPublisher#offer},
+     * {@link #offerUnlessClosed(SubmissionPublisher, Object, BiPredicate)}
+     * handles the documented close exception at the operation itself.</p>
      *
      * @param block the captured block; must not be null
      */
@@ -145,7 +156,31 @@ final class AudioBackendSupport implements AutoCloseable {
         if (!open || current.isClosed()) {
             return;
         }
-        current.offer(block, DROP_INPUT_BLOCK);
+        offerUnlessClosed(current, block, DROP_INPUT_BLOCK);
+    }
+
+    /**
+     * Offers an item without allowing a concurrent {@link #close()} to leak
+     * {@link IllegalStateException} onto a backend callback thread.
+     *
+     * <p>The earlier {@link SubmissionPublisher#isClosed()} checks remain a
+     * cheap fast path, but they cannot make the subsequent offer atomic with
+     * close. Serializing the operations would block the real-time caller, so
+     * the close race is handled at the non-blocking operation itself. An
+     * {@code IllegalStateException} from an open publisher is rethrown rather
+     * than hidden.</p>
+     */
+    private static <T> void offerUnlessClosed(
+            SubmissionPublisher<T> publisher,
+            T item,
+            BiPredicate<Flow.Subscriber<? super T>, T> dropHandler) {
+        try {
+            publisher.offer(item, dropHandler);
+        } catch (IllegalStateException closedRace) {
+            if (!publisher.isClosed()) {
+                throw closedRace;
+            }
+        }
     }
 
     void validateOutgoing(AudioBlock block) {

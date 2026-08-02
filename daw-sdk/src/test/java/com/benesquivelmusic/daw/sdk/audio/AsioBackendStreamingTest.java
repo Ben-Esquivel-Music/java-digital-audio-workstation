@@ -441,6 +441,38 @@ class AsioBackendStreamingTest {
         assertThat(calls).containsExactly("stop", "disposeBuffers");
     }
 
+    @Test
+    void queuedResetTeardownSkipsAStreamThatWasClosedAndReopened() {
+        List<Runnable> queuedTeardowns = new ArrayList<>();
+        backend.close();
+        backend = new AsioBackend(queuedTeardowns::add);
+        calls.clear();
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        backend.stopStreamingForDriverReset();
+        assertThat(queuedTeardowns).hasSize(1);
+
+        backend.close();
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        assertThat(backend.activeBufferSwitchShim().isStreaming()).isTrue();
+        calls.clear();
+        logRecords.clear();
+        stopSucceeds = false;
+        disposeSucceeds = false;
+
+        queuedTeardowns.getFirst().run();
+
+        assertThat(calls)
+                .as("a reset task captured from the previous stream must make no native calls")
+                .isEmpty();
+        assertThat(logRecords)
+                .as("a stale reset task must not report refusals from an obsolete shim")
+                .noneMatch(record -> Level.WARNING.equals(record.getLevel()));
+        assertThat(backend.activeBufferSwitchShim().isStreaming())
+                .as("the reopened stream remains current and running")
+                .isTrue();
+    }
+
     /**
      * Story 311 (S3): a reset does not close the backend — the driver is still
      * loaded, and short-circuiting {@code close()} would leak the driver shim.
