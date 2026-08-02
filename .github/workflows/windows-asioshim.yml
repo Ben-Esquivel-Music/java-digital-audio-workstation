@@ -21,11 +21,17 @@ name: Windows asioshim Build & Bundle
 # in this repository's secret-aware context).
 #
 # CI lane contract:
-#   * `DAW_REQUIRE_ASIOSHIM=1` is exported so the env-gated tests
-#     (`NativeLibraryDetectorTest`, `AsioFormatChangeShimTest`) flip
-#     their `Assumptions.assumeTrue(...)` calls to hard `assertTrue(...)`
-#     assertions. Absence of `asioshim.dll` on the FFM library path
+#   * `DAW_REQUIRE_ASIOSHIM=1` is exported so the env-gated tests flip their
+#     `Assumptions.assumeTrue(...)` calls to hard `assertThat(...).isTrue()`
+#     assertions. Two suites read the variable — `NativeLibraryDetectorTest`
+#     and, since story 311, `AsioStreamingIntegrationTest` (both in
+#     `daw-core`, which is the only module whose Surefire sets
+#     `-Djava.library.path=${native.libs.dir}` and which runs after the CMake
+#     native build). Absence of `asioshim.dll` on the FFM library path
 #     therefore fails the job rather than silently skipping the test.
+#     `AsioFormatChangeShimTest` (in `daw-sdk`) deliberately does *not* read
+#     the variable: `daw-sdk` runs before the native build, so its asioshim
+#     assertion can only ever be an unconditional `assumeTrue`.
 #   * The final `Verify bundled distribution` step asserts the
 #     packaged DLL exists under `daw-app/target/dist/native/windows-x64/`.
 
@@ -35,8 +41,11 @@ on:
     paths:
       - 'daw-core/native/asio/**'
       - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/AudioBlockRing.java'
       - 'daw-sdk/src/test/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-sdk/src/test/java/com/benesquivelmusic/daw/sdk/audio/AudioBlockRingTest.java'
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryDetectorTest.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/AsioStreamingIntegrationTest.java'
       - 'lib/CMakeLists.txt'
       - '.github/workflows/windows-asioshim.yml'
   pull_request:
@@ -44,8 +53,11 @@ on:
     paths:
       - 'daw-core/native/asio/**'
       - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/AudioBlockRing.java'
       - 'daw-sdk/src/test/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-sdk/src/test/java/com/benesquivelmusic/daw/sdk/audio/AudioBlockRingTest.java'
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryDetectorTest.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/AsioStreamingIntegrationTest.java'
       - 'lib/CMakeLists.txt'
       - '.github/workflows/windows-asioshim.yml'
   workflow_dispatch: {}
@@ -128,8 +140,8 @@ jobs:
         shell: pwsh
         env:
           # Flip the env-gated assertions in NativeLibraryDetectorTest and
-          # AsioFormatChangeShimTest from assumeTrue (skip) to assertTrue
-          # (fail) — see daw-core/native/asio/README.md.
+          # AsioStreamingIntegrationTest from assumeTrue (skip) to a hard
+          # assertion — see daw-core/native/asio/README.md.
           DAW_REQUIRE_ASIOSHIM: '1'
         run: |
           mvn -B -DskipTests=false verify

@@ -12,6 +12,7 @@ import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.attribute.CodeAttribute;
+import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.MonitorInstruction;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -60,6 +61,19 @@ class RealTimeSafeContractTest {
     private static final Set<Class<?>> BOXED_TYPES = Set.of(
             Boolean.class, Byte.class, Character.class, Short.class,
             Integer.class, Long.class, Float.class, Double.class);
+
+    /** Story 311 — the ASIO real-time bridge scanned by the sentinels below. */
+    private static final String ASIO_BRIDGE_CLASS =
+            "com.benesquivelmusic.daw.sdk.audio.AsioBufferSwitchShim";
+
+    /**
+     * Story 311 — the method on {@link #ASIO_BRIDGE_CLASS} that the driver's
+     * real-time thread enters. The bytecode sentinel below matches on this
+     * name, so renaming the bridge method without updating this constant would
+     * silently stop the scan; that is exactly what the sentinel's non-empty
+     * guard fails on.
+     */
+    private static final String ASIO_BRIDGE_METHOD = "bufferSwitch";
 
     // ------------------------------------------------------------------
     // Discovery
@@ -134,6 +148,99 @@ class RealTimeSafeContractTest {
         assertThat(isRealTimeSafe(processBlock))
                 .as("AudioEngine.processBlock must be annotated @RealTimeSafe")
                 .isTrue();
+    }
+
+    /**
+     * Story 311 — the ASIO buffer-switch bridge runs on the driver's own
+     * real-time thread, so it is a critical path in exactly the same sense as
+     * {@code AudioEngine.processBlock}. The generic bytecode / varargs /
+     * boxing checks below already sweep {@code daw.sdk}; this asserts the
+     * bridge method carries the annotation in the first place.
+     */
+    @Test
+    void asioBufferSwitchBridgeShouldBeRealTimeSafe() throws Exception {
+        Class<?> bridge = Class.forName(ASIO_BRIDGE_CLASS);
+        // getDeclaredMethod throws NoSuchMethodException when either method is
+        // renamed away, so this sentinel already fails loudly rather than
+        // silently asserting nothing.
+        Method bufferSwitch = bridge.getDeclaredMethod(
+                ASIO_BRIDGE_METHOD, int.class, int.class);
+        assertThat(isRealTimeSafe(bufferSwitch))
+                .as("AsioBufferSwitchShim.bufferSwitch must be annotated @RealTimeSafe")
+                .isTrue();
+        Method write = bridge.getDeclaredMethod(
+                "write", Class.forName("com.benesquivelmusic.daw.sdk.audio.AudioBlock"));
+        assertThat(isRealTimeSafe(write))
+                .as("AsioBufferSwitchShim.write must be annotated @RealTimeSafe")
+                .isTrue();
+    }
+
+    /**
+     * Story 311 — structural guard for the off-thread input marshalling.
+     *
+     * <p>{@code SubmissionPublisher.doOffer} acquires a
+     * {@link java.util.concurrent.locks.ReentrantLock} (even with zero
+     * subscribers, and held across the whole subscriber fan-out),
+     * {@code BufferedSubscription.offer} grows an {@code Object[]}, and the
+     * delivery {@code Executor} allocates a task. {@link RealTimeSafe} forbids
+     * all three verbatim. The bridge therefore de-interleaves into a lock-free
+     * ring and lets the {@code asio-input-drain} thread do the publishing —
+     * a property no behavioural test can pin down, so it is asserted directly
+     * against the callback's bytecode.</p>
+     *
+     * <p>The scan is by method <em>name</em>, so it would pass vacuously if the
+     * bridge method were renamed or compiled without a {@code Code} attribute:
+     * the loop body would never run and {@code offenders} would be empty. The
+     * scanned-method count is therefore asserted non-empty first, per this
+     * repo's conformance-sentinel convention.</p>
+     */
+    @Test
+    void asioBufferSwitchMustNotPublishFromTheCallbackThread() throws Exception {
+        Class<?> bridge = Class.forName(ASIO_BRIDGE_CLASS);
+        byte[] bytes = readClassBytes(bridge);
+        assertThat(bytes).as("AsioBufferSwitchShim class file must be readable").isNotNull();
+        ClassModel model = ClassFile.of().parse(bytes);
+
+        List<String> offenders = new ArrayList<>();
+        int scannedBridgeMethods = 0;
+        for (MethodModel mm : model.methods()) {
+            if (!mm.methodName().stringValue().equals(ASIO_BRIDGE_METHOD)) {
+                continue;
+            }
+            CodeAttribute code = mm
+                    .findAttribute(java.lang.classfile.Attributes.code())
+                    .map(CodeAttribute.class::cast)
+                    .orElse(null);
+            if (code == null) {
+                continue;
+            }
+            scannedBridgeMethods++;
+            for (var element : code) {
+                if (!(element instanceof InvokeInstruction invoke)) {
+                    continue;
+                }
+                String owner = invoke.owner().asInternalName();
+                String name = invoke.name().stringValue();
+                if (owner.contains("SubmissionPublisher")
+                        || name.equals("publishInput")
+                        || name.equals("submit")
+                        || name.equals("offer")) {
+                    offenders.add("bufferSwitch invokes " + owner + "#" + name);
+                }
+            }
+        }
+
+        assertThat(scannedBridgeMethods)
+                .as("this sentinel only asserts anything if it actually scanned the "
+                        + "bytecode of AsioBufferSwitchShim#%s, and no such method "
+                        + "with a Code attribute was found, so the check below would "
+                        + "pass vacuously. If the ASIO bridge method was renamed, "
+                        + "update ASIO_BRIDGE_METHOD here.", ASIO_BRIDGE_METHOD)
+                .isGreaterThanOrEqualTo(1);
+        assertThat(offenders)
+                .as("AsioBufferSwitchShim.bufferSwitch must hand captured audio to the "
+                        + "asio-input-drain thread instead of publishing inline")
+                .isEmpty();
     }
 
     // ------------------------------------------------------------------

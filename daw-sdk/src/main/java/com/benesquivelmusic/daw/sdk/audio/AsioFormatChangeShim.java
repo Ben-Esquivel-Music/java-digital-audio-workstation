@@ -34,10 +34,21 @@ import java.util.Optional;
  */
 final class AsioFormatChangeShim implements AutoCloseable {
 
+    /**
+     * ASIO selector: "do you handle selector {@code value}?" — the driver's
+     * capability handshake, answered from {@link #handlesSelector(int)}.
+     */
+    static final int kAsioSelectorSupported = 1;
+    /** ASIO selector: which ASIO engine version the host implements. */
+    static final int kAsioEngineVersion = 2;
     /** ASIO selector: a generic reset request from the driver. */
     static final int kAsioResetRequest = 3;
     /** ASIO selector: the driver wants the host to resync the device clock. */
     static final int kAsioResyncRequest = 4;
+    /** ASIO selector: does the host implement {@code bufferSwitchTimeInfo}? */
+    static final int kAsioSupportsTimeInfo = 5;
+    /** ASIO selector: the driver's reported latencies changed. */
+    static final int kAsioLatenciesChanged = 6;
     /** ASIO selector: the driver renegotiated the buffer size to {@code value} frames. */
     static final int kAsioBufferSizeChange = 7;
 
@@ -45,6 +56,13 @@ final class AsioFormatChangeShim implements AutoCloseable {
     private static final int ASE_OK = 1;
     /** ASE_NotPresent — selector unknown / unhandled. */
     private static final int ASE_NOT_PRESENT = 0;
+
+    /**
+     * ASIO 2.0. Answering {@code kAsioEngineVersion} with 0 makes drivers fall
+     * back to ASIO 1.0 behaviour (no {@code bufferSwitchTimeInfo}, no sample
+     * position), so the host must report 2.
+     */
+    private static final int ASIO_ENGINE_VERSION = 2;
 
     /**
      * Windows ASIO callback descriptor. The SDK uses C {@code long}, which is
@@ -174,6 +192,35 @@ final class AsioFormatChangeShim implements AutoCloseable {
      *       controller re-queries device capabilities on reopen.</li>
      * </ul>
      *
+     * <p>Story 311 makes this shim reachable for the first time: the
+     * {@code ASIOCallbacks} struct is only built by
+     * {@code asioshim_createBuffers}, so drivers now also send the ASIO
+     * handshake selectors this method answers:</p>
+     * <ul>
+     *   <li>{@link #kAsioSelectorSupported} &rarr; 1 when {@code value} names
+     *       a selector this shim handles, 0 otherwise.</li>
+     *   <li>{@link #kAsioEngineVersion} &rarr; {@value #ASIO_ENGINE_VERSION}.</li>
+     *   <li>{@link #kAsioSupportsTimeInfo} &rarr; 1; the native shim
+     *       implements {@code bufferSwitchTimeInfo}.</li>
+     *   <li>{@link #kAsioLatenciesChanged} &rarr; 1 (accepted). Latency
+     *       <em>reporting</em> belongs to story 217, so nothing is published.</li>
+     * </ul>
+     *
+     * <p>{@link #kAsioBufferSizeChange} and {@link #kAsioResetRequest}
+     * invalidate the driver's buffers, so they quiesce the streaming bridge
+     * via {@link AsioBackend#stopStreamingForDriverReset()} <em>before</em>
+     * announcing the event (story 311). {@link #kAsioResyncRequest} does not
+     * invalidate the buffers and is left alone.</p>
+     *
+     * <p>Because story 311 installs this shim <em>before</em>
+     * {@code ASIOCreateBuffers} — drivers issue the handshake selectors
+     * synchronously from inside that call — a
+     * {@link #kAsioBufferSizeChange} can legitimately arrive while
+     * {@link AudioBackendSupport#format()} is still {@code null}. The proposed
+     * format is then {@link Optional#empty()}, which is exactly the
+     * "format unknown" case the {@link AudioDeviceEvent.FormatChangeRequested}
+     * contract already defines.</p>
+     *
      * <p>Package-private so that unit tests can drive each selector
      * without needing a real ASIO driver loaded.</p>
      *
@@ -184,7 +231,16 @@ final class AsioFormatChangeShim implements AutoCloseable {
      */
     long dispatch(long selector, long value) {
         switch ((int) selector) {
+            case kAsioSelectorSupported:
+                return handlesSelector((int) value) ? ASE_OK : ASE_NOT_PRESENT;
+            case kAsioEngineVersion:
+                return ASIO_ENGINE_VERSION;
+            case kAsioSupportsTimeInfo:
+                return ASE_OK;
+            case kAsioLatenciesChanged:
+                return ASE_OK;
             case kAsioBufferSizeChange: {
+                backend.stopStreamingForDriverReset();
                 AudioFormat current = support.format();
                 Optional<AudioFormat> proposed = current == null
                         ? Optional.empty()
@@ -203,6 +259,7 @@ final class AsioFormatChangeShim implements AutoCloseable {
                         new FormatChangeReason.ClockSourceChange());
                 return ASE_OK;
             case kAsioResetRequest:
+                backend.stopStreamingForDriverReset();
                 backend.publishFormatChangeRequested(
                         device, Optional.empty(),
                         new FormatChangeReason.DriverReset());
@@ -210,6 +267,19 @@ final class AsioFormatChangeShim implements AutoCloseable {
             default:
                 return ASE_NOT_PRESENT;
         }
+    }
+
+    /**
+     * Answers ASIO's {@code kAsioSelectorSupported} handshake: the set of
+     * selectors {@link #dispatch(long, long)} implements.
+     */
+    private static boolean handlesSelector(int selector) {
+        return switch (selector) {
+            case kAsioSelectorSupported, kAsioEngineVersion, kAsioResetRequest,
+                 kAsioResyncRequest, kAsioSupportsTimeInfo,
+                 kAsioLatenciesChanged, kAsioBufferSizeChange -> true;
+            default -> false;
+        };
     }
 
     /**

@@ -7,6 +7,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -59,8 +62,33 @@ public final class AsioBackend implements AudioBackend {
     private static volatile Supplier<AsioDriverShim> driverShimFactory =
             AsioDriverShim::new;
 
+    /**
+     * Factory for the optional real-time streaming FFM binding (story 311).
+     * Defaults to loading {@code asioshim} via {@link AsioStreamingShim};
+     * tests inject a stub via {@link #setStreamingShimFactory(Supplier)} to
+     * exercise the {@code createBuffers} / {@code start} / {@code stop} /
+     * {@code disposeBuffers} ordering without a Windows host.
+     */
+    private static volatile Supplier<AsioStreamingShim> streamingShimFactory =
+            AsioStreamingShim::new;
+
     /** Serializes the Steinberg SDK's process-wide single-driver lifecycle. */
     private static final Object DRIVER_LIFECYCLE_LOCK = new Object();
+
+    /**
+     * Runs {@code ASIOStop} / {@code ASIODisposeBuffers} after a
+     * driver-initiated reset (story 218 &times; 311). A pre-created
+     * single-thread daemon executor rather than a thread per reset: the caller
+     * is the driver's own host-callback thread, which must not pay for an OS
+     * thread creation, and serializing the teardowns keeps a reset storm from
+     * spawning an unbounded number of threads. Mirrors the house
+     * {@link AsioControlThread} idiom.
+     */
+    private static final ExecutorService RESET_TEARDOWN_EXECUTOR =
+            Executors.newSingleThreadExecutor(task -> Thread.ofPlatform()
+                    .name("asio-reset-teardown")
+                    .daemon(true)
+                    .unstarted(task));
 
     /** Backend instance that currently owns the single process-wide driver. */
     private static AsioBackend activeBackend;
@@ -72,12 +100,39 @@ public final class AsioBackend implements AudioBackend {
      */
     private static final AtomicBoolean FALLBACK_LOGGED = new AtomicBoolean(false);
 
+    private final Executor resetTeardownExecutor;
     private final AudioBackendSupport support = new AudioBackendSupport();
     private volatile AsioFormatChangeShim formatChangeShim;
     private volatile AsioDriverShim driverShim;
+    private volatile AsioStreamingShim streamingShim;
+    private volatile AsioBufferSwitchShim bufferSwitchShim;
+
+    /**
+     * Name of the driver {@code ASIOInit} succeeded for, or {@code null} while
+     * no driver is loaded. Held so a teardown the driver refuses can name it in
+     * the diagnostic without issuing a downcall from the teardown path.
+     */
+    private volatile String activeDriverName;
+
+    /**
+     * Latched by every {@link #stopStreamingForDriverReset()}, cleared on entry
+     * to {@link #open(DeviceId, AudioFormat, int)} and re-checked once the
+     * stream is running. A driver may issue {@code kAsioResetRequest} from
+     * inside {@code ASIOCreateBuffers} — before either streaming shim is
+     * published — in which case the reset would otherwise silently no-op while
+     * {@code open()} went on to start a driver that just asked to be reset.
+     */
+    private volatile boolean driverResetRequested;
 
     /** Creates a new ASIO backend (no native resources allocated until {@link #open}). */
     public AsioBackend() {
+        this(RESET_TEARDOWN_EXECUTOR);
+    }
+
+    /** Test seam for controlling when an asynchronous reset teardown runs. */
+    AsioBackend(Executor resetTeardownExecutor) {
+        this.resetTeardownExecutor = Objects.requireNonNull(
+                resetTeardownExecutor, "resetTeardownExecutor");
     }
 
     @Override
@@ -114,6 +169,37 @@ public final class AsioBackend implements AudioBackend {
         }
     }
 
+    /**
+     * Opens the driver and, when the native streaming shim is present, starts
+     * the ASIO buffer-switch loop (story 311).
+     *
+     * <p>Sequence, all under the process-wide driver lifecycle lock:</p>
+     * <ol>
+     *   <li>{@code asioshim_loadDriver} + {@code ASIOInit} (story 310).</li>
+     *   <li>Buffer-size negotiation against the driver-reported
+     *       {@code ASIOGetBufferSize} four-tuple (stories 213 / 220). A
+     *       request outside the reported range or off its granularity ladder
+     *       raises {@link AudioBackendException}; the size is never silently
+     *       resized.</li>
+     *   <li>Install the story-218 {@code asioMessage} shim — <em>before</em>
+     *       {@code ASIOCreateBuffers}, because drivers issue the ASIO handshake
+     *       selectors synchronously from inside that call.</li>
+     *   <li>{@code ASIOCreateBuffers} for the opened channel set, clamped in
+     *       each direction against the driver's reported input / output counts,
+     *       then a read-back of the driver's buffer descriptors.</li>
+     *   <li>{@link AudioBackendSupport#markOpen(AudioFormat, int)} —
+     *       <em>before</em> the upcall is installed, because
+     *       {@code publishInput} drops while the backend is not open and the
+     *       first callback must not race the flag.</li>
+     *   <li>Install the buffer-switch upcall, publish the streaming fields, then
+     *       {@code ASIOStart} and take ownership of the process-wide driver.</li>
+     * </ol>
+     *
+     * <p>When {@code asioshim} is absent — every non-Windows host, and every
+     * Windows build made without the Steinberg SDK — steps 4 and 6 are
+     * skipped and the method behaves exactly as it did in story 310: the
+     * backend opens, publishes device events, and simply streams no audio.</p>
+     */
     @Override
     public void open(DeviceId device, AudioFormat format, int bufferFrames) {
         Objects.requireNonNull(device, "device must not be null");
@@ -130,6 +216,7 @@ public final class AsioBackend implements AudioBackend {
                 throw new IllegalStateException(
                         "another ASIO backend already owns the process-wide driver");
             }
+            driverResetRequested = false;
 
             AsioDriverShim candidate = driverShimFactory.get();
             if (!candidate.isLifecycleAvailable()) {
@@ -148,23 +235,310 @@ public final class AsioBackend implements AudioBackend {
                 throw new AudioBackendException(
                         "Could not load and initialize ASIO driver: " + driverName);
             }
+            activeDriverName = driverName;
 
+            AsioStreamingShim streaming = null;
+            AsioBufferSwitchShim bridge = null;
+            AsioFormatChangeShim callback = null;
+            boolean marked = false;
             try {
+                // ASIOGetBufferSize only answers once the driver is
+                // initialized, so negotiation happens after loadDriver and
+                // before any buffer is created.
+                requireAcceptedBufferSize(bufferFrames);
+
+                // The asioMessage upcall must be live BEFORE ASIOCreateBuffers.
+                // Story 311 is the first story that ever builds an ASIOCallbacks
+                // table, and real drivers issue kAsioEngineVersion /
+                // kAsioSelectorSupported / kAsioSupportsTimeInfo synchronously
+                // from inside ASIOCreateBuffers. With the slot still empty the
+                // trampoline answers 0 and the driver falls back to ASIO 1.0.
+                // support.format() is deliberately still null here, so a
+                // kAsioBufferSizeChange arriving during ASIOCreateBuffers yields
+                // Optional.empty() for the proposed format — which
+                // AsioFormatChangeShim#dispatch already handles correctly.
+                callback = new AsioFormatChangeShim(
+                        this, support, new DeviceId(NAME, driverName));
+                formatChangeShim = callback;
+
+                streaming = acquireStreamingShim();
+                List<AsioStreamingShim.BufferInfo> bufferInfos = List.of();
+                if (streaming != null) {
+                    int[] counts = negotiateChannelCounts(format.channels(), driverName);
+                    if (!streaming.createBuffers(channelIndices(counts[0]),
+                            channelIndices(counts[1]), bufferFrames)) {
+                        throw new AudioBackendException(
+                                "ASIO driver rejected ASIOCreateBuffers for "
+                                        + counts[0] + " input(s) / " + counts[1]
+                                        + " output(s) at " + bufferFrames
+                                        + " frames: " + driverName);
+                    }
+                    bufferInfos = streaming.getBufferInfos();
+                    if (bufferInfos.isEmpty()) {
+                        throw new AudioBackendException(
+                                "ASIO driver reported no buffer descriptors after "
+                                        + "ASIOCreateBuffers: " + driverName);
+                    }
+                }
+
                 // ASIOInit succeeded before the backend is marked open. This
                 // ordering prevents every capability wrapper from reaching an
                 // uninitialized SDK global.
                 support.markOpen(format, bufferFrames);
-                AsioFormatChangeShim callback =
-                        new AsioFormatChangeShim(this, support, new DeviceId(NAME, driverName));
+                marked = true;
+
+                if (streaming != null) {
+                    bridge = new AsioBufferSwitchShim(
+                            support, format, bufferFrames, bufferInfos);
+                    if (!streaming.installBufferSwitchCallback(bridge.upcallStub())) {
+                        throw new AudioBackendException(
+                                "Could not install the ASIO buffer-switch callback for "
+                                        + driverName);
+                    }
+                    // Publish both shims BEFORE ASIOStart: a block sunk in the
+                    // window between start and the field assignment would
+                    // otherwise be silently dropped, and a reset arriving in
+                    // that window would find nothing to tear down.
+                    streamingShim = streaming;
+                    bufferSwitchShim = bridge;
+                    if (!streaming.start()) {
+                        throw new AudioBackendException(
+                                "ASIOStart failed for driver: " + driverName);
+                    }
+                }
+
                 driverShim = candidate;
-                formatChangeShim = callback;
                 activeBackend = this;
             } catch (RuntimeException | Error failure) {
-                candidate.close();
-                support.markClosed();
+                rollbackOpen(candidate, streaming, bridge, callback, marked);
                 throw failure;
             }
+
+            if (driverResetRequested) {
+                // A reset arrived while open() was still wiring the stream up
+                // (drivers legitimately send one from inside ASIOCreateBuffers).
+                // The earlier call could only latch the request because neither
+                // shim was published yet; both are live now, so run the real
+                // teardown before handing a "running" stream back to the caller.
+                stopStreamingForDriverReset();
+            }
         }
+    }
+
+    /**
+     * Resolves how many input and output channels {@code ASIOCreateBuffers}
+     * should be asked for (story 311, S1).
+     *
+     * <p>Story 310's behaviour of requesting the opened format's channel set in
+     * <em>both</em> directions breaks on a playback-only device — or on
+     * ASIO4ALL with only speakers enabled — because {@code ASIOCreateBuffers}
+     * fails for the phantom inputs and {@code open()} would throw where it used
+     * to succeed. Asymmetric input / output counts are the norm on
+     * multi-channel USB interfaces, this project's primary target, so each
+     * direction is clamped against the driver's reported count. Channels the
+     * driver does not have simply get no buffer;
+     * {@link AsioBufferSwitchShim} captures silence for them and leaves their
+     * (non-existent) output buffers alone.</p>
+     *
+     * <p>When no count is available — no capability shim, or
+     * {@code ASIOGetChannels} failed — the request keeps the previous
+     * behaviour.</p>
+     *
+     * @return {@code {inputs, outputs}}
+     * @throws AudioBackendException when the combined request exceeds the
+     *                               native shim's {@code MAX_STREAM_CHANNELS}
+     *                               cap, rather than letting
+     *                               {@code ASIOCreateBuffers} fail opaquely
+     */
+    private static int[] negotiateChannelCounts(int formatChannels, String driverName) {
+        int inputs = formatChannels;
+        int outputs = formatChannels;
+        Optional<int[]> reported = driverChannelCounts();
+        if (reported.isPresent()) {
+            inputs = Math.clamp(reported.get()[0], 0, formatChannels);
+            outputs = Math.clamp(reported.get()[1], 0, formatChannels);
+        }
+        if (inputs + outputs > AsioStreamingShim.MAX_STREAM_CHANNELS) {
+            throw new AudioBackendException(
+                    "ASIO driver rejected channel request " + inputs + " input(s) + "
+                            + outputs + " output(s): the native shim activates at most "
+                            + AsioStreamingShim.MAX_STREAM_CHANNELS
+                            + " channels in total (inputs + outputs), so a symmetric "
+                            + "request tops out at "
+                            + (AsioStreamingShim.MAX_STREAM_CHANNELS / 2)
+                            + " channels: " + driverName);
+        }
+        return new int[] {inputs, outputs};
+    }
+
+    /**
+     * Reads {@code ASIOGetChannels(numInputChannels, numOutputChannels)} via
+     * the capability shim, or {@link Optional#empty()} when the shim, the
+     * symbol, or the driver cannot answer.
+     */
+    private static Optional<int[]> driverChannelCounts() {
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            return shim.getChannelCount();
+        }
+    }
+
+    /**
+     * Returns a streaming shim when the native library exports the story-311
+     * symbols, or {@code null} when it does not — in which case the caller
+     * keeps the story-310 no-streaming path. An unusable shim is closed
+     * immediately so its FFM arena is not leaked.
+     */
+    private static AsioStreamingShim acquireStreamingShim() {
+        AsioStreamingShim candidate = streamingShimFactory.get();
+        if (candidate.isStreamingAvailable()) {
+            return candidate;
+        }
+        candidate.close();
+        return null;
+    }
+
+    /** The opened format's channel set: {@code {0, 1, …, channels - 1}}. */
+    private static int[] channelIndices(int channels) {
+        int[] indices = new int[channels];
+        for (int i = 0; i < channels; i++) {
+            indices[i] = i;
+        }
+        return indices;
+    }
+
+    /**
+     * Rejects a buffer size the driver does not accept (stories 213 / 220
+     * &times; 311). When no driver-reported range is available — the {@code asioshim}
+     * library is missing, or {@code ASIOGetBufferSize} failed — the requested
+     * size is accepted unchanged, exactly as before story 311.
+     */
+    private static void requireAcceptedBufferSize(int bufferFrames) {
+        Optional<BufferSizeRange> reported;
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            reported = shim.isAvailable() ? shim.getBufferSize() : Optional.empty();
+        }
+        if (reported.isEmpty()) {
+            return;
+        }
+        BufferSizeRange range = reported.get();
+        if (range.accepts(bufferFrames)) {
+            return;
+        }
+        throw new AudioBackendException(
+                "ASIO driver rejected buffer size " + bufferFrames
+                        + " frames: driver reports min=" + range.min()
+                        + " max=" + range.max()
+                        + " preferred=" + range.preferred()
+                        + " granularity=" + range.granularity());
+    }
+
+    /**
+     * Undoes a partially completed {@link #open(DeviceId, AudioFormat, int)}.
+     * The teardown order matches {@link #close()}: stop and dispose the
+     * driver's buffers, uninstall the upcall, and only then free the stub's
+     * arena — a late callback must never jump into released memory. The
+     * {@code asioMessage} shim is closed too, so a failed open never leaves a
+     * registered upcall behind (it is now installed before
+     * {@code ASIOCreateBuffers}).
+     */
+    private void rollbackOpen(AsioDriverShim candidate, AsioStreamingShim streaming,
+                              AsioBufferSwitchShim bridge, AsioFormatChangeShim callback,
+                              boolean marked) {
+        bufferSwitchShim = null;
+        streamingShim = null;
+        formatChangeShim = null;
+        if (bridge != null) {
+            bridge.stopStreaming();
+        }
+        if (streaming != null) {
+            tearDownStreaming(streaming);
+        }
+        if (bridge != null) {
+            bridge.close();
+        }
+        if (streaming != null) {
+            streaming.close();
+        }
+        if (callback != null) {
+            callback.close();
+        }
+        if (marked) {
+            support.markClosed();
+        }
+        activeDriverName = null;
+        candidate.close();
+    }
+
+    /**
+     * Runs the driver-side half of the story-311 teardown — {@code ASIOStop},
+     * {@code ASIODisposeBuffers}, then uninstalling the buffer-switch upcall —
+     * and reports a driver that refused either of the first two.
+     *
+     * <p>The native shim propagates the driver's own status rather than always
+     * answering "OK": {@code asioshim_stop} and {@code asioshim_disposeBuffers}
+     * return success only for the genuine "nothing to do" cases (not started, no
+     * buffers, no driver loaded) and failure when the SDK call was actually made
+     * and the driver refused it. A driver that ignores {@code ASIOStop} and
+     * keeps firing {@code bufferSwitch} is therefore detectable here, and is
+     * logged at {@link Level#WARNING} naming the refused call and the driver.</p>
+     *
+     * <p><strong>Why the teardown then continues instead of bailing out.</strong>
+     * The caller frees the upcall stub's arena immediately after this returns, so
+     * the question a refusal raises is whether a still-running driver can reach
+     * that stub. It cannot, because the native shim closes both windows:</p>
+     * <ul>
+     *   <li>{@code asioshim_disposeBuffers} publishes "no buffers created"
+     *       before it re-enters the SDK and then waits on a bounded in-flight
+     *       barrier, so no callback is inside the native {@code bufferSwitch}
+     *       body when {@code ASIODisposeBuffers} frees the buffers that body
+     *       writes into; and</li>
+     *   <li>{@code uninstallAsioBufferSwitchCallback} stores a null callback
+     *       pointer and drains that same barrier again. Every callback that
+     *       arrives afterwards loads null and returns without ever touching the
+     *       upcall stub.</li>
+     * </ul>
+     *
+     * <p>Aborting on a refused {@code ASIOStop} would therefore make nothing
+     * safer — it would skip the uninstall that is the actual protection, leak
+     * the upcall arena and the {@code asio-input-drain} thread for the life of
+     * the process, and leave the driver streaming into buffers nobody disposes.
+     * The native {@code asioshim_unloadDriver} repeats this same teardown before
+     * {@code ASIOExit}, which is the last chance to quiesce such a driver.</p>
+     */
+    private void tearDownStreaming(AsioStreamingShim streaming) {
+        boolean stopped = streaming.stop();
+        boolean disposed = streaming.disposeBuffers();
+        warnIfDriverRefusedTeardown(stopped, disposed);
+        streaming.uninstallBufferSwitchCallback();
+    }
+
+    /**
+     * Logs a driver that refused {@code ASIOStop} and/or
+     * {@code ASIODisposeBuffers}. Shared by {@link #close()} /
+     * {@code rollbackOpen(...)} — via {@link #tearDownStreaming} — and by the
+     * asynchronous {@link #stopStreamingForDriverReset()} teardown, which runs
+     * the same two calls and would otherwise discard the same information.
+     */
+    private void warnIfDriverRefusedTeardown(boolean stopped, boolean disposed) {
+        if (stopped && disposed) {
+            return;
+        }
+        String refused;
+        if (!stopped && !disposed) {
+            refused = "ASIOStop and ASIODisposeBuffers";
+        } else if (!stopped) {
+            refused = "ASIOStop";
+        } else {
+            refused = "ASIODisposeBuffers";
+        }
+        String driver = activeDriverName;
+        LOG.log(Level.WARNING,
+                "ASIO driver refused " + refused + " during teardown: "
+                        + (driver == null ? "<no driver loaded>" : driver)
+                        + ". The driver may still be firing bufferSwitch. The "
+                        + "teardown continues: the native shim closes its buffer "
+                        + "gate and waits on a bounded in-flight callback barrier "
+                        + "before anything a callback touches is released.");
     }
 
     private static String resolveDriverName(AsioDriverShim shim, DeviceId device) {
@@ -184,6 +558,21 @@ public final class AsioBackend implements AudioBackend {
                         + "(e.g. ASIO4ALL) and bundle daw-core/native/asio/asioshim.dll.");
     }
 
+    /**
+     * Live capture stream fed by the ASIO buffer-switch callback (story 311).
+     *
+     * <p>Each callback de-interleaves the driver's input half into a lock-free
+     * ring; the dedicated {@code asio-input-drain} daemon thread then allocates
+     * one {@link AudioBlock} per captured block, in order, and publishes it
+     * here. Marshalling the publish off the driver's real-time thread is what
+     * keeps the callback allocation- and lock-free, and it means every
+     * published block owns a private sample array — {@link AudioBlock}'s
+     * documented immutability holds and subscribers need not copy.</p>
+     *
+     * <p>Delivery is non-blocking in both stages: a subscriber that cannot keep
+     * up loses blocks rather than stalling the audio device, and a drain thread
+     * that cannot keep up loses blocks rather than stalling the driver.</p>
+     */
     @Override
     public Flow.Publisher<AudioBlock> inputBlocks() {
         return support.inputBlocks();
@@ -205,6 +594,17 @@ public final class AsioBackend implements AudioBackend {
      * ASIO host-callback thread; see that method's Javadoc for the
      * exact mapping from each ASIO callback to a
      * {@link FormatChangeReason}.</p>
+     *
+     * <p><strong>Reopen contract (stories 218 &times; 311).</strong> A
+     * {@code kAsioResetRequest} / {@code kAsioBufferSizeChange} quiesces the
+     * streaming bridge and disposes the driver's buffers, but it deliberately
+     * does <em>not</em> mark the backend closed — the driver is still loaded.
+     * {@link #isOpen()} therefore keeps reporting {@code true} and a second
+     * {@link #open(DeviceId, AudioFormat, int)} throws
+     * {@link IllegalStateException}. The consumer of a
+     * {@link AudioDeviceEvent.FormatChangeRequested} must
+     * {@link #close()} this backend and then {@code open(...)} it again with
+     * the new format / buffer size.</p>
      */
     @Override
     public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
@@ -263,9 +663,46 @@ public final class AsioBackend implements AudioBackend {
                 new AudioDeviceEvent.FormatChangeRequested(device, proposedFormat, reason));
     }
 
+    /**
+     * Hands a rendered block to the ASIO buffer-switch bridge (story 311).
+     * The block is copied into a lock-free single-producer / single-consumer
+     * ring; the next {@code bufferSwitch} pulls the most recent one and
+     * interleaves it into the driver's output buffers. The call never blocks:
+     * a full ring drops the block.
+     *
+     * <p>Before {@link #open(DeviceId, AudioFormat, int)} — or on a build
+     * without the native streaming shim — the block is validated and
+     * discarded, exactly as in story 310.</p>
+     *
+     * @throws AudioBackendException when the block's frame count does not match
+     *                               the size the stream was opened at. An
+     *                               engine rendering 64-frame blocks into a
+     *                               128-frame ASIO stream would otherwise
+     *                               produce half-audio / half-silence buffers
+     *                               with no diagnostic; the story requires a
+     *                               buffer-size mismatch to surface "rather
+     *                               than silently resizing"
+     */
     @Override
     public void sink(AudioBlock block) {
         support.validateOutgoing(block);
+        // Capture the swappable reference exactly once: close() may null the
+        // field concurrently with a render-thread sink(...).
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        if (bridge == null) {
+            return;
+        }
+        // The bridge is the authority on the negotiated size — it is what
+        // actually indexes the driver's buffers.
+        int streamFrames = bridge.bufferFrames();
+        if (block.frames() != streamFrames) {
+            throw new AudioBackendException(
+                    "ASIO driver rejected block size " + block.frames()
+                            + " frames: the open stream runs at " + streamFrames
+                            + " frames per buffer. Re-open the backend for the "
+                            + "new size rather than resizing silently.");
+        }
+        bridge.write(block);
     }
 
     @Override
@@ -357,9 +794,42 @@ public final class AsioBackend implements AudioBackend {
         }
     }
 
+    /**
+     * Tears the stream down in the order story 311 mandates:
+     * {@code ASIOStop} &rarr; {@code ASIODisposeBuffers} &rarr; uninstall the
+     * buffer-switch upcall &rarr; free the upcall arena &rarr; the existing
+     * story-310 {@code asioMessage} uninstall and {@code ASIOExit}.
+     *
+     * <p>Freeing the upcall arena strictly after the uninstall is the load-
+     * bearing part: a callback that arrives between the two would otherwise
+     * jump into released memory. Closing the buffer-switch shim also flushes
+     * and joins the {@code asio-input-drain} thread, so no captured block is
+     * published after this method returns. Idempotent.</p>
+     *
+     * <p>A driver that refuses {@code ASIOStop} or {@code ASIODisposeBuffers} is
+     * logged and the teardown carries on; see
+     * {@link #tearDownStreaming(AsioStreamingShim)} for why continuing is the
+     * safe response and aborting is not.</p>
+     */
     @Override
     public void close() {
         synchronized (DRIVER_LIFECYCLE_LOCK) {
+            AsioStreamingShim streaming = streamingShim;
+            streamingShim = null;
+            AsioBufferSwitchShim bridge = bufferSwitchShim;
+            bufferSwitchShim = null;
+            if (bridge != null) {
+                bridge.stopStreaming();
+            }
+            if (streaming != null) {
+                tearDownStreaming(streaming);
+            }
+            if (bridge != null) {
+                bridge.close();
+            }
+            if (streaming != null) {
+                streaming.close();
+            }
             AsioFormatChangeShim callback = formatChangeShim;
             formatChangeShim = null;
             if (callback != null) {
@@ -367,6 +837,7 @@ public final class AsioBackend implements AudioBackend {
             }
             AsioDriverShim lifecycle = driverShim;
             driverShim = null;
+            activeDriverName = null;
             if (lifecycle != null) {
                 lifecycle.close();
             }
@@ -375,6 +846,92 @@ public final class AsioBackend implements AudioBackend {
             }
             support.close();
         }
+    }
+
+    /**
+     * Quiesces the streaming bridge and tears the driver's buffers down after
+     * a driver-initiated reset (story 218 &times; 311).
+     *
+     * <p>Called from {@link AsioFormatChangeShim#dispatch(long, long)} — i.e.
+     * from the driver's own host-callback thread — for
+     * {@code kAsioResetRequest} and {@code kAsioBufferSizeChange}. The bridge
+     * is quiesced inline with a plain volatile write so no further callback
+     * touches the driver's buffers, but {@code ASIOStop} /
+     * {@code ASIODisposeBuffers} are dispatched to the shared
+     * {@code asio-reset-teardown} daemon executor: the ASIO contract forbids
+     * calling driver functions from inside a host callback, and doing so would
+     * deadlock against the shim's driver mutex. A driver that refuses either
+     * call is logged at {@link Level#WARNING} exactly as in
+     * {@link #tearDownStreaming(AsioStreamingShim)}; unlike that path this one
+     * frees nothing — the upcall stays installed and the bridge alive — so the
+     * refusal is a diagnostic rather than a hazard.</p>
+     *
+     * <p>The queued task rechecks that its captured streaming shim is still
+     * current while holding the lifecycle lock. If {@link #close()} and a
+     * subsequent {@link #open(DeviceId, AudioFormat, int)} have already moved
+     * the backend to another stream, the stale task makes no native calls and
+     * logs no refusal. The driver callback itself only quiesces the bridge and
+     * enqueues this work; it never acquires that lock or waits.</p>
+     *
+     * <p><strong>The backend stays open.</strong> This does not call
+     * {@code markClosed()} — the driver is still loaded, and short-circuiting
+     * {@link #close()} would leak the driver shim. {@link #isOpen()} therefore
+     * still reports {@code true} afterwards and a second
+     * {@link #open(DeviceId, AudioFormat, int)} throws
+     * {@link IllegalStateException}{@code ("backend already has an open
+     * stream")}. That is the intended story-218 contract: the consumer of the
+     * {@link AudioDeviceEvent.FormatChangeRequested} event must
+     * {@link #close()} and then {@code open(...)} again, which re-creates the
+     * driver's buffers at the new size.</p>
+     *
+     * <p>Idempotent, and a no-op when nothing is streaming. The request is
+     * latched unconditionally so a reset arriving from inside
+     * {@code ASIOCreateBuffers} — before either shim is published — is re-run
+     * by {@code open(...)} once the fields are live.</p>
+     */
+    void stopStreamingForDriverReset() {
+        driverResetRequested = true;
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        if (bridge != null) {
+            bridge.stopStreaming();
+        }
+        AsioStreamingShim streaming = streamingShim;
+        if (streaming == null) {
+            return;
+        }
+        resetTeardownExecutor.execute(() -> {
+            synchronized (DRIVER_LIFECYCLE_LOCK) {
+                // close() may have already disposed this shim and open() may
+                // have published its replacement while this task was queued.
+                // Keep the identity check and downcalls in the same lifecycle
+                // critical section so the stream cannot move on between them.
+                if (streamingShim != streaming) {
+                    return;
+                }
+                boolean stopped = streaming.stop();
+                boolean disposed = streaming.disposeBuffers();
+                warnIfDriverRefusedTeardown(stopped, disposed);
+            }
+        });
+    }
+
+    /**
+     * Test seam: the buffer-switch bridge currently installed by
+     * {@link #open(DeviceId, AudioFormat, int)}, or {@code null} when the
+     * backend is closed or the native streaming shim was unavailable.
+     */
+    AsioBufferSwitchShim activeBufferSwitchShim() {
+        return bufferSwitchShim;
+    }
+
+    /**
+     * Test seam: the story-218 {@code asioMessage} shim currently installed by
+     * {@link #open(DeviceId, AudioFormat, int)}, or {@code null} when the
+     * backend is closed. Non-null from before {@code ASIOCreateBuffers} runs,
+     * which is the ordering story 311 depends on.
+     */
+    AsioFormatChangeShim activeFormatChangeShim() {
+        return formatChangeShim;
     }
 
     /**
@@ -501,6 +1058,24 @@ public final class AsioBackend implements AudioBackend {
     /** Restores the production ASIO driver shim factory. */
     static void resetDriverShimFactory() {
         driverShimFactory = AsioDriverShim::new;
+    }
+
+    /**
+     * Test seam for the story-311 streaming path: replaces the factory the
+     * backend uses to obtain its {@link AsioStreamingShim}, so the
+     * {@code createBuffers} / {@code start} / {@code stop} /
+     * {@code disposeBuffers} ordering can be asserted without a Windows host
+     * or the Steinberg SDK.
+     *
+     * @param factory non-null supplier of a shim instance per open
+     */
+    static void setStreamingShimFactory(Supplier<AsioStreamingShim> factory) {
+        streamingShimFactory = Objects.requireNonNull(factory, "factory");
+    }
+
+    /** Restores the production ASIO streaming shim factory. */
+    static void resetStreamingShimFactory() {
+        streamingShimFactory = AsioStreamingShim::new;
     }
 
     /**
