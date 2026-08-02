@@ -118,8 +118,10 @@
 //   offset 24..32  int64 buffer1     address of `ASIOBufferInfo.buffers[1]`
 // The two addresses are the driver's own double-buffer halves; the JVM
 // reads and writes them directly because the sample-format conversion
-// boundary lives in Java (story 312 generalises it). They are valid only
-// between a successful `asioshim_createBuffers` and the matching
+// boundary lives in Java. Story 312 converts the whole ASIOSampleType
+// matrix there (`AsioSampleType`), keyed off the `sampleType` field above,
+// which is why no `asioshim_getChannelSampleType` export exists. They are
+// valid only between a successful `asioshim_createBuffers` and the matching
 // `asioshim_disposeBuffers` / `asioshim_unloadDriver`.
 //
 // All struct layouts are normalised to 32-bit integer fields (plus the

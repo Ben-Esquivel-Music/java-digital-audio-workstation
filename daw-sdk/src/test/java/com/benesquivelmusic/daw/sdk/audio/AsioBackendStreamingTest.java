@@ -47,6 +47,11 @@ class AsioBackendStreamingTest {
     private static final int FRAMES = 128;
     private static final long AWAIT_SECONDS = 10;
 
+    /** {@code ASIOSTFloat32LSB} — what the stub driver reports by default. */
+    private static final int FLOAT32_LSB = 19;
+    /** {@code ASIOSTDSDInt8LSB1} — out of scope by story 312's Non-Goals. */
+    private static final int DSD_INT8_LSB1 = 32;
+
     private Arena arena;
     private List<String> calls;
     private StubDriverShim driver;
@@ -377,6 +382,35 @@ class AsioBackendStreamingTest {
                 .hasMessageContaining("no buffer descriptors");
         assertThat(backend.isOpen()).isFalse();
         assertThat(driver.unloaded).isTrue();
+    }
+
+    /**
+     * Story 312: an {@code ASIOSampleType} this DAW cannot convert fails the
+     * open rather than silencing the channel. The bridge rejects it from its
+     * constructor — before it opens the upcall arena or starts the drain
+     * thread — so {@code rollbackOpen} runs the full teardown with a null
+     * bridge and the backend is not left marked open.
+     */
+    @Test
+    void anUnsupportedDriverSampleTypeRollsTheOpenBackInsteadOfStreamingGarbage() {
+        bufferInfos = driverBufferInfos(DSD_INT8_LSB1);
+
+        assertThatThrownBy(() -> backend.open(DRIVER_A, FORMAT, FRAMES))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("unsupported ASIOSampleType")
+                .hasMessageContaining("input 0=" + DSD_INT8_LSB1);
+        assertThat(backend.isOpen())
+                .as("a rejected sample type must not leave the backend marked open")
+                .isFalse();
+        assertThat(backend.activeBufferSwitchShim()).isNull();
+        assertThat(backend.activeFormatChangeShim()).isNull();
+        assertThat(driver.unloaded).isTrue();
+        assertThat(calls).containsSubsequence(
+                "getBufferInfos", "stop", "disposeBuffers",
+                "uninstallBufferSwitchCallback", "close", "unload");
+        assertThat(calls)
+                .as("ASIOStart must never be reached for a format the DAW cannot convert")
+                .doesNotContain("start", "installBufferSwitchCallback");
     }
 
     // ------------------------------------------------------------------
@@ -714,21 +748,26 @@ class AsioBackendStreamingTest {
                 .contains(call);
     }
 
+    /** The default fixture: every channel reports {@code ASIOSTFloat32LSB}. */
     private List<AsioStreamingShim.BufferInfo> driverBufferInfos() {
+        return driverBufferInfos(FLOAT32_LSB);
+    }
+
+    private List<AsioStreamingShim.BufferInfo> driverBufferInfos(int sampleType) {
         inputBuffers = new MemorySegment[2][2];
         outputBuffers = new MemorySegment[2][2];
         List<AsioStreamingShim.BufferInfo> infos = new ArrayList<>();
         for (int channel = 0; channel < 2; channel++) {
             inputBuffers[0][channel] = arena.allocate(ValueLayout.JAVA_FLOAT, FRAMES);
             inputBuffers[1][channel] = arena.allocate(ValueLayout.JAVA_FLOAT, FRAMES);
-            infos.add(new AsioStreamingShim.BufferInfo(channel, true, 19,
+            infos.add(new AsioStreamingShim.BufferInfo(channel, true, sampleType,
                     inputBuffers[0][channel].address(),
                     inputBuffers[1][channel].address()));
         }
         for (int channel = 0; channel < 2; channel++) {
             outputBuffers[0][channel] = arena.allocate(ValueLayout.JAVA_FLOAT, FRAMES);
             outputBuffers[1][channel] = arena.allocate(ValueLayout.JAVA_FLOAT, FRAMES);
-            infos.add(new AsioStreamingShim.BufferInfo(channel, false, 19,
+            infos.add(new AsioStreamingShim.BufferInfo(channel, false, sampleType,
                     outputBuffers[0][channel].address(),
                     outputBuffers[1][channel].address()));
         }

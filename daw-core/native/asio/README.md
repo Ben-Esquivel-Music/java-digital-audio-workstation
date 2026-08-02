@@ -235,11 +235,38 @@ a successful no-op; the call fails with `*outCount == 0` when no driver is
 loaded or buffers have not been created.
 
 The raw addresses are deliberate: the sample-format conversion boundary lives
-in Java (story 312 generalises it), so the JVM reads and writes the driver's
-buffers directly through FFM. They are valid only between a successful
-`asioshim_createBuffers` and the matching `asioshim_disposeBuffers` /
-`asioshim_unloadDriver`, and carry no alignment guarantee — the Java side must
-use the `*_UNALIGNED` value layouts.
+in Java, so the JVM reads and writes the driver's buffers directly through FFM.
+They are valid only between a successful `asioshim_createBuffers` and the
+matching `asioshim_disposeBuffers` / `asioshim_unloadDriver`, and carry no
+alignment guarantee — the Java side must use the `*_UNALIGNED` value layouts.
+
+### Sample-format conversion (story 312)
+
+Story 312 converts the full `ASIOSampleType` matrix **in Java**, in
+`daw-sdk`'s `AsioSampleType`, driven by the per-channel `sampleType` the record
+above already reports. The shim therefore needs no
+`asioshim_getChannelSampleType` export and moves no samples of its own.
+
+| Reported `ASIOSampleType` | Codes | Driver bytes per sample |
+| --- | --- | --- |
+| `Int16MSB` / `Int16LSB` | 0, 16 | 2 |
+| `Int24MSB` / `Int24LSB` (packed) | 1, 17 | 3 |
+| `Int32MSB` / `Int32LSB` | 2, 18 | 4 |
+| `Int32MSB16/18/20/24`, `Int32LSB16/18/20/24` (right-justified) | 8–11, 24–27 | 4 |
+| `Float32MSB` / `Float32LSB` | 3, 19 | 4 |
+| `Float64MSB` / `Float64LSB` | 4, 20 | 8 |
+
+Anything outside that matrix — the DSD types (32, 33, 40), an unassigned code,
+or the `-1` this shim reports when `ASIOGetChannelInfo` refused — fails
+`AsioBackend#open` with an `AudioBackendException` naming every offending
+channel. Guessing at the layout would hand the driver the engine's float bytes
+reinterpreted as integers, which is loud enough to damage speakers.
+
+The choice of Java over the native trampoline is deliberate: this shim is
+skipped entirely by CMake unless `-DASIO_SDK_DIR=...` is supplied (see
+*Building* below), so conversion code placed here would compile — and be
+tested — on the release lane only, whereas the Java converter is covered by
+`AsioSampleTypeTest` on every build.
 
 ## Building
 

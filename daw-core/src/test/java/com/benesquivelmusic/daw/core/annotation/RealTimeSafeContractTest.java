@@ -75,6 +75,14 @@ class RealTimeSafeContractTest {
      */
     private static final String ASIO_BRIDGE_METHOD = "bufferSwitch";
 
+    /**
+     * Story 312 — the {@code ASIOSampleType} converter the bridge calls per
+     * channel per block. Package-private in another module, so it is reached
+     * the same way {@link #ASIO_BRIDGE_CLASS} is.
+     */
+    private static final String ASIO_SAMPLE_TYPE_CLASS =
+            "com.benesquivelmusic.daw.sdk.audio.AsioSampleType";
+
     // ------------------------------------------------------------------
     // Discovery
     // ------------------------------------------------------------------
@@ -172,6 +180,30 @@ class RealTimeSafeContractTest {
                 "write", Class.forName("com.benesquivelmusic.daw.sdk.audio.AudioBlock"));
         assertThat(isRealTimeSafe(write))
                 .as("AsioBufferSwitchShim.write must be annotated @RealTimeSafe")
+                .isTrue();
+    }
+
+    /**
+     * Story 312 — the two sample-format conversion seams the bridge calls once
+     * per channel per block, still on the driver's real-time thread. The
+     * generic bytecode / varargs / boxing sweep above already covers them once
+     * they carry the annotation; this asserts that they do, and — because
+     * {@code getDeclaredMethod} throws {@link NoSuchMethodException} rather
+     * than passing vacuously — that neither has been renamed or had its
+     * signature changed out from under the sweep.
+     */
+    @Test
+    void asioSampleTypeConversionSeamsShouldBeRealTimeSafe() throws Exception {
+        Class<?> sampleType = Class.forName(ASIO_SAMPLE_TYPE_CLASS);
+        Method decode = sampleType.getDeclaredMethod(
+                "decode", java.lang.foreign.MemorySegment.class, float[].class, int.class);
+        assertThat(isRealTimeSafe(decode))
+                .as("AsioSampleType.decode must be annotated @RealTimeSafe")
+                .isTrue();
+        Method encode = sampleType.getDeclaredMethod(
+                "encode", float[].class, java.lang.foreign.MemorySegment.class, int.class);
+        assertThat(isRealTimeSafe(encode))
+                .as("AsioSampleType.encode must be annotated @RealTimeSafe")
                 .isTrue();
     }
 
