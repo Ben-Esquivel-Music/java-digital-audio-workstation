@@ -5,6 +5,7 @@ import java.lang.foreign.SymbolLookup;
 import java.util.Objects;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
+import java.util.function.BiPredicate;
 
 /**
  * Internal helper that holds the mutable state every {@link AudioBackend}
@@ -18,6 +19,23 @@ import java.util.concurrent.SubmissionPublisher;
  * sealed {@link AudioBackend} hierarchy is the public surface.</p>
  */
 final class AudioBackendSupport implements AutoCloseable {
+
+    /**
+     * Drop handler shared by every {@link #publishInput(AudioBlock)} call.
+     * Hoisted into a constant so no lambda is allocated per published block
+     * (story 311). Returning {@code false} tells
+     * {@link SubmissionPublisher#offer(Object, java.util.function.BiPredicate)}
+     * to drop the item rather than retry.
+     */
+    private static final BiPredicate<Flow.Subscriber<? super AudioBlock>, AudioBlock>
+            DROP_INPUT_BLOCK = (subscriber, droppedBlock) -> false;
+
+    /**
+     * Drop handler shared by every {@link #publishDeviceEvent(AudioDeviceEvent)}
+     * call; hoisted for the same reason as {@link #DROP_INPUT_BLOCK}.
+     */
+    private static final BiPredicate<Flow.Subscriber<? super AudioDeviceEvent>, AudioDeviceEvent>
+            DROP_DEVICE_EVENT = (subscriber, droppedEvent) -> false;
 
     private volatile SubmissionPublisher<AudioBlock> publisher = new SubmissionPublisher<>();
     private volatile SubmissionPublisher<AudioDeviceEvent> devicePublisher =
@@ -76,25 +94,58 @@ final class AudioBackendSupport implements AutoCloseable {
         return devicePublisher;
     }
 
+    /**
+     * Publishes a device event without ever blocking the caller.
+     *
+     * <p>Deliberately <em>not</em> gated on the open flag: story 218's
+     * driver-initiated reset and format-change notifications must still reach
+     * subscribers while the backend is opening or tearing down, which is
+     * exactly when a driver sends them.</p>
+     */
     void publishDeviceEvent(AudioDeviceEvent event) {
         Objects.requireNonNull(event, "event must not be null");
-        if (devicePublisher.isClosed()) {
+        // Capture the swappable publisher reference exactly once: markOpen()
+        // may replace it concurrently after a close-then-open cycle.
+        SubmissionPublisher<AudioDeviceEvent> current = devicePublisher;
+        if (current.isClosed()) {
             return;
         }
         // Use offer() with a drop handler instead of submit() to avoid
         // blocking under backpressure — this may be called from a native
-        // callback thread (e.g. ASIO buffer-switch) that must not stall.
-        devicePublisher.offer(event, (subscriber, droppedEvent) -> {
-            // Drop the event rather than block; log for diagnostics.
-            return false;
-        });
+        // callback thread (e.g. ASIO's asioMessage) that must not stall.
+        current.offer(event, DROP_DEVICE_EVENT);
     }
 
+    /**
+     * Publishes a captured input block without ever blocking the caller.
+     *
+     * <p>Story 311: for the ASIO backend this runs on the dedicated
+     * {@code asio-input-drain} thread rather than the driver's real-time
+     * thread, but it must still never stall — a stalled drain thread backs up
+     * into the callback's capture ring. The previous
+     * {@code publisher.submit(...)} blocks under back-pressure and was
+     * therefore unusable. {@code offer(...)} with a drop handler applies
+     * exactly the rationale already documented on
+     * {@link #publishDeviceEvent(AudioDeviceEvent)}: a slow subscriber loses
+     * a block instead of stalling capture.</p>
+     *
+     * <p>The guard checks both the open flag <em>and</em> the publisher's
+     * closed state: {@link SubmissionPublisher#offer} throws
+     * {@code IllegalStateException("Closed")} on a closed publisher with no
+     * subscribers, so a publish racing {@link #close()} must be filtered out
+     * here rather than construct an exception.</p>
+     *
+     * @param block the captured block; must not be null
+     */
     void publishInput(AudioBlock block) {
         Objects.requireNonNull(block, "block must not be null");
-        if (open) {
-            publisher.submit(block);
+        // Capture the swappable publisher reference exactly once: markOpen()
+        // may replace it concurrently after a close-then-open cycle.
+        SubmissionPublisher<AudioBlock> current = publisher;
+        if (!open || current.isClosed()) {
+            return;
         }
+        current.offer(block, DROP_INPUT_BLOCK);
     }
 
     void validateOutgoing(AudioBlock block) {

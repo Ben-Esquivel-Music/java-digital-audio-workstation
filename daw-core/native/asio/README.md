@@ -5,7 +5,8 @@ JVM loads via FFM (`SymbolLookup.libraryLookup("asioshim", arena)`) to
 talk to a Steinberg ASIO driver.
 
 The Java side lives in `AsioDriverShim.java`, `AsioCapabilityShim.java`,
-`AsioControlThread.java`, `AsioFormatChangeShim.java`, and the public
+`AsioControlThread.java`, `AsioFormatChangeShim.java`,
+`AsioStreamingShim.java`, `AsioBufferSwitchShim.java`, and the public
 `AsioDriverInfo.java` display value under
 `daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/`.
 
@@ -27,6 +28,15 @@ The Java side lives in `AsioDriverShim.java`, `AsioCapabilityShim.java`,
 | `int asioshim_setClockSource(int reference)` | `ASIOSetClockSource` | `AsioBackend.selectClockSource` (story 216) |
 | `void installAsioMessageCallback(void* callback)` | (host upcall) | `AsioFormatChangeShim` (story 218) |
 | `void uninstallAsioMessageCallback()` | (host upcall) | `AsioFormatChangeShim` close |
+| `long asioshim_messageTrampoline(long selector, long value, void* message, double* opt)` | `ASIOCallbacks::asioMessage` | the vendor driver (story 218; the callbacks table is wired to this exported symbol) |
+| `int asioshim_createBuffers(const int* inputChannels, int numInputs, const int* outputChannels, int numOutputs, int bufferFrames)` | `ASIOCreateBuffers` + `ASIOCallbacks` install | `AsioStreamingShim.createBuffers` (story 311) |
+| `int asioshim_getBufferInfos(void* outArray, int* outCount)` | cached `ASIOBufferInfo[]` + `ASIOGetChannelInfo` types | `AsioStreamingShim.getBufferInfos` (story 311) |
+| `int asioshim_start()` | `ASIOStart` | `AsioStreamingShim.start` (story 311) |
+| `int asioshim_stop()` | `ASIOStop` | `AsioStreamingShim.stop` (story 311) |
+| `int asioshim_disposeBuffers()` | `ASIOStop` + `ASIODisposeBuffers` | `AsioStreamingShim.disposeBuffers` (story 311) |
+| `void installAsioBufferSwitchCallback(void* callback)` | (host upcall) | `AsioStreamingShim.installBufferSwitchCallback` (story 311) |
+| `void uninstallAsioBufferSwitchCallback()` | (host upcall) | `AsioStreamingShim.uninstallBufferSwitchCallback` |
+| `void asioshim_bufferSwitchTrampoline(long index, long directProcess)` | `ASIOCallbacks::bufferSwitch` | the vendor driver (story 311; the callbacks table is wired to this exported symbol) |
 
 Most capability functions return `1` (`SHIM_OK`) for `ASE_OK` and `0`
 (`SHIM_FAIL`) otherwise, with two exceptions:
@@ -38,6 +48,23 @@ Most capability functions return `1` (`SHIM_OK`) for `ASE_OK` and `0`
   `ASE_NotPresent`, `ASE_HWMalfunction`, `ASE_InvalidParameter`,
   `ASE_InvalidMode`, …) so the Java side can translate each into a
   mapped `AudioBackendException` message.
+
+`asioshim_stop` and `asioshim_disposeBuffers` (story 311) follow the normal
+convention with one carve-out: they return `1` when there was **nothing to
+do** — no driver loaded, not started, or no buffers created — because the
+Java `close()` path calls them unconditionally. They still return `0` when
+the SDK call was actually made and the driver **refused** it. That
+distinction is a **diagnostic**, not a stop signal: a driver that answers
+`ASIOStop()` with `ASE_InvalidMode` may keep firing `bufferSwitch`, which is
+worth surfacing, so `AsioBackend#tearDownStreaming` logs the refusal at
+`WARNING` — naming the refused call and the driver — and then deliberately
+carries on to dispose the buffers, uninstall the upcall, and free its arena.
+What makes that free safe is the bounded in-flight callback barrier plus the
+null callback pointer published by `uninstallAsioBufferSwitchCallback` (see
+"Driver-thread entry points" below), not `ASIOStop` having succeeded. Bailing
+out on a refusal would skip the very uninstall that provides the protection,
+and would leak the FFM upcall arena and the `asio-input-drain` thread for the
+life of the process.
 
 `asioshim_getClockSources` writes into a caller-allocated buffer of
 `*outCount` entries (each entry is a fixed 48-byte struct: 32-byte
@@ -95,6 +122,124 @@ graceful-absence/failure value without calling the SDK. Settings screens that
 probe a closed backend therefore see fallback buffer/rate menus and empty
 clock/channel/panel capabilities; they are refreshed against the real driver
 after open.
+
+### The SDK's `asioDrivers` global is ours to manage
+
+The shim loads by **index** (`asioOpenDriver`) instead of calling the SDK's
+`loadAsioDriver(char*)` helper, so that a driver whose registry key differs
+from its display description is still loadable. That has a consequence worth
+spelling out, because getting it wrong is an access violation rather than a
+returned error code:
+
+`loadAsioDriver` is the **only** place the SDK ever assigns its own
+process-global `AsioDrivers* asioDrivers` (defined as
+`AsioDrivers* asioDrivers = 0;` in `host/asiodrivers.cpp`). Steinberg's
+`ASIOExit()` in `common/asio.cpp` then dereferences that global with no null
+check:
+
+```c
+ASIOError ASIOExit(void) {
+    if (theAsioDriver) {
+#if WINDOWS
+        asioDrivers->removeCurrentDriver();
+```
+
+and `AsioDrivers::removeCurrentDriver()` is a non-static member that reads and
+writes `this->curIndex`. Bypassing `loadAsioDriver` would therefore leave the
+global null and turn every `ASIOExit()` — i.e. every `close()` and every
+re-`open()` — into a null-`this` member access. (Some downstream forks, such
+as RtAudio's vendored `asio.cpp`, carry an `if (asioDrivers)` patch; the
+Steinberg SDK this shim builds against does not.)
+
+`asioshim.cpp` therefore owns that global's lifetime explicitly: it publishes
+its own `AsioDrivers` subclass into `asioDrivers` as soon as the instance is
+created — before anything can reach `ASIOInit`/`ASIOExit` — and clears it back
+to `nullptr` immediately before destroying that instance, so the SDK global
+never dangles. The unload path still calls `removeCurrentDriver()` itself for
+the failure paths that never reached `ASIOInit`; when `ASIOExit()` did run,
+that second call is a no-op because `removeCurrentDriver()` leaves
+`curIndex == -1`.
+
+## Real-time streaming (story 311)
+
+Audio only flows once the driver's double buffers exist and the host callback
+table is installed. The ordering contract, all on `asio-control`, is:
+
+```
+asioshim_createBuffers  →  asioshim_getBufferInfos  →  asioshim_start
+        … streaming (driver-thread bufferSwitch callbacks) …
+asioshim_stop  →  asioshim_disposeBuffers  →  asioshim_unloadDriver
+```
+
+`asioshim_createBuffers` requires a loaded driver and no already-created
+buffers. It rejects negative counts, an empty channel set, a non-positive
+`bufferFrames`, negative channel indices, a null channel array with a positive
+matching count, and more than **64 total active channels** — the cap is on
+`numInputs + numOutputs` combined, so a symmetric configuration tops out at 32
+in + 32 out. All of that is checked before entering the SDK. It then builds
+the `ASIOBufferInfo[]` inputs-first-then-outputs, fills the process-global
+`ASIOCallbacks` table, and calls `ASIOCreateBuffers`. On `ASE_OK` it caches
+each channel's `ASIOSampleType` via `ASIOGetChannelInfo`, probes
+`ASIOOutputReady()` once, and publishes the created state.
+
+A failure leaves no partial state — including the partial state the *driver*
+may hold. `ASIOCreateBuffers` can fail part-way through (request 32 in + 32
+out on a 32-in/16-out device and a driver may allocate the inputs, refuse the
+outputs, and return `ASE_InvalidMode` while still holding those inputs and a
+live pointer to the callback table), so the failure path calls
+`ASIODisposeBuffers()` **before** it clears the shim's own "buffers created"
+flag. Clearing first would make every later `asioshim_disposeBuffers` a no-op
+and leave the device unusable — answering each corrected retry with "buffers
+already created" — until the process restarts.
+
+This is also the point at which the story-218
+`asioshim_messageTrampoline` finally becomes reachable: it occupies the
+`ASIOCallbacks::asioMessage` slot, and before this story no `ASIOCallbacks`
+struct was ever constructed, so the driver had nowhere to deliver
+`kAsioResetRequest` / `kAsioBufferSizeChange` / `kAsioResyncRequest`. The
+`sampleRateDidChange` slot forwards to the same trampoline with
+`kAsioResetRequest`, which is what `AsioFormatChangeShim` already documents
+("sample-rate-driven resets … are reported as `DriverReset`").
+
+`asioshim_stop` and `asioshim_disposeBuffers` return `1` when there is nothing
+to do — including when no driver is loaded — so the Java `close()` path can
+call them unconditionally, and `0` when the driver refused the underlying SDK
+call (see the return-code note above). `asioshim_unloadDriver` performs the
+same stop + dispose teardown before `ASIOExit`, so a `close()` that skips the
+explicit teardown still leaves the vendor driver clean.
+
+Each `bufferSwitch` invokes the JVM upcall and then, when the driver
+advertised support at `ASIOCreateBuffers` time, calls `ASIOOutputReady()`
+natively — but **only when the upcall actually ran**. With no upcall installed
+(between `asioshim_start` and `installAsioBufferSwitchCallback`, or after an
+uninstall the driver has not caught up with) nothing filled the output half,
+so signalling output-ready would tell the driver to replay the previous
+cycle's contents: audible looped garbage instead of silence.
+
+`asioshim_getBufferInfos` reports the addresses `ASIOCreateBuffers` handed
+back, one fixed 32-byte record per active channel, in exactly the order passed
+to `asioshim_createBuffers` (all inputs first, then all outputs):
+
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| `0` | `int32` | `channel` — driver channel index |
+| `4` | `int32` | `isInput` — 1 = input, 0 = output |
+| `8` | `int32` | `sampleType` — the driver's `ASIOSampleType`, or `-1` when the driver refused to report one |
+| `12` | `int32` | reserved, always 0 — padding so the two addresses below are 8-byte aligned |
+| `16` | `int64` | `buffer0` — address of `ASIOBufferInfo.buffers[0]` |
+| `24` | `int64` | `buffer1` — address of `ASIOBufferInfo.buffers[1]` |
+
+`*outCount` is capacity-in / actual-written-out, matching
+`asioshim_listDrivers` and `asioshim_getClockSources`. A zero-capacity call is
+a successful no-op; the call fails with `*outCount == 0` when no driver is
+loaded or buffers have not been created.
+
+The raw addresses are deliberate: the sample-format conversion boundary lives
+in Java (story 312 generalises it), so the JVM reads and writes the driver's
+buffers directly through FFM. They are valid only between a successful
+`asioshim_createBuffers` and the matching `asioshim_disposeBuffers` /
+`asioshim_unloadDriver`, and carry no alignment guarantee — the Java side must
+use the `*_UNALIGNED` value layouts.
 
 ## Building
 
@@ -155,10 +300,57 @@ green build.
 
 ## Threading
 
-All enumeration, lifecycle, capability, and control-panel FFM downcalls run on
-the dedicated daemon platform thread named `asio-control`, never the JavaFX or
-audio render thread. This keeps the SDK's COM initialization, driver creation,
-calls, exit, and release in one apartment. `AsioFormatChangeShim` uses a shared
-FFM arena because its upcall is invoked from the vendor driver's callback
-thread. Windows C `long` is 32-bit even on x64, so the callback ABI is
-normalized to `int32_t` / `ValueLayout.JAVA_INT`, not Java `long`.
+All enumeration, lifecycle, capability, control-panel, and streaming-control
+FFM downcalls run on the dedicated daemon platform thread named `asio-control`,
+never the JavaFX or audio render thread. This keeps the SDK's COM
+initialization, driver creation, calls, exit, and release in one apartment.
+`AsioFormatChangeShim` and `AsioBufferSwitchShim` use a shared FFM arena
+because their upcalls are invoked from the vendor driver's callback thread.
+Windows C `long` is 32-bit even on x64, so the callback ABI is normalized to
+`int32_t` / `ValueLayout.JAVA_INT`, not Java `long`.
+
+### Driver-thread entry points
+
+Four functions in `asioshim.cpp` run on the *vendor driver's* real-time audio
+thread rather than on `asio-control`. They are the four `ASIOCallbacks` slots
+`asioshim_createBuffers` installs:
+
+| `ASIOCallbacks` slot | Function | Exported? |
+| --- | --- | --- |
+| `bufferSwitch` | `asioshim_bufferSwitchTrampoline` | yes (story 311) |
+| `asioMessage` | `asioshim_messageTrampoline` | yes (story 218) |
+| `bufferSwitchTimeInfo` | `shimBufferSwitchTimeInfo` | no — `ASIOTime*` has no useful FFM mapping |
+| `sampleRateDidChange` | `shimSampleRateDidChange` | no — forwards to the message trampoline as `kAsioResetRequest` |
+
+**All four are deliberately lock-free.** Every host-called export in
+`asioshim.cpp` takes the shim's `g_driverMutex`; these four must never take
+it, for two reasons:
+
+1. **RT violation.** A mutex acquisition inside the audio callback is an
+   unbounded, priority-inversion-prone blocking operation.
+2. **Deadlock.** A control thread inside `asioshim_stop` holds `g_driverMutex`
+   while `ASIOStop()` waits for the driver's callback thread to quiesce — a
+   callback parked on that same mutex would never return.
+
+The only synchronisation on that path is `std::atomic`, and it takes two
+cooperating mechanisms:
+
+- **State gates.** A null callback pointer (after
+  `uninstallAsioBufferSwitchCallback`) makes the trampoline a cheap no-op, and
+  the "buffers created" flag is published `false` *before* the SDK teardown so
+  a callback that has not started yet returns without touching disposed state.
+- **An in-flight barrier.** Both gates are read once, at callback entry, so
+  neither says anything about a callback that is already past them — and the
+  story-311 driver-reset path really does tear down from a different thread
+  while the driver is still running. Every callback therefore counts itself
+  into an atomic in-flight counter for the duration of its body, and
+  `asioshim_stop`, `asioshim_disposeBuffers` and
+  `uninstallAsioBufferSwitchCallback` each drain that counter to zero before
+  they let the SDK free the driver's buffers or let Java free the upcall
+  stub's arena. The drain spins on `std::this_thread::yield()` and is bounded
+  (~100 ms against a monotonic clock), so a misbehaving driver can delay, but
+  never hang, `asio-control`. Draining while holding `g_driverMutex` is safe
+  precisely because the callback path never takes that mutex.
+
+`ASIOOutputReady()` is likewise called natively from the trampoline rather
+than from Java, keeping the JVM upcall a pure memory copy.
