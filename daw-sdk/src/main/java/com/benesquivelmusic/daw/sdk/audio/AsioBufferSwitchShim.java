@@ -13,9 +13,8 @@ import java.lang.invoke.MethodType;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.locks.LockSupport;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * FFM (JEP 454) upcall that bridges the ASIO driver's
@@ -70,23 +69,31 @@ import java.util.logging.Logger;
  * recorded audio must stay contiguous.</p>
  *
  * <h2>Sample format</h2>
- * <p>Story 311 implements {@code ASIOSTFloat32LSB} ({@value #ASIOST_FLOAT32_LSB})
- * only; generalising the conversion is story 312's job. Channels whose driver
- * reported any other {@code ASIOSampleType} are zero-filled on input
- * <em>and</em> on output — leaving the driver's own output bytes in place would
- * replay them every block as a fixed-pitch buzz. The unsupported types are
- * logged once at construction time, never from the callback thread.</p>
+ * <p>Story 312 converts the full {@code ASIOSampleType} matrix here:
+ * {@code Int16}, packed 3-byte {@code Int24}, {@code Int32} — including the
+ * right-justified {@code Int32×16/18/20/24} variants — and IEEE 754
+ * {@code Float32} / {@code Float64}, in both byte orders. {@link AsioSampleType}
+ * owns every layout fact; this class only decides <em>which</em> converter each
+ * channel gets.</p>
+ *
+ * <p>The conversion locus is Java rather than the shim's native
+ * {@code bufferSwitch} trampoline. That trampoline hands the JVM the driver's
+ * raw buffer addresses and moves no samples at all, as {@code asioshim.cpp},
+ * {@code asioshim.h} and {@code native/asio/README.md} all record; the shim is
+ * also skipped by CMake in any checkout without the non-redistributable
+ * Steinberg SDK, so conversion code placed there would compile — and be
+ * tested — nowhere.</p>
+ *
+ * <p>Each channel's converter is resolved <em>once</em>, here at construction
+ * time, from the {@code ASIOSampleType} the driver reported for that channel;
+ * the callback thread never inspects a sample type. A channel whose reported
+ * type this DAW cannot convert (a DSD layout, an unassigned code, or the
+ * shim's {@code -1} "the driver refused to say") now fails
+ * {@link AsioBackend#open(DeviceId, AudioFormat, int)} with an
+ * {@link AudioBackendException} naming every offending channel, rather than
+ * being silently mis-decoded or silenced.</p>
  */
 final class AsioBufferSwitchShim implements AutoCloseable {
-
-    private static final Logger LOG =
-            Logger.getLogger(AsioBufferSwitchShim.class.getName());
-
-    /** {@code ASIOSTFloat32LSB} — the only sample type story 311 converts. */
-    static final int ASIOST_FLOAT32_LSB = 19;
-
-    /** Bytes per {@code ASIOSTFloat32LSB} sample. */
-    private static final int BYTES_PER_SAMPLE = 4;
 
     /** Name of the daemon thread that marshals captured blocks off the RT thread. */
     static final String DRAIN_THREAD_NAME = "asio-input-drain";
@@ -127,12 +134,18 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     private final MemorySegment[][] inputBuffers;
     /** Driver output buffers indexed {@code [half][channel]}. */
     private final MemorySegment[][] outputBuffers;
-    /** Whether channel {@code c} has a usable float32 input buffer. */
-    private final boolean[] inputReady;
-    /** Whether the driver exposed any output buffer at all for channel {@code c}. */
-    private final boolean[] outputBound;
-    /** Whether channel {@code c} has a usable float32 output buffer. */
-    private final boolean[] outputReady;
+    /**
+     * Per-channel input converter, or {@code null} when the channel has no
+     * usable driver buffer — the driver exposed none, or its address could not
+     * be reinterpreted. Such a channel captures silence.
+     */
+    private final AsioSampleType[] inputTypes;
+    /**
+     * Per-channel output converter, or {@code null} when the channel has no
+     * usable driver buffer. Such a channel is left completely untouched: there
+     * is no buffer to write to.
+     */
+    private final AsioSampleType[] outputTypes;
 
     /** Interleaved capture staging buffer; callback thread only. */
     private final float[] inputScratch;
@@ -169,6 +182,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * @param bufferFrames the negotiated buffer size in sample frames; must be positive
      * @param bufferInfos  the descriptors returned by
      *                     {@link AsioStreamingShim#getBufferInfos()}; must not be null
+     * @throws AudioBackendException when the driver reports an
+     *                               {@code ASIOSampleType} this DAW cannot
+     *                               convert for a channel it actually exposed
+     *                               a buffer for
      */
     AsioBufferSwitchShim(AudioBackendSupport support, AudioFormat format,
                          int bufferFrames, List<AsioStreamingShim.BufferInfo> bufferInfos) {
@@ -184,16 +201,18 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         this.bufferFrames = bufferFrames;
         this.inputBuffers = new MemorySegment[HALVES][channels];
         this.outputBuffers = new MemorySegment[HALVES][channels];
-        this.inputReady = new boolean[channels];
-        this.outputBound = new boolean[channels];
-        this.outputReady = new boolean[channels];
+        this.inputTypes = new AsioSampleType[channels];
+        this.outputTypes = new AsioSampleType[channels];
         for (int half = 0; half < HALVES; half++) {
             Arrays.fill(inputBuffers[half], MemorySegment.NULL);
             Arrays.fill(outputBuffers[half], MemorySegment.NULL);
         }
-        long byteSize = (long) bufferFrames * BYTES_PER_SAMPLE;
-        String unsupportedTypes = bindDriverBuffers(bufferInfos, byteSize);
-        warnAboutUnsupportedSampleTypes(unsupportedTypes);
+        // Load-bearing ordering: binding rejects an unconvertible channel by
+        // throwing, and it runs BEFORE Arena.ofShared() and before
+        // drainThread.start(). A rejected open therefore leaks neither the
+        // upcall arena nor the drain thread, and AsioBackend#open's
+        // catch (RuntimeException | Error) rolls back with bridge == null.
+        bindDriverBuffers(bufferInfos);
 
         int samplesPerBlock = channels * bufferFrames;
         this.inputScratch = new float[samplesPerBlock];
@@ -218,56 +237,73 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     }
 
     /**
-     * Reinterprets each descriptor's raw {@code buffers[0]} / {@code buffers[1]}
-     * addresses into bounded {@link MemorySegment} views.
+     * Resolves each descriptor's {@code ASIOSampleType} and reinterprets its
+     * raw {@code buffers[0]} / {@code buffers[1]} addresses into bounded
+     * {@link MemorySegment} views sized for <em>that channel's</em> format.
      *
      * <p>Descriptors for channels the opened format does not cover are ignored,
      * and channels the driver never reported keep their
-     * {@link MemorySegment#NULL} placeholder — a playback-only device simply
-     * captures silence, and an interface with fewer outputs than the format
-     * asks for leaves the extra channels unwritten (story 311, S1).</p>
+     * {@link MemorySegment#NULL} placeholder and a {@code null} converter — a
+     * playback-only device simply captures silence, and an interface with fewer
+     * outputs than the format asks for leaves the extra channels unwritten
+     * (story 311, S1).</p>
      *
-     * @return a comma-separated list of the {@code ASIOSampleType}s story 311
-     *         cannot convert, or an empty string when every channel is float32
+     * <p>The view's byte size is per channel, not global: a
+     * {@code frames * 4} view over an {@code ASIOSTFloat64LSB} buffer would
+     * cover only the first half of it and every access past
+     * {@code frames / 2} would throw {@link IndexOutOfBoundsException} on the
+     * driver's real-time thread.</p>
+     *
+     * @throws AudioBackendException when any channel the driver actually bound
+     *                               buffers for reports a type this DAW cannot
+     *                               convert
      */
-    private String bindDriverBuffers(List<AsioStreamingShim.BufferInfo> bufferInfos,
-                                     long byteSize) {
+    private void bindDriverBuffers(List<AsioStreamingShim.BufferInfo> bufferInfos) {
         StringBuilder unsupported = new StringBuilder();
         for (AsioStreamingShim.BufferInfo info : bufferInfos) {
             int channel = info.channel();
             if (channel < 0 || channel >= channels) {
                 continue;
             }
-            boolean supported = info.sampleType() == ASIOST_FLOAT32_LSB;
-            if (!supported) {
+            Optional<AsioSampleType> resolved = AsioSampleType.forCode(info.sampleType());
+            // An unresolved type has no byte size, so the view is sized from
+            // the widest container the SDK defines. It is never read: the
+            // rejection below fails the open before any callback can run.
+            int bytesPerSample = resolved.isPresent()
+                    ? resolved.get().bytesPerSample()
+                    : Long.BYTES;
+            long byteSize = (long) bufferFrames * bytesPerSample;
+            MemorySegment half0 = viewOf(info.buffer0(), byteSize);
+            MemorySegment half1 = viewOf(info.buffer1(), byteSize);
+            boolean bound = !half0.equals(MemorySegment.NULL)
+                    && !half1.equals(MemorySegment.NULL);
+            if (bound && resolved.isEmpty()) {
+                // Only a channel we would actually touch can fail the open. A
+                // descriptor with no usable buffer is never decoded or
+                // encoded, so its type is irrelevant.
                 if (!unsupported.isEmpty()) {
                     unsupported.append(", ");
                 }
                 unsupported.append(info.input() ? "input " : "output ")
                         .append(channel).append('=').append(info.sampleType());
             }
-            MemorySegment half0 = viewOf(info.buffer0(), byteSize);
-            MemorySegment half1 = viewOf(info.buffer1(), byteSize);
-            boolean bound = !half0.equals(MemorySegment.NULL)
-                    && !half1.equals(MemorySegment.NULL);
             if (info.input()) {
                 inputBuffers[0][channel] = half0;
                 inputBuffers[1][channel] = half1;
-                inputReady[channel] = bound && supported;
+                inputTypes[channel] = bound ? resolved.orElse(null) : null;
             } else {
                 outputBuffers[0][channel] = half0;
                 outputBuffers[1][channel] = half1;
-                outputBound[channel] = bound;
-                outputReady[channel] = bound && supported;
+                outputTypes[channel] = bound ? resolved.orElse(null) : null;
             }
         }
-        return unsupported.toString();
+        rejectUnsupportedSampleTypes(unsupported.toString());
     }
 
     /**
      * Builds a bounded view over a raw driver buffer address. The resulting
      * segment carries <em>no</em> alignment guarantee, which is why every
-     * access uses {@code JAVA_FLOAT_UNALIGNED}.
+     * access uses a {@code JAVA_*_UNALIGNED} layout.
      */
     private static MemorySegment viewOf(long address, long byteSize) {
         if (address == 0L) {
@@ -283,18 +319,25 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     }
 
     /**
-     * Logs the unsupported {@code ASIOSampleType}s exactly once, here at
-     * construction time. The callback thread must never log.
+     * Fails the open for every {@code ASIOSampleType} this DAW cannot convert,
+     * naming all of them in one message rather than reporting the first and
+     * hiding the rest.
+     *
+     * <p>Mis-decoding is the alternative, and at a hardware boundary it is
+     * loud: the driver would read the engine's float bytes as integers. The
+     * story's Non-Goals require a clear {@link AudioBackendException}
+     * instead.</p>
      */
-    private static void warnAboutUnsupportedSampleTypes(String unsupportedTypes) {
+    private static void rejectUnsupportedSampleTypes(String unsupportedTypes) {
         if (unsupportedTypes.isEmpty()) {
             return;
         }
-        LOG.log(Level.WARNING,
+        throw new AudioBackendException(
                 "ASIO driver reported unsupported ASIOSampleType(s) [" + unsupportedTypes
-                        + "]; story 311 converts ASIOSTFloat32LSB (" + ASIOST_FLOAT32_LSB
-                        + ") only, so those channels are silenced until story 312 "
-                        + "(ASIO sample-format conversion) generalises the copy boundary.");
+                        + "]; this DAW converts Int16, Int24 (packed 3-byte) and Int32 "
+                        + "— including the right-justified Int32x16/18/20/24 variants — "
+                        + "plus Float32 and Float64, in both byte orders. DSD types and "
+                        + "a driver that reports no type at all (-1) are not supported.");
     }
 
     private MemorySegment buildUpcallStub() {
@@ -360,7 +403,7 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         float[] incoming = inputScratch;
         MemorySegment[] inputs = inputBuffers[bufferIndex];
         for (int channel = 0; channel < channelCount; channel++) {
-            copyInputChannel(inputs[channel], inputReady[channel],
+            copyInputChannel(inputs[channel], inputTypes[channel],
                     incoming, channel, channelCount, frames);
         }
         // Drop-on-full rather than block: a stalled drain thread must never
@@ -375,43 +418,38 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         }
         MemorySegment[] outputs = outputBuffers[bufferIndex];
         for (int channel = 0; channel < channelCount; channel++) {
-            copyOutputChannel(outputs[channel], outputBound[channel],
-                    outputReady[channel], outputScratch, channel, channelCount, frames);
+            copyOutputChannel(outputs[channel], outputTypes[channel],
+                    outputScratch, channel, channelCount, frames);
         }
     }
 
     /**
-     * Driver &rarr; engine copy for one channel: bulk-reads the per-channel
-     * driver buffer into a scratch array, then de-interleaves it into the
-     * interleaved {@link AudioBlock} layout.
+     * Driver &rarr; engine copy for one channel: decodes the driver buffer
+     * into a per-channel scratch array of normalised float32, then
+     * de-interleaves it into the interleaved {@link AudioBlock} layout.
      *
-     * <p>One {@link MemorySegment#copy} per channel replaces {@code frames}
-     * individually bounds-checked {@code get} calls (8192 of them at
-     * 32&nbsp;channels &times; 128&nbsp;frames) and is still allocation-free.</p>
+     * <p>The decode is story 312's driver-side conversion seam.
+     * {@link AsioSampleType#decode} branches on the channel's format once and
+     * then runs a flat loop; for {@code ASIOSTFloat32LSB} on x64 it is still
+     * the single bulk {@link MemorySegment#copy} story 311 established, which
+     * replaces {@code frames} individually bounds-checked {@code get} calls
+     * (8192 of them at 32&nbsp;channels &times; 128&nbsp;frames).</p>
      *
-     * <p>story 312: this is one of the two sample-format conversion seams.
-     * Story 311 only decodes {@code ASIOSTFloat32LSB}; every other
-     * {@code ASIOSampleType} — and every channel the driver did not expose —
-     * arrives here with {@code ready == false} and is silenced. Story 312
-     * generalises the decode based on the per-channel {@code ASIOSampleType}
-     * captured at construction.</p>
+     * @param type the channel's converter, or {@code null} when the driver
+     *             exposed no usable buffer — that channel captures silence
      */
     @RealTimeSafe
-    private void copyInputChannel(MemorySegment source, boolean ready,
+    private void copyInputChannel(MemorySegment source, AsioSampleType type,
                                   float[] destination, int channel,
                                   int channelCount, int frames) {
-        if (!ready) {
+        if (type == null) {
             for (int frame = 0; frame < frames; frame++) {
                 destination[frame * channelCount + channel] = 0f;
             }
             return;
         }
         float[] scratch = inputChannelScratch;
-        // JAVA_FLOAT_UNALIGNED: a reinterpreted native segment carries no
-        // alignment guarantee, and the aligned layout would throw
-        // IllegalArgumentException on a misaligned driver buffer.
-        MemorySegment.copy(source, ValueLayout.JAVA_FLOAT_UNALIGNED, 0L,
-                scratch, 0, frames);
+        type.decode(source, scratch, frames);
         for (int frame = 0; frame < frames; frame++) {
             destination[frame * channelCount + channel] = scratch[frame];
         }
@@ -419,36 +457,27 @@ final class AsioBufferSwitchShim implements AutoCloseable {
 
     /**
      * Engine &rarr; driver copy for one channel: interleaved scratch into a
-     * per-channel scratch array, then one bulk {@link MemorySegment#copy} into
-     * the driver's buffer.
+     * per-channel scratch array, then one encode pass into the driver's
+     * buffer. The encode counterpart of {@link #copyInputChannel}.
      *
-     * <p>story 312: the encode counterpart of {@link #copyInputChannel}. Story
-     * 311 only encodes {@code ASIOSTFloat32LSB}; a channel of any other
-     * {@code ASIOSampleType} has its driver buffer <strong>zero-filled</strong>
-     * rather than skipped. A zero byte pattern is silence for every integer PCM
-     * and float {@code ASIOSampleType}, whereas leaving the driver's bytes
-     * alone would replay them every block as a fixed-pitch buzz. Story 312
-     * generalises the encode.</p>
+     * @param type the channel's converter, or {@code null} when the driver
+     *             exposed no usable buffer — there is nothing to write to, so
+     *             that channel is skipped entirely
      */
     @RealTimeSafe
-    private void copyOutputChannel(MemorySegment destination, boolean bound,
-                                   boolean ready, float[] source, int channel,
+    private void copyOutputChannel(MemorySegment destination, AsioSampleType type,
+                                   float[] source, int channel,
                                    int channelCount, int frames) {
-        if (!bound) {
+        if (type == null) {
             // The driver exposes no output buffer for this channel (fewer
             // hardware outputs than the opened format asks for).
-            return;
-        }
-        if (!ready) {
-            destination.fill((byte) 0);
             return;
         }
         float[] scratch = outputChannelScratch;
         for (int frame = 0; frame < frames; frame++) {
             scratch[frame] = source[frame * channelCount + channel];
         }
-        MemorySegment.copy(scratch, 0, destination,
-                ValueLayout.JAVA_FLOAT_UNALIGNED, 0L, frames);
+        type.encode(scratch, destination, frames);
     }
 
     /**

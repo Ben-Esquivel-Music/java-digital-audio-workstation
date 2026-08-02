@@ -181,8 +181,12 @@ namespace {
     constexpr int MAX_STREAM_CHANNELS = 64;
     constexpr int BUFFER_INFO_STRIDE = 32;
     // Not a valid ASIOSampleType; means "the driver refused to report a
-    // sample type for this channel". The Java side treats anything other
-    // than ASIOSTFloat32LSB as unsupported (story 312 generalises it).
+    // sample type for this channel". Story 312 converts the whole SDK
+    // matrix on the Java side — Int16, packed Int24, Int32 (including the
+    // right-justified Int32LSB/MSB16/18/20/24 variants), Float32 and
+    // Float64, in both byte orders — so this value, the DSD types, and any
+    // code outside that matrix make the Java side reject the open with an
+    // AudioBackendException rather than mis-decode the channel.
     constexpr int32_t SAMPLE_TYPE_UNKNOWN = -1;
     // Upper bound on how long a control-path teardown waits for in-flight
     // driver callbacks to drain. Best-effort by design: a driver whose
@@ -1037,8 +1041,12 @@ ASIOSHIM_EXPORT int asioshim_createBuffers(const int* inputChannels,
 }
 
 // Reports the buffer addresses ASIOCreateBuffers handed back, so the JVM
-// can read and write the driver's buffers directly (the sample-format
-// conversion boundary lives in Java — story 312 generalises it).
+// can read and write the driver's buffers directly. The sample-format
+// conversion boundary lives in Java: story 312 converts the whole
+// ASIOSampleType matrix in AsioSampleType, keyed off the per-channel
+// sampleType this record already carries, so no separate
+// asioshim_getChannelSampleType export is needed and this trampoline moves
+// no samples itself.
 //
 // Writes a fixed 32-byte record per active channel, in exactly the order
 // passed to asioshim_createBuffers:
