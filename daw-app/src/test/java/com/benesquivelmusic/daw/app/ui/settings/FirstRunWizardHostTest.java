@@ -24,6 +24,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -55,7 +57,7 @@ class FirstRunWizardHostTest {
                     wizard,
                     _ -> {
                         applies.incrementAndGet();
-                        return Optional.empty();
+                        return CompletableFuture.completedFuture(Optional.empty());
                     },
                     _ -> { });
             DawgDialog<Void> dialog = host.dialogForTest();
@@ -80,7 +82,9 @@ class FirstRunWizardHostTest {
     void hiddenCancelKeepsClosePermissionWithoutRemovingTheHeaderGlyph() {
         runOnFxThread(() -> {
             FirstRunWizardHost host = new FirstRunWizardHost(
-                    newWizard(newModel()), _ -> Optional.empty(), _ -> { });
+                    newWizard(newModel()),
+                    _ -> CompletableFuture.completedFuture(Optional.empty()),
+                    _ -> { });
             DawgDialog<Void> dialog = host.dialogForTest();
             Button cancel = (Button) dialog.getDialogPane().lookupButton(ButtonType.CANCEL);
 
@@ -107,7 +111,7 @@ class FirstRunWizardHostTest {
                         if (attempts.incrementAndGet() == 1) {
                             throw new IllegalStateException("selected ASIO device is unavailable");
                         }
-                        return Optional.empty();
+                        return CompletableFuture.completedFuture(Optional.empty());
                     },
                     _ -> { });
             DawgDialog<Void> dialog = host.dialogForTest();
@@ -149,12 +153,95 @@ class FirstRunWizardHostTest {
     }
 
     @Test
+    void asynchronousFailureKeepsEveryDismissRouteOpenForARetry() {
+        runOnFxThread(() -> {
+            SettingsModel model = newModel();
+            FirstRunWizard wizard = newWizard(model);
+            CompletableFuture<Optional<String>> firstApply = new CompletableFuture<>();
+            AtomicInteger attempts = new AtomicInteger();
+            FirstRunWizardHost host = new FirstRunWizardHost(
+                    wizard,
+                    _ -> attempts.incrementAndGet() == 1
+                            ? firstApply
+                            : CompletableFuture.completedFuture(Optional.empty()),
+                    _ -> { });
+            DawgDialog<Void> dialog = host.dialogForTest();
+            AtomicReference<Throwable> routeFailure = new AtomicReference<>();
+            AtomicBoolean pendingStateObserved = new AtomicBoolean();
+            AtomicBoolean dismissalWasBlocked = new AtomicBoolean();
+            AtomicBoolean rootFailureWasVisible = new AtomicBoolean();
+            dialog.setOnShown(_ -> Platform.runLater(() -> {
+                try {
+                    Button next = nextButton(dialog);
+                    advanceToDone(next);
+                    next.fire();
+                    wizard.finish();
+                    pendingStateObserved.set(wizard.isFinishPending()
+                            && next.isDisabled()
+                            && !model.isFirstRunWizardCompleted()
+                            && !wizard.hasOutcome()
+                            && attempts.get() == 1);
+
+                    Window window = dialog.getDialogPane().getScene().getWindow();
+                    Event.fireEvent(window, escapeEvent());
+                    Event.fireEvent(window,
+                            new WindowEvent(window, WindowEvent.WINDOW_CLOSE_REQUEST));
+                    Event.fireEvent(dialog.getGraphic(), mouseClick());
+                    dismissalWasBlocked.set(dialog.isShowing()
+                            && !model.isFirstRunWizardCompleted()
+                            && !wizard.hasOutcome());
+
+                    Thread.ofVirtual().name("wizard-test-driver-failure").start(() -> {
+                        firstApply.completeExceptionally(new CompletionException(
+                                new IllegalStateException(
+                                        "ASIO driver rejected the selected output")));
+                        Platform.runLater(() -> {
+                            try {
+                                rootFailureWasVisible.set(!wizard.isFinishPending()
+                                        && dialog.isShowing()
+                                        && wizard.isOutcomeErrorVisible()
+                                        && wizard.outcomeErrorText().contains(
+                                                "ASIO driver rejected the selected output")
+                                        && !wizard.outcomeErrorText().contains(
+                                                "CompletionException")
+                                        && !model.isFirstRunWizardCompleted()
+                                        && !wizard.hasOutcome());
+                                next.fire();
+                            } catch (Throwable failure) {
+                                routeFailure.set(failure);
+                                dialog.close();
+                            }
+                        });
+                    });
+                } catch (Throwable failure) {
+                    routeFailure.set(failure);
+                    dialog.close();
+                }
+            }));
+
+            Optional<Void> result = showWithWatchdog(host, routeFailure);
+
+            rethrow(routeFailure.get());
+            assertThat(result).isEmpty();
+            assertThat(pendingStateObserved).isTrue();
+            assertThat(dismissalWasBlocked).isTrue();
+            assertThat(rootFailureWasVisible).isTrue();
+            assertThat(attempts).hasValue(2);
+            assertThat(model.isFirstRunWizardCompleted()).isTrue();
+            assertThat(wizard.wasFinished()).isTrue();
+            return null;
+        });
+    }
+
+    @Test
     void restartNoticeIsPublishedOnlyAfterSuccessfulFinish() {
         runOnFxThread(() -> {
             AtomicReference<String> notice = new AtomicReference<>();
             FirstRunWizardHost host = new FirstRunWizardHost(
                     newWizard(newModel()),
-                    _ -> Optional.of("Restart required for: Audio backend. Changes apply when you relaunch."),
+                    _ -> CompletableFuture.completedFuture(Optional.of(
+                            "Restart required for: Audio backend. "
+                                    + "Changes apply when you relaunch.")),
                     notice::set);
             DawgDialog<Void> dialog = host.dialogForTest();
             dialog.setOnShown(_ -> Platform.runLater(() -> {
@@ -171,7 +258,8 @@ class FirstRunWizardHostTest {
 
             AtomicBoolean cleanNotice = new AtomicBoolean();
             FirstRunWizardHost cleanHost = new FirstRunWizardHost(
-                    newWizard(newModel()), _ -> Optional.empty(),
+                    newWizard(newModel()),
+                    _ -> CompletableFuture.completedFuture(Optional.empty()),
                     _ -> cleanNotice.set(true));
             DawgDialog<Void> cleanDialog = cleanHost.dialogForTest();
             cleanDialog.setOnShown(_ -> Platform.runLater(() -> {
@@ -184,6 +272,26 @@ class FirstRunWizardHostTest {
             rethrow(cleanFailure.get());
 
             assertThat(cleanNotice).isFalse();
+            return null;
+        });
+    }
+
+    @Test
+    void lateApplyCompletionAfterWizardTeardownRecordsNoOutcome() {
+        runOnFxThread(() -> {
+            SettingsModel model = newModel();
+            FirstRunWizard wizard = newWizard(model);
+            CompletableFuture<Void> pendingApply = new CompletableFuture<>();
+            wizard.setOnFinishedAsync(_ -> pendingApply);
+
+            wizard.finish();
+            assertThat(wizard.isFinishPending()).isTrue();
+            wizard.close();
+            pendingApply.complete(null);
+
+            assertThat(wizard.isFinishPending()).isFalse();
+            assertThat(wizard.hasOutcome()).isFalse();
+            assertThat(model.isFirstRunWizardCompleted()).isFalse();
             return null;
         });
     }
@@ -253,7 +361,13 @@ class FirstRunWizardHostTest {
         watchdog.setOnFinished(_ -> {
             failure.compareAndSet(null,
                     new AssertionError("first-run wizard dismissal route timed out"));
-            dialog.close();
+            dialog.setOnCloseRequest(null);
+            Window window = dialog.getDialogPane().getScene().getWindow();
+            if (window != null) {
+                window.hide();
+            } else {
+                dialog.close();
+            }
         });
         watchdog.play();
         try {

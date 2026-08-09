@@ -5,9 +5,11 @@ import com.benesquivelmusic.daw.app.ui.SettingsModel;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
+import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyIntegerProperty;
 import javafx.beans.property.ReadOnlyIntegerWrapper;
 import javafx.scene.Node;
@@ -29,6 +31,10 @@ import java.util.Map;
 import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.ResourceBundle;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -113,10 +119,11 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
 
     private final DeviceEnumerationTask enumerationTask;
 
-    private Consumer<Map<String, Object>> onFinished;
+    private Function<Map<String, Object>, CompletionStage<?>> onFinished;
     private Runnable onSkipped;
     private Runnable onOutcomeRecorded;
     private boolean closed;
+    private boolean finishPending;
     private Outcome outcome;
 
     /** A successfully recorded terminal choice. */
@@ -390,7 +397,7 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
             }
             contentBox.getChildren().setAll(children);
         }
-        backButton.setDisable(step == 0);
+        backButton.setDisable(finishPending || step == 0);
         nextButton.setText(done ? msg("wizard.finish") : msg("wizard.next"));
         skipButton.setVisible(!done);
         skipButton.setManaged(!done);
@@ -410,9 +417,29 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
         return edits;
     }
 
-    /** @param callback receives {@link #collectedEdits()} on Finish; may be null */
+    /**
+     * Sets a synchronous Finish callback. This compatibility form is adapted to
+     * an already-completed stage; asynchronous apply paths should use
+     * {@link #setOnFinishedAsync(Function)}.
+     *
+     * @param callback receives {@link #collectedEdits()} on Finish; may be null
+     */
     public void setOnFinished(Consumer<Map<String, Object>> callback) {
-        this.onFinished = callback;
+        onFinished = callback == null ? null : edits -> {
+            callback.accept(edits);
+            return CompletableFuture.completedFuture(null);
+        };
+    }
+
+    /**
+     * Sets the non-blocking Finish contract. The wizard remains open and does
+     * not persist completion until the returned stage succeeds.
+     *
+     * @param callback starts the apply and returns its actual completion; may be null
+     */
+    void setOnFinishedAsync(
+            Function<Map<String, Object>, ? extends CompletionStage<?>> callback) {
+        onFinished = callback == null ? null : edits -> callback.apply(edits);
     }
 
     /** @param callback runs on Skip (nothing is applied); may be null */
@@ -434,24 +461,23 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
      * apply leaves every terminal marker unset so Finish remains retryable.
      */
     public void finish() {
-        if (closed || outcome != null) {
+        if (closed || outcome != null || finishPending) {
             return;
         }
         clearOutcomeError();
+        CompletionStage<?> completion;
         try {
             Map<String, Object> edits = collectedEdits();
-            if (onFinished != null) {
-                onFinished.accept(edits);
-            }
-            model.setFirstRunWizardCompleted(true);
+            completion = onFinished == null
+                    ? CompletableFuture.completedFuture(null)
+                    : Objects.requireNonNull(onFinished.apply(edits),
+                            "Finish callback completion must not be null");
         } catch (RuntimeException failure) {
-            LOG.log(Level.WARNING, "First-run wizard settings could not be applied", failure);
-            showOutcomeError("wizard.applyError", failure);
+            showFinishFailure(failure);
             return;
         }
-        outcome = Outcome.FINISHED;
-        close();
-        requestHostDismissal();
+        setFinishPending(true);
+        completion.whenComplete((_, failure) -> finishCompleted(failure));
     }
 
     /**
@@ -459,7 +485,7 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
      * completion and recording the terminal outcome. Nothing is applied.
      */
     public void skip() {
-        if (closed || outcome != null) {
+        if (closed || outcome != null || finishPending) {
             return;
         }
         clearOutcomeError();
@@ -489,6 +515,11 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
     /** @return whether Finish, rather than Skip, recorded the outcome */
     public boolean wasFinished() {
         return outcome == Outcome.FINISHED;
+    }
+
+    /** @return whether Finish is waiting for its asynchronous apply result */
+    public boolean isFinishPending() {
+        return finishPending;
     }
 
     /**
@@ -598,6 +629,60 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
                 ? failure.getClass().getSimpleName() : message;
     }
 
+    private void finishCompleted(Throwable failure) {
+        Throwable applyFailure = unwrapCompletionFailure(failure);
+        Runnable completion = () -> completeFinishOnFx(applyFailure);
+        if (Platform.isFxApplicationThread()) {
+            completion.run();
+        } else {
+            FxDispatcher.runOnFx(completion);
+        }
+    }
+
+    private void completeFinishOnFx(Throwable applyFailure) {
+        if (!finishPending || closed || outcome != null) {
+            return;
+        }
+        if (applyFailure != null) {
+            setFinishPending(false);
+            showFinishFailure(applyFailure);
+            return;
+        }
+        try {
+            model.setFirstRunWizardCompleted(true);
+        } catch (RuntimeException persistenceFailure) {
+            setFinishPending(false);
+            showFinishFailure(persistenceFailure);
+            return;
+        }
+        outcome = Outcome.FINISHED;
+        setFinishPending(false);
+        close();
+        requestHostDismissal();
+    }
+
+    private void showFinishFailure(Throwable failure) {
+        LOG.log(Level.WARNING, "First-run wizard settings could not be applied", failure);
+        showOutcomeError("wizard.applyError", failure);
+    }
+
+    private void setFinishPending(boolean pending) {
+        finishPending = pending;
+        backButton.setDisable(pending || currentStep.get() == 0);
+        nextButton.setDisable(pending);
+        skipButton.setDisable(pending);
+    }
+
+    private static Throwable unwrapCompletionFailure(Throwable failure) {
+        Throwable current = failure;
+        while ((current instanceof CompletionException
+                || current instanceof ExecutionException)
+                && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
     /** Tears down the audio-step enumeration; idempotent. */
     @Override
     public void close() {
@@ -605,6 +690,7 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
             return;
         }
         closed = true;
+        finishPending = false;
         if (enumerationTask != null) {
             enumerationTask.close();
         }

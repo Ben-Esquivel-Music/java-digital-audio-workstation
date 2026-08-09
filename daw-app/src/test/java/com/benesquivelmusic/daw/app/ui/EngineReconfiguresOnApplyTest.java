@@ -601,6 +601,53 @@ class EngineReconfiguresOnApplyTest {
     }
 
     @Test
+    void fastAudioListenerFailureDoesNotRaceOkClose() throws Exception {
+        Story307TestSupport.StubController controller =
+                new Story307TestSupport.StubController();
+        SettingsModel model = Story307TestSupport.model("engineFastListenerFailure");
+        int changedBuffer = model.getBufferSize() == 256 ? 512 : 256;
+        AtomicInteger listenerCalls = new AtomicInteger();
+        AtomicReference<SettingsDialog> dialogRef = new AtomicReference<>();
+
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = new SettingsDialog(model);
+            dialogRef.set(dialog);
+            dialog.setAudioEngineController(controller);
+            dialog.setSettingsChangeListener(_ -> {
+                if (listenerCalls.incrementAndGet() == 2) {
+                    throw new IllegalStateException("fast listener failed");
+                }
+            });
+            dialog.getShell().settingRow("audio.bufferSize").orElseThrow()
+                    .setValue(changedBuffer);
+            dialog.show();
+            dialog.applySettings();
+
+            assertThat(controller.configurationApplied.await(5, TimeUnit.SECONDS)).isTrue();
+            Thread worker = controller.applyThread.get();
+            worker.join(5_000);
+            assertThat(worker.isAlive()).isFalse();
+
+            dialog.applyAndCloseWhenReady();
+            assertThat(dialog.isShowing()).isTrue();
+            return null;
+        });
+
+        assertThat(Story307TestSupport.awaitFxValue(
+                () -> dialogRef.get().getShell().isOperationNoticeVisible(),
+                true, 5, TimeUnit.SECONDS)).isTrue();
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = dialogRef.get();
+            assertThat(listenerCalls).hasValue(2);
+            assertThat(dialog.getShell().operationNoticeText())
+                    .contains("fast listener failed");
+            assertThat(dialog.isShowing()).isTrue();
+            dialog.hide();
+            return null;
+        });
+    }
+
+    @Test
     void dirtyCloseApplyKeepsDialogOpenWhenEngineReconfigurationFails() throws Exception {
         Story307TestSupport.StubController controller =
                 new Story307TestSupport.StubController();

@@ -81,6 +81,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.ResourceBundle;
+import java.util.concurrent.CompletionStage;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
@@ -1400,15 +1401,16 @@ public final class MainController {
      * (persistence + the SettingsApplied publish + engine-reconfigure +
      * {@link LiveSettingsApplier} all ride along; values identical to the
      * persisted ones stay non-pending and write nothing). The dialog is
-     * never shown; detaching its backup and audio authorities afterwards
-     * tears down disk-usage and device discovery (an in-flight engine
-     * reconfigure keeps its own captured references and completes normally).
+     * never shown. Its backup and audio authorities remain attached until the
+     * returned per-apply completion settles, then disk-usage and device
+     * discovery are detached on the same FX-thread continuation.
      */
-    private Optional<String> applyWizardEdits(java.util.Map<String, Object> edits) {
+    private CompletionStage<Optional<String>> applyWizardEdits(
+            java.util.Map<String, Object> edits) {
         return applyWizardEdits(createSettingsDialog(), edits);
     }
 
-    static Optional<String> applyWizardEdits(
+    static CompletionStage<Optional<String>> applyWizardEdits(
             SettingsDialog dialog, java.util.Map<String, Object> edits) {
         Objects.requireNonNull(dialog, "dialog must not be null");
         Objects.requireNonNull(edits, "edits must not be null");
@@ -1418,14 +1420,20 @@ public final class MainController {
                     shell.settingRow(id).ifPresent(row -> row.setValue(value)));
             Optional<String> restartNotice = shell.isRestartBannerVisible()
                     ? Optional.of(shell.restartBannerText()) : Optional.empty();
-            dialog.applySettings();
-            return restartNotice;
+            return dialog.applySettingsAsync()
+                    .thenApply(_ -> restartNotice)
+                    .whenComplete((_, _) -> detachWizardSettingsDialog(dialog));
+        } catch (RuntimeException | Error failure) {
+            detachWizardSettingsDialog(dialog);
+            throw failure;
+        }
+    }
+
+    private static void detachWizardSettingsDialog(SettingsDialog dialog) {
+        try {
+            dialog.setBackupSettingsAccess(null);
         } finally {
-            try {
-                dialog.setBackupSettingsAccess(null);
-            } finally {
-                dialog.setAudioEngineController(null);
-            }
+            dialog.setAudioEngineController(null);
         }
     }
 
