@@ -295,7 +295,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public double getCpuLoadPercent() {
         PerformanceMonitor monitor = audioEngine.getPerformanceMonitor();
-        return monitor == null ? -1.0 : monitor.getCpuLoadPercent();
+        if (monitor == null) {
+            return -1.0;
+        }
+        // Story 314 review: this is the one production UI-side poll of the
+        // monitor, so it drains the underrun/warning events the RT thread
+        // recorded — logging and listener delivery must never run on the
+        // audio callback.
+        monitor.publishPendingEvents();
+        return monitor.getCpuLoadPercent();
     }
 
     @Override

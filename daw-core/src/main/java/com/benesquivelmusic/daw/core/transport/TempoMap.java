@@ -29,6 +29,15 @@ public final class TempoMap {
     private final List<TempoChangeEvent> tempoChanges = new ArrayList<>();
     private final List<TimeSignatureChangeEvent> timeSignatureChanges = new ArrayList<>();
 
+    // Cached unmodifiable views (story 314 review): the getters sit on the
+    // per-block render path (Transport.getTempo / getTimeSignature* — 3+
+    // calls per block), so they must not allocate a fresh wrapper per call.
+    // The views stay live over the backing lists — semantics unchanged.
+    private final List<TempoChangeEvent> tempoChangesView =
+            Collections.unmodifiableList(tempoChanges);
+    private final List<TimeSignatureChangeEvent> timeSignatureChangesView =
+            Collections.unmodifiableList(timeSignatureChanges);
+
     /**
      * Creates a new tempo map with default initial values (120 BPM, 4/4).
      */
@@ -91,7 +100,7 @@ public final class TempoMap {
      * @return the list of tempo change events
      */
     public List<TempoChangeEvent> getTempoChanges() {
-        return Collections.unmodifiableList(tempoChanges);
+        return tempoChangesView;
     }
 
     /**
@@ -194,7 +203,7 @@ public final class TempoMap {
      * @return the list of time signature change events
      */
     public List<TimeSignatureChangeEvent> getTimeSignatureChanges() {
-        return Collections.unmodifiableList(timeSignatureChanges);
+        return timeSignatureChangesView;
     }
 
     /**

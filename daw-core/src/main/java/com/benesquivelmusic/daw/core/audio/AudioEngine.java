@@ -611,7 +611,10 @@ public final class AudioEngine {
                 && previousMixer.getGraphScheduler() == graphScheduler) {
             previousMixer.setGraphScheduler(null);
         }
-        this.mixer = mixer;
+        // Story 314 review: prepare the INCOMING mixer BEFORE the volatile
+        // store. Publishing first would let the RT thread mixDown an
+        // unprepared mixer (null scratch buffers → NPE inside the FFM
+        // upcall) for the whole multi-ms prepare window.
         if (mixer != null && running.get()) {
             mixer.prepareForPlayback(format.channels(), format.bufferSize());
             // Re-install the scheduler on the new mixer so parallel
@@ -620,6 +623,7 @@ public final class AudioEngine {
                 mixer.setGraphScheduler(graphScheduler);
             }
         }
+        this.mixer = mixer;
     }
 
     /**

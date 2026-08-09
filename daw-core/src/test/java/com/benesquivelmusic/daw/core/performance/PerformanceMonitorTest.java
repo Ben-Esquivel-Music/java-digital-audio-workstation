@@ -131,19 +131,43 @@ class PerformanceMonitorTest {
     }
 
     @Test
-    void shouldNotifyListenerOnWarning() {
+    void shouldNotifyListenerOnWarningWhenPendingEventsArePublished() {
         List<PerformanceMetrics> captured = new ArrayList<>();
         monitor.addWarningListener(captured::add);
         monitor.setWarningThresholdPercent(10.0);
 
-        // Drive the load above the threshold
+        // Drive the load above the threshold; delivery is deferred to the
+        // off-thread drain (story 314 review — RT-safe recordProcessingTime).
         long highLoad = (long) (BUFFER_DURATION_NS * 0.9);
         for (int i = 0; i < 200; i++) {
             monitor.recordProcessingTime(highLoad);
         }
+        monitor.publishPendingEvents();
 
         assertThat(captured).isNotEmpty();
         assertThat(captured.get(0).warning()).isTrue();
+    }
+
+    @Test
+    void shouldDeferListenerDeliveryUntilPendingEventsArePublished() {
+        List<PerformanceMetrics> captured = new ArrayList<>();
+        monitor.addWarningListener(captured::add);
+        monitor.setWarningThresholdPercent(10.0);
+
+        long highLoad = (long) (BUFFER_DURATION_NS * 0.9);
+        for (int i = 0; i < 200; i++) {
+            monitor.recordProcessingTime(highLoad);
+        }
+        assertThat(captured)
+                .as("recordProcessingTime performs no listener delivery on the audio thread")
+                .isEmpty();
+
+        monitor.publishPendingEvents();
+        assertThat(captured).hasSize(1);
+
+        monitor.publishPendingEvents();
+        assertThat(captured)
+                .as("a drain with no new transitions publishes nothing").hasSize(1);
     }
 
     @Test
@@ -151,11 +175,13 @@ class PerformanceMonitorTest {
         List<PerformanceMetrics> captured = new ArrayList<>();
         monitor.setWarningThresholdPercent(10.0);
 
-        // First drive load high
+        // First drive load high and drain the on-transition (before the
+        // listener attaches, so it observes only the clear).
         long highLoad = (long) (BUFFER_DURATION_NS * 0.9);
         for (int i = 0; i < 200; i++) {
             monitor.recordProcessingTime(highLoad);
         }
+        monitor.publishPendingEvents();
 
         // Now add listener and drive load low until warning clears
         monitor.addWarningListener(captured::add);
@@ -163,6 +189,7 @@ class PerformanceMonitorTest {
         for (int i = 0; i < 200; i++) {
             monitor.recordProcessingTime(lowLoad);
         }
+        monitor.publishPendingEvents();
 
         assertThat(captured).isNotEmpty();
         assertThat(captured.get(0).warning()).isFalse();
@@ -180,6 +207,7 @@ class PerformanceMonitorTest {
         for (int i = 0; i < 200; i++) {
             monitor.recordProcessingTime(highLoad);
         }
+        monitor.publishPendingEvents();
 
         assertThat(captured).isEmpty();
     }

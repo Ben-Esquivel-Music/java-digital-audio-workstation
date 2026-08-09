@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.audio.harness;
 
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.EngineBinder;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback;
 import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
@@ -55,6 +56,7 @@ public final class HeadlessAudioHarness implements AutoCloseable {
     private final AudioFormat format;
     private final HeadlessAudioBackend backend = new HeadlessAudioBackend();
     private final AudioEngine engine;
+    private final EngineBinder binder;
 
     private DawProject project;
     private double speedFactor = 1.0;
@@ -71,6 +73,7 @@ public final class HeadlessAudioHarness implements AutoCloseable {
         this.format = Objects.requireNonNull(format, "format");
         this.engine = new AudioEngine(format);
         this.engine.setAudioBackend(backend);
+        this.binder = new EngineBinder(engine);
     }
 
     // ── Configuration ────────────────────────────────────────────────────────
@@ -79,19 +82,19 @@ public final class HeadlessAudioHarness implements AutoCloseable {
      * Loads a project into the harness, wiring its transport, mixer, and
      * tracks into the underlying {@link AudioEngine} for rendering.
      *
+     * <p>Delegates to the production {@link EngineBinder} (story 314) so the
+     * harness exercises exactly the binding path the application uses —
+     * live transport/mixer references plus an immutable tracks snapshot.</p>
+     *
      * @param project the project to render (may be {@code null} to unload)
      * @return this harness
      */
     public HeadlessAudioHarness load(DawProject project) {
         this.project = project;
         if (project != null) {
-            engine.setTransport(project.getTransport());
-            engine.setMixer(project.getMixer());
-            engine.setTracks(java.util.List.copyOf(project.getTracks()));
+            binder.bind(project);
         } else {
-            engine.setTransport(null);
-            engine.setMixer(null);
-            engine.setTracks(null);
+            binder.unbind();
         }
         return this;
     }
@@ -317,6 +320,9 @@ public final class HeadlessAudioHarness implements AutoCloseable {
 
     @Override
     public void close() {
+        // Unbind first: kills playbackActive immediately and detaches the
+        // TRACKS change listener the binder delegation registers in load().
+        binder.unbind();
         try {
             if (engine.isRunning()) {
                 engine.stop();
