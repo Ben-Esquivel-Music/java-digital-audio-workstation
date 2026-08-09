@@ -56,6 +56,7 @@ import com.benesquivelmusic.daw.app.ui.layout.BuiltInLayouts;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.settings.BackupSettingsAccess;
 import com.benesquivelmusic.daw.app.ui.settings.FirstRunWizard;
+import com.benesquivelmusic.daw.app.ui.settings.FirstRunWizardHost;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsCatalogue;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
@@ -80,6 +81,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.ResourceBundle;
+import java.util.concurrent.CompletionStage;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
@@ -1381,34 +1383,15 @@ public final class MainController {
     void showSetupWizard() {
         FirstRunWizard wizard = new FirstRunWizard(
                 SettingsCatalogue.create(), settingsModel, audioEngineController);
-        var host = new com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog<Void>();
-        host.setTitle(wizard.title());
-        host.setHeaderText(wizard.title());
-        host.getDialogPane().setContent(wizard);
-        host.setResultConverter(_ -> null);
+        FirstRunWizardHost host = new FirstRunWizardHost(
+                wizard, this::applyWizardEdits, this::showWizardRestartNotice);
         if (rootPane != null && rootPane.getScene() != null) {
-            host.initOwner(rootPane.getScene().getWindow());
-        }
-        Runnable closeHost = () -> {
-            // Showing-guarded: the abnormal-close Skip below runs AFTER
-            // the host is already hidden ([X] / the header close glyph).
-            if (host.isShowing()) {
-                host.setResult(null);
-                host.hide();
+            Window owner = rootPane.getScene().getWindow();
+            if (owner != null) {
+                host.initOwner(owner);
             }
-        };
-        wizard.setOnFinished(edits -> {
-            applyWizardEdits(edits);
-            closeHost.run();
-        });
-        wizard.setOnSkipped(closeHost);
+        }
         host.showAndWait();
-        // Story 309 — an abnormal close ([X] or the header close glyph)
-        // triggers neither Finish nor Skip; treat the dismissal as Skip so
-        // the first-run flag is still set and the wizard never auto-nags
-        // on later launches (it stays re-openable from General ▸ Startup).
-        wizard.skipIfNoOutcome();
-        wizard.close(); // idempotent — belt-and-braces teardown
     }
 
     /**
@@ -1418,20 +1401,44 @@ public final class MainController {
      * (persistence + the SettingsApplied publish + engine-reconfigure +
      * {@link LiveSettingsApplier} all ride along; values identical to the
      * persisted ones stay non-pending and write nothing). The dialog is
-     * never shown; detaching its audio controller afterwards tears down
-     * the discovery its wiring started (an in-flight engine-reconfigure
-     * keeps its own captured references and completes normally).
+     * never shown. Its backup and audio authorities remain attached until the
+     * returned per-apply completion settles, then disk-usage and device
+     * discovery are detached on the same FX-thread continuation.
      */
-    private void applyWizardEdits(java.util.Map<String, Object> edits) {
-        SettingsDialog dialog = createSettingsDialog();
+    private CompletionStage<Optional<String>> applyWizardEdits(
+            java.util.Map<String, Object> edits) {
+        return applyWizardEdits(createSettingsDialog(), edits);
+    }
+
+    static CompletionStage<Optional<String>> applyWizardEdits(
+            SettingsDialog dialog, java.util.Map<String, Object> edits) {
+        Objects.requireNonNull(dialog, "dialog must not be null");
+        Objects.requireNonNull(edits, "edits must not be null");
         try {
             var shell = dialog.getShell();
             edits.forEach((id, value) ->
                     shell.settingRow(id).ifPresent(row -> row.setValue(value)));
-            dialog.applySettings();
+            Optional<String> restartNotice = shell.isRestartBannerVisible()
+                    ? Optional.of(shell.restartBannerText()) : Optional.empty();
+            return dialog.applySettingsAsync()
+                    .thenApply(_ -> restartNotice)
+                    .whenComplete((_, _) -> detachWizardSettingsDialog(dialog));
+        } catch (RuntimeException | Error failure) {
+            detachWizardSettingsDialog(dialog);
+            throw failure;
+        }
+    }
+
+    private static void detachWizardSettingsDialog(SettingsDialog dialog) {
+        try {
+            dialog.setBackupSettingsAccess(null);
         } finally {
             dialog.setAudioEngineController(null);
         }
+    }
+
+    private void showWizardRestartNotice(String message) {
+        notificationBar.show(NotificationLevel.WARNING, message);
     }
 
     /**

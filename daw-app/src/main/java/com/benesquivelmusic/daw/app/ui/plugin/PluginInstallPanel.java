@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.plugin;
 
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
+import com.benesquivelmusic.daw.app.ui.dialogs.DialogDismissibility;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginJarScanner.JarInspection;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
@@ -105,6 +106,14 @@ public final class PluginInstallPanel extends VBox {
             DawgDialog.error("Install plugin", rejectionMessage(inspection)).showAndWait();
             return;
         }
+        createDialog(inspection, registry, onInstalled).showAndWait();
+    }
+
+    static DawgDialog<Void> createDialog(
+            JarInspection inspection, PluginRegistry registry, Runnable onInstalled) {
+        Objects.requireNonNull(inspection, "inspection must not be null");
+        Objects.requireNonNull(registry, "registry must not be null");
+        Objects.requireNonNull(onInstalled, "onInstalled must not be null");
         DawgDialog<Void> dialog = new DawgDialog<>();
         dialog.setTitle("Install plugin");
         dialog.setHeaderText("Install plugin");
@@ -112,7 +121,9 @@ public final class PluginInstallPanel extends VBox {
         PluginInstallPanel panel = new PluginInstallPanel(inspection, registry, onInstalled);
         panel.setOnCloseRequest(dialog::close);
         dialog.getDialogPane().setContent(panel);
-        dialog.showAndWait();
+        DialogDismissibility.installHiddenCancel(dialog);
+        dialog.setResultConverter(_ -> null);
+        return dialog;
     }
 
     /** Sets the callback the panel invokes to request its containing dialog close. */
@@ -230,6 +241,7 @@ public final class PluginInstallPanel extends VBox {
 
     private HBox footer(Button primary) {
         Button cancel = new Button("Cancel");
+        cancel.setId("plugin-install-cancel");
         cancel.getStyleClass().addAll("dawg-button", "size-default", "secondary");
         cancel.setOnAction(_ -> requestClose());
         HBox footer = new HBox(ROW_SPACING, cancel, primary);

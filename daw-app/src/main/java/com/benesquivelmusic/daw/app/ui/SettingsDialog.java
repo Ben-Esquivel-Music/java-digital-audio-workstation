@@ -67,6 +67,8 @@ import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Flow;
@@ -1488,6 +1490,32 @@ public final class SettingsDialog extends DawgDialog<Void> {
      * persisted authorities.
      */
     void applySettings() {
+        applySettingsWithCompletion();
+    }
+
+    /**
+     * Applies the pending settings and reports when this apply transaction is
+     * actually complete. A transaction with no live audio work completes
+     * synchronously; a transaction that reconfigures audio completes on the FX
+     * thread only after the associated driver call, deferred persistence, and
+     * post-commit listener have succeeded. Driver or listener failures complete
+     * the stage exceptionally after their contained operation notice is shown.
+     *
+     * <p>The stage is deliberately non-blocking: callers must compose a
+     * continuation instead of waiting on the JavaFX Application Thread.</p>
+     *
+     * @return per-apply completion; never {@code null}
+     */
+    CompletionStage<Void> applySettingsAsync() {
+        try {
+            return applySettingsWithCompletion();
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+    }
+
+    private CompletionStage<Void> applySettingsWithCompletion() {
+        CompletableFuture<Void> completion = new CompletableFuture<>();
         shell.clearOperationNotice();
         Map<String, Object> pendingEdits = shell.pendingEdits();
         // A clean Apply/OK after an error is an explicit retry of the close
@@ -1580,19 +1608,25 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     engineReconfigureRequested,
                     deferredAudioEdits,
                     deferredAudioEdits.isEmpty() ? null : listenerAfterApply,
-                    engineReconfigureRequested ? deviceEnumerationTask : null));
+                    engineReconfigureRequested ? deviceEnumerationTask : null,
+                    completion));
+        } else {
+            completion.complete(null);
         }
 
         shell.refreshFromPersisted();
+        return completion;
     }
 
     /** Applies and delays OK-close until asynchronous audio work succeeds. */
     void applyAndCloseWhenReady() {
         applySettings();
         if (outstandingAudioReconfigures.get() == 0) {
-            if (!audioQueueFailed.get()) {
-                FxDispatcher.runOnFx(this::closeShell);
-            }
+            FxDispatcher.runOnFx(() -> {
+                if (!audioQueueFailed.get()) {
+                    closeShell();
+                }
+            });
         } else {
             closeAfterAudioApply = true;
         }
@@ -1667,10 +1701,12 @@ public final class SettingsDialog extends DawgDialog<Void> {
             boolean reconfigureEngine,
             Map<String, Object> deferredEdits,
             SettingsChangeListener listenerAfterCommit,
-            DeviceEnumerationTask enumerationTask) {
+            DeviceEnumerationTask enumerationTask,
+            CompletableFuture<Void> completion) {
 
         private AudioReconfigureSnapshot {
             deferredEdits = Map.copyOf(deferredEdits);
+            Objects.requireNonNull(completion, "completion must not be null");
         }
     }
 
@@ -1702,7 +1738,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     return;
                 }
                 try {
-                    applyAudioReconfigure(snapshot);
+                    Throwable failure = applyAudioReconfigure(snapshot);
+                    FxDispatcher.runOnFx(
+                            () -> completeAudioReconfigure(snapshot, failure));
                 } finally {
                     if (outstandingAudioReconfigures.decrementAndGet() == 0) {
                         FxDispatcher.runOnFx(this::updateAudioUtilityDisabledState);
@@ -1719,7 +1757,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
         }
     }
 
-    private void applyAudioReconfigure(AudioReconfigureSnapshot snapshot) {
+    private Throwable applyAudioReconfigure(AudioReconfigureSnapshot snapshot) {
         boolean deferredCommitted = false;
         boolean locked = false;
         boolean sampleRateApplied = false;
@@ -1788,7 +1826,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
             audioRuntimeState = new AudioRuntimeState(effectiveSampleRate,
                     effectiveBufferFrames, effectiveBitDepth, effectiveWorkerPoolSize,
                     effectiveMixPrecision, effectiveSrcQuality);
-            notifySettingsListener(snapshot.listenerAfterCommit());
+            return null;
         } catch (AudioBackendException rejected) {
             audioQueueFailed.set(true);
             restoreAudioRuntime(snapshot, previousState, previousEndpoint,
@@ -1797,16 +1835,19 @@ public final class SettingsDialog extends DawgDialog<Void> {
             if (!deferredCommitted && snapshot.applySampleRate() && !sampleRateApplied) {
                 LOG.log(Level.WARNING,
                         "Sample rate selection rejected by the audio driver", rejected);
-                rejectDeferredAudioEdits(snapshot,
-                        "Sample rate " + (int) snapshot.sampleRate()
-                                + " Hz was rejected by the audio driver.");
+                String notice = "Sample rate " + (int) snapshot.sampleRate()
+                        + " Hz was rejected by the audio driver.";
+                rejectDeferredAudioEdits(snapshot, notice);
+                return new IllegalStateException(notice, rejected);
             } else {
                 LOG.log(Level.WARNING, "Failed to reconfigure the audio engine", rejected);
                 if (!deferredCommitted) {
-                    rejectDeferredAudioEdits(snapshot,
-                            "Could not apply audio configuration: "
-                                    + failureMessage(rejected));
+                    String notice = "Could not apply audio configuration: "
+                            + failureMessage(rejected);
+                    rejectDeferredAudioEdits(snapshot, notice);
+                    return new IllegalStateException(notice, rejected);
                 }
+                return rejected;
             }
         } catch (InterruptedException cancelled) {
             audioQueueFailed.set(true);
@@ -1815,8 +1856,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     sampleRateApplied, mixPrecisionApplied, srcQualityApplied,
                     reconfigureAttempted);
             if (!deferredCommitted) {
-                rejectDeferredAudioEdits(snapshot, "Audio configuration was cancelled.");
+                String notice = "Audio configuration was cancelled.";
+                rejectDeferredAudioEdits(snapshot, notice);
+                return new IllegalStateException(notice, cancelled);
             }
+            return cancelled;
         } catch (RuntimeException failure) {
             audioQueueFailed.set(true);
             LOG.log(Level.WARNING, "Failed to reconfigure the audio engine", failure);
@@ -1824,9 +1868,12 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     sampleRateApplied, mixPrecisionApplied, srcQualityApplied,
                     reconfigureAttempted);
             if (!deferredCommitted) {
-                rejectDeferredAudioEdits(snapshot,
-                        "Could not apply audio configuration: " + failureMessage(failure));
+                String notice = "Could not apply audio configuration: "
+                        + failureMessage(failure);
+                rejectDeferredAudioEdits(snapshot, notice);
+                return new IllegalStateException(notice, failure);
             }
+            return failure;
         } finally {
             if (locked) {
                 audioControllerOperationLock.unlock();
@@ -1932,23 +1979,27 @@ public final class SettingsDialog extends DawgDialog<Void> {
         });
     }
 
-    private void notifySettingsListener(SettingsChangeListener listener) {
-        if (listener != null) {
-            FxDispatcher.runOnFx(() -> notifySettingsListenerOnFx(listener));
+    /** FX thread: post-commit notification is part of the per-apply outcome. */
+    private void completeAudioReconfigure(
+            AudioReconfigureSnapshot snapshot, Throwable driverFailure) {
+        Throwable completionFailure = driverFailure;
+        SettingsChangeListener listener = snapshot.listenerAfterCommit();
+        if (completionFailure == null && listener != null) {
+            try {
+                listener.onSettingsChanged(model);
+            } catch (RuntimeException listenerFailure) {
+                LOG.log(Level.WARNING, "Settings change listener failed", listenerFailure);
+                audioQueueFailed.set(true);
+                String notice = "Settings were saved, but a live update failed: "
+                        + failureMessage(listenerFailure);
+                shell.showOperationNotice(notice);
+                completionFailure = new IllegalStateException(notice, listenerFailure);
+            }
         }
-    }
-
-    private void notifySettingsListenerOnFx(SettingsChangeListener listener) {
-        if (listener == null) {
-            return;
-        }
-        try {
-            listener.onSettingsChanged(model);
-        } catch (RuntimeException failure) {
-            LOG.log(Level.WARNING, "Settings change listener failed", failure);
-            audioQueueFailed.set(true);
-            shell.showOperationNotice("Settings were saved, but a live update failed: "
-                    + failureMessage(failure));
+        if (completionFailure == null) {
+            snapshot.completion().complete(null);
+        } else {
+            snapshot.completion().completeExceptionally(completionFailure);
         }
     }
 
