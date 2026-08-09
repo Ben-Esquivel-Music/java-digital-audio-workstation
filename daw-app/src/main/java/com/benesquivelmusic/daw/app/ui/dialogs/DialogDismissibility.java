@@ -30,7 +30,8 @@ public final class DialogDismissibility {
      * footer Cancel makes the glyph redundant. This helper captures and
      * restores that same node after hiding the plumbing button, preserving
      * the glyph's existing action, accessibility text, and style without
-     * weakening the visible-footer rule.</p>
+     * weakening the visible-footer rule. Repeated installation reuses the
+     * existing canonical {@link ButtonType#CANCEL} button.</p>
      *
      * @param dialog the content-owned host; must not be {@code null}
      * @return the installed hidden button
@@ -39,7 +40,9 @@ public final class DialogDismissibility {
         Objects.requireNonNull(dialog, "dialog must not be null");
         Node contentOwnedCloseGlyph = dialog.getGraphic();
 
-        dialog.getDialogPane().getButtonTypes().add(ButtonType.CANCEL);
+        if (!dialog.getDialogPane().getButtonTypes().contains(ButtonType.CANCEL)) {
+            dialog.getDialogPane().getButtonTypes().add(ButtonType.CANCEL);
+        }
         Button hiddenCancel = (Button) dialog.getDialogPane().lookupButton(ButtonType.CANCEL);
         hiddenCancel.setVisible(false);
         hiddenCancel.setManaged(false);
