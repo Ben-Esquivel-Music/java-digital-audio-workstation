@@ -352,6 +352,80 @@ Operationalises [`SETTINGS_VIEW_DESIGN_BOOK.md`](../design/SETTINGS_VIEW_DESIGN_
 | 308 | [Absorb the Metronome and Backup Dialogs into Categories](308-absorb-metronome-recording-and-backup-dialogs-into-settings-categories.md) | 🟡 Medium | Settings |
 | 309 | [Scope Labels, Import / Export Profiles, and First-Run Wizard](309-setting-scope-labels-import-export-profiles-and-first-run-wizard.md) | 🟡 Medium | Settings |
 
+## Functional Completion (Session Reliability Design Books)
+
+Operationalises the five **session reliability** design books distilled from a 10-area code audit of the shipping tree: [`AUDIO_ENGINE_WIRING_DESIGN_BOOK.md`](../design/AUDIO_ENGINE_WIRING_DESIGN_BOOK.md), [`RECORDING_RELIABILITY_DESIGN_BOOK.md`](../design/RECORDING_RELIABILITY_DESIGN_BOOK.md), [`PERSISTENCE_INTEGRITY_DESIGN_BOOK.md`](../design/PERSISTENCE_INTEGRITY_DESIGN_BOOK.md), [`FAILURE_SURFACING_DESIGN_BOOK.md`](../design/FAILURE_SURFACING_DESIGN_BOOK.md), and [`INTERACTION_COMPLETENESS_DESIGN_BOOK.md`](../design/INTERACTION_COMPLETENESS_DESIGN_BOOK.md). Where the UI overhaul (260–288) made the DAW *look* right and the companion books (289–309) made its surfaces *behave* right, these make it *function*: the audit found a chrome-complete app whose engine never receives the project, whose recordings never reach disk, whose reopened projects come back silent, and whose failures are invisible. Each book divides the work by guarantee, not by surface, and ships a staged migration path; one story per stage.
+
+### Audio Engine Wiring (the audible core)
+
+Operationalises [`AUDIO_ENGINE_WIRING_DESIGN_BOOK.md`](../design/AUDIO_ENGINE_WIRING_DESIGN_BOOK.md) §8 — every sound-making promise of the UI is honoured by the engine: engine ⇄ project wiring, transport truth, backend truth, one RT-safe metering tap bus feeding every meter and analyzer, one plugin world, the live mastering chain, and mixer control truth.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 314 | [Wire the Audio Engine to the Live Project: Transport, Mixer, and Tracks](314-wire-the-audio-engine-to-the-live-project.md) | 🔴 Critical | Engine Wiring |
+| 315 | [Transport Truth: Engine-Driven Clock, Loop Precision, and Stop Semantics](315-transport-truth-engine-clock-loop-and-stop-semantics.md) | 🟠 High | Engine Wiring |
+| 316 | [ASIO as the Production Streaming Path](316-asio-as-the-production-streaming-path.md) | 🟠 High | Engine Wiring |
+| 317 | [Fallback Backend Correctness and Honest Engine State](317-fallback-backend-correctness-and-honest-engine-state.md) | 🟠 High | Engine Wiring |
+| 318 | [RT-Safe Metering Tap Bus Feeding Every Meter](318-rt-safe-metering-tap-bus.md) | 🟠 High | Engine Wiring |
+| 319 | [Live Analyzer and Display Feeds: Retire the Synthetic Idle Animation](319-live-analyzer-and-display-feeds.md) | 🟠 High | Engine Wiring |
+| 320 | [One Plugin World: Editors Join the Signal Path](320-one-plugin-world-editors-join-the-signal-path.md) | 🟠 High | Engine Wiring |
+| 321 | [Master-Bus Inserts and the Live Mastering Chain](321-master-bus-inserts-and-live-mastering-chain.md) | 🟠 High | Engine Wiring |
+| 322 | [Mixer Control Truth: One Model, Both Surfaces, Nothing Dead](322-mixer-control-truth-one-model-both-surfaces.md) | 🟠 High | Engine Wiring |
+
+### Recording Reliability (capture to disk)
+
+Operationalises [`RECORDING_RELIABILITY_DESIGN_BOOK.md`](../design/RECORDING_RELIABILITY_DESIGN_BOOK.md) §8 — a 2-hour session ends with all audio on disk: the capture-to-disk pipeline, RT-safety of the capture path, record-state integrity, multi-channel routing, device-loss rescue, and the capture workflows.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 323 | [Recorded Audio Reaches Disk: Segment Flush and Project-Relative Storage](323-recorded-audio-reaches-disk.md) | 🔴 Critical | Recording |
+| 324 | [RT-Safe Capture Path](324-rt-safe-capture-path.md) | 🟠 High | Recording |
+| 325 | [Record-State Integrity: Guards Against Lying States](325-record-state-integrity.md) | 🟠 High | Recording |
+| 326 | [Multi-Channel Input Capture Routing](326-multichannel-input-capture-routing.md) | 🟠 High | Recording |
+| 327 | [Device-Loss Detection and Take Rescue, Live](327-device-loss-detection-and-take-rescue.md) | 🟠 High | Recording |
+| 328 | [Capture Workflows: Count-In, Punch, Loop Takes, Comping](328-capture-workflows-count-in-punch-loop-takes.md) | 🟠 High | Recording |
+
+### Persistence Integrity (round-trip fidelity)
+
+Operationalises [`PERSISTENCE_INTEGRITY_DESIGN_BOOK.md`](../design/PERSISTENCE_INTEGRITY_DESIGN_BOOK.md) §8 — save it, reopen it, it's still there: audio and MIDI round-trip, atomic writes and autosave snapshot isolation, journal-on-by-default recovery, the app-exit protocol, and settings truth. Extends [`PROJECT_MANAGER_DESIGN_BOOK.md`](../design/PROJECT_MANAGER_DESIGN_BOOK.md).
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 329 | [Audio Reloads on Project Open](329-audio-reloads-on-project-open.md) | 🔴 Critical | Persistence |
+| 330 | [MIDI and Transport Settings Round-Trip](330-midi-and-transport-settings-round-trip.md) | 🟠 High | Persistence |
+| 331 | [Atomic Saves and Autosave Snapshot Isolation](331-atomic-saves-and-autosave-isolation.md) | 🟠 High | Persistence |
+| 332 | [Journaled Persistence On by Default, Recovery on Every Open Path](332-journaled-persistence-on-by-default.md) | 🟠 High | Persistence |
+| 333 | [The App-Exit Protocol: Close Guard, Save As, Lock Lifecycle](333-app-exit-protocol-and-save-as.md) | 🟠 High | Persistence |
+| 334 | [Full-State Persistence: Plugin Inserts, Take Stacks, Tempo Map](334-full-state-persistence-inserts-takes-tempo-map.md) | 🟠 High | Persistence |
+| 335 | [Settings Truth: Every Setting Read by the Thing It Claims to Control](335-settings-truth-cleanup.md) | 🟡 Medium | Persistence |
+
+### Failure Surfacing (no silent failures)
+
+Operationalises [`FAILURE_SURFACING_DESIGN_BOOK.md`](../design/FAILURE_SURFACING_DESIGN_BOOK.md) §8 — no silent failures, no button does nothing: global exception visibility, the RT-safe error channel, engine health surfaces, production notification injection, the dialog-dismissibility contract, and insert-chain fault eviction.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 313 | [Unbrick First-Time Setup: Dismissible Wizard Host, Outcome Ordering, and Apply Error Containment](313-unbrick-first-time-setup-dismissible-wizard-host-and-outcome-ordering.md) | 🔴 Critical | Failure Surfacing |
+| 336 | [Global Exception Visibility: Handlers, Log Sink, Notification Bridge](336-global-exception-visibility.md) | 🔴 Critical | Failure Surfacing |
+| 337 | [RT-Safe Error Channel and Callback Guards](337-rt-error-channel-and-callback-guards.md) | 🔴 Critical | Failure Surfacing |
+| 338 | [Engine Health: Watchdog, Xrun Counter, Clock and State Surfaces](338-engine-health-watchdog-and-status-surfaces.md) | 🟠 High | Failure Surfacing |
+| 339 | [Production Notification Injection and Dialog-Dismissibility Conformance](339-production-notification-injection-and-dialog-conformance.md) | 🟠 High | Failure Surfacing |
+| 340 | [Insert-Chain Concurrency and Fault Eviction](340-insert-chain-concurrency-and-fault-eviction.md) | 🟠 High | Failure Surfacing |
+
+### Interaction Completeness (every control real)
+
+Operationalises [`INTERACTION_COMPLETENESS_DESIGN_BOOK.md`](../design/INTERACTION_COMPLETENESS_DESIGN_BOOK.md) §8 — every control does something real and every visual tells the truth: arrangement navigation, waveform and clip visual truth, drag-drop feedback, shortcut safety, menu truth, MIDI editing parity, and render economy.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 341 | [Arrangement Navigation: Zoom That Zooms, Scrolling, Minimap](341-arrangement-navigation-zoom-scroll-minimap.md) | 🟠 High | Interaction |
+| 342 | [Waveform and Clip Visual Truth](342-waveform-and-clip-visual-truth.md) | 🟡 Medium | Interaction |
+| 343 | [Drag-and-Drop Feedback Rendered, Import Off the FX Thread](343-drag-drop-feedback-rendered-and-async-import.md) | 🟠 High | Interaction |
+| 344 | [Shortcut Safety and Live Rebinding](344-shortcut-safety-and-live-rebinding.md) | 🟠 High | Interaction |
+| 345 | [Menu Truth and Export Reachability](345-menu-truth-and-export-reachability.md) | 🟡 Medium | Interaction |
+| 346 | [MIDI Clip Editing Parity in the Arrangement](346-midi-clip-editing-parity.md) | 🟡 Medium | Interaction |
+| 347 | [Render Economy and Motion Conformance](347-render-economy-and-motion-conformance.md) | 🟡 Medium | Interaction |
+
 ## Code Quality & Refactoring
 
 | # | Story | Priority | Area |
