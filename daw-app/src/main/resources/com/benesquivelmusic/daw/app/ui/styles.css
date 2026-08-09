@@ -3028,6 +3028,26 @@
     -fx-text-fill: -text-mute;
     -fx-font-size: 10px;
 }
+.first-run-wizard-error,
+.first-run-wizard-enumeration-error {
+    -fx-padding: 8 12 8 12;
+    -fx-spacing: 8;
+    -fx-alignment: center-left;
+    -fx-background-color: -surface-2;
+    -fx-border-color: -danger;
+    -fx-border-width: 0 0 1 0;
+}
+.first-run-wizard-error .dawg-icon,
+.first-run-wizard-enumeration-error .dawg-icon {
+    -fx-icon-color: -danger;
+}
+.dialog-pane .first-run-wizard-error-text,
+.dialog-pane .first-run-wizard-enumeration-error-text,
+.first-run-wizard-error-text,
+.first-run-wizard-enumeration-error-text {
+    -fx-text-fill: -danger;
+    -fx-font-size: 11px;
+}
 .first-run-wizard-buttons {
     -fx-spacing: 8;
     -fx-alignment: center-right;

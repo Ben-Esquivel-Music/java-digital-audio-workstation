@@ -84,9 +84,11 @@ class FirstRunWizardShowsOnceTest {
     }
 
     private static SettingsModel newModel() {
-        Preferences prefs = Preferences.userRoot()
-                .node("firstRunWizardShowsOnceTest_" + System.nanoTime());
-        return new SettingsModel(prefs);
+        return new SettingsModel(newPreferences("firstRunWizardShowsOnceTest"));
+    }
+
+    private static Preferences newPreferences(String prefix) {
+        return Preferences.userRoot().node(prefix + "_" + System.nanoTime());
     }
 
     private static List<String> rowIds(FirstRunWizard wizard) {
@@ -180,6 +182,81 @@ class FirstRunWizardShowsOnceTest {
                     .as("finish hands the EDITED row value to the apply glue "
                             + "— never the descriptor default")
                     .containsEntry("project.defaultTempo", 150.0);
+            return null;
+        });
+    }
+
+    @Test
+    void outcomeIsPersistedOnlyAfterItsCallbackSucceeds() throws Exception {
+        runOnFxThread(() -> {
+            Preferences finishedPreferences = newPreferences("finishedOutcomeOrdering");
+            SettingsModel finishedModel = new SettingsModel(finishedPreferences);
+            FirstRunWizard finishedWizard = new FirstRunWizard(
+                    SettingsCatalogue.create(), finishedModel, null);
+            AtomicBoolean finishSawTerminalState = new AtomicBoolean();
+            finishedWizard.setOnFinished(_ -> finishSawTerminalState.set(
+                    finishedModel.isFirstRunWizardCompleted()
+                            || finishedWizard.hasOutcome()));
+
+            finishedWizard.finish();
+
+            assertThat(finishSawTerminalState)
+                    .as("the apply callback runs before either terminal state")
+                    .isFalse();
+            assertThat(finishedModel.isFirstRunWizardCompleted()).isTrue();
+            assertThat(new SettingsModel(finishedPreferences)
+                    .isFirstRunWizardCompleted()).isTrue();
+            assertThat(finishedWizard.hasOutcome()).isTrue();
+
+            SettingsModel skippedModel = newModel();
+            FirstRunWizard skippedWizard = new FirstRunWizard(
+                    SettingsCatalogue.create(), skippedModel, null);
+            AtomicBoolean skipSawTerminalState = new AtomicBoolean();
+            skippedWizard.setOnSkipped(() -> skipSawTerminalState.set(
+                    skippedModel.isFirstRunWizardCompleted()
+                            || skippedWizard.hasOutcome()));
+
+            skippedWizard.skip();
+
+            assertThat(skipSawTerminalState)
+                    .as("the Skip callback runs before either terminal state")
+                    .isFalse();
+            assertThat(skippedModel.isFirstRunWizardCompleted()).isTrue();
+            assertThat(skippedWizard.hasOutcome()).isTrue();
+            assertThat(skippedWizard.wasFinished()).isFalse();
+
+            Preferences failedPreferences = newPreferences("failedOutcomeOrdering");
+            SettingsModel failedModel = new SettingsModel(failedPreferences);
+            FirstRunWizard failedWizard = new FirstRunWizard(
+                    SettingsCatalogue.create(), failedModel, null);
+            failedWizard.setOnFinished(_ -> {
+                throw new IllegalStateException("ASIO control panel rejected the setup");
+            });
+
+            failedWizard.finish();
+
+            assertThat(failedModel.isFirstRunWizardCompleted())
+                    .as("a throwing apply callback never publishes completion")
+                    .isFalse();
+            assertThat(new SettingsModel(failedPreferences)
+                    .isFirstRunWizardCompleted())
+                    .as("the failed callback does not persist completion either")
+                    .isFalse();
+            assertThat(failedWizard.hasOutcome()).isFalse();
+            assertThat(failedWizard.isOutcomeErrorVisible()).isTrue();
+            assertThat(failedWizard.outcomeErrorText())
+                    .contains("ASIO control panel rejected the setup")
+                    .contains("Finish again");
+
+            SettingsModel abandonedModel = newModel();
+            FirstRunWizard abandonedWizard = new FirstRunWizard(
+                    SettingsCatalogue.create(), abandonedModel, null);
+            abandonedWizard.close();
+            abandonedWizard.skipIfNoOutcome();
+            assertThat(abandonedModel.isFirstRunWizardCompleted())
+                    .as("plain teardown is abandonment, not a host dismissal outcome")
+                    .isFalse();
+            assertThat(abandonedWizard.hasOutcome()).isFalse();
             return null;
         });
     }
