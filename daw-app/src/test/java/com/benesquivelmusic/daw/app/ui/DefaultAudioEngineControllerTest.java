@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
@@ -67,6 +68,59 @@ class DefaultAudioEngineControllerTest {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
         assertThat(controller.getCpuLoadPercent()).isEqualTo(-1.0);
+    }
+
+    // -- Story 314 review follow-up: always-active monitor-event drain -------
+
+    @Test
+    void monitorEventsAreDrainedWithoutAnyCpuLoadPoll() throws InterruptedException {
+        AudioFormat format = new AudioFormat(48_000.0, 2, 24, 256);
+        AudioEngine engine = new AudioEngine(format);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        try {
+            PerformanceMonitor monitor = new PerformanceMonitor(format);
+            CountDownLatch warned = new CountDownLatch(1);
+            monitor.addWarningListener(_ -> warned.countDown());
+            engine.setPerformanceMonitor(monitor);
+            // One recorded block far above the ~5.3 ms budget pushes the
+            // smoothed load orders of magnitude past the default 80%
+            // threshold, leaving a pending warning transition on the RT side.
+            monitor.recordProcessingTime(TimeUnit.SECONDS.toNanos(10));
+            // Deliberately no getCpuLoadPercent() call: delivery must come
+            // from the controller's always-active 250 ms drain alone —
+            // underrun logs and warning listeners must work with every
+            // dialog closed.
+            assertThat(warned.await(2, TimeUnit.SECONDS))
+                    .as("the always-active monitor-event drain must deliver "
+                            + "deferred warning-listener notifications without "
+                            + "any UI-side poll")
+                    .isTrue();
+        } finally {
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void getCpuLoadPercentIsSideEffectFree() {
+        AudioFormat format = new AudioFormat(48_000.0, 2, 24, 256);
+        AudioEngine engine = new AudioEngine(format);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        // Kill the drain before its first 250 ms tick so the getter is the
+        // only candidate publisher left.
+        controller.shutdown();
+        PerformanceMonitor monitor = new PerformanceMonitor(format);
+        AtomicInteger warnings = new AtomicInteger();
+        monitor.addWarningListener(_ -> warnings.incrementAndGet());
+        engine.setPerformanceMonitor(monitor);
+        monitor.recordProcessingTime(TimeUnit.SECONDS.toNanos(10));
+
+        double load = controller.getCpuLoadPercent();
+
+        assertThat(load).isEqualTo(monitor.getCpuLoadPercent());
+        assertThat(warnings.get())
+                .as("getCpuLoadPercent() must not publish the monitor's "
+                        + "pending events — the always-active drain owns that")
+                .isZero();
     }
 
     @Test
@@ -323,10 +377,23 @@ class DefaultAudioEngineControllerTest {
         AudioFormat starting = new AudioFormat(48_000.0, 2, 24, 256);
         AudioEngine engine = new AudioEngine(starting);
         List<String> notifications = new ArrayList<>();
+        // Story 314 review follow-up: the driver-originated reopen must fire
+        // the post-reconfigure callback (MainController wires it to reinstall
+        // the CPU budget enforcer AND EngineBinder.refreshPerformanceMonitor(),
+        // whose per-block budget is fixed at construction) — and it must fire
+        // BEFORE the terminal STOPPED transition, per the step-7/8/9 ordering
+        // convention. Capture the engine state observed inside the callback.
+        AtomicReference<DefaultAudioEngineController> controllerRef = new AtomicReference<>();
+        AtomicInteger postReconfigureHits = new AtomicInteger();
+        AtomicReference<EngineState> stateWhenCallbackRan = new AtomicReference<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null,
+                engine, () -> {
+                    stateWhenCallbackRan.compareAndSet(null, controllerRef.get().engineState());
+                    postReconfigureHits.incrementAndGet();
+                },
                 message -> { synchronized (notifications) { notifications.add(message); } },
                 new IncompleteTakeStore(projectRoot));
+        controllerRef.set(controller);
 
         MockAudioBackend backend = new MockAudioBackend();
         backend.setBufferSizeRange(
@@ -375,6 +442,15 @@ class DefaultAudioEngineControllerTest {
             assertThat(notifications)
                     .anyMatch(m -> m.toLowerCase().contains("reconfigur"));
         }
+        // The post-reconfigure callback ran exactly once for this reopen,
+        // and it ran while the controller was still RECONFIGURING — i.e.
+        // strictly before the terminal STOPPED transition observers gate on.
+        assertThat(postReconfigureHits.get()).isEqualTo(1);
+        assertThat(stateWhenCallbackRan.get())
+                .as("the post-reconfigure callback must run before the "
+                        + "STOPPED transition (side effects precede the "
+                        + "terminal state)")
+                .isEqualTo(EngineState.RECONFIGURING);
     }
 
     @Test
@@ -384,8 +460,13 @@ class DefaultAudioEngineControllerTest {
         AudioFormat starting = new AudioFormat(48_000.0, 2, 24, 256);
         AudioEngine engine = new AudioEngine(starting);
         List<String> notifications = new ArrayList<>();
+        // Story 314 review follow-up: the SRC-fallback branch also calls
+        // audioEngine.setFormat(...), so the post-reconfigure callback
+        // (budget-enforcer reinstall + monitor refresh) must fire on this
+        // path too.
+        AtomicInteger postReconfigureHits = new AtomicInteger();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null,
+                engine, postReconfigureHits::incrementAndGet,
                 message -> { synchronized (notifications) { notifications.add(message); } },
                 new IncompleteTakeStore(projectRoot));
 
@@ -430,6 +511,10 @@ class DefaultAudioEngineControllerTest {
                     .anyMatch(m -> m.contains("44") /* 44 kHz */);
         }
         assertThat(engine.isRunning()).isFalse();
+        // The post-reconfigure callback fired for this driver-originated
+        // reopen too — the STOPPED arc completing implies it already ran
+        // (step 8 precedes step 9's STOPPED transition).
+        assertThat(postReconfigureHits.get()).isEqualTo(1);
     }
 
     private static void waitFor(java.util.function.BooleanSupplier condition)

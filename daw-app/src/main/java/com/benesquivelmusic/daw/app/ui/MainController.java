@@ -825,7 +825,11 @@ public final class MainController {
                     // Story 314 review: the PerformanceMonitor's per-block budget is
                     // fixed at construction, so a mid-session format apply must
                     // replace the binder-wired monitor too or CPU% and underrun
-                    // warnings go permanently stale.
+                    // warnings go permanently stale. This callback fires from BOTH
+                    // DefaultAudioEngineController.applyConfiguration() (user-driven
+                    // Settings apply) and performFormatChangeReopen() (driver-
+                    // originated format/buffer change), so the refresh covers every
+                    // path that mutates the engine format.
                     engineBinder.refreshPerformanceMonitor();
                 }));
         applyStartupAudioSettings(startupSettings, audioEngineController);

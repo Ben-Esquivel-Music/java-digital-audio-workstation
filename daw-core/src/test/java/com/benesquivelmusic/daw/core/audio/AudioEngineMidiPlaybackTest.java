@@ -72,9 +72,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
 
         // Prepare and inject the test MidiTrackRenderer
@@ -109,9 +107,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
         midiRenderer.prepareRenderer(midiTrack);
         engine.setMidiTrackRenderer(midiRenderer);
@@ -145,9 +141,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
         midiRenderer.prepareRenderer(midiTrack);
         engine.setMidiTrackRenderer(midiRenderer);
@@ -173,9 +167,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -202,9 +194,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
         midiRenderer.prepareRenderer(midiTrack);
         engine.setMidiTrackRenderer(midiRenderer);
@@ -247,9 +237,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(midiChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(audioTrack, midiTrack));
+        engine.setGraph(transport, mixer, List.of(audioTrack, midiTrack));
         engine.start();
         midiRenderer.prepareRenderer(midiTrack);
         engine.setMidiTrackRenderer(midiRenderer);
@@ -279,9 +267,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
         midiRenderer.prepareRenderer(midiTrack);
         engine.setMidiTrackRenderer(midiRenderer);
@@ -340,9 +326,7 @@ class AudioEngineMidiPlaybackTest {
         largeMixer.addChannel(mixerChannel);
 
         fastTransport.play();
-        largeEngine.setTransport(fastTransport);
-        largeEngine.setMixer(largeMixer);
-        largeEngine.setTracks(List.of(midiTrack));
+        largeEngine.setGraph(fastTransport, largeMixer, List.of(midiTrack));
         largeEngine.start();
         midiRenderer.prepareRenderer(midiTrack);
         largeEngine.setMidiTrackRenderer(midiRenderer);
@@ -405,9 +389,7 @@ class AudioEngineMidiPlaybackTest {
         transport.setPositionInBeats(0.0001); // Start near loop end
         transport.play();
 
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
         midiRenderer.prepareRenderer(midiTrack);
         engine.setMidiTrackRenderer(midiRenderer);
@@ -555,9 +537,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(audioTrack));
+        engine.setGraph(transport, mixer, List.of(audioTrack));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -586,9 +566,7 @@ class AudioEngineMidiPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(midiTrack));
+        engine.setGraph(transport, mixer, List.of(midiTrack));
         engine.start();
         // Do NOT call prepareRenderer — renderer should skip silently
         engine.setMidiTrackRenderer(midiRenderer);

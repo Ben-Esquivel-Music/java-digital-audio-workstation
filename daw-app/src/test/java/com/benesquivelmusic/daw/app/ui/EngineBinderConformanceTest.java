@@ -24,9 +24,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Story 314 — the EngineBinder conformance sentinel (the source-scan pattern
  * of {@code RunLaterConsolidationTest}): no production source in
  * {@code daw-app} or {@code daw-core} outside {@code EngineBinder.java} may
- * call the audio engine's {@code setTransport} / {@code setMixer} /
- * {@code setTracks} — the binder is the one binding point (Audio Engine
- * Wiring Design Book §4.1).
+ * call the audio engine's graph setters — the binder is the one binding
+ * point (Audio Engine Wiring Design Book §4.1). The engine's live publish
+ * seam is the atomic {@code setGraph(Transport, Mixer, List<Track>)};
+ * the individual {@code setTransport} / {@code setMixer} setters no longer
+ * exist on the engine (they were folded into {@code setGraph} in the
+ * story-314 review follow-up), but their scans deliberately stay in place
+ * so a reintroduced piecewise setter — which would break the binder's
+ * atomic-swap guarantee — fails this test rather than slipping back in.
  *
  * <p>The scan is <em>receiver-aware</em>: {@code daw-app} carries unrelated
  * same-named methods ({@code ArrangementCanvas.setTracks} called as
@@ -59,6 +64,13 @@ final class EngineBinderConformanceTest {
     private static final List<String> ALLOWED_SET_TRANSPORT_RECEIVERS = List.of();
 
     /**
+     * {@code .setGraph(} — the engine's atomic publish seam — has no
+     * legitimate non-binder receiver at all: only {@code EngineBinder}
+     * may publish a (Transport, Mixer, tracks) graph to the engine.
+     */
+    private static final List<String> ALLOWED_SET_GRAPH_RECEIVERS = List.of();
+
+    /**
      * The three patterns one setter is scanned with. {@code receiverAware}
      * captures the receiver token (identifier, or {@code )} for a chained call
      * such as {@code getEngine().setTracks(...)}; a chained-call receiver
@@ -84,7 +96,8 @@ final class EngineBinderConformanceTest {
     private static final List<SetterScan> SETTER_SCANS = List.of(
             SetterScan.of("setTracks", ALLOWED_SET_TRACKS_RECEIVERS),
             SetterScan.of("setMixer", ALLOWED_SET_MIXER_RECEIVERS),
-            SetterScan.of("setTransport", ALLOWED_SET_TRANSPORT_RECEIVERS));
+            SetterScan.of("setTransport", ALLOWED_SET_TRANSPORT_RECEIVERS),
+            SetterScan.of("setGraph", ALLOWED_SET_GRAPH_RECEIVERS));
 
     @Test
     void onlyEngineBinderCallsTheEngineSettersAcrossDawAppAndDawCore() throws IOException {
@@ -134,6 +147,11 @@ final class EngineBinderConformanceTest {
                 .as("observed non-binder .setTransport( receivers must equal the pinned "
                         + "(empty) allowlist")
                 .containsExactlyElementsOf(ALLOWED_SET_TRANSPORT_RECEIVERS);
+        assertThat(receiversBySetter.getOrDefault("setGraph", Set.of()))
+                .as("observed non-binder .setGraph( receivers must equal the pinned "
+                        + "(empty) allowlist — only EngineBinder may publish the "
+                        + "engine's atomic (Transport, Mixer, tracks) graph")
+                .containsExactlyElementsOf(ALLOWED_SET_GRAPH_RECEIVERS);
     }
 
     @Test

@@ -207,8 +207,8 @@ class AudioEngineTest {
         ch.addInsert(new InsertSlot("Gain", new HalfGainProcessor()));
         mixer.addChannel(ch);
 
-        // Setting mixer after start() should prepare effects chains
-        engine.setMixer(mixer);
+        // Publishing a mixer after start() should prepare effects chains
+        engine.setGraph(null, mixer, null);
 
         // Verify the chain works with pre-allocated buffers by checking
         // the effects chain's intermediate buffers are not null
@@ -290,9 +290,7 @@ class AudioEngineTest {
         clip.setAudioData(clipAudio);
         track.addClip(clip);
 
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
 
         // Verify getSystemLatencySamples() reports the expected latency
         assertThat(engine.getSystemLatencySamples()).isEqualTo(4);

@@ -13,24 +13,39 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@link AudioEngine} (story 314, Audio Engine Wiring Design Book §4.1).
  *
  * <p>This is the <em>only</em> code allowed to call
- * {@link AudioEngine#setTransport}, {@link AudioEngine#setMixer}, and
- * {@link AudioEngine#setTracks} — a source-scan conformance test enforces
- * that. {@link #bind(DawProject)} hands the engine the project's live
- * {@code Transport} and {@code Mixer} references and an immutable snapshot
- * of the track list, refreshed on structural change only
- * ({@link DawProject.ChangeKind#TRACKS} — track add/remove/move/duplicate,
- * including undo paths). Per-block state (mute/volume/pan) is intentionally
- * <em>not</em> snapshotted: the render pipeline reads it live from each
- * {@code MixerChannel}; only structure is copied.</p>
+ * {@link AudioEngine#setGraph} and {@link AudioEngine#setTracks} — a
+ * source-scan conformance test enforces that. {@link #bind(DawProject)}
+ * hands the engine the project's live {@code Transport} and {@code Mixer}
+ * references and an immutable snapshot of the track list, refreshed on
+ * structural change only ({@link DawProject.ChangeKind#TRACKS} — track
+ * add/remove/move/duplicate, including undo paths). Per-block state
+ * (mute/volume/pan) is intentionally <em>not</em> snapshotted: the render
+ * pipeline reads it live from each {@code MixerChannel}; only structure is
+ * copied.</p>
+ *
+ * <h2>Atomic graph publish</h2>
+ * <p>Both {@link #bind(DawProject)} and {@link #unbind()} publish the whole
+ * transport/mixer/tracks graph in a <em>single</em>
+ * {@link AudioEngine#setGraph} call — one volatile store of one immutable
+ * graph record. The RT callback snapshots that record with one volatile
+ * load, so it sees either the entire old graph or the entire new graph;
+ * there is no half-swapped state for {@code playbackActive} to gate on.
+ * (The earlier gate-off → swap → gate-on sequencing of individual setters
+ * could not guarantee this: the callback took three separate volatile
+ * loads, so it could read the old, still-playing transport immediately
+ * before the gate-off and then the new tracks/mixer after the following
+ * stores — a hybrid graph. Atomicity supersedes ordering.)</p>
  *
  * <h2>Threading contract</h2>
  * <p>{@link #bind(DawProject)} and {@link #unbind()} are lifecycle-thread
  * operations (the FX / lifecycle thread) — never call them from the
- * real-time audio callback. The engine setters they delegate to are plain
- * volatile stores, which is what publishes the new graph to the RT
- * callback's next {@code processBlock}. The tracks-refresh listener runs on
- * whichever thread performed the project mutation (the UI thread in
- * production); allocating the snapshot copy there is fine.</p>
+ * real-time audio callback. {@link AudioEngine#setGraph} performs its
+ * non-RT mixer preparation and then a single volatile store, which is what
+ * publishes the new graph to the RT callback's next {@code processBlock}.
+ * The tracks-refresh listener runs on whichever thread performed the
+ * project mutation (the UI thread in production); allocating the snapshot
+ * copy there is fine — {@link AudioEngine#setTracks} folds it into a fresh
+ * graph record under the engine's mutator lock.</p>
  *
  * <h2>Binding epoch</h2>
  * <p>The binder owns a binding epoch that increments on every
@@ -63,17 +78,15 @@ public final class EngineBinder {
 
     /**
      * Binds the given project to the engine: detaches the previous
-     * project's tracks listener, then publishes the new graph under the
-     * <em>gate-off → swap → gate-on</em> rule that holds on every path
-     * (mirroring {@link #unbind()}'s transport-first rule): the transport is
-     * nulled first — the transport is the {@code playbackActive} gate, so a
-     * rebind while the previous project is still playing can never expose a
-     * half-swapped (new tracks, old mixer/transport) graph to the RT
-     * callback — then the tracks snapshot and mixer land, and the project's
-     * live transport is set <em>last</em> so the gate flips on only after
-     * the whole graph is in place. Also registers the structural-change
-     * refresh listener, {@linkplain #refreshPerformanceMonitor() refreshes}
-     * the {@link PerformanceMonitor}, and increments the binding epoch.
+     * project's tracks listener, then publishes the project's live
+     * transport, live mixer, and an immutable tracks snapshot in a single
+     * atomic {@link AudioEngine#setGraph} call — one volatile store of one
+     * immutable graph record, so a rebind while the previous project is
+     * still playing can never expose a half-swapped graph to the RT
+     * callback (there is no half-swapped state; see the class javadoc).
+     * Also registers the structural-change refresh listener,
+     * {@linkplain #refreshPerformanceMonitor() refreshes} the
+     * {@link PerformanceMonitor}, and increments the binding epoch.
      *
      * @param project the project to bind; must not be {@code null}
      */
@@ -81,10 +94,8 @@ public final class EngineBinder {
         Objects.requireNonNull(project, "project must not be null");
         detachTrackListener();
 
-        engine.setTransport(null);
-        engine.setTracks(List.copyOf(project.getTracks()));
-        engine.setMixer(project.getMixer());
-        engine.setTransport(project.getTransport());
+        engine.setGraph(project.getTransport(), project.getMixer(),
+                List.copyOf(project.getTracks()));
 
         trackListenerUnregister = project.addChangeListener(kind -> {
             if (kind == DawProject.ChangeKind.TRACKS) {
@@ -118,15 +129,15 @@ public final class EngineBinder {
 
     /**
      * Unbinds the current project: detaches the remembered tracks listener,
-     * then nulls the transport <em>first</em> (killing
-     * {@code playbackActive} immediately), then the mixer and tracks.
-     * Idempotent; does not increment the epoch.
+     * then clears the whole graph in a single atomic
+     * {@link AudioEngine#setGraph} call — transport, mixer, and tracks all
+     * null in one volatile store, killing {@code playbackActive} and the
+     * rest of the render configuration together. Idempotent; does not
+     * increment the epoch.
      */
     public void unbind() {
         detachTrackListener();
-        engine.setTransport(null);
-        engine.setMixer(null);
-        engine.setTracks(null);
+        engine.setGraph(null, null, null);
         boundProject = null;
     }
 

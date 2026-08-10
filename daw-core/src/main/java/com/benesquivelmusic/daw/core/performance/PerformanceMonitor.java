@@ -28,8 +28,11 @@ import java.util.logging.Logger;
  * called from the UI thread to read the latest metrics.
  * {@link #recordProcessingTime(long)} performs no logging or listener
  * delivery itself — those side effects are deferred and published by
- * {@link #publishPendingEvents()}, which a UI-side poll must call off the
- * audio thread.</p>
+ * {@link #publishPendingEvents()}, which an owning component must call
+ * periodically off the audio thread (the production seam is
+ * {@code DefaultAudioEngineController}'s always-active monitor-event
+ * drain, a dedicated daemon thread that ticks for the controller's whole
+ * lifetime — delivery never depends on any dialog being open).</p>
  *
  * <h3>Usage</h3>
  * <pre>{@code
@@ -195,9 +198,10 @@ public final class PerformanceMonitor {
      * warning-listener delivery). Multiple underruns or transitions between
      * drains coalesce into one publication carrying the latest state.
      *
-     * <p>Call from a UI-side poll (the production seam is
-     * {@code DefaultAudioEngineController.getCpuLoadPercent}); never call
-     * from the audio callback.</p>
+     * <p>Call periodically from a non-RT thread (the production seam is
+     * {@code DefaultAudioEngineController}'s always-active monitor-event
+     * drain, which ticks on its own daemon thread regardless of any
+     * dialog being open); never call from the audio callback.</p>
      */
     public void publishPendingEvents() {
         long underruns = underrunCount.get();

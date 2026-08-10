@@ -34,7 +34,12 @@ import java.util.logging.Logger;
  * the engine reads audio data from each track's {@link AudioClip}s at the
  * current transport position, mixes them through the mixer channel strips
  * into the master bus, and advances the transport. Loop playback is supported
- * when the transport's loop mode is enabled.</p>
+ * when the transport's loop mode is enabled. That transport/mixer/tracks
+ * configuration is published atomically via
+ * {@link #setGraph(Transport, Mixer, List)} as one immutable snapshot record
+ * behind a single volatile field, so the audio thread always sees either the
+ * entire old graph or the entire new one — never a half-swapped hybrid
+ * (story 314 review).</p>
  *
  * <p>An optional {@link NativeAudioBackend} can be attached to provide
  * low-latency audio I/O via PortAudio FFM bindings or Java Sound API.
@@ -76,10 +81,17 @@ public final class AudioEngine {
     // MIDI track renderer for SoundFont synthesis (volatile for safe stop() from UI thread)
     private volatile MidiTrackRenderer midiTrackRenderer;
 
-    // Volatile references for lock-free UI ↔ audio thread communication
-    private volatile Transport transport;
-    private volatile Mixer mixer;
-    private volatile List<Track> tracks;
+    // The whole transport/mixer/tracks project graph is published to the
+    // audio thread as ONE volatile store of an immutable record (story 314
+    // review). Three separate volatile fields allowed processBlock to read
+    // the OLD transport (playbackActive gate) alongside the NEW tracks and
+    // mixer mid-publish — a hybrid graph. One field makes that impossible.
+    private volatile EngineGraph graph = EngineGraph.EMPTY;
+
+    // Serializes the graph mutators (setGraph / setTracks) so concurrent
+    // read-modify-writes cannot lose an update. The RT read path NEVER
+    // touches this lock — processBlock reads the volatile graph field only.
+    private final Object graphLock = new Object();
 
     // Optional callback invoked from processBlock when recording is active
     private volatile RecordingCallback recordingCallback;
@@ -175,7 +187,7 @@ public final class AudioEngine {
         masterChain.allocateIntermediateBuffers(channels, frames);
 
         // Pre-allocate intermediate buffers for mixer channel insert effects
-        Mixer currentMixer = this.mixer;
+        Mixer currentMixer = this.graph.mixer();
         if (currentMixer != null) {
             currentMixer.prepareForPlayback(channels, frames);
         }
@@ -220,7 +232,7 @@ public final class AudioEngine {
         // Detach the scheduler from the mixer first so subsequent mixDown
         // calls (e.g. via offline export) revert to the single-threaded
         // path even if the mixer reference outlives the engine restart.
-        Mixer currentMixer = this.mixer;
+        Mixer currentMixer = this.graph.mixer();
         if (currentMixer != null && currentMixer.getGraphScheduler() == graphScheduler) {
             currentMixer.setGraphScheduler(null);
         }
@@ -568,71 +580,85 @@ public final class AudioEngine {
         }
     }
 
+    // ── Project graph publication (story 314) ────────────────────────────
+
     /**
-     * Sets the transport used to control playback position and state.
+     * Atomically publishes the whole project graph — transport, mixer, and
+     * track list — to the audio thread as a single volatile store of an
+     * immutable snapshot record.
      *
-     * <p>This reference is read from the audio thread on every
-     * {@link #processBlock(float[][], float[][], int)} call. The caller
-     * may update it from the UI thread at any time — the volatile reference
-     * guarantees visibility without locks.</p>
+     * <p>This is the {@link EngineBinder}'s publish seam. Because all three
+     * components land in one store, the next
+     * {@link #processBlock(float[][], float[][], int)} observes either the
+     * entire previous graph or the entire new one — never a hybrid such as
+     * the old (still playing) transport gating playback over the new tracks
+     * and mixer. The same source-scan conformance sentinel that restricts
+     * {@link #setTracks(List)} applies to this method: only
+     * {@code EngineBinder} may call it from production code.</p>
+     *
+     * <p>Non-RT preparation runs before the store (see
+     * {@link #handOffMixer(Mixer, Mixer)}): the graph scheduler is detached
+     * from the outgoing mixer (story 125) and, when the engine is running,
+     * the incoming mixer is prepared for playback and the scheduler
+     * re-installed (story 314 review) so the audio thread never renders
+     * through an unprepared mixer.</p>
+     *
+     * <p>Lifecycle-thread only — never call from the audio callback.</p>
      *
      * @param transport the transport, or {@code null} to disable playback rendering
+     * @param mixer     the mixer, or {@code null} to disable playback rendering
+     * @param tracks    an immutable track-list snapshot, or {@code null} to
+     *                  disable playback rendering
      */
-    public void setTransport(Transport transport) {
-        this.transport = transport;
+    public void setGraph(Transport transport, Mixer mixer, List<Track> tracks) {
+        synchronized (graphLock) {
+            handOffMixer(this.graph.mixer(), mixer);
+            this.graph = new EngineGraph(transport, mixer, tracks);
+        }
     }
 
     /**
-     * Returns the currently configured transport, or {@code null}.
+     * Returns the transport from the current graph snapshot, or {@code null}.
      *
      * @return the transport
      */
     public Transport getTransport() {
-        return transport;
+        return graph.transport();
     }
 
     /**
-     * Sets the mixer used to sum track outputs into the master bus.
-     *
-     * <p>This reference is read from the audio thread on every
-     * {@link #processBlock(float[][], float[][], int)} call. If the engine
-     * is already running, the mixer's channel effects chains are pre-allocated
-     * immediately so that the audio thread remains allocation-free.</p>
-     *
-     * @param mixer the mixer, or {@code null} to disable playback rendering
-     */
-    public void setMixer(Mixer mixer) {
-        // Story 125: detach the scheduler from the *previous* mixer so
-        // stale references do not attempt parallel dispatch after the
-        // pool is closed in stop(). This is safe even when the old mixer
-        // is null or when no scheduler is installed.
-        Mixer previousMixer = this.mixer;
-        if (previousMixer != null && graphScheduler != null
-                && previousMixer.getGraphScheduler() == graphScheduler) {
-            previousMixer.setGraphScheduler(null);
-        }
-        // Story 314 review: prepare the INCOMING mixer BEFORE the volatile
-        // store. Publishing first would let the RT thread mixDown an
-        // unprepared mixer (null scratch buffers → NPE inside the FFM
-        // upcall) for the whole multi-ms prepare window.
-        if (mixer != null && running.get()) {
-            mixer.prepareForPlayback(format.channels(), format.bufferSize());
-            // Re-install the scheduler on the new mixer so parallel
-            // insert dispatch keeps working after a hot mixer swap.
-            if (graphScheduler != null) {
-                mixer.setGraphScheduler(graphScheduler);
-            }
-        }
-        this.mixer = mixer;
-    }
-
-    /**
-     * Returns the currently configured mixer, or {@code null}.
+     * Returns the mixer from the current graph snapshot, or {@code null}.
      *
      * @return the mixer
      */
     public Mixer getMixer() {
-        return mixer;
+        return graph.mixer();
+    }
+
+    /**
+     * Non-RT mixer hand-off run before a graph store (factored from the
+     * pre-story-314-review {@code setMixer}). Detaches the graph scheduler
+     * from the outgoing mixer (story 125) so stale references do not
+     * attempt parallel dispatch after the pool is closed in {@link #stop()}
+     * — safe even when the old mixer is null or no scheduler is installed.
+     * When the engine is running, the INCOMING mixer is prepared BEFORE the
+     * caller's volatile store: publishing first would let the RT thread
+     * mixDown an unprepared mixer (null scratch buffers → NPE inside the
+     * FFM upcall) for the whole multi-ms prepare window, and the scheduler
+     * is re-installed so parallel insert dispatch keeps working after a
+     * hot mixer swap.
+     */
+    private void handOffMixer(Mixer previousMixer, Mixer incomingMixer) {
+        if (previousMixer != null && graphScheduler != null
+                && previousMixer.getGraphScheduler() == graphScheduler) {
+            previousMixer.setGraphScheduler(null);
+        }
+        if (incomingMixer != null && running.get()) {
+            incomingMixer.prepareForPlayback(format.channels(), format.bufferSize());
+            if (graphScheduler != null) {
+                incomingMixer.setGraphScheduler(graphScheduler);
+            }
+        }
     }
 
     /**
@@ -647,31 +673,38 @@ public final class AudioEngine {
      * @return the system latency in sample frames, or 0 if no mixer is configured
      */
     public int getSystemLatencySamples() {
-        Mixer currentMixer = this.mixer;
+        Mixer currentMixer = this.graph.mixer();
         return currentMixer != null ? currentMixer.getSystemLatencySamples() : 0;
     }
 
     /**
-     * Sets the list of tracks whose clips are rendered during playback.
+     * Replaces only the track list in the published graph, keeping the
+     * current transport and mixer — a read-modify-write that still lands as
+     * one volatile store of a fresh immutable snapshot. This is the
+     * {@link EngineBinder}'s structural-change refresh seam (track
+     * add/remove/move/duplicate); the source-scan conformance sentinel
+     * restricts production callers to {@code EngineBinder}.
      *
-     * <p>The list reference is captured once per
-     * {@link #processBlock(float[][], float[][], int)} call. To avoid
-     * concurrent-modification issues, pass an immutable or snapshot list
-     * and update the reference atomically from the UI thread.</p>
+     * <p>To avoid concurrent-modification issues, pass an immutable or
+     * snapshot list. Lifecycle-thread only — never call from the audio
+     * callback.</p>
      *
      * @param tracks the track list, or {@code null} to disable playback rendering
      */
     public void setTracks(List<Track> tracks) {
-        this.tracks = tracks;
+        synchronized (graphLock) {
+            EngineGraph current = this.graph;
+            this.graph = new EngineGraph(current.transport(), current.mixer(), tracks);
+        }
     }
 
     /**
-     * Returns the currently configured track list, or {@code null}.
+     * Returns the track list from the current graph snapshot, or {@code null}.
      *
      * @return the track list
      */
     public List<Track> getTracks() {
-        return tracks;
+        return graph.tracks();
     }
 
     /**
@@ -889,8 +922,10 @@ public final class AudioEngine {
      * thread. The core track-mixdown/master-chain path performs zero
      * allocations and zero lock acquisitions — all buffers are
      * pre-allocated during {@link #start()}, and the
-     * {@link RenderPipeline} reads only from volatile snapshots of the
-     * transport, mixer, track list, and MIDI renderer. When an enforcer
+     * {@link RenderPipeline} reads from one atomic volatile snapshot of
+     * the immutable transport/mixer/tracks graph (published whole via
+     * {@link #setGraph(Transport, Mixer, List)}) plus volatile snapshots
+     * of the MIDI renderer and other collaborators. When an enforcer
      * is present, per-track CPU timing occurs and the enforcer acquires
      * an internal lock for each measurement; the enforcer pre-allocates
      * its own buffers to minimize GC pressure on the audio thread.</p>
@@ -917,10 +952,14 @@ public final class AudioEngine {
         }
 
         // Snapshot volatile references once for this block so that the
-        // UI thread cannot tear the configuration mid-render.
-        Transport currentTransport = this.transport;
-        Mixer currentMixer = this.mixer;
-        List<Track> currentTracks = this.tracks;
+        // UI thread cannot tear the configuration mid-render. The whole
+        // transport/mixer/tracks graph arrives as ONE volatile load of an
+        // immutable record (story 314 review), so a concurrent EngineBinder
+        // publish can never expose a half-swapped hybrid graph.
+        EngineGraph currentGraph = this.graph;
+        Transport currentTransport = currentGraph.transport();
+        Mixer currentMixer = currentGraph.mixer();
+        List<Track> currentTracks = currentGraph.tracks();
         MidiTrackRenderer currentMidiRenderer = this.midiTrackRenderer;
         RecordingCallback cb = this.recordingCallback;
         PerformanceMonitor monitor = this.performanceMonitor;
@@ -1080,6 +1119,18 @@ public final class AudioEngine {
         return scheduler == null ? 0 : scheduler.getLastDispatchedTaskCount();
     }
 
+
+    /**
+     * Immutable whole-project graph snapshot (story 314 review). Published
+     * with a single volatile store so the RT callback can never observe a
+     * half-swapped graph. Every component is nullable — {@code null} means
+     * playback rendering is disabled for that aspect. In particular,
+     * {@code tracks} is deliberately NOT normalized to an empty list:
+     * {@link #getTracks()} must keep returning {@code null} when unset.
+     */
+    private record EngineGraph(Transport transport, Mixer mixer, List<Track> tracks) {
+        static final EngineGraph EMPTY = new EngineGraph(null, null, null);
+    }
 
     /**
      * Callback interface invoked from the audio thread to capture input audio
