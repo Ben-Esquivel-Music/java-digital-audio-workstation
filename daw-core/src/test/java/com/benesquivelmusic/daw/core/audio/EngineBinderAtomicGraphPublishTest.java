@@ -34,11 +34,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code bind(...)} publishes via exactly one {@code setGraph(} call
  *       and never touches the removed individual setters;</li>
  *   <li>the only {@code setTracks(} occurrence in {@code bind(...)} is the
- *       structural-change refresh listener, registered AFTER the atomic
- *       publish;</li>
+ *       structural-change refresh listener, registered BEFORE the atomic
+ *       publish (both under {@code bindingLock}) — copy-before-register
+ *       left a missed-update window in which a cross-thread track
+ *       mutation whose fire() snapshot-read both landed between the
+ *       tracks copy-read and the registration was silently lost; early
+ *       registration is safe only because the listener body serializes on
+ *       {@code bindingLock}, held through the publish;</li>
  *   <li>{@code unbind()} clears via exactly one
  *       {@code setGraph(null, null, null)} call and no individual
  *       setters.</li>
+ *   <li>the {@code setTracks(} refresh inside {@code bind(...)}'s listener
+ *       is generation-guarded <em>under</em> {@code bindingLock}:
+ *       registration → lambda {@code synchronized(bindingLock)} →
+ *       {@code bindingGeneration == generation} re-check →
+ *       {@code setTracks(}. A check-then-call refactor (generation read
+ *       under the lock, {@code setTracks} moved outside the synchronized
+ *       block) would reopen the TOCTOU race the guard closes — the stale
+ *       listener passes the check, loses the CPU, and folds old tracks
+ *       over a republished graph — yet would pass every behavioral test,
+ *       because no deterministic behavioral pin exists without an injected
+ *       pause seam. So the shape is pinned at source level too.</li>
  * </ul>
  */
 class EngineBinderAtomicGraphPublishTest {
@@ -57,6 +73,10 @@ class EngineBinderAtomicGraphPublishTest {
     private static final Pattern SET_TRANSPORT = Pattern.compile("\\bsetTransport\\s*\\(");
     private static final Pattern SET_MIXER = Pattern.compile("\\bsetMixer\\s*\\(");
     private static final Pattern SET_TRACKS = Pattern.compile("\\bsetTracks\\s*\\(");
+    private static final Pattern SYNC_BINDING_LOCK = Pattern.compile(
+            "\\bsynchronized\\s*\\(\\s*bindingLock\\s*\\)");
+    private static final Pattern GENERATION_RECHECK = Pattern.compile(
+            "\\bif\\s*\\(\\s*bindingGeneration\\s*==\\s*generation\\s*\\)");
 
     @Test
     void bindPublishesTheWholeGraphInOneAtomicSetGraphCall() throws IOException {
@@ -76,7 +96,7 @@ class EngineBinderAtomicGraphPublishTest {
     }
 
     @Test
-    void bindsOnlySetTracksUseIsTheRefreshListenerRegisteredAfterThePublish()
+    void bindsOnlySetTracksUseIsTheRefreshListenerRegisteredBeforeThePublish()
             throws IOException {
         String body = methodBody(binderCode(), "public void bind(DawProject project)");
 
@@ -92,13 +112,59 @@ class EngineBinderAtomicGraphPublishTest {
         assertThat(listenerRegistration)
                 .as("bind() must register the structural-change listener").isNotNegative();
         assertThat(tracksRefresh)
-                .as("the setTracks refresh must live inside the listener, which is "
-                        + "registered AFTER the atomic setGraph publish")
+                .as("the setTracks refresh must live inside the listener lambda, "
+                        + "which follows the addChangeListener( registration in source")
                 .isGreaterThan(listenerRegistration);
         assertThat(listenerRegistration)
-                .as("the listener registration (and its setTracks refresh) must follow "
-                        + "the atomic setGraph publish")
-                .isGreaterThan(publish);
+                .as("the listener registration must PRECEDE the atomic setGraph "
+                        + "publish: copy-before-register left a missed-update window — "
+                        + "a cross-thread track mutation whose fire() snapshot-read "
+                        + "both landed between the tracks copy-read and the "
+                        + "registration was silently lost until the next TRACKS "
+                        + "change. Registering early is safe only because the listener "
+                        + "body serializes on bindingLock, which bind() holds through "
+                        + "the publish — a delivery to the new listener cannot run "
+                        + "setTracks before the publish, and a stale-generation "
+                        + "delivery no-ops")
+                .isLessThan(publish);
+    }
+
+    @Test
+    void bindsTracksRefreshIsGenerationGuardedInsideTheLambdasBindingLock()
+            throws IOException {
+        String body = methodBody(binderCode(), "public void bind(DawProject project)");
+
+        int listenerRegistration = body.indexOf("addChangeListener(");
+        assertThat(listenerRegistration)
+                .as("bind() must register the structural-change listener").isNotNegative();
+
+        int lambdaLock = indexOfAfter(SYNC_BINDING_LOCK, body, listenerRegistration);
+        assertThat(lambdaLock)
+                .as("the refresh listener must take bindingLock INSIDE the lambda — a "
+                        + "synchronized(bindingLock) after the addChangeListener offset "
+                        + "(the body's FIRST synchronized(bindingLock) is the outer "
+                        + "bind-sequence one); without a lock in the listener a stale "
+                        + "invocation could pass a bare generation check and then lose "
+                        + "the CPU while bind()/unbind() republishes (TOCTOU)")
+                .isGreaterThan(listenerRegistration);
+
+        int generationRecheck = indexOfAfter(GENERATION_RECHECK, body, lambdaLock);
+        assertThat(generationRecheck)
+                .as("the listener must re-check its captured generation "
+                        + "(bindingGeneration == generation) AFTER taking the lambda's "
+                        + "bindingLock — a check hoisted outside the lock reopens the "
+                        + "TOCTOU window the binding-generation guard exists to close")
+                .isGreaterThan(lambdaLock);
+
+        int tracksRefresh = indexOf(SET_TRACKS, body);
+        assertThat(tracksRefresh)
+                .as("the single setTracks refresh must follow the lock-held generation "
+                        + "re-check — moving setTracks outside the synchronized block "
+                        + "(check-then-call) would pass every behavioral test (no "
+                        + "deterministic behavioral pin exists without an injected "
+                        + "pause seam) yet reopen the stale-listener race, so the "
+                        + "guarded shape is pinned at source level")
+                .isGreaterThan(generationRecheck);
     }
 
     @Test
@@ -140,6 +206,18 @@ class EngineBinderAtomicGraphPublishTest {
         Matcher matcher = pattern.matcher(code);
         assertThat(matcher.find())
                 .as("expected a match for %s", pattern.pattern()).isTrue();
+        return matcher.start();
+    }
+
+    /**
+     * Returns the offset of the first match at or after {@code from}, or fails
+     * the test when absent.
+     */
+    private static int indexOfAfter(Pattern pattern, String code, int from) {
+        Matcher matcher = pattern.matcher(code);
+        assertThat(matcher.find(from))
+                .as("expected a match for %s at or after offset %s", pattern.pattern(), from)
+                .isTrue();
         return matcher.start();
     }
 

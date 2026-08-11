@@ -36,6 +36,53 @@ import java.util.concurrent.atomic.AtomicLong;
  * before the gate-off and then the new tracks/mixer after the following
  * stores — a hybrid graph. Atomicity supersedes ordering.)</p>
  *
+ * <p><strong>Stale-listener guard.</strong> {@code ChangeNotifier.fire}
+ * reads its listener snapshot once into a local before iterating, so
+ * detaching the previous project's tracks listener cannot cancel an
+ * invocation already captured by an in-flight notification: the detached
+ * listener can still run <em>after</em> the new (or cleared) graph publish
+ * and fold the old project's tracks back over it — exactly the hybrid
+ * state the atomic publish exists to prevent. Both
+ * {@link #bind(DawProject)} and {@link #unbind()} therefore bump a binding
+ * generation under {@code bindingLock} before detaching and publishing,
+ * and the tracks listener re-checks its captured generation under the same
+ * lock before calling {@link AudioEngine#setTracks} — a late invocation
+ * observes the bumped generation and becomes a no-op instead of a
+ * hybrid-graph fold-in. Lock ordering is always {@code bindingLock} →
+ * the engine's internal mutator lock, never reversed (the engine never
+ * calls back into the binder, and {@code ChangeNotifier.fire} takes no
+ * lock), so no deadlock cycle is possible.</p>
+ *
+ * <p><strong>Attach-before-publish.</strong> {@link #bind(DawProject)}
+ * registers the tracks listener <em>before</em> its {@code setGraph}
+ * publish, both under {@code bindingLock}. The previous
+ * copy-before-register order left a missed-update window: a cross-thread
+ * track mutation whose notification's snapshot-read both landed between
+ * the tracks copy-read and the registration was silently lost until the
+ * next TRACKS change. Registering first closes it for any delivery whose
+ * snapshot <em>saw</em> the new listener: that delivery serializes behind
+ * {@code bindingLock} (held through the publish), runs after the bind
+ * completes on the mutating thread itself, and re-copies the live track
+ * list — program order alone guarantees the republish carries the
+ * mutation (or a stale generation no-ops). A snapshot that
+ * <em>missed</em> the listener implies the registration's volatile store
+ * — and the tracks copy-read that follows it in program order on the
+ * bind thread — came later in the volatile synchronization order than
+ * that delivery's snapshot read, so a lost update would require the
+ * mutation's visibility to lag the much-later copy; that is a practical
+ * hardening, <em>not</em> a formal happens-before guarantee for the
+ * plain track-list accesses. Under the documented threading contract the
+ * window cannot arise at all (track mutation and bind share the
+ * lifecycle thread), and a contract-violating cross-thread mutation is a
+ * data race on the track list itself regardless — the reorder hardens
+ * that unsupported case; it does not sanction it.
+ * Registering early is safe <em>only</em> because of that lock: a
+ * delivery to the new listener cannot execute its {@code setTracks}
+ * before the publish (it blocks on {@code bindingLock} until
+ * {@code bind} releases it), so it can never fold the new project's
+ * tracks into the old graph — the hazard the old registered-after-publish
+ * order guarded against back when the listener body was lock-free.</p>
+ *
  * <h2>Threading contract</h2>
  * <p>{@link #bind(DawProject)} and {@link #unbind()} are lifecycle-thread
  * operations (the FX / lifecycle thread) — never call them from the
@@ -59,6 +106,28 @@ public final class EngineBinder {
     private final AudioEngine engine;
     private final AtomicLong epoch = new AtomicLong();
 
+    /**
+     * Serializes {@link #bind(DawProject)} and {@link #unbind()} in their
+     * entirety, and the tracks listener's guarded refresh, against each
+     * other (stale-listener guard and attach-before-publish, class
+     * javadoc). Never touched by the RT callback; always acquired before —
+     * never after — the engine's internal mutator lock.
+     */
+    private final Object bindingLock = new Object();
+
+    /**
+     * The current binding generation, guarded by {@link #bindingLock}.
+     * Bumped by every {@link #bind(DawProject)} <em>and</em>
+     * {@link #unbind()} before detach + publish; the tracks listener
+     * captures its generation at registration and re-checks it under the
+     * lock before {@link AudioEngine#setTracks}, so a detached listener
+     * invoked late by an in-flight {@code ChangeNotifier.fire} snapshot is
+     * a no-op. Distinct from the public {@link #epoch}, whose contract
+     * (increments on bind only, after attach; unbind leaves it alone) is
+     * unchanged.
+     */
+    private long bindingGeneration;
+
     private volatile DawProject boundProject;
     /**
      * Unregister token remembered from the previous bind's
@@ -78,35 +147,56 @@ public final class EngineBinder {
 
     /**
      * Binds the given project to the engine: detaches the previous
-     * project's tracks listener, then publishes the project's live
-     * transport, live mixer, and an immutable tracks snapshot in a single
-     * atomic {@link AudioEngine#setGraph} call — one volatile store of one
+     * project's tracks listener, registers the structural-change refresh
+     * listener, then publishes the project's live transport, live mixer,
+     * and an immutable tracks snapshot in a single atomic
+     * {@link AudioEngine#setGraph} call — one volatile store of one
      * immutable graph record, so a rebind while the previous project is
      * still playing can never expose a half-swapped graph to the RT
      * callback (there is no half-swapped state; see the class javadoc).
-     * Also registers the structural-change refresh listener,
-     * {@linkplain #refreshPerformanceMonitor() refreshes} the
-     * {@link PerformanceMonitor}, and increments the binding epoch.
+     * Also {@linkplain #refreshPerformanceMonitor() refreshes} the
+     * {@link PerformanceMonitor}, records the bound project, and
+     * increments the binding epoch.
+     *
+     * <p>The whole sequence — generation bump, detach, listener
+     * registration, atomic publish, monitor refresh, bound-project and
+     * epoch update — runs under the binding lock, fully serializing
+     * concurrent binds/unbinds against each other and against the
+     * listener. The listener is registered <em>before</em> the publish to
+     * close the missed-update window (attach-before-publish, class
+     * javadoc); a delivery to it cannot run its refresh before the publish
+     * — it blocks on the binding lock until this method exits — and a
+     * previous binding's listener invoked late by an in-flight
+     * notification snapshot observes the bumped generation and skips
+     * (stale-listener guard, class javadoc).</p>
      *
      * @param project the project to bind; must not be {@code null}
      */
     public void bind(DawProject project) {
         Objects.requireNonNull(project, "project must not be null");
-        detachTrackListener();
+        synchronized (bindingLock) {
+            bindingGeneration++;
+            long generation = bindingGeneration;
+            detachTrackListener();
 
-        engine.setGraph(project.getTransport(), project.getMixer(),
-                List.copyOf(project.getTracks()));
+            trackListenerUnregister = project.addChangeListener(kind -> {
+                if (kind == DawProject.ChangeKind.TRACKS) {
+                    synchronized (bindingLock) {
+                        if (bindingGeneration == generation) {
+                            engine.setTracks(List.copyOf(project.getTracks()));
+                        }
+                    }
+                }
+            });
 
-        trackListenerUnregister = project.addChangeListener(kind -> {
-            if (kind == DawProject.ChangeKind.TRACKS) {
-                engine.setTracks(List.copyOf(project.getTracks()));
-            }
-        });
+            engine.setGraph(project.getTransport(), project.getMixer(),
+                    List.copyOf(project.getTracks()));
 
-        refreshPerformanceMonitor();
+            refreshPerformanceMonitor();
 
-        boundProject = project;
-        epoch.incrementAndGet();
+            boundProject = project;
+            epoch.incrementAndGet();
+        }
     }
 
     /**
@@ -133,12 +223,19 @@ public final class EngineBinder {
      * {@link AudioEngine#setGraph} call — transport, mixer, and tracks all
      * null in one volatile store, killing {@code playbackActive} and the
      * rest of the render configuration together. Idempotent; does not
-     * increment the epoch.
+     * increment the epoch. Like {@link #bind(DawProject)}, it bumps the
+     * binding generation under the binding lock before detach + clear, so
+     * a detached listener invoked late by an in-flight notification cannot
+     * resurrect the old project's tracks onto the cleared graph
+     * (stale-listener guard, class javadoc).
      */
     public void unbind() {
-        detachTrackListener();
-        engine.setGraph(null, null, null);
-        boundProject = null;
+        synchronized (bindingLock) {
+            bindingGeneration++;
+            detachTrackListener();
+            engine.setGraph(null, null, null);
+            boundProject = null;
+        }
     }
 
     /**
