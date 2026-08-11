@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.performance;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -24,7 +25,14 @@ import java.util.logging.Logger;
  * <p>The {@link #recordProcessingTime(long)} and {@link #recordTrackProcessingTime(String, long)}
  * methods are designed to be called from the audio thread. The
  * {@link #snapshot()} and {@link #getTrackMetrics()} methods can be safely
- * called from the UI thread to read the latest metrics.</p>
+ * called from the UI thread to read the latest metrics.
+ * {@link #recordProcessingTime(long)} performs no logging or listener
+ * delivery itself — those side effects are deferred and published by
+ * {@link #publishPendingEvents()}, which an owning component must call
+ * periodically off the audio thread (the production seam is
+ * {@code DefaultAudioEngineController}'s always-active monitor-event
+ * drain, a dedicated daemon thread that ticks for the controller's whole
+ * lifetime — delivery never depends on any dialog being open).</p>
  *
  * <h3>Usage</h3>
  * <pre>{@code
@@ -57,6 +65,13 @@ public final class PerformanceMonitor {
     private final AtomicLong underrunCount = new AtomicLong(0);
     private volatile double warningThresholdPercent = DEFAULT_WARNING_THRESHOLD;
     private volatile boolean warningActive;
+
+    // Pending-event state: written lock-free on the audio thread by
+    // recordProcessingTime, drained off-thread by publishPendingEvents.
+    private final AtomicLong warningTransitionCount = new AtomicLong(0);
+    private volatile long lastUnderrunProcessingNanos;
+    private volatile long publishedUnderrunCount;
+    private volatile long publishedWarningTransitionCount;
 
     // Per-track metrics: written from audio thread, read from UI thread
     private volatile List<TrackPerformanceMetrics> trackMetrics = Collections.emptyList();
@@ -139,15 +154,19 @@ public final class PerformanceMonitor {
 
     /**
      * Records the time taken to process one audio buffer. This method
-     * updates the exponentially smoothed CPU load, detects underruns,
-     * and fires warning events as needed.
+     * updates the exponentially smoothed CPU load, counts underruns,
+     * and flips the warning flag.
      *
      * <p>This method is intended to be called from the audio thread
-     * after each {@code processBlock} invocation.</p>
+     * after each {@code processBlock} invocation. It is real-time safe:
+     * logging and listener delivery are deferred as lock-free pending
+     * state and published by {@link #publishPendingEvents()} off the
+     * audio thread (story 314 review).</p>
      *
      * @param processingTimeNanos the wall-clock time spent processing
      *                            the buffer, in nanoseconds
      */
+    @RealTimeSafe
     public void recordProcessingTime(long processingTimeNanos) {
         double loadPercent = (processingTimeNanos / bufferDurationNanos) * 100.0;
 
@@ -158,10 +177,8 @@ public final class PerformanceMonitor {
 
         // Detect buffer underrun (processing took longer than available budget)
         if (processingTimeNanos > (long) bufferDurationNanos) {
-            long count = underrunCount.incrementAndGet();
-            LOGGER.log(Level.WARNING,
-                    "Buffer underrun detected (#{0}): processing took {1} ns, budget was {2} ns",
-                    new Object[]{count, processingTimeNanos, (long) bufferDurationNanos});
+            lastUnderrunProcessingNanos = processingTimeNanos;
+            underrunCount.incrementAndGet();
         }
 
         // Check warning threshold
@@ -171,15 +188,44 @@ public final class PerformanceMonitor {
         this.warningActive = nowWarning;
 
         if (nowWarning != wasWarning) {
-            PerformanceMetrics metrics = buildSnapshot(smoothedLoad);
-            if (nowWarning) {
+            warningTransitionCount.incrementAndGet();
+        }
+    }
+
+    /**
+     * Publishes the events {@link #recordProcessingTime(long)} deferred —
+     * underrun log lines and warning-threshold transitions (log plus
+     * warning-listener delivery). Multiple underruns or transitions between
+     * drains coalesce into one publication carrying the latest state.
+     *
+     * <p>Call periodically from a non-RT thread (the production seam is
+     * {@code DefaultAudioEngineController}'s always-active monitor-event
+     * drain, which ticks on its own daemon thread regardless of any
+     * dialog being open); never call from the audio callback.</p>
+     */
+    public void publishPendingEvents() {
+        long underruns = underrunCount.get();
+        if (underruns > publishedUnderrunCount) {
+            publishedUnderrunCount = underruns;
+            LOGGER.log(Level.WARNING,
+                    "Buffer underrun detected (#{0}): processing took {1} ns, budget was {2} ns",
+                    new Object[]{underruns, lastUnderrunProcessingNanos, (long) bufferDurationNanos});
+        }
+
+        long transitions = warningTransitionCount.get();
+        if (transitions != publishedWarningTransitionCount) {
+            publishedWarningTransitionCount = transitions;
+            double load = this.cpuLoadPercent;
+            double threshold = this.warningThresholdPercent;
+            PerformanceMetrics metrics = buildSnapshot(load);
+            if (metrics.warning()) {
                 LOGGER.log(Level.WARNING,
                         "CPU load warning: {0,number,#.#}% exceeds threshold of {1,number,#.#}%",
-                        new Object[]{smoothedLoad, threshold});
+                        new Object[]{load, threshold});
             } else {
                 LOGGER.log(Level.INFO,
                         "CPU load returned to normal: {0,number,#.#}% (threshold: {1,number,#.#}%)",
-                        new Object[]{smoothedLoad, threshold});
+                        new Object[]{load, threshold});
             }
             for (PerformanceWarningListener listener : warningListeners) {
                 listener.onPerformanceWarning(metrics);
@@ -276,6 +322,10 @@ public final class PerformanceMonitor {
         warningActive = false;
         pendingTrackMetrics.clear();
         trackMetrics = Collections.emptyList();
+        warningTransitionCount.set(0);
+        lastUnderrunProcessingNanos = 0;
+        publishedUnderrunCount = 0;
+        publishedWarningTransitionCount = 0;
     }
 
     private PerformanceMetrics buildSnapshot(double load) {

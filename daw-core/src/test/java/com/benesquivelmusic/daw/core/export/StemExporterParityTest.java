@@ -105,9 +105,8 @@ class StemExporterParityTest {
         // ── Live render via AudioEngine.processBlock ─────────────────────
         DawProject liveProject = buildProject(totalFrames);
         AudioEngine engine = new AudioEngine(format());
-        engine.setTransport(liveProject.getTransport());
-        engine.setMixer(liveProject.getMixer());
-        engine.setTracks(liveProject.getTracks());
+        engine.setGraph(liveProject.getTransport(), liveProject.getMixer(),
+                liveProject.getTracks());
         liveProject.getTransport().play();
         engine.start();
 

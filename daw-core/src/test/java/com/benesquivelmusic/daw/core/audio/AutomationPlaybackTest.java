@@ -68,9 +68,7 @@ class AutomationPlaybackTest {
      */
     private float[][] runProcessBlock(List<Track> tracks) {
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(tracks);
+        engine.setGraph(transport, mixer, tracks);
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -229,9 +227,7 @@ class AutomationPlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -337,9 +333,7 @@ class AutomationPlaybackTest {
         // Position at beat 0.5 — linear interpolation should yield volume ≈ 0.5
         transport.setPositionInBeats(0.5);
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];

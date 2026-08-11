@@ -28,10 +28,15 @@ import java.util.function.Consumer;
  * {@code @RealTimeSafe} itself, matching the un-annotated model
  * {@code notifyChange} methods that delegate to it).</p>
  *
- * <p>{@code fire} invokes each listener on the calling thread; a listener must do
- * only lock-free, non-blocking work (the sanctioned sink is the view-model's
- * lock-free single-reader buffer, §4.1, §4.6). Exceptions from a listener
- * propagate to the caller — listeners are trusted, in-process UI adapters.</p>
+ * <p>{@code fire} invokes each listener on the calling thread. On signals that
+ * can fire from a real-time context a listener must do only lock-free,
+ * non-blocking work ({@code fire} itself stays RT-safe; the sanctioned UI sink
+ * is the view-model's lock-free single-reader buffer, §4.1, §4.6). Signals
+ * fired only by lifecycle / UI-thread mutators — {@code DawProject}'s
+ * structural {@code TRACKS} signal — may serialize under short non-RT locks;
+ * {@code EngineBinder}'s stale-listener guard is the sanctioned example.
+ * Exceptions from a listener propagate to the caller — listeners are trusted,
+ * in-process UI adapters.</p>
  *
  * @param <K> the change-tag type (each model's {@code ChangeKind} enum)
  */

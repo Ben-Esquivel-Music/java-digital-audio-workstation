@@ -172,9 +172,7 @@ class MetronomeSideOutputRouterEngineTest {
             transport.setTimeSignature(4, 4);
             transport.setPositionInBeats(0.0);
             transport.play();
-            engine.setTransport(transport);
-            engine.setMixer(new Mixer());
-            engine.setTracks(List.of());
+            engine.setGraph(transport, new Mixer(), List.of());
             engine.setBackend(backend);
             engine.setMetronome(metronome);
             engine.setMetronomeSideOutputRouter(router);

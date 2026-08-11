@@ -118,6 +118,34 @@ final class DefaultAudioEngineController implements AudioEngineController {
             });
 
     /**
+     * The production drain seam for the {@link PerformanceMonitor}'s
+     * deferred RT events (story 314 review follow-up). The RT audio
+     * callback records underruns and warning-threshold transitions as
+     * lock-free pending state; logging and warning-listener delivery are
+     * forbidden on the audio callback, so this dedicated single-thread
+     * daemon worker ({@code "daw-monitor-event-drain"}) calls
+     * {@link PerformanceMonitor#publishPendingEvents()} every
+     * {@value #MONITOR_EVENT_DRAIN_MILLIS}&nbsp;ms for the controller's
+     * whole lifetime. That keeps underrun log lines and warning listeners
+     * delivering even when every dialog is closed — the drain must never
+     * depend on a UI poll such as {@link #getCpuLoadPercent()}.
+     *
+     * <p>Each tick looks the monitor up via
+     * {@link AudioEngine#getPerformanceMonitor()} — never caches it —
+     * because {@code EngineBinder.refreshPerformanceMonitor()} replaces
+     * the instance after format changes. Shut down in {@link #shutdown()}.</p>
+     */
+    private final ScheduledExecutorService monitorEventDrain =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "daw-monitor-event-drain");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** Fixed delay between {@link #monitorEventDrain} ticks. */
+    private static final long MONITOR_EVENT_DRAIN_MILLIS = 250L;
+
+    /**
      * Coalescing window: when another
      * {@link AudioDeviceEvent.FormatChangeRequested} arrives within this
      * delay, the previous pending reopen is cancelled and rescheduled
@@ -178,6 +206,30 @@ final class DefaultAudioEngineController implements AudioEngineController {
         this.backendSelector = Objects.requireNonNull(
                 backendSelector, "backendSelector must not be null");
         this.xrunDetector = createDetectorFor(audioEngine.getFormat());
+        monitorEventDrain.scheduleWithFixedDelay(this::drainMonitorEvents,
+                MONITOR_EVENT_DRAIN_MILLIS, MONITOR_EVENT_DRAIN_MILLIS,
+                TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * One {@link #monitorEventDrain} tick — see the field javadoc. The
+     * monitor is looked up fresh per tick because
+     * {@code EngineBinder.refreshPerformanceMonitor()} swaps the instance
+     * after format changes; caching would leave this drain pumping a
+     * dead monitor.
+     */
+    private void drainMonitorEvents() {
+        try {
+            PerformanceMonitor monitor = audioEngine.getPerformanceMonitor();
+            if (monitor != null) {
+                monitor.publishPendingEvents();
+            }
+        } catch (RuntimeException e) {
+            // An escaping exception would silently cancel the fixed-delay
+            // schedule and kill the drain for the rest of the session —
+            // log and keep ticking.
+            LOG.log(Level.WARNING, "Performance-monitor event drain tick failed", e);
+        }
     }
 
     @Override
@@ -295,7 +347,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public double getCpuLoadPercent() {
         PerformanceMonitor monitor = audioEngine.getPerformanceMonitor();
-        return monitor == null ? -1.0 : monitor.getCpuLoadPercent();
+        if (monitor == null) {
+            return -1.0;
+        }
+        // Deliberately side-effect-free: the monitor's deferred RT events
+        // (underrun log lines, warning transitions, warning listeners) are
+        // drained by the always-active monitorEventDrain worker, not by
+        // this read. A dialog poll must never be load-bearing for event
+        // delivery.
+        return monitor.getCpuLoadPercent();
     }
 
     @Override
@@ -982,11 +1042,32 @@ final class DefaultAudioEngineController implements AudioEngineController {
             }
         }
 
-        // 8. Resume in STOPPED state. Transport does NOT auto-start —
+        // 8. Run the post-reconfigure callback — the same hook
+        //    applyConfiguration() fires. MainController wires it to
+        //    reinstall the per-track CPU budget enforcer AND to
+        //    EngineBinder.refreshPerformanceMonitor(); the
+        //    PerformanceMonitor's per-block budget is fixed at
+        //    construction, so a driver-originated buffer/format change
+        //    that skipped this hook would leave the monitor reporting
+        //    stale CPU load and false underruns. Runs on this
+        //    best-effort path regardless of whether the backend reopen
+        //    in step 6 logged a failure — setFormat already happened
+        //    either way. Must precede the STOPPED transition (step 9)
+        //    so observers gating on STOPPED see the refreshed monitor.
+        if (postReconfigureCallback != null) {
+            try {
+                postReconfigureCallback.run();
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Post-reconfigure callback failed", e);
+            }
+        }
+
+        // 9. Resume in STOPPED state. Transport does NOT auto-start —
         //    user re-arms manually, identical to the onDeviceArrived
         //    convention. This is the final step so that any observer
         //    waiting on STOPPED has a reliable happens-before guarantee
-        //    that step 7 (notification + cache invalidation) completed.
+        //    that steps 7-8 (notification + cache invalidation +
+        //    post-reconfigure callback) completed.
         setEngineState(EngineState.STOPPED);
     }
 
@@ -1142,6 +1223,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             pending.cancel(false);
         }
         formatChangeWorker.shutdownNow();
+        monitorEventDrain.shutdownNow();
         XrunDetector detector = this.xrunDetector;
         if (detector != null) {
             detector.close();

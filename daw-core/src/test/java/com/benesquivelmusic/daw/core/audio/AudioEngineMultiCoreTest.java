@@ -19,7 +19,7 @@ class AudioEngineMultiCoreTest {
                 4, AudioGraphScheduler.DEFAULT_MIN_PARALLEL_BLOCK_SIZE);
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY, settings);
         Mixer mixer = new Mixer();
-        engine.setMixer(mixer);
+        engine.setGraph(null, mixer, null);
 
         // Before start: no scheduler/pool wired yet.
         assertThat(engine.getWorkerPool()).isNull();
@@ -51,7 +51,7 @@ class AudioEngineMultiCoreTest {
         AudioEngine engine = new AudioEngine(
                 AudioFormat.CD_QUALITY, new AudioEngineSettings(1, 64));
         Mixer mixer = new Mixer();
-        engine.setMixer(mixer);
+        engine.setGraph(null, mixer, null);
 
         engine.start();
         try {
@@ -66,18 +66,18 @@ class AudioEngineMultiCoreTest {
     }
 
     @Test
-    void setMixerReinstallsSchedulerOnRunningEngine() {
+    void mixerHotSwapViaSetGraphReinstallsSchedulerOnRunningEngine() {
         AudioEngine engine = new AudioEngine(
                 AudioFormat.CD_QUALITY, new AudioEngineSettings(2, 64));
         engine.start();
         try {
             // Hot-swap mixer while running should propagate the scheduler.
             Mixer m1 = new Mixer();
-            engine.setMixer(m1);
+            engine.setGraph(engine.getTransport(), m1, engine.getTracks());
             assertThat(m1.getGraphScheduler()).isSameAs(engine.getGraphScheduler());
 
             Mixer m2 = new Mixer();
-            engine.setMixer(m2);
+            engine.setGraph(engine.getTransport(), m2, engine.getTracks());
             assertThat(m2.getGraphScheduler()).isSameAs(engine.getGraphScheduler());
             // The previous mixer must have its scheduler detached so stale
             // references do not attempt parallel dispatch after pool close.

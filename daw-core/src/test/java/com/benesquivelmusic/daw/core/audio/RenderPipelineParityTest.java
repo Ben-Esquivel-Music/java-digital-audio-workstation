@@ -97,9 +97,7 @@ class RenderPipelineParityTest {
         Track[] liveTracks = new Track[2];
         populateProject(liveTransport, liveMixer, liveTracks, totalFrames);
         liveTransport.play();
-        engine.setTransport(liveTransport);
-        engine.setMixer(liveMixer);
-        engine.setTracks(List.of(liveTracks[0], liveTracks[1]));
+        engine.setGraph(liveTransport, liveMixer, List.of(liveTracks[0], liveTracks[1]));
         engine.start();
 
         float[][] liveOut = new float[CHANNELS][totalFrames];

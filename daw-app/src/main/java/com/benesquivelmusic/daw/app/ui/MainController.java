@@ -26,6 +26,7 @@ import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.EngineBinder;
 import com.benesquivelmusic.daw.core.export.RenderQueue;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.ChannelNameSnapshotReconciler;
@@ -171,6 +172,8 @@ public final class MainController {
     private ProjectManager projectManager;
     private UndoManager undoManager;
     private AudioEngine audioEngine;
+    /** Story 314 — the one binding point handing the engine the live project. */
+    private EngineBinder engineBinder;
     // Story 137: registry of per-track input-level monitors used by the
     // mixer's input-meter column and the arrangement-view clip indicator.
     private final InputLevelMonitorRegistry inputLevelMonitorRegistry = new InputLevelMonitorRegistry();
@@ -487,6 +490,11 @@ public final class MainController {
         }
         vmDisposers.clear();
 
+        // Story 314 — the engine binds the live project here, between epochs:
+        // epoch-N consumers are disposed above, the VMs below are re-created
+        // against the same live references the engine now renders.
+        engineBinder.bind(project);
+
         FxDispatcher disp = dispatcher();
 
         // Project — the name cells track ProjectVM.name; the arrangement placeholder +
@@ -796,6 +804,7 @@ public final class MainController {
                 Preferences.userNodeForPackage(SettingsModel.class));
         this.settingsModel = startupSettings;
         audioEngine = new AudioEngine(project.getFormat());
+        engineBinder = new EngineBinder(audioEngine);
         // Story 137: bind the input-level-monitor registry so the engine
         // taps the raw input signal per armed track before any processing.
         audioEngine.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
@@ -813,6 +822,15 @@ public final class MainController {
                     // change in SettingsDialog → applyConfiguration) so the
                     // enforcer's blockBudgetNanos stays in sync with the live format.
                     installTrackCpuBudgetEnforcer();
+                    // Story 314 review: the PerformanceMonitor's per-block budget is
+                    // fixed at construction, so a mid-session format apply must
+                    // replace the binder-wired monitor too or CPU% and underrun
+                    // warnings go permanently stale. This callback fires from BOTH
+                    // DefaultAudioEngineController.applyConfiguration() (user-driven
+                    // Settings apply) and performFormatChangeReopen() (driver-
+                    // originated format/buffer change), so the refresh covers every
+                    // path that mutates the engine format.
+                    engineBinder.refreshPerformanceMonitor();
                 }));
         applyStartupAudioSettings(startupSettings, audioEngineController);
 
@@ -1011,6 +1029,12 @@ public final class MainController {
                         // listeners + continuous channels) so nothing leaks on close.
                         for (Runnable disposer : vmDisposers) { disposer.run(); }
                         vmDisposers.clear();
+                        // Story 314 — detach the engine from the project
+                        // (transport nulled first, killing playbackActive)
+                        // before the audio/engine teardown below.
+                        if (engineBinder != null) {
+                            engineBinder.unbind();
+                        }
                         disposeRenderQueue();
                         pluginViewController.dispose();
                         if (pluginFaultUiController != null) {

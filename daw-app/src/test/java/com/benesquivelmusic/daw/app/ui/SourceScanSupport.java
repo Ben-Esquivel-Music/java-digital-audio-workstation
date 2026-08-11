@@ -21,14 +21,18 @@ import java.util.regex.Pattern;
 public final class SourceScanSupport {
 
     /**
-     * One Java comment or one string / text-block literal. Alternation order
-     * matters: a literal is matched before {@code //} and {@code /*} so a
-     * delimiter inside a string is not mistaken for a comment, and a quote
-     * inside a comment is consumed as part of the comment.
+     * One Java comment or one string / text-block / char literal. Alternation
+     * order matters: a literal is matched before {@code //} and {@code /*} so
+     * a delimiter inside a string is not mistaken for a comment, and a quote
+     * inside a comment is consumed as part of the comment. Char literals are
+     * tokenized too, ahead of the comment alternatives: a quote-bearing char
+     * literal ({@code '"'}) would otherwise open a phantom string that
+     * swallows real code up to the next quote (story 314 review).
      */
     private static final Pattern COMMENT_OR_STRING = Pattern.compile(
             "\"\"\"[\\s\\S]*?\"\"\""        // text block
             + "|\"(?:\\\\.|[^\"\\\\])*\""   // string literal
+            + "|'(?:\\\\.|[^'\\\\])'"       // char literal
             + "|//[^\\n]*"                  // line comment
             + "|/\\*[\\s\\S]*?\\*/");       // block comment
 
@@ -83,19 +87,26 @@ public final class SourceScanSupport {
         StringBuilder out = new StringBuilder(source.length());
         while (m.find()) {
             String token = m.group();
-            // A string / text block (starts with a quote) is code — keep it
-            // verbatim; anything else the alternation matched is a comment and
-            // is replaced with a single space.
-            m.appendReplacement(out, token.charAt(0) == '"'
+            // A string / text block / char literal (starts with a quote) is
+            // code — keep it verbatim; anything else the alternation matched
+            // is a comment and is replaced with a single space.
+            char first = token.charAt(0);
+            m.appendReplacement(out, first == '"' || first == '\''
                     ? Matcher.quoteReplacement(token) : " ");
         }
         m.appendTail(out);
         return out.toString();
     }
 
-    /** Blanks string / text-block literals out of already comment-free code. */
+    /**
+     * Blanks string / text-block / char literals out of already comment-free
+     * code. Char literals are consumed FIRST so a quote-bearing char literal
+     * ({@code '"'}) cannot pair with a real string delimiter and blank the
+     * code between them (story 314 review).
+     */
     public static String stripStringLiterals(String code) {
         return code
+                .replaceAll("'(?:\\\\.|[^'\\\\])'", "''")
                 .replaceAll("\"\"\"[\\s\\S]*?\"\"\"", "\"\"")
                 .replaceAll("\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");
     }

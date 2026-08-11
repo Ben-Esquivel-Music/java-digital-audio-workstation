@@ -25,3 +25,11 @@ The `AudioEngine` class has a fully implemented `processBlock()` method that rea
 - Multi-device output (e.g., headphone cue mix on a second device)
 - ASIO driver support on Windows (PortAudio handles this transparently)
 - Network audio streaming (Dante, AES67)
+
+## Status Note (story 314)
+
+The engine half of this story — `processBlock()` rendering the live project's
+transport, mixer, and tracks — is subsumed by story 314, whose `EngineBinder`
+now binds the project graph into the engine on every lifecycle path. The
+hardware-loop and stream-handling concerns (backend consolidation, ASIO
+streaming, Java Sound correctness) continue in stories 316 and 317.

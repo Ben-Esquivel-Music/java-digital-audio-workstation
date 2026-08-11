@@ -66,9 +66,7 @@ class AudioEnginePlaybackTest {
 
     @Test
     void shouldPassthroughInputWhenTransportIsStopped() {
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of());
+        engine.setGraph(transport, mixer, List.of());
         engine.start();
 
         // Transport is STOPPED by default
@@ -105,9 +103,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -141,9 +137,7 @@ class AudioEnginePlaybackTest {
 
         transport.play();
         transport.setPositionInBeats(0.0);
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -175,9 +169,7 @@ class AudioEnginePlaybackTest {
         // Position far past the clip end
         transport.play();
         transport.setPositionInBeats(1.0);
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -208,9 +200,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -239,9 +229,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -285,9 +273,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(ch2);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track1, track2));
+        engine.setGraph(transport, mixer, List.of(track1, track2));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -318,9 +304,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -349,9 +333,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -382,9 +364,7 @@ class AudioEnginePlaybackTest {
         mixer.getMasterChannel().setVolume(0.5);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -413,9 +393,7 @@ class AudioEnginePlaybackTest {
         mixer.getMasterChannel().setMuted(true);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -443,9 +421,7 @@ class AudioEnginePlaybackTest {
         transport.play();
         assertThat(transport.getPositionInBeats()).isEqualTo(0.0);
 
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -459,9 +435,7 @@ class AudioEnginePlaybackTest {
 
     @Test
     void shouldNotAdvanceTransportWhenStopped() {
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of());
+        engine.setGraph(transport, mixer, List.of());
         engine.start();
 
         // Transport is STOPPED
@@ -483,9 +457,7 @@ class AudioEnginePlaybackTest {
         transport.record();
         assertThat(transport.getState()).isEqualTo(TransportState.RECORDING);
 
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -521,9 +493,7 @@ class AudioEnginePlaybackTest {
         transport.setLoopRegion(0.0, 1.0);
         transport.play();
 
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -567,9 +537,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(ch2);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track1, track2));
+        engine.setGraph(transport, mixer, List.of(track1, track2));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -613,9 +581,7 @@ class AudioEnginePlaybackTest {
         monoTransport.setTempo(TEMPO);
         monoTransport.play();
 
-        monoEngine.setTransport(monoTransport);
-        monoEngine.setMixer(monoMixer);
-        monoEngine.setTracks(List.of(track));
+        monoEngine.setGraph(monoTransport, monoMixer, List.of(track));
         monoEngine.start();
 
         float[][] input = new float[1][BUFFER_SIZE];
@@ -641,9 +607,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -662,9 +626,7 @@ class AudioEnginePlaybackTest {
     @Test
     void shouldProduceSilenceWithNoTracks() {
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of());
+        engine.setGraph(transport, mixer, List.of());
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -686,9 +648,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.record();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         int[] callbackCount = {0};
@@ -704,20 +664,20 @@ class AudioEnginePlaybackTest {
     // ── Getter/setter coverage ──────────────────────────────────────────────
 
     @Test
-    void shouldGetAndSetTransport() {
+    void shouldExposeTransportPublishedViaSetGraph() {
         assertThat(engine.getTransport()).isNull();
-        engine.setTransport(transport);
+        engine.setGraph(transport, null, null);
         assertThat(engine.getTransport()).isSameAs(transport);
-        engine.setTransport(null);
+        engine.setGraph(null, null, null);
         assertThat(engine.getTransport()).isNull();
     }
 
     @Test
-    void shouldGetAndSetMixer() {
+    void shouldExposeMixerPublishedViaSetGraph() {
         assertThat(engine.getMixer()).isNull();
-        engine.setMixer(mixer);
+        engine.setGraph(null, mixer, null);
         assertThat(engine.getMixer()).isSameAs(mixer);
-        engine.setMixer(null);
+        engine.setGraph(null, null, null);
         assertThat(engine.getMixer()).isNull();
     }
 
@@ -760,9 +720,7 @@ class AudioEnginePlaybackTest {
         monoTransport.setTempo(TEMPO);
         monoTransport.play();
 
-        monoEngine.setTransport(monoTransport);
-        monoEngine.setMixer(monoMixer);
-        monoEngine.setTracks(List.of(track));
+        monoEngine.setGraph(monoTransport, monoMixer, List.of(track));
         monoEngine.start();
 
         // Process first block of 4 frames
@@ -808,9 +766,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -849,9 +805,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -885,9 +839,7 @@ class AudioEnginePlaybackTest {
         mixer.addChannel(mixerChannel);
 
         transport.play();
-        engine.setTransport(transport);
-        engine.setMixer(mixer);
-        engine.setTracks(List.of(track));
+        engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
