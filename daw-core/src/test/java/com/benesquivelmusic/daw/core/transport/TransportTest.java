@@ -4,8 +4,11 @@ import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class TransportTest {
 
@@ -24,14 +27,84 @@ class TransportTest {
     }
 
     @Test
-    void shouldStopAndResetPosition() {
+    void stopShouldReturnToThePlayStartAnchor() {
+        // Story 315 — play from beat 60, advance, Stop: the playhead sits at
+        // beat 60 again (not zero), so auditioning a section never loses the
+        // engineer's place in the song.
         Transport transport = new Transport();
-        transport.setPositionInBeats(16.0);
+        transport.setPositionInBeats(60.0);
         transport.play();
+        transport.advancePosition(4.0);
+        assertThat(transport.getPositionInBeats()).isEqualTo(64.0);
+
         transport.stop();
 
         assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
-        assertThat(transport.getPositionInBeats()).isZero();
+        assertThat(transport.getPositionInBeats()).isEqualTo(60.0);
+    }
+
+    @Test
+    void stopWhileAlreadyStoppedIsANoOp() {
+        // Story 315 — the "second Stop rewinds to zero" gesture lives in the
+        // UI layer; the model-level stop() is idempotent so internal stops
+        // (e.g. RecordingPipeline.stop()) never double-rewind the playhead.
+        Transport transport = new Transport();
+        transport.setPositionInBeats(60.0);
+        transport.play();
+        transport.stop();
+        assertThat(transport.getPositionInBeats()).isEqualTo(60.0);
+
+        transport.stop();
+
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(60.0);
+    }
+
+    @Test
+    void stopShouldLeaveThePositionWhenReturnToStartIsDisabled() {
+        Transport transport = new Transport();
+        transport.setReturnToStartOnStop(false);
+        transport.setPositionInBeats(60.0);
+        transport.play();
+        transport.advancePosition(4.0);
+
+        transport.stop();
+
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(64.0);
+        assertThat(transport.isReturnToStartOnStop()).isFalse();
+    }
+
+    @Test
+    void returnToStartOnStopDefaultsToTrue() {
+        assertThat(new Transport().isReturnToStartOnStop()).isTrue();
+    }
+
+    @Test
+    void recordShouldAnchorAtTheRecordStartPosition() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(8.0);
+        transport.record();
+        transport.advancePosition(2.0);
+
+        transport.stop();
+
+        assertThat(transport.getPositionInBeats()).isEqualTo(8.0);
+    }
+
+    @Test
+    void resumeFromPauseReAnchorsAtTheResumePosition() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(10.0);
+        transport.play();               // anchor = 10
+        transport.advancePosition(2.0); // 12
+        transport.pause();
+        transport.play();               // re-anchor = 12
+        transport.advancePosition(1.0); // 13
+
+        transport.stop();
+
+        assertThat(transport.getPositionInBeats()).isEqualTo(12.0);
     }
 
     @Test
@@ -162,6 +235,7 @@ class TransportTest {
     @Test
     void shouldAdvancePositionLinearly() {
         Transport transport = new Transport();
+        transport.play();
         transport.advancePosition(4.0);
         assertThat(transport.getPositionInBeats()).isEqualTo(4.0);
         transport.advancePosition(2.5);
@@ -174,6 +248,7 @@ class TransportTest {
         transport.setLoopEnabled(true);
         transport.setLoopRegion(4.0, 12.0);
         transport.setPositionInBeats(10.0);
+        transport.play();
         transport.advancePosition(3.0);
         // 10 + 3 = 13, loop length = 8, wraps to 13 - 8 = 5
         assertThat(transport.getPositionInBeats()).isEqualTo(5.0);
@@ -185,6 +260,7 @@ class TransportTest {
         transport.setLoopEnabled(true);
         transport.setLoopRegion(0.0, 8.0);
         transport.setPositionInBeats(7.0);
+        transport.play();
         transport.advancePosition(1.0);
         // 7 + 1 = 8 which is exactly loop end, wraps to 0
         assertThat(transport.getPositionInBeats()).isEqualTo(0.0);
@@ -196,6 +272,7 @@ class TransportTest {
         transport.setLoopEnabled(false);
         transport.setLoopRegion(0.0, 8.0);
         transport.setPositionInBeats(7.0);
+        transport.play();
         transport.advancePosition(3.0);
         assertThat(transport.getPositionInBeats()).isEqualTo(10.0);
     }
@@ -206,6 +283,7 @@ class TransportTest {
         transport.setLoopEnabled(true);
         transport.setLoopRegion(0.0, 4.0);
         transport.setPositionInBeats(3.0);
+        transport.play();
         transport.advancePosition(9.0);
         // 3 + 9 = 12, loop length = 4, 12 - 4 = 8, 8 - 4 = 4, 4 - 4 = 0
         assertThat(transport.getPositionInBeats()).isEqualTo(0.0);
@@ -216,6 +294,53 @@ class TransportTest {
         Transport transport = new Transport();
         assertThatThrownBy(() -> transport.advancePosition(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void advancePositionIsANoOpWhenTheTransportIsNotRolling() {
+        // Story 315 — the RT advance backs off unless the transport is
+        // PLAYING or RECORDING, closing the stop-vs-advance race (a CAS retry
+        // that observes stop()'s anchor store also observes STOPPED).
+        Transport transport = new Transport();
+        transport.setPositionInBeats(5.0);
+
+        transport.advancePosition(1.0); // STOPPED
+        assertThat(transport.getPositionInBeats()).isEqualTo(5.0);
+
+        transport.play();
+        transport.pause();
+        transport.advancePosition(1.0); // PAUSED
+        assertThat(transport.getPositionInBeats()).isEqualTo(5.0);
+    }
+
+    @Test
+    void degenerateTinyLoopRegionWrapsInConstantTime() {
+        // Story 315 — the ruler can create a pathological 0.001-beat (or even
+        // smaller) loop region mid-gesture. The closed-form modulo wrap must
+        // terminate in O(1) where the old while-subtract loop would iterate
+        // once per loop length. A large delta over a 1e-9-beat region would
+        // take ~1e12 iterations under the old code.
+        Transport transport = new Transport();
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(0.0, 1e-9);
+        transport.play();
+
+        assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> transport.advancePosition(1000.0));
+
+        assertThat(transport.getPositionInBeats()).isGreaterThanOrEqualTo(0.0);
+        assertThat(transport.getPositionInBeats()).isLessThan(1e-9);
+
+        // And the 0.001-beat region the ruler realistically creates:
+        Transport ruler = new Transport();
+        ruler.setLoopEnabled(true);
+        ruler.setLoopRegion(2.0, 2.001);
+        ruler.setPositionInBeats(2.0);
+        ruler.play();
+        assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> ruler.advancePosition(500.0));
+        assertThat(ruler.getPositionInBeats()).isGreaterThanOrEqualTo(2.0);
+        assertThat(ruler.getPositionInBeats()).isLessThan(2.001);
     }
 
     @Test
@@ -424,18 +549,55 @@ class TransportTest {
     }
 
     @Test
-    void finishPostRollShouldStopAndResetPosition() {
+    void finishPostRollShouldStopAndReturnToThePlayStartAnchor() {
+        // Story 315 — finishPostRoll() is the deferred stop, so it aligns
+        // with stop(): the playhead returns to the play-start anchor instead
+        // of hard-resetting to zero.
         Transport transport = new Transport();
         transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
-        transport.play();
         transport.setPositionInBeats(32.0);
+        transport.play();               // anchor = 32
+        transport.advancePosition(2.0); // post-roll playback runs past the stop
         transport.requestStop();
+        transport.advancePosition(1.0); // still rolling through the post-roll
 
         transport.finishPostRoll();
 
         assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
         assertThat(transport.isInPostRoll()).isFalse();
-        assertThat(transport.getPositionInBeats()).isZero();
+        assertThat(transport.getPositionInBeats()).isEqualTo(32.0);
+    }
+
+    @Test
+    void finishPostRollShouldLeaveThePositionWhenReturnToStartIsDisabled() {
+        Transport transport = new Transport();
+        transport.setReturnToStartOnStop(false);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        transport.setPositionInBeats(32.0);
+        transport.play();
+        transport.advancePosition(2.0);
+        transport.requestStop();
+
+        transport.finishPostRoll();
+
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(34.0);
+    }
+
+    @Test
+    void playWithPreRollShouldAnchorAtThePreRewindPosition() {
+        // Story 315 — Stop returns to where the user started Play, not to the
+        // rewound pre-roll spot.
+        Transport transport = new Transport();
+        transport.setTimeSignature(4, 4);
+        transport.setPositionInBeats(96.0);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+
+        transport.playWithPreRoll();
+        assertThat(transport.getPositionInBeats()).isEqualTo(88.0);
+
+        transport.stop();
+        assertThat(transport.getPositionInBeats()).isEqualTo(96.0);
     }
 
     @Test

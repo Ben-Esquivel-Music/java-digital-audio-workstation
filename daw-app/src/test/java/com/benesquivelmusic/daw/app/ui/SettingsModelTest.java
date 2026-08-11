@@ -77,6 +77,31 @@ class SettingsModelTest {
         assertThat(model.getDefaultTempo()).isCloseTo(120.0, within(0.01));
     }
 
+    // ── Transport (story 315) ────────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToReturnToStartOnStop() {
+        assertThat(model.isReturnToStartOnStop()).isTrue();
+    }
+
+    @Test
+    void shouldPersistReturnToStartOnStopAcrossInstances() {
+        model.setReturnToStartOnStop(false);
+
+        SettingsModel reloaded = new SettingsModel(prefs);
+
+        assertThat(reloaded.isReturnToStartOnStop()).isFalse();
+    }
+
+    @Test
+    void resetToDefaultsShouldRestoreReturnToStartOnStop() {
+        model.setReturnToStartOnStop(false);
+
+        model.resetToDefaults();
+
+        assertThat(model.isReturnToStartOnStop()).isTrue();
+    }
+
     // ── Appearance defaults ──────────────────────────────────────────────────
 
     @Test

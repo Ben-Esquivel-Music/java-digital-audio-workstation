@@ -134,11 +134,20 @@ public final class TransportVM {
                 transport.getTimeSignatureDenominator());
     }
 
+    /**
+     * Reads the loop trio as ONE snapshot (story 315 review). The three
+     * individual getters each read the same volatile {@code LoopWindow}
+     * reference separately, so a control write landing between them yields a
+     * {@link LoopRegion} stitched from two different windows — an enabled flag
+     * from one and bounds from another. {@link Transport#getLoopWindow()} is the
+     * tear-free read the core added for exactly this.
+     */
     private LoopRegion readLoopRegion() {
+        Transport.LoopWindow window = transport.getLoopWindow();
         return new LoopRegion(
-                transport.isLoopEnabled(),
-                transport.getLoopStartInBeats(),
-                transport.getLoopEndInBeats());
+                window.enabled(),
+                window.startInBeats(),
+                window.endInBeats());
     }
 
     // ── Read-only property views (the VM is the sole writer) ──────────────────

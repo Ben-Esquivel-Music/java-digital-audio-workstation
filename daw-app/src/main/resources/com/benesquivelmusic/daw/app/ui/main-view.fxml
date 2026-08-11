@@ -21,20 +21,23 @@
 
                 <!-- Group 1: Transport — text-only per UI Design Book §2.4
                      ("an icon is a replacement for a label, not a decoration
-                     on it"). Icons would compete with the labels (§1.4). -->
+                     on it"). Icons would compete with the labels (§1.4).
+                     Play/Stop/Record/Loop carry no onAction: story 315 binds
+                     them via TransportControlBinder (rebuildViewModels), which
+                     raises story-290 TransportCommands - one gesture path. -->
                 <HBox fx:id="transportGroup" spacing="4" alignment="CENTER"
                       styleClass="toolbar-button-group">
                     <Button fx:id="skipBackButton" text="Skip Back" onAction="#onSkipBack"
                             styleClass="dawg-button, size-transport"/>
-                    <Button fx:id="playButton" text="Play" onAction="#onPlay"
+                    <Button fx:id="playButton" text="Play"
                             styleClass="dawg-button, size-transport"/>
-                    <Button fx:id="stopButton" text="Stop" onAction="#onStop"
+                    <Button fx:id="stopButton" text="Stop"
                             styleClass="dawg-button, size-transport"/>
-                    <Button fx:id="recordButton" text="Record" onAction="#onRecord"
+                    <Button fx:id="recordButton" text="Record"
                             styleClass="dawg-button, size-transport, danger, record-button"/>
                     <Button fx:id="skipForwardButton" text="Skip Forward" onAction="#onSkipForward"
                             styleClass="dawg-button, size-transport"/>
-                    <Button fx:id="loopButton" text="Loop" onAction="#onToggleLoop"
+                    <Button fx:id="loopButton" text="Loop"
                             styleClass="dawg-button, size-transport, loop-button"/>
                 </HBox>
 

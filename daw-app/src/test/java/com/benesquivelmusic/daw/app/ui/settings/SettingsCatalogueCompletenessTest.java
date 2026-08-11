@@ -157,10 +157,10 @@ class SettingsCatalogueCompletenessTest {
                 .map(SettingDescriptor::id)
                 .toList();
         assertThat(ids).doesNotHaveDuplicates();
-        // 17 SettingsModel-backed + 3 manager-backed + 13 story-308
+        // 18 SettingsModel-backed + 3 manager-backed + 13 story-308
         // absorbed Recording/Backups + one per DawAction.
         assertThat(catalogue.descriptors())
-                .hasSize(33 + DawAction.values().length);
+                .hasSize(34 + DawAction.values().length);
     }
 
     @Test

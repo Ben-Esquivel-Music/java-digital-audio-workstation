@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.transport;
 
 import com.benesquivelmusic.daw.core.transport.Transport.ChangeKind;
+import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 
 import org.junit.jupiter.api.Test;
 
@@ -77,13 +78,13 @@ class CoreTransportSignalTest {
         }
         transport.addChangeListener(kind -> counts.get(kind).incrementAndGet());
 
+        transport.setPositionInBeats(4.0);// POSITION (immediate — transport stopped)
         transport.play();                 // STATE
         transport.setTempo(150.0);        // TEMPO
         transport.setTimeSignature(3, 4); // TIME_SIGNATURE
         transport.setLoopEnabled(true);   // LOOP
         transport.setLoopRegion(0.0, 8.0);// LOOP
-        transport.setPositionInBeats(4.0);// POSITION
-        transport.advancePosition(1.0);   // POSITION
+        transport.advancePosition(1.0);   // POSITION (engine-driven advance)
 
         assertThat(counts.get(ChangeKind.STATE).get()).isEqualTo(1);
         assertThat(counts.get(ChangeKind.TEMPO).get()).isEqualTo(1);
@@ -172,5 +173,145 @@ class CoreTransportSignalTest {
         Transport transport = new Transport();
         assertThatNullPointerException().isThrownBy(() -> transport.addChangeListener(null));
         assertThatNullPointerException().isThrownBy(() -> transport.removeChangeListener(null));
+    }
+
+    // ── Story 315 — pre/post-roll transitions and stop semantics fire the
+    //    same change signals as every other mutator ───────────────────────────
+
+    @Test
+    void playWithPreRollFiresPositionThenState() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(16.0);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.playWithPreRoll();
+
+        assertThat(fired)
+                .as("the pre-roll rewind moves the playhead and starts playback — "
+                        + "both slices signal (previously silent)")
+                .containsExactly(ChangeKind.POSITION, ChangeKind.STATE);
+    }
+
+    @Test
+    void playWithPreRollWithoutARewindFiresOnlyState() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(16.0);
+        // No pre-roll configured — equivalent to play(): no POSITION signal.
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.playWithPreRoll();
+
+        assertThat(fired).containsExactly(ChangeKind.STATE);
+    }
+
+    @Test
+    void requestStopEnteringThePostRollWindowFiresState() {
+        Transport transport = new Transport();
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        transport.record();
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        boolean enteredPostRoll = transport.requestStop();
+
+        assertThat(enteredPostRoll).isTrue();
+        assertThat(fired)
+                .as("entering the post-roll window (RECORDING → PLAYING + gating "
+                        + "flags) signals STATE (previously silent)")
+                .containsExactly(ChangeKind.STATE);
+    }
+
+    @Test
+    void finishPostRollFiresStateAndPositionWhenThePlayheadMoved() {
+        Transport transport = new Transport();
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        transport.setPositionInBeats(32.0);
+        transport.play();               // anchor = 32
+        transport.advancePosition(2.0); // 34
+        transport.requestStop();
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.finishPostRoll();
+
+        assertThat(fired)
+                .as("the deferred stop signals STATE and, because the playhead "
+                        + "rewound to the anchor, POSITION (previously silent)")
+                .containsExactly(ChangeKind.STATE, ChangeKind.POSITION);
+        assertThat(transport.getPositionInBeats()).isEqualTo(32.0);
+    }
+
+    @Test
+    void finishPostRollFiresOnlyStateWhenThePlayheadDidNotMove() {
+        Transport transport = new Transport();
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        transport.setPositionInBeats(32.0);
+        transport.play();   // anchor = 32; no advance — playhead already at anchor
+        transport.requestStop();
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.finishPostRoll();
+
+        assertThat(fired).containsExactly(ChangeKind.STATE);
+    }
+
+    @Test
+    void stopFiresStateAndPositionWhenThePlayheadRewindsToTheAnchor() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(16.0);
+        transport.play();
+        transport.advancePosition(1.0);
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.stop();
+
+        assertThat(fired).containsExactly(ChangeKind.STATE, ChangeKind.POSITION);
+        assertThat(transport.getPositionInBeats()).isEqualTo(16.0);
+    }
+
+    @Test
+    void stopWhileAlreadyStoppedFiresNothing() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(16.0);
+        transport.play();
+        transport.stop();
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.stop(); // idempotent no-op
+
+        assertThat(fired)
+                .as("stop() from STOPPED changes nothing, so it must not fire a "
+                        + "spurious signal")
+                .isEmpty();
+    }
+
+    @Test
+    void seekWhilePlayingFiresNothingUntilTheAdvanceAppliesIt() {
+        Transport transport = new Transport();
+        // Simulate the audio callback owning the clock — without a claim there
+        // is no driver to drain the queue, so the seek applies inline instead
+        // (story 315 review; see TransportRealTimeClockOwnershipTest).
+        transport.setRealTimeClockActive(true);
+        transport.play();
+        List<ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.setPositionInBeats(4.0); // queued — RT thread will apply it
+
+        assertThat(fired)
+                .as("a seek issued during playback is queued; POSITION fires only "
+                        + "when the RT advance applies it at the block boundary")
+                .isEmpty();
+
+        transport.advancePosition(0.5);
+
+        assertThat(fired).containsExactly(ChangeKind.POSITION);
+        assertThat(transport.getPositionInBeats()).isEqualTo(4.0);
     }
 }

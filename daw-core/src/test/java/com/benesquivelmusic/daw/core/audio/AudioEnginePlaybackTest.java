@@ -135,8 +135,10 @@ class AudioEnginePlaybackTest {
         MixerChannel mixerChannel = new MixerChannel("Track 1");
         mixer.addChannel(mixerChannel);
 
-        transport.play();
+        // Story 315: seek before play — a seek issued while PLAYING is queued
+        // for the next block boundary instead of applying inline.
         transport.setPositionInBeats(0.0);
+        transport.play();
         engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 
@@ -166,9 +168,11 @@ class AudioEnginePlaybackTest {
         MixerChannel mixerChannel = new MixerChannel("Track 1");
         mixer.addChannel(mixerChannel);
 
-        // Position far past the clip end
-        transport.play();
+        // Position far past the clip end. Story 315: seek before play — a
+        // seek issued while PLAYING is queued for the next block boundary
+        // instead of applying inline.
         transport.setPositionInBeats(1.0);
+        transport.play();
         engine.setGraph(transport, mixer, List.of(track));
         engine.start();
 

@@ -85,17 +85,38 @@ final class AudioImportController {
         if (selectedFile == null) {
             return;
         }
-        importAudioFile(selectedFile.toPath(), null);
+        // "Import at playhead": the committed transport position is the correct
+        // placement (a seek queued while rolling has not landed yet, so the
+        // committed read IS the playhead the user sees).
+        importAudioFile(selectedFile.toPath(), null,
+                deps.project().get().getTransport().getPositionInBeats());
     }
 
-    boolean importAudioFile(Path file, Track targetTrack) {
+    /**
+     * Imports {@code file} onto {@code targetTrack} (or a new audio track when
+     * {@code null}), placing the clip at {@code placementBeat}.
+     *
+     * <p>The placement beat is an explicit parameter — never round-tripped
+     * through {@link com.benesquivelmusic.daw.core.transport.Transport}. Story
+     * 315 made {@code setPositionInBeats} deferred while the transport is
+     * rolling (applied at the next audio-block boundary), so a
+     * seek-then-read-back would return the stale pre-seek position and place
+     * the clip at the playhead instead of the requested beat.</p>
+     *
+     * @param file          the audio file to import
+     * @param targetTrack   the track to place the clip on, or {@code null} to
+     *                      create a new audio track
+     * @param placementBeat the beat position where the clip should start
+     * @return {@code true} if the import succeeded, {@code false} if it failed
+     *         (the failure has already been notified to the user)
+     */
+    boolean importAudioFile(Path file, Track targetTrack, double placementBeat) {
         DawProject project = deps.project().get();
         AudioFileImporter importer = new AudioFileImporter(project);
-        double playheadBeat = project.getTransport().getPositionInBeats();
         boolean createdNewTrack = (targetTrack == null);
 
         try {
-            AudioImportResult result = importer.importFile(file, playheadBeat, targetTrack);
+            AudioImportResult result = importer.importFile(file, placementBeat, targetTrack);
 
             HBox trackItem = createdNewTrack
                     ? deps.trackStripController().get().addTrackToUI(result.track()) : null;
@@ -220,13 +241,11 @@ final class AudioImportController {
                         + canvas.getScrollXBeats();
                 dropBeat = Math.max(0.0, dropBeat);
 
-                double savedPlayhead = project.getTransport().getPositionInBeats();
-                project.getTransport().setPositionInBeats(dropBeat);
-                try {
-                    success = importAudioFile(filesToImport.getFirst(), targetTrack);
-                } finally {
-                    project.getTransport().setPositionInBeats(savedPlayhead);
-                }
+                // The drop beat is passed straight through — the transport is
+                // never touched for a drag-drop placement (story 315: a seek
+                // while rolling is deferred, so a seek/read-back round-trip
+                // would place the clip at the stale playhead position).
+                success = importAudioFile(filesToImport.getFirst(), targetTrack, dropBeat);
             }
 
             event.setDropCompleted(success);

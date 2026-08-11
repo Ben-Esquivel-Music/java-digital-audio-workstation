@@ -15,7 +15,8 @@ import java.util.List;
 
 /**
  * Applies live settings changes to the running DAW — UI scale, auto-save
- * interval, default tempo, and plugin scan paths.
+ * interval, default tempo, transport stop behaviour, and plugin scan
+ * paths.
  *
  * <p>Extracted from {@code MainController} to keep the main coordinator
  * free of settings propagation logic.</p>
@@ -40,6 +41,10 @@ final class LiveSettingsApplier {
                     currentConfig.maxCheckpoints(), currentConfig.enabled()));
         }
         project.getTransport().setTempo(model.getDefaultTempo());
+        // Story 315 — LIVE apply class: the transport reads the volatile
+        // flag on each Stop, so pushing it here is all a settings Apply
+        // needs (no engine re-arm).
+        project.getTransport().setReturnToStartOnStop(model.isReturnToStartOnStop());
         String newPluginPaths = model.getPluginScanPaths();
         if (!newPluginPaths.equals(previousPluginPaths) && !newPluginPaths.isBlank()) {
             List<Path> paths = new ArrayList<>();

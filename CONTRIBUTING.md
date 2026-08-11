@@ -109,9 +109,11 @@ work well:
   project state to enable/disable flags) + `Host` callback (action
   dispatch).
 - **`AnimationController`** → `IdleVisualizationAnimator`,
-  `TransportGlowAnimator`, `TimeTickerAnimator`, `ButtonPressAnimator`
+  `TransportGlowAnimator`, `ButtonPressAnimator`
   — the controller coordinates a single `AnimationTimer`; each animator
-  owns one concern.
+  owns one concern. (The former wall-clock time ticker was deleted by
+  story 315 — the time display binds the transport's beats→time
+  projection instead.)
 - **`EditorView`** → `MidiEditorView` + `AudioEditorView` (delegated
   per active selection).
 - **`ArrangementCanvas`** → `TrackLaneRenderer`,

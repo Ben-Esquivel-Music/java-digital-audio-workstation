@@ -67,6 +67,8 @@ class SettingDescriptorTest {
         setters.put("project.defaultTempo", v -> model.setDefaultTempo((Double) v));
         setters.put("project.useJournaledPersistence",
                 v -> model.setUseJournaledPersistence((Boolean) v));
+        setters.put("transport.returnToStartOnStop",
+                v -> model.setReturnToStartOnStop((Boolean) v));
         setters.put("appearance.uiScale", v -> model.setUiScale((Double) v));
         setters.put("plugins.scanPaths", v -> model.setPluginScanPaths((String) v));
         return setters;
@@ -96,6 +98,7 @@ class SettingDescriptorTest {
         candidates.put("project.defaultTempo",
                 Arrays.asList(20.0, 999.0, 19.9, 999.1, 1000.0));
         candidates.put("project.useJournaledPersistence", Arrays.asList(true, false));
+        candidates.put("transport.returnToStartOnStop", Arrays.asList(true, false));
         candidates.put("appearance.uiScale", Arrays.asList(0.5, 3.0, 0.49, 3.01));
         candidates.put("plugins.scanPaths", Arrays.asList("C:\\plugins;D:\\vst", null));
         return candidates;
@@ -116,9 +119,9 @@ class SettingDescriptorTest {
         SettingsModel model = new SettingsModel(isolatedNode());
         Map<String, Consumer<Object>> setters = settersById(model);
         Map<String, List<Object>> candidates = candidatesById();
-        // Non-empty guard: the table must cover all 17 SettingsModel-backed
+        // Non-empty guard: the table must cover all 18 SettingsModel-backed
         // descriptors, so a silently shrunken table cannot green-wash this.
-        assertThat(candidates).hasSize(17);
+        assertThat(candidates).hasSize(18);
         assertThat(candidates.keySet()).isEqualTo(setters.keySet());
 
         for (Map.Entry<String, List<Object>> entry : candidates.entrySet()) {
@@ -191,9 +194,11 @@ class SettingDescriptorTest {
         expectedById.put("project.defaultTempo", fresh.getDefaultTempo());
         expectedById.put("project.useJournaledPersistence",
                 fresh.isUseJournaledPersistence());
+        expectedById.put("transport.returnToStartOnStop",
+                fresh.isReturnToStartOnStop());
         expectedById.put("appearance.uiScale", fresh.getUiScale());
         expectedById.put("plugins.scanPaths", fresh.getPluginScanPaths());
-        assertThat(expectedById).hasSize(17);
+        assertThat(expectedById).hasSize(18);
 
         for (Map.Entry<String, Object> expected : expectedById.entrySet()) {
             assertThat(catalogue.byId(expected.getKey()).orElseThrow().defaultValue())

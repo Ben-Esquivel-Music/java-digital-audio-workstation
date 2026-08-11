@@ -288,8 +288,12 @@ class AudioEngineMidiPlaybackTest {
         midiTrack.setSoundFontAssignment(newAssignment);
         midiRenderer.prepareRenderer(midiTrack);
 
-        // Reset transport to beat 0 for a clean second render
+        // Reset transport to beat 0 for a clean second render. Story 315: a
+        // seek issued while PLAYING is queued for the next block boundary, so
+        // pause first to make the rewind land immediately, then resume.
+        transport.pause();
         transport.setPositionInBeats(0.0);
+        transport.play();
         output = new float[CHANNELS][BUFFER_SIZE];
         engine.processBlock(input, output, BUFFER_SIZE);
 

@@ -73,6 +73,38 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
     }
 
     @Override
+    public void pause() {
+        TransportState state = transport.getState();
+        // VALIDATE: pausing is only meaningful from PLAYING or RECORDING — a
+        // stale intent (the binder reads the async VM mirror, which can lag the
+        // authoritative state by one frame) is absorbed here.
+        if (state != TransportState.PLAYING && state != TransportState.RECORDING) {
+            return;
+        }
+        transport.pause();
+        // ANNOUNCE skipped: the story-283 TransportEvent vocabulary has no
+        // Paused event, and §5.1 permits skipping a phase. Do not invent one —
+        // pause is a UI-local fact until a consumer needs it on the bus.
+    }
+
+    /**
+     * Resolves the Play gesture from the AUTHORITATIVE transport state (story
+     * 315 review): PLAYING pauses, anything else starts. RECORDING therefore
+     * maps to {@link #start()}, whose VALIDATE rejects it — Stop stays the only
+     * way out of record. Resolving here rather than at the gesture layer is the
+     * whole point of {@link TogglePlayPauseCommand}: the binder's
+     * {@code TransportVM} mirror is a frame behind this read.
+     */
+    @Override
+    public void togglePlayPause() {
+        if (transport.getState() == TransportState.PLAYING) {
+            pause();
+        } else {
+            start();
+        }
+    }
+
+    @Override
     public void stop() {
         TransportState before = transport.getState();
         if (before == TransportState.STOPPED) {
@@ -121,8 +153,19 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
         return beatsToFrames(transport.getPositionInBeats());
     }
 
-    /** Converts a beat position to a non-negative sample-frame position at the current tempo. */
-    private long beatsToFrames(double beats) {
+    /**
+     * Converts a beat position to a non-negative sample-frame position at this
+     * handler's sample rate and the transport's current tempo — the <em>single</em>
+     * conversion behind every {@link TransportEvent} frame field (story 315
+     * review; {@code TransportController} held a verbatim copy plus its own
+     * {@code sampleRate} field, so a future correction — e.g. honouring the
+     * {@code TempoMap} instead of the initial tempo, which this still does not —
+     * would have had to be made twice).
+     *
+     * @param beats the beat position to convert
+     * @return the equivalent sample-frame position, never negative
+     */
+    public long beatsToFrames(double beats) {
         double secondsPerBeat = 60.0 / transport.getTempo();
         return Math.max(0L, Math.round(beats * secondsPerBeat * sampleRate));
     }

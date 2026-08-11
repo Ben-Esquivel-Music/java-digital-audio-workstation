@@ -13,6 +13,8 @@ package com.benesquivelmusic.daw.app.ui.vm.command;
  */
 public sealed interface TransportCommand
         permits StartTransportCommand,
+                PauseTransportCommand,
+                TogglePlayPauseCommand,
                 StopTransportCommand,
                 ToggleRecordCommand,
                 SetTempoCommand,

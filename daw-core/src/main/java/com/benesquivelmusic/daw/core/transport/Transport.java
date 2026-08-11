@@ -1,10 +1,13 @@
 package com.benesquivelmusic.daw.core.transport;
 
 import com.benesquivelmusic.daw.core.concurrent.ChangeNotifier;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
-import java.util.Objects;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -16,6 +19,45 @@ import java.util.function.Consumer;
  * <p>Tempo and time signature data are managed by an associated
  * {@link TempoMap}, which supports multiple tempo and time signature
  * changes along the timeline.</p>
+ *
+ * <h2>Threading contract (Audio Engine Wiring Design Book §4.1, §6.1)</h2>
+ *
+ * <p>The RT audio callback <em>owns the position advance</em>: it is the only
+ * production caller of {@link #advancePosition(double)} (from
+ * {@code RenderPipeline} at the end of each rendered block). The FX thread
+ * owns every other mutator (the control writes) and reaches the RT-owned
+ * position only via the defined seam — the <em>seek queue</em>:</p>
+ *
+ * <ul>
+ *   <li>{@code state}, {@code positionInBeats}, the {@link LoopWindow} and the
+ *       roll flags are {@code volatile}, so a value written on one thread is
+ *       never stale or torn when read on another (JMM safe publication).</li>
+ *   <li>The seek queue is armed only while an RT clock has explicitly
+ *       {@linkplain #setRealTimeClockActive(boolean) claimed} this transport —
+ *       i.e. while a live audio callback really is calling
+ *       {@link #advancePosition(double)} on it. Deferral without such a driver
+ *       would strand every seek forever (nothing would ever drain the queue),
+ *       so an unclaimed transport applies seeks inline exactly as it did
+ *       before the queue existed.</li>
+ *   <li>{@link #setPositionInBeats(double)} issued while the transport is
+ *       {@linkplain TransportState#PLAYING playing} or
+ *       {@linkplain TransportState#RECORDING recording} <em>and</em> claimed
+ *       does not race the RT read-modify-write: the target is published into a
+ *       single-slot, last-writer-wins seek queue and applied by the RT thread
+ *       exactly at the next block boundary — a seek is never lost, never
+ *       torn.</li>
+ *   <li>{@link #advancePosition(double)} is {@code @RealTimeSafe}: it drains
+ *       the seek queue (unconditionally — a claim released mid-flight must not
+ *       strand one), then advances via a lock-free {@link VarHandle} CAS loop
+ *       with a closed-form loop wrap — no locks, no allocation.</li>
+ *   <li>{@link #stop()} stores {@link TransportState#STOPPED} <em>before</em>
+ *       touching the position, and {@link #advancePosition(double)} re-reads
+ *       the state <em>after</em> its drain and after its successful CAS,
+ *       undoing an advance that landed past a stop. The state store alone is
+ *       not sufficient: a stop that writes no new position leaves the CAS
+ *       witness unchanged, so the CAS still succeeds (see
+ *       {@link #advancePosition(double)}).</li>
+ * </ul>
  *
  * <h2>Toolkit-neutral change notification</h2>
  *
@@ -41,6 +83,29 @@ public final class Transport {
     private static final double DEFAULT_LOOP_END = 16.0;
 
     /**
+     * Sentinel meaning "no seek pending" in {@link #pendingSeek}. The canonical
+     * NaN bit pattern can never collide with a real seek target because
+     * {@link #setPositionInBeats(double)} rejects NaN (and every other
+     * non-finite or negative value) before publishing into the queue.
+     */
+    private static final long NO_SEEK = Double.doubleToRawLongBits(Double.NaN);
+
+    /**
+     * {@link VarHandle} over {@link #positionInBeats} enabling the lock-free
+     * compare-and-set advance in {@link #advancePosition(double)}.
+     */
+    private static final VarHandle POSITION;
+
+    static {
+        try {
+            POSITION = MethodHandles.lookup()
+                    .findVarHandle(Transport.class, "positionInBeats", double.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    /**
      * The kind of transport slice that a change notification refers to.
      *
      * <p>An observer registered via {@link Transport#addChangeListener(Consumer)}
@@ -61,6 +126,22 @@ public final class Transport {
     }
 
     /**
+     * Immutable snapshot of the loop region — the enabled flag and both
+     * boundaries published as <em>one</em> {@code volatile} reference so the
+     * RT thread can read the trio consistently in a single load. Three
+     * separate fields could tear across a concurrent FX-thread update; a
+     * record cannot (story 315, Audio Engine Wiring Design Book §4.1).
+     *
+     * @param startInBeats loop start position in beats (&ge; 0)
+     * @param endInBeats   loop end position in beats (&gt; {@code startInBeats}
+     *                     for any window installed via
+     *                     {@link Transport#setLoopRegion(double, double)})
+     * @param enabled      whether loop mode is engaged
+     */
+    public record LoopWindow(boolean enabled, double startInBeats, double endInBeats) {
+    }
+
+    /**
      * Backs the toolkit-neutral {@code Consumer<ChangeKind>} change signal — the
      * register / unregister / lock-free notify mechanism lives in the shared
      * {@link ChangeNotifier}. {@link ChangeNotifier#fire} allocates nothing, so it
@@ -69,44 +150,149 @@ public final class Transport {
      */
     private final ChangeNotifier<ChangeKind> changes = new ChangeNotifier<>();
 
-    private TransportState state = TransportState.STOPPED;
-    private double positionInBeats = 0.0;
+    private volatile TransportState state = TransportState.STOPPED;
+    private volatile double positionInBeats = 0.0;
     private final TempoMap tempoMap = new TempoMap();
-    private boolean loopEnabled = false;
-    private double loopStartInBeats = DEFAULT_LOOP_START;
-    private double loopEndInBeats = DEFAULT_LOOP_END;
-    private PunchRegion punchRegion;
-    private PreRollPostRoll preRollPostRoll = PreRollPostRoll.DISABLED;
-    private boolean inPreRoll = false;
-    private boolean inPostRoll = false;
+    private volatile LoopWindow loopWindow =
+            new LoopWindow(false, DEFAULT_LOOP_START, DEFAULT_LOOP_END);
+    private volatile PunchRegion punchRegion;
+    private volatile PreRollPostRoll preRollPostRoll = PreRollPostRoll.DISABLED;
+    private volatile boolean inPreRoll = false;
+    private volatile boolean inPostRoll = false;
 
-    /** Starts playback from the current position. */
+    /**
+     * Single-slot, last-writer-wins seek queue: {@code doubleToRawLongBits} of
+     * the pending seek target, or {@link #NO_SEEK}. Written by the FX thread
+     * ({@link #setPositionInBeats(double)} while rolling <em>and</em> claimed),
+     * drained by the RT thread at the next {@link #advancePosition(double)}
+     * (and by {@link #pause()}, whose state flip halts the RT advance, and by
+     * {@link #setRealTimeClockActive(boolean) releasing the claim}). In
+     * production all control writes are FX-thread-serialized; the queue exists
+     * solely for the FX&harr;RT race.
+     */
+    private final AtomicLong pendingSeek = new AtomicLong(NO_SEEK);
+
+    /**
+     * Whether a real-time clock has claimed this transport — i.e. whether an
+     * audio callback is genuinely driving {@link #advancePosition(double)} on
+     * it right now (story 315 review; Audio Engine Wiring Design Book §6.1
+     * thread ownership).
+     *
+     * <p>This is the seek queue's arming condition. The transport state alone
+     * is <em>not</em> a truthful proxy for "something is advancing me":
+     * {@code AudioEngine.startAudioOutput()} returns early when no backend is
+     * configured ("playback without hardware output"), yet the UI still calls
+     * {@link #play()} — the transport is {@link TransportState#PLAYING} with
+     * nobody rendering. Deferring seeks in that state queues them behind a
+     * drain that never comes, freezing the playhead and the time display.
+     * Default {@code false}: an unclaimed transport applies every seek
+     * inline.</p>
+     */
+    private volatile boolean realTimeClockActive = false;
+
+    /**
+     * The position at which Play (or Record) last started — the anchor that
+     * {@link #stop()} returns the playhead to when
+     * {@link #isReturnToStartOnStop()} is set. Resume-from-pause re-anchors at
+     * the resume position.
+     */
+    private volatile double playStartAnchor = 0.0;
+
+    /**
+     * Whether {@link #stop()} returns the playhead to {@link #playStartAnchor}.
+     * The story-305 settings layer seeds this flag; the core holds only the
+     * flag itself (no preference persistence here).
+     */
+    private volatile boolean returnToStartOnStop = true;
+
+    /**
+     * Starts playback from the current position.
+     *
+     * <p>Records the current position as the play-start anchor that
+     * {@link #stop()} returns to. Calling {@code play()} after {@link #pause()}
+     * re-anchors at the resume position — Stop then returns to where playback
+     * last resumed, matching common DAW convention.</p>
+     */
     public void play() {
+        playStartAnchor = positionInBeats;
+        inPreRoll = false;
+        inPostRoll = false;
         state = TransportState.PLAYING;
-        inPreRoll = false;
-        inPostRoll = false;
         notifyChange(ChangeKind.STATE);
     }
 
-    /** Stops playback and resets the position to zero. */
+    /**
+     * Stops playback and returns the playhead to the play-start anchor (when
+     * {@link #isReturnToStartOnStop()} is set; otherwise the position is left
+     * where it was).
+     *
+     * <p>Idempotent: calling {@code stop()} while already
+     * {@link TransportState#STOPPED} is a no-op and fires no signal. The
+     * "second Stop rewinds to zero" behaviour is a <em>gesture-level</em>
+     * semantic owned by the UI layer, deliberately not implemented here —
+     * internal callers (e.g. {@code RecordingPipeline.stop()}) must be able to
+     * stop the transport without a follow-up UI stop yanking the playhead to
+     * zero.</p>
+     *
+     * <p>Ordering: the {@link TransportState#STOPPED} store happens
+     * <em>first</em> so a concurrent {@link #advancePosition(double)} sees the
+     * stop as early as possible. That store is the cheap half of the guarantee,
+     * not the whole of it — a stop that writes no new position (return-to-start
+     * disabled, or the playhead already on the anchor) leaves the RT thread's
+     * CAS witness intact, so the advance must re-read the state after its CAS
+     * and undo itself; see {@link #advancePosition(double)}. A queued seek is
+     * discarded — a stop supersedes it; otherwise the next Play's first block
+     * would apply a stale seek.</p>
+     */
     public void stop() {
+        if (state == TransportState.STOPPED) {
+            return;
+        }
         state = TransportState.STOPPED;
-        positionInBeats = 0.0;
         inPreRoll = false;
         inPostRoll = false;
+        pendingSeek.set(NO_SEEK);
+        boolean moved = false;
+        if (returnToStartOnStop) {
+            double anchor = playStartAnchor;
+            moved = positionInBeats != anchor;
+            positionInBeats = anchor;
+        }
         notifyChange(ChangeKind.STATE);
-    }
-
-    /** Pauses playback at the current position. */
-    public void pause() {
-        if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
-            state = TransportState.PAUSED;
-            notifyChange(ChangeKind.STATE);
+        if (moved) {
+            notifyChange(ChangeKind.POSITION);
         }
     }
 
-    /** Starts recording from the current position. */
+    /**
+     * Pauses playback at the current position.
+     *
+     * <p>Drains the seek queue: a seek issued during playback still lands even
+     * though the RT advance (which normally applies queued seeks) halts once
+     * the state flips to {@link TransportState#PAUSED}.</p>
+     */
+    public void pause() {
+        if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
+            state = TransportState.PAUSED;
+            long seek = pendingSeek.getAndSet(NO_SEEK);
+            boolean sought = seek != NO_SEEK;
+            if (sought) {
+                positionInBeats = Double.longBitsToDouble(seek);
+            }
+            notifyChange(ChangeKind.STATE);
+            if (sought) {
+                notifyChange(ChangeKind.POSITION);
+            }
+        }
+    }
+
+    /**
+     * Starts recording from the current position, anchoring the play-start
+     * position exactly as {@link #play()} does — {@link #stop()} after a
+     * recording pass returns the playhead to where the pass started.
+     */
     public void record() {
+        playStartAnchor = positionInBeats;
         state = TransportState.RECORDING;
         notifyChange(ChangeKind.STATE);
     }
@@ -121,13 +307,169 @@ public final class Transport {
         return positionInBeats;
     }
 
-    /** Sets the playback position in beats. */
+    /**
+     * Sets the playback position in beats.
+     *
+     * <p>The seek is deferred to the RT thread <em>only</em> when the transport
+     * is {@linkplain TransportState#PLAYING playing} or
+     * {@linkplain TransportState#RECORDING recording} <strong>and</strong> a
+     * real-time clock has {@linkplain #setRealTimeClockActive(boolean) claimed}
+     * it: the target is then published into the last-writer-wins seek queue and
+     * applied by the RT thread at the next block boundary (which fires
+     * {@link ChangeKind#POSITION}), and this method returns without firing. In
+     * every other case — stopped, paused, or rolling with nothing actually
+     * driving {@link #advancePosition(double)} — the position is stored
+     * immediately, any stale queued seek is discarded, and
+     * {@link ChangeKind#POSITION} fires here.</p>
+     *
+     * <p>Deferring without a driver would strand the seek forever: only the RT
+     * advance and the claim-release drain the queue, so a "playing" transport
+     * that no callback is rendering (e.g. the engine started with no audio
+     * backend configured) would freeze its playhead and its time display on
+     * every ruler click and skip.</p>
+     *
+     * <p>Relative seeks (skip forward/back, nudges) must compose against
+     * {@link #getSeekTargetInBeats()}, not this class's committed position —
+     * see that method.</p>
+     *
+     * @param positionInBeats the target position (must be finite and &ge; 0)
+     * @throws IllegalArgumentException if the position is negative, NaN, or
+     *                                  infinite
+     */
     public void setPositionInBeats(double positionInBeats) {
+        if (Double.isNaN(positionInBeats) || Double.isInfinite(positionInBeats)) {
+            throw new IllegalArgumentException("position must be finite: " + positionInBeats);
+        }
         if (positionInBeats < 0) {
             throw new IllegalArgumentException("position must not be negative: " + positionInBeats);
         }
+        TransportState current = state;
+        boolean rolling = current == TransportState.PLAYING
+                || current == TransportState.RECORDING;
+        if (rolling && realTimeClockActive) {
+            pendingSeek.set(Double.doubleToRawLongBits(positionInBeats));
+            // Re-read the claim after publishing (Dekker-style double check):
+            // setRealTimeClockActive(false) stores the flag BEFORE draining, so
+            // between the two volatile accesses at least one side observes the
+            // other and the seek is applied exactly once — never stranded by a
+            // stream that closed microseconds after the gate check passed.
+            if (!realTimeClockActive) {
+                drainPendingSeekInline();
+            }
+            return;
+        }
+        pendingSeek.set(NO_SEEK);
         this.positionInBeats = positionInBeats;
         notifyChange(ChangeKind.POSITION);
+    }
+
+    /**
+     * Returns the position that a <em>relative</em> seek must be computed
+     * from: the pending seek target when one is queued, otherwise
+     * {@link #getPositionInBeats()}.
+     *
+     * <p>{@link #getPositionInBeats()} returns the <em>committed</em> position,
+     * which does not move while a seek sits in the queue. Two skip-forward
+     * presses inside one audio block would therefore both compute
+     * {@code position + jump} from the same base, and the single-slot,
+     * last-writer-wins queue would keep only the second — the playhead would
+     * land one jump ahead instead of two. Composing against this method makes
+     * successive relative seeks accumulate:</p>
+     *
+     * <pre>{@code
+     * transport.setPositionInBeats(
+     *         Math.max(0.0, transport.getSeekTargetInBeats() + jumpInBeats));
+     * }</pre>
+     *
+     * <p>Absolute seeks (ruler click, marker jump, go-to-start) must keep using
+     * {@link #getPositionInBeats()} semantics — they do not read the base at
+     * all.</p>
+     *
+     * @return the queued seek target if one is pending, else the committed
+     *         position
+     */
+    public double getSeekTargetInBeats() {
+        long seek = pendingSeek.get();
+        return seek == NO_SEEK ? positionInBeats : Double.longBitsToDouble(seek);
+    }
+
+    /**
+     * Claims or releases the real-time clock for this transport — the explicit
+     * ownership seam behind the seek queue (story 315 review; Audio Engine
+     * Wiring Design Book §6.1).
+     *
+     * <p>Claim ({@code true}) when an audio callback that will call
+     * {@link #advancePosition(double)} on <em>this</em> transport really has
+     * started, and release ({@code false}) when it stops. The invariant is
+     * "claimed &hArr; a callback is actually driving this transport";
+     * {@code AudioEngine} maintains it across its stream lifecycle and hands
+     * the claim over on {@code setGraph}. Defaults to {@code false}, so a
+     * transport that nothing renders (unit tests, offline export, a playback
+     * start that found no audio backend) never defers a seek.</p>
+     *
+     * <p>Releasing drains any queued seek inline — applying it and firing
+     * {@link ChangeKind#POSITION} — so a seek issued microseconds before the
+     * stream closed is not silently lost. The flag is stored <em>before</em>
+     * the drain so a concurrent {@link #setPositionInBeats(double)} that
+     * already passed the gate check either sees the release (and applies
+     * inline itself) or lands in the queue in time for this drain.</p>
+     *
+     * @param active {@code true} to claim, {@code false} to release
+     */
+    public void setRealTimeClockActive(boolean active) {
+        if (active) {
+            this.realTimeClockActive = true;
+            return;
+        }
+        this.realTimeClockActive = false;
+        drainPendingSeekInline();
+    }
+
+    /**
+     * Returns whether a real-time clock currently
+     * {@linkplain #setRealTimeClockActive(boolean) claims} this transport.
+     *
+     * @return {@code true} while an audio callback is driving
+     *         {@link #advancePosition(double)} on this transport
+     */
+    public boolean isRealTimeClockActive() {
+        return realTimeClockActive;
+    }
+
+    /**
+     * Applies a queued seek on the calling (non-RT) thread and fires
+     * {@link ChangeKind#POSITION}; a no-op when the queue is empty. Used by
+     * the claim release and by the double check in
+     * {@link #setPositionInBeats(double)}.
+     */
+    private void drainPendingSeekInline() {
+        long seek = pendingSeek.getAndSet(NO_SEEK);
+        if (seek != NO_SEEK) {
+            this.positionInBeats = Double.longBitsToDouble(seek);
+            notifyChange(ChangeKind.POSITION);
+        }
+    }
+
+    /**
+     * Returns whether {@link #stop()} returns the playhead to the play-start
+     * anchor. Defaults to {@code true} (common DAW convention).
+     */
+    public boolean isReturnToStartOnStop() {
+        return returnToStartOnStop;
+    }
+
+    /**
+     * Configures whether {@link #stop()} returns the playhead to the
+     * play-start anchor ({@code true}, the default) or leaves it where
+     * playback halted ({@code false}).
+     *
+     * <p>The story-305 settings descriptor catalogue seeds this flag from the
+     * user preference; the core holds only the flag.</p>
+     *
+     * @param returnToStartOnStop the new behaviour
+     */
+    public void setReturnToStartOnStop(boolean returnToStartOnStop) {
+        this.returnToStartOnStop = returnToStartOnStop;
     }
 
     /**
@@ -199,25 +541,36 @@ public final class Transport {
         notifyChange(ChangeKind.TIME_SIGNATURE);
     }
 
+    /**
+     * Returns the current loop region and enabled flag as one immutable,
+     * consistently-published snapshot. RT-path readers must use this (a single
+     * volatile load) rather than the three individual getters, which could
+     * observe a half-updated region across a concurrent control write.
+     */
+    public LoopWindow getLoopWindow() {
+        return loopWindow;
+    }
+
     /** Returns {@code true} if loop mode is enabled. */
     public boolean isLoopEnabled() {
-        return loopEnabled;
+        return loopWindow.enabled();
     }
 
     /** Enables or disables loop mode. */
     public void setLoopEnabled(boolean loopEnabled) {
-        this.loopEnabled = loopEnabled;
+        LoopWindow current = this.loopWindow;
+        this.loopWindow = new LoopWindow(loopEnabled, current.startInBeats(), current.endInBeats());
         notifyChange(ChangeKind.LOOP);
     }
 
     /** Returns the loop start position in beats. */
     public double getLoopStartInBeats() {
-        return loopStartInBeats;
+        return loopWindow.startInBeats();
     }
 
     /** Returns the loop end position in beats. */
     public double getLoopEndInBeats() {
-        return loopEndInBeats;
+        return loopWindow.endInBeats();
     }
 
     /**
@@ -234,28 +587,128 @@ public final class Transport {
             throw new IllegalArgumentException(
                     "loop end must be greater than loop start: start=" + startInBeats + ", end=" + endInBeats);
         }
-        this.loopStartInBeats = startInBeats;
-        this.loopEndInBeats = endInBeats;
+        LoopWindow current = this.loopWindow;
+        this.loopWindow = new LoopWindow(current.enabled(), startInBeats, endInBeats);
         notifyChange(ChangeKind.LOOP);
     }
 
     /**
-     * Advances the playback position by the given number of beats.
+     * Advances the playback position by the given number of beats — the RT
+     * audio callback's per-block clock tick (sole production caller:
+     * {@code RenderPipeline}, at the end of each rendered block).
      *
-     * <p>When loop mode is enabled, the position wraps back to the loop start
-     * if it reaches or exceeds the loop end.</p>
+     * <p>Order of operations:</p>
+     * <ol>
+     *   <li><b>Seek drain.</b> A queued UI seek is applied <em>verbatim</em>
+     *       (the delta is NOT added: the just-rendered block was rendered from
+     *       the pre-seek position, so the seek takes effect exactly at this
+     *       block boundary) and {@link ChangeKind#POSITION} fires. The queue is
+     *       drained unconditionally — even if the
+     *       {@linkplain #setRealTimeClockActive(boolean) claim} was released
+     *       mid-flight — so a seek can never be stranded. The application
+     *       itself goes through the same guarded compare-and-set as the
+     *       advance, so a stop that lands mid-drain supersedes the seek instead
+     *       of the drain parking the playhead at a target the user cancelled by
+     *       stopping.</li>
+     *   <li><b>CAS advance.</b> Otherwise the position advances by
+     *       {@code deltaBeats} through a lock-free compare-and-set loop. When
+     *       loop mode is enabled and the new position reaches or passes the
+     *       loop end, it wraps to
+     *       {@code loopStart + ((next - loopEnd) % loopLength)} — the O(1)
+     *       closed form of repeated length subtraction, identical in result
+     *       and safe even for pathologically tiny loop regions.</li>
+     *   <li><b>Stop/pause back-off.</b> The state is checked three times: once
+     *       after the drain (a stop supersedes a seek that was already pulled
+     *       out of the queue), once before each CAS attempt (the cheap fast
+     *       path), and once <em>after</em> a successful CAS.</li>
+     * </ol>
+     *
+     * <h4>Why the post-CAS re-read is required</h4>
+     *
+     * <p>The pre-CAS state read alone does <em>not</em> establish "the playhead
+     * never moves past a stop". The tempting argument — {@link #stop()} stores
+     * {@link TransportState#STOPPED} before its anchor position, so a CAS retry
+     * provoked by that anchor store must already have observed the stopped
+     * state — only holds when the stop actually <em>changes</em> the position
+     * and thereby invalidates the CAS witness. It writes no new value when
+     * {@link #isReturnToStartOnStop()} is {@code false}, and none that matters
+     * when the playhead already sits on the anchor (Stop pressed right after
+     * Play). The witness then still matches, the CAS succeeds after the stop,
+     * and the playhead creeps one block past the stop point.</p>
+     *
+     * <p>The real guarantee is therefore: after a successful CAS the state is
+     * re-read, and if the transport is no longer rolling the advance is undone
+     * with a compensating {@code compareAndSet(next, current)} and nothing is
+     * fired. The compensation is deliberately conditional — if it fails,
+     * {@link #stop()} (or a seek drain) stored its own value in between, and
+     * that value is the authoritative one; either way an advance that has
+     * <em>observed</em> the stop neither keeps its value nor fires
+     * {@link ChangeKind#POSITION}. (An advance that completed before the stop
+     * became visible to it may still deliver its POSITION signal after the
+     * stop's {@link ChangeKind#STATE}; that is a benign late notification —
+     * the observer re-reads the position, which the stop has already
+     * corrected — not a playhead that moved past the stop.)</p>
      *
      * @param deltaBeats number of beats to advance (must be &ge; 0)
      */
+    @RealTimeSafe
     public void advancePosition(double deltaBeats) {
         if (deltaBeats < 0) {
             throw new IllegalArgumentException("deltaBeats must not be negative: " + deltaBeats);
         }
-        positionInBeats += deltaBeats;
-        if (loopEnabled && loopEndInBeats > loopStartInBeats) {
-            double loopLength = loopEndInBeats - loopStartInBeats;
-            while (positionInBeats >= loopEndInBeats) {
-                positionInBeats -= loopLength;
+        long seek = pendingSeek.getAndSet(NO_SEEK);
+        if (seek != NO_SEEK) {
+            TransportState afterDrain = state;
+            if (afterDrain != TransportState.PLAYING
+                    && afterDrain != TransportState.RECORDING) {
+                // A stop landed between the queue read and here: it supersedes
+                // the queued seek (stop() clears the queue, but this value is
+                // already out of it), so discard rather than park the playhead
+                // at a seek target the user cancelled by stopping.
+                return;
+            }
+            double previous = positionInBeats;
+            double target = Double.longBitsToDouble(seek);
+            if (!POSITION.compareAndSet(this, previous, target)) {
+                return; // stop() stored its anchor first — that value wins
+            }
+            TransportState afterStore = state;
+            if (afterStore != TransportState.PLAYING
+                    && afterStore != TransportState.RECORDING) {
+                // Same in-flight-stop hazard as the CAS advance below, and the
+                // same conditional undo: if stop() stored its own position
+                // after ours the compensation fails and its value stands.
+                POSITION.compareAndSet(this, target, previous);
+                return;
+            }
+            notifyChange(ChangeKind.POSITION);
+            return;
+        }
+        LoopWindow loop = loopWindow; // one consistent read outside the CAS loop
+        boolean wraps = loop.enabled() && loop.endInBeats() > loop.startInBeats();
+        while (true) {
+            double current = positionInBeats;
+            TransportState currentState = state;
+            if (currentState != TransportState.PLAYING
+                    && currentState != TransportState.RECORDING) {
+                return; // stop()/pause() landed — never advance a non-rolling transport
+            }
+            double next = current + deltaBeats;
+            if (wraps && next >= loop.endInBeats()) {
+                double loopLength = loop.endInBeats() - loop.startInBeats();
+                next = loop.startInBeats() + ((next - loop.endInBeats()) % loopLength);
+            }
+            if (POSITION.compareAndSet(this, current, next)) {
+                TransportState afterCas = state;
+                if (afterCas != TransportState.PLAYING
+                        && afterCas != TransportState.RECORDING) {
+                    // The stop landed while this CAS was in flight. Undo the
+                    // advance if it is still ours; if the CAS below fails the
+                    // stop wrote its own position afterwards and that wins.
+                    POSITION.compareAndSet(this, next, current);
+                    return;
+                }
+                break;
             }
         }
         notifyChange(ChangeKind.POSITION);
@@ -310,7 +763,8 @@ public final class Transport {
      * @return {@code true} if punch recording should gate input capture
      */
     public boolean isPunchEnabled() {
-        return punchRegion != null && punchRegion.enabled();
+        PunchRegion current = punchRegion;
+        return current != null && current.enabled();
     }
 
     // ── Pre-roll / Post-roll ───────────────────────────────────────────────
@@ -373,18 +827,31 @@ public final class Transport {
      * configured (or the configuration is disabled or {@code preBars == 0}),
      * this method is equivalent to {@link #play()}.
      *
+     * <p>The play-start anchor records the position <em>before</em> the
+     * pre-roll rewind: {@link #stop()} returns the playhead to where the user
+     * started Play, not to the rewound spot. The rewind itself is a direct
+     * volatile store — control writes happen while the transport is not
+     * rolling, so no seek queue is needed here.</p>
+     *
+     * <p>Fires {@link ChangeKind#POSITION} when the rewind actually moved the
+     * playhead, then {@link ChangeKind#STATE} — the same signals every other
+     * mutator fires, so view-models observe the transition immediately
+     * (story 315; previously this transition was silent).</p>
+     *
      * <p>The returned value is the number of beats that playback was rewound
      * by, which is useful for tests asserting sample-accurate pre-roll.</p>
      *
      * @return the number of beats by which the playhead was shifted back
      */
     public double playWithPreRoll() {
+        double startPosition = positionInBeats;
+        playStartAnchor = startPosition;
         double shift = 0.0;
         if (preRollPostRoll.enabled() && preRollPostRoll.preBars() > 0) {
             shift = preRollPostRoll.preRollBeats(getTimeSignatureNumerator());
-            double target = positionInBeats - shift;
+            double target = startPosition - shift;
             if (target < 0) {
-                shift = positionInBeats; // clamp
+                shift = startPosition; // clamp
                 target = 0.0;
             }
             positionInBeats = target;
@@ -394,6 +861,10 @@ public final class Transport {
         }
         inPostRoll = false;
         state = TransportState.PLAYING;
+        if (shift > 0) {
+            notifyChange(ChangeKind.POSITION);
+        }
+        notifyChange(ChangeKind.STATE);
         return shift;
     }
 
@@ -404,6 +875,9 @@ public final class Transport {
      * normal and call {@link #finishPostRoll()} once the post-roll duration
      * has elapsed. If no post-roll is configured, this method is equivalent
      * to {@link #stop()}.
+     *
+     * <p>Entering the post-roll window fires {@link ChangeKind#STATE}
+     * (story 315; previously this transition was silent).</p>
      *
      * @return {@code true} if the transport entered a post-roll window
      *         (still running), {@code false} if it stopped immediately
@@ -416,6 +890,7 @@ public final class Transport {
             inPreRoll = false;
             // Post-roll plays back, not records — drop out of RECORDING.
             state = TransportState.PLAYING;
+            notifyChange(ChangeKind.STATE);
             return true;
         }
         stop();
@@ -423,14 +898,18 @@ public final class Transport {
     }
 
     /**
-     * Completes a post-roll window started by {@link #requestStop()}, moving
-     * the transport to the {@link TransportState#STOPPED} state. Safe to call
-     * when not in post-roll (no-op).
+     * Completes a post-roll window started by {@link #requestStop()} — the
+     * deferred stop. Delegates to {@link #stop()}: the transport moves to
+     * {@link TransportState#STOPPED}, the playhead returns to the play-start
+     * anchor per {@link #isReturnToStartOnStop()} (story 315; previously this
+     * hard-reset to zero), any queued seek is discarded, and
+     * {@link ChangeKind#STATE} (plus {@link ChangeKind#POSITION} when the
+     * playhead moved) fires. Safe to call when the transport is not stopping:
+     * an already-stopped transport is left untouched (no signal).
      */
     public void finishPostRoll() {
         inPostRoll = false;
-        state = TransportState.STOPPED;
-        positionInBeats = 0.0;
+        stop();
     }
 
     /**

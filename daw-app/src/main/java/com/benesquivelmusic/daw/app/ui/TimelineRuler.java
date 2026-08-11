@@ -83,7 +83,14 @@ public final class TimelineRuler extends Pane {
     private static final double LOOP_HANDLE_HIT_ZONE = 8.0;
     private static final double PUNCH_HANDLE_WIDTH = 6.0;
 
-    private final TimelineRulerModel model;
+    /**
+     * The backing model — replaced wholesale by {@link #rebind(Transport)} on
+     * project switch (story 315 / story 314's epoch rule), never mutated in
+     * place: {@link TimelineRulerModel} holds its transport in a final field,
+     * so a fresh model per epoch is the only way to retarget, and every
+     * gesture/paint path reads {@code model.getTransport()} at call time.
+     */
+    private TimelineRulerModel model;
     private final Canvas canvas;
 
     private double pixelsPerBeat = BASE_PIXELS_PER_BEAT;
@@ -139,6 +146,38 @@ public final class TimelineRuler extends Pane {
     /** Returns the underlying ruler model. */
     public TimelineRulerModel getModel() {
         return model;
+    }
+
+    /**
+     * Retargets the ruler at a different project's transport (story 315; the
+     * story-314 epoch rule). The ruler is built once at startup but the
+     * project — and with it the {@link Transport} — is swapped on every
+     * File&nbsp;▸&nbsp;Open / New; without this rebind the ruler's loop
+     * gestures and tempo display would keep reading and writing the dead
+     * project's transport. A fresh {@link TimelineRulerModel} is installed
+     * (the core model is immutable with respect to its transport), the
+     * user's current {@link TimeDisplayMode} is carried over, and the ruler
+     * repaints from the new transport immediately.
+     *
+     * <p>Idempotent (story 314's epoch-guard style): rebinding to the transport
+     * the ruler already targets returns without reallocating the model or
+     * forcing a repaint. {@code rebuildViewModels()} runs at startup too — right
+     * after the ruler was built against that very transport — so without this
+     * fast path every launch threw away a just-built model and repainted an
+     * unchanged ruler.</p>
+     *
+     * @param transport the live project's transport; must not be {@code null}
+     * @throws NullPointerException if {@code transport} is {@code null}
+     */
+    public void rebind(Transport transport) {
+        Objects.requireNonNull(transport, "transport must not be null");
+        if (model.getTransport() == transport) {
+            return;
+        }
+        TimelineRulerModel fresh = new TimelineRulerModel(transport);
+        fresh.setDisplayMode(model.getDisplayMode());
+        this.model = fresh;
+        redraw();
     }
 
     /** Adds a listener that is called when the user clicks on the ruler to seek. */

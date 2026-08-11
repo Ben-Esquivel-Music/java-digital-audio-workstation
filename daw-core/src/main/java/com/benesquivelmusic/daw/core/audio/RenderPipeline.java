@@ -601,19 +601,95 @@ public final class RenderPipeline {
         if (beatsPerBar <= 0) {
             beatsPerBar = 4;
         }
-        double pos0 = transport.getPositionInBeats();
-        double pos1 = pos0 + numFrames / samplesPerBeat;
 
-        // Subdivision indices [firstIdx, lastIdxExclusive) whose
-        // beat-positions land inside [pos0, pos1). Inclusive on the
-        // left so a block that begins exactly on a beat fires its click
-        // at sample 0 (sample-accurate downbeat).
-        long firstIdx = (long) Math.ceil(pos0 * clicksPerBeat - 1e-9);
-        long lastIdxExclusive = (long) Math.ceil(pos1 * clicksPerBeat - 1e-9);
+        // Story 315 — split this block at the loop boundary the same way
+        // renderTracks does, so click scheduling is loop-aware: no click is
+        // scheduled for a beat at or beyond the loop end, and the wrapped-in
+        // click at the loop start fires within this block at its exact
+        // post-wrap sample offset. The loop trio is read once through the
+        // immutable LoopWindow record so a concurrent FX-thread loop edit
+        // cannot tear it mid-block. (A click's decaying body may still ring
+        // across the wrap boundary within the block/tail — that is the click's
+        // natural ring-out, not timeline content bleeding past the loop end.)
+        //
+        // Known pre-existing divergence: clicks are scheduled against the raw
+        // transport cursor (getPositionInBeats()), while renderTracks renders
+        // PDC-shifted content from getPositionInBeats() + renderOffsetBeats.
+        // The two split points therefore differ by the render offset whenever
+        // plugin latency is non-zero, so with a latent insert chain the click
+        // path and the track path wrap on different frames. That is the
+        // behaviour the pre-loop-aware code already had (clicks were always
+        // scheduled from the raw position); making the click grid follow the
+        // PDC-compensated cursor would change audible click timing and is a
+        // separate concern, deliberately not changed here.
+        Transport.LoopWindow loop = transport.getLoopWindow();
+        boolean loopActive = loop.enabled() && loop.endInBeats() > loop.startInBeats();
+        double segStartBeat = transport.getPositionInBeats();
+        int framesProcessed = 0;
 
+        while (framesProcessed < numFrames) {
+            int segFrames = numFrames - framesProcessed;
+            if (loopActive && segStartBeat < loop.endInBeats()) {
+                double beatsUntilLoopEnd = loop.endInBeats() - segStartBeat;
+                int framesUntilLoopEnd = (int) Math.ceil(beatsUntilLoopEnd * samplesPerBeat);
+                if (framesUntilLoopEnd > 0) {
+                    segFrames = Math.min(segFrames, framesUntilLoopEnd);
+                }
+            }
+            double segEndBeat = segStartBeat + segFrames / samplesPerBeat;
+            // Subdivision indices [firstIdx, lastIdxExclusive) whose
+            // beat-positions land inside this segment. Inclusive on the left
+            // so a segment that begins exactly on a beat fires its click at
+            // its first frame (sample-accurate downbeat / loop restart);
+            // capped at the loop end (when this segment runs up to it) so a
+            // grid position at or past the loop end never schedules from the
+            // pre-wrap segment — that beat belongs to the wrapped timeline and
+            // is emitted by the follow-up segment starting at the loop start.
+            // A position already past the loop end (transient until the next
+            // advance wraps it) schedules linearly, matching renderTracks.
+            double schedulingEndBeat = (loopActive && segStartBeat < loop.endInBeats())
+                    ? Math.min(segEndBeat, loop.endInBeats())
+                    : segEndBeat;
+            long firstIdx = (long) Math.ceil(segStartBeat * clicksPerBeat - 1e-9);
+            long lastIdxExclusive = (long) Math.ceil(schedulingEndBeat * clicksPerBeat - 1e-9);
+
+            scheduleSegmentClicks(metronome, router, cueBusManager, backend,
+                    numFrames, samplesPerBeat, clicksPerBeat, beatsPerBar,
+                    segStartBeat, framesProcessed, firstIdx, lastIdxExclusive);
+
+            framesProcessed += segFrames;
+            segStartBeat = segEndBeat;
+            if (loopActive && segStartBeat >= loop.endInBeats()) {
+                segStartBeat = loop.startInBeats() + (segStartBeat - loop.endInBeats());
+            }
+        }
+    }
+
+    /**
+     * Story 315 — schedules the metronome clicks of one loop-split segment:
+     * every subdivision index in {@code [firstIdx, lastIdxExclusive)} is
+     * generated, routed, and summed/written at the sample-accurate offset
+     * {@code segFrameOffset + round((beatPos − segStartBeat) × samplesPerBeat)}.
+     * The click body is clamped to the block (not the segment) and any
+     * overflow is parked in the click tail, exactly as before the loop-aware
+     * split — see {@link #mixMetronomeClicks} for the routing contract.
+     */
+    private void scheduleSegmentClicks(Metronome metronome,
+                                       MetronomeSideOutputRouter router,
+                                       CueBusManager cueBusManager,
+                                       AudioBackend backend,
+                                       int numFrames,
+                                       double samplesPerBeat,
+                                       int clicksPerBeat,
+                                       int beatsPerBar,
+                                       double segStartBeat,
+                                       int segFrameOffset,
+                                       long firstIdx,
+                                       long lastIdxExclusive) {
         for (long idx = firstIdx; idx < lastIdxExclusive; idx++) {
             double beatPos = idx / (double) clicksPerBeat;
-            int sampleOffset = (int) Math.round((beatPos - pos0) * samplesPerBeat);
+            int sampleOffset = segFrameOffset
+                    + (int) Math.round((beatPos - segStartBeat) * samplesPerBeat);
             if (sampleOffset < 0 || sampleOffset >= numFrames) {
                 continue;
             }
@@ -835,9 +911,13 @@ public final class RenderPipeline {
         // Offset ahead by the PDC system latency so that after compensation
         // delays, the output aligns with the transport cursor.
         double currentBeat = transport.getPositionInBeats() + renderOffsetBeats;
-        boolean loopEnabled = transport.isLoopEnabled();
-        double loopStart = transport.getLoopStartInBeats();
-        double loopEnd = transport.getLoopEndInBeats();
+        // Story 315 — read the loop trio through the immutable LoopWindow
+        // record (a single volatile load) so a concurrent FX-thread loop edit
+        // cannot tear the enabled/start/end triple mid-block.
+        Transport.LoopWindow loopWindow = transport.getLoopWindow();
+        boolean loopEnabled = loopWindow.enabled();
+        double loopStart = loopWindow.startInBeats();
+        double loopEnd = loopWindow.endInBeats();
         double loopLength = loopEnd - loopStart;
 
         int framesProcessed = 0;

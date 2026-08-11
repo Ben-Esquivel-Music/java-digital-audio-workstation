@@ -113,6 +113,87 @@ class TransportCommandEventTest {
     }
 
     @Test
+    void pauseCommandPausesAPlayingTransportAndAnnouncesNothing() {
+        Transport transport = new Transport();
+        transport.play();
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        AtomicReference<TransportEvent> any = new AtomicReference<>();
+        try (EventBus.Subscription sub = bus.on(TransportEvent.class,
+                DispatchMode.ON_CALLER_THREAD, any::set)) {
+
+            new PauseTransportCommand().execute(handler);
+
+            assertThat(transport.getState())
+                    .as("MUTATE: the command paused the transport")
+                    .isEqualTo(TransportState.PAUSED);
+            assertThat(any.get())
+                    .as("ANNOUNCE is deliberately skipped — the story-283 TransportEvent "
+                            + "vocabulary has no Paused event and §5.1 permits skipping a phase")
+                    .isNull();
+        }
+    }
+
+    @Test
+    void pauseCommandIsANoOpWhileStopped() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(7.0);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        new PauseTransportCommand().execute(handler);
+
+        assertThat(transport.getState())
+                .as("VALIDATE: a stale Pause intent (only PLAYING/RECORDING may pause) is absorbed")
+                .isEqualTo(TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(7.0);
+    }
+
+    @Test
+    void togglePlayPauseCommandFlipsPlayingAndPausedFromTheAuthoritativeState() {
+        // Story 315 review — the handler owns the decision, so the SAME command
+        // starts an idle transport and pauses a rolling one. Nothing about the
+        // command carries the choice.
+        Transport transport = new Transport();
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        new TogglePlayPauseCommand().execute(handler);
+        assertThat(transport.getState())
+                .as("a toggle against a STOPPED transport starts it")
+                .isEqualTo(TransportState.PLAYING);
+
+        new TogglePlayPauseCommand().execute(handler);
+        assertThat(transport.getState())
+                .as("a toggle against a PLAYING transport pauses it")
+                .isEqualTo(TransportState.PAUSED);
+
+        new TogglePlayPauseCommand().execute(handler);
+        assertThat(transport.getState())
+                .as("a toggle against a PAUSED transport resumes it")
+                .isEqualTo(TransportState.PLAYING);
+    }
+
+    @Test
+    void togglePlayPauseCommandIsANoOpWhileRecording() {
+        // Stop is the only way out of record: the toggle maps RECORDING to
+        // start, whose VALIDATE rejects it — the retired playOrPauseCommand()
+        // mapping preserved exactly.
+        Transport transport = new Transport();
+        transport.record();
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        AtomicReference<TransportEvent> any = new AtomicReference<>();
+        try (EventBus.Subscription sub = bus.on(TransportEvent.class,
+                DispatchMode.ON_CALLER_THREAD, any::set)) {
+
+            new TogglePlayPauseCommand().execute(handler);
+
+            assertThat(transport.getState()).isEqualTo(TransportState.RECORDING);
+            assertThat(any.get())
+                    .as("a dropped toggle announces nothing").isNull();
+        }
+    }
+
+    @Test
     void outOfRangeTempoIsRejectedInValidateAndNeverMutatesOrAnnounces() {
         Transport transport = new Transport();
         transport.setTempo(120.0);

@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
@@ -23,8 +25,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for the {@link TransportController} helper logic that can be exercised
  * without a live JavaFX scene or toolkit.
  *
- * <p>The {@code formatTime} tests have been moved to {@link AnimationControllerTest}
- * after the time-ticker logic was extracted into {@link AnimationController}.</p>
+ * <p>Story 315 — the controller now implements the story-290
+ * {@code TransportIntentHandler} ({@code start}/{@code pause}/{@code stop}
+ * replace the retired {@code onPlay}/{@code onStop} gesture entries), no
+ * longer receives time-ticker runnables or the time-display label (the display
+ * is bound by {@code TransportControlBinder.bindTimeDisplay}), and no longer
+ * holds the Stop/Loop buttons (their state is binder-driven).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class TransportControllerTest {
@@ -38,7 +44,23 @@ class TransportControllerTest {
         assertThat(java.lang.reflect.Modifier.isFinal(controllerClass.getModifiers())).isTrue();
     }
 
-    // ── Pre-Roll / Post-Roll (Story 134) ─────────────────────────────────────
+    @Test
+    void controllerNoLongerHoldsTheBinderOwnedButtonsOrTheTimeDisplay() {
+        // Story 315 — the Stop/Loop buttons and the time display are entirely
+        // binder-driven; the controller must hold no reference through which a
+        // stray disable/setText/pseudo-class poke could return.
+        assertThat(TransportController.class.getDeclaredFields())
+                .noneMatch(f -> f.getName().equals("stopButton")
+                        || f.getName().equals("loopButton")
+                        || f.getName().equals("timeDisplay"));
+    }
+
+    // ── Harness ──────────────────────────────────────────────────────────────
+
+    /** The play button handed to the controller, for enablement assertions. */
+    private Button playButton;
+    /** The REC indicator handed to the controller, for recording-lifecycle assertions. */
+    private Label recIndicator;
 
     private TransportController newController(DawProject project) throws Exception {
         AtomicReference<TransportController> ref = new AtomicReference<>();
@@ -48,24 +70,20 @@ class TransportControllerTest {
             UndoManager undo = new UndoManager();
             NotificationBar nb = new NotificationBar();
             Label statusLabel = new Label();
-            Label timeDisplay = new Label();
             Label statusBarLabel = new Label();
-            Label recIndicator = new Label();
-            Button play = new Button(), stop = new Button(),
-                    record = new Button(), loop = new Button();
+            recIndicator = new Label();
+            playButton = new Button();
+            Button record = new Button();
             // Story 293 — the Host is retired; pass direct functional deps.
-            // Values mirror the former stub: snap off, quarter grid, no count-in,
-            // no-op tickers / MIDI flash, and the former Host defaults for
+            // Values mirror the former stub: snap off, quarter grid, no
+            // count-in, no-op MIDI flash, and the former Host defaults for
             // latency compensation (true) and reported latency (UNKNOWN).
             ref.set(new TransportController(project, engine, undo, nb,
-                    statusLabel, timeDisplay, statusBarLabel, recIndicator,
-                    play, stop, record, loop,
+                    statusLabel, statusBarLabel, recIndicator,
+                    playButton, record,
                     () -> false,
                     () -> GridResolution.QUARTER,
                     () -> CountInMode.OFF,
-                    () -> { },
-                    () -> { },
-                    () -> { },
                     track -> { },
                     () -> true,
                     () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN));
@@ -230,7 +248,7 @@ class TransportControllerTest {
         TransportController controller = newController(project);
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
-            controller.onStop();
+            controller.stop();
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
@@ -241,10 +259,10 @@ class TransportControllerTest {
                 com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
     }
 
-    // ── Play toggles pause (Story 262 / UI Design Book §5.1) ────────────────
+    // ── Intent handlers (story 315: start/pause/stop replace onPlay/onStop) ──
 
     @Test
-    void onPlayWhileStoppedShouldStartPlayback() throws Exception {
+    void startWhileStoppedShouldStartPlayback() throws Exception {
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
         Transport transport = project.getTransport();
@@ -252,60 +270,273 @@ class TransportControllerTest {
                 com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
 
         TransportController controller = newController(project);
-        CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
-            try { controller.onPlay(); } catch (RuntimeException ignored) {
-                // Audio engine may fail to open in headless env — the
-                // transport state assertion is what matters.
-            }
-            latch.countDown();
-        });
-        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        runHandler(controller::start);
 
         assertThat(transport.getState()).isEqualTo(
                 com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
     }
 
     @Test
-    void onPlayWhilePlayingShouldPause() throws Exception {
+    void pauseWhilePlayingShouldPause() throws Exception {
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
         Transport transport = project.getTransport();
         transport.play();
-        assertThat(transport.getState()).isEqualTo(
-                com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
 
         TransportController controller = newController(project);
-        CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
-            try { controller.onPlay(); } catch (RuntimeException ignored) { }
-            latch.countDown();
-        });
-        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        runHandler(controller::pause);
 
         assertThat(transport.getState()).isEqualTo(
                 com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
     }
 
     @Test
-    void onPlayWhilePausedShouldResumePlayback() throws Exception {
+    void startWhilePausedShouldResumePlayback() throws Exception {
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
         Transport transport = project.getTransport();
         transport.play();
         transport.pause();
-        assertThat(transport.getState()).isEqualTo(
-                com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
 
         TransportController controller = newController(project);
-        CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
-            try { controller.onPlay(); } catch (RuntimeException ignored) { }
-            latch.countDown();
-        });
-        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        runHandler(controller::start);
 
         assertThat(transport.getState()).isEqualTo(
                 com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+    }
+
+    @Test
+    void startWhileRecordingIsANoOp() throws Exception {
+        // Stop is the only way out of record — the retired onPlay guard
+        // survives as the handler's VALIDATE phase.
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.record();
+
+        TransportController controller = newController(project);
+        runHandler(controller::start);
+
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.RECORDING);
+    }
+
+    @Test
+    void pauseWhileStoppedIsANoOp() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setPositionInBeats(3.0);
+
+        TransportController controller = newController(project);
+        runHandler(controller::pause);
+
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(3.0);
+    }
+
+    @Test
+    void togglePlayPauseFlipsPlayingAndPausedThroughTheProductionHandler() throws Exception {
+        // Story 315 review — the production handler resolves the Play gesture
+        // from the AUTHORITATIVE transport state and runs the engine +
+        // status-bar tails of its own start()/pause().
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+
+        TransportController controller = newController(project);
+
+        runHandler(controller::togglePlayPause);
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+
+        runHandler(controller::togglePlayPause);
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
+
+        runHandler(controller::togglePlayPause);
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+    }
+
+    @Test
+    void togglePlayPauseWhileRecordingIsANoOp() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.record();
+
+        TransportController controller = newController(project);
+        runHandler(controller::togglePlayPause);
+
+        assertThat(transport.getState())
+                .as("Stop is the only way out of record")
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.RECORDING);
+    }
+
+    // ── Stop semantics (story 315) ───────────────────────────────────────────
+
+    @Test
+    void stopReturnsToTheAnchorAndASecondStopRewindsToZero() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setPositionInBeats(5.0);
+
+        TransportController controller = newController(project);
+        runHandler(controller::start);          // anchors at beat 5
+        transport.advancePosition(3.0);         // the engine clock moves on
+        assertThat(transport.getPositionInBeats()).isEqualTo(8.0);
+
+        runHandler(controller::stop);           // first Stop → back to the anchor
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats())
+                .as("Stop returns the playhead to the play-start anchor").isEqualTo(5.0);
+
+        runHandler(controller::stop);           // second Stop → the gesture-level rewind
+        assertThat(transport.getPositionInBeats())
+                .as("a second Stop while already stopped rewinds to zero").isEqualTo(0.0);
+    }
+
+    @Test
+    void secondStopLeavesThePlayheadWhenReturnToStartOnStopIsOff() throws Exception {
+        // Story 315 review — the shipped transport.returnToStartOnStop
+        // description promises "when off, the playhead stays where it stopped".
+        // The double-stop gesture must honour it instead of always rewinding.
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setReturnToStartOnStop(false);
+        transport.setPositionInBeats(5.0);
+
+        TransportController controller = newController(project);
+        runHandler(controller::start);          // anchors at beat 5
+        transport.advancePosition(3.0);
+        runHandler(controller::stop);           // first Stop — no rewind
+        assertThat(transport.getPositionInBeats())
+                .as("with the preference off, Stop leaves the playhead").isEqualTo(8.0);
+
+        runHandler(controller::stop);           // second Stop — still no rewind
+        assertThat(transport.getPositionInBeats())
+                .as("with the preference off, a second Stop does not rewind to zero")
+                .isEqualTo(8.0);
+    }
+
+    @Test
+    void stopFinalizesAnActiveRecordingEvenWhenTheTransportIsAlreadyStopped() throws Exception {
+        // Story 315 review — RecordingPipeline.start() sets active = true at its
+        // top and only calls transport.record() at the very end, so a throw in
+        // between (session creation, temp-file I/O, engine start) leaves the
+        // pipeline ACTIVE while the transport is still STOPPED, and onRecord()
+        // does not catch it. This test reproduces exactly that end state — an
+        // active pipeline over a stopped transport — and asserts Stop finalizes
+        // rather than taking the double-stop rewind and leaking the recording
+        // sessions, the temp files, the per-track recording flags and the lit
+        // REC indicator forever.
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        Track armed = new Track("Armed", TrackType.AUDIO);
+        armed.setArmed(true);
+        project.addTrack(armed);
+        transport.setPositionInBeats(5.0);
+
+        TransportController controller = newController(project);
+        runHandler(controller::toggleRecord);   // pipeline active; transport RECORDING
+        assertThat(armed.isRecording())
+                .as("the pipeline armed the track").isTrue();
+        assertThat(recIndicator.isVisible())
+                .as("the REC indicator lit when recording started").isTrue();
+
+        // The aborted-start state: the transport never made it to RECORDING (or
+        // an internal caller already stopped it) while the pipeline runs on.
+        transport.stop();
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(armed.isRecording())
+                .as("the pipeline is still active — nothing has finalized it").isTrue();
+
+        runHandler(controller::stop);
+
+        assertThat(armed.isRecording())
+                .as("Stop finalized the recording instead of rewinding past it").isFalse();
+        assertThat(recIndicator.isVisible())
+                .as("the REC indicator is cleared by the finalize").isFalse();
+        assertThat(transport.getPositionInBeats())
+                .as("the finalize path does not take the double-stop rewind to zero")
+                .isEqualTo(5.0);
+    }
+
+    @Test
+    void twoSkipForwardsWhileTheRealTimeClockIsClaimedLandTwoJumpsAhead() throws Exception {
+        // Story 315 review — a relative seek must compose against the PENDING
+        // seek target. While the RT clock owns the transport the committed
+        // position does not move until the next block boundary, so composing
+        // against getPositionInBeats() made two presses inside one block both
+        // add the jump to the same base; the single-slot, last-writer-wins queue
+        // then kept only the second and the playhead landed one jump ahead.
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.play();
+        transport.setRealTimeClockActive(true);   // an audio callback owns the clock
+        double jump = 4.0 * transport.getTimeSignatureNumerator(); // 4 bars of 4/4 = 16 beats
+
+        TransportController controller = newController(project);
+        runHandler(controller::onSkipForward);
+        runHandler(controller::onSkipForward);
+
+        assertThat(transport.getSeekTargetInBeats())
+                .as("two Skip Forwards inside one audio block queue two jumps")
+                .isEqualTo(2.0 * jump);
+
+        // The block boundary applies the queued target.
+        transport.advancePosition(0.0);
+        assertThat(transport.getPositionInBeats())
+                .as("the drained seek lands two jumps ahead").isEqualTo(2.0 * jump);
+    }
+
+    @Test
+    void stopButtonIsNeverDisabledByUpdateStatus() throws Exception {
+        // Story 315 — Stop must stay clickable while STOPPED (the double-stop
+        // rewind gesture). The controller no longer even receives the Stop
+        // button (structural test above); updateStatus only gates Play.
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        TransportController controller = newController(project);
+
+        runHandler(controller::updateStatus);   // state == STOPPED
+        assertThat(playButton.isDisable())
+                .as("Play stays enabled while stopped").isFalse();
+
+        project.getTransport().record();
+        runHandler(controller::updateStatus);
+        assertThat(playButton.isDisable())
+                .as("Play is disabled during RECORDING (Stop is the only way out)")
+                .isTrue();
+    }
+
+    /** Runs a handler method on the FX thread, tolerating headless audio-engine failures. */
+    private static void runHandler(Runnable handler) throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        Platform.runLater(() -> {
+            try {
+                handler.run();
+            } catch (RuntimeException e) {
+                // Audio engine may fail to open in a headless environment; the
+                // transport-state assertions are what matter.
+            } catch (Throwable t) {
+                thrown.set(t);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        if (thrown.get() instanceof Error e) {
+            throw e;
+        }
     }
 }

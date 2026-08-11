@@ -266,7 +266,8 @@ public final class RecordingPipeline {
             track.setRecording(false);
         }
 
-        // Stop the transport (this resets positionInBeats to 0)
+        // Stop the transport (story 315: this returns the playhead to the
+        // record-start anchor, per Transport.isReturnToStartOnStop()).
         transport.stop();
 
         // In loop-record mode, finalize the in-flight loop lap as the last

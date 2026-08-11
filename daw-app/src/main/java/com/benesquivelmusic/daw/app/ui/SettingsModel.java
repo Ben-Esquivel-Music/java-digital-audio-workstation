@@ -37,6 +37,9 @@ public final class SettingsModel {
     private static final String KEY_DEFAULT_TEMPO = "project.defaultTempo";
     private static final String KEY_USE_JOURNALED_PERSISTENCE = "project.useJournaledPersistence";
 
+    // ── Transport keys (story 315) ───────────────────────────────────────────
+    private static final String KEY_RETURN_TO_START_ON_STOP = "transport.returnToStartOnStop";
+
     // ── Appearance keys ──────────────────────────────────────────────────────
     private static final String KEY_UI_SCALE = "appearance.uiScale";
     private static final String KEY_THEME_ID = "appearance.themeId";
@@ -106,6 +109,16 @@ public final class SettingsModel {
     static final boolean DEFAULT_APPLY_LATENCY_COMPENSATION = true;
 
     /**
+     * Default for the "Return to start on stop" toggle (story 315).
+     * {@code true} matches the common DAW convention the transport
+     * implements: Stop returns the playhead to the play-start anchor,
+     * and a second Stop returns it to zero. Users who prefer the
+     * playhead to stay where playback halted disable it from the
+     * Settings dialog.
+     */
+    static final boolean DEFAULT_RETURN_TO_START_ON_STOP = true;
+
+    /**
      * Default SRC quality tier. {@code MEDIUM} matches the story 126
      * recommendation: 32-tap polyphase FIR with ≥ 60 dB stop-band
      * attenuation — well above audible thresholds while staying CPU-cheap
@@ -153,6 +166,7 @@ public final class SettingsModel {
     private int autoSaveIntervalSeconds;
     private double defaultTempo;
     private boolean useJournaledPersistence;
+    private boolean returnToStartOnStop;
     private double uiScale;
     private String themeId;
     private String pluginScanPaths;
@@ -194,6 +208,8 @@ public final class SettingsModel {
         defaultTempo = prefs.getDouble(KEY_DEFAULT_TEMPO, DEFAULT_TEMPO);
         useJournaledPersistence = prefs.getBoolean(
                 KEY_USE_JOURNALED_PERSISTENCE, DEFAULT_USE_JOURNALED_PERSISTENCE);
+        returnToStartOnStop = prefs.getBoolean(
+                KEY_RETURN_TO_START_ON_STOP, DEFAULT_RETURN_TO_START_ON_STOP);
         uiScale = prefs.getDouble(KEY_UI_SCALE, DEFAULT_UI_SCALE);
         themeId = prefs.get(KEY_THEME_ID, DEFAULT_THEME_ID);
         pluginScanPaths = prefs.get(KEY_PLUGIN_SCAN_PATHS, DEFAULT_PLUGIN_SCAN_PATHS);
@@ -559,6 +575,34 @@ public final class SettingsModel {
         prefs.putBoolean(KEY_USE_JOURNALED_PERSISTENCE, use);
     }
 
+    // ── Transport (story 315) ────────────────────────────────────────────────
+
+    /**
+     * Returns whether Stop returns the playhead to the play-start anchor —
+     * the "Return to start on stop" toggle in the Settings dialog
+     * (story 315). Defaults to {@code true}. The value is pushed to the
+     * live {@code Transport} by {@code LiveSettingsApplier} on Apply and
+     * seeded into every freshly loaded project's transport.
+     *
+     * @return {@code true} when Stop returns the playhead to where
+     *         playback last started
+     */
+    public boolean isReturnToStartOnStop() {
+        return returnToStartOnStop;
+    }
+
+    /**
+     * Sets the return-to-start-on-stop toggle and persists the change.
+     * When disabled, the playhead stays where playback stopped.
+     *
+     * @param returnToStart {@code true} to return the playhead to the
+     *                      play-start anchor on Stop
+     */
+    public void setReturnToStartOnStop(boolean returnToStart) {
+        this.returnToStartOnStop = returnToStart;
+        prefs.putBoolean(KEY_RETURN_TO_START_ON_STOP, returnToStart);
+    }
+
     // ── Appearance ───────────────────────────────────────────────────────────
 
     /** Returns the UI scale factor. */
@@ -679,6 +723,7 @@ public final class SettingsModel {
         setAutoSaveIntervalSeconds(DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
         setDefaultTempo(DEFAULT_TEMPO);
         setUseJournaledPersistence(DEFAULT_USE_JOURNALED_PERSISTENCE);
+        setReturnToStartOnStop(DEFAULT_RETURN_TO_START_ON_STOP);
         setUiScale(DEFAULT_UI_SCALE);
         setThemeId(DEFAULT_THEME_ID);
         setPluginScanPaths(DEFAULT_PLUGIN_SCAN_PATHS);

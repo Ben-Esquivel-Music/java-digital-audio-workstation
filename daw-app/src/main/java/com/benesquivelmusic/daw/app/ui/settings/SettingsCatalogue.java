@@ -41,9 +41,9 @@ import java.util.function.Predicate;
  * behaviour — and is the data source for the §6.1 search index
  * (story 306) and the §6.3 import/export profile (story 309).</p>
  *
- * <h2>Descriptor population ({@code 33 + DawAction.values().length})</h2>
+ * <h2>Descriptor population ({@code 34 + DawAction.values().length})</h2>
  * <ul>
- *   <li>17 {@code SettingsModel}-backed descriptors — id = the
+ *   <li>18 {@code SettingsModel}-backed descriptors — id = the
  *       {@code Preferences} key. Defaults are read from a scratch
  *       {@code SettingsModel} over an in-memory
  *       {@link TransientPreferences} node (an empty node makes every
@@ -212,6 +212,7 @@ public final class SettingsCatalogue {
         int defaultAutoSaveInterval = scratch.getAutoSaveIntervalSeconds();
         double defaultTempo = scratch.getDefaultTempo();
         boolean defaultJournaledPersistence = scratch.isUseJournaledPersistence();
+        boolean defaultReturnToStartOnStop = scratch.isReturnToStartOnStop();
         double defaultUiScale = scratch.getUiScale();
         String defaultScanPaths = scratch.getPluginScanPaths();
 
@@ -353,7 +354,17 @@ public final class SettingsCatalogue {
                 modelDescriptor(messages, "project.defaultTempo",
                         List.of("bpm"),
                         Scope.PROJECT_DEFAULTS, ApplyClass.LIVE, ControlKind.TEXT,
-                        defaultTempo, scratch::setDefaultTempo)));
+                        defaultTempo, scratch::setDefaultTempo),
+                // Story 315 — LIVE: the transport reads the volatile flag on
+                // each Stop, no engine re-arm. APPLICATION: one preference
+                // governing every project's transport (seeded per load,
+                // pushed live by LiveSettingsApplier), not a stored
+                // per-project default.
+                modelDescriptor(messages, "transport.returnToStartOnStop",
+                        List.of("stop", "return", "playhead", "anchor"),
+                        Scope.APPLICATION, ApplyClass.LIVE, ControlKind.TOGGLE,
+                        defaultReturnToStartOnStop,
+                        scratch::setReturnToStartOnStop)));
 
         Group projectAutosave = new Group("autosave",
                 msg(messages, "settings.group.project.autosave"), List.of(

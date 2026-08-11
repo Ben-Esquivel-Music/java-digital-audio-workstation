@@ -18,6 +18,27 @@ public interface TransportIntentHandler {
     /** Begins playback from the current position (§5.2 "Start / Play"). */
     void start();
 
+    /**
+     * Pauses playback at the current position (§5.2; story 315 — the pause half
+     * of Play-toggles-pause). Only meaningful while PLAYING or RECORDING; the
+     * production handler's VALIDATE phase absorbs a stale intent.
+     */
+    void pause();
+
+    /**
+     * Toggles between playing and paused — the Play gesture, resolved
+     * <em>here</em> rather than at the gesture layer (story 315 review;
+     * §2.8 "one path").
+     *
+     * <p>The handler owns the transport, so it is the only participant that can
+     * read the authoritative state; a binder deciding from the async
+     * {@code TransportVM} mirror can be a frame stale and raise a Start that
+     * VALIDATE then drops. Implementations start when not PLAYING and pause
+     * when PLAYING; a RECORDING transport maps to start, which VALIDATE rejects
+     * (Stop is the only way out of record).</p>
+     */
+    void togglePlayPause();
+
     /** Stops playback and returns the playhead to the anchor (§5.2 "Stop"). */
     void stop();
 

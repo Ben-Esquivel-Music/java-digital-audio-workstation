@@ -1133,6 +1133,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
             case "project.autoSaveIntervalSeconds" -> model.getAutoSaveIntervalSeconds();
             case "project.defaultTempo" -> model.getDefaultTempo();
             case "project.useJournaledPersistence" -> model.isUseJournaledPersistence();
+            case "transport.returnToStartOnStop" -> model.isReturnToStartOnStop();
             case "appearance.uiScale" -> model.getUiScale();
             case "plugins.scanPaths" -> model.getPluginScanPaths();
             // Last-published overlay first: after an Apply the managers
@@ -2058,6 +2059,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
             case "project.defaultTempo" -> applyDefaultTempo(value);
             case "project.useJournaledPersistence" ->
                     model.setUseJournaledPersistence((Boolean) value);
+            case "transport.returnToStartOnStop" ->
+                    model.setReturnToStartOnStop((Boolean) value);
             case "appearance.uiScale" -> model.setUiScale(((Number) value).doubleValue());
             case "plugins.scanPaths" -> {
                 if (value != null) {

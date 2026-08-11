@@ -460,6 +460,9 @@ public final class AudioEngine {
         }
         streamOpen = true;
         streamPaused = false;
+        // Only here — after the backend really opened AND started a stream that
+        // calls processBlock — is the transport's clock genuinely RT-driven.
+        claimTransportClock();
 
         LOG.info("Audio output started via " + backend.getBackendName()
                 + " (output device: " + outputDeviceIndex + ")");
@@ -482,6 +485,9 @@ public final class AudioEngine {
             }
             streamOpen = false;
             streamPaused = false;
+            // No callback drives the transport any more. Releasing also drains
+            // a seek queued microseconds before the stream closed.
+            releaseTransportClock();
         }
     }
 
@@ -537,6 +543,7 @@ public final class AudioEngine {
         }
         streamOpen = true;
         streamPaused = false;
+        claimTransportClock();
 
         LOG.info("Audio input/output started via " + backend.getBackendName()
                 + " (input device: " + inputDeviceIndex + ")");
@@ -551,6 +558,7 @@ public final class AudioEngine {
         if (backend != null && streamOpen && !streamPaused) {
             backend.stopStream();
             streamPaused = true;
+            releaseTransportClock();
         }
     }
 
@@ -577,6 +585,50 @@ public final class AudioEngine {
         if (backend != null && streamOpen && streamPaused) {
             backend.startStream();
             streamPaused = false;
+            claimTransportClock();
+        }
+    }
+
+    // ── Real-time clock ownership (story 315 review) ─────────────────────
+
+    /**
+     * Returns {@code true} while a backend stream is open <em>and</em> running,
+     * i.e. while {@link #processBlock(float[][], float[][], int)} is genuinely
+     * being called by the backend and therefore driving
+     * {@link Transport#advancePosition(double)}.
+     *
+     * <p>This — not {@link Transport#getState()} — is the truth condition
+     * behind {@link Transport#setRealTimeClockActive(boolean)}. The transport
+     * can be {@code PLAYING} with no stream at all:
+     * {@link #startAudioOutput(int)} returns early when no backend is
+     * configured, and the UI starts the transport regardless (honest playing
+     * states are story 317).</p>
+     */
+    private boolean callbackIsDriving() {
+        return streamOpen && !streamPaused;
+    }
+
+    /**
+     * Claims the RT clock on the currently published transport. Called only
+     * from the paths that have just started a backend stream registered on
+     * {@link #processBlock(float[][], float[][], int)}.
+     */
+    private void claimTransportClock() {
+        Transport transport = this.graph.transport();
+        if (transport != null) {
+            transport.setRealTimeClockActive(true);
+        }
+    }
+
+    /**
+     * Releases the RT clock on the currently published transport, draining any
+     * seek queued while the claim was held. Called from every path that stops
+     * or pauses the stream.
+     */
+    private void releaseTransportClock() {
+        Transport transport = this.graph.transport();
+        if (transport != null) {
+            transport.setRealTimeClockActive(false);
         }
     }
 
@@ -603,6 +655,12 @@ public final class AudioEngine {
      * re-installed (story 314 review) so the audio thread never renders
      * through an unprepared mixer.</p>
      *
+     * <p>The RT-clock claim (story 315 review) is handed over with the graph:
+     * the outgoing transport is released — draining any seek it had queued —
+     * and the incoming one is claimed only when a backend stream is actually
+     * running, so an {@link EngineBinder} rebind mid-playback leaves exactly
+     * one claimed transport, and a rebind with no stream open leaves none.</p>
+     *
      * <p>Lifecycle-thread only — never call from the audio callback.</p>
      *
      * @param transport the transport, or {@code null} to disable playback rendering
@@ -613,7 +671,14 @@ public final class AudioEngine {
     public void setGraph(Transport transport, Mixer mixer, List<Track> tracks) {
         synchronized (graphLock) {
             handOffMixer(this.graph.mixer(), mixer);
+            Transport outgoing = this.graph.transport();
+            if (outgoing != null && outgoing != transport) {
+                outgoing.setRealTimeClockActive(false);
+            }
             this.graph = new EngineGraph(transport, mixer, tracks);
+            if (transport != null) {
+                transport.setRealTimeClockActive(callbackIsDriving());
+            }
         }
     }
 
