@@ -40,12 +40,26 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       past the stop point.</li>
  * </ol>
  *
+ * <p>A third family (Copilot review of story 315) is the <b>ABA on the
+ * position word</b>: the advance's compensating compare-and-set inferred
+ * ownership from the position <em>value</em>, so when a stop or pause stored
+ * the very bits the RT CAS had just written (a queued seek onto the play-start
+ * anchor, a loop wrap landing exactly on the anchor, a seek that pause()
+ * commits itself), the compensation "succeeded" and rolled the transition's
+ * authoritative position back to the pre-advance value. The fix makes the RT
+ * thread the explicit owner of the position word for the duration of an
+ * advance ({@code advancesInFlight}) and makes {@code stop()}/{@code pause()}
+ * store their state first and then await retirement before touching the
+ * queue or the position — so no transition store can ever interleave between
+ * an RT CAS and its compensation.</p>
+ *
  * <p>Each test drives the hazard directly: a long-lived "RT" thread and the
  * test thread meet at a {@link CyclicBarrier} and then fire
- * {@code advancePosition} and {@code stop()} simultaneously, for a bounded
- * iteration count with no sleeps. The asserted invariants hold for
- * <em>every</em> interleaving of the fixed implementation — a failure is
- * always a real violation, never a timing artefact.</p>
+ * {@code advancePosition} and the transition ({@code stop()} or
+ * {@code pause()}) simultaneously, for a bounded iteration count with no
+ * sleeps. The asserted invariants hold for <em>every</em> interleaving of the
+ * fixed implementation — a failure is always a real violation, never a timing
+ * artefact.</p>
  */
 class TransportStopVersusAdvanceRaceTest {
 
@@ -54,6 +68,7 @@ class TransportStopVersusAdvanceRaceTest {
 
     private static final double ANCHOR = 50.0;
     private static final double BLOCK_BEATS = 1.0;
+    private static final double SEEK_TARGET = 70.0;
 
     @Test
     void aStopThatLandsDuringASeekDrainSupersedesTheQueuedSeek() throws Exception {
@@ -64,7 +79,7 @@ class TransportStopVersusAdvanceRaceTest {
             transport.setPositionInBeats(ANCHOR);
             transport.play();                     // anchor = 50
             transport.setPositionInBeats(1_000.0); // queued behind the RT drain
-        }, (transport, iteration) -> {
+        }, Transport::stop, (transport, iteration) -> {
             if (transport.getState() != TransportState.STOPPED) {
                 violations.add("iteration " + iteration + ": transport is not stopped");
             }
@@ -96,7 +111,7 @@ class TransportStopVersusAdvanceRaceTest {
             transport.setLoopRegion(0.0, ANCHOR + 0.5);
             transport.setPositionInBeats(ANCHOR);
             transport.play(); // anchor = 50 = the current position
-        }, (transport, iteration) -> {
+        }, Transport::stop, (transport, iteration) -> {
             if (transport.getPositionInBeats() != ANCHOR) {
                 violations.add("iteration " + iteration
                         + ": the playhead advanced past the stop to "
@@ -130,7 +145,7 @@ class TransportStopVersusAdvanceRaceTest {
                             null, transport.getPositionInBeats());
                 }
             });
-        }, (transport, iteration) -> {
+        }, Transport::stop, (transport, iteration) -> {
             Double announced = positionAtStopAnnouncement.get();
             if (announced == null) {
                 violations.add("iteration " + iteration + ": stop() fired no STATE signal");
@@ -146,14 +161,125 @@ class TransportStopVersusAdvanceRaceTest {
         assertThat(violations).isEmpty();
     }
 
+    // ── ABA on the position word (Copilot review of story 315) ─────────────
+
     /**
-     * Runs {@link #ITERATIONS} rounds of "one RT advance versus one stop",
-     * fired simultaneously from two threads meeting at a barrier.
+     * ABA #1 — seek drain versus a stop onto the play-start anchor. The queued
+     * seek targets the anchor itself: the RT drain CASes
+     * {@code previous -> anchor}, {@code stop()} stores that same anchor
+     * (identical bits), and a value-inferred compensation
+     * {@code CAS(anchor -> previous)} then "succeeds" and leaves a
+     * <em>stopped</em> transport one block away from its anchor. With explicit
+     * RT ownership the stop awaits the advance's retirement, so the playhead
+     * must always rest on the anchor.
+     */
+    @Test
+    void aQueuedSeekOntoTheAnchorNeverLeavesAStoppedTransportOffItsAnchor() throws Exception {
+        Queue<String> violations = new ConcurrentLinkedQueue<>();
+
+        race(transport -> {
+            transport.setRealTimeClockActive(true);
+            transport.setPositionInBeats(ANCHOR);
+            transport.play();                     // anchor = 50
+            transport.advancePosition(1.0);       // position 51, nothing queued
+            transport.setPositionInBeats(ANCHOR); // queued; target == anchor
+        }, Transport::stop, (transport, iteration) -> {
+            if (transport.getState() != TransportState.STOPPED) {
+                violations.add("iteration " + iteration + ": transport is not stopped");
+            }
+            if (transport.getPositionInBeats() != ANCHOR) {
+                violations.add("iteration " + iteration
+                        + ": a stopped transport must rest on its anchor " + ANCHOR
+                        + ", but the playhead sits at " + transport.getPositionInBeats());
+            }
+        });
+
+        assertThat(violations).isEmpty();
+    }
+
+    /**
+     * ABA #2 — seek drain versus a pause that commits the same seek. The RT
+     * drain CASes {@code previous -> target}; {@code pause()} peeks the still
+     * queued target, stores it (identical bits) and clears the queue; the RT
+     * thread then re-reads {@code PAUSED} and a value-inferred compensation
+     * {@code CAS(target -> previous)} "succeeds" — the seek is lost with no
+     * trace left in the queue. With explicit RT ownership the pause awaits the
+     * advance's retirement, so the seek lands exactly once, whether the RT
+     * drain or the pause commits it.
+     */
+    @Test
+    void aSeekThatPauseCommitsConcurrentlyWithTheRtDrainIsNeverLost() throws Exception {
+        Queue<String> violations = new ConcurrentLinkedQueue<>();
+
+        race(transport -> {
+            transport.setRealTimeClockActive(true);
+            transport.setPositionInBeats(ANCHOR);
+            transport.play();
+            transport.advancePosition(1.0);            // position 51, nothing queued
+            transport.setPositionInBeats(SEEK_TARGET); // queued behind the RT drain
+        }, Transport::pause, (transport, iteration) -> {
+            if (transport.getState() != TransportState.PAUSED) {
+                violations.add("iteration " + iteration + ": transport is not paused");
+            }
+            if (transport.getPositionInBeats() != SEEK_TARGET) {
+                violations.add("iteration " + iteration
+                        + ": the seek to " + SEEK_TARGET + " was lost; the playhead sits at "
+                        + transport.getPositionInBeats());
+            }
+            if (transport.getSeekTargetInBeats() != SEEK_TARGET) {
+                violations.add("iteration " + iteration
+                        + ": the seek target must read " + SEEK_TARGET + " but reads "
+                        + transport.getSeekTargetInBeats());
+            }
+        });
+
+        assertThat(violations).isEmpty();
+    }
+
+    /**
+     * ABA #3 — CAS advance whose loop wrap lands exactly on the anchor, versus
+     * a stop. Loop {@code [50, 52)}, position 51, block 1.0: the wrap yields
+     * {@code next == 50 == anchor}. The RT CAS {@code 51 -> 50} succeeds,
+     * {@code stop()} stores the anchor 50 (identical bits), and a
+     * value-inferred compensation {@code CAS(50 -> 51)} "succeeds" — the
+     * stopped transport sits at 51. With explicit RT ownership the stop awaits
+     * retirement first, so the playhead must always rest on the anchor.
+     */
+    @Test
+    void aLoopWrapLandingExactlyOnTheAnchorNeverLeavesAStoppedTransportOffItsAnchor() throws Exception {
+        Queue<String> violations = new ConcurrentLinkedQueue<>();
+
+        race(transport -> {
+            transport.setLoopWindow(true, ANCHOR, ANCHOR + 2.0);
+            transport.setPositionInBeats(ANCHOR);
+            transport.play();               // anchor = 50
+            transport.advancePosition(1.0); // position 51; next block wraps to exactly 50
+        }, Transport::stop, (transport, iteration) -> {
+            if (transport.getState() != TransportState.STOPPED) {
+                violations.add("iteration " + iteration + ": transport is not stopped");
+            }
+            if (transport.getPositionInBeats() != ANCHOR) {
+                violations.add("iteration " + iteration
+                        + ": a stopped transport must rest on its anchor " + ANCHOR
+                        + ", but the playhead sits at " + transport.getPositionInBeats());
+            }
+        });
+
+        assertThat(violations).isEmpty();
+    }
+
+    /**
+     * Runs {@link #ITERATIONS} rounds of "one RT advance versus one transition
+     * ({@code stop()} or {@code pause()})", fired simultaneously from two
+     * threads meeting at a barrier.
      *
-     * @param arrange  prepares a fresh transport for the round
-     * @param assertion runs on the test thread once both operations completed
+     * @param arrange    prepares a fresh transport for the round
+     * @param transition the rolling-to-non-rolling transition the test thread
+     *                   fires against the RT advance
+     * @param assertion  runs on the test thread once both operations completed
      */
     private static void race(Consumer<Transport> arrange,
+                             Consumer<Transport> transition,
                              RoundAssertion assertion) throws Exception {
         AtomicReference<Transport> current = new AtomicReference<>();
         CyclicBarrier ready = new CyclicBarrier(2);
@@ -196,7 +322,7 @@ class TransportStopVersusAdvanceRaceTest {
             await(ready);
             await(fire);
             rendezvous(gate);
-            transport.stop();
+            transition.accept(transport);
             await(done);
             assertion.check(transport, i);
         }

@@ -3,10 +3,14 @@ package com.benesquivelmusic.daw.core.transport;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -232,6 +236,55 @@ class TransportTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> transport.setLoopRegion(8.0, 4.0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest(name = "setLoopRegion({0}, {1})")
+    @MethodSource("nonFiniteLoopBounds")
+    void setLoopRegionRejectsNonFiniteBoundsAndLeavesTheWindowUntouched(double start, double end) {
+        // Story 315 review: comparisons with NaN are all false and a finite
+        // start with +Infinity passes end > start, so the ordering checks alone
+        // let non-finite bounds through into the wrap arithmetic. Reject them
+        // first, leave the installed window alone, fire nothing.
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopRegion(start, end))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("finite");
+
+        assertThat(transport.getLoopWindow()).isSameAs(before);
+        assertThat(fired).as("no LOOP signal on rejection").isEmpty();
+    }
+
+    @ParameterizedTest(name = "setLoopWindow(true, {0}, {1})")
+    @MethodSource("nonFiniteLoopBounds")
+    void setLoopWindowRejectsNonFiniteBoundsAndLeavesTheWindowUntouched(double start, double end) {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopWindow(true, start, end))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("finite");
+
+        assertThat(transport.getLoopWindow()).isSameAs(before);
+        assertThat(fired).as("no LOOP signal on rejection").isEmpty();
+    }
+
+    /** NaN / +Infinity / -Infinity, for the start and for the end. */
+    static Stream<Arguments> nonFiniteLoopBounds() {
+        return Stream.of(
+                Arguments.of(Double.NaN, 16.0),
+                Arguments.of(Double.POSITIVE_INFINITY, 16.0),
+                Arguments.of(Double.NEGATIVE_INFINITY, 16.0),
+                Arguments.of(4.0, Double.NaN),
+                Arguments.of(4.0, Double.POSITIVE_INFINITY),
+                Arguments.of(4.0, Double.NEGATIVE_INFINITY));
     }
 
     @Test

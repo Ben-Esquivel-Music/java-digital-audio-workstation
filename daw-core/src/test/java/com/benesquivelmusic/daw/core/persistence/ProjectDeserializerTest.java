@@ -111,6 +111,72 @@ class ProjectDeserializerTest {
     }
 
     @Test
+    void shouldKeepDefaultLoopBoundsButApplyTheFlagWhenSavedLoopStartIsNaN() throws IOException {
+        // Story 315 review: Double.parseDouble accepts "NaN"/"Infinity", and
+        // the transport now rejects non-finite bounds — a malformed file must
+        // still load, keeping the defaults and applying only the flag.
+        String xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <daw-project version="1">
+                  <metadata>
+                    <name>NaN Loop Start</name>
+                  </metadata>
+                  <transport tempo="120.0" loop-enabled="true" loop-start="NaN" loop-end="8.0"/>
+                </daw-project>
+                """;
+        Transport defaults = new Transport();
+
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTransport().getLoopWindow())
+                .as("flag applied, bounds left at the transport defaults")
+                .isEqualTo(new Transport.LoopWindow(
+                        true, defaults.getLoopStartInBeats(), defaults.getLoopEndInBeats()));
+    }
+
+    @Test
+    void shouldKeepDefaultLoopBoundsButApplyTheFlagWhenSavedLoopEndIsInfinite() throws IOException {
+        String xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <daw-project version="1">
+                  <metadata>
+                    <name>Infinite Loop End</name>
+                  </metadata>
+                  <transport tempo="120.0" loop-enabled="true" loop-start="4.0" loop-end="Infinity"/>
+                </daw-project>
+                """;
+        Transport defaults = new Transport();
+
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTransport().getLoopWindow())
+                .as("flag applied, bounds left at the transport defaults")
+                .isEqualTo(new Transport.LoopWindow(
+                        true, defaults.getLoopStartInBeats(), defaults.getLoopEndInBeats()));
+    }
+
+    @Test
+    void shouldIgnoreANonFiniteSavedPositionAndStillLoad() throws IOException {
+        // setPositionInBeats throws on non-finite input, so without the guard a
+        // file with position="Infinity" aborted the whole load.
+        String xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <daw-project version="1">
+                  <metadata>
+                    <name>Infinite Position</name>
+                  </metadata>
+                  <transport tempo="120.0" position="Infinity"/>
+                </daw-project>
+                """;
+
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTransport().getPositionInBeats())
+                .as("non-finite position ignored; playhead stays at the default")
+                .isEqualTo(0.0);
+    }
+
+    @Test
     void shouldDeserializeTracks() throws IOException {
         DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track audio = original.createAudioTrack("Vocals");

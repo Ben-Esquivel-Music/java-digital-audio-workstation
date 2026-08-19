@@ -366,18 +366,21 @@ public final class ProjectDeserializer {
         // Loop: flag and bounds go out as ONE window when the parsed bounds
         // are valid (story 315 review — an enable-then-region pair would let
         // the RT clock see the flag over the previous bounds); malformed
-        // bounds keep the transport's defaults and only the flag is applied.
+        // bounds — including "NaN"/"Infinity", which Double.parseDouble
+        // accepts but the transport rejects — keep the transport's defaults
+        // and only the flag is applied.
         boolean loopEnabled = parseBooleanAttr(elem, "loop-enabled");
         double loopStart = parseDoubleAttr(elem, "loop-start", 0.0);
         double loopEnd = parseDoubleAttr(elem, "loop-end", 16.0);
-        if (loopStart >= 0 && loopEnd > loopStart) {
+        if (Double.isFinite(loopStart) && Double.isFinite(loopEnd)
+                && loopStart >= 0 && loopEnd > loopStart) {
             transport.setLoopWindow(loopEnabled, loopStart, loopEnd);
         } else {
             transport.setLoopEnabled(loopEnabled);
         }
 
         double position = parseDoubleAttr(elem, "position", 0.0);
-        if (position >= 0) {
+        if (Double.isFinite(position) && position >= 0) {
             transport.setPositionInBeats(position);
         }
 

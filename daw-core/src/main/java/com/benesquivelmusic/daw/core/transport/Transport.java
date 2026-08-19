@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -56,14 +57,45 @@ import java.util.function.Consumer;
  *       pop-then-commit drain had exactly that gap, collapsing two relative
  *       seeks that straddled it into one). The drain ignores the claim flag —
  *       a claim released mid-flight must not strand a seek.</li>
- *   <li>{@link #stop()} stores {@link TransportState#STOPPED} <em>before</em>
- *       touching the position, and {@link #advancePosition(double)} re-reads
- *       the state <em>after</em> its seek peek and after its successful CAS,
- *       undoing an advance that landed past a stop. The state store alone is
- *       not sufficient: a stop that writes no new position leaves the CAS
- *       witness unchanged, so the CAS still succeeds (see
- *       {@link #advancePosition(double)}).</li>
+ *   <li>{@link #stop()} and {@link #pause()} store their non-rolling state
+ *       <em>before</em> touching the queue or the position, and
+ *       {@link #advancePosition(double)} re-reads the state <em>after</em> its
+ *       seek peek and after its successful CAS, undoing an advance that landed
+ *       past the transition. The state store alone is not sufficient: an
+ *       advance whose CAS lands before it observes the new state would
+ *       otherwise keep its block when the transition writes no position of
+ *       its own (see {@link #advancePosition(double)}). The
+ *       position-ownership protocol below is what makes that undo sound.</li>
  * </ul>
+ *
+ * <h2>Position ownership protocol</h2>
+ *
+ * <p>The RT thread <em>owns the position word</em> for the whole of an
+ * advance: {@link #advancePosition(double)} increments
+ * {@code advancesInFlight} (an {@link AtomicInteger}, full fence) before it
+ * reads the state, peeks the queue, or touches the position, and decrements
+ * it only after its CAS — and any compensating CAS — has retired. The two
+ * rolling-to-non-rolling transitions, {@link #stop()} and {@link #pause()},
+ * <em>acquire</em> the word by storing their new state first and then
+ * awaiting {@code advancesInFlight == 0}; only then do they clear or drain the
+ * queue and store the position. This is a Dekker pairing: the advance
+ * increments before reading the state, the transition stores the state
+ * before reading the counter, so either the advance observes the non-rolling
+ * state and leaves without a CAS, or the transition observes the counter and
+ * waits until that advance has fully retired (committed or compensated).
+ * Consequently no transition store can ever interleave between an RT CAS and
+ * its compensation, and the compensation's outcome never depends on the
+ * position's <em>value</em> bits — the ABA where a stop/pause stored the very
+ * bits the RT CAS had just written (a seek onto the anchor, a loop wrap
+ * landing on the anchor, a seek that pause() itself commits) and a
+ * value-inferred undo then rolled the transition's authoritative position
+ * back is impossible by construction (story 315 review). Every other control
+ * write (seek while not rolling, loop, tempo, pre-roll) is FX-thread
+ * serialized with those transitions, and the RT thread never blocks,
+ * allocates, or parks inside the owned window, so the transition's wait is a
+ * handful of instructions long. Change listeners fire only <em>outside</em>
+ * the owned window, so a listener that calls {@code stop()} or
+ * {@code pause()} on the RT thread can never await itself.</p>
  *
  * <h2>Toolkit-neutral change notification</h2>
  *
@@ -95,6 +127,15 @@ public final class Transport {
      * non-finite or negative value) before publishing into the queue.
      */
     private static final long NO_SEEK = Double.doubleToRawLongBits(Double.NaN);
+
+    /**
+     * Number of busy spins {@link #awaitNoAdvanceInFlight()} performs before
+     * falling back to {@link Thread#yield()} per iteration. An in-flight
+     * advance retires within a handful of instructions, so the spin phase
+     * covers the common case; the yield phase only matters when the RT thread
+     * was preempted mid-advance on a loaded single core.
+     */
+    private static final int SPINS_BEFORE_YIELD = 1_000;
 
     /**
      * {@link VarHandle} over {@link #positionInBeats} enabling the lock-free
@@ -144,9 +185,9 @@ public final class Transport {
      * <em>define</em> a new loop without the RT thread ever observing the
      * enabled flag paired with the previous bounds (story 315 review).</p>
      *
-     * @param startInBeats loop start position in beats (&ge; 0)
-     * @param endInBeats   loop end position in beats (&gt; {@code startInBeats}
-     *                     for any window installed via
+     * @param startInBeats loop start position in beats (finite, &ge; 0)
+     * @param endInBeats   loop end position in beats (finite, &gt;
+     *                     {@code startInBeats} for any window installed via
      *                     {@link Transport#setLoopWindow(boolean, double, double)}
      *                     or {@link Transport#setLoopRegion(double, double)})
      * @param enabled      whether loop mode is engaged
@@ -184,10 +225,29 @@ public final class Transport {
      * clearing the slot, and clears via {@code compareAndSet} on the peeked
      * value — so {@link #getSeekTargetInBeats()} never observes an
      * empty-queue-but-uncommitted gap, and a newer target published mid-drain
-     * survives for the next drain. In production all control writes are
-     * FX-thread-serialized; the queue exists solely for the FX&harr;RT race.
+     * survives for the next drain. {@link #stop()} and {@link #pause()} touch
+     * the slot only after {@linkplain #awaitNoAdvanceInFlight() awaiting} the
+     * retirement of any in-flight RT drain, so a transition never clears or
+     * commits a slot that an RT drain is mid-way through committing. In
+     * production all control writes are FX-thread-serialized; the queue exists
+     * solely for the FX&harr;RT race.
      */
     private final AtomicLong pendingSeek = new AtomicLong(NO_SEEK);
+
+    /**
+     * Number of {@link #advancePosition(double)} calls currently owning the
+     * position word (see the class-level position ownership protocol). In
+     * production there is a single RT writer, so this is effectively a flag;
+     * it is a counter rather than a boolean so that multi-threaded tests that
+     * drive several advances at once stay correct. Incremented (full fence)
+     * before the advance reads any state and decremented after its CAS and
+     * compensation have retired; {@link #stop()} and {@link #pause()} store
+     * their state and then {@linkplain #awaitNoAdvanceInFlight() spin} until
+     * it reads zero before touching the queue or the position. Increment and
+     * decrement are allocation-free and lock-free, so the RT path stays
+     * {@code @RealTimeSafe}.
+     */
+    private final AtomicInteger advancesInFlight = new AtomicInteger();
 
     /**
      * Whether a real-time clock has claimed this transport — i.e. whether an
@@ -254,13 +314,19 @@ public final class Transport {
      *
      * <p>Ordering: the {@link TransportState#STOPPED} store happens
      * <em>first</em> so a concurrent {@link #advancePosition(double)} sees the
-     * stop as early as possible. That store is the cheap half of the guarantee,
-     * not the whole of it — a stop that writes no new position (return-to-start
-     * disabled, or the playhead already on the anchor) leaves the RT thread's
-     * CAS witness intact, so the advance must re-read the state after its CAS
-     * and undo itself; see {@link #advancePosition(double)}. A queued seek is
-     * discarded — a stop supersedes it; otherwise the next Play's first block
-     * would apply a stale seek.</p>
+     * stop as early as possible; the stop then
+     * {@linkplain #awaitNoAdvanceInFlight() awaits} the retirement of any
+     * advance that was already inside its owned window, and only afterwards
+     * clears the queue and stores the anchor. The state store is the cheap
+     * half of the guarantee, not the whole of it — an advance whose CAS landed
+     * before it observed the stop would otherwise keep its block when the stop
+     * writes no position of its own (return-to-start disabled), so the advance
+     * must re-read the state after its CAS and undo itself; the await is what makes
+     * that undo sound, because it guarantees this stop's own position store
+     * can never land between the RT CAS and its compensation (see
+     * {@link #advancePosition(double)} and the class-level ownership
+     * protocol). A queued seek is discarded — a stop supersedes it; otherwise
+     * the next Play's first block would apply a stale seek.</p>
      */
     public void stop() {
         if (state == TransportState.STOPPED) {
@@ -269,6 +335,7 @@ public final class Transport {
         state = TransportState.STOPPED;
         inPreRoll = false;
         inPostRoll = false;
+        awaitNoAdvanceInFlight();
         pendingSeek.set(NO_SEEK);
         boolean moved = false;
         if (returnToStartOnStop) {
@@ -288,10 +355,23 @@ public final class Transport {
      * <p>Drains the seek queue: a seek issued during playback still lands even
      * though the RT advance (which normally applies queued seeks) halts once
      * the state flips to {@link TransportState#PAUSED}.</p>
+     *
+     * <p>Ordering: the {@link TransportState#PAUSED} store happens
+     * <em>first</em>, then the pause
+     * {@linkplain #awaitNoAdvanceInFlight() awaits} the retirement of any
+     * advance already inside its owned window, and only afterwards peeks,
+     * commits and clears the queue. An RT drain that observed the pause after
+     * its CAS rolls its commit back and leaves the slot untouched, so this
+     * drain always finds the target still queued; an RT drain that committed
+     * while still rolling cleared the slot, so this drain finds nothing to do.
+     * Either way the seek lands exactly once and is never lost — the await is
+     * what rules out the pause's own commit landing between the RT CAS and
+     * its compensation (class-level ownership protocol).</p>
      */
     public void pause() {
         if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
             state = TransportState.PAUSED;
+            awaitNoAdvanceInFlight();
             // Commit-before-clear (see getSeekTargetInBeats): peek the target,
             // store it, and only then CAS the slot empty, so the target stays
             // observable until the position includes it. A deliberate side
@@ -308,6 +388,35 @@ public final class Transport {
             notifyChange(ChangeKind.STATE);
             if (sought) {
                 notifyChange(ChangeKind.POSITION);
+            }
+        }
+    }
+
+    /**
+     * Blocks the calling control thread until no {@link #advancePosition(double)}
+     * owns the position word — the acquire half of the class-level position
+     * ownership protocol. Called by {@link #stop()} and {@link #pause()}
+     * <em>after</em> their volatile state store (Dekker: the advance
+     * increments the counter before reading the state, so an advance that
+     * starts after this store sees the non-rolling state and never CASes,
+     * while one that started before it is counted here and waited out).
+     *
+     * <p>The wait is the length of a handful of CAS instructions: the RT
+     * thread never blocks, allocates, parks, or runs listeners inside its
+     * owned window. It spins with {@link Thread#onSpinWait()} and, after a
+     * bounded number of spins, yields per iteration so an RT thread that was
+     * preempted on a loaded single core can run and retire. Never called from
+     * inside an owned window (by construction — no callbacks fire there), so
+     * it cannot self-deadlock.</p>
+     */
+    private void awaitNoAdvanceInFlight() {
+        int spins = 0;
+        while (advancesInFlight.get() > 0) {
+            if (spins < SPINS_BEFORE_YIELD) {
+                spins++;
+                Thread.onSpinWait();
+            } else {
+                Thread.yield();
             }
         }
     }
@@ -641,10 +750,13 @@ public final class Transport {
      * use {@link #setLoopWindow(boolean, double, double)} instead, which
      * publishes all three together.
      *
-     * @param startInBeats loop start position (must be &ge; 0)
-     * @param endInBeats   loop end position (must be greater than {@code startInBeats})
-     * @throws IllegalArgumentException if the bounds are invalid; the current
-     *                                  window is left untouched and nothing fires
+     * @param startInBeats loop start position (must be finite and &ge; 0)
+     * @param endInBeats   loop end position (must be finite and greater than
+     *                     {@code startInBeats})
+     * @throws IllegalArgumentException if either bound is NaN or infinite, or
+     *                                  the bounds are otherwise invalid; the
+     *                                  current window is left untouched and
+     *                                  nothing fires
      */
     public void setLoopRegion(double startInBeats, double endInBeats) {
         requireValidLoopBounds(startInBeats, endInBeats);
@@ -666,9 +778,13 @@ public final class Transport {
      * the current window is left untouched and nothing fires.</p>
      *
      * @param enabled      whether loop mode is engaged
-     * @param startInBeats loop start position (must be &ge; 0)
-     * @param endInBeats   loop end position (must be greater than {@code startInBeats})
-     * @throws IllegalArgumentException if the bounds are invalid
+     * @param startInBeats loop start position (must be finite and &ge; 0)
+     * @param endInBeats   loop end position (must be finite and greater than
+     *                     {@code startInBeats})
+     * @throws IllegalArgumentException if either bound is NaN or infinite, or
+     *                                  the bounds are otherwise invalid; the
+     *                                  current window is left untouched and
+     *                                  nothing fires
      */
     public void setLoopWindow(boolean enabled, double startInBeats, double endInBeats) {
         requireValidLoopBounds(startInBeats, endInBeats);
@@ -676,6 +792,15 @@ public final class Transport {
     }
 
     private static void requireValidLoopBounds(double startInBeats, double endInBeats) {
+        // Non-finite bounds must be rejected BEFORE the ordering checks: every
+        // comparison with NaN is false (so NaN would sail through), and a
+        // finite start with +Infinity end satisfies end > start — yet an
+        // enabled window holding either corrupts the wrap arithmetic
+        // (Infinity % length is NaN) and the render cursor (story 315 review).
+        if (!Double.isFinite(startInBeats) || !Double.isFinite(endInBeats)) {
+            throw new IllegalArgumentException(
+                    "loop bounds must be finite: start=" + startInBeats + ", end=" + endInBeats);
+        }
         if (startInBeats < 0) {
             throw new IllegalArgumentException("loop start must not be negative: " + startInBeats);
         }
@@ -704,6 +829,14 @@ public final class Transport {
      *
      * <p>Order of operations:</p>
      * <ol>
+     *   <li><b>Take ownership.</b> After validating the delta, the advance
+     *       increments {@code advancesInFlight} (a full fence) and holds it
+     *       across every state read, queue peek, CAS and compensation below —
+     *       the class-level position ownership protocol. {@link #stop()} and
+     *       {@link #pause()} store their state and then await this counter
+     *       reaching zero before they touch the queue or the position, so no
+     *       transition store can ever interleave between a CAS below and its
+     *       compensation.</li>
      *   <li><b>Seek drain.</b> A queued UI seek is applied <em>verbatim</em>
      *       (the delta is NOT added: the just-rendered block was rendered from
      *       the pre-seek position, so the seek takes effect exactly at this
@@ -734,28 +867,43 @@ public final class Transport {
      *       <em>after</em> a successful CAS. Every back-off leaves the queue
      *       untouched — the rolling-to-non-rolling transition owns the
      *       clear.</li>
+     *   <li><b>Release ownership, then notify.</b> The counter is decremented
+     *       in a {@code finally}, and {@link ChangeKind#POSITION} fires only
+     *       <em>after</em> that, outside the owned window — so a listener that
+     *       calls {@code stop()} or {@code pause()} on the RT thread can never
+     *       await its own advance.</li>
      * </ol>
      *
      * <h4>Why the post-CAS re-read is required</h4>
      *
      * <p>The pre-CAS state read alone does <em>not</em> establish "the playhead
-     * never moves past a stop". The tempting argument — {@link #stop()} stores
-     * {@link TransportState#STOPPED} before its anchor position, so a CAS retry
-     * provoked by that anchor store must already have observed the stopped
-     * state — only holds when the stop actually <em>changes</em> the position
-     * and thereby invalidates the CAS witness. It writes no new value when
-     * {@link #isReturnToStartOnStop()} is {@code false}, and none that matters
-     * when the playhead already sits on the anchor (Stop pressed right after
-     * Play). The witness then still matches, the CAS succeeds after the stop,
-     * and the playhead creeps one block past the stop point.</p>
+     * never moves past a stop". A transition can store its state after that
+     * read but before (or while) the CAS lands — and nothing else touches the
+     * position word inside the owned window, so the CAS succeeds regardless of
+     * what the transition will later write. The transition then awaits this
+     * advance's retirement; when it writes no position of its own
+     * ({@link #stop()} with {@link #isReturnToStartOnStop()} {@code false},
+     * {@link #pause()} with nothing queued) the advanced value would simply
+     * stand, leaving the playhead one block past the stop or pause point.</p>
      *
      * <p>The real guarantee is therefore: after a successful CAS the state is
      * re-read, and if the transport is no longer rolling the advance is undone
      * with a compensating {@code compareAndSet(next, current)} and nothing is
-     * fired. The compensation is deliberately conditional — if it fails,
-     * {@link #stop()} (or a seek drain) stored its own value in between, and
-     * that value is the authoritative one; either way an advance that has
-     * <em>observed</em> the stop neither keeps its value nor fires
+     * fired. Because the transition awaits this advance's retirement before it
+     * touches the queue or stores the position, the compensation is
+     * <em>uncontended by transitions by construction</em>: no stop or pause
+     * position store can land between the CAS and the undo, and the undo's
+     * outcome never depends on the position's value bits (the ABA where a
+     * transition stored the very bits the CAS had just written, and a
+     * value-inferred undo rolled that authoritative position back, cannot
+     * occur). The undo stays a {@code compareAndSet} purely as a defence
+     * against writers outside the protocol — tests driving the word from
+     * several threads, and the direct control-thread stores (the inline seek
+     * in {@link #setPositionInBeats(double)}, the claim-release and
+     * double-check drains, {@link #playWithPreRoll()}'s rewind), which are
+     * FX-serialized with the transitions and so never coincide with a
+     * compensation in production. Either way an advance
+     * that has <em>observed</em> the stop neither keeps its value nor fires
      * {@link ChangeKind#POSITION}. (An advance that completed before the stop
      * became visible to it may still deliver its POSITION signal after the
      * stop's {@link ChangeKind#STATE}; that is a benign late notification —
@@ -769,6 +917,30 @@ public final class Transport {
         if (deltaBeats < 0) {
             throw new IllegalArgumentException("deltaBeats must not be negative: " + deltaBeats);
         }
+        boolean moved;
+        advancesInFlight.incrementAndGet(); // full fence — pairs with the transition's state store
+        try {
+            moved = advanceOwned(deltaBeats);
+        } finally {
+            advancesInFlight.decrementAndGet();
+        }
+        if (moved) {
+            notifyChange(ChangeKind.POSITION); // outside the owned window — listeners may stop()/pause()
+        }
+    }
+
+    /**
+     * The body of {@link #advancePosition(double)} that runs while this thread
+     * owns the position word ({@code advancesInFlight > 0}): seek drain or CAS
+     * advance, with the stop/pause back-off and compensation. Fires nothing —
+     * the caller fires {@link ChangeKind#POSITION} after releasing ownership.
+     *
+     * @return {@code true} when the position was committed (seek drained or
+     *         advance landed) and {@link ChangeKind#POSITION} must fire;
+     *         {@code false} when the advance backed off or was undone
+     */
+    @RealTimeSafe
+    private boolean advanceOwned(double deltaBeats) {
         // Peek — do NOT pop. The target must stay observable through
         // getSeekTargetInBeats() until the position commit below includes it:
         // a pop-then-commit drain leaves a window where the queue is empty and
@@ -783,34 +955,38 @@ public final class Transport {
                 // A stop or pause landed after the peek: it supersedes the
                 // seek. Return without touching the queue — every
                 // rolling-to-non-rolling transition owns the clear (stop()
-                // sets NO_SEEK after its state store, pause() drains inline),
-                // so nothing is stranded and the target stays visible until
-                // that owner commits or discards it.
-                return;
+                // sets NO_SEEK after awaiting our retirement, pause() drains
+                // inline after the same await), so nothing is stranded and
+                // the target stays visible until that owner commits or
+                // discards it.
+                return false;
             }
             double previous = positionInBeats;
             double target = Double.longBitsToDouble(seek);
             if (!POSITION.compareAndSet(this, previous, target)) {
-                // stop() stored its anchor first — that value wins, and stop()
-                // has already cleared (or is about to clear) the queue itself.
-                return;
+                // Not a transition (they await our retirement) — a
+                // non-protocol writer moved the word. Return without touching
+                // the slot: whoever moved it owns the clear, and a
+                // still-queued target is drained next block.
+                return false;
             }
             TransportState afterStore = state;
             if (afterStore != TransportState.PLAYING
                     && afterStore != TransportState.RECORDING) {
-                // Same in-flight-stop hazard as the CAS advance below, and the
-                // same conditional undo: if stop() stored its own position
-                // after ours the compensation fails and its value stands. The
-                // queue again stays untouched — the stop owns the clear.
+                // A stop or pause stored its state while our CAS was in
+                // flight; it is now awaiting our retirement, so it has not yet
+                // touched the position or the queue. Roll our commit back —
+                // uncontended by the transition by construction — and leave
+                // the slot untouched: the transition owns the clear (stop
+                // discards, pause commits).
                 POSITION.compareAndSet(this, target, previous);
-                return;
+                return false;
             }
             // Committed while still rolling — only now empty the slot, and
             // only if it still holds the value just applied: a newer seek
             // published mid-drain must stay queued for the next block.
             pendingSeek.compareAndSet(seek, NO_SEEK);
-            notifyChange(ChangeKind.POSITION);
-            return;
+            return true;
         }
         LoopWindow loop = loopWindow; // one consistent read outside the CAS loop
         boolean wraps = loop.enabled() && loop.endInBeats() > loop.startInBeats();
@@ -819,7 +995,7 @@ public final class Transport {
             TransportState currentState = state;
             if (currentState != TransportState.PLAYING
                     && currentState != TransportState.RECORDING) {
-                return; // stop()/pause() landed — never advance a non-rolling transport
+                return false; // stop()/pause() landed — never advance a non-rolling transport
             }
             double next = current + deltaBeats;
             if (wraps && next >= loop.endInBeats()) {
@@ -830,16 +1006,17 @@ public final class Transport {
                 TransportState afterCas = state;
                 if (afterCas != TransportState.PLAYING
                         && afterCas != TransportState.RECORDING) {
-                    // The stop landed while this CAS was in flight. Undo the
-                    // advance if it is still ours; if the CAS below fails the
-                    // stop wrote its own position afterwards and that wins.
+                    // A stop or pause stored its state while this CAS was in
+                    // flight and is awaiting our retirement before it touches
+                    // the queue or the position. Undo the advance —
+                    // uncontended by the transition by construction; the CAS
+                    // form only guards against non-protocol writers.
                     POSITION.compareAndSet(this, next, current);
-                    return;
+                    return false;
                 }
-                break;
+                return true;
             }
         }
-        notifyChange(ChangeKind.POSITION);
     }
 
     /**
