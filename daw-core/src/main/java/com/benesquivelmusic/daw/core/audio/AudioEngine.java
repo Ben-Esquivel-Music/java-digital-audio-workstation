@@ -69,9 +69,70 @@ public final class AudioEngine {
      */
     private volatile AudioBackend sdkBackend;
 
+    /**
+     * Lifecycle state of the backend audio stream (story 315 review). One
+     * volatile field replaces the former {@code streamOpen}/{@code streamPaused}
+     * pair so a stopped-but-unreleasable stream can be told apart from a
+     * paused one.
+     *
+     * <p>Transitions, and what each does to the transport's RT-clock claim
+     * ({@link Transport#setRealTimeClockActive(boolean)}):</p>
+     * <ul>
+     *   <li>{@code CLOSED → RUNNING}: {@code openStream} succeeded; the claim
+     *       is taken <em>before</em> {@code startStream} (the callback may run
+     *       before that call returns).</li>
+     *   <li>{@code RUNNING → CLOSED} / {@code RUNNING → RELEASE_PENDING} on a
+     *       start failure: the claim is released (draining any seek queued in
+     *       the window), then the handle is closed — {@code CLOSED} if that
+     *       close succeeded, {@code RELEASE_PENDING} if not.</li>
+     *   <li>{@code RUNNING → PAUSED} ({@link #pauseAudioOutput()}): releases
+     *       the claim. {@code PAUSED → RUNNING} ({@link #startAudioOutput()}):
+     *       claims before {@code startStream}; a failed resume returns to
+     *       {@code PAUSED} and releases.</li>
+     *   <li>{@code RUNNING|PAUSED|RELEASE_PENDING → CLOSED}
+     *       ({@link #stopAudioOutput()}, close succeeded): releases the claim.
+     *       {@code RUNNING|PAUSED → RELEASE_PENDING} (close failed, callback
+     *       reported inactive): releases the claim. Close failed with the
+     *       callback active or its state unknown: state and claim are
+     *       preserved for a later retry.</li>
+     *   <li>{@code RELEASE_PENDING → CLOSED} ({@link #startAudioOutput()}
+     *       retrying the close before a fresh open): the claim is already
+     *       released; nothing changes until the fresh stream starts.</li>
+     *   <li>{@code RUNNING|PAUSED|RELEASE_PENDING → CLOSED}
+     *       ({@link #setAudioBackend(NativeAudioBackend)} re-pointing the
+     *       engine at a <em>different</em> backend): the outgoing backend's
+     *       handle is closed best-effort and abandoned if that fails — a later
+     *       retry would run on the new backend and never reach it — and the
+     *       claim is released.</li>
+     * </ul>
+     */
+    private enum StreamState {
+        /** No backend stream handle is held. */
+        CLOSED,
+        /**
+         * The stream is open and started (or being started): the callback may
+         * call {@link #processBlock(float[][], float[][], int)}, and the RT
+         * clock is claimed.
+         */
+        RUNNING,
+        /**
+         * The stream is open but stopped via {@link #pauseAudioOutput()};
+         * resumable, clock released.
+         */
+        PAUSED,
+        /**
+         * The stream is stopped (callback known inactive) but
+         * {@code closeStream()} failed, so the backend still owns the handle.
+         * The clock is released; the handle must be released by a later close
+         * retry before any new stream can be opened. Not resumable, and not
+         * reported by {@link #isStreamOpen()} — to callers, output is simply
+         * stopped; the retained handle is the engine's own business.
+         */
+        RELEASE_PENDING
+    }
+
     // Audio output stream state
-    private volatile boolean streamOpen;
-    private volatile boolean streamPaused;
+    private volatile StreamState streamState = StreamState.CLOSED;
     private volatile boolean backendInitialized;
 
     // Unified per-block render pipeline shared by live playback and offline
@@ -330,14 +391,55 @@ public final class AudioEngine {
      * low-latency audio input/output via PortAudio FFM bindings or the
      * Java Sound API fallback.</p>
      *
+     * <p>Story 315 review — a stream handle the engine still tracks (running,
+     * paused, or retained after a failed close — see
+     * {@link StreamState#RELEASE_PENDING}) belongs to the <em>outgoing</em>
+     * backend. Re-pointing the engine at a different backend instance while
+     * one is tracked would make every later close retry run against the new
+     * backend, which holds nothing, silently breaking "retry until the close
+     * actually succeeds" and abandoning the old handle unnoticed. So, when
+     * the incoming backend is a different instance, this method first closes
+     * the outgoing backend's stream best-effort — logging a warning naming
+     * the backend if that close fails, because the handle is then being
+     * abandoned — and marks the stream {@link StreamState#CLOSED}, releasing
+     * the transport's RT clock (which drains any queued seek). Re-setting the
+     * same instance leaves the stream state untouched: a paused stream stays
+     * paused and resumable.</p>
+     *
      * @param backend the audio backend, or {@code null} to use no backend
+     * @throws IllegalStateException if the engine is currently running
      */
     public void setAudioBackend(NativeAudioBackend backend) {
         if (running.get()) {
             throw new IllegalStateException("Cannot change audio backend while engine is running");
         }
+        NativeAudioBackend outgoing = this.audioBackend;
+        if (streamState != StreamState.CLOSED && outgoing != null && outgoing != backend) {
+            abandonStreamOnOutgoingBackend(outgoing);
+        }
         this.audioBackend = backend;
         this.backendInitialized = false;
+    }
+
+    /**
+     * Closes, best-effort, the stream the engine still tracks on a backend
+     * that is about to be replaced, then forgets it: the state becomes
+     * {@link StreamState#CLOSED} and the RT clock is released whether or not
+     * the close succeeded, because no later retry could reach this backend
+     * once the engine points elsewhere.
+     */
+    private void abandonStreamOnOutgoingBackend(NativeAudioBackend outgoing) {
+        try {
+            outgoing.closeStream();
+        } catch (AudioBackendException closeFailure) {
+            LOG.log(Level.WARNING,
+                    "Abandoning the audio stream handle still held by " + outgoing.getBackendName()
+                            + ": it could not be closed, and the engine is being re-pointed at"
+                            + " another backend, so no later retry can release it",
+                    closeFailure);
+        }
+        streamState = StreamState.CLOSED;
+        releaseTransportClock();
     }
 
     /**
@@ -392,6 +494,12 @@ public final class AudioEngine {
     }
 
     // ── Audio output stream lifecycle ────────────────────────────────────────
+    //
+    // The backend stream's lifecycle is one volatile StreamState (see the enum
+    // javadoc for the state machine and for which transitions claim or release
+    // the transport's RT clock). Lifecycle methods run on non-RT threads only
+    // (controller / UI thread, device-event thread) — never from the audio
+    // callback.
 
     /**
      * Starts audio output by opening and starting a stream on the configured
@@ -399,12 +507,21 @@ public final class AudioEngine {
      * audio callback driven at the hardware buffer rate.
      *
      * <p>If the stream was previously paused via {@link #pauseAudioOutput()},
-     * this resumes it without re-opening the stream.</p>
+     * this resumes it without re-opening the stream. If an earlier stop left
+     * the backend holding an unreleasable stream handle (see
+     * {@link StreamState#RELEASE_PENDING}), that close is retried first and
+     * the method fails — without opening a second stream — when the handle
+     * still cannot be released.</p>
      *
      * <p>If no audio backend is configured, the engine is started without
-     * hardware output (the transport will still advance via the UI timer).</p>
+     * hardware output: no callback calls {@link #processBlock}, so nothing
+     * drives the transport's clock, its RT-clock claim is never taken and
+     * seeks apply inline. Honest playing states for that case are story
+     * 317.</p>
      *
-     * @throws AudioBackendException if the stream cannot be opened or started
+     * @throws AudioBackendException if the stream cannot be opened or started,
+     *                               or a previously retained stream handle
+     *                               still cannot be released
      */
     public void startAudioOutput() {
         startAudioOutput(0);
@@ -416,22 +533,30 @@ public final class AudioEngine {
      *
      * @param outputDeviceIndex the output device index reported by
      *                          {@link NativeAudioBackend#getAvailableDevices()}
-     * @throws AudioBackendException if the stream cannot be opened or started
+     * @throws AudioBackendException if the stream cannot be opened or started,
+     *                               or a previously retained stream handle
+     *                               still cannot be released
      */
     public void startAudioOutput(int outputDeviceIndex) {
-        if (streamOpen && streamPaused) {
+        StreamState state = this.streamState;
+        if (state == StreamState.RUNNING) {
+            return; // already running
+        }
+        if (state == StreamState.PAUSED) {
             resumeAudioOutput();
             return;
         }
 
-        if (streamOpen && !streamPaused) {
-            return; // already running
+        NativeAudioBackend backend = this.audioBackend;
+        if (state == StreamState.RELEASE_PENDING && backend != null) {
+            // Both production backends refuse openStream while they still hold
+            // a handle, so the retained one must go before a fresh open.
+            releaseRetainedStreamHandle(backend);
         }
 
         // Ensure the engine is running (pre-allocates buffers)
         start();
 
-        NativeAudioBackend backend = this.audioBackend;
         if (backend == null) {
             LOG.info("No audio backend configured; playback without hardware output");
             return;
@@ -452,20 +577,89 @@ public final class AudioEngine {
         );
 
         backend.openStream(config, this::processBlock);
-        try {
-            backend.startStream();
-        } catch (AudioBackendException e) {
-            backend.closeStream();
-            throw e;
-        }
-        streamOpen = true;
-        streamPaused = false;
-        // Only here — after the backend really opened AND started a stream that
-        // calls processBlock — is the transport's clock genuinely RT-driven.
-        claimTransportClock();
+        startOpenedStream(backend);
 
         LOG.info("Audio output started via " + backend.getBackendName()
                 + " (output device: " + outputDeviceIndex + ")");
+    }
+
+    /**
+     * Starts the stream the backend has just opened on
+     * {@link #processBlock(float[][], float[][], int)}, claiming the transport's
+     * RT clock <em>before</em> {@link NativeAudioBackend#startStream()} and
+     * unwinding both the claim and the handle when the start fails.
+     *
+     * <p>Story 315 review — {@code startStream()} may begin invoking the
+     * callback before it returns (Java Sound spawns its audio-I/O thread
+     * there; {@code Pa_StartStream} may run the callback first too), so
+     * claiming afterwards left a window in which the RT callback advanced the
+     * transport while UI seeks still applied inline. Claiming first closes
+     * that window: a seek issued in it is queued and applied by the first
+     * callback block. Should the start then fail, the claim is released
+     * first — which drains that queued seek inline instead of stranding it —
+     * and the handle is given back best-effort: a close that also fails
+     * leaves the stream {@link StreamState#RELEASE_PENDING} and is attached
+     * as a suppressed exception, never masking the start failure.</p>
+     *
+     * <p>The unwind covers <em>every</em> throwable from the start call, not
+     * only {@link AudioBackendException}: Java Sound's {@code line.start()}
+     * and its virtual-thread spawn, and PortAudio's own
+     * {@code IllegalStateException}, are unguarded there. Because the claim
+     * is now taken before the start call, a start that escaped the unwind
+     * would leave the engine {@code RUNNING} with the clock claimed and no
+     * callback driving — and every later {@link #startAudioOutput()} would
+     * return early on that state, a permanent wedge.</p>
+     *
+     * @throws AudioBackendException the start failure, when the backend
+     *                               refused to start the stream
+     * @throws RuntimeException      any other unchecked failure (or {@link Error}) the backend's start
+     *                               call raised, rethrown as-is after the
+     *                               same unwind
+     */
+    private void startOpenedStream(NativeAudioBackend backend) {
+        streamState = StreamState.RUNNING;
+        claimTransportClock();
+        try {
+            backend.startStream();
+        } catch (RuntimeException | Error startFailure) {
+            // The callback is not running; the handle is still held until the
+            // close below succeeds.
+            streamState = StreamState.RELEASE_PENDING;
+            releaseTransportClock();
+            try {
+                backend.closeStream();
+                streamState = StreamState.CLOSED;
+            } catch (AudioBackendException closeFailure) {
+                startFailure.addSuppressed(closeFailure);
+                LOG.log(Level.WARNING,
+                        "Audio stream failed to start and its handle could not be released;"
+                                + " the release is retried by the next start or stop",
+                        closeFailure);
+            }
+            throw startFailure;
+        }
+    }
+
+    /**
+     * Retries the close a previous stop could not complete, so the backend
+     * no longer owns the stale handle and a fresh stream can be opened.
+     * Only called in {@link StreamState#RELEASE_PENDING}, where the callback
+     * is known inactive and the clock is already released.
+     *
+     * @throws AudioBackendException if the handle still cannot be released;
+     *                               the state stays {@code RELEASE_PENDING}
+     */
+    private void releaseRetainedStreamHandle(NativeAudioBackend backend) {
+        try {
+            backend.closeStream();
+        } catch (AudioBackendException closeFailure) {
+            throw new AudioBackendException(
+                    "Cannot open a new audio stream: the previous stream's handle is still"
+                            + " held by " + backend.getBackendName()
+                            + " and could not be released",
+                    closeFailure);
+        }
+        streamState = StreamState.CLOSED;
     }
 
     /**
@@ -475,28 +669,41 @@ public final class AudioEngine {
      * <p>Story 315 review — {@link NativeAudioBackend#stopStream()} and
      * {@link NativeAudioBackend#closeStream()} are attempted independently,
      * because close is the operation that actually releases the stream and
-     * its callback. The stream is marked closed and the transport's RT-clock
-     * claim released only once the callback is known to be gone: close
-     * returned normally, or — after a failed close — the backend reports the
-     * stream inactive. If close failed and the stream is still active, the
-     * claimed state is preserved: the (possibly still running) callback keeps
-     * the clock so seeks stay queued behind it, and a later call to this
-     * method retries. If even that activity probe fails, the callback state is
-     * unknown and the claim is preserved as well (see
-     * {@link #callbackStillRunning(NativeAudioBackend)}).</p>
+     * its callback. The transport's RT-clock claim is released only once the
+     * callback is known to be gone: close returned normally (the stream is
+     * then {@link StreamState#CLOSED}), or — after a failed close — the
+     * backend reports the stream inactive (the stream is then
+     * {@link StreamState#RELEASE_PENDING}: the claim is released, so a seek
+     * queued microseconds earlier is drained rather than stranded, but the
+     * backend still owns the handle, and a later stop or start retries the
+     * close before anything else is opened). If close failed and the stream
+     * is still active, the current state and the claim are preserved: the
+     * (possibly still running) callback keeps the clock so seeks stay queued
+     * behind it, and a later call to this method retries. If even that
+     * activity probe fails, the callback state is unknown and the claim is
+     * preserved as well (see {@link #callbackStillRunning(NativeAudioBackend)}).</p>
      *
      * <p>A subsequent call to {@link #startAudioOutput()} will open a fresh
-     * stream.</p>
+     * stream once the handle is released.</p>
      */
     public void stopAudioOutput() {
         NativeAudioBackend backend = this.audioBackend;
-        if (backend == null || !streamOpen) {
+        if (backend == null || streamState == StreamState.CLOSED) {
             return;
         }
         AudioBackendException stopFailure = stopStreamBestEffort(backend);
-        boolean callbackGone = closeStreamBestEffort(backend, stopFailure);
-        if (callbackGone || !callbackStillRunning(backend)) {
-            markStreamClosedAndReleaseTransportClock();
+        boolean closed = closeStreamBestEffort(backend, stopFailure);
+        if (closed) {
+            streamState = StreamState.CLOSED;
+            releaseTransportClock();
+        } else if (!callbackStillRunning(backend)) {
+            // No callback drives the transport any more, but the backend kept
+            // the handle. Releasing here is necessary — otherwise every seek
+            // would be stranded in the queue behind a drain that never comes
+            // (the exact story-315 bug); the handle is released by a later
+            // close retry.
+            streamState = StreamState.RELEASE_PENDING;
+            releaseTransportClock();
         }
     }
 
@@ -506,11 +713,11 @@ public final class AudioEngine {
      * <p>Story 315 review — best-effort like the rest of
      * {@link #stopAudioOutput()}: the probe itself can fail (PortAudio wraps
      * a refused {@code Pa_IsStreamActive} in an {@link AudioBackendException}),
-     * and unknown is treated as "possibly still running" so the claimed state
-     * is preserved. That is the conservative choice: a wrongly-preserved claim
-     * is retried by the next {@link #stopAudioOutput()}, whereas a
-     * wrongly-released claim would let an active callback race inline
-     * seeks.</p>
+     * and unknown is treated as "possibly still running" so the current state
+     * and claim are preserved. That is the conservative choice: a
+     * wrongly-preserved claim is retried by the next
+     * {@link #stopAudioOutput()}, whereas a wrongly-released claim would let
+     * an active callback race inline seeks.</p>
      *
      * @return {@code true} when the backend reports the stream active, or
      *         when the probe failed and the callback state is unknown
@@ -548,7 +755,7 @@ public final class AudioEngine {
      * production backends null out their callback and stream handle there).
      *
      * @return {@code true} when close returned normally, i.e. callback
-     *         shutdown is guaranteed
+     *         shutdown is guaranteed and the handle is released
      */
     private static boolean closeStreamBestEffort(NativeAudioBackend backend,
                                                  AudioBackendException stopFailure) {
@@ -572,39 +779,37 @@ public final class AudioEngine {
     }
 
     /**
-     * Marks the stream closed and releases the RT-clock claim. Only reached
-     * once no callback can call {@link #processBlock}: after a successful
-     * close, or after a failed close when the backend reports the real
-     * hardware state as inactive — releasing then is necessary, otherwise
-     * every seek would be stranded in the queue behind a drain that never
-     * comes (the exact story-315 bug).
-     */
-    private void markStreamClosedAndReleaseTransportClock() {
-        streamOpen = false;
-        streamPaused = false;
-        // No callback drives the transport any more. Releasing also drains
-        // a seek queued microseconds before the stream closed.
-        releaseTransportClock();
-    }
-
-    /**
      * Starts audio I/O for recording by opening a stream that includes both
      * input and output channels on the configured {@link NativeAudioBackend}.
      *
      * <p>If a stream is already open, it is closed first so that a new
-     * full-duplex stream can be opened with the specified input device.</p>
+     * full-duplex stream can be opened with the specified input device. When
+     * that close does not release the backend's handle (the callback is still
+     * active, its state is unknown, or the stream was already
+     * {@link StreamState#RELEASE_PENDING}), this method fails instead of
+     * attempting a second open that the production backends reject.</p>
      *
      * <p>If no audio backend is configured, the engine is started without
-     * hardware I/O (recording will still capture data via the recording
-     * callback from {@link #processBlock}).</p>
+     * hardware I/O: no callback calls {@link #processBlock}, so the recording
+     * callback receives no blocks and nothing drives the transport's clock
+     * (its RT-clock claim is never taken and seeks apply inline). Honest
+     * playing states for that case are story 317.</p>
      *
      * @param inputDeviceIndex the index of the input device to open
-     * @throws AudioBackendException if the stream cannot be opened or started
+     * @throws AudioBackendException if the stream cannot be opened or started,
+     *                               or the previous stream's handle could not
+     *                               be released
      */
     public void startAudioInputOutput(int inputDeviceIndex) {
         // Close existing stream if open
-        if (streamOpen) {
+        if (streamState != StreamState.CLOSED) {
             stopAudioOutput();
+            if (streamState != StreamState.CLOSED) {
+                throw new AudioBackendException(
+                        "Cannot open a full-duplex audio stream: the previous stream"
+                                + " could not be closed and its handle is still held by"
+                                + " the backend");
+            }
         }
 
         // Ensure the engine is running (pre-allocates buffers)
@@ -631,15 +836,7 @@ public final class AudioEngine {
         );
 
         backend.openStream(config, this::processBlock);
-        try {
-            backend.startStream();
-        } catch (AudioBackendException e) {
-            backend.closeStream();
-            throw e;
-        }
-        streamOpen = true;
-        streamPaused = false;
-        claimTransportClock();
+        startOpenedStream(backend);
 
         LOG.info("Audio input/output started via " + backend.getBackendName()
                 + " (input device: " + inputDeviceIndex + ")");
@@ -647,50 +844,87 @@ public final class AudioEngine {
 
     /**
      * Pauses audio output by stopping the stream without closing it,
-     * allowing a fast resume via {@link #startAudioOutput()}.
+     * allowing a fast resume via {@link #startAudioOutput()}. Only a
+     * {@link StreamState#RUNNING} stream can be paused; in every other state
+     * this is a no-op.
      */
     public void pauseAudioOutput() {
         NativeAudioBackend backend = this.audioBackend;
-        if (backend != null && streamOpen && !streamPaused) {
+        if (backend != null && streamState == StreamState.RUNNING) {
             backend.stopStream();
-            streamPaused = true;
+            streamState = StreamState.PAUSED;
             releaseTransportClock();
         }
     }
 
     /**
-     * Returns whether the audio output stream is currently open.
+     * Returns whether audio output is live or resumable — the stream is
+     * {@link StreamState#RUNNING} or {@link StreamState#PAUSED}. This is what
+     * the settings-apply path reads to decide whether to restart output after
+     * a reconfigure.
      *
-     * @return {@code true} if a stream is open (active or paused)
+     * <p>A stream whose close failed and whose backend handle the engine still
+     * retains ({@link StreamState#RELEASE_PENDING}) is <em>not</em> reported
+     * open: output is stopped and not resumable, so a caller that restarted
+     * output on this answer would start hardware against a stopped transport.
+     * The engine releases that retained handle itself — on the next
+     * {@link #stopAudioOutput()}, or before the next open.</p>
+     *
+     * @return {@code true} only in {@link StreamState#RUNNING} or
+     *         {@link StreamState#PAUSED}
      */
     public boolean isStreamOpen() {
-        return streamOpen;
+        StreamState state = this.streamState;
+        return state == StreamState.RUNNING || state == StreamState.PAUSED;
     }
 
     /**
-     * Returns whether the audio output stream is paused.
+     * Returns whether the audio output stream is paused via
+     * {@link #pauseAudioOutput()} and resumable via {@link #startAudioOutput()}.
+     * A stream retained after a failed close is <em>not</em> paused: it is
+     * stopped, but not resumable.
      *
-     * @return {@code true} if the stream is open but paused
+     * @return {@code true} only in {@link StreamState#PAUSED}
      */
     public boolean isStreamPaused() {
-        return streamPaused;
+        return streamState == StreamState.PAUSED;
     }
 
+    /**
+     * Restarts a paused stream, claiming the RT clock before the backend
+     * start call (see {@link #startOpenedStream(NativeAudioBackend)} for
+     * why). On a start failure of any kind — not only an
+     * {@link AudioBackendException}; see
+     * {@link #startOpenedStream(NativeAudioBackend)} for why the unwind must
+     * catch every throwable — the stream stays open and paused (the resume is
+     * retryable) and the claim is released again.
+     *
+     * @throws AudioBackendException if the backend refused to restart the stream
+     * @throws RuntimeException      any other unchecked failure (or {@link Error}) the backend's start
+     *                               call raised, rethrown as-is after the
+     *                               same unwind
+     */
     private void resumeAudioOutput() {
         NativeAudioBackend backend = this.audioBackend;
-        if (backend != null && streamOpen && streamPaused) {
-            backend.startStream();
-            streamPaused = false;
+        if (backend != null && streamState == StreamState.PAUSED) {
+            streamState = StreamState.RUNNING;
             claimTransportClock();
+            try {
+                backend.startStream();
+            } catch (RuntimeException | Error startFailure) {
+                streamState = StreamState.PAUSED;
+                releaseTransportClock();
+                throw startFailure;
+            }
         }
     }
 
     // ── Real-time clock ownership (story 315 review) ─────────────────────
 
     /**
-     * Returns {@code true} while a backend stream is open <em>and</em> running,
-     * i.e. while {@link #processBlock(float[][], float[][], int)} is genuinely
-     * being called by the backend and therefore driving
+     * Returns {@code true} while a backend stream is {@link StreamState#RUNNING},
+     * i.e. while {@link #processBlock(float[][], float[][], int)} is (or is
+     * about to be) called by the backend and therefore driving
      * {@link Transport#advancePosition(double)}.
      *
      * <p>This — not {@link Transport#getState()} — is the truth condition
@@ -701,13 +935,15 @@ public final class AudioEngine {
      * states are story 317).</p>
      */
     private boolean callbackIsDriving() {
-        return streamOpen && !streamPaused;
+        return streamState == StreamState.RUNNING;
     }
 
     /**
      * Claims the RT clock on the currently published transport. Called only
-     * from the paths that have just started a backend stream registered on
-     * {@link #processBlock(float[][], float[][], int)}.
+     * from the paths that are about to start a backend stream registered on
+     * {@link #processBlock(float[][], float[][], int)} — immediately before
+     * the start call, so the very first callback block cannot race an inline
+     * seek. The same paths release the claim again should the start fail.
      */
     private void claimTransportClock() {
         Transport transport = this.graph.transport();
@@ -719,7 +955,8 @@ public final class AudioEngine {
     /**
      * Releases the RT clock on the currently published transport, draining any
      * seek queued while the claim was held. Called from every path that stops
-     * or pauses the stream.
+     * or pauses the stream, and from the start paths when the backend refused
+     * to start the stream.
      */
     private void releaseTransportClock() {
         Transport transport = this.graph.transport();

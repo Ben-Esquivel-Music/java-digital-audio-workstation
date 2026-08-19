@@ -627,13 +627,14 @@ public final class TimelineRuler extends Pane {
         Transport transport = model.getTransport();
         double beatPos = pixelToScrolledBeat(event.getX());
 
-        // Shift+click: define a new loop region
+        // Shift+click: define a new loop region — flag and bounds published
+        // as one window so the RT clock never sees enabled + stale bounds
+        // (story 315 review).
         if (event.isShiftDown()) {
             double snapped = snapBeat(beatPos);
             loopDragMode = LoopDragMode.DEFINING_REGION;
             loopDragAnchorBeat = snapped;
-            transport.setLoopEnabled(true);
-            transport.setLoopRegion(snapped, snapped + 0.001);
+            transport.setLoopWindow(true, snapped, snapped + 0.001);
             redraw();
             return;
         }

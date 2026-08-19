@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import org.junit.jupiter.api.Test;
 
@@ -68,6 +69,45 @@ class ProjectDeserializerTest {
         assertThat(restored.getTransport().getLoopStartInBeats()).isEqualTo(4.0);
         assertThat(restored.getTransport().getLoopEndInBeats()).isEqualTo(32.0);
         assertThat(restored.getTransport().getPositionInBeats()).isEqualTo(8.0);
+    }
+
+    @Test
+    void shouldRestoreEnabledLoopWithValidBoundsAsTheFullTrio() throws IOException {
+        // Story 315 review — this asserts only that the restored trio reads back
+        // consistently (the Transport is created inside deserialize(), so no
+        // per-signal listener can be attached here); the single-publish property
+        // itself is pinned by TransportTest.setLoopWindowNeverExposesEnabledOverThePreviousBounds.
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        original.getTransport().setLoopWindow(true, 4.0, 32.0);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTransport().getLoopWindow())
+                .as("enabled flag and both bounds restored together")
+                .isEqualTo(new Transport.LoopWindow(true, 4.0, 32.0));
+    }
+
+    @Test
+    void shouldKeepDefaultLoopBoundsButApplyTheFlagWhenSavedBoundsAreMalformed() throws IOException {
+        // Malformed bounds (end <= start) keep the transport's default region;
+        // the enabled flag is still honoured — same semantics as before the
+        // single-publish change, now via the explicit else branch.
+        String xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <daw-project version="1">
+                  <metadata>
+                    <name>Malformed Loop</name>
+                  </metadata>
+                  <transport tempo="120.0" loop-enabled="true" loop-start="12.0" loop-end="4.0"/>
+                </daw-project>
+                """;
+
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTransport().getLoopWindow())
+                .as("flag applied, bounds left at the transport defaults")
+                .isEqualTo(new Transport.LoopWindow(true, 0.0, 16.0));
     }
 
     @Test

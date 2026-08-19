@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -341,6 +343,147 @@ class TransportTest {
                 () -> ruler.advancePosition(500.0));
         assertThat(ruler.getPositionInBeats()).isGreaterThanOrEqualTo(2.0);
         assertThat(ruler.getPositionInBeats()).isLessThan(2.001);
+    }
+
+    // ── setLoopWindow — atomic loop definition (story 315 review) ──────────
+
+    @Test
+    void setLoopWindowPublishesEnabledAndBothBoundsTogetherWithOneLoopSignal() {
+        Transport transport = new Transport();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.setLoopWindow(true, 4.0, 12.0);
+
+        assertThat(transport.getLoopWindow())
+                .as("one call installs the complete trio")
+                .isEqualTo(new Transport.LoopWindow(true, 4.0, 12.0));
+        assertThat(transport.isLoopEnabled()).isTrue();
+        assertThat(transport.getLoopStartInBeats()).isEqualTo(4.0);
+        assertThat(transport.getLoopEndInBeats()).isEqualTo(12.0);
+        assertThat(fired)
+                .as("exactly one LOOP signal for the whole definition")
+                .containsExactly(Transport.ChangeKind.LOOP);
+    }
+
+    @Test
+    void setLoopWindowWithEnabledFalseStillInstallsTheBounds() {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 1.0, 2.0);
+
+        transport.setLoopWindow(false, 8.0, 24.0);
+
+        assertThat(transport.getLoopWindow())
+                .as("disabling through setLoopWindow also publishes the new bounds")
+                .isEqualTo(new Transport.LoopWindow(false, 8.0, 24.0));
+    }
+
+    @Test
+    void setLoopWindowRejectsNegativeStartAndLeavesThePreviousWindowUntouched() {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopWindow(true, -1.0, 16.0))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(transport.getLoopWindow())
+                .as("a rejected window leaves the previous one installed")
+                .isSameAs(before);
+        assertThat(fired).as("nothing fires on rejection").isEmpty();
+    }
+
+    @Test
+    void setLoopWindowRejectsEndNotGreaterThanStartAndLeavesThePreviousWindowUntouched() {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopWindow(true, 8.0, 8.0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> transport.setLoopWindow(false, 8.0, 4.0))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(transport.getLoopWindow())
+                .as("rejected windows leave the previous one installed")
+                .isSameAs(before);
+        assertThat(fired).as("nothing fires on rejection").isEmpty();
+    }
+
+    @Test
+    void setLoopWindowNeverExposesEnabledOverThePreviousBounds() {
+        // The observable form of the finding: an observer that snapshots the
+        // window on every LOOP signal stands in for the RT thread's single
+        // volatile load. Defining a new loop through setLoopWindow must never
+        // let it see enabled == true paired with the bounds that were installed
+        // before the definition — the old enable-then-region pair does exactly
+        // that for one signal (documented below as the contrast).
+        Transport.LoopWindow previousBounds = new Transport.LoopWindow(false, 0.0, 16.0);
+
+        Transport atomic = new Transport();
+        assertThat(atomic.getLoopWindow()).isEqualTo(previousBounds);
+        List<Transport.LoopWindow> atomicSnapshots = new ArrayList<>();
+        atomic.addChangeListener(kind -> {
+            if (kind == Transport.ChangeKind.LOOP) {
+                atomicSnapshots.add(atomic.getLoopWindow());
+            }
+        });
+
+        atomic.setLoopWindow(true, 4.0, 12.0);
+
+        assertThat(atomicSnapshots)
+                .as("the single snapshot is the fully-defined loop, never enabled over the old bounds")
+                .containsExactly(new Transport.LoopWindow(true, 4.0, 12.0));
+        assertThat(atomicSnapshots)
+                .noneMatch(window -> window.enabled()
+                        && window.startInBeats() == previousBounds.startInBeats()
+                        && window.endInBeats() == previousBounds.endInBeats());
+
+        // Contrast — the two-call sequence the ruler used before this fix.
+        Transport twoCall = new Transport();
+        List<Transport.LoopWindow> twoCallSnapshots = new ArrayList<>();
+        twoCall.addChangeListener(kind -> {
+            if (kind == Transport.ChangeKind.LOOP) {
+                twoCallSnapshots.add(twoCall.getLoopWindow());
+            }
+        });
+
+        twoCall.setLoopEnabled(true);
+        twoCall.setLoopRegion(4.0, 12.0);
+
+        assertThat(twoCallSnapshots)
+                .as("enable-then-region publishes an intermediate enabled-over-old-bounds window")
+                .containsExactly(
+                        new Transport.LoopWindow(true, 0.0, 16.0),
+                        new Transport.LoopWindow(true, 4.0, 12.0));
+    }
+
+    @Test
+    void setLoopEnabledAndSetLoopRegionEachPublishOneCompleteWindowAndOneLoopSignal() {
+        // The toggle keeps the bounds; the drag keeps the flag — both through
+        // the same single store-and-notify path as setLoopWindow.
+        Transport transport = new Transport();
+        transport.setLoopWindow(false, 4.0, 12.0);
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.setLoopEnabled(true);
+        assertThat(transport.getLoopWindow())
+                .as("toggle keeps the bounds")
+                .isEqualTo(new Transport.LoopWindow(true, 4.0, 12.0));
+
+        transport.setLoopRegion(2.0, 6.0);
+        assertThat(transport.getLoopWindow())
+                .as("region change keeps the flag")
+                .isEqualTo(new Transport.LoopWindow(true, 2.0, 6.0));
+
+        assertThat(fired)
+                .as("one LOOP signal per mutator call")
+                .containsExactly(Transport.ChangeKind.LOOP, Transport.ChangeKind.LOOP);
     }
 
     @Test

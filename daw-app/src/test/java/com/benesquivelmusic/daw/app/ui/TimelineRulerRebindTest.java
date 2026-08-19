@@ -13,7 +13,9 @@ import javafx.scene.input.MouseEvent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -25,7 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * once but the project (and its {@link Transport}) is swapped on every load;
  * {@link TimelineRuler#rebind(Transport)} must retarget every gesture and
  * paint path at the live transport, carry the user's display mode across, and
- * leave the dead project's transport untouched.
+ * leave the dead project's transport untouched. Also covers the story 315
+ * review rule that the ruler's Shift+press <em>defines</em> a loop through a
+ * single {@link Transport#setLoopWindow(boolean, double, double)} publish.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class TimelineRulerRebindTest {
@@ -108,6 +112,56 @@ class TimelineRulerRebindTest {
         assertThat(ruler.getModel())
                 .as("a real project switch still installs a fresh model")
                 .isNotSameAs(modelBefore);
+    }
+
+    @Test
+    void shiftPressPublishesEnabledAndNewBoundsAsOneConsistentLoopWindow() throws Exception {
+        // Story 315 review — defining a loop is ONE publish: the ruler calls
+        // Transport.setLoopWindow(true, start, end), never an enable-then-region
+        // pair. A listener that snapshots getLoopWindow() on every LOOP signal
+        // stands in for the RT thread's single volatile load and must never see
+        // enabled == true paired with the bounds from before the gesture.
+        Transport transport = new Transport();
+        transport.setLoopWindow(false, 10.0, 14.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+
+        TimelineRuler ruler = computeOnFx(() -> {
+            TimelineRuler r = new TimelineRuler(transport);
+            new Scene(r, 800, TimelineRuler.DEFAULT_HEIGHT);
+            r.applyCss();
+            r.layout();
+            return r;
+        });
+        List<Transport.LoopWindow> snapshots = new CopyOnWriteArrayList<>();
+        transport.addChangeListener(kind -> {
+            if (kind == Transport.ChangeKind.LOOP) {
+                snapshots.add(transport.getLoopWindow());
+            }
+        });
+
+        // Shift+press at x = 80 → beat 2.0 (snap is off, so the beat is exact).
+        Canvas canvas = computeOnFx(() -> (Canvas) ruler.getChildrenUnmodifiable().get(0));
+        computeOnFx(() -> {
+            Event.fireEvent(canvas, mouseEvent(MouseEvent.MOUSE_PRESSED, 80.0));
+            return null;
+        });
+
+        assertThat(snapshots)
+                .as("the press fires exactly one LOOP signal")
+                .hasSize(1);
+        Transport.LoopWindow first = snapshots.get(0);
+        assertThat(first.enabled()).as("the first snapshot is already enabled").isTrue();
+        assertThat(first.startInBeats())
+                .as("…and already carries the new start (the pressed beat)")
+                .isEqualTo(2.0);
+        assertThat(first.endInBeats())
+                .as("…and the new provisional end")
+                .isEqualTo(2.001);
+        assertThat(snapshots)
+                .as("no snapshot ever pairs enabled with the pre-gesture bounds")
+                .noneMatch(window -> window.enabled()
+                        && window.startInBeats() == before.startInBeats()
+                        && window.endInBeats() == before.endInBeats());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

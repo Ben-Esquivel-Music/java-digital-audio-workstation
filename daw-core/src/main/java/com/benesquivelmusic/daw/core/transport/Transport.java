@@ -138,10 +138,17 @@ public final class Transport {
      * separate fields could tear across a concurrent FX-thread update; a
      * record cannot (story 315, Audio Engine Wiring Design Book §4.1).
      *
+     * <p>Every mutator installs a complete window in one store, and
+     * {@link Transport#setLoopWindow(boolean, double, double)} is the single
+     * call that publishes all three fields together — the way to
+     * <em>define</em> a new loop without the RT thread ever observing the
+     * enabled flag paired with the previous bounds (story 315 review).</p>
+     *
      * @param startInBeats loop start position in beats (&ge; 0)
      * @param endInBeats   loop end position in beats (&gt; {@code startInBeats}
      *                     for any window installed via
-     *                     {@link Transport#setLoopRegion(double, double)})
+     *                     {@link Transport#setLoopWindow(boolean, double, double)}
+     *                     or {@link Transport#setLoopRegion(double, double)})
      * @param enabled      whether loop mode is engaged
      */
     public record LoopWindow(boolean enabled, double startInBeats, double endInBeats) {
@@ -184,9 +191,10 @@ public final class Transport {
 
     /**
      * Whether a real-time clock has claimed this transport — i.e. whether an
-     * audio callback is genuinely driving {@link #advancePosition(double)} on
-     * it right now (story 315 review; Audio Engine Wiring Design Book §6.1
-     * thread ownership).
+     * audio callback is driving {@link #advancePosition(double)} on it, or is
+     * about to: the claim is taken immediately before the stream is started,
+     * and released when the stream stops, pauses, or fails to start (story
+     * 315 review; Audio Engine Wiring Design Book §6.1 thread ownership).
      *
      * <p>This is the seek queue's arming condition. The transport state alone
      * is <em>not</em> a truthful proxy for "something is advancing me":
@@ -424,10 +432,15 @@ public final class Transport {
      * ownership seam behind the seek queue (story 315 review; Audio Engine
      * Wiring Design Book §6.1).
      *
-     * <p>Claim ({@code true}) when an audio callback that will call
-     * {@link #advancePosition(double)} on <em>this</em> transport really has
-     * started, and release ({@code false}) when it stops. The invariant is
-     * "claimed &hArr; a callback is actually driving this transport";
+     * <p>Claim ({@code true}) immediately <em>before</em> starting an audio
+     * stream whose callback will call {@link #advancePosition(double)} on
+     * <em>this</em> transport — the backend may run the first callback block
+     * before its start call returns, so claiming afterwards would let that
+     * block race an inline seek — and release ({@code false}) when the stream
+     * stops, pauses, or fails to start. Seeks issued between the claim and the
+     * first callback block are queued and applied by that first block (or by
+     * the release, when the start fails). The invariant is "claimed &hArr; a
+     * callback is driving, or is about to drive, this transport";
      * {@code AudioEngine} maintains it across its stream lifecycle and hands
      * the claim over on {@code setGraph}. Defaults to {@code false}, so a
      * transport that nothing renders (unit tests, offline export, a playback
@@ -455,8 +468,9 @@ public final class Transport {
      * Returns whether a real-time clock currently
      * {@linkplain #setRealTimeClockActive(boolean) claims} this transport.
      *
-     * @return {@code true} while an audio callback is driving
-     *         {@link #advancePosition(double)} on this transport
+     * @return {@code true} while an audio callback is driving — or, the claim
+     *         being taken immediately before the stream is started, is about
+     *         to drive — {@link #advancePosition(double)} on this transport
      */
     public boolean isRealTimeClockActive() {
         return realTimeClockActive;
@@ -579,6 +593,15 @@ public final class Transport {
      * consistently-published snapshot. RT-path readers must use this (a single
      * volatile load) rather than the three individual getters, which could
      * observe a half-updated region across a concurrent control write.
+     *
+     * <p>Every loop mutator ({@link #setLoopWindow(boolean, double, double)},
+     * {@link #setLoopEnabled(boolean)}, {@link #setLoopRegion(double, double)})
+     * installs a complete window through one volatile store followed by one
+     * {@link ChangeKind#LOOP} notification, so a snapshot taken here — on the
+     * RT thread or inside a change listener — is always a window that some
+     * single call published in full. Callers that <em>define</em> a new loop
+     * must use {@code setLoopWindow} rather than an enable-then-region pair
+     * (story 315 review).</p>
      */
     public LoopWindow getLoopWindow() {
         return loopWindow;
@@ -589,11 +612,17 @@ public final class Transport {
         return loopWindow.enabled();
     }
 
-    /** Enables or disables loop mode. */
+    /**
+     * Enables or disables loop mode, keeping the current loop bounds (the loop
+     * toggle). To define a new loop — flag <em>and</em> bounds — use
+     * {@link #setLoopWindow(boolean, double, double)} instead, which publishes
+     * all three together.
+     *
+     * @param loopEnabled whether loop mode is engaged
+     */
     public void setLoopEnabled(boolean loopEnabled) {
         LoopWindow current = this.loopWindow;
-        this.loopWindow = new LoopWindow(loopEnabled, current.startInBeats(), current.endInBeats());
-        notifyChange(ChangeKind.LOOP);
+        publishLoopWindow(new LoopWindow(loopEnabled, current.startInBeats(), current.endInBeats()));
     }
 
     /** Returns the loop start position in beats. */
@@ -607,12 +636,46 @@ public final class Transport {
     }
 
     /**
-     * Sets the loop region boundaries in beats.
+     * Sets the loop region boundaries in beats, keeping the current enabled
+     * flag (a handle drag). To define a new loop — flag <em>and</em> bounds —
+     * use {@link #setLoopWindow(boolean, double, double)} instead, which
+     * publishes all three together.
      *
      * @param startInBeats loop start position (must be &ge; 0)
      * @param endInBeats   loop end position (must be greater than {@code startInBeats})
+     * @throws IllegalArgumentException if the bounds are invalid; the current
+     *                                  window is left untouched and nothing fires
      */
     public void setLoopRegion(double startInBeats, double endInBeats) {
+        requireValidLoopBounds(startInBeats, endInBeats);
+        LoopWindow current = this.loopWindow;
+        publishLoopWindow(new LoopWindow(current.enabled(), startInBeats, endInBeats));
+    }
+
+    /**
+     * Defines a loop in one call — enabled flag and both bounds published as a
+     * single {@link LoopWindow} through one volatile store and one
+     * {@link ChangeKind#LOOP} notification (story 315 review).
+     *
+     * <p>This is the API to use whenever a new loop is being defined (the
+     * ruler's Shift+click, project load). A {@link #setLoopEnabled(boolean)}
+     * followed by {@link #setLoopRegion(double, double)} is <em>not</em>
+     * atomic: between the two calls the RT thread can observe an enabled loop
+     * over the previous bounds and wrap or render one block against the wrong
+     * region. Validation matches {@code setLoopRegion} exactly; on rejection
+     * the current window is left untouched and nothing fires.</p>
+     *
+     * @param enabled      whether loop mode is engaged
+     * @param startInBeats loop start position (must be &ge; 0)
+     * @param endInBeats   loop end position (must be greater than {@code startInBeats})
+     * @throws IllegalArgumentException if the bounds are invalid
+     */
+    public void setLoopWindow(boolean enabled, double startInBeats, double endInBeats) {
+        requireValidLoopBounds(startInBeats, endInBeats);
+        publishLoopWindow(new LoopWindow(enabled, startInBeats, endInBeats));
+    }
+
+    private static void requireValidLoopBounds(double startInBeats, double endInBeats) {
         if (startInBeats < 0) {
             throw new IllegalArgumentException("loop start must not be negative: " + startInBeats);
         }
@@ -620,8 +683,17 @@ public final class Transport {
             throw new IllegalArgumentException(
                     "loop end must be greater than loop start: start=" + startInBeats + ", end=" + endInBeats);
         }
-        LoopWindow current = this.loopWindow;
-        this.loopWindow = new LoopWindow(current.enabled(), startInBeats, endInBeats);
+    }
+
+    /**
+     * The single store-and-notify path shared by every loop mutator: one
+     * volatile write of the complete window, then exactly one
+     * {@link ChangeKind#LOOP} signal. {@link #advancePosition(double)} keeps
+     * reading the one volatile snapshot — no lock, no allocation is added on
+     * the RT read path.
+     */
+    private void publishLoopWindow(LoopWindow window) {
+        this.loopWindow = window;
         notifyChange(ChangeKind.LOOP);
     }
 
