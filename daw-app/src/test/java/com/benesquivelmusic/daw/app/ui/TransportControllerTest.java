@@ -61,6 +61,8 @@ class TransportControllerTest {
     private Button playButton;
     /** The REC indicator handed to the controller, for recording-lifecycle assertions. */
     private Label recIndicator;
+    /** The status-bar label handed to the controller, for "UI tail untouched" assertions. */
+    private Label statusBarLabel;
 
     private TransportController newController(DawProject project) throws Exception {
         AtomicReference<TransportController> ref = new AtomicReference<>();
@@ -70,7 +72,7 @@ class TransportControllerTest {
             UndoManager undo = new UndoManager();
             NotificationBar nb = new NotificationBar();
             Label statusLabel = new Label();
-            Label statusBarLabel = new Label();
+            statusBarLabel = new Label();
             recIndicator = new Label();
             playButton = new Button();
             Button record = new Button();
@@ -319,6 +321,36 @@ class TransportControllerTest {
 
         assertThat(transport.getState()).isEqualTo(
                 com.benesquivelmusic.daw.core.transport.TransportState.RECORDING);
+    }
+
+    @Test
+    void playWithPreRollWhileRecordingIsANoOp() throws Exception {
+        // Story 315 review — Shift+Space is reachable while RECORDING, and
+        // Transport.playWithPreRoll() is permissive (always sets PLAYING and
+        // rewinds). The production handler's VALIDATE rejects it before the
+        // engine or the status bar is touched: Stop is the only way out of
+        // record.
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setPositionInBeats(20.0);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+        transport.record();
+
+        TransportController controller = newController(project);
+        runHandler(controller::playWithPreRoll);
+
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.RECORDING);
+        assertThat(transport.getPositionInBeats())
+                .as("no pre-roll rewind is applied when the intent is rejected")
+                .isEqualTo(20.0);
+        assertThat(transport.isInPreRoll())
+                .as("the pre-roll window is never entered when the intent is rejected")
+                .isFalse();
+        assertThat(statusBarLabel.getText())
+                .as("the status-bar tail runs only after VALIDATE passes")
+                .isNullOrEmpty();
     }
 
     @Test

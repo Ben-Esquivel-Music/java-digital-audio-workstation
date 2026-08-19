@@ -106,14 +106,24 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
 
     /**
      * Starts playback with the configured pre-roll applied (Story 134; story
-     * 315 review). No VALIDATE gate: {@code Transport.playWithPreRoll()} always
-     * transitions to PLAYING — re-anchoring and rewinding when a pre-roll is
-     * configured — so the announce is unconditional and carries the
+     * 315 review). VALIDATE rejects the intent while RECORDING — Stop is the
+     * only way out of record, exactly as in {@link #start()}. Otherwise
+     * {@code Transport.playWithPreRoll()} always transitions to PLAYING —
+     * re-anchoring and rewinding when a pre-roll is configured — so the
+     * announce follows every accepted intent and carries the
      * <em>post-rewind</em> position, i.e. where playback actually begins
      * (parity with the production controller's path).
      */
     @Override
     public void playWithPreRoll() {
+        // Story 315 review — VALIDATE: no-op while RECORDING. Stop is the only
+        // way out of record (mirrors start()). Transport.playWithPreRoll()
+        // unconditionally sets PLAYING, so without this guard Shift+Space would
+        // silently drop out of record — leaving the recording pipeline active
+        // and un-finalized — and still announce Started.
+        if (transport.getState() == TransportState.RECORDING) {
+            return;
+        }
         transport.playWithPreRoll();
         EventBusPublisher.publish(new TransportEvent.Started(positionFrames(), Instant.now()));
     }

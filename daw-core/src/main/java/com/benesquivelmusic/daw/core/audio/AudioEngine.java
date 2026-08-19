@@ -469,26 +469,122 @@ public final class AudioEngine {
     }
 
     /**
-     * Stops the audio output stream and closes it.
+     * Stops the audio output stream and closes it. Best-effort: backend
+     * failures are logged, never thrown.
+     *
+     * <p>Story 315 review — {@link NativeAudioBackend#stopStream()} and
+     * {@link NativeAudioBackend#closeStream()} are attempted independently,
+     * because close is the operation that actually releases the stream and
+     * its callback. The stream is marked closed and the transport's RT-clock
+     * claim released only once the callback is known to be gone: close
+     * returned normally, or — after a failed close — the backend reports the
+     * stream inactive. If close failed and the stream is still active, the
+     * claimed state is preserved: the (possibly still running) callback keeps
+     * the clock so seeks stay queued behind it, and a later call to this
+     * method retries. If even that activity probe fails, the callback state is
+     * unknown and the claim is preserved as well (see
+     * {@link #callbackStillRunning(NativeAudioBackend)}).</p>
      *
      * <p>A subsequent call to {@link #startAudioOutput()} will open a fresh
      * stream.</p>
      */
     public void stopAudioOutput() {
         NativeAudioBackend backend = this.audioBackend;
-        if (backend != null && streamOpen) {
-            try {
-                backend.stopStream();
-                backend.closeStream();
-            } catch (AudioBackendException e) {
-                LOG.log(Level.WARNING, "Error stopping audio output stream", e);
-            }
-            streamOpen = false;
-            streamPaused = false;
-            // No callback drives the transport any more. Releasing also drains
-            // a seek queued microseconds before the stream closed.
-            releaseTransportClock();
+        if (backend == null || !streamOpen) {
+            return;
         }
+        AudioBackendException stopFailure = stopStreamBestEffort(backend);
+        boolean callbackGone = closeStreamBestEffort(backend, stopFailure);
+        if (callbackGone || !callbackStillRunning(backend)) {
+            markStreamClosedAndReleaseTransportClock();
+        }
+    }
+
+    /**
+     * Probes the backend for a still-running callback after a failed close.
+     *
+     * <p>Story 315 review — best-effort like the rest of
+     * {@link #stopAudioOutput()}: the probe itself can fail (PortAudio wraps
+     * a refused {@code Pa_IsStreamActive} in an {@link AudioBackendException}),
+     * and unknown is treated as "possibly still running" so the claimed state
+     * is preserved. That is the conservative choice: a wrongly-preserved claim
+     * is retried by the next {@link #stopAudioOutput()}, whereas a
+     * wrongly-released claim would let an active callback race inline
+     * seeks.</p>
+     *
+     * @return {@code true} when the backend reports the stream active, or
+     *         when the probe failed and the callback state is unknown
+     */
+    private static boolean callbackStillRunning(NativeAudioBackend backend) {
+        try {
+            return backend.isStreamActive();
+        } catch (RuntimeException probeFailure) {
+            LOG.log(Level.WARNING,
+                    "Could not probe audio output stream activity after a failed close;"
+                            + " treating the callback as possibly still running",
+                    probeFailure);
+            return true;
+        }
+    }
+
+    /**
+     * Stops the backend stream, returning the failure instead of throwing so
+     * close is still attempted.
+     *
+     * @return the stop failure, or {@code null} when the stream stopped
+     */
+    private static AudioBackendException stopStreamBestEffort(NativeAudioBackend backend) {
+        try {
+            backend.stopStream();
+            return null;
+        } catch (AudioBackendException e) {
+            return e;
+        }
+    }
+
+    /**
+     * Closes the backend stream regardless of whether stop succeeded. A close
+     * that returns normally guarantees the callback has been released (both
+     * production backends null out their callback and stream handle there).
+     *
+     * @return {@code true} when close returned normally, i.e. callback
+     *         shutdown is guaranteed
+     */
+    private static boolean closeStreamBestEffort(NativeAudioBackend backend,
+                                                 AudioBackendException stopFailure) {
+        try {
+            backend.closeStream();
+        } catch (AudioBackendException closeFailure) {
+            if (stopFailure != null) {
+                closeFailure.addSuppressed(stopFailure);
+            }
+            LOG.log(Level.WARNING,
+                    "Error closing audio output stream; the callback may still be running",
+                    closeFailure);
+            return false;
+        }
+        if (stopFailure != null) {
+            LOG.log(Level.WARNING,
+                    "Error stopping audio output stream (stream was still closed)",
+                    stopFailure);
+        }
+        return true;
+    }
+
+    /**
+     * Marks the stream closed and releases the RT-clock claim. Only reached
+     * once no callback can call {@link #processBlock}: after a successful
+     * close, or after a failed close when the backend reports the real
+     * hardware state as inactive — releasing then is necessary, otherwise
+     * every seek would be stranded in the queue behind a drain that never
+     * comes (the exact story-315 bug).
+     */
+    private void markStreamClosedAndReleaseTransportClock() {
+        streamOpen = false;
+        streamPaused = false;
+        // No callback drives the transport any more. Releasing also drains
+        // a seek queued microseconds before the stream closed.
+        releaseTransportClock();
     }
 
     /**

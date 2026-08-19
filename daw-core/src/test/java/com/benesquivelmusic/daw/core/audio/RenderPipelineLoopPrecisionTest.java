@@ -44,6 +44,13 @@ class RenderPipelineLoopPrecisionTest {
     /** Reported insert-chain latency: 256 frames → renderOffset = 2⁻⁶ beats, exact. */
     private static final int INSERT_LATENCY_FRAMES = 256;
 
+    /**
+     * Sub-sample loop: one frame is 2⁻¹⁴ beats, so a loop of 2⁻¹⁶ beats (a
+     * quarter frame) is shorter than the smallest renderable segment.
+     */
+    private static final double SUB_SAMPLE_LOOP_START = 4.0;
+    private static final double SUB_SAMPLE_LOOP_LENGTH = 1.0 / 65_536.0; // 2⁻¹⁶ beats
+
     @Test
     void loopWrapIsSampleAccurateWithNoPostLoopEndBleed() {
         // Mono keeps the mixer path gain-neutral (volume 1.0, no pan law), so
@@ -217,6 +224,77 @@ class RenderPipelineLoopPrecisionTest {
                             .isEqualTo(0.0f);
                 }
             }
+        }
+    }
+
+    /**
+     * Story 315 review — the in-block wrap must be modulo, not plain
+     * subtraction. Every segment is clamped to whole frames, so a loop
+     * shorter than one frame (2⁻¹⁶ beats = a quarter frame) is overshot by
+     * MORE than its own length on every frame: one frame from the loop start
+     * lands 3·2⁻¹⁶ beats past the loop end. A single subtraction wrapped the
+     * cursor to {@code loopStart + 3·2⁻¹⁶} — still past the end — after
+     * which the split guard never fired again and frames 1…511 of the block
+     * rendered linearly from beyond the loop (source samples 65537…66047).
+     * Modulo maps any overshoot back into {@code [loopStart, loopEnd)}, so
+     * every frame of every block is one full sub-sample lap and carries the
+     * single in-loop source sample; the transport's own closed-form wrap
+     * then keeps the cursor inside the loop across block boundaries.
+     */
+    @Test
+    void subSampleLoopNeverRendersFromBeyondTheLoopEnd() {
+        AudioFormat format = new AudioFormat(SAMPLE_RATE, 1, 16, BLOCK_SIZE);
+        AudioEngine engine = new AudioEngine(format);
+        Transport transport = new Transport();
+        transport.setTempo(TEMPO);
+        Mixer mixer = new Mixer();
+        mixer.addChannel(new MixerChannel("Track 1"));
+
+        // Every source sample encodes its own index, so content rendered from
+        // beyond the loop end shows up as a concrete value mismatch.
+        int clipSamples = 8 * SAMPLES_PER_BEAT;
+        float[][] clipData = new float[1][clipSamples];
+        for (int i = 0; i < clipSamples; i++) {
+            clipData[0][i] = (i + 1) / 1_048_576.0f; // distinct, nonzero, exact
+        }
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Ramp", 0.0, 8.0, null);
+        clip.setAudioData(clipData);
+        track.addClip(clip);
+
+        double loopStart = SUB_SAMPLE_LOOP_START;
+        double loopEnd = loopStart + SUB_SAMPLE_LOOP_LENGTH;
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(loopStart, loopEnd);
+        transport.setPositionInBeats(loopStart); // inline: applied while STOPPED
+        transport.play();
+        engine.setGraph(transport, mixer, List.of(track));
+        engine.start();
+
+        // The only source sample whose beat position lies inside the loop is
+        // the one at the loop start (4 × 16384 = 65536); each rendered frame
+        // is one full sub-sample lap and must carry exactly that sample.
+        float inLoopSample = clipData[0][(int) (loopStart * SAMPLES_PER_BEAT)];
+        float[][] input = new float[1][BLOCK_SIZE];
+        float[][] output = new float[1][BLOCK_SIZE];
+        for (int block = 0; block < 3; block++) {
+            Arrays.fill(output[0], 0.0f);
+            engine.processBlock(input, output, BLOCK_SIZE);
+            for (int f = 0; f < BLOCK_SIZE; f++) {
+                if (output[0][f] != inLoopSample) {
+                    assertThat(output[0][f])
+                            .as("frame %d of block %d must be the single in-loop source "
+                                            + "sample — anything else is content rendered "
+                                            + "from beyond the sub-sample loop's end",
+                                    f, block)
+                            .isEqualTo(inLoopSample);
+                }
+            }
+            assertThat(transport.getPositionInBeats())
+                    .as("after block %d the transport cursor must still sit inside "
+                            + "the sub-sample loop", block)
+                    .isGreaterThanOrEqualTo(loopStart)
+                    .isLessThan(loopEnd);
         }
     }
 

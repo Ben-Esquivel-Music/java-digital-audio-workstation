@@ -621,6 +621,17 @@ class EngineReconfiguresOnApplyTest {
             dialog.getShell().settingRow("audio.bufferSize").orElseThrow()
                     .setValue(changedBuffer);
             dialog.show();
+            return null;
+        });
+
+        // Story 315 review — this callable deliberately HOLDS the FX thread:
+        // the worker's completion runnable (listener call #2, which fails) must
+        // still be queued behind this turn when applyAndCloseWhenReady() posts
+        // its close check, so the failure lands first and blocks the close.
+        // Its guard budget (15 s) therefore exceeds the inner waits (5 s + 5 s) that
+        // it legitimately performs on the FX thread.
+        Story307TestSupport.onFx(() -> {
+            SettingsDialog dialog = dialogRef.get();
             dialog.applySettings();
 
             assertThat(controller.configurationApplied.await(5, TimeUnit.SECONDS)).isTrue();
@@ -631,7 +642,7 @@ class EngineReconfiguresOnApplyTest {
             dialog.applyAndCloseWhenReady();
             assertThat(dialog.isShowing()).isTrue();
             return null;
-        });
+        }, 15, TimeUnit.SECONDS);
 
         assertThat(Story307TestSupport.awaitFxValue(
                 () -> dialogRef.get().getShell().isOperationNoticeVisible(),

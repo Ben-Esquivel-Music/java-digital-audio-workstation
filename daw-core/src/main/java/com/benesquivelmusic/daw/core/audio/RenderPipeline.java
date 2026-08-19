@@ -624,6 +624,7 @@ public final class RenderPipeline {
         // loop end.
         Transport.LoopWindow loop = transport.getLoopWindow();
         boolean loopActive = loop.enabled() && loop.endInBeats() > loop.startInBeats();
+        double loopLength = loop.endInBeats() - loop.startInBeats(); // > 0 whenever loopActive
         double segStartBeat = transport.getPositionInBeats();
         // Story 315 review — same loop-mapping as renderTracks, applied to
         // the raw cursor: setPositionInBeats permits a target at/past the
@@ -631,9 +632,7 @@ public final class RenderPipeline {
         // block boundary, so an unmapped start would schedule a full block
         // of out-of-loop clicks. Mirrors advancePosition's closed-form wrap.
         if (loopActive && segStartBeat >= loop.endInBeats()) {
-            segStartBeat = loop.startInBeats()
-                    + ((segStartBeat - loop.endInBeats())
-                            % (loop.endInBeats() - loop.startInBeats()));
+            segStartBeat = loop.startInBeats() + ((segStartBeat - loop.endInBeats()) % loopLength);
         }
         int framesProcessed = 0;
 
@@ -670,8 +669,16 @@ public final class RenderPipeline {
 
             framesProcessed += segFrames;
             segStartBeat = segEndBeat;
+            // Story 315 review — wrap by modulo, not plain subtraction: the
+            // segment is clamped to whole frames, so a loop shorter than one
+            // frame (a valid sub-sample loop) is overshot by more than its
+            // own length and a single subtraction would leave the cursor at
+            // or past the loop end — the split guard above then never fires
+            // again and the rest of the block schedules linearly from outside
+            // the loop. Modulo keeps the cursor in [loopStart, loopEnd) for
+            // any overshoot and composes with advancePosition's closed form.
             if (loopActive && segStartBeat >= loop.endInBeats()) {
-                segStartBeat = loop.startInBeats() + (segStartBeat - loop.endInBeats());
+                segStartBeat = loop.startInBeats() + ((segStartBeat - loop.endInBeats()) % loopLength);
             }
         }
     }
@@ -968,8 +975,15 @@ public final class RenderPipeline {
             framesProcessed += framesToProcess;
             currentBeat += framesToProcess / samplesPerBeat;
 
+            // Story 315 review — modulo, not plain subtraction: the segment
+            // is clamped to whole frames, so a sub-sample loop (shorter than
+            // one frame) is overshot by more than its own length and a single
+            // subtraction would leave the cursor at/past the loop end — the
+            // split guard above then never fires again and the rest of the
+            // block renders linearly from beyond the loop. Same closed form
+            // as the start-of-block mapping and advancePosition.
             if (loopEnabled && loopLength > 0.0 && currentBeat >= loopEnd) {
-                currentBeat = loopStart + (currentBeat - loopEnd);
+                currentBeat = loopStart + ((currentBeat - loopEnd) % loopLength);
                 if (midiRenderer != null) {
                     midiRenderer.allNotesOff();
                 }

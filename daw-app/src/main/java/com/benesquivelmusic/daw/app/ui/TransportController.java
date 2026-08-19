@@ -705,17 +705,29 @@ final class TransportController implements TransportIntentHandler {
      * the recording pipeline reads it to suppress capture so the user
      * hears context but no input is recorded.</p>
      *
+     * <p>VALIDATE (story 315 review): a no-op while RECORDING — Stop is the
+     * only way out of record, exactly as in {@link #start()}. The guard sits
+     * before the engine call so neither the audio output nor the status bar is
+     * touched by a rejected intent; {@link Transport#playWithPreRoll()} itself
+     * is permissive and would otherwise drop the transport out of record
+     * without finalizing the active recording pipeline.</p>
+     *
      * <p>ANNOUNCE (story 315 review): {@link TransportEvent.Started} is
      * published here too, carrying the <em>post-rewind</em> position — this was
      * the one start path that announced nothing, so a bus consumer pairing
      * Started with Stopped saw an unmatched Stopped whenever the user started
      * with pre-roll. {@link Transport#playWithPreRoll()} always transitions the
      * transport to PLAYING (re-anchoring and rewinding when a pre-roll is
-     * configured), so the announce is unconditional and always follows the
+     * configured), so once VALIDATE passes the announce always follows the
      * actual transition.</p>
      */
     @Override
     public void playWithPreRoll() {
+        // Story 315 review — VALIDATE before touching the engine (mirrors
+        // start()): Shift+Space while RECORDING must not leave record.
+        if (project.getTransport().getState() == TransportState.RECORDING) {
+            return;
+        }
         try {
             audioEngine.startAudioOutput();
         } catch (RuntimeException e) {

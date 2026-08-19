@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter;
+import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 
@@ -45,6 +46,20 @@ class MetronomeLoopSchedulingEngineTest {
      */
     private static final int LOOP_FRAMES = SAMPLES_PER_BEAT + 3968;
     private static final double LOOP_END_BEATS = LOOP_FRAMES / (double) SAMPLES_PER_BEAT;
+
+    /**
+     * Sub-sample loop for the modulo-wrap regression: one frame is 2⁻¹⁴
+     * beats, the loop is 2⁻¹⁶ beats (a quarter frame) and starts 2⁻¹⁶ beats
+     * after beat 4 — so it contains NO sixteenth-grid position (4.0 lies
+     * before it, 4.25 after it) and a loop-faithful metronome stays silent.
+     * The block is half a beat long so that, if the wrap ever leaves the
+     * cursor past the loop end, the linear walk reaches the out-of-loop
+     * grid position 4.25 within the same block.
+     */
+    private static final double SUB_SAMPLE_LOOP_LENGTH = 1.0 / 65_536.0; // 2⁻¹⁶ beats
+    private static final double SUB_SAMPLE_LOOP_START = 4.0 + SUB_SAMPLE_LOOP_LENGTH;
+    private static final double SUB_SAMPLE_LOOP_END = SUB_SAMPLE_LOOP_START + SUB_SAMPLE_LOOP_LENGTH;
+    private static final int SUB_SAMPLE_BLOCK_FRAMES = SAMPLES_PER_BEAT / 2;
 
     @Test
     void noClickSchedulesPastTheLoopEndAndTheWrappedDownbeatFiresMidBlock() {
@@ -233,6 +248,67 @@ class MetronomeLoopSchedulingEngineTest {
                     .isGreaterThan(0.0f);
         }
         assertNoEnergyOutsideClickWindows(rendered, expectedOnsets, clickLength, totalFrames);
+    }
+
+    /**
+     * Story 315 review — the in-block wrap must be modulo, not plain
+     * subtraction. Every segment is clamped to whole frames, so a loop
+     * shorter than one frame is overshot by MORE than its own length: one
+     * frame from the loop start lands 3·2⁻¹⁶ beats past the loop end. A
+     * single subtraction wrapped the cursor to {@code loopStart + 3·2⁻¹⁶} =
+     * beat 4 + 2⁻¹⁴ — still past the end — after which the split guard never
+     * fired again and the rest of the block walked the linear timeline: the
+     * out-of-loop sixteenth at beat 4.25 clicked at frame 4096. Modulo maps
+     * any overshoot back into {@code [loopStart, loopEnd)}, where there is no
+     * grid position, so the output must be perfectly silent and the
+     * transport cursor must stay inside the loop across block boundaries.
+     */
+    @Test
+    void subSampleLoopNeverSchedulesClicksFromBeyondTheLoopEnd() {
+        Transport transport = new Transport();
+        transport.setTempo(TEMPO);
+        transport.setTimeSignature(4, 4);
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(SUB_SAMPLE_LOOP_START, SUB_SAMPLE_LOOP_END);
+        transport.setPositionInBeats(SUB_SAMPLE_LOOP_START); // inline: applied while STOPPED
+        transport.play();
+
+        Metronome metronome = new Metronome(SAMPLE_RATE, 2);
+        metronome.setEnabled(true);
+        metronome.setSubdivision(Subdivision.SIXTEENTH);
+        metronome.setClickOutput(new ClickOutput(0, 1.0, true, false));
+
+        AudioFormat format = new AudioFormat(SAMPLE_RATE, 2, 16, SUB_SAMPLE_BLOCK_FRAMES);
+        AudioEngine engine = new AudioEngine(format);
+        engine.setGraph(transport, new Mixer(), List.of());
+        engine.setMetronome(metronome);
+        engine.setMetronomeSideOutputRouter(new MetronomeSideOutputRouter());
+        engine.start();
+
+        float[][] input = new float[2][SUB_SAMPLE_BLOCK_FRAMES];
+        float[][] output = new float[2][SUB_SAMPLE_BLOCK_FRAMES];
+        for (int block = 0; block < 3; block++) {
+            for (int ch = 0; ch < 2; ch++) {
+                java.util.Arrays.fill(output[ch], 0.0f);
+            }
+            engine.processBlock(input, output, SUB_SAMPLE_BLOCK_FRAMES);
+
+            for (int f = 0; f < SUB_SAMPLE_BLOCK_FRAMES; f++) {
+                if (output[0][f] != 0.0f || output[1][f] != 0.0f) {
+                    assertThat(Math.max(Math.abs(output[0][f]), Math.abs(output[1][f])))
+                            .as("frame %d of block %d is non-silent — the sub-sample loop "
+                                            + "contains no grid position, so a click here was "
+                                            + "scheduled from beyond the loop end",
+                                    f, block)
+                            .isEqualTo(0.0f);
+                }
+            }
+            assertThat(transport.getPositionInBeats())
+                    .as("after block %d the transport cursor must still sit inside "
+                            + "the sub-sample loop", block)
+                    .isGreaterThanOrEqualTo(SUB_SAMPLE_LOOP_START)
+                    .isLessThan(SUB_SAMPLE_LOOP_END);
+        }
     }
 
     /** Builds the engine exactly as the harness above: graph, metronome, router, start. */

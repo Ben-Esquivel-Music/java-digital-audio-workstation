@@ -116,6 +116,39 @@ class TransportCommandEventTest {
     }
 
     @Test
+    void playWithPreRollCommandIsANoOpWhileRecordingAndNeverDropsOutOfRecordOrAnnounces() {
+        // Story 315 review — Shift+Space is reachable while RECORDING, and
+        // Transport.playWithPreRoll() is permissive (always sets PLAYING and
+        // rewinds). The handler's VALIDATE must reject it: Stop is the only
+        // way out of record, so there is no MUTATE (no state change, no
+        // rewind) and no ANNOUNCE.
+        Transport transport = new Transport();
+        transport.setPositionInBeats(20.0);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+        transport.record();
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        AtomicReference<TransportEvent.Started> announced = new AtomicReference<>();
+        try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
+                DispatchMode.ON_CALLER_THREAD, announced::set)) {
+
+            new PlayWithPreRollCommand().execute(handler);
+
+            assertThat(transport.getState())
+                    .as("PlayWithPreRoll is a no-op while RECORDING — Stop is the only way out of record")
+                    .isEqualTo(TransportState.RECORDING);
+            assertThat(transport.getPositionInBeats())
+                    .as("no pre-roll rewind is applied when the intent is rejected")
+                    .isEqualTo(20.0);
+            assertThat(transport.isInPreRoll())
+                    .as("the pre-roll window is never entered when the intent is rejected")
+                    .isFalse();
+            assertThat(announced.get())
+                    .as("no Started is announced when PlayWithPreRoll is a no-op").isNull();
+        }
+    }
+
+    @Test
     void pauseCommandPausesAPlayingTransportAndAnnouncesNothing() {
         Transport transport = new Transport();
         transport.play();
