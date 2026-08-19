@@ -39,8 +39,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (see {@code DropZoneFiresDockEventTest}), so the test drives the extracted
  * core — the same {@code importAudioFile(file, targetTrack, dropBeat)} call
  * the installed {@code DRAG_DROPPED} handler makes after computing the drop
- * beat. A real {@link Transport} in {@link TransportState#PLAYING} state gives
- * the deferred-seek behaviour automatically.</p>
+ * beat. A real {@link Transport} in {@link TransportState#PLAYING} state with
+ * the RT-clock claim held gives the deferred-seek behaviour — deferral requires
+ * PLAYING <em>and</em> the claim (story 315); an unclaimed transport applies
+ * seeks inline even while rolling, which would let the old
+ * seek/import/restore behaviour pass unnoticed.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class AudioImportControllerTest {
@@ -115,7 +118,8 @@ class AudioImportControllerTest {
 
         Transport transport = project.getTransport();
         transport.setPositionInBeats(2.0); // committed while STOPPED
-        transport.play();                  // rolling → seeks are now deferred
+        transport.setRealTimeClockActive(true);
+        transport.play();                  // rolling + claimed → seeks are deferred
 
         MixerView mixerView = callOnFxThread(() -> new MixerView(project));
         AudioImportController controller = createController(project, mixerView);

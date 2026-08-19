@@ -1,10 +1,12 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
 
@@ -38,6 +40,9 @@ class RenderPipelineLoopPrecisionTest {
     /** Loop = 4 beats + 256 frames: frame-grid aligned, block-grid hostile. */
     private static final int LOOP_FRAMES = 4 * SAMPLES_PER_BEAT + 256;
     private static final double LOOP_END_BEATS = LOOP_FRAMES / (double) SAMPLES_PER_BEAT;
+
+    /** Reported insert-chain latency: 256 frames → renderOffset = 2⁻⁶ beats, exact. */
+    private static final int INSERT_LATENCY_FRAMES = 256;
 
     @Test
     void loopWrapIsSampleAccurateWithNoPostLoopEndBleed() {
@@ -144,5 +149,93 @@ class RenderPipelineLoopPrecisionTest {
                 .as("the wrap carries the intra-block overshoot instead of "
                         + "quantizing the restart to the buffer size")
                 .isEqualTo(256.0 / SAMPLES_PER_BEAT);
+    }
+
+    /**
+     * Story 315 review — the no-bleed guarantee must survive a latent insert
+     * chain: with {@value #INSERT_LATENCY_FRAMES} frames of reported plugin
+     * latency the PDC-shifted render cursor
+     * ({@code position + renderOffsetBeats}) reaches the loop end 256 frames
+     * before the raw transport cursor does. At block 128 the transport sits
+     * at beat 4.0 (inside the loop) while the shifted cursor sits exactly on
+     * the loop end (65536 + 256 = 65792 frames) — without loop-mapping the
+     * shifted cursor, {@code renderTracks} skips its split guard and renders
+     * the whole block linearly from beyond the loop.
+     */
+    @Test
+    void latentInsertChainDoesNotBleedPostLoopEndContentAtTheWrap() {
+        AudioFormat format = new AudioFormat(SAMPLE_RATE, 1, 16, BLOCK_SIZE);
+        AudioEngine engine = new AudioEngine(format);
+        Transport transport = new Transport();
+        transport.setTempo(TEMPO);
+        Mixer mixer = new Mixer();
+        MixerChannel channel = new MixerChannel("Track 1");
+        mixer.addChannel(channel);
+        // A unity-gain passthrough that only REPORTS latency: the channel
+        // stays gain-neutral while getSystemLatencySamples() becomes 256, so
+        // the render cursor runs 256 frames (2⁻⁶ beats, exact) ahead of the
+        // transport.
+        channel.addInsert(new InsertSlot("Latent",
+                new ReportedLatencyProcessor(INSERT_LATENCY_FRAMES)));
+        assertThat(mixer.getSystemLatencySamples())
+                .as("harness precondition: the insert chain must report its latency")
+                .isEqualTo(INSERT_LATENCY_FRAMES);
+
+        // The only clip content sits immediately PAST the loop end, so every
+        // rendered frame must be silent: any energy is content rendered from
+        // at/beyond the loop end by the PDC-shifted cursor.
+        int clipSamples = SAMPLES_PER_BEAT;
+        float[][] clipData = new float[1][clipSamples];
+        for (int i = 0; i < clipSamples; i++) {
+            clipData[0][i] = (i + 1) / 1_048_576.0f; // distinct, nonzero, exact
+        }
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("PostLoop", LOOP_END_BEATS, LOOP_END_BEATS + 1.0, null);
+        clip.setAudioData(clipData);
+        track.addClip(clip);
+
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(0.0, LOOP_END_BEATS);
+        transport.play();
+        engine.setGraph(transport, mixer, List.of(track));
+        engine.start();
+
+        // 132 blocks cover the shifted cursor's loop-end hit at block 128
+        // (and the transport's own wrap one boundary later) with margin.
+        float[][] input = new float[1][BLOCK_SIZE];
+        float[][] output = new float[1][BLOCK_SIZE];
+        for (int block = 0; block < 132; block++) {
+            Arrays.fill(output[0], 0.0f);
+            engine.processBlock(input, output, BLOCK_SIZE);
+            for (int f = 0; f < BLOCK_SIZE; f++) {
+                if (output[0][f] != 0.0f) {
+                    assertThat(output[0][f])
+                            .as("frame %d of block %d is non-silent — the only clip "
+                                            + "content lies past the loop end, so energy "
+                                            + "here is PDC-shifted post-loop-end bleed",
+                                    f, block)
+                            .isEqualTo(0.0f);
+                }
+            }
+        }
+    }
+
+    /** Unity-gain passthrough that only reports latency — drives the PDC offset. */
+    private record ReportedLatencyProcessor(int latency) implements AudioProcessor {
+        @Override
+        public void process(float[][] in, float[][] out, int frames) {
+            for (int ch = 0; ch < in.length; ch++) {
+                System.arraycopy(in[ch], 0, out[ch], 0, frames);
+            }
+        }
+
+        @Override public void reset() {}
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
+
+        @Override
+        public int getLatencySamples() {
+            return latency;
+        }
     }
 }

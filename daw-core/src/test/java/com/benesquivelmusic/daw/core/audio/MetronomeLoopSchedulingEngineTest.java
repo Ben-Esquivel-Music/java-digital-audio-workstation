@@ -122,6 +122,173 @@ class MetronomeLoopSchedulingEngineTest {
         }
     }
 
+    /**
+     * Story 315 review — a seek target exactly AT the loop end is permitted
+     * while looping ({@code setPositionInBeats} does not clamp into the loop;
+     * {@code advancePosition} wraps only at the next block boundary).
+     * Scheduling loop-maps that cursor to the loop start before walking the
+     * grid, so the very first block fires the wrapped downbeat at frame 0
+     * and the whole run is indistinguishable from one started at the loop
+     * start. (Unmapped, the first block scheduled linearly over the
+     * out-of-loop range [loopEnd, loopEnd + block) — which contains no grid
+     * position — and the frame-0 downbeat went silently missing.)
+     */
+    @Test
+    void seekExactlyToTheLoopEndFiresTheWrappedDownbeatAtFrameZero() {
+        Transport transport = new Transport();
+        transport.setTempo(TEMPO);
+        transport.setTimeSignature(4, 4);
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(0.0, LOOP_END_BEATS);
+        transport.setPositionInBeats(LOOP_END_BEATS); // inline: applied while STOPPED
+        transport.play();
+
+        Metronome metronome = new Metronome(SAMPLE_RATE, 2);
+        metronome.setEnabled(true);
+        metronome.setClickOutput(new ClickOutput(0, 1.0, true, false));
+        AudioEngine engine = startedEngine(transport, metronome);
+
+        int laps = 3;
+        int totalFrames = laps * LOOP_FRAMES;
+        float[][] rendered = renderBlocks(engine, totalFrames);
+
+        // Identical expected onsets to a run started at the loop start:
+        // beats 0 and 1 of each lap — and nowhere else.
+        int clickLength = Math.max(
+                metronome.generateClick(true)[0].length,
+                metronome.generateClick(false)[0].length);
+        List<Integer> expectedOnsets = new ArrayList<>();
+        for (int lap = 0; lap < laps; lap++) {
+            expectedOnsets.add(lap * LOOP_FRAMES);
+            expectedOnsets.add(lap * LOOP_FRAMES + SAMPLES_PER_BEAT);
+        }
+
+        for (int onset : expectedOnsets) {
+            assertThat(maxAbs(rendered, onset, Math.min(onset + 64, totalFrames)))
+                    .as("a click must sound at frame %d — the loop-end seek maps to "
+                                    + "the loop start, so the run must match one started there",
+                            onset)
+                    .isGreaterThan(0.0f);
+        }
+        assertNoEnergyOutsideClickWindows(rendered, expectedOnsets, clickLength, totalFrames);
+    }
+
+    /**
+     * Story 315 review — a seek BEYOND the loop end must not emit the
+     * out-of-loop grid click at the seek target: scheduling loop-maps the
+     * cursor ({@code loopStart + ((pos − loopEnd) mod loopLength)} — the
+     * same closed form {@code advancePosition} applies one block later), so
+     * the first block already walks the wrapped timeline and every click
+     * lands at its post-wrap offset. (Unmapped, beat 2 — a grid position
+     * past the 1.2421875-beat loop end — fired a click at frame 0.)
+     */
+    @Test
+    void seekBeyondTheLoopEndSchedulesFromTheWrappedPositionNotTheSeekTarget() {
+        Transport transport = new Transport();
+        transport.setTempo(TEMPO);
+        transport.setTimeSignature(4, 4);
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(0.0, LOOP_END_BEATS);
+        transport.setPositionInBeats(2.0); // past the loop end; inline while STOPPED
+        transport.play();
+
+        Metronome metronome = new Metronome(SAMPLE_RATE, 2);
+        metronome.setEnabled(true);
+        metronome.setClickOutput(new ClickOutput(0, 1.0, true, false));
+        AudioEngine engine = startedEngine(transport, metronome);
+
+        // Beat 2 maps to 2 − 1.2421875 = 0.7578125 beats = 12416 frames into
+        // the loop: beat 1 arrives 3968 frames in, the wrap (and its
+        // downbeat) 7936 frames in, then the lap pattern repeats.
+        int mappedStartFrame = 2 * SAMPLES_PER_BEAT - LOOP_FRAMES; // 12416
+        int firstBeatOnset = SAMPLES_PER_BEAT - mappedStartFrame;  // 3968
+        int firstWrapOnset = LOOP_FRAMES - mappedStartFrame;       // 7936
+        int laps = 2;
+        int totalFrames = firstWrapOnset + laps * LOOP_FRAMES;     // 48640
+
+        float[][] rendered = renderBlocks(engine, totalFrames);
+
+        int clickLength = Math.max(
+                metronome.generateClick(true)[0].length,
+                metronome.generateClick(false)[0].length);
+        List<Integer> expectedOnsets = new ArrayList<>();
+        expectedOnsets.add(firstBeatOnset);
+        for (int lap = 0; lap < laps; lap++) {
+            expectedOnsets.add(firstWrapOnset + lap * LOOP_FRAMES);
+            int beatOneOnset = firstWrapOnset + lap * LOOP_FRAMES + SAMPLES_PER_BEAT;
+            if (beatOneOnset < totalFrames) {
+                expectedOnsets.add(beatOneOnset);
+            }
+        }
+
+        assertThat(maxAbs(rendered, 0, 64))
+                .as("no click may fire at the seek target itself — beat 2 lies past "
+                        + "the loop end, so a click there is out-of-loop bleed")
+                .isEqualTo(0.0f);
+        for (int onset : expectedOnsets) {
+            assertThat(maxAbs(rendered, onset, Math.min(onset + 64, totalFrames)))
+                    .as("a click must sound at frame %d — the post-wrap offset of its "
+                                    + "loop-mapped grid position",
+                            onset)
+                    .isGreaterThan(0.0f);
+        }
+        assertNoEnergyOutsideClickWindows(rendered, expectedOnsets, clickLength, totalFrames);
+    }
+
+    /** Builds the engine exactly as the harness above: graph, metronome, router, start. */
+    private static AudioEngine startedEngine(Transport transport, Metronome metronome) {
+        AudioFormat format = new AudioFormat(SAMPLE_RATE, 2, 16, BUFFER_FRAMES);
+        AudioEngine engine = new AudioEngine(format);
+        engine.setGraph(transport, new Mixer(), List.of());
+        engine.setMetronome(metronome);
+        engine.setMetronomeSideOutputRouter(new MetronomeSideOutputRouter());
+        engine.start();
+        return engine;
+    }
+
+    /** Renders {@code totalFrames} through the engine in BUFFER_FRAMES blocks. */
+    private static float[][] renderBlocks(AudioEngine engine, int totalFrames) {
+        float[][] rendered = new float[2][totalFrames];
+        float[][] input = new float[2][BUFFER_FRAMES];
+        float[][] output = new float[2][BUFFER_FRAMES];
+        int done = 0;
+        while (done < totalFrames) {
+            int frames = Math.min(BUFFER_FRAMES, totalFrames - done);
+            for (int ch = 0; ch < 2; ch++) {
+                java.util.Arrays.fill(output[ch], 0.0f);
+            }
+            engine.processBlock(input, output, frames);
+            for (int ch = 0; ch < 2; ch++) {
+                System.arraycopy(output[ch], 0, rendered[ch], done, frames);
+            }
+            done += frames;
+        }
+        return rendered;
+    }
+
+    /**
+     * Everything outside a click window must be perfectly silent: any energy
+     * there is a click scheduled for a beat at/after the loop end (bleed) or
+     * a mis-placed wrapped click.
+     */
+    private static void assertNoEnergyOutsideClickWindows(float[][] rendered,
+                                                          List<Integer> onsets,
+                                                          int clickLength,
+                                                          int totalFrames) {
+        for (int f = 0; f < totalFrames; f++) {
+            if (insideAnyClickWindow(f, onsets, clickLength)) {
+                continue;
+            }
+            if (rendered[0][f] != 0.0f || rendered[1][f] != 0.0f) {
+                assertThat(rendered[0][f])
+                        .as("frame %d lies outside every legitimate click window — "
+                                + "non-silence here is a click scheduled past the "
+                                + "loop end or at a wrong wrap offset", f)
+                        .isEqualTo(0.0f);
+            }
+        }
+    }
+
     private static boolean insideAnyClickWindow(int frame, List<Integer> onsets, int clickLength) {
         for (int onset : onsets) {
             if (frame >= onset && frame < onset + clickLength) {

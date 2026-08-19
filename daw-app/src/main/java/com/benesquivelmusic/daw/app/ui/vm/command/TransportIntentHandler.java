@@ -39,8 +39,33 @@ public interface TransportIntentHandler {
      */
     void togglePlayPause();
 
+    /**
+     * Starts playback with the configured pre-roll applied (Story 134; §5.2).
+     * Always transitions the transport to PLAYING — with a pre-roll configured
+     * it re-anchors and rewinds first; with none it is equivalent to
+     * {@link #start()}.
+     */
+    void playWithPreRoll();
+
     /** Stops playback and returns the playhead to the anchor (§5.2 "Stop"). */
     void stop();
+
+    /**
+     * Skips the playhead back to the beginning (§5.2). An absolute seek to
+     * beat zero: queued while the RT clock owns the transport, immediate
+     * otherwise (story 315).
+     */
+    void skipBack();
+
+    /**
+     * Skips the playhead forward by four bars (§5.2). A RELATIVE seek — the
+     * jump composes against {@code Transport.getSeekTargetInBeats()}, never the
+     * committed position (story 315 review): while the RT clock owns the
+     * transport a seek sits queued until the next block boundary, and only the
+     * pending target lets successive skips accumulate instead of collapsing
+     * onto the same base.
+     */
+    void skipForward();
 
     /** Toggles the record-arm / recording state (§5.2 "Record"). */
     void toggleRecord();

@@ -18,7 +18,10 @@ import com.benesquivelmusic.daw.app.ui.vm.ProjectVM;
 import com.benesquivelmusic.daw.app.ui.vm.TransportControlBinder;
 import com.benesquivelmusic.daw.app.ui.vm.TransportVM;
 import com.benesquivelmusic.daw.app.ui.vm.command.HistoryCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.PlayWithPreRollCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.RedoCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.SkipBackCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.SkipForwardCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.StopTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TogglePlayPauseCommand;
@@ -1809,7 +1812,7 @@ public final class MainController {
                 () -> viewNavigationController.onZoomIn(),
                 () -> viewNavigationController.onZoomOut(),
                 () -> viewNavigationController.onToggleSnap(),
-                () -> transportController.onSkipBack(),
+                () -> dispatchTransportCommand(new SkipBackCommand()),
                 () -> project.markDirty(),
                 () -> viewNavigationController.isSnapEnabled(),
                 () -> viewNavigationController.getZoomLevel(viewNavigationController.getActiveView()),
@@ -2031,11 +2034,11 @@ public final class MainController {
                     @Override public void onPlay() { dispatchTransportCommand(new TogglePlayPauseCommand()); }
                     @Override public void onStop() { dispatchTransportCommand(new StopTransportCommand()); }
                     @Override public void onRecord() { dispatchTransportCommand(new ToggleRecordCommand()); }
-                    @Override public void onPlayWithPreRoll() { transportController.onPlayWithPreRoll(); }
+                    @Override public void onPlayWithPreRoll() { dispatchTransportCommand(new PlayWithPreRollCommand()); }
                     @Override public void onTogglePreRoll() { transportController.onTogglePreRoll(); }
                     @Override public void onTogglePostRoll() { transportController.onTogglePostRoll(); }
-                    @Override public void onSkipBack() { transportController.onSkipBack(); }
-                    @Override public void onSkipForward() { transportController.onSkipForward(); }
+                    @Override public void onSkipBack() { dispatchTransportCommand(new SkipBackCommand()); }
+                    @Override public void onSkipForward() { dispatchTransportCommand(new SkipForwardCommand()); }
                     @Override public void onToggleLoop() { dispatchTransportCommand(new ToggleLoopCommand()); }
                     @Override public void onToggleMetronome() { metronomeController.onToggleMetronome(); }
                     @Override public void onUndo() { MainController.this.onUndo(); }
@@ -3801,11 +3804,16 @@ public final class MainController {
     // Story 315 — the Play/Stop/Record/Loop FXML handlers are gone: those
     // buttons are bound by TransportControlBinder in rebuildViewModels() and
     // raise TransportCommands into dispatchTransportCommand() (§2.8 one path).
-    // Skip and metronome are not commands and stay imperative. The loop
-    // repaint the old onToggleLoop handler forced is covered by the per-frame
-    // tickArrangementOverlays() → applyLoopAndRulerGrid().
-    @FXML private void onSkipBack() { transportController.onSkipBack(); }
-    @FXML private void onSkipForward() { transportController.onSkipForward(); }
+    // Skip Back/Forward and pre-roll play now ALSO ride the command path
+    // (story 315 review follow-up — the last transport gestures that bypassed
+    // it); only the FXML method names survive, because the FXML references
+    // them. The metronome toggle and the pre/post-roll TOGGLES stay
+    // imperative: they are configuration gestures, not transport-state
+    // transitions. The loop repaint the old onToggleLoop handler forced is
+    // covered by the per-frame tickArrangementOverlays() →
+    // applyLoopAndRulerGrid().
+    @FXML private void onSkipBack() { dispatchTransportCommand(new SkipBackCommand()); }
+    @FXML private void onSkipForward() { dispatchTransportCommand(new SkipForwardCommand()); }
     @FXML private void onToggleMetronome() { metronomeController.onToggleMetronome(); }
     @FXML private void onAddAudioTrack() { trackCreationController.onAddAudioTrack(); }
     @FXML private void onAddMidiTrack() { trackCreationController.onAddMidiTrack(); }

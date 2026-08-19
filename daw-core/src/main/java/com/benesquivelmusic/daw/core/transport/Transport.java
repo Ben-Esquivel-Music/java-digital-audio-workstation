@@ -47,12 +47,18 @@ import java.util.function.Consumer;
  *       exactly at the next block boundary — a seek is never lost, never
  *       torn.</li>
  *   <li>{@link #advancePosition(double)} is {@code @RealTimeSafe}: it drains
- *       the seek queue (unconditionally — a claim released mid-flight must not
- *       strand one), then advances via a lock-free {@link VarHandle} CAS loop
- *       with a closed-form loop wrap — no locks, no allocation.</li>
+ *       the seek queue commit-before-clear — the target is <em>peeked</em>,
+ *       committed into the position, and only then CAS-cleared out of the
+ *       slot — then advances via a lock-free {@link VarHandle} CAS loop with a
+ *       closed-form loop wrap; no locks, no allocation. The queue is never
+ *       empty while its target is uncommitted, so
+ *       {@link #getSeekTargetInBeats()} can never return the pre-seek base (a
+ *       pop-then-commit drain had exactly that gap, collapsing two relative
+ *       seeks that straddled it into one). The drain ignores the claim flag —
+ *       a claim released mid-flight must not strand a seek.</li>
  *   <li>{@link #stop()} stores {@link TransportState#STOPPED} <em>before</em>
  *       touching the position, and {@link #advancePosition(double)} re-reads
- *       the state <em>after</em> its drain and after its successful CAS,
+ *       the state <em>after</em> its seek peek and after its successful CAS,
  *       undoing an advance that landed past a stop. The state store alone is
  *       not sufficient: a stop that writes no new position leaves the CAS
  *       witness unchanged, so the CAS still succeeds (see
@@ -166,9 +172,13 @@ public final class Transport {
      * ({@link #setPositionInBeats(double)} while rolling <em>and</em> claimed),
      * drained by the RT thread at the next {@link #advancePosition(double)}
      * (and by {@link #pause()}, whose state flip halts the RT advance, and by
-     * {@link #setRealTimeClockActive(boolean) releasing the claim}). In
-     * production all control writes are FX-thread-serialized; the queue exists
-     * solely for the FX&harr;RT race.
+     * {@link #setRealTimeClockActive(boolean) releasing the claim}). Every
+     * drain commits the target into {@link #positionInBeats} <em>before</em>
+     * clearing the slot, and clears via {@code compareAndSet} on the peeked
+     * value — so {@link #getSeekTargetInBeats()} never observes an
+     * empty-queue-but-uncommitted gap, and a newer target published mid-drain
+     * survives for the next drain. In production all control writes are
+     * FX-thread-serialized; the queue exists solely for the FX&harr;RT race.
      */
     private final AtomicLong pendingSeek = new AtomicLong(NO_SEEK);
 
@@ -274,10 +284,18 @@ public final class Transport {
     public void pause() {
         if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
             state = TransportState.PAUSED;
-            long seek = pendingSeek.getAndSet(NO_SEEK);
+            // Commit-before-clear (see getSeekTargetInBeats): peek the target,
+            // store it, and only then CAS the slot empty, so the target stays
+            // observable until the position includes it. A deliberate side
+            // effect of the peek: an RT drain that had already popped the
+            // queue used to make the seek invisible here and it was silently
+            // discarded — now the target stays visible until committed and
+            // this drain applies it, exactly as the contract above promises.
+            long seek = pendingSeek.get();
             boolean sought = seek != NO_SEEK;
             if (sought) {
                 positionInBeats = Double.longBitsToDouble(seek);
+                pendingSeek.compareAndSet(seek, NO_SEEK);
             }
             notifyChange(ChangeKind.STATE);
             if (sought) {
@@ -385,6 +403,14 @@ public final class Transport {
      * {@link #getPositionInBeats()} semantics — they do not read the base at
      * all.</p>
      *
+     * <p>Invariant (story 315 review): every drain commits the queued target
+     * into the position <em>before</em> clearing the queue, so at every
+     * instant this method returns either the queued target or a committed
+     * position that already includes it — never the pre-seek base. Relative
+     * seeks composed against it therefore always accumulate, even when they
+     * straddle an in-flight RT drain; two skips can never collapse into
+     * one.</p>
+     *
      * @return the queued seek target if one is pending, else the committed
      *         position
      */
@@ -443,9 +469,16 @@ public final class Transport {
      * {@link #setPositionInBeats(double)}.
      */
     private void drainPendingSeekInline() {
-        long seek = pendingSeek.getAndSet(NO_SEEK);
+        // Commit-before-clear (see getSeekTargetInBeats): peek, store, then
+        // CAS the slot empty — a getAndSet pop would open a window where the
+        // queue is empty but the position does not yet include the target. The
+        // CAS leaves a newer concurrently-published target queued for the next
+        // drain (the publisher's own double check in setPositionInBeats
+        // guarantees one runs).
+        long seek = pendingSeek.get();
         if (seek != NO_SEEK) {
             this.positionInBeats = Double.longBitsToDouble(seek);
+            pendingSeek.compareAndSet(seek, NO_SEEK);
             notifyChange(ChangeKind.POSITION);
         }
     }
@@ -602,13 +635,19 @@ public final class Transport {
      *   <li><b>Seek drain.</b> A queued UI seek is applied <em>verbatim</em>
      *       (the delta is NOT added: the just-rendered block was rendered from
      *       the pre-seek position, so the seek takes effect exactly at this
-     *       block boundary) and {@link ChangeKind#POSITION} fires. The queue is
-     *       drained unconditionally — even if the
-     *       {@linkplain #setRealTimeClockActive(boolean) claim} was released
-     *       mid-flight — so a seek can never be stranded. The application
-     *       itself goes through the same guarded compare-and-set as the
-     *       advance, so a stop that lands mid-drain supersedes the seek instead
-     *       of the drain parking the playhead at a target the user cancelled by
+     *       block boundary) and {@link ChangeKind#POSITION} fires. The target
+     *       is <em>peeked</em>, committed through the same guarded
+     *       compare-and-set as the advance, and only then CAS-cleared out of
+     *       the queue — commit-before-clear, so
+     *       {@link #getSeekTargetInBeats()} never observes an empty queue over
+     *       a position that excludes the target (see that method's invariant).
+     *       The clear is a {@code compareAndSet} on the peeked value: a newer
+     *       seek published mid-drain stays queued for the next block. The
+     *       drain ignores the {@linkplain #setRealTimeClockActive(boolean)
+     *       claim} — released mid-flight it must not strand a seek — but it
+     *       backs off a stop or pause without touching the queue, so a stop
+     *       that lands mid-drain supersedes the seek instead of the drain
+     *       parking the playhead at a target the user cancelled by
      *       stopping.</li>
      *   <li><b>CAS advance.</b> Otherwise the position advances by
      *       {@code deltaBeats} through a lock-free compare-and-set loop. When
@@ -618,9 +657,11 @@ public final class Transport {
      *       closed form of repeated length subtraction, identical in result
      *       and safe even for pathologically tiny loop regions.</li>
      *   <li><b>Stop/pause back-off.</b> The state is checked three times: once
-     *       after the drain (a stop supersedes a seek that was already pulled
-     *       out of the queue), once before each CAS attempt (the cheap fast
-     *       path), and once <em>after</em> a successful CAS.</li>
+     *       after the seek peek (a stop supersedes a still-queued seek), once
+     *       before each CAS attempt (the cheap fast path), and once
+     *       <em>after</em> a successful CAS. Every back-off leaves the queue
+     *       untouched — the rolling-to-non-rolling transition owns the
+     *       clear.</li>
      * </ol>
      *
      * <h4>Why the post-CAS re-read is required</h4>
@@ -656,31 +697,46 @@ public final class Transport {
         if (deltaBeats < 0) {
             throw new IllegalArgumentException("deltaBeats must not be negative: " + deltaBeats);
         }
-        long seek = pendingSeek.getAndSet(NO_SEEK);
+        // Peek — do NOT pop. The target must stay observable through
+        // getSeekTargetInBeats() until the position commit below includes it:
+        // a pop-then-commit drain leaves a window where the queue is empty and
+        // the position is still the pre-seek base, so a relative seek landing
+        // in it composes against the stale base and two skips straddling the
+        // drain collapse into one jump.
+        long seek = pendingSeek.get();
         if (seek != NO_SEEK) {
-            TransportState afterDrain = state;
-            if (afterDrain != TransportState.PLAYING
-                    && afterDrain != TransportState.RECORDING) {
-                // A stop landed between the queue read and here: it supersedes
-                // the queued seek (stop() clears the queue, but this value is
-                // already out of it), so discard rather than park the playhead
-                // at a seek target the user cancelled by stopping.
+            TransportState afterPeek = state;
+            if (afterPeek != TransportState.PLAYING
+                    && afterPeek != TransportState.RECORDING) {
+                // A stop or pause landed after the peek: it supersedes the
+                // seek. Return without touching the queue — every
+                // rolling-to-non-rolling transition owns the clear (stop()
+                // sets NO_SEEK after its state store, pause() drains inline),
+                // so nothing is stranded and the target stays visible until
+                // that owner commits or discards it.
                 return;
             }
             double previous = positionInBeats;
             double target = Double.longBitsToDouble(seek);
             if (!POSITION.compareAndSet(this, previous, target)) {
-                return; // stop() stored its anchor first — that value wins
+                // stop() stored its anchor first — that value wins, and stop()
+                // has already cleared (or is about to clear) the queue itself.
+                return;
             }
             TransportState afterStore = state;
             if (afterStore != TransportState.PLAYING
                     && afterStore != TransportState.RECORDING) {
                 // Same in-flight-stop hazard as the CAS advance below, and the
                 // same conditional undo: if stop() stored its own position
-                // after ours the compensation fails and its value stands.
+                // after ours the compensation fails and its value stands. The
+                // queue again stays untouched — the stop owns the clear.
                 POSITION.compareAndSet(this, target, previous);
                 return;
             }
+            // Committed while still rolling — only now empty the slot, and
+            // only if it still holds the value just applied: a newer seek
+            // published mid-drain must stay queued for the next block.
+            pendingSeek.compareAndSet(seek, NO_SEEK);
             notifyChange(ChangeKind.POSITION);
             return;
         }

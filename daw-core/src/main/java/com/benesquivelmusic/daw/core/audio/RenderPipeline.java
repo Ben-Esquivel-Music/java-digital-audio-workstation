@@ -612,19 +612,29 @@ public final class RenderPipeline {
         // across the wrap boundary within the block/tail — that is the click's
         // natural ring-out, not timeline content bleeding past the loop end.)
         //
-        // Known pre-existing divergence: clicks are scheduled against the raw
-        // transport cursor (getPositionInBeats()), while renderTracks renders
+        // Known divergence: clicks are scheduled against the raw transport
+        // cursor (getPositionInBeats()), while renderTracks renders
         // PDC-shifted content from getPositionInBeats() + renderOffsetBeats.
-        // The two split points therefore differ by the render offset whenever
-        // plugin latency is non-zero, so with a latent insert chain the click
-        // path and the track path wrap on different frames. That is the
-        // behaviour the pre-loop-aware code already had (clicks were always
-        // scheduled from the raw position); making the click grid follow the
-        // PDC-compensated cursor would change audible click timing and is a
-        // separate concern, deliberately not changed here.
+        // The two intra-block split frames therefore differ by the render
+        // offset whenever plugin latency is non-zero — making the click grid
+        // follow the PDC-compensated cursor would change audible click
+        // timing and is deliberately not done here. Both cursors are,
+        // however, loop-mapped before use (below and in renderTracks), so
+        // neither path ever schedules clicks or content from at/beyond the
+        // loop end.
         Transport.LoopWindow loop = transport.getLoopWindow();
         boolean loopActive = loop.enabled() && loop.endInBeats() > loop.startInBeats();
         double segStartBeat = transport.getPositionInBeats();
+        // Story 315 review — same loop-mapping as renderTracks, applied to
+        // the raw cursor: setPositionInBeats permits a target at/past the
+        // loop end while looping, and advancePosition wraps only at the NEXT
+        // block boundary, so an unmapped start would schedule a full block
+        // of out-of-loop clicks. Mirrors advancePosition's closed-form wrap.
+        if (loopActive && segStartBeat >= loop.endInBeats()) {
+            segStartBeat = loop.startInBeats()
+                    + ((segStartBeat - loop.endInBeats())
+                            % (loop.endInBeats() - loop.startInBeats()));
+        }
         int framesProcessed = 0;
 
         while (framesProcessed < numFrames) {
@@ -645,8 +655,9 @@ public final class RenderPipeline {
             // grid position at or past the loop end never schedules from the
             // pre-wrap segment — that beat belongs to the wrapped timeline and
             // is emitted by the follow-up segment starting at the loop start.
-            // A position already past the loop end (transient until the next
-            // advance wraps it) schedules linearly, matching renderTracks.
+            // (With the initial cursor loop-mapped above, a loop-active
+            // segment always starts inside the loop; the linear branch covers
+            // loop-inactive blocks only.)
             double schedulingEndBeat = (loopActive && segStartBeat < loop.endInBeats())
                     ? Math.min(segEndBeat, loop.endInBeats())
                     : segEndBeat;
@@ -919,6 +930,24 @@ public final class RenderPipeline {
         double loopStart = loopWindow.startInBeats();
         double loopEnd = loopWindow.endInBeats();
         double loopLength = loopEnd - loopStart;
+
+        // Story 315 review — loop-map the starting cursor before rendering:
+        // the split guard below only fires while the cursor is still inside
+        // the loop, so a cursor starting at/past the end would render the
+        // whole block linearly from beyond the loop. Two ways it gets there:
+        // (a) renderOffsetBeats pushes the PDC-shifted cursor at/past the
+        // loop end while the raw cursor is still inside — the no-bleed loop
+        // guarantee case; (b) the raw cursor itself is at/past the end
+        // (setPositionInBeats permits such a target while looping;
+        // advancePosition wraps only at the NEXT block boundary) — this block
+        // then renders from the position the transport is about to occupy.
+        // The mapping mirrors advancePosition's closed-form wrap, and modulo
+        // mapping composes: the wrapped cursor lines up exactly with where
+        // the previous block's in-block wrap left off and with the
+        // transport's own wrap one boundary later.
+        if (loopEnabled && loopLength > 0.0 && currentBeat >= loopEnd) {
+            currentBeat = loopStart + ((currentBeat - loopEnd) % loopLength);
+        }
 
         int framesProcessed = 0;
 

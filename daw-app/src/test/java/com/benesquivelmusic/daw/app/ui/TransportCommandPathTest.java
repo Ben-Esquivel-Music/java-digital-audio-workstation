@@ -136,7 +136,7 @@ class TransportCommandPathTest {
         try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
                 DispatchMode.ON_CALLER_THREAD, started::add)) {
 
-            computeOnFx(() -> { handler.onPlayWithPreRoll(); return null; });
+            computeOnFx(() -> { handler.playWithPreRoll(); return null; });
 
             assertThat(transport.getState()).isEqualTo(TransportState.PLAYING);
             assertThat(transport.getPositionInBeats())

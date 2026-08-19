@@ -7,11 +7,14 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
+import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -194,6 +197,108 @@ class TransportCommandEventTest {
     }
 
     @Test
+    void skipAndPreRollCommandsRouteToTheirHandlerMethods() {
+        // Story 315 review follow-up — the last transport gestures adopted the
+        // command path. A command is a thin router (§2.8): each new record must
+        // reach exactly its own handler method, nothing else.
+        RecordingHandler handler = new RecordingHandler();
+
+        new SkipBackCommand().execute(handler);
+        new SkipForwardCommand().execute(handler);
+        new PlayWithPreRollCommand().execute(handler);
+
+        assertThat(handler.calls)
+                .containsExactly("skipBack", "skipForward", "playWithPreRoll");
+    }
+
+    @Test
+    void skipBackCommandSeeksToZeroAndAnnouncesNothing() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(9.0);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        AtomicReference<TransportEvent> any = new AtomicReference<>();
+        try (EventBus.Subscription sub = bus.on(TransportEvent.class,
+                DispatchMode.ON_CALLER_THREAD, any::set)) {
+
+            new SkipBackCommand().execute(handler);
+
+            assertThat(transport.getPositionInBeats())
+                    .as("MUTATE: an absolute seek to the beginning").isEqualTo(0.0);
+            assertThat(any.get())
+                    .as("ANNOUNCE is deliberately skipped — TransportEvent.Seeked has no "
+                            + "production publisher and §5.1 permits skipping a phase")
+                    .isNull();
+        }
+    }
+
+    @Test
+    void twoSkipForwardCommandsWhileTheRealTimeClockIsClaimedAccumulate() {
+        // Story 315 review — a relative seek composes against the PENDING seek
+        // target, never the committed position. While the transport is rolling
+        // AND the RT clock is claimed, seeks sit in a single-slot,
+        // last-writer-wins queue until the next block boundary; only reading
+        // getSeekTargetInBeats() lets successive skips accumulate.
+        Transport transport = new Transport();
+        transport.play();
+        transport.setRealTimeClockActive(true); // an audio callback owns the clock
+        double jump = 4.0 * transport.getTimeSignatureNumerator(); // 4 bars of 4/4 = 16 beats
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        // A seek already sits queued (rolling + claimed → deferred)…
+        transport.setPositionInBeats(8.0);
+        assertThat(transport.getPositionInBeats())
+                .as("the seek is queued, not applied — the committed position holds")
+                .isEqualTo(0.0);
+
+        // …and two Skip Forwards inside the same block stack on top of it.
+        new SkipForwardCommand().execute(handler);
+        new SkipForwardCommand().execute(handler);
+
+        assertThat(transport.getSeekTargetInBeats())
+                .as("each skip composes against the pending target — two jumps accumulate")
+                .isEqualTo(8.0 + 2.0 * jump);
+
+        // The block boundary applies the queued target.
+        transport.advancePosition(0.0);
+        assertThat(transport.getPositionInBeats())
+                .as("the drained seek lands the queued base plus two jumps")
+                .isEqualTo(8.0 + 2.0 * jump);
+    }
+
+    @Test
+    void playWithPreRollCommandAnnouncesStartedAtThePostRewindPosition() throws InterruptedException {
+        Transport transport = new Transport();
+        transport.setTempo(120.0);
+        transport.setPositionInBeats(20.0);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        CountDownLatch delivered = new CountDownLatch(1);
+        AtomicReference<TransportEvent.Started> captured = new AtomicReference<>();
+        try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
+                DispatchMode.ON_CALLER_THREAD, event -> {
+                    captured.set(event);
+                    delivered.countDown();
+                })) {
+
+            new PlayWithPreRollCommand().execute(handler);
+
+            assertThat(transport.getState())
+                    .as("MUTATE: playWithPreRoll always transitions to PLAYING")
+                    .isEqualTo(TransportState.PLAYING);
+            assertThat(transport.getPositionInBeats())
+                    .as("2 bars of 4/4 pre-roll rewinds beat 20 to beat 12").isEqualTo(12.0);
+            assertThat(delivered.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                    .as("ANNOUNCE: Started reaches the subscriber via the bus").isTrue();
+            // 12 beats @ 120 BPM = 6 s @ 48 kHz = 288000 frames — the POST-rewind
+            // position, i.e. where playback actually begins (parity with the
+            // production TransportController path).
+            assertThat(captured.get().positionFrames()).isEqualTo(288_000L);
+        }
+    }
+
+    @Test
     void outOfRangeTempoIsRejectedInValidateAndNeverMutatesOrAnnounces() {
         Transport transport = new Transport();
         transport.setTempo(120.0);
@@ -211,5 +316,26 @@ class TransportCommandEventTest {
             assertThat(any.get())
                     .as("no event is announced when validation fails").isNull();
         }
+    }
+
+    /**
+     * Records which handler method each command routes to — the recording fake
+     * the interface Javadoc promises ("Tests substitute a recording fake to
+     * assert that a control gesture issues the right command without touching
+     * the engine").
+     */
+    private static final class RecordingHandler implements TransportIntentHandler {
+        final List<String> calls = new ArrayList<>();
+
+        @Override public void start() { calls.add("start"); }
+        @Override public void pause() { calls.add("pause"); }
+        @Override public void togglePlayPause() { calls.add("togglePlayPause"); }
+        @Override public void playWithPreRoll() { calls.add("playWithPreRoll"); }
+        @Override public void stop() { calls.add("stop"); }
+        @Override public void skipBack() { calls.add("skipBack"); }
+        @Override public void skipForward() { calls.add("skipForward"); }
+        @Override public void toggleRecord() { calls.add("toggleRecord"); }
+        @Override public void setTempo(double bpm) { calls.add("setTempo(" + bpm + ")"); }
+        @Override public void toggleLoop() { calls.add("toggleLoop"); }
     }
 }

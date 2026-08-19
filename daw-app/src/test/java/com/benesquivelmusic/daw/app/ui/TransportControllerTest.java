@@ -157,7 +157,7 @@ class TransportControllerTest {
     }
 
     @Test
-    void onPlayWithPreRollShouldSeekBackByConfiguredBars() throws Exception {
+    void playWithPreRollShouldSeekBackByConfiguredBars() throws Exception {
         // Issue test: enable pre-roll with preBars=2, set playhead at bar 25,
         // press Shift+Space, assert transport seeks to bar 23 and plays.
         DawProject project = new DawProject("test",
@@ -172,7 +172,7 @@ class TransportControllerTest {
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
-                controller.onPlayWithPreRoll();
+                controller.playWithPreRoll();
             } catch (RuntimeException e) {
                 // Audio engine may fail to open in a headless environment;
                 // that does not affect the transport position assertion.
@@ -485,8 +485,8 @@ class TransportControllerTest {
         double jump = 4.0 * transport.getTimeSignatureNumerator(); // 4 bars of 4/4 = 16 beats
 
         TransportController controller = newController(project);
-        runHandler(controller::onSkipForward);
-        runHandler(controller::onSkipForward);
+        runHandler(controller::skipForward);
+        runHandler(controller::skipForward);
 
         assertThat(transport.getSeekTargetInBeats())
                 .as("two Skip Forwards inside one audio block queue two jumps")

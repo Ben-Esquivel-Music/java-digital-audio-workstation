@@ -263,6 +263,69 @@ class TransportSeekTest {
         assertThat(transport.getPositionInBeats()).isEqualTo(8.0);
     }
 
+    /**
+     * Regression for the pop-then-commit drain gap (story 315 Copilot review):
+     * {@code advancePosition} used to pop the seek queue <em>before</em>
+     * committing the target into the position, so a
+     * {@code getSeekTargetInBeats()} read landing between the two saw neither
+     * value and returned the stale pre-seek base — two Skip Forward presses
+     * straddling the drain collapsed into one jump. The fixed drain commits
+     * before it clears, so the base is linearizable: always the queued target
+     * or a committed position that already includes it.
+     *
+     * <p>Deterministic by construction, not by timing: the simulated RT thread
+     * advances by <em>zero</em> beats (legal — the delta must only be
+     * non-negative), so drains run constantly while the committed position
+     * never drifts, and every round asserts <em>exact</em> equality — the
+     * second skip must land exactly one jump past the first, no tolerance.
+     * Against the pop-then-commit drain this fails intermittently; with
+     * commit-before-clear it can never fail.</p>
+     */
+    @Test
+    void relativeSeeksComposedAgainstTheSeekTargetNeverCollapseAcrossTheRtDrain()
+            throws Exception {
+        Transport transport = rollingWithRealTimeClock();
+        transport.play(); // position 0 committed while stopped; loop disabled
+
+        AtomicBoolean running = new AtomicBoolean(true);
+        CountDownLatch started = new CountDownLatch(1);
+        Thread advancer = new Thread(() -> {
+            started.countDown();
+            while (running.get()) {
+                transport.advancePosition(0.0); // drain-only block boundaries
+            }
+        }, "rt-advance-sim");
+        advancer.start();
+        assertThat(started.await(5, TimeUnit.SECONDS))
+                .as("the simulated RT thread must start")
+                .isTrue();
+
+        double lastTarget = 0.0;
+        try {
+            for (int round = 0; round < 20_000; round++) {
+                double t1 = transport.getSeekTargetInBeats() + 1.0;
+                transport.setPositionInBeats(t1);
+                double t2 = transport.getSeekTargetInBeats() + 1.0;
+                transport.setPositionInBeats(t2);
+                assertThat(t2)
+                        .as("round %d: the second skip must build on the first"
+                                + " — a stale base collapses two skips into one",
+                                round)
+                        .isEqualTo(t1 + 1.0);
+                lastTarget = t2;
+            }
+        } finally {
+            running.set(false);
+            advancer.join(TimeUnit.SECONDS.toMillis(10));
+        }
+        assertThat(advancer.isAlive())
+                .as("the simulated RT thread must terminate")
+                .isFalse();
+
+        transport.setRealTimeClockActive(false); // drains any still-queued target
+        assertThat(transport.getPositionInBeats()).isEqualTo(lastTarget);
+    }
+
     /** The relative-seek idiom story 315 documents on {@code getSeekTargetInBeats}. */
     private static void skipForward(Transport transport, double jumpInBeats) {
         transport.setPositionInBeats(

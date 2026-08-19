@@ -627,7 +627,8 @@ final class TransportController implements TransportIntentHandler {
         recIndicator.setManaged(true);
     }
 
-    void onSkipBack() {
+    @Override
+    public void skipBack() {
         // While PLAYING/RECORDING the seek is queued and lands at the next
         // block boundary (story 315); when idle it applies immediately. Either
         // way the bound time display follows the VM playhead — no direct write.
@@ -637,7 +638,8 @@ final class TransportController implements TransportIntentHandler {
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
     }
 
-    void onSkipForward() {
+    @Override
+    public void skipForward() {
         Transport transport = project.getTransport();
         double jump = 4.0 * transport.getTimeSignatureNumerator();
         // RELATIVE seek — compose against the pending seek target, not the
@@ -712,7 +714,8 @@ final class TransportController implements TransportIntentHandler {
      * configured), so the announce is unconditional and always follows the
      * actual transition.</p>
      */
-    void onPlayWithPreRoll() {
+    @Override
+    public void playWithPreRoll() {
         try {
             audioEngine.startAudioOutput();
         } catch (RuntimeException e) {
