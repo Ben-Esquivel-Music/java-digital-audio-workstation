@@ -430,18 +430,30 @@ class MetronomeLoopSchedulingEngineTest {
      *
      * <p>Before the fix three onsets were silent. Frames {@code 20480}
      * and {@code 61439} are the loop-start downbeats whose residue was
-     * carried across a block boundary. Frame {@code 36863} is a second,
+     * carried across a block boundary. Frame {@code 36864} is a second,
      * independent sub-bug: that lap's beat-1 grid position sits at
-     * 36863.5, half a frame before the end of its block, so nearest-frame
-     * rounding produced an offset of exactly {@code numFrames} and the
-     * click was dropped outright by the block bound instead of being
-     * placed on the last frame its segment owns.</p>
+     * <b>36863.5</b>, exactly half a frame before the end of its block, so
+     * nearest-frame rounding — {@code Math.round}, round-half-up — puts it
+     * on {@code 36864}, an offset of exactly {@code numFrames} that its own
+     * segment cannot address. Originally the block bound dropped it outright
+     * and no click sounded at all.</p>
+     *
+     * <p>Story 315 review (third round) — the remedy moved, and the onset
+     * with it. Clamping the offset down to the last frame the segment owns
+     * made the click sound again, but at {@code 36863}: one sample EARLY,
+     * on the frame the rounding had just rejected. The scheduling window is
+     * now the segment's frame-ownership interval, so this position is not
+     * admitted here at all — the next block collects it and sounds it on its
+     * own frame 0, which is {@code 36864}, the frame nearest-frame rounding
+     * always said it belonged on.</p>
      *
      * <p>81 408 frames = 159 whole blocks covers four laps' worth of grid
-     * positions. The onsets below are spaced 16384, 4096, 16383, 4096,
+     * positions. The onsets below are spaced 16384, 4096, 16384, 4095,
      * 16384, 4096 and 16384 frames apart, so the minimum onset gap is
-     * <b>4096</b> frames — far above the ~656-frame click body, which is
-     * what makes the silence sweep meaningful. (3968 is the minimum gap of
+     * <b>4095</b> frames — one less than before the carry moved 36863 to
+     * 36864, and still far above the ~655-frame click body, which is what
+     * keeps both the silence sweep and the rising-edge onset census
+     * meaningful. (3968 is the minimum gap of
      * {@link #nonFrameAlignedLoopStillFiresTheWrappedDownbeat()}, whose loop
      * is 20352.5 frames rather than 20479.5; it does not apply here.)</p>
      */
@@ -467,10 +479,22 @@ class MetronomeLoopSchedulingEngineTest {
                 metronome.generateClick(false)[0].length);
         List<Integer> expectedOnsets = List.of(
                 0, 16_384,       // lap 0: downbeat, beat 1
-                20_480, 36_863,  // lap 1: block-boundary wrap, then the beat-1
-                                 //        click that rounds to exactly numFrames
+                20_480, 36_864,  // lap 1: block-boundary wrap, then the beat-1
+                                 //        click carried into the next block
                 40_959, 57_343,  // lap 2
                 61_439, 77_823); // lap 3
+
+        // The COMPLETE onset census, which is what makes the 36_864 above
+        // load-bearing: the per-onset energy sweep below cannot tell 36_863
+        // from 36_864 (a click body is 655 frames long, so either onset fills
+        // the other's window), and neither can the silence sweep. Recovering
+        // the scheduler's own frames from the rendered rising edges can, and
+        // the minimum onset gap here — 4095 frames — is far above the click
+        // body, so every click is separable.
+        assertThat(clickOnsets(rendered, totalFrames, metronome.generateClick(true)))
+                .as("every frame a click was scheduled on, across four laps — a "
+                        + "one-frame displacement changes this list")
+                .containsExactlyElementsOf(expectedOnsets);
 
         for (int onset : expectedOnsets) {
             assertThat(maxAbs(rendered, onset, Math.min(onset + 64, totalFrames)))
@@ -863,6 +887,99 @@ class MetronomeLoopSchedulingEngineTest {
                         .isEqualTo(expected);
             }
         }
+    }
+
+    /**
+     * Story 315 review (third round) — the click walk's half-frame CARRY,
+     * pinned with LOOPING DISABLED so it is independent of every piece of the
+     * loop machinery above. The MIDI walk has the same discriminator in
+     * {@code AudioEngineMidiPlaybackTest}; the two walks are required to read
+     * alike, and this is the fixture that says so for clicks.
+     *
+     * <p>The defect. Click admission is a test in BEATS
+     * ({@code [gridStartBeat, schedulingEndBeat)}) while
+     * {@code scheduleSegmentClicks} maps in FRAMES, with
+     * {@code round((beatPos − segStartBeat) × samplesPerBeat)}. A grid
+     * position in the last half frame of a segment was admitted by that
+     * segment and then rounded to a frame the segment cannot address, so the
+     * clamp pulled it back to the segment's last frame — one sample early,
+     * systematically — or, on the block's last segment, the block bound
+     * dropped it outright. The window is now the segment's FRAME-OWNERSHIP
+     * interval, so the position is declined here and collected by the next
+     * segment, which sounds it at its own frame 0.</p>
+     *
+     * <p>Construction. 44.1 kHz at 68 BPM gives
+     * {@code samplesPerBeat = 2646000 / 68 = 38911.7647…}, deliberately NOT a
+     * whole number of frames, so beat 1.0 lands at frame <b>38911.76</b> —
+     * 0.24 frame before block 76's boundary at {@code 76 × 512 = 38912}.
+     * Nearest-frame rounding puts it on 38912, which is block 76's frame 0,
+     * not block 75's last frame. Before the carry the click sounded at
+     * <b>38911</b>; it must now sound at <b>38912</b>. Eighty blocks
+     * (40 960 frames) covers beat 1 with room to spare and stops well short
+     * of beat 2 at frame 77 823.5, so the complete onset census is
+     * {@code [0, 38912]}.</p>
+     *
+     * <p>An "exactly on a block boundary" grid position deliberately has no
+     * fixture: {@code lastIdxExclusive = ceil(schedulingEndBeat ×
+     * clicksPerBeat − 1e-9)} already makes the right bound exclusive for an
+     * exactly-aligned index, so that case was correct before this change and
+     * would not discriminate.</p>
+     */
+    @Test
+    void gridPositionInTheLastHalfFrameOfABlockSoundsOnTheNextBlocksFirstFrame() {
+        final double carrySampleRate = 44_100.0;
+        final double carryTempo = 68.0;              // → samplesPerBeat = 38911.7647…
+        final int carryBlockFrames = 512;
+        final int carryOnset = 38_912;               // 76 × 512, the frame beat 1.0 rounds to
+        final int totalFrames = 80 * carryBlockFrames; // 40_960
+
+        Transport transport = new Transport();
+        transport.setTempo(carryTempo);
+        transport.setTimeSignature(4, 4);
+        transport.setLoopEnabled(false); // explicit: this fixture is loop-free
+        transport.play();
+
+        Metronome metronome = new Metronome(carrySampleRate, 2);
+        metronome.setEnabled(true);
+        metronome.setSubdivision(Subdivision.QUARTER);
+        // Main-mix click only — no side output, so no backend is needed.
+        metronome.setClickOutput(new ClickOutput(0, 1.0, true, false));
+
+        AudioFormat format = new AudioFormat(carrySampleRate, 2, 16, carryBlockFrames);
+        AudioEngine engine = new AudioEngine(format);
+        engine.setGraph(transport, new Mixer(), List.of());
+        engine.setMetronome(metronome);
+        engine.setMetronomeSideOutputRouter(new MetronomeSideOutputRouter());
+        engine.start();
+
+        float[][] rendered = new float[2][totalFrames];
+        float[][] input = new float[2][carryBlockFrames];
+        float[][] output = new float[2][carryBlockFrames];
+        int done = 0;
+        while (done < totalFrames) {
+            for (int ch = 0; ch < 2; ch++) {
+                java.util.Arrays.fill(output[ch], 0.0f);
+            }
+            engine.processBlock(input, output, carryBlockFrames);
+            for (int ch = 0; ch < 2; ch++) {
+                System.arraycopy(output[ch], 0, rendered[ch], done, carryBlockFrames);
+            }
+            done += carryBlockFrames;
+        }
+
+        float[][] accentedClick = metronome.generateClick(true);
+        int clickLength = Math.max(accentedClick[0].length,
+                metronome.generateClick(false)[0].length);
+
+        List<Integer> onsets = clickOnsets(rendered, totalFrames, accentedClick);
+        assertThat(onsets)
+                .as("beat 1.0 sits at frame 38911.76, whose nearest frame is %d — the "
+                        + "first frame of the NEXT block. A window ending on this "
+                        + "block's cursor end admits it here and the clamp drags it "
+                        + "back to 38911; the frame-ownership window declines it and "
+                        + "the next block sounds it on time", carryOnset)
+                .containsExactly(0, carryOnset);
+        assertNoEnergyOutsideClickWindows(rendered, onsets, clickLength, totalFrames);
     }
 
     /** Builds the engine exactly as the harness above: graph, metronome, router, start. */

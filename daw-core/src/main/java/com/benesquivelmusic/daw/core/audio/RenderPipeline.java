@@ -159,6 +159,50 @@ public final class RenderPipeline {
     private boolean clickLoopWrapPending;
 
     /**
+     * The grid-window END of the previously scheduled click segment, or
+     * {@link Double#NaN} if this walk has not scheduled one yet. RT-thread
+     * confined, exactly like {@link #clickLoopWrapPending}.
+     *
+     * <p>The click walk's half of the frame-ownership partition; the full
+     * argument is on {@link #trackPreviousWindowEndBeat}, and the two walks
+     * are deliberately written to read identically. In brief: a segment's
+     * grid window ends half a frame before its own exclusive end, because a
+     * grid position in that last half frame rounds to a frame the segment
+     * cannot address, so the NEXT segment reaches back to
+     * {@code clickPreviousWindowEndBeat} and sounds it at its own frame 0 —
+     * the frame nearest-frame rounding always said it belonged on. Carrying
+     * the remembered bound itself, rather than recomputing
+     * {@code cursor − half a frame}, is what makes the two windows abut with
+     * no gap and no overlap.</p>
+     *
+     * <p>Lap edges are exempt and stay beat-exact at the loop end, so the
+     * pre-wrap segment still releases its final grid position on the last
+     * frame it owns. NaN is the "nothing scheduled yet" sentinel, and the
+     * field is deliberately NOT cleared on stop or pause for the reasons
+     * recorded on {@link #clickLoopWrapPending}.</p>
+     */
+    private double clickPreviousWindowEndBeat = Double.NaN;
+
+    /**
+     * The previous scheduled click segment's own END cursor — its raw
+     * {@code segEndBeat}, NOT its grid-window end — or {@link Double#NaN} if
+     * this walk has not scheduled one yet. RT-thread confined.
+     *
+     * <p>The continuity reference that decides whether the next segment may
+     * carry at all; see {@link #trackPreviousSegmentEndBeat} for the full
+     * argument, including why half a frame is the right tolerance and not an
+     * arbitrary epsilon. The drift it absorbs arises on THIS walk too, from a
+     * different source: the transport wraps its position in one closed-form
+     * step per block while this walk accumulates {@code segStartBeat +
+     * segFrames / samplesPerBeat} across the block's loop-split segments, so
+     * the next block's entry cursor and this walk's accumulated cursor are
+     * the same quantity computed two ways. (Without a loop split the two
+     * expressions are bit-identical — the click walk carries no PDC offset —
+     * which is why an ordinary linear render continues exactly.)</p>
+     */
+    private double clickPreviousSegmentEndBeat = Double.NaN;
+
+    /**
      * Same fact for the content/MIDI walk. A separate flag because that walk
      * runs on the PDC-shifted cursor and therefore wraps at a different frame
      * than the click walk within the same block. The staleness argument on
@@ -170,6 +214,108 @@ public final class RenderPipeline {
      * {@code AudioEngineMidiPlaybackTest.loopStartNoteSurvivesAPauseOnTheWrapBoundary}.</p>
      */
     private boolean trackLoopWrapPending;
+
+    /**
+     * The event-window END of the previously rendered content segment, or
+     * {@link Double#NaN} if this walk has not rendered one yet. RT-thread
+     * confined, exactly like {@link #trackLoopWrapPending}.
+     *
+     * <p>Story 315 review (second round) — this is what makes the half-frame
+     * CARRY at an ordinary continuation edge safe. A segment's event window
+     * is its frame-ownership interval and ends half a frame before its own
+     * exclusive end, so the next segment has to reach back and collect what
+     * the previous one declined. Reaching back is legitimate only when there
+     * IS a previous segment that declined something: the first block of a
+     * render, and any seek, are HARD left edges for exactly the reason a lap
+     * start is, and widening there would let a seek landing in the middle of
+     * a note re-trigger its note-on. Two DIFFERENT fixtures cover that rule
+     * and they are not interchangeable — see the case analysis on the
+     * DISCONTINUITY bullet in {@link #renderTracks}. In short:
+     * {@code AudioEngineMidiPlaybackTest.oneAndAHalfFrameLoopKeepsTheEventWindowWideningEnabled}
+     * rules out widening every non-lap edge unconditionally (1023 note-ons,
+     * not 1024), while the guard that decides WHICH edges are continuations
+     * is pinned by {@code noteOnLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment},
+     * {@code noteOffLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment} and
+     * {@code eventExactlyOnABlockBoundaryBelongsToTheBlockThatBeginsThere}.</p>
+     *
+     * <p>Carrying from the REMEMBERED bound rather than from
+     * {@code cursor − half a frame} also makes the two ownership intervals
+     * tile with no gap and no overlap by construction, even across a block
+     * boundary where the accumulated segment cursor and
+     * {@code transport.getPositionInBeats() + renderOffsetBeats} can differ
+     * by an ulp. The DECISION to carry is a separate question, taken against
+     * {@link #trackPreviousSegmentEndBeat}; the carried VALUE always comes
+     * from here, so whichever way that decision goes the partition stays
+     * exact.</p>
+     *
+     * <p><b>The NaN initialisation is load-bearing.</b> Every comparison
+     * against NaN is false, so the continuity test at the use site takes its
+     * hard-edge branch on the first segment of a fresh render without a
+     * separate "have we rendered yet" flag. Do not "clean up" that double
+     * comparison into a NaN-unsafe form. The field is deliberately NOT reset
+     * on stop, on pause, or when looping is off: the continuity test already
+     * bounds a stale value, and a defensive clear here would destroy work the
+     * walk still owes — the same mistake the not-playing clear on
+     * {@link #clickLoopWrapPending} documents.</p>
+     */
+    private double trackPreviousWindowEndBeat = Double.NaN;
+
+    /**
+     * The previous rendered content segment's own END cursor — its raw
+     * {@code segmentEndBeat}, NOT its window end — or {@link Double#NaN} if
+     * this walk has not rendered one yet. RT-thread confined.
+     *
+     * <p>Story 315 review (third round) — this field carries the carry
+     * DECISION, and it exists because the obvious alternative is not robust.
+     * Testing {@link #trackPreviousWindowEndBeat} positionally, i.e.
+     * "does it lie in {@code [origin − half a frame, origin]}?", passes in
+     * the ordinary continuation case only by EQUALITY: the remembered bound
+     * sits exactly on the lower end of that interval. Within a block that
+     * equality is exact by construction ({@code currentBeat} is assigned the
+     * previous {@code segmentEndBeat}), but across a block boundary it is
+     * not. The block-entry cursor is
+     * {@code (transport.getPositionInBeats()) + renderOffsetBeats}, i.e.
+     * {@code (a + b) + c}, while the accumulated segment cursor reaches the
+     * same place as {@code (a + c) + b}. Floating-point addition is not
+     * associative, so with a non-zero PDC {@code renderOffsetBeats} the two
+     * can differ by an ulp IN EITHER DIRECTION. Drift upward by one ulp and
+     * an equality-only guard fails, the boundary silently degrades to a hard
+     * edge, and every event in its last half frame is dropped — for a
+     * note-OFF that is a stuck note, which is precisely the bug class this
+     * whole change exists to remove. (With {@code renderOffsetBeats == 0} the
+     * two expressions are bit-identical, which is why no fixture catches
+     * it.)</p>
+     *
+     * <p>So the test is CONTINUITY, at the resolution the carry itself
+     * operates at: {@code |origin − trackPreviousSegmentEndBeat| ×
+     * samplesPerBeat < 0.5}. Half a frame is not an arbitrary epsilon, and
+     * this codebase is right to distrust thresholds — see the wrap-flag essay
+     * on the widening in {@link #renderTracks}, where a threshold genuinely
+     * cannot work because the two populations of readings OVERLAP. Here they
+     * do not, by eight orders of magnitude:</p>
+     * <ul>
+     *   <li>ULP DRIFT, which must be treated as continuation. An ulp at beat
+     *       1024 is 2⁻⁴² = 2.2737367544323206e-13 beats; at 44.1 kHz /
+     *       120 BPM ({@code samplesPerBeat} 22050) that is 5.0e-9 of a frame
+     *       — a hundred-millionth of the tolerance.</li>
+     *   <li>A GENUINE DISCONTINUITY, which must be treated as a hard edge. A
+     *       seek, a transport restart, or the block-entry loop mapping moves
+     *       the cursor by frames at least and usually by thousands of them —
+     *       orders of magnitude ABOVE the tolerance.</li>
+     *   <li>THE GAP BETWEEN THEM is not a grey area but a no-op zone: a
+     *       "seek" of less than half a frame lands inside the very frame the
+     *       walk was already on, and there carrying and not carrying select
+     *       the same frame for every event, so either answer is correct.</li>
+     * </ul>
+     *
+     * <p>NaN is again the "nothing rendered yet" sentinel:
+     * {@code Math.abs(NaN − x) < 0.5} is false, so a fresh walk takes the
+     * hard-edge branch with no separate flag. And as with every other piece
+     * of state on these two walks, the field is deliberately NOT cleared on
+     * stop or pause — the continuity test itself is the staleness bound, and
+     * a lifecycle clear would destroy work the walk still owes.</p>
+     */
+    private double trackPreviousSegmentEndBeat = Double.NaN;
 
     // One-shot warning flag for exceeding return bus cap
     private boolean returnBusCapWarningLogged;
@@ -651,6 +797,12 @@ public final class RenderPipeline {
         if (samplesPerBeat <= 0.0) {
             return;
         }
+        // Half a frame, in beats — the shift that turns a segment's cursor
+        // range into its FRAME-OWNERSHIP interval at an ordinary continuation
+        // edge. A per-block constant, hoisted here beside the other per-block
+        // quantities exactly as renderTracks hoists its own; see the
+        // scheduling-window computation in the segment loop below.
+        double halfFrameBeats = 0.5 / samplesPerBeat;
         Subdivision subdivision = metronome.getSubdivision();
         int clicksPerBeat = subdivision.getClicksPerBeat();
         if (clicksPerBeat <= 0) {
@@ -689,11 +841,12 @@ public final class RenderPipeline {
         //    boundary is fully written (see its javadoc);
         //  • note-OFFS sitting exactly at loopEnd, which are scheduled on
         //    every lap. MidiTrackRenderer admits a note end with
-        //    "noteEndBeat > startBeat && noteEndBeat <= endBeat" — inclusive
-        //    on the right — and the value it receives as endBeat is
-        //    eventWindowEndBeat, which renderTracks caps with
-        //    "Math.min(..., loopEnd)" and passes into renderSegment. (It is
-        //    NOT renderSegment's own endBeat local, which is the uncapped
+        //    "noteEndBeat > windowStartBeat && noteEndBeat <= windowEndBeat"
+        //    — inclusive on the right — and the value it receives as
+        //    windowEndBeat is eventWindowEndBeat, which renderTracks pins to
+        //    loopEnd on the segment that reaches it (the segmentEndsLap
+        //    branch) and passes into renderSegment. (It is NOT
+        //    renderSegment's own endBeat local, which is the uncapped
         //    audio-clip range of the first bullet.) So the final pre-wrap
         //    segment releases a note that ends exactly as the lap ends. That
         //    is intended: the note must be released, and the post-wrap window
@@ -835,9 +988,60 @@ public final class RenderPipeline {
             // (With the initial cursor loop-mapped above, a loop-active
             // segment always starts inside the loop; the linear branch covers
             // loop-inactive blocks only.)
-            double schedulingEndBeat = (loopActive && segStartBeat < loop.endInBeats())
-                    ? Math.min(segEndBeat, loop.endInBeats())
-                    : segEndBeat;
+            //
+            // Story 315 review (third round) — the right edge is NOT this
+            // segment's cursor end, for the same reason renderTracks' event
+            // window is not: admission is a test in BEATS while
+            // scheduleSegmentClicks maps in FRAMES, with
+            // round((beatPos − segStartBeat) × samplesPerBeat), and the two
+            // domains disagree over the last half frame of EVERY segment.
+            // A grid position in (N − 0.5, N] frames was admitted here and
+            // rounded to N, outside the segment's addressable [0, N − 1], so
+            // the clamp below had to drag it back to N − 1 — one sample
+            // early, systematically. Copilot found this in the MIDI walk; the
+            // click walk has it in the identical shape, and the two walks are
+            // required to read alike.
+            //
+            // So the window handed to scheduleSegmentClicks is this segment's
+            // FRAME-OWNERSHIP interval: the set of beats whose nearest frame
+            // lies in [0, N − 1]. At an ordinary continuation edge that is
+            // the cursor end shifted back half a frame; the straggler is then
+            // owned by the NEXT segment, whose gridStartBeat reaches back to
+            // collect it (below), and sounds on that segment's frame 0 — the
+            // frame the rounding always said it belonged on. The click is
+            // CARRIED across the boundary, not re-quantized.
+            //
+            // Verified branch by branch against the value this expression
+            // produced before the change; only ONE of them moves, and it is
+            // exactly the defect:
+            //  • segment ENDS A LAP, ordinary looping case (segStartBeat
+            //    inside the loop, span clamped to the loop end): capped at
+            //    loop.endInBeats(), as Math.min did. UNCHANGED — a lap end is
+            //    a HARD edge, because the pre-wrap segment's last frame is
+            //    the only frame available to a grid position sitting at the
+            //    loop end and there is no next segment in the lap to carry it
+            //    into;
+            //  • segment ENDS A LAP from the binade corner (segStartBeat
+            //    already at or past loopEnd, so the span above was NOT
+            //    clamped): keeps its uncapped segEndBeat verbatim, as the
+            //    false branch of the old conditional did. UNCHANGED, and
+            //    deliberately so — that corner is documented on
+            //    renderTracks' loopSplitActive and is a non-goal here;
+            //  • ordinary CONTINUATION, looping or not: segEndBeat − half a
+            //    frame. This is the only branch whose value changes, and the
+            //    change is the fix.
+            // segStartBeat = segEndBeat at the bottom of this loop already
+            // gives exact tiling within a block, so no gap opens between the
+            // shifted right edge and the next segment's carried-in left edge.
+            boolean segmentEndsLap = loopActive && segEndBeat >= loop.endInBeats();
+            double schedulingEndBeat;
+            if (segmentEndsLap) {
+                schedulingEndBeat = (segStartBeat < loop.endInBeats())
+                        ? loop.endInBeats()
+                        : segEndBeat;
+            } else {
+                schedulingEndBeat = segEndBeat - halfFrameBeats;
+            }
             // Story 315 review — the pre-wrap segment is clamped to WHOLE
             // frames, so a loop end that is not sample-aligned is overshot
             // by δ ∈ (0, 1) frame and the wrap leaves the cursor δ frames
@@ -927,12 +1131,46 @@ public final class RenderPipeline {
             //    periodically rather than every frame — 0.75 frame every
             //    third — a count taken on the content walk, whose events are
             //    directly countable; see renderTracks.)
+            // This segment BEGINS a lap iff the previous one ended at the loop
+            // end — the wrap that set the flag. A lap start is a HARD left
+            // edge: nothing below the loop start may leak in, so nothing is
+            // carried into it and its window is not shifted back.
+            boolean segmentBeginsLap = clickLoopWrapPending && loopActive;
             double gridStartBeat = segStartBeat;
-            if (clickLoopWrapPending && loopActive && loopLength * samplesPerBeat >= 1.0) {
+            if (segmentBeginsLap && loopLength * samplesPerBeat >= 1.0) {
                 double beatsIntoLoop = segStartBeat - loop.startInBeats();
                 if (beatsIntoLoop > 0.0 && beatsIntoLoop * samplesPerBeat < 1.0) {
                     gridStartBeat = loop.startInBeats();
                 }
+            }
+            // The carry-in half of the partition: at an ordinary continuation
+            // edge this segment collects the grid position the previous one
+            // declined, by beginning at the very bound the previous one
+            // ended on. Using that remembered double — rather than
+            // recomputing segStartBeat − halfFrameBeats — is what makes the
+            // two windows abut with no gap and no overlap.
+            //
+            // The DECISION is a continuity test against the previous
+            // segment's own end cursor, at the resolution the carry operates
+            // at: half a frame. It is not an arbitrary epsilon and it is not
+            // the equality-in-disguise a positional bound on
+            // clickPreviousWindowEndBeat would be — see
+            // trackPreviousSegmentEndBeat for the full argument. On this walk
+            // the drift it absorbs comes from the transport wrapping in one
+            // closed-form step per block while this loop accumulates
+            // segStartBeat + segFrames / samplesPerBeat across the block's
+            // segments; ulp drift is ~1e-13 beats (about 5e-9 of a frame)
+            // while any genuine discontinuity — a seek, a restart, the
+            // block-entry loop mapping — moves the cursor by whole frames.
+            //
+            // NaN is the "nothing scheduled yet" sentinel: every comparison
+            // against NaN is false, Math.abs(NaN − x) < 0.5 included, so the
+            // first segment of a fresh render is a hard edge with no separate
+            // flag. Do not rewrite this into a NaN-unsafe form.
+            boolean continuesPreviousSegment =
+                    Math.abs(segStartBeat - clickPreviousSegmentEndBeat) * samplesPerBeat < 0.5;
+            if (!segmentBeginsLap && continuesPreviousSegment) {
+                gridStartBeat = clickPreviousWindowEndBeat;
             }
             long firstIdx = (long) Math.ceil(gridStartBeat * clicksPerBeat - 1e-9);
             long lastIdxExclusive = (long) Math.ceil(schedulingEndBeat * clicksPerBeat - 1e-9);
@@ -944,6 +1182,15 @@ public final class RenderPipeline {
             // widening actually fired (a frame-aligned wrap leaves no residue
             // and needs none), so no later segment may widen for the same lap.
             clickLoopWrapPending = false;
+            // Hand this segment's right edge to the next one as its carry-in
+            // bound, so the two ownership intervals abut exactly, and its raw
+            // end cursor as the continuity reference that decides whether the
+            // next segment may reach back for it at all. Both are recorded
+            // BEFORE the modulo wrap below, so they describe this segment's
+            // own timeline position; a segment that follows a wrap sets
+            // segmentBeginsLap and takes the hard edge regardless.
+            clickPreviousWindowEndBeat = schedulingEndBeat;
+            clickPreviousSegmentEndBeat = segEndBeat;
 
             framesProcessed += segFrames;
             segStartBeat = segEndBeat;
@@ -974,6 +1221,19 @@ public final class RenderPipeline {
      * and any overflow is parked in the click tail, exactly as before the
      * loop-aware split — see {@link #mixMetronomeClicks} for the routing
      * contract.
+     *
+     * <p>{@code segStartBeat} is the sample-offset ORIGIN, not the admission
+     * window: the caller passes the index range separately, derived from a
+     * window that may begin below this origin (a lap-start widening, or the
+     * half-frame carry-in from the previous segment) and that ends half a
+     * frame below the segment's cursor end at an ordinary continuation edge.
+     * The clamp is therefore not the general-case corrector it once was —
+     * {@code mixMetronomeClicks} now hands down the segment's
+     * frame-ownership interval, so a position in the last half frame is
+     * carried into the next segment instead of being pulled back a sample.
+     * The LOWER clamp remains load-bearing for the widened lap-start
+     * position; the upper one is reachable only at a lap end and on
+     * floating-point residue. The clamp comment below carries the detail.</p>
      */
     private void scheduleSegmentClicks(Metronome metronome,
                                        MetronomeSideOutputRouter router,
@@ -1011,12 +1271,26 @@ public final class RenderPipeline {
             //    frame, never to the pre-wrap segment that owns the frames
             //    before it;
             //  • a grid position within half a frame of the segment end
-            //    rounds UP to segFrames and, on the block's last segment, was
-            //    dropped outright by the numFrames bound — that click simply
-            //    never sounded. (Reproducible with a loop whose quantized
-            //    wrap lands exactly on a block boundary.)
-            // Every index admitted by the half-open beat window therefore
-            // sounds exactly once, inside the frames its segment owns.
+            //    rounds UP to segFrames. That USED to be the general case
+            //    and it was a bug in its own right: the position was
+            //    admitted by a window ending on the segment's cursor end,
+            //    then dragged back to the last frame the segment owns — one
+            //    sample early — or, on the block's last segment, dropped
+            //    outright by the numFrames bound. It no longer arises there:
+            //    mixMetronomeClicks now hands down the segment's
+            //    FRAME-OWNERSHIP interval, which ends half a frame early, so
+            //    such a position is admitted by the NEXT segment instead and
+            //    sounds at its frame 0.
+            // What remains reachable on the upper clamp is therefore narrow:
+            // a grid position sitting AT a lap end, where the window is
+            // deliberately held beat-exact because the pre-wrap segment's
+            // last frame is the only frame that position can sound on; and
+            // floating-point residue, where a product lands a hair above the
+            // frame count. The LOWER clamp is untouched by any of this and
+            // remains fully load-bearing for the widened lap-start position
+            // of the first bullet.
+            // Every index admitted by the beat window therefore sounds
+            // exactly once, inside the frames its segment owns.
             if (sampleOffset < segFrameOffset) {
                 sampleOffset = segFrameOffset;
             } else if (sampleOffset >= segFrameOffset + segFrames) {
@@ -1242,6 +1516,11 @@ public final class RenderPipeline {
         double tempo = transport.getTempo();
         double sampleRate = format.sampleRate();
         double samplesPerBeat = sampleRate * 60.0 / tempo;
+        // Half a frame, in beats — the shift that turns a segment's cursor
+        // range into its FRAME-OWNERSHIP interval at an ordinary continuation
+        // edge. Hoisted here because it is a per-block constant; see the event
+        // window computation in the segment loop below for what it buys.
+        double halfFrameBeats = 0.5 / samplesPerBeat;
         // Offset ahead by the PDC system latency so that after compensation
         // delays, the output aligns with the transport cursor.
         double currentBeat = transport.getPositionInBeats() + renderOffsetBeats;
@@ -1463,9 +1742,55 @@ public final class RenderPipeline {
             // begins inside that sub-frame residue, and cap it at the loop
             // end whenever this segment runs up to it. The raw fractional
             // cursor stays the frame-mapping origin for audio clips
-            // (renderSegment keeps using it), and the widened window shifts
-            // the MIDI frame origin by less than one frame, which
-            // MidiTrackRenderer's beatToFrame already clamps into range.
+            // (renderSegment keeps using it); for MIDI the origin travels
+            // with the widening, as its own frameOriginBeat argument.
+            //
+            // Story 315 review (second round) — that is only half the
+            // partition, and the other half is not about loops at all.
+            // Admission is a test in BEATS while MidiTrackRenderer maps in
+            // FRAMES, with round((beat - origin) × samplesPerBeat), and the
+            // two domains disagree over the last half frame of EVERY segment,
+            // looping or not: a position in (N - 0.5, N] frames was admitted
+            // by this segment and rounded to N, outside its renderable
+            // [0, N - 1], so the renderer had to drag it back to N - 1 — one
+            // sample early, systematically. Copilot flagged the note-off case
+            // (44.1 kHz at 68 BPM: ideal offset 9727.94, which correctly
+            // rounds to the NEXT block's frame 0); the note-on branch had the
+            // identical defect.
+            //
+            // So the window handed down is not this segment's cursor range at
+            // all: it is the segment's FRAME-OWNERSHIP interval, the set of
+            // beats whose nearest frame lies in [0, N - 1]. At an ordinary
+            // continuation edge that is the cursor range shifted back half a
+            // frame at BOTH ends. The straggler is then owned by the NEXT
+            // segment, whose own window reaches half a frame back to collect
+            // it, and lands on its frame 0 — the frame the rounding always
+            // said it belonged on. The event is CARRIED across the boundary,
+            // not re-quantized.
+            //
+            // Loop edges are exempt, and must be: they are HARD edges. The
+            // right edge stays beat-exact at loopEnd, because a note-off
+            // sitting there has no next segment in the lap to be carried into
+            // — releasing it on the last frame before the wrap is the
+            // semantics, implemented by MidiTrackRenderer's inclusive <= plus
+            // its upper clamp. A lap start stays beat-exact at loopStart,
+            // because nothing in the half frame BELOW the loop start — i.e.
+            // outside the half-open loop — may leak in.
+            //
+            // The tiling is exact by construction, not by tolerance: segment
+            // k + 1 does not recompute its left edge from its own cursor, it
+            // is HANDED segment k's right edge through
+            // trackPreviousWindowEndBeat. Segment k's right edge and segment
+            // k + 1's left edge are therefore the same double — no gap for an
+            // event to fall through, no overlap to double-fire it — and that
+            // holds even across a block boundary, where the accumulated
+            // segment cursor and transport.getPositionInBeats() +
+            // renderOffsetBeats can differ by an ulp.
+            //
+            // Carrying is also what distinguishes a continuation from a
+            // DISCONTINUITY. The render's first segment and any seek have no
+            // previous segment that declined anything, so they are hard left
+            // edges exactly as a lap start is; see the guard at the use site.
             //
             // The widening is gated on BOTH a wrap flag that survives the
             // block boundary AND the positional residue test, and each does a
@@ -1537,28 +1862,148 @@ public final class RenderPipeline {
             //    behaves identically; 0.75 frame returns to the loop start
             //    every third frame — 512 note-ons — because it too is an
             //    exact binary fraction.)
-            double eventWindowStartBeat = currentBeat;
-            if (trackLoopWrapPending && loopActive && loopLength * samplesPerBeat >= 1.0) {
+            // This segment BEGINS a lap iff the previous one ended at the loop
+            // end — the wrap that set the flag. A lap start is a hard edge:
+            // nothing is carried into it, so its window is not shifted back.
+            boolean segmentBeginsLap = trackLoopWrapPending && loopActive;
+
+            double frameOriginBeat = currentBeat;
+            if (segmentBeginsLap && loopLength * samplesPerBeat >= 1.0) {
                 double beatsIntoLoop = currentBeat - loopStart;
                 if (beatsIntoLoop > 0.0 && beatsIntoLoop * samplesPerBeat < 1.0) {
-                    eventWindowStartBeat = loopStart;
+                    frameOriginBeat = loopStart;
                 }
             }
-            double eventWindowEndBeat = currentBeat + framesToProcess / samplesPerBeat;
-            if (loopSplitActive) {
-                eventWindowEndBeat = Math.min(eventWindowEndBeat, loopEnd);
+
+            double segmentEndBeat = currentBeat + framesToProcess / samplesPerBeat;
+            // A wrap FOLLOWS this segment iff the advanced cursor reaches the
+            // loop end — the same test the wrap at the bottom of this loop
+            // body performs, evaluated one step early so the window can be
+            // held beat-exact there.
+            boolean segmentEndsLap = loopActive && segmentEndBeat >= loopEnd;
+
+            // The LEFT edge carries from the remembered previous window end,
+            // never from a positional guess. Three cases:
+            //  • a LAP START — a hard edge by definition; nothing below the
+            //    loop start may leak in, so the window begins at the origin;
+            //  • a DISCONTINUITY — the render's first segment, or a seek —
+            //    also a hard edge, and for the same reason: no previous
+            //    segment declined anything here, and reaching back would let
+            //    a seek landing inside a note re-trigger its note-on. Which
+            //    fixture pins this depends on WHAT you break, and the two
+            //    cases are worth keeping straight (all three counts below
+            //    measured on JDK 26, AudioEngineMidiPlaybackTest, 29 tests):
+            //      – drop the discontinuity rule ALTOGETHER, i.e. widen every
+            //        non-lap edge positionally with "frameOriginBeat -
+            //        halfFrameBeats": the ONLY failure is
+            //        oneAndAHalfFrameLoopKeepsTheEventWindowWideningEnabled,
+            //        whose transport is parked a quarter frame past a note on
+            //        the loop start — 1024 note-ons where 1023 is correct.
+            //        That fixture is what caught the over-widening, and it is
+            //        the reason this bullet exists;
+            //      – break the CONTINUITY GUARD below instead, and that
+            //        fixture cannot see it. Forcing continuesPreviousSegment
+            //        false gives 3 failures —
+            //        noteOnLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment,
+            //        noteOffLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment
+            //        and eventExactlyOnABlockBoundaryBelongsToTheBlockThatBeginsThere
+            //        — and forcing it true gives 11; the 1.5-frame fixture
+            //        stays GREEN in BOTH directions. The reason is the NaN
+            //        sentinel: with the guard forced true the first segment's
+            //        window start becomes trackPreviousWindowEndBeat, still
+            //        NaN, and every "noteStartBeat >= NaN" is false — which
+            //        admits nothing, landing on the same 1023 the hard edge
+            //        produces. Coincidence, not coverage. A future reader who
+            //        mutates the guard and finds that fixture green has not
+            //        found dead code; look at the three named above;
+            //  • an exact CONTINUATION — begin where the previous window
+            //    ended, which is half a frame back past this origin.
+            //
+            // Using the remembered bound ITSELF as the edge is what makes the
+            // two ownership intervals tile with no gap and no overlap, even
+            // across a block boundary where the accumulated segment cursor
+            // and transport.getPositionInBeats() + renderOffsetBeats can
+            // differ by an ulp.
+            //
+            // What DECIDES between the two is a separate question, and it is
+            // deliberately not a positional bound on the carried value. A
+            // "does trackPreviousWindowEndBeat lie in [origin - half a frame,
+            // origin]?" test passes in the ordinary continuation case only by
+            // EQUALITY — the remembered bound sits exactly on that lower end
+            // — and across a block boundary that equality is at the mercy of
+            // the same non-associative ulp above. One ulp of upward drift and
+            // the boundary would silently degrade to a hard edge, dropping
+            // every event in its last half frame; for a note-OFF that is a
+            // STUCK NOTE, the very bug class this change exists to remove.
+            //
+            // So the test is CONTINUITY against the remembered previous
+            // segment END, at the resolution the carry itself operates at:
+            // half a frame. That is not an arbitrary epsilon. Unlike the
+            // wrap-flag essay above — where a threshold genuinely cannot work
+            // because the two populations of readings OVERLAP — the two
+            // populations here are eight orders of magnitude apart: ulp drift
+            // is ~1e-13 beats, about 5e-9 of a frame, while any genuine
+            // discontinuity (a seek, a restart, the block-entry loop mapping)
+            // moves the cursor by whole frames and usually by thousands of
+            // them. The gap between them is not a grey area either: a "seek"
+            // shorter than half a frame lands inside the frame the walk was
+            // already on, where carrying and not carrying pick the same frame
+            // for every event. The full argument is on
+            // trackPreviousSegmentEndBeat.
+            //
+            // NaN is the "nothing rendered yet" sentinel and every comparison
+            // against it is false — Math.abs(NaN - x) < 0.5 included — so a
+            // fresh walk takes the hard-edge branch without a separate flag.
+            // Do not rewrite this test into a NaN-unsafe form.
+            boolean continuesPreviousSegment =
+                    Math.abs(frameOriginBeat - trackPreviousSegmentEndBeat) * samplesPerBeat < 0.5;
+            double eventWindowStartBeat = (segmentBeginsLap || !continuesPreviousSegment)
+                    ? frameOriginBeat
+                    : trackPreviousWindowEndBeat;
+            double eventWindowEndBeat;
+            if (segmentEndsLap) {
+                // loopSplitActive is the ordinary looping case: the span above
+                // was clamped to the loop end, so cap the window there too and
+                // let MidiTrackRenderer's right-INCLUSIVE note-off bound
+                // release a note that ends exactly as the lap ends.
+                //
+                // Its absence here is the binade corner documented on
+                // loopSplitActive above — currentBeat has rounded up to
+                // exactly loopEnd, the span was NOT clamped, and this window
+                // is left uncapped and unshifted exactly as it is today. That
+                // known limitation is a deliberate non-goal of this change; do
+                // not "tidy" the branch away.
+                eventWindowEndBeat = loopSplitActive ? loopEnd : segmentEndBeat;
+            } else {
+                eventWindowEndBeat = segmentEndBeat - halfFrameBeats;
             }
 
             renderSegment(tracks, trackCount, currentBeat,
-                    eventWindowStartBeat, eventWindowEndBeat, samplesPerBeat,
-                    midiRenderer, framesProcessed, framesToProcess);
+                    eventWindowStartBeat, eventWindowEndBeat, frameOriginBeat,
+                    samplesPerBeat, midiRenderer, framesProcessed, framesToProcess);
             // This segment owns its lap's first frame now, whether or not the
             // widening actually fired (a frame-aligned wrap leaves no residue
             // and needs none), so no later segment may widen for the same lap.
             trackLoopWrapPending = false;
+            // Hand this segment's right edge to the next one as its carry-in
+            // bound, so the two ownership intervals abut exactly, and its raw
+            // end cursor as the continuity reference that decides whether the
+            // next segment may reach back for it at all.
+            trackPreviousWindowEndBeat = eventWindowEndBeat;
+            trackPreviousSegmentEndBeat = segmentEndBeat;
 
             framesProcessed += framesToProcess;
-            currentBeat += framesToProcess / samplesPerBeat;
+            // Assign the segment's own end rather than re-adding the same
+            // quotient. The VALUE is identical either way, but reusing the
+            // very double the window was derived from makes the next
+            // iteration's continuity test exact BY INSPECTION for a
+            // within-block continuation: its frameOriginBeat is literally
+            // this segmentEndBeat, so the difference is a bit-exact zero
+            // rather than two identical expressions argued to agree. Across a
+            // BLOCK boundary the origin is re-derived from the transport and
+            // the difference is an ulp, which is what the half-frame
+            // tolerance is there to absorb.
+            currentBeat = segmentEndBeat;
 
             // Story 315 review — modulo, not plain subtraction: the segment
             // is clamped to whole frames, so a sub-sample loop (shorter than
@@ -1582,16 +2027,21 @@ public final class RenderPipeline {
      * {@link MidiTrackRenderer}, audio tracks by copying overlapping clip
      * data into the track buffers.
      *
-     * <p>Two different beat ranges are in play, and the split is deliberate.
+     * <p>THREE beat quantities are in play, and the split is deliberate.
      * {@code startBeat} is the segment's raw fractional render cursor and,
      * with the {@code endBeat} derived from it, is the range used for audio
      * clips. {@code eventWindowStartBeat}/{@code eventWindowEndBeat} are the
-     * caller's loop-exact EVENT window and are used only for MIDI (see
-     * {@link #renderTracks}, which computes them). That window is ASYMMETRIC
-     * — half-open {@code [start, end)} for note-ons, right-INCLUSIVE
-     * {@code (start, end]} for note-offs, which is how a note ending exactly
-     * at the loop end is released; {@link MidiTrackRenderer} carries the full
-     * rule.</p>
+     * caller's EVENT window — the segment's frame-ownership interval — and
+     * are used only for MIDI. {@code frameOriginBeat} is the beat that maps to
+     * MIDI frame 0 of this segment, and it is NOT the window start: an
+     * ordinary continuation window begins half a frame below it, and a lap
+     * start moves the origin onto {@code loopStart} while the window follows
+     * it exactly. {@link #renderTracks} computes all three.</p>
+     *
+     * <p>That window is ASYMMETRIC — half-open {@code [start, end)} for
+     * note-ons, right-INCLUSIVE {@code (start, end]} for note-offs, which is
+     * how a note ending exactly at the loop end is released;
+     * {@link MidiTrackRenderer} carries the full rule.</p>
      *
      * <p>Audio clips are RANGES, not point events: the frame that straddles
      * the loop boundary has to be filled with something, and clipping their
@@ -1607,6 +2057,7 @@ public final class RenderPipeline {
     private void renderSegment(List<Track> tracks, int trackCount,
                                double startBeat,
                                double eventWindowStartBeat, double eventWindowEndBeat,
+                               double frameOriginBeat,
                                double samplesPerBeat,
                                MidiTrackRenderer midiRenderer,
                                int frameOffset, int framesToProcess) {
@@ -1619,8 +2070,8 @@ public final class RenderPipeline {
                     && track.getSoundFontAssignment() != null
                     && midiRenderer != null) {
                 midiRenderer.renderMidiTrack(track, trackBuffers[t],
-                        eventWindowStartBeat, eventWindowEndBeat, samplesPerBeat,
-                        frameOffset, framesToProcess);
+                        eventWindowStartBeat, eventWindowEndBeat, frameOriginBeat,
+                        samplesPerBeat, frameOffset, framesToProcess);
                 continue;
             }
 

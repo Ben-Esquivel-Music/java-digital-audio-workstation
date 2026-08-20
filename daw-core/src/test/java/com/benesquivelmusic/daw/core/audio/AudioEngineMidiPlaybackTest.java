@@ -527,6 +527,21 @@ class AudioEngineMidiPlaybackTest {
      * the fix note 65 fired on all 8 laps — out-of-loop content bleeding into
      * a loop that story 315 guarantees is clean. Note 62 at beat 1.0 is the
      * control: it is genuinely inside the loop and must keep firing.</p>
+     *
+     * <p>Since the second review round this pins the OUT-OF-LOOP half of the
+     * loop-end exemption. Ordinary segment ends now finish half a frame early
+     * so that a straggler is carried into the next segment; a loop end must
+     * not move in either direction, and the two directions fail differently.
+     * Running PAST {@code loopEnd} is what this test catches — that is the
+     * original bleed, and the whole-frame split already overshoots by
+     * δ ∈ [0, 1) frame, so {@code segmentEndBeat − ½ frame} is past
+     * {@code loopEnd} on any lap whose δ exceeds half a frame. Stopping half
+     * a frame SHORT is caught by the companion
+     * {@link #noteEndingExactlyOnTheLoopEndIsReleasedOncePerLapWhileLooping()}:
+     * measured on JDK 26 by applying the shift at the loop end instead of
+     * capping there, it loses the release on the four laps whose δ is under
+     * half a frame — frames 165374, 330749, 496124 and 661499 disappear while
+     * 82687, 248062, 413437 and 578812 survive.</p>
      */
     @Test
     void noteExactlyAtTheLoopEndNeverFiresWhileLooping() {
@@ -589,6 +604,13 @@ class AudioEngineMidiPlaybackTest {
      * are orthogonal discriminators, one per half of the fix: this one still
      * fails with the split epsilon alone and no flag, and that one still
      * fails with the flag alone and no epsilon.</p>
+     *
+     * <p>Unchanged by the second review round's half-frame carry, and
+     * re-running it is how that is pinned. The carry hands each segment the
+     * PREVIOUS segment's window END, which after a lap start is already at
+     * least half a frame into the lap, so it never reaches back over the lap
+     * boundary to claim the loop-start note a second time. A 24th note-on
+     * here would mean it had.</p>
      */
     @Test
     void noteAtTheLoopStartFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed() {
@@ -629,6 +651,12 @@ class AudioEngineMidiPlaybackTest {
      * are orthogonal discriminators, one per half of the fix: this one still
      * fails with the wrap flag alone and no epsilon, and that one still fails
      * with the epsilon alone and no flag.</p>
+     *
+     * <p>Unchanged by the second review round's half-frame carry: a lap start
+     * is a hard left edge, taken before the carry bound is consulted, so
+     * recovering this lap's loop-start note is still the split epsilon's and
+     * the widening's job. The carry cannot stand in for either, and this
+     * count staying at 7 while the epsilon still owns it is what says so.</p>
      */
     @Test
     void noteAtTheLoopStartFiresOnEveryLapWhenTheWrapResidueRoundsUp() {
@@ -712,6 +740,14 @@ class AudioEngineMidiPlaybackTest {
      * wrapping; lap 1 lands on the boundary exactly.) The frame recorded is
      * the renderer's cumulative rendered-frame index, which here equals the
      * global frame index because every block is rendered while playing.</p>
+     *
+     * <p>These frames are UNCHANGED by the second review round's half-frame
+     * carry, and that is the point of re-running them: a lap start takes the
+     * hard-edge branch before the carry bound is consulted, so 7859, 15735,
+     * 23610, 31485 and 39360 are the same values before and after. This is
+     * also the only fixture here whose block-entry cursor is PDC-shifted, so
+     * it is the one that would expose a carry bound that failed to survive a
+     * block boundary.</p>
      */
     @Test
     void loopStartNoteSurvivesTheBlockEntryMappingUnderPluginDelayCompensation() {
@@ -788,6 +824,12 @@ class AudioEngineMidiPlaybackTest {
      * content cursor starts ahead of beat 0, so the render begins past the
      * first lap's downbeat — a delay-compensation start-up artifact, not a
      * scheduling defect.</p>
+     *
+     * <p>The count is UNCHANGED by the second review round's half-frame
+     * carry, and re-running it is how that is pinned: a lap start is a hard
+     * left edge, taken before the carry bound is consulted, so the owed
+     * loop-start note is still the widening's job across the pause and the
+     * carry neither supplies it nor duplicates it.</p>
      */
     @Test
     void loopStartNoteSurvivesAPauseOnTheWrapBoundary() {
@@ -805,41 +847,126 @@ class AudioEngineMidiPlaybackTest {
     }
 
     /**
-     * Story 315 review — a note-off that maps to exactly {@code framesToProcess}
-     * must still be dispatched, otherwise the note sustains until the next
-     * {@code allNotesOff()} or transport stop. Looping is DISABLED here: this
-     * is a plain linear-playback defect, independent of the loop work.
+     * Story 315 review (second round) — a note-off whose ideal position falls
+     * in the LAST HALF FRAME of a segment must be carried into the next
+     * segment and dispatched on its frame 0, not dragged back onto the
+     * current segment's last frame. Looping is DISABLED here: this is a plain
+     * linear-playback defect, independent of the loop work.
      *
-     * <p>{@code findNextEventFrame} seeds {@code nextFrame = framesToProcess}
-     * and selects only on {@code frame < nextFrame}, but the note-off branch
-     * mapped its beat with {@code maxFrame = framesToProcess}, which the clamp
-     * can legally return. Such a note-off was never sent, and the next
-     * segment's window cannot recover it either — that window admits only
-     * {@code noteEndBeat > startBeat}, and the following segment starts past
-     * the note end. Note-ONs were always safe because they already clamp to
-     * {@code framesToProcess - 1}.</p>
+     * <p>Two rounds of the same fixture. The FIRST round fixed a drop: the
+     * note-off branch mapped its beat with {@code maxFrame = framesToProcess}
+     * while {@code findNextEventFrame} seeds {@code nextFrame =
+     * framesToProcess} and selects only on {@code frame < nextFrame}, so such
+     * a note-off was never sent at all and its note sustained until the next
+     * {@code allNotesOff()} or transport stop — count <b>0</b>. Clamping to
+     * {@code framesToProcess - 1} recovered the event but emitted it one
+     * sample EARLY, which is the defect this round fixes: the event window is
+     * now the segment's frame-ownership interval, ending half a frame before
+     * the segment's exclusive end, so block 18 does not admit this note-off
+     * at all. Block 19 does — its own window reaches half a frame back past
+     * its origin — and maps it to frame 0, the frame nearest-frame rounding
+     * always said it belonged on.</p>
      *
      * <p>Config: 44.1 kHz at 68 BPM gives samplesPerBeat = 38911.7647…, so the
      * note-off at beat 0.25 lands on frame 9727.94 — 0.06 frame before block
-     * 18's end at 9728, which is exactly {@code framesToProcess} after
-     * nearest-frame rounding. Before the fix this note-off count was
-     * <b>0</b>.</p>
+     * 18's end at 9728. Rounding takes it to 9728, which IS block 19's frame
+     * 0. Before this round the dispatch frame was <b>9727</b>; it is
+     * <b>9728</b> now.</p>
      */
     @Test
-    void noteOffLandingExactlyOnTheSegmentEndIsStillDispatched() {
+    void noteOffLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment() {
         StubSoundFontRenderer instance = renderSession(
                 44_100.0, 68.0, 512, 24,
                 false, 0.0, 0.0,
                 List.of(MidiNoteData.of(60, 0, 1, 100))); // beat 0.0 → 0.25, off at 9727.94
 
         assertThat(countNoteOffs(instance, 60))
-                .as("note-offs for a note whose end maps to exactly framesToProcess — "
-                        + "dropping it leaves the note stuck until the next allNotesOff()")
+                .as("note-offs for a note whose end falls in a segment's last half "
+                        + "frame — dropping it leaves the note stuck until the next "
+                        + "allNotesOff()")
                 .isEqualTo(1);
+        assertThat(noteOffFrames(instance, 60))
+                .as("the frame it was dispatched at: the NEXT block's frame 0 (global "
+                        + "9728), which is where 9727.94 rounds to — not 9727, which is "
+                        + "what re-quantizing it into the earlier segment produced")
+                .containsExactly(9728);
         assertThat(countNoteOns(instance, 60))
                 .as("the matching note-on — asserted so the test cannot pass by "
                         + "breaking note-on dispatch instead")
                 .isEqualTo(1);
+    }
+
+    /**
+     * Story 315 review (second round) — the note-ON branch had the identical
+     * defect and gets the identical fix. Copilot's finding named only the
+     * note-off; the two branches share one predicate, one mapping and one
+     * clamp, so a note-off carried while a note-on is still re-quantized
+     * would be a half-applied fix.
+     *
+     * <p>Same fixture as
+     * {@link #noteOffLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment()}
+     * — 44.1 kHz at 68 BPM, samplesPerBeat = 38911.7647…, 512-frame blocks,
+     * looping disabled — with the note moved one 1/16 column later so that
+     * its START, rather than its end, sits on beat 0.25 = frame 9727.94, 0.06
+     * frame before block 18's end. It must fire on block 19's frame 0, global
+     * frame <b>9728</b>; before this round it fired at <b>9727</b>.</p>
+     *
+     * <p>The note's own end (beat 0.5 = frame 19455.88) lies past the 24
+     * blocks = 12288 frames this fixture renders, so no note-off is expected
+     * and none is asserted. {@code containsExactly} is used rather than a
+     * count so that a duplicate — the failure mode a window that overlaps its
+     * neighbour would produce — fails too.</p>
+     */
+    @Test
+    void noteOnLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment() {
+        StubSoundFontRenderer instance = renderSession(
+                44_100.0, 68.0, 512, 24,
+                false, 0.0, 0.0,
+                List.of(MidiNoteData.of(60, 1, 1, 100))); // on at beat 0.25 = frame 9727.94
+
+        assertThat(noteOnFrames(instance, 60))
+                .as("the frame the note-on was dispatched at: the NEXT block's frame 0 "
+                        + "(global 9728), exactly once — never 9727, and never both")
+                .containsExactly(9728);
+    }
+
+    /**
+     * Story 315 review (second round) — the sharpest discriminator: an event
+     * sitting EXACTLY on a block boundary. It belongs to the block that
+     * BEGINS there, on its frame 0, and to no other.
+     *
+     * <p>Every quantity in this fixture is dyadic, so the arithmetic is exact
+     * in {@code double} and the assertion is not riding a rounding accident.
+     * At 32768 Hz and 120 BPM samplesPerBeat is exactly 16384, so beat 0.25 —
+     * the end of a 1/16-column note starting at beat 0.0 — is frame
+     * <b>4096</b> exactly, which is block 8's frame 0 with 512-frame blocks.
+     * Looping is disabled; 16 blocks = 8192 frames carry the render well past
+     * it.</p>
+     *
+     * <p>Before this round the note-off landed on <b>4095</b>: block 7's
+     * window ran to beat 0.25 inclusive, the mapping rounded the position to
+     * 512 = {@code framesToProcess}, and the clamp dragged it back onto block
+     * 7's last frame. Now block 7's window ends half a frame earlier, block
+     * 8's begins half a frame before its own origin, and the event maps to
+     * offset 0 there. The tie is the exact one the note-off window's
+     * inclusive {@code <=} and the note-on window's exclusive {@code <}
+     * resolve in opposite directions, which is why the note-on at beat 0.0 is
+     * asserted alongside it: it must still land on frame 0 of block 0.</p>
+     */
+    @Test
+    void eventExactlyOnABlockBoundaryBelongsToTheBlockThatBeginsThere() {
+        StubSoundFontRenderer instance = renderSession(
+                32_768.0, 120.0, 512, 16,      // samplesPerBeat = 16384 exactly
+                false, 0.0, 0.0,
+                List.of(MidiNoteData.of(60, 0, 1, 100))); // beat 0.0 → 0.25 = frame 4096
+
+        assertThat(noteOffFrames(instance, 60))
+                .as("the note-off sits exactly on block 8's first frame (4096) and "
+                        + "belongs to block 8, not to block 7's last frame (4095)")
+                .containsExactly(4096);
+        assertThat(noteOnFrames(instance, 60))
+                .as("the matching note-on, still on frame 0 of the very first block")
+                .containsExactly(0);
     }
 
     /**
@@ -879,6 +1006,15 @@ class AudioEngineMidiPlaybackTest {
      * {@code beatToFrame} then measures 4.0 from an origin four beats away,
      * saturates against the upper clamp, and the note-on lands on the LAST
      * frame of the segment instead of the first.</p>
+     *
+     * <p>These frames are UNCHANGED by the second review round's half-frame
+     * carry, which is what re-running this test pins. The lap-start segment
+     * itself takes the hard-edge branch, and the segment FOLLOWING it begins
+     * its window where that one's window ENDED — at least half a frame into
+     * the lap, because every segment consumes at least one frame — so the
+     * note is claimed by exactly one segment per lap. A duplicate would fail
+     * {@code containsExactlyElementsOf}, which is why the assertion is a
+     * frame list rather than a count.</p>
      */
     @Test
     void noteAtANonZeroLoopStartFiresOnEveryLapAtTheLapsFirstFrame() {
@@ -914,9 +1050,13 @@ class AudioEngineMidiPlaybackTest {
      * Story 315 review — a note whose end lands exactly on the loop end must
      * be released exactly once per lap while LOOPING, and must not be
      * released a second time after the wrap.
-     * {@link #noteOffLandingExactlyOnTheSegmentEndIsStillDispatched()} covers
-     * the same clamp with looping switched off; this is the looped case,
-     * where the segment end is the loop boundary rather than a block end.
+     * {@link #noteOffLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment()}
+     * covers an ordinary block end with looping switched off, where the event
+     * is CARRIED into the next segment instead; this is the looped case, and
+     * it is the counterexample that keeps the two rules apart. A loop end is
+     * a HARD edge — there is no next segment in the lap to carry a release
+     * into — so here the upper clamp is still the semantics rather than a
+     * re-quantization, and the frames below pin exactly that.
      *
      * <p>The note runs from beat 3.0 to beat 4.0 in the loop [0.0, 4.0), so
      * its end is the loop's exclusive end. It is admitted by the final
@@ -999,6 +1139,16 @@ class AudioEngineMidiPlaybackTest {
      * modulo lands the cursor back exactly ON the loop start every frame, so
      * the ordinary window test admits the note 1536 times with the guard AND
      * without it. See the comment on the widening.</p>
+     *
+     * <p>Since the second review round it ALSO pins that a lap start is
+     * exempt from the half-frame carry, and it is the sharpest guard on that
+     * rule. Every one of these 1536 single-frame segments begins a lap, and
+     * the residue orbit sits under half a frame for most of them, so a window
+     * that reached half a frame back past its own cursor unconditionally
+     * would re-admit the loop-start note on those frames. Measured on JDK 26
+     * by replacing the carry guard with a plain
+     * {@code frameOriginBeat − ½ frame}: this count goes from 1 to
+     * <b>1536</b>, one note-on per rendered frame.</p>
      */
     @Test
     void subFrameLoopFiresTheLoopStartNoteOnceNotOnEveryFrame() {
@@ -1040,13 +1190,46 @@ class AudioEngineMidiPlaybackTest {
      * discriminator: the residue orbit is then the exact two-cycle
      * 0.25 → 0.75 → 0.25 frame and never returns to the loop start, so the
      * note is NEVER admitted by the ordinary window test
-     * ({@code noteStartBeat >= startBeat}). Every note-on counted here is one
-     * the widening recovered.</p>
+     * ({@code noteStartBeat >= windowStartBeat}). Every note-on counted here
+     * is one the widening recovered.</p>
      *
      * <p>Segments alternate 2, 1, 2, 1, … frames long, so over 3 × 512 = 1536
      * frames there are 1536 ÷ 3 × 2 = 1024 of them. All of them fire except
      * the very first, which begins before any wrap has set the flag: 1023.
      * </p>
+     *
+     * <p><b>The missing 1024th is the second review round's other pin.</b>
+     * That round gave ordinary continuation edges a window reaching half a
+     * frame back past their own cursor, so that an event in a segment's last
+     * half frame is CARRIED into the next segment rather than re-quantized
+     * into the current one. The note here sits a quarter frame BEFORE the
+     * render's very first cursor, so a naive "not a lap start ⇒ carry" rule
+     * would sweep it in and make this 1024. It must not: the start of
+     * playback — like a seek — is a HARD left edge, because there is no
+     * previous segment that declined the event, and carrying there would let
+     * a seek into the middle of a note re-trigger its note-on. Replacing the
+     * guarded left edge with that naive rule
+     * ({@code segmentBeginsLap ? frameOriginBeat : frameOriginBeat −
+     * halfFrameBeats}) fails HERE and nowhere else in this class — 1024
+     * against 1023 — which is what this fixture is for.</p>
+     *
+     * <p><b>Be precise about what it does NOT cover, because the boundary is
+     * counter-intuitive.</b> Story 315 review (third round) — this fixture
+     * does not pin the CONTINUITY GUARD that decides which edges are
+     * continuations, and cannot: forcing that guard false leaves this test
+     * green (the three fixtures that fail are
+     * {@link #noteOnLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment()},
+     * {@link #noteOffLandingInTheLastHalfFrameIsCarriedIntoTheNextSegment()}
+     * and
+     * {@link #eventExactlyOnABlockBoundaryBelongsToTheBlockThatBeginsThere()}),
+     * and forcing it TRUE leaves this test green too. The second case is the
+     * surprising one: with the guard forced true the first segment's window
+     * start becomes the still-NaN remembered bound, every
+     * {@code noteStartBeat >= NaN} is false, and admitting nothing lands on
+     * the same 1023 that the hard edge produces. The count agrees by
+     * coincidence, not by coverage. Do not read this fixture's green as
+     * evidence that the guard is exercised, and do not "simplify" the guard
+     * on the strength of it.</p>
      */
     @Test
     void oneAndAHalfFrameLoopKeepsTheEventWindowWideningEnabled() {
@@ -1064,7 +1247,8 @@ class AudioEngineMidiPlaybackTest {
         assertThat(countNoteOns(instance, 60))
                 .as("a loop of 1.5 frames must keep the event-window widening enabled: "
                         + "the cursor never lands on the loop start, so every one of the "
-                        + "1023 note-ons is one the widening recovered")
+                        + "1023 note-ons is one the widening recovered — and the render's "
+                        + "own first segment is a hard left edge, so there is no 1024th")
                 .isEqualTo(1023);
     }
 
@@ -1340,8 +1524,12 @@ class AudioEngineMidiPlaybackTest {
         double startBeat = 0.0;
         double endBeat = BUFFER_SIZE / samplesPerBeat;
 
+        // windowStartBeat and frameOriginBeat coincide here: this is a direct
+        // unit call with no loop split and no continuation edge to carry an
+        // event across, so the segment's cursor is both its admission bound
+        // and its frame-mapping origin.
         renderer.renderMidiTrack(track, buffer, startBeat, endBeat,
-                samplesPerBeat, 0, BUFFER_SIZE);
+                startBeat, samplesPerBeat, 0, BUFFER_SIZE);
 
         StubSoundFontRenderer instance = stubRenderer.lastCreatedInstance;
         assertThat(instance).isNotNull();
@@ -1372,7 +1560,7 @@ class AudioEngineMidiPlaybackTest {
         float[][] buffer = new float[2][BUFFER_SIZE];
         double samplesPerBeat = SAMPLE_RATE * 60.0 / TEMPO;
         renderer.renderMidiTrack(track, buffer, 0.0,
-                BUFFER_SIZE / samplesPerBeat, samplesPerBeat, 0, BUFFER_SIZE);
+                BUFFER_SIZE / samplesPerBeat, 0.0, samplesPerBeat, 0, BUFFER_SIZE);
 
         assertThat(renderer.hasRenderer(track.getId())).isTrue();
 
@@ -1399,12 +1587,12 @@ class AudioEngineMidiPlaybackTest {
 
         // First render
         renderer.renderMidiTrack(track, buffer, 0.0, endBeat,
-                samplesPerBeat, 0, BUFFER_SIZE);
+                0.0, samplesPerBeat, 0, BUFFER_SIZE);
         StubSoundFontRenderer firstInstance = stubRenderer.lastCreatedInstance;
 
         // Second render — should reuse the same renderer
         renderer.renderMidiTrack(track, buffer, 0.0, endBeat,
-                samplesPerBeat, 0, BUFFER_SIZE);
+                0.0, samplesPerBeat, 0, BUFFER_SIZE);
         StubSoundFontRenderer secondInstance = stubRenderer.lastCreatedInstance;
 
         assertThat(secondInstance).isSameAs(firstInstance);
