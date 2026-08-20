@@ -30,7 +30,18 @@ import java.util.logging.Logger;
  *
  * <p>MIDI note events are rendered with sample-accurate timing by splitting the
  * segment into sub-chunks around each note-on/note-off boundary and rendering
- * each sub-chunk separately.</p>
+ * each sub-chunk separately. Which events belong to a segment is decided by the
+ * beat window the caller passes to
+ * {@link #renderMidiTrack(Track, float[][], double, double, double, int, int)},
+ * and the two event kinds take opposite ends of it: note-ONs are admitted on
+ * the half-open {@code [startBeat, endBeat)}, note-OFFs on the mirror-image
+ * {@code (startBeat, endBeat]} — EXCLUSIVE on the left, INCLUSIVE on the
+ * right. That right-inclusivity is deliberate and load-bearing: it is how a
+ * note ending exactly at the loop end gets released on the lap it belongs to.
+ * Because note-ons and note-offs are point events, the window is computed
+ * loop-exactly by the caller rather than being read off the segment's own
+ * fractional render cursor, and at a loop wrap it may begin up to one frame
+ * before that cursor. See that method for the full contract.</p>
  *
  * <p>When the FluidSynth native library is not available, the renderer logs a
  * warning and falls back to {@link JavaSoundRenderer}. Note that the Java Sound
@@ -133,12 +144,78 @@ final class MidiTrackRenderer implements AutoCloseable {
 
     /**
      * Renders a MIDI track's note data into the provided track buffer for the
-     * given beat range, with sample-accurate timing.
+     * given event window, with sample-accurate timing.
      *
-     * <p>For each note in the track's {@link MidiClip} that overlaps the beat
-     * range [{@code startBeat}, {@code endBeat}), this method computes per-event
-     * frame offsets and renders in sub-chunks: render up to the next event
-     * offset, send the event, continue rendering the remainder.</p>
+     * <p>For each note in the track's {@link MidiClip} whose event position
+     * falls in the beat window bounded by {@code startBeat} and
+     * {@code endBeat}, this method computes per-event frame offsets and
+     * renders in sub-chunks: render up to the next event offset, send the
+     * event, continue rendering the remainder.</p>
+     *
+     * <h4>The window is ASYMMETRIC: ons half-open, offs right-inclusive</h4>
+     * <p>The two event kinds take opposite ends of the same window:</p>
+     * <ul>
+     *   <li>note-ONs are admitted on the half-open
+     *       {@code [startBeat, endBeat)} —
+     *       {@code noteStartBeat >= startBeat && noteStartBeat < endBeat};</li>
+     *   <li>note-OFFs are admitted on the mirror-image
+     *       {@code (startBeat, endBeat]} —
+     *       {@code noteEndBeat > startBeat && noteEndBeat <= endBeat}, i.e.
+     *       EXCLUSIVE on the left and INCLUSIVE on the right.</li>
+     * </ul>
+     * <p>The right-inclusivity for offs is deliberate and load-bearing, not a
+     * stray {@code <=}: the caller caps this window at the loop end, so it is
+     * the only way a note ending exactly AT the loop end is released on the
+     * lap it belongs to. It is pinned by {@code AudioEngineMidiPlaybackTest#
+     * noteEndingExactlyOnTheLoopEndIsReleasedOncePerLapWhileLooping}, and the
+     * matching exclusion of note-ONs at the loop end is pinned by
+     * {@code noteExactlyAtTheLoopEndNeverFiresWhileLooping}. Do not
+     * "regularize" either bound: the window is half-open for ons only, and
+     * describing it as half-open without qualification is wrong for offs.</p>
+     *
+     * <h4>The window is the caller's, not the segment's own cursor</h4>
+     * <p>{@code startBeat}/{@code endBeat} are the segment's loop-exact EVENT
+     * WINDOW, computed by the caller — they are not simply the
+     * segment's own fractional render cursor and its cursor + duration. MIDI
+     * note-ons and note-offs are POINT events, and the caller's loop split is
+     * clamped to whole frames, so passing the raw cursor would let a note
+     * sitting exactly on the loop start fall between two laps' windows and a
+     * note sitting exactly on the (exclusive) loop end fall inside one. The
+     * caller therefore caps the window at the loop end and, at a loop wrap,
+     * may begin it up to one frame BEFORE the segment's own cursor.</p>
+     *
+     * <p>{@code startBeat} doubles as the frame-mapping origin for every event
+     * in the window, so at such a wrap the mapping origin moves WITH the
+     * window rather than staying on the segment's own cursor.
+     * {@link #beatToFrame} clamps its result into
+     * {@code [0, framesToProcess - 1]}, and on this path only the UPPER clamp
+     * is load-bearing. It is what stops a note-off landing on exactly
+     * {@code framesToProcess} from being swallowed: the sub-chunk dispatcher
+     * seeds its search at {@code framesToProcess} and selects strictly below
+     * it, so such an event would never be sent at all. Story 315 review —
+     * before that clamp was applied to the note-off end, such note-offs were
+     * dropped outright and their notes sustained until the next
+     * {@link #allNotesOff()}.</p>
+     *
+     * <p>The LOWER clamp is unreachable under the CURRENT caller contract
+     * only. {@code RenderPipeline.renderSegment} passes the very same
+     * {@code eventWindowStartBeat} as both the window start and the
+     * frame-mapping origin, and admission is {@code noteStartBeat >=
+     * startBeat} for note-ons and {@code noteEndBeat > startBeat} for
+     * note-offs — so every admitted event satisfies
+     * {@code beat - startBeat >= 0} and {@code Math.max(0, …)} cannot fire
+     * today. Widen only the admission bound while keeping the raw render
+     * cursor as the origin and it becomes load-bearing at once; see
+     * {@link #beatToFrame} for why it must stay. Do not read the two clamps
+     * as a matched pair.</p>
+     *
+     * <p>The asymmetry with the metronome's click walk is worth recording,
+     * because there the lower clamp genuinely fires. That walk widens only
+     * the WINDOW ({@code gridStartBeat}) and keeps the segment's own
+     * {@code segStartBeat} as the sample-offset ORIGIN, so a recovered
+     * loop-start grid position sits BEFORE the origin and rounds to a
+     * negative offset. The MIDI walk widens both together, which is exactly
+     * why its lower clamp cannot.</p>
      *
      * <p>This method only accesses already-initialized renderers — it never
      * performs I/O or native allocations. If no renderer has been prepared
@@ -147,8 +224,13 @@ final class MidiTrackRenderer implements AutoCloseable {
      *
      * @param track           the MIDI track to render
      * @param trackBuffer     the output buffer {@code [channel][frame]}
-     * @param startBeat       the beat position at the start of this segment
-     * @param endBeat         the beat position at the end of this segment
+     * @param startBeat       start of this segment's event window — INCLUSIVE
+     *                        for note-ons, EXCLUSIVE for note-offs — and the
+     *                        frame-mapping origin for its events
+     * @param endBeat         end of this segment's event window — EXCLUSIVE
+     *                        for note-ons, INCLUSIVE for note-offs, which is
+     *                        what releases a note ending exactly at the loop
+     *                        end
      * @param samplesPerBeat  samples per beat at the current tempo
      * @param frameOffset     the frame offset within the track buffer
      * @param framesToProcess the number of frames to render
@@ -413,7 +495,12 @@ final class MidiTrackRenderer implements AutoCloseable {
 
     /**
      * Finds the next event frame offset >= minFrame for any note-on or note-off
-     * that falls within the segment [startBeat, endBeat).
+     * admitted by this segment's ASYMMETRIC event window: note-ONs on the
+     * half-open {@code [startBeat, endBeat)}, note-OFFs on the mirror-image
+     * {@code (startBeat, endBeat]} — INCLUSIVE on the right, which is how a
+     * note ending exactly at the loop end is released. See
+     * {@link #renderMidiTrack(Track, float[][], double, double, double, int,
+     * int)} for the full contract.
      *
      * @return the frame offset of the next event, or {@code framesToProcess}
      *         if no more events exist
@@ -436,7 +523,21 @@ final class MidiTrackRenderer implements AutoCloseable {
                 }
             }
             if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
-                int frame = beatToFrame(noteEndBeat, startBeat, samplesPerBeat, framesToProcess);
+                // Story 315 review — clamp to framesToProcess - 1, exactly as
+                // the note-on branch above does. The dispatcher seeds
+                // nextFrame = framesToProcess and selects only on
+                // frame < nextFrame, so a note-off mapped to exactly
+                // framesToProcess was NEVER sent, and the next segment's
+                // window cannot recover it either — that window admits only
+                // noteEndBeat > startBeat, and the following segment starts
+                // past the note end. The note therefore sustained until the
+                // next allNotesOff() or transport stop. At 44100 Hz with
+                // 512-frame blocks and looping disabled, 68 BPM lost the
+                // note-off of every 1/16 column from 1 to 8. Note-ons were
+                // always safe because they already clamp to
+                // framesToProcess - 1.
+                int frame = beatToFrame(noteEndBeat, startBeat, samplesPerBeat,
+                        framesToProcess - 1);
                 if (frame >= minFrame && frame < nextFrame) {
                     nextFrame = frame;
                 }
@@ -471,7 +572,9 @@ final class MidiTrackRenderer implements AutoCloseable {
             }
 
             if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
-                int frame = beatToFrame(noteEndBeat, startBeat, samplesPerBeat, framesToProcess);
+                // Same clamp as findNextEventFrame — see the note there.
+                int frame = beatToFrame(noteEndBeat, startBeat, samplesPerBeat,
+                        framesToProcess - 1);
                 if (frame == targetFrame) {
                     try {
                         state.renderer.sendEvent(
@@ -518,6 +621,29 @@ final class MidiTrackRenderer implements AutoCloseable {
     /**
      * Converts a beat position to a frame index within the current segment,
      * clamped to [0, maxFrame].
+     *
+     * <p>The {@code maxFrame} end is load-bearing on every call: every caller
+     * passes {@code framesToProcess - 1} to keep an event off the segment's
+     * exclusive end, where the sub-chunk dispatcher would never see it.</p>
+     *
+     * <p><b>The {@code 0} end is unreachable under the CURRENT caller
+     * contract only — it is not dead code, and it must not be deleted.</b>
+     * {@code RenderPipeline.renderSegment} today passes the very same
+     * {@code eventWindowStartBeat} as both the admission bound and the
+     * frame-mapping origin (see
+     * {@link #renderMidiTrack(Track, float[][], double, double, double, int,
+     * int)}), so every admitted event satisfies {@code beat >= startBeat} and
+     * maps to a non-negative offset. Widen only the admission bound while
+     * keeping the raw render cursor as the origin — which is exactly the
+     * shape {@code RenderPipeline.mixMetronomeClicks} uses, where the widened
+     * grid start is decoupled from {@code segStartBeat} — and the clamp
+     * becomes load-bearing immediately: it is then the only thing standing
+     * between a recovered loop-start event and a negative buffer index.</p>
+     *
+     * <p>Deleting {@code Math.max(0, …)} leaves the whole daw-core suite
+     * green, so no test would catch its removal, and none would catch the
+     * out-of-bounds write a later change to the caller would then expose.
+     * That is a reason to keep it, not permission to drop it.</p>
      */
     @RealTimeSafe
     private static int beatToFrame(double beat, double startBeat,

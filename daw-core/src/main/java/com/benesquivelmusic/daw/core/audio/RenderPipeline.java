@@ -112,6 +112,65 @@ public final class RenderPipeline {
     private final float[][] clickTail;
     private int clickTailFrames;
 
+    /**
+     * Story 315 review — set when an in-block loop wrap leaves the CLICK
+     * walk's cursor on a lap whose first frame has not been scheduled yet;
+     * consumed by the next segment, which may live in the NEXT block because
+     * a quantized wrap can land exactly on the block boundary. The positional
+     * residue test alone cannot carry that fact across the boundary: for a
+     * frame that HAS already been scheduled, beatsIntoLoop * samplesPerBeat
+     * evaluates to 0.99999999999988990 rather than 1.0, and the lap's
+     * loop-start click then fires a second time one frame later. (That
+     * reading, the genuine residue it overlaps with, and the provenance of
+     * both are recorded on the widening in {@code mixMetronomeClicks}.)
+     *
+     * <p><b>Staleness is bounded positionally, NOT by lifecycle clears, and
+     * this flag is deliberately never cleared on stop or pause.</b> A stale
+     * flag — one set before a seek that landed elsewhere inside the loop —
+     * can only widen the window while the residue test also passes, i.e.
+     * while the cursor is already within one frame past the loop start, where
+     * emitting the loop-start event is the correct thing to do anyway. (A
+     * seek landing three frames past the loop START produces no widening at
+     * all: the residue test reads 3.0, not < 1.0. A seek past the loop END
+     * cannot illustrate staleness at all — it trips the block-entry mapping
+     * above {@code mixMetronomeClicks}'s split loop, which clears this flag
+     * outright.) A lifecycle clear, by contrast, destroys real information:
+     * {@code AudioEngine.processBlock} hands EVERY backend callback to
+     * {@link #renderBlock} regardless of transport state, so a clear on the
+     * not-playing path runs on every paused callback while the position sits
+     * parked inside the sub-frame residue, and the loop-start event owed to
+     * the paused lap is lost on resume. Do not re-add it.</p>
+     *
+     * <p><b>Provenance of the pause/resume evidence: it is a CONTENT-walk
+     * measurement, carried over to this walk by symmetry rather than
+     * measured here.</b> The number quoted for that argument — 4 loop-start
+     * events with the not-playing clear, 5 without it, on the pause/resume
+     * fixture in {@code AudioEngineMidiPlaybackTest} (48 kHz, 120 BPM,
+     * 64-frame blocks, loop [0.0, 0.328125) beats = 7875 frames, 16 frames of
+     * insert latency, 615 playing + 20 paused + 20 resumed blocks) — is a
+     * {@link #trackLoopWrapPending} result: that fixture never installs a
+     * metronome, so {@code mixMetronomeClicks} never runs during it and THIS
+     * flag is never touched by it. No pause/resume fixture exercises the
+     * click walk directly. The argument transfers because both walks park
+     * their cursor inside the same kind of sub-frame wrap residue across a
+     * pause and both consume the flag through the same shape of widening —
+     * but it is reasoning by symmetry, not a click-walk measurement.</p>
+     */
+    private boolean clickLoopWrapPending;
+
+    /**
+     * Same fact for the content/MIDI walk. A separate flag because that walk
+     * runs on the PDC-shifted cursor and therefore wraps at a different frame
+     * than the click walk within the same block. The staleness argument on
+     * {@link #clickLoopWrapPending} applies verbatim: bounded by the
+     * positional residue test, never cleared on stop or pause.
+     *
+     * <p>This is the flag the pause/resume measurement quoted there was
+     * actually taken on — see
+     * {@code AudioEngineMidiPlaybackTest.loopStartNoteSurvivesAPauseOnTheWrapBoundary}.</p>
+     */
+    private boolean trackLoopWrapPending;
+
     // One-shot warning flag for exceeding return bus cap
     private boolean returnBusCapWarningLogged;
 
@@ -620,11 +679,52 @@ public final class RenderPipeline {
         // follow the PDC-compensated cursor would change audible click
         // timing and is deliberately not done here. Both cursors are,
         // however, loop-mapped before use (below and in renderTracks), so
-        // neither path ever schedules clicks or content from at/beyond the
-        // loop end.
+        // neither path ever schedules a click grid position or a MIDI note-on
+        // from at/beyond the loop end. There are exactly TWO deliberate
+        // exceptions, both of them events AT the loop end rather than beyond
+        // it:
+        //  • audio-clip RANGES — renderSegment's own endBeat local is
+        //    deliberately NOT capped at the loop end, so a clip's raw range
+        //    runs up to one frame past it and the frame straddling the
+        //    boundary is fully written (see its javadoc);
+        //  • note-OFFS sitting exactly at loopEnd, which are scheduled on
+        //    every lap. MidiTrackRenderer admits a note end with
+        //    "noteEndBeat > startBeat && noteEndBeat <= endBeat" — inclusive
+        //    on the right — and the value it receives as endBeat is
+        //    eventWindowEndBeat, which renderTracks caps with
+        //    "Math.min(..., loopEnd)" and passes into renderSegment. (It is
+        //    NOT renderSegment's own endBeat local, which is the uncapped
+        //    audio-clip range of the first bullet.) So the final pre-wrap
+        //    segment releases a note that ends exactly as the lap ends. That
+        //    is intended: the note must be released, and the post-wrap window
+        //    cannot admit it a second time (its endBeat is a few frames into
+        //    the new lap, four beats short of the note end). Pinned by
+        //    AudioEngineMidiPlaybackTest#noteEndingExactlyOnTheLoopEndIsReleasedOncePerLapWhileLooping.
+        // Note-ONS at loopEnd are NOT an exception — they are excluded, and
+        // that exclusion is pinned by noteExactlyAtTheLoopEndNeverFiresWhileLooping.
         Transport.LoopWindow loop = transport.getLoopWindow();
         boolean loopActive = loop.enabled() && loop.endInBeats() > loop.startInBeats();
         double loopLength = loop.endInBeats() - loop.startInBeats(); // > 0 whenever loopActive
+        // Story 315 review — DEFENSIVE AND UNPINNED. No test covers this
+        // clear, and none can: it is redundant given the code below it, so
+        // deleting it changes no observable and no mutation of it can be
+        // caught. Kept only as a local guarantee.
+        //
+        // Why it is redundant. Nothing returns between here and the segment
+        // loop (every early return above is before the LoopWindow read), the
+        // loop runs at least once for any numFrames >= 1, and its body ends
+        // with an UNCONDITIONAL "clickLoopWrapPending = false" after
+        // scheduleSegmentClicks — so the flag is false at method exit with or
+        // without this line. Meanwhile the only read of the flag inside the
+        // block is the widening, whose condition is conjoined with
+        // loopActive, and the only write that sets it is the in-block wrap,
+        // also guarded by loopActive; with looping off neither can act on a
+        // stale value. The single residual difference is a numFrames == 0
+        // callback, where the segment loop never runs — not a case any
+        // backend produces.
+        if (!loopActive) {
+            clickLoopWrapPending = false;
+        }
         double segStartBeat = transport.getPositionInBeats();
         // Story 315 review — same loop-mapping as renderTracks, applied to
         // the raw cursor: setPositionInBeats permits a target at/past the
@@ -633,6 +733,33 @@ public final class RenderPipeline {
         // of out-of-loop clicks. Mirrors advancePosition's closed-form wrap.
         if (loopActive && segStartBeat >= loop.endInBeats()) {
             segStartBeat = loop.startInBeats() + ((segStartBeat - loop.endInBeats()) % loopLength);
+            // This mapping lands the cursor on a genuine fractional position
+            // that no lap owes a widened window for, so clear the flag. It
+            // fires for two reasons, and neither is a quantization residue:
+            // a seek past the loop end, or the FX thread shrinking loopEnd
+            // below the current position (no seek involved). Either way the
+            // cursor's offset into the lap is arbitrary, not the sub-frame
+            // overshoot of a whole-frame split.
+            //
+            // The asymmetry with renderTracks is deliberate and must stay:
+            // this walk reads the RAW cursor, which the transport itself
+            // already wraps, so the only ways for it to arrive at/past the
+            // loop end are the two above. renderTracks walks the PDC-shifted
+            // cursor, and its mapping ALSO fires as the continuation of a
+            // quantized wrap — the shifted cursor crosses the loop end while
+            // the raw one is still inside — so it deliberately does NOT clear
+            // there, and "restoring symmetry" by adding the clear back drops
+            // the loop-start event on every block-boundary-aligned wrap.
+            //
+            // Pinned by MetronomeLoopSchedulingEngineTest#
+            // seekPastTheLoopEndAfterABlockBoundaryWrapAbandonsTheOwedLoopStartClick,
+            // which is the only fixture that can see this line: the others
+            // either never seek, or seek in block 0 where the flag is still
+            // false, and deleting the clear leaves their rendered output
+            // byte-identical. Delete it and a click reappears at the seek
+            // landing — the abandoned lap's loop-start click, recovered one
+            // frame into a lap the seek walked away from.
+            clickLoopWrapPending = false;
         }
         int framesProcessed = 0;
 
@@ -640,10 +767,61 @@ public final class RenderPipeline {
             int segFrames = numFrames - framesProcessed;
             if (loopActive && segStartBeat < loop.endInBeats()) {
                 double beatsUntilLoopEnd = loop.endInBeats() - segStartBeat;
-                int framesUntilLoopEnd = (int) Math.ceil(beatsUntilLoopEnd * samplesPerBeat);
-                if (framesUntilLoopEnd > 0) {
-                    segFrames = Math.min(segFrames, framesUntilLoopEnd);
-                }
+                // Story 315 review — shave an epsilon off the ceil and floor
+                // the result at one frame. Same arithmetic as renderTracks;
+                // the reasoning is recorded in full there, and the figures
+                // below were measured on THIS walk.
+                //
+                // THE EPSILON. A product that ought to be a whole number of
+                // frames comes out a hair ABOVE it, so ceil returns k + 1 and
+                // the segment overshoots the loop end by a frame. Simulated
+                // on the fixture this floor is pinned on
+                // (MetronomeLoopSchedulingEngineTest#
+                // loopStartClickFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed
+                // — 48 kHz, 120 BPM, samplesPerBeat 24000, loop
+                // [0.0, 0.328125), 64-frame blocks, 2708 blocks), 1385 of the
+                // products this walk computes land within 1e-6 above a
+                // positive integer; the largest such excess is (exact double,
+                // printed in full)
+                //   5333.0000000000072759576141834259033203125
+                // i.e. k + 7.2759576141834259e-12.
+                // The often-quoted 5.56e-13 is NOT a product error — it is
+                // the excess of a resulting RESIDUE, and it was measured on
+                // the identical arithmetic at 44.1 kHz / 72 BPM with loop
+                // [0.0, 0.25) and 1024-frame blocks, where the wrap after the
+                // over-ceiled product leaves the cursor
+                //   1.0000000000005559996907322783954441547393798828125
+                // frames into the lap — just OUTSIDE the "< 1.0" widening
+                // below, so that lap's loop-start click is dropped. Product
+                // excess and residue excess are different quantities; do not
+                // read either figure as the other.
+                //
+                // THE FLOOR is load-bearing, not cosmetic, and this fixture
+                // exercises it directly: with the epsilon applied, the raw
+                // ceil evaluates to 0 exactly 17 times across those 2708
+                // blocks. The old "> 0" guard skipped the clamp on each of
+                // them, so the segment ran to the end of its block from a
+                // cursor a fraction of a frame short of the loop end and
+                // overshot the loop end by the whole remainder of the block.
+                //
+                // The FIGURE "286 of 300 laps wrong in a sweep" was measured
+                // offline by simulation and is NOT reproducible from any test
+                // in this repo — that disclaimer applies to the figure only.
+                // The MECHANISM is pinned right here: putting the old "> 0"
+                // guard back in place of this floor fails
+                // loopStartClickFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed,
+                // whose onset list drops from 23 lap-start clicks to 6 — 17
+                // laps lose their click, the same count as the 17 zero
+                // ceils measured above (both figures observed on JDK 26; the
+                // one-to-one correspondence between them is inferred from the
+                // mechanism, not checked lap by lap). Dropping the epsilon
+                // instead (keeping the
+                // floor) fails that same test plus
+                // AudioEngineMidiPlaybackTest#
+                // noteAtTheLoopStartFiresOnEveryLapWhenTheWrapResidueRoundsUp.
+                int framesUntilLoopEnd =
+                        Math.max(1, (int) Math.ceil(beatsUntilLoopEnd * samplesPerBeat - 1e-9));
+                segFrames = Math.min(segFrames, framesUntilLoopEnd);
             }
             double segEndBeat = segStartBeat + segFrames / samplesPerBeat;
             // Subdivision indices [firstIdx, lastIdxExclusive) whose
@@ -660,12 +838,112 @@ public final class RenderPipeline {
             double schedulingEndBeat = (loopActive && segStartBeat < loop.endInBeats())
                     ? Math.min(segEndBeat, loop.endInBeats())
                     : segEndBeat;
-            long firstIdx = (long) Math.ceil(segStartBeat * clicksPerBeat - 1e-9);
+            // Story 315 review — the pre-wrap segment is clamped to WHOLE
+            // frames, so a loop end that is not sample-aligned is overshot
+            // by δ ∈ (0, 1) frame and the wrap leaves the cursor δ frames
+            // PAST the loop start. Walking the grid from that fractional
+            // cursor makes ceil() step over the grid position exactly AT
+            // loopStart, so the wrapped-in downbeat is silently dropped on
+            // every lap whose length is not a whole number of frames — the
+            // ordinary case (a 4-beat loop at 44.1 kHz / 128 BPM drops it on
+            // every other lap). Keep the fractional cursor for the
+            // sample-offset math — it stays sub-frame accurate and composes
+            // with advancePosition — but widen the grid window down to the
+            // loop start whenever this segment begins inside that sub-frame
+            // residue, so the loop-start click is emitted exactly once, at
+            // the quantized wrap frame.
+            //
+            // The widening is gated on BOTH a wrap flag that survives the
+            // block boundary AND the positional residue test, and each does a
+            // job the other cannot.
+            //
+            // The FLAG makes the widening fire exactly once per lap. A
+            // threshold cannot, because the two populations of readings
+            // OVERLAP — the largest genuine residue sits ABOVE the smallest
+            // already-consumed reading, so any cut-off placed between them
+            // is on the wrong side of one of the two:
+            //  • largest GENUINE residue — the wrap overshot and this lap's
+            //    first frame is still unscheduled, so the widening MUST
+            //    fire: 0.99999999999994320, at 32768 Hz / 128 BPM
+            //    (samplesPerBeat = 15360), loop [0.0, 0.25) beats,
+            //    128-frame blocks;
+            //  • smallest CONSUMED reading — this lap's first frame was
+            //    ALREADY scheduled, so the widening MUST NOT fire:
+            //    0.99999999999988990, at 48000 Hz / 120 BPM
+            //    (samplesPerBeat = 24000), loop [0.0, 0.328125) beats,
+            //    64-frame blocks.
+            // 0.99999999999994320 > 0.99999999999988990, so a cut-off that
+            // admits every genuine residue also admits that consumed reading
+            // and the lap's loop-start click fires a second time one frame
+            // later; a cut-off that rejects the consumed reading also
+            // rejects a genuine residue and that lap loses its click.
+            // Provenance: both figures were measured offline by simulating
+            // this walk across a sweep of sample rates, tempos, block sizes
+            // and loop lengths. They are NOT reproducible from any test in
+            // this repo. The flag is set at the
+            // in-block wrap and cleared by the first segment that schedules
+            // afterwards — which may be in the NEXT block, because a
+            // quantized wrap can land exactly on the block boundary and leave
+            // the residue where the wrap itself is invisible to this walk.
+            //
+            // The RESIDUE TEST is retained as a bound on a STALE flag: after
+            // a seek to a position inside the loop no mapping fires, so a
+            // flag set before the seek can survive it. The residue test
+            // confines any such stale widening to a cursor already within one
+            // frame of the loop start, where emitting the loop-start click is
+            // harmless.
+            //
+            // Loops shorter than one frame are excluded: they cannot
+            // express one downbeat per lap at frame resolution — every
+            // segment would be a fresh wrap, and a grid-aligned sub-sample
+            // loop start would then click on every single frame.
+            //
+            // The 1.0 is pinned from BOTH sides, so it cannot drift:
+            // subFrameLoopClicksOnceNotOnEveryFrame uses a 0.3-frame loop
+            // that must be EXCLUDED (ruling out any threshold <= 0.3), and
+            // oneAndAHalfFrameLoopKeepsTheGridWideningEnabled uses a
+            // 1.5-frame loop that must be INCLUDED (ruling out any threshold
+            // > 1.5). Both live in MetronomeLoopSchedulingEngineTest.
+            //
+            // Be precise about what that guard does and does not buy.
+            // Measured on this walk at 32768 Hz / 120 BPM over 1536 frames,
+            // with the loop start on a quarter-note grid position:
+            //  • loop length 0.3 frame — not an exact binary fraction, so
+            //    the modulo residue drifts and never returns to the loop
+            //    start: the rendered output is EXACTLY one click at frame 0
+            //    with the guard, and one click started on every one of the
+            //    1536 frames without it. Here the guard is load-bearing, and
+            //    MetronomeLoopSchedulingEngineTest pins it.
+            //  • loop length 0.25 frame — a length that DIVIDES a frame
+            //    exactly: the modulo wrap puts the cursor back exactly ON
+            //    loopStart every frame, so ceil() admits the loop-start grid
+            //    index through the ordinary (un-widened) walk with no
+            //    widening involved. One click per frame — 1536 in 1536
+            //    frames — WITH the guard AND without it. The guard does not
+            //    rescue that case and does not claim to: it is a
+            //    pre-existing pathology of sub-frame loops, not something
+            //    this widening introduced. (0.5 frame behaves identically.
+            //    Other exact binary fractions return to the loop start
+            //    periodically rather than every frame — 0.75 frame every
+            //    third — a count taken on the content walk, whose events are
+            //    directly countable; see renderTracks.)
+            double gridStartBeat = segStartBeat;
+            if (clickLoopWrapPending && loopActive && loopLength * samplesPerBeat >= 1.0) {
+                double beatsIntoLoop = segStartBeat - loop.startInBeats();
+                if (beatsIntoLoop > 0.0 && beatsIntoLoop * samplesPerBeat < 1.0) {
+                    gridStartBeat = loop.startInBeats();
+                }
+            }
+            long firstIdx = (long) Math.ceil(gridStartBeat * clicksPerBeat - 1e-9);
             long lastIdxExclusive = (long) Math.ceil(schedulingEndBeat * clicksPerBeat - 1e-9);
 
             scheduleSegmentClicks(metronome, router, cueBusManager, backend,
                     numFrames, samplesPerBeat, clicksPerBeat, beatsPerBar,
-                    segStartBeat, framesProcessed, firstIdx, lastIdxExclusive);
+                    segStartBeat, framesProcessed, segFrames, firstIdx, lastIdxExclusive);
+            // This segment owns its lap's first frame now, whether or not the
+            // widening actually fired (a frame-aligned wrap leaves no residue
+            // and needs none), so no later segment may widen for the same lap.
+            clickLoopWrapPending = false;
 
             framesProcessed += segFrames;
             segStartBeat = segEndBeat;
@@ -679,6 +957,7 @@ public final class RenderPipeline {
             // any overshoot and composes with advancePosition's closed form.
             if (loopActive && segStartBeat >= loop.endInBeats()) {
                 segStartBeat = loop.startInBeats() + ((segStartBeat - loop.endInBeats()) % loopLength);
+                clickLoopWrapPending = true;
             }
         }
     }
@@ -687,10 +966,14 @@ public final class RenderPipeline {
      * Story 315 — schedules the metronome clicks of one loop-split segment:
      * every subdivision index in {@code [firstIdx, lastIdxExclusive)} is
      * generated, routed, and summed/written at the sample-accurate offset
-     * {@code segFrameOffset + round((beatPos − segStartBeat) × samplesPerBeat)}.
-     * The click body is clamped to the block (not the segment) and any
-     * overflow is parked in the click tail, exactly as before the loop-aware
-     * split — see {@link #mixMetronomeClicks} for the routing contract.
+     * {@code segFrameOffset + round((beatPos − segStartBeat) × samplesPerBeat)},
+     * clamped into this segment's own frame span
+     * {@code [segFrameOffset, segFrameOffset + segFrames)} so that every index
+     * the beat window admits sounds exactly once, inside the frames its own
+     * segment owns. The click body is clamped to the block (not the segment)
+     * and any overflow is parked in the click tail, exactly as before the
+     * loop-aware split — see {@link #mixMetronomeClicks} for the routing
+     * contract.
      */
     private void scheduleSegmentClicks(Metronome metronome,
                                        MetronomeSideOutputRouter router,
@@ -702,12 +985,45 @@ public final class RenderPipeline {
                                        int beatsPerBar,
                                        double segStartBeat,
                                        int segFrameOffset,
+                                       int segFrames,
                                        long firstIdx,
                                        long lastIdxExclusive) {
         for (long idx = firstIdx; idx < lastIdxExclusive; idx++) {
             double beatPos = idx / (double) clicksPerBeat;
             int sampleOffset = segFrameOffset
                     + (int) Math.round((beatPos - segStartBeat) * samplesPerBeat);
+            // Story 315 review — clamp into THIS segment's own frame span.
+            // Nearest-frame rounding is kept (it matches renderSegment's clip
+            // placement, so clicks stay aligned with rendered content), but
+            // two boundary cases would otherwise mis-place or lose a click:
+            //  • the loop-start grid position recovered by the widened grid
+            //    window lies up to one frame BEFORE the fractional cursor, so
+            //    (beatPos − segStartBeat) × samplesPerBeat is negative and
+            //    Math.round takes it to −1 whenever that residue is above
+            //    half a frame (at exactly half, Java's round-half-up takes
+            //    −0.5 to 0). The consequence then depended on where the
+            //    widened segment starts: at block frame 0 the offset came out
+            //    −1 and the defensive bound below dropped the click outright;
+            //    with segFrameOffset > 0 it came out segFrameOffset − 1, so
+            //    the click was placed one frame EARLY, in the previous
+            //    segment's last frame. Either way it is wrong — the position
+            //    belongs to this segment's first frame, the quantized wrap
+            //    frame, never to the pre-wrap segment that owns the frames
+            //    before it;
+            //  • a grid position within half a frame of the segment end
+            //    rounds UP to segFrames and, on the block's last segment, was
+            //    dropped outright by the numFrames bound — that click simply
+            //    never sounded. (Reproducible with a loop whose quantized
+            //    wrap lands exactly on a block boundary.)
+            // Every index admitted by the half-open beat window therefore
+            // sounds exactly once, inside the frames its segment owns.
+            if (sampleOffset < segFrameOffset) {
+                sampleOffset = segFrameOffset;
+            } else if (sampleOffset >= segFrameOffset + segFrames) {
+                sampleOffset = segFrameOffset + segFrames - 1;
+            }
+            // Defensive bound: the clamp above already keeps the offset
+            // inside [0, numFrames), and the buffer writes below index by it.
             if (sampleOffset < 0 || sampleOffset >= numFrames) {
                 continue;
             }
@@ -937,6 +1253,26 @@ public final class RenderPipeline {
         double loopStart = loopWindow.startInBeats();
         double loopEnd = loopWindow.endInBeats();
         double loopLength = loopEnd - loopStart;
+        // Story 315 review — the same predicate mixMetronomeClicks calls
+        // loopActive, spelled the same way so the two walks' loop conditions
+        // read identically: "looping is on AND the region is non-empty".
+        // (loopEnd > loopStart and loopLength > 0.0 are the same test.) The
+        // two walks are deliberately equivalent here; a reader comparing them
+        // should find no asymmetry to interpret.
+        boolean loopActive = loopEnabled && loopLength > 0.0;
+        // Story 315 review — DEFENSIVE AND UNPINNED, for exactly the reasons
+        // recorded on the matching clear in mixMetronomeClicks: nothing
+        // returns between here and the segment loop, that loop runs at least
+        // once for any numFrames >= 1, and its body ends with an
+        // UNCONDITIONAL "trackLoopWrapPending = false" after renderSegment,
+        // so the flag is false at method exit either way. The widening that
+        // reads it and the in-block wrap that sets it are both conjoined with
+        // loopActive, so a stale value cannot act while looping is off. No
+        // test covers this clear and none can; only a numFrames == 0 callback
+        // would tell the two versions apart.
+        if (!loopActive) {
+            trackLoopWrapPending = false;
+        }
 
         // Story 315 review — loop-map the starting cursor before rendering:
         // the split guard below only fires while the cursor is still inside
@@ -952,8 +1288,21 @@ public final class RenderPipeline {
         // mapping composes: the wrapped cursor lines up exactly with where
         // the previous block's in-block wrap left off and with the
         // transport's own wrap one boundary later.
-        if (loopEnabled && loopLength > 0.0 && currentBeat >= loopEnd) {
+        if (loopActive && currentBeat >= loopEnd) {
             currentBeat = loopStart + ((currentBeat - loopEnd) % loopLength);
+            // The content walk must NOT clear the wrap flag here. Unlike the
+            // click walk, this mapping also fires for reason (a) above — the
+            // PDC-shifted cursor crosses the loop end while the raw cursor is
+            // still inside — which is the exact continuation of a whole-frame
+            // quantization residue, not a seek. Clearing here wiped a flag
+            // the previous block legitimately set and dropped the loop-start
+            // event on exactly the block-boundary-aligned wraps the flag
+            // exists for (measured: 938 missed laps vs 792 across 792 configs
+            // at 16 frames of insert latency, 1961 vs 792 at 512 frames; the
+            // 792 residual is each config's lap 0, a genuine PDC start-up
+            // artifact — measured offline by simulation, NOT reproducible
+            // from a test in this repo). A stale flag from a real seek is
+            // already bounded by the residue test below.
         }
 
         int framesProcessed = 0;
@@ -961,16 +1310,252 @@ public final class RenderPipeline {
         while (framesProcessed < numFrames) {
             int framesToProcess = numFrames - framesProcessed;
 
-            if (loopEnabled && loopLength > 0.0 && currentBeat < loopEnd) {
+            // True while this walk is splitting blocks at the loop boundary
+            // at all — the condition under which the segment span must be
+            // clamped to the loop end and the event window below capped at
+            // it, because only then can the raw whole-frame span overshoot
+            // it. It does NOT say the segment reaches the loop end; a segment
+            // that runs out of block first is just as much a loop-split
+            // segment.
+            //
+            // Recomputed per iteration, and for every non-degenerate loop it
+            // is invariant across the whole block: currentBeat < loopEnd
+            // holds on entry (the block-entry mapping above establishes it)
+            // and is restored by every in-block modulo wrap at the bottom, so
+            // in practice the second conjunct is true throughout and the
+            // value reduces to loopActive — itself read once, before the
+            // loop. Segments of one block therefore do not disagree about it.
+            //
+            // "Always true" is not, however, provable. Both mappings restore
+            // the cursor as loopStart + ((x - loopEnd) % loopLength): the
+            // modulo result r is strictly < loopLength, but the SUM can still
+            // round up to exactly loopEnd. The trigger is a loop that
+            // STRADDLES A BINADE BOUNDARY — a finer double grid at loopStart
+            // than at loopEnd, so an exact r is representable while
+            // loopStart + r is not — and it needs no extreme
+            // loopStart/loopLength ratio. Measured on JDK 26 for an ordinary
+            // ~6-beat loop:
+            //
+            //   loopStart = Math.nextDown(1024.0) = 1023.9999999999999
+            //   loopEnd   = 1030.0
+            //   cursor    = 1036.0
+            //   loopLength                          = 6.000000000000114
+            //   r = (cursor - loopEnd) % loopLength = 6.0   (r < loopLength)
+            //   loopStart + r                       = 1030.0  == loopEnd
+            //   ulp(loopStart) = 1.1368683772161603E-13
+            //   ulp(loopEnd)   = 2.2737367544323206E-13
+            //
+            // In that corner the second conjunct MAKES THINGS WORSE — it is
+            // not a safety net, and it is written down here so that nobody
+            // re-derives it as one. Simulated on those values at 44.1 kHz /
+            // 120 BPM with 512-frame blocks:
+            //  • conjunct PRESENT (today) — loopSplitActive is false, so the
+            //    span is NOT clamped to the loop end and the event window is
+            //    NOT capped at it. All 512 frames render from the loop end
+            //    outwards, window [1030.0, 1030.0232199546485): a whole block
+            //    scheduled from OUTSIDE the loop, which is precisely the
+            //    failure the block-entry mapping above exists to prevent.
+            //  • conjunct REMOVED — the split yields a 1-frame segment whose
+            //    event window is capped to the empty [1030.0, 1030.0), and
+            //    the bottom-of-loop modulo restores the cursor to
+            //    1024.000045351474, back inside the loop.
+            //
+            // It is nevertheless left as-is here. The conjunct is
+            // PRE-EXISTING — HEAD spelled the same guard inline as
+            // "loopEnabled && loopLength > 0.0 && currentBeat < loopEnd", and
+            // this work only hoisted it into a named local (then reused that
+            // local for the event-window cap below). No test reaches the
+            // corner either: replacing this line with
+            // "loopSplitActive = loopActive" leaves the whole daw-core suite
+            // green (Tests run: 6321, Failures: 0, Errors: 0, Skipped: 10),
+            // so nothing pins either behaviour. Dropping the conjunct is
+            // therefore a judgement call about a case no fixture constructs;
+            // it is a candidate for a FOLLOW-UP, deliberately not part of
+            // this change. Do not "simplify" it away as an obvious no-op
+            // either — it is not one.
+            boolean loopSplitActive = loopActive && currentBeat < loopEnd;
+            if (loopSplitActive) {
                 double beatsUntilLoopEnd = loopEnd - currentBeat;
-                int framesUntilLoopEnd = (int) Math.ceil(beatsUntilLoopEnd * samplesPerBeat);
-                if (framesUntilLoopEnd > 0) {
-                    framesToProcess = Math.min(framesToProcess, framesUntilLoopEnd);
-                }
+                // Story 315 review — shave an epsilon off the ceil and floor
+                // the result at one frame.
+                //
+                // THE EPSILON. A product that ought to be a whole number of
+                // frames comes out a hair ABOVE it, so ceil returns k + 1 and
+                // the segment overshoots the loop end by a frame. Simulated
+                // on the fixture this half is pinned on
+                // (AudioEngineMidiPlaybackTest#
+                // noteAtTheLoopStartFiresOnEveryLapWhenTheWrapResidueRoundsUp
+                // — 44.1 kHz, 72 BPM, samplesPerBeat 36750, loop
+                // [0.0, 0.25), 1024-frame blocks), the PRODUCTS this walk
+                // computes that land within 1e-6 above a positive integer run
+                // from k + 1.1368683772161603e-13 to
+                // k + 1.8189894035458565e-12, and the one that does the
+                // damage is (exact double, printed in full)
+                //   967.0000000000001136868377216160297393798828125
+                // i.e. k + 1.1368683772161603e-13, at block 17.
+                // The often-quoted 5.56e-13 is NOT a product error — it is
+                // the excess of the resulting RESIDUE: after that ceil the
+                // wrap leaves the cursor
+                //   1.0000000000005559996907322783954441547393798828125
+                // frames into the lap, just OUTSIDE the "< 1.0" widening
+                // below, so that lap's loop-start event is dropped. The two
+                // excesses are not the same quantity and not even the same
+                // size: 5.5599969e-13 for the residue against
+                // 1.1368683772161603e-13 for the product that caused it. The
+                // residue's excess is accumulated across the whole block's
+                // "currentBeat += framesToProcess / samplesPerBeat" chain; it
+                // is not the product's own excess carried through.
+                //
+                // THE FLOOR is load-bearing, not cosmetic. With the epsilon
+                // alone the count can reach 0 — in that same fixture the last
+                // segment of blocks 35 and 53 has product 1.020017403874e-12,
+                // and ceil(that - 1e-9) is -0.0, i.e. 0 — and the old "> 0"
+                // guard then skipped the clamp entirely, so the segment ran
+                // to the end of the block from a cursor a fraction of a frame
+                // short of the loop end, overshooting the loop end by the
+                // whole remainder of the block. With the floor the count is
+                // always >= 1, the guard is gone, and every segment consumes
+                // >= 1 frame.
+                //
+                // The FIGURE "286 of 300 laps wrong in a sweep" was measured
+                // offline by simulation and is NOT reproducible from any test
+                // in this repo — that disclaimer applies to the figure only.
+                // The MECHANISM is pinned right here: putting the old "> 0"
+                // guard back in place of this floor fails four tests in
+                // AudioEngineMidiPlaybackTest, every one of them by LOSING
+                // loop-start note-ons (run on JDK 26):
+                //   noteAtTheLoopStartFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed
+                //       expected 23 note-ons, got 6
+                //   noteAtTheLoopStartFiresOnEveryLapWhenTheWrapResidueRoundsUp
+                //       expected 7, got 5
+                //   loopStartNoteSurvivesTheBlockEntryMappingUnderPluginDelayCompensation
+                //       expected 5, got 2
+                //   loopStartNoteSurvivesAPauseOnTheWrapBoundary
+                //       expected 5, got 2
+                // Dropping the epsilon instead (keeping the floor) fails
+                // exactly two: the WrapResidueRoundsUp test above and
+                // MetronomeLoopSchedulingEngineTest#
+                // loopStartClickFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed.
+                int framesUntilLoopEnd =
+                        Math.max(1, (int) Math.ceil(beatsUntilLoopEnd * samplesPerBeat - 1e-9));
+                framesToProcess = Math.min(framesToProcess, framesUntilLoopEnd);
             }
 
-            renderSegment(tracks, trackCount, currentBeat, samplesPerBeat,
+            // Story 315 review — MIDI notes are POINT events, so the beat
+            // window handed to the MIDI renderer must partition the loop
+            // timeline EXACTLY: every note position inside the loop must fall
+            // in exactly one segment window per lap, and no position outside
+            // the loop may fall in any. The raw cursor cannot do that, because
+            // the split above is clamped to WHOLE frames and therefore
+            // overshoots the loop end by δ ∈ [0, 1) frame:
+            //
+            //   • the pre-wrap window ran to currentBeat + framesToProcess /
+            //     samplesPerBeat, i.e. δ PAST the loop end, so a note
+            //     sitting exactly at loopEnd — outside the half-open loop —
+            //     fired on every lap (out-of-loop bleed);
+            //   • the post-wrap window began at loopStart + δ, so a note
+            //     sitting exactly at loopStart was skipped on every wrapped
+            //     lap. MidiTrackRenderer tests note positions with an exact
+            //     >=, with no epsilon, so even the ~1e-11-frame residue left
+            //     on an otherwise frame-aligned lap dropped that note.
+            //
+            // Widen the window down to the loop start whenever this segment
+            // begins inside that sub-frame residue, and cap it at the loop
+            // end whenever this segment runs up to it. The raw fractional
+            // cursor stays the frame-mapping origin for audio clips
+            // (renderSegment keeps using it), and the widened window shifts
+            // the MIDI frame origin by less than one frame, which
+            // MidiTrackRenderer's beatToFrame already clamps into range.
+            //
+            // The widening is gated on BOTH a wrap flag that survives the
+            // block boundary AND the positional residue test, and each does a
+            // job the other cannot.
+            //
+            // The FLAG makes the widening fire exactly once per lap. A
+            // threshold cannot, because the two populations of readings
+            // OVERLAP — the largest genuine residue sits ABOVE the smallest
+            // already-consumed reading, so any cut-off placed between them
+            // is on the wrong side of one of the two:
+            //  • largest GENUINE residue — the wrap overshot and this lap's
+            //    first frame is still unrendered, so the widening MUST
+            //    fire: 0.99999999999994320, at 32768 Hz / 128 BPM
+            //    (samplesPerBeat = 15360), loop [0.0, 0.25) beats,
+            //    128-frame blocks;
+            //  • smallest CONSUMED reading — this lap's first frame was
+            //    ALREADY rendered, so the widening MUST NOT fire:
+            //    0.99999999999988990, at 48000 Hz / 120 BPM
+            //    (samplesPerBeat = 24000), loop [0.0, 0.328125) beats,
+            //    64-frame blocks.
+            // 0.99999999999994320 > 0.99999999999988990, so a cut-off that
+            // admits every genuine residue also admits that consumed reading
+            // and the lap's loop-start note fires a second time one frame
+            // later; a cut-off that rejects the consumed reading also
+            // rejects a genuine residue and that lap loses its note.
+            // Provenance: both figures were measured offline by simulating
+            // the walk across a sweep of sample rates, tempos, block sizes
+            // and loop lengths. They are NOT reproducible from any test in
+            // this repo. The flag is set at the in-block wrap and
+            // cleared by the first segment that renders afterwards — which
+            // may be in the NEXT block, because a quantized wrap can land
+            // exactly on the block boundary and leave the residue where the
+            // wrap itself is invisible to this walk.
+            //
+            // The RESIDUE TEST is retained as a bound on a STALE flag: after
+            // a seek to a position inside the loop no mapping fires, so a
+            // flag set before the seek can survive it. The residue test
+            // confines any such stale widening to a cursor already within one
+            // frame of the loop start, where emitting the loop-start event is
+            // harmless.
+            //
+            // Loops shorter than one frame are excluded from the widening:
+            // every segment would be a fresh wrap, so a note at the loop
+            // start would re-fire on every single frame.
+            //
+            // The 1.0 is pinned from BOTH sides, so it cannot drift:
+            // subFrameLoopFiresTheLoopStartNoteOnceNotOnEveryFrame uses a
+            // 0.3-frame loop that must be EXCLUDED (ruling out any threshold
+            // <= 0.3), and oneAndAHalfFrameLoopKeepsTheEventWindowWideningEnabled
+            // uses a 1.5-frame loop that must be INCLUDED (ruling out any
+            // threshold > 1.5). Both live in AudioEngineMidiPlaybackTest.
+            //
+            // Be precise about what that guard does and does not buy.
+            // Measured on this walk at 32768 Hz / 120 BPM over 1536 frames,
+            // with a note sitting exactly on a grid-aligned loop start:
+            //  • loop length 0.3 frame — not an exact binary fraction, so
+            //    the modulo residue drifts and never returns to the loop
+            //    start: 1 note-on WITH the guard, one per frame (1536)
+            //    without it. Here the guard is load-bearing, and
+            //    AudioEngineMidiPlaybackTest pins it.
+            //  • loop length 0.25 frame — a length that DIVIDES a frame
+            //    exactly: the modulo wrap puts the cursor back exactly ON
+            //    loopStart every frame, so the note is admitted by the
+            //    ordinary (un-widened) window test with no widening
+            //    involved. 1536 note-ons in 1536 frames WITH the guard AND
+            //    without it. The guard does not rescue that case and does
+            //    not claim to: it is a pre-existing pathology of sub-frame
+            //    loops, not something this widening introduced. (0.5 frame
+            //    behaves identically; 0.75 frame returns to the loop start
+            //    every third frame — 512 note-ons — because it too is an
+            //    exact binary fraction.)
+            double eventWindowStartBeat = currentBeat;
+            if (trackLoopWrapPending && loopActive && loopLength * samplesPerBeat >= 1.0) {
+                double beatsIntoLoop = currentBeat - loopStart;
+                if (beatsIntoLoop > 0.0 && beatsIntoLoop * samplesPerBeat < 1.0) {
+                    eventWindowStartBeat = loopStart;
+                }
+            }
+            double eventWindowEndBeat = currentBeat + framesToProcess / samplesPerBeat;
+            if (loopSplitActive) {
+                eventWindowEndBeat = Math.min(eventWindowEndBeat, loopEnd);
+            }
+
+            renderSegment(tracks, trackCount, currentBeat,
+                    eventWindowStartBeat, eventWindowEndBeat, samplesPerBeat,
                     midiRenderer, framesProcessed, framesToProcess);
+            // This segment owns its lap's first frame now, whether or not the
+            // widening actually fired (a frame-aligned wrap leaves no residue
+            // and needs none), so no later segment may widen for the same lap.
+            trackLoopWrapPending = false;
 
             framesProcessed += framesToProcess;
             currentBeat += framesToProcess / samplesPerBeat;
@@ -982,8 +1567,9 @@ public final class RenderPipeline {
             // split guard above then never fires again and the rest of the
             // block renders linearly from beyond the loop. Same closed form
             // as the start-of-block mapping and advancePosition.
-            if (loopEnabled && loopLength > 0.0 && currentBeat >= loopEnd) {
+            if (loopActive && currentBeat >= loopEnd) {
                 currentBeat = loopStart + ((currentBeat - loopEnd) % loopLength);
+                trackLoopWrapPending = true;
                 if (midiRenderer != null) {
                     midiRenderer.allNotesOff();
                 }
@@ -991,9 +1577,37 @@ public final class RenderPipeline {
         }
     }
 
+    /**
+     * Renders one loop-split segment of a block: MIDI tracks through the
+     * {@link MidiTrackRenderer}, audio tracks by copying overlapping clip
+     * data into the track buffers.
+     *
+     * <p>Two different beat ranges are in play, and the split is deliberate.
+     * {@code startBeat} is the segment's raw fractional render cursor and,
+     * with the {@code endBeat} derived from it, is the range used for audio
+     * clips. {@code eventWindowStartBeat}/{@code eventWindowEndBeat} are the
+     * caller's loop-exact EVENT window and are used only for MIDI (see
+     * {@link #renderTracks}, which computes them). That window is ASYMMETRIC
+     * — half-open {@code [start, end)} for note-ons, right-INCLUSIVE
+     * {@code (start, end]} for note-offs, which is how a note ending exactly
+     * at the loop end is released; {@link MidiTrackRenderer} carries the full
+     * rule.</p>
+     *
+     * <p>Audio clips are RANGES, not point events: the frame that straddles
+     * the loop boundary has to be filled with something, and clipping their
+     * beat range to the loop end would leave part of that frame unwritten —
+     * an audible click. A clip starting exactly at the loop start also cannot
+     * be dropped, because {@code overlapStart = max(startBeat, clipStart)}
+     * maps it to the segment's first frame regardless of the sub-frame
+     * residue left by the whole-frame loop split. Only point events (MIDI
+     * note-on/note-off) can fall through the crack that residue opens, so
+     * only they get the loop-exact window.</p>
+     */
     @RealTimeSafe
     private void renderSegment(List<Track> tracks, int trackCount,
-                               double startBeat, double samplesPerBeat,
+                               double startBeat,
+                               double eventWindowStartBeat, double eventWindowEndBeat,
+                               double samplesPerBeat,
                                MidiTrackRenderer midiRenderer,
                                int frameOffset, int framesToProcess) {
         double endBeat = startBeat + framesToProcess / samplesPerBeat;
@@ -1005,7 +1619,7 @@ public final class RenderPipeline {
                     && track.getSoundFontAssignment() != null
                     && midiRenderer != null) {
                 midiRenderer.renderMidiTrack(track, trackBuffers[t],
-                        startBeat, endBeat, samplesPerBeat,
+                        eventWindowStartBeat, eventWindowEndBeat, samplesPerBeat,
                         frameOffset, framesToProcess);
                 continue;
             }

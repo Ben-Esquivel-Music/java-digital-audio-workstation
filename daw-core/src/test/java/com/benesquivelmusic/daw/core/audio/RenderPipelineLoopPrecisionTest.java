@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
-import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
 
@@ -298,22 +297,4 @@ class RenderPipelineLoopPrecisionTest {
         }
     }
 
-    /** Unity-gain passthrough that only reports latency — drives the PDC offset. */
-    private record ReportedLatencyProcessor(int latency) implements AudioProcessor {
-        @Override
-        public void process(float[][] in, float[][] out, int frames) {
-            for (int ch = 0; ch < in.length; ch++) {
-                System.arraycopy(in[ch], 0, out[ch], 0, frames);
-            }
-        }
-
-        @Override public void reset() {}
-        @Override public int getInputChannelCount() { return 1; }
-        @Override public int getOutputChannelCount() { return 1; }
-
-        @Override
-        public int getLatencySamples() {
-            return latency;
-        }
-    }
 }

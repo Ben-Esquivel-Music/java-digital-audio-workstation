@@ -2,11 +2,13 @@ package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
@@ -15,6 +17,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -38,6 +41,79 @@ class AudioEngineMidiPlaybackTest {
 
     private static final double TEMPO = 120.0;
     private static final double SAMPLES_PER_BEAT = SAMPLE_RATE * 60.0 / TEMPO;
+
+    // ── Loop-boundary fixture (story 315) ───────────────────────────────────
+    // The class-level FORMAT above uses an 8-frame buffer at 120 BPM, which is
+    // far too coarse to express a loop lap. The loop-boundary regression tests
+    // below therefore build their own engine/transport/mixer around the
+    // constants in this block.
+
+    /**
+     * Tempo for the loop-boundary tests. At {@link #SAMPLE_RATE} this gives
+     * samplesPerBeat = 44100 × 60 ÷ 128 = 20671.875 — an exact binary
+     * fraction (20671 + 7/8), so every frame position below is reproducible
+     * to the last bit rather than being tempo-rounding noise.
+     */
+    private static final double LOOP_TEMPO = 128.0;
+
+    /** Block size in frames for the loop-boundary tests. */
+    private static final int LOOP_BLOCK_FRAMES = 512;
+
+    /** Loop region start for the loop-boundary tests, in beats. */
+    private static final double LOOP_START_BEAT = 0.0;
+
+    /**
+     * Loop region end for the loop-boundary tests, in beats. 4 × 20671.875 =
+     * 82687.5 frames — deliberately half a frame off the frame grid, which is
+     * the ordinary case: almost no musically useful loop length lands on a
+     * whole frame. The pipeline can only split a block at a whole frame, so a
+     * lap boundary here is always quantized and leaves a sub-frame residue on
+     * the far side of the wrap. (Every SECOND lap boundary — 165375.0,
+     * 330750.0, … — does land exactly on the grid, so the residue there is
+     * only the ~1e-11-frame floating-point remainder; the MIDI window test is
+     * an exact {@code >=} with no epsilon, so even that residue is enough to
+     * drop a note sitting on the loop start.)
+     */
+    private static final double LOOP_END_BEAT = 4.0;
+
+    /**
+     * samplesPerBeat for the loop-boundary fixture: 44100 × 60 ÷ 128 =
+     * 20671.875, exact in binary (20671 + 7/8).
+     */
+    private static final double LOOP_SAMPLES_PER_BEAT = 20_671.875;
+
+    /**
+     * Frames in one lap of the loop-boundary fixture: 4 beats ×
+     * {@link #LOOP_SAMPLES_PER_BEAT} = 82687.5 — a half frame, which is what
+     * makes every second wrap leave a sub-frame residue and every other wrap
+     * land on a whole frame.
+     */
+    private static final double LOOP_LAP_FRAMES = 4.0 * LOOP_SAMPLES_PER_BEAT;
+
+    /**
+     * Blocks rendered by each loop-boundary test. 1292 × 512 = 661504 frames,
+     * against a lap of 82687.5 frames: 8 × 82687.5 = 661500 ≤ 661504, and
+     * 9 × 82687.5 = 744187.5 > 661504. The render therefore contains exactly
+     * 8 loop wraps and 9 lap starts, and a note at beat 1.0 — comfortably
+     * inside the loop — is crossed on the 8 laps that reach it.
+     */
+    private static final int LOOP_BLOCK_COUNT = 1292;
+
+    /** Lap starts within {@link #LOOP_BLOCK_COUNT} blocks — the initial lap plus 8 wraps. */
+    private static final int LOOP_LAP_STARTS = 9;
+
+    /** Laps within {@link #LOOP_BLOCK_COUNT} blocks that run far enough to reach beat 1.0. */
+    private static final int LOOP_LAPS_REACHING_BEAT_ONE = 8;
+
+    /**
+     * Reported insert-chain latency for the delay-compensation regression
+     * below. Any nonzero value makes {@code renderTracks} walk a cursor
+     * shifted ahead of the transport; 16 frames is small enough that the
+     * shift stays well inside one 64-frame block, so the block-entry loop
+     * mapping fires as a whole-frame quantization CONTINUATION rather than
+     * as a multi-block jump.
+     */
+    private static final int PDC_INSERT_LATENCY_FRAMES = 16;
 
     private static final Path DUMMY_SF2_PATH = Path.of("/tmp/test.sf2");
     private static final SoundFontAssignment ASSIGNMENT =
@@ -409,6 +485,836 @@ class AudioEngineMidiPlaybackTest {
         assertThat(instance.allNotesOffCallCount).isGreaterThanOrEqualTo(1);
     }
 
+    // ── Loop-boundary event window ──────────────────────────────────────────
+
+    /**
+     * Story 315 — a note sitting exactly on the loop start must be triggered
+     * on every lap, including laps entered through a quantized wrap.
+     *
+     * <p>The pipeline can only split a block at a whole frame, so a loop end
+     * of 82687.5 frames is overshot by up to one frame and the wrap leaves
+     * the render cursor a sub-frame PAST the loop start. The MIDI renderer
+     * admits a note-on with an exact {@code noteStartBeat >= startBeat} — no
+     * epsilon — so that residue excluded the note at beat 0.0 on every
+     * wrapped lap: before the fix note 60 fired exactly ONCE across nine
+     * laps, at the very first lap start (the only one not reached through a
+     * wrap). Note 62 at beat 1.0 sits nowhere near a segment boundary and
+     * fired correctly throughout, which is what makes it a meaningful
+     * control: it isolates the failure to the loop-start boundary rather
+     * than to the harness.</p>
+     */
+    @Test
+    void noteAtTheLoopStartFiresOnEveryLapWhenTheLoopIsNotFrameAligned() {
+        StubSoundFontRenderer instance = renderLoopedSession(List.of(
+                MidiNoteData.of(60, 0, 4, 100),   // column 0 → beat 0.0 = the loop start
+                MidiNoteData.of(62, 4, 4, 100))); // column 4 → beat 1.0, the control
+
+        assertThat(countNoteOns(instance, 60))
+                .as("note-ons for the note sitting exactly on the loop start")
+                .isEqualTo(LOOP_LAP_STARTS);
+        assertThat(countNoteOns(instance, 62))
+                .as("note-ons for the control note at beat 1.0")
+                .isEqualTo(LOOP_LAPS_REACHING_BEAT_ONE);
+    }
+
+    /**
+     * Story 315 — the loop region is half-open, so a note sitting exactly on
+     * the loop end lies OUTSIDE the loop and must never sound while looping.
+     *
+     * <p>The pre-wrap segment's event window was never capped at the loop
+     * end: it ran to the end of the whole-frame-quantized split, a sub-frame
+     * PAST the loop end, and therefore admitted the note at beat 4.0. Before
+     * the fix note 65 fired on all 8 laps — out-of-loop content bleeding into
+     * a loop that story 315 guarantees is clean. Note 62 at beat 1.0 is the
+     * control: it is genuinely inside the loop and must keep firing.</p>
+     */
+    @Test
+    void noteExactlyAtTheLoopEndNeverFiresWhileLooping() {
+        StubSoundFontRenderer instance = renderLoopedSession(List.of(
+                MidiNoteData.of(65, 16, 4, 100),  // column 16 → beat 4.0 = the loop end
+                MidiNoteData.of(62, 4, 4, 100))); // column 4 → beat 1.0, the control
+
+        assertThat(countNoteOns(instance, 65))
+                .as("note-ons for the note sitting exactly on the (exclusive) loop end")
+                .isZero();
+        assertThat(countNoteOns(instance, 62))
+                .as("note-ons for the control note at beat 1.0")
+                .isEqualTo(LOOP_LAPS_REACHING_BEAT_ONE);
+    }
+
+    /**
+     * Story 315 review — the loop-start note must fire exactly ONCE per lap,
+     * never twice. This test pins the WRAP FLAG half of the fix.
+     *
+     * <p>The widening that recovers the loop-start note asks whether this
+     * segment begins inside the sub-frame residue a quantized wrap leaves
+     * behind: {@code beatsIntoLoop × samplesPerBeat < 1.0}. That positional
+     * reading cannot, on its own, tell "the wrap overshot and this lap's
+     * first frame is still unrendered" apart from "the previous block already
+     * rendered this lap's first frame" — for a frame that HAS been consumed
+     * the product evaluates to <b>0.99999999999988990</b>, not to 1.0, so the
+     * test still passes and the lap fires its loop-start note a SECOND time
+     * one frame later.</p>
+     *
+     * <p>No threshold can separate the two readings, because the two
+     * populations OVERLAP — the largest genuine residue sits ABOVE the
+     * smallest already-consumed reading:</p>
+     * <ul>
+     *   <li>largest GENUINE residue, where the widening MUST fire:
+     *       <b>0.99999999999994320</b>, at 32768 Hz / 128 BPM
+     *       (samplesPerBeat = 15360), loop [0.0, 0.25) beats, 128-frame
+     *       blocks;</li>
+     *   <li>smallest CONSUMED reading, where the widening MUST NOT fire:
+     *       <b>0.99999999999988990</b>, at 48000 Hz / 120 BPM
+     *       (samplesPerBeat = 24000), loop [0.0, 0.328125) beats, 64-frame
+     *       blocks — the config this test uses.</li>
+     * </ul>
+     * <p>A cut-off admitting every genuine residue therefore also admits
+     * that consumed reading (double note), and one rejecting the consumed
+     * reading also rejects a genuine residue (dropped note). The fix
+     * therefore carries an explicit per-walk "we wrapped and have not yet
+     * scheduled this lap's first frame" flag across the block boundary and
+     * conjoins it with the positional test. <i>Provenance: both figures were
+     * measured offline by simulating the walk across a sweep of sample
+     * rates, tempos, block sizes and loop lengths; they are NOT reproducible
+     * from any test in this repo.</i></p>
+     *
+     * <p>Config: 48 kHz at 120 BPM gives samplesPerBeat = 24000 exactly, and
+     * the loop end 0.328125 = 21/64 is exact in binary, so the lap is exactly
+     * 7875 frames. 2708 × 64 = 173312 frames spans 22 wraps, hence 23 lap
+     * starts. Before the fix the count was <b>24</b>: lap 21 fired at frames
+     * 165375 <i>and</i> 165376.</p>
+     *
+     * <p>This test and {@link #noteAtTheLoopStartFiresOnEveryLapWhenTheWrapResidueRoundsUp()}
+     * are orthogonal discriminators, one per half of the fix: this one still
+     * fails with the split epsilon alone and no flag, and that one still
+     * fails with the flag alone and no epsilon.</p>
+     */
+    @Test
+    void noteAtTheLoopStartFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed() {
+        StubSoundFontRenderer instance = renderSession(
+                48_000.0, 120.0, 64, 2708,
+                true, 0.0, 0.328125,
+                List.of(MidiNoteData.of(60, 0, 1, 100))); // column 0 → beat 0.0 = loop start
+
+        assertThat(countNoteOns(instance, 60))
+                .as("note-ons for the note on the loop start — exactly one per lap "
+                        + "start, never a second one a frame later")
+                .isEqualTo(23);
+    }
+
+    /**
+     * Story 315 review — the loop-start note must not be DROPPED on a lap
+     * whose wrap residue rounds up past one frame. This test pins the SPLIT
+     * EPSILON half of the fix.
+     *
+     * <p>The block split computes
+     * {@code framesUntilLoopEnd = ceil(beatsUntilLoopEnd × samplesPerBeat)}
+     * with no epsilon. When that product should be a whole number k but
+     * evaluates to {@code k + 5.6e-13}, {@code ceil} returns {@code k + 1},
+     * the segment overshoots by a full frame, and the wrap leaves a residue
+     * of <b>1.000000000000556</b> frames — just OUTSIDE the {@code < 1.0}
+     * widening, so that lap's loop-start note is never scheduled. Shaving an
+     * epsilon off the {@code ceil} (and flooring the result at one frame, so
+     * the segment always consumes at least one frame instead of skipping the
+     * clamp entirely) keeps the residue inside the widening.</p>
+     *
+     * <p>Config: 44.1 kHz at 72 BPM gives samplesPerBeat = 36750 exactly and
+     * a loop of 0.25 beats = 9187.5 frames. 54 × 1024 = 55296 frames spans 6
+     * wraps, hence 7 lap starts. Before the fix the count was <b>6</b> — lap
+     * 2 was missed entirely.</p>
+     *
+     * <p>This test and
+     * {@link #noteAtTheLoopStartFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed()}
+     * are orthogonal discriminators, one per half of the fix: this one still
+     * fails with the wrap flag alone and no epsilon, and that one still fails
+     * with the epsilon alone and no flag.</p>
+     */
+    @Test
+    void noteAtTheLoopStartFiresOnEveryLapWhenTheWrapResidueRoundsUp() {
+        StubSoundFontRenderer instance = renderSession(
+                44_100.0, 72.0, 1024, 54,
+                true, 0.0, 0.25,
+                List.of(MidiNoteData.of(60, 0, 1, 100))); // column 0 → beat 0.0 = loop start
+
+        assertThat(countNoteOns(instance, 60))
+                .as("note-ons for the note on the loop start — no lap may be skipped "
+                        + "because its wrap residue rounded up past one frame")
+                .isEqualTo(7);
+    }
+
+    /**
+     * Story 315 review — the content walk's wrap flag must survive the
+     * block-entry loop mapping under plugin delay compensation.
+     *
+     * <p>{@code renderTracks} walks the PDC-shifted cursor
+     * {@code transport.getPositionInBeats() + renderOffsetBeats}, so with a
+     * latent insert its block-entry mapping
+     * ({@code currentBeat >= loopEnd → wrap}) fires for a NON-seek reason on
+     * every lap: the shifted cursor crosses the loop end while the raw cursor
+     * is still inside it. That mapping is the exact continuation of the
+     * whole-frame quantization residue the previous block's split left
+     * behind, not a seek to a fresh position. Clearing the wrap flag there
+     * therefore destroys the only record that this lap's first frame has not
+     * been rendered yet — and the positional residue test alone cannot
+     * reconstruct it, which is the whole reason the flag exists.</p>
+     *
+     * <p>The click walk ({@code mixMetronomeClicks}) DOES clear its flag in
+     * the same place, and correctly so: it reads the RAW cursor, whose
+     * mapping can only fire on a genuine seek. The asymmetry is deliberate —
+     * see the comments on both mappings.</p>
+     *
+     * <p>Config: 48 kHz at 120 BPM gives samplesPerBeat = 24000 exactly, and
+     * the loop end 0.328125 = 21/64 is exact in binary, so the lap is exactly
+     * 7875 frames. The insert reports {@value #PDC_INSERT_LATENCY_FRAMES}
+     * frames of latency, shifting the content cursor that far ahead of the
+     * transport. 616 × 64 = 39424 frames spans five lap starts reached by the
+     * content cursor. With the erroneous clear the count was <b>4</b>: the
+     * note-on at global frame <b>39360</b> was dropped. That is lap 5's wrap,
+     * and it lands exactly on the end of block <b>614</b> — the block
+     * boundary itself — so the lap's first frame is the first frame of block
+     * 615 and the flag has to survive the boundary to be of any use. The four
+     * surviving note-ons are dispatched in blocks 122, 245, 368 and 491, a
+     * stride of 123 blocks; the dropped one is the single lap whose stride is
+     * 124, i.e. precisely the boundary-aligned wrap.</p>
+     *
+     * <p>The fixture sits deliberately, and deterministically, on the
+     * widening's boundary rather than landing there by accident. Block 615
+     * enters with the raw transport at frame 7860 of the 7875-frame lap, so
+     * the PDC-shifted cursor is at 7876 — in EXACT arithmetic exactly one
+     * frame past the loop start, i.e. exactly the {@code < 1.0} cut-off. What
+     * makes the widening fire is that the block-entry modulo evaluates the
+     * residue in IEEE-754, where it comes out just UNDER one frame:
+     * {@code beatsIntoLoop × samplesPerBeat = 0.99999999999589310}. Every
+     * quantity feeding that computation (24000 samples per beat, 21/64 beats
+     * of loop) is exact in binary, so the value is reproducible to the last
+     * bit on every run and every platform — the test is pinned to the
+     * boundary case on purpose, not riding a rounding accident.</p>
+     *
+     * <p>Lap 0 is legitimately absent from the count on both sides of the
+     * fix: with PDC the content cursor starts ahead of beat 0, so the render
+     * simply begins past the first lap's downbeat. That is a start-up artifact
+     * of delay compensation, not a scheduling defect.</p>
+     *
+     * <p><b>The FRAMES are asserted, not just the count.</b> A regression
+     * that fires the right note on the right lap at the wrong frame — which
+     * is exactly what moving the widened window's frame ORIGIN does — is
+     * invisible to a count. The expected frames are the content walk's own
+     * quantized lap boundaries, and they are the click walk's onsets for the
+     * same laps shifted back by the PDC offset: the click walk (pinned in
+     * {@code MetronomeLoopSchedulingEngineTest} on this identical 48 kHz
+     * fixture) puts laps 1–5 at 7875, 15751, 23626, 31501 and 39376, and
+     * subtracting the {@value #PDC_INSERT_LATENCY_FRAMES}-frame render offset
+     * gives 7859, 15735, 23610, 31485 and 39360 — the values below. (Laps 2–5
+     * sit one frame past the exact boundary 7875·k because the accumulated
+     * fractional cursor has not quite reached the loop end on that frame, so
+     * the split's {@code Math.max(1, …)} floor spends one more frame before
+     * wrapping; lap 1 lands on the boundary exactly.) The frame recorded is
+     * the renderer's cumulative rendered-frame index, which here equals the
+     * global frame index because every block is rendered while playing.</p>
+     */
+    @Test
+    void loopStartNoteSurvivesTheBlockEntryMappingUnderPluginDelayCompensation() {
+        StubSoundFontRenderer instance = renderSession(
+                48_000.0, 120.0, 64, 616,
+                true, 0.0, 0.328125,
+                PDC_INSERT_LATENCY_FRAMES,
+                List.of(MidiNoteData.of(60, 0, 1, 100))); // column 0 → beat 0.0 = loop start
+
+        assertThat(countNoteOns(instance, 60))
+                .as("note-ons for the note on the loop start — the PDC-shifted "
+                        + "block-entry mapping must not clear the wrap flag, or the "
+                        + "lap whose wrap lands on a block boundary loses its downbeat")
+                .isEqualTo(5);
+        assertThat(noteOnFrames(instance, 60))
+                .as("the frames those note-ons were dispatched at — one per lap, on "
+                        + "the lap's first rendered frame, which is the click walk's "
+                        + "onset for the same lap minus the %d-frame PDC offset",
+                        PDC_INSERT_LATENCY_FRAMES)
+                .containsExactly(7859, 15735, 23610, 31485, 39360);
+    }
+
+    /**
+     * Story 315 review — the content walk's wrap flag must survive a
+     * pause/resume, so it must NOT be cleared on {@code renderBlock}'s
+     * not-playing path.
+     *
+     * <p>When a lap's quantized wrap lands on a block boundary the flag is
+     * the ONLY record that the new lap's first frame is still unrendered: the
+     * transport position is parked inside the sub-frame residue the wrap left
+     * behind, and the positional residue test cannot tell that residue apart
+     * from one the previous block already consumed (see
+     * {@link #noteAtTheLoopStartFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed()}
+     * for why no threshold can). Pausing on exactly that boundary and
+     * resuming must therefore still emit the lap's loop-start note.</p>
+     *
+     * <p>{@code AudioEngine.processBlock} forwards EVERY backend callback to
+     * {@code RenderPipeline.renderBlock}, whatever the transport state — the
+     * device callback does not stop at a pause. A clear of the wrap flags on
+     * {@code renderBlock}'s not-playing path is consequently executed on
+     * every paused callback, wiping the owed loop-start event; the harness
+     * keeps calling {@code processBlock} through the pause precisely to
+     * reproduce that.</p>
+     *
+     * <p>Config: the same fixture as
+     * {@link #loopStartNoteSurvivesTheBlockEntryMappingUnderPluginDelayCompensation()}
+     * — 48 kHz at 120 BPM (samplesPerBeat = 24000 exactly), a loop end of
+     * 0.328125 = 21/64 beats (exactly 7875 frames per lap), 64-frame blocks
+     * and {@value #PDC_INSERT_LATENCY_FRAMES} frames of insert latency —
+     * split into 615 playing blocks, 20 paused blocks and 20 resumed blocks.
+     * The pause falls on the boundary-aligned wrap at the end of block 614,
+     * so the owed loop-start note is dispatched in the first resumed block —
+     * the 636th block handed to {@code processBlock}. With the not-playing
+     * clear restored the count is <b>4</b> and that note-on is gone; the four
+     * survivors (blocks 122, 245, 368, 491) are all mid-block wraps that
+     * never needed the flag to cross a boundary.</p>
+     *
+     * <p><b>Two different frame numbers describe that dispatch, and only one
+     * of them is assertable here.</b> In WALL-CLOCK terms it is global frame
+     * <b>40640</b> = 635 × 64, counting every block the backend pushed
+     * through the engine. But this test asserts only a count, and the frame
+     * the harness could assert is a different quantity:
+     * {@link #noteOnFrames} reports {@link StubSoundFontRenderer.Dispatch}'s
+     * RENDERED-frame index, and the stub's counter only advances inside
+     * {@code render()}, which the paused blocks never reach — while paused,
+     * {@code renderBlock} skips {@code renderTracks} entirely. Those 20
+     * paused blocks (1280 frames) are therefore not counted, and a frame
+     * assertion added here would have to expect <b>39360</b> = 615 × 64, not
+     * 40640. Nothing is broken today; this is recorded so a future author
+     * does not write the assertion against the wall-clock number and get a
+     * confusing 1280-frame discrepancy.</p>
+     *
+     * <p>Lap 0 is legitimately absent on both sides of the fix: with PDC the
+     * content cursor starts ahead of beat 0, so the render begins past the
+     * first lap's downbeat — a delay-compensation start-up artifact, not a
+     * scheduling defect.</p>
+     */
+    @Test
+    void loopStartNoteSurvivesAPauseOnTheWrapBoundary() {
+        StubSoundFontRenderer instance = renderSession(
+                48_000.0, 120.0, 64, 615, 20, 20,
+                true, 0.0, 0.328125,
+                PDC_INSERT_LATENCY_FRAMES, 0.0,
+                List.of(MidiNoteData.of(60, 0, 1, 100))); // column 0 → beat 0.0 = loop start
+
+        assertThat(countNoteOns(instance, 60))
+                .as("note-ons for the note on the loop start — renderBlock runs on "
+                        + "every paused callback too, so clearing the wrap flag there "
+                        + "destroys the loop-start event owed across the pause")
+                .isEqualTo(5);
+    }
+
+    /**
+     * Story 315 review — a note-off that maps to exactly {@code framesToProcess}
+     * must still be dispatched, otherwise the note sustains until the next
+     * {@code allNotesOff()} or transport stop. Looping is DISABLED here: this
+     * is a plain linear-playback defect, independent of the loop work.
+     *
+     * <p>{@code findNextEventFrame} seeds {@code nextFrame = framesToProcess}
+     * and selects only on {@code frame < nextFrame}, but the note-off branch
+     * mapped its beat with {@code maxFrame = framesToProcess}, which the clamp
+     * can legally return. Such a note-off was never sent, and the next
+     * segment's window cannot recover it either — that window admits only
+     * {@code noteEndBeat > startBeat}, and the following segment starts past
+     * the note end. Note-ONs were always safe because they already clamp to
+     * {@code framesToProcess - 1}.</p>
+     *
+     * <p>Config: 44.1 kHz at 68 BPM gives samplesPerBeat = 38911.7647…, so the
+     * note-off at beat 0.25 lands on frame 9727.94 — 0.06 frame before block
+     * 18's end at 9728, which is exactly {@code framesToProcess} after
+     * nearest-frame rounding. Before the fix this note-off count was
+     * <b>0</b>.</p>
+     */
+    @Test
+    void noteOffLandingExactlyOnTheSegmentEndIsStillDispatched() {
+        StubSoundFontRenderer instance = renderSession(
+                44_100.0, 68.0, 512, 24,
+                false, 0.0, 0.0,
+                List.of(MidiNoteData.of(60, 0, 1, 100))); // beat 0.0 → 0.25, off at 9727.94
+
+        assertThat(countNoteOffs(instance, 60))
+                .as("note-offs for a note whose end maps to exactly framesToProcess — "
+                        + "dropping it leaves the note stuck until the next allNotesOff()")
+                .isEqualTo(1);
+        assertThat(countNoteOns(instance, 60))
+                .as("the matching note-on — asserted so the test cannot pass by "
+                        + "breaking note-on dispatch instead")
+                .isEqualTo(1);
+    }
+
+    /**
+     * Story 315 review — the widening must recover the note at a NON-ZERO
+     * loop start. Every other loop test in this class loops from beat 0.0, so
+     * {@code eventWindowStartBeat = loopStart} is only ever exercised at 0.0
+     * and would pass identically if the production line read {@code = 0.0}.
+     *
+     * <p>Here the loop is the bar [4.0, 8.0). Derivation of the expected
+     * frames, at {@link #SAMPLE_RATE} and {@link #LOOP_TEMPO} (samplesPerBeat
+     * = 20671.875 exactly, so a 4-beat lap is 82687.5 frames — deliberately
+     * not a whole number, which is what makes every wrap leave a sub-frame
+     * residue):</p>
+     * <ul>
+     *   <li>The transport is parked on beat 4.0 before playback, so render
+     *       frame 0 IS the loop start and lap 0's note-on lands on frame 0.
+     *   </li>
+     *   <li>Lap k's exact boundary is {@code k × 82687.5} frames. The split
+     *       can only land on a whole frame and always consumes at least one,
+     *       so a lap begins on the first whole frame STRICTLY past its exact
+     *       boundary: {@code floor(k × 82687.5) + 1}. For odd k that is just
+     *       the ceiling of a half-frame boundary; for even k the boundary is
+     *       itself a whole frame, and the accumulated fractional cursor has
+     *       not quite reached the loop end there, so the split's
+     *       {@code Math.max(1, …)} floor spends one more frame first.</li>
+     *   <li>The note sits exactly on the loop start, so the widened window
+     *       maps it onto that first frame — offset 0 within the segment.</li>
+     * </ul>
+     *
+     * <p>1292 blocks of 512 frames = 661504 frames, and 8 × 82687.5 = 661500
+     * ≤ 661504 &lt; 9 × 82687.5, so the render contains exactly 8 wraps and 9
+     * lap starts.</p>
+     *
+     * <p>Asserting the FRAMES is what makes this test discriminating.
+     * Hard-coding the widened window start to 0.0 does not lose the note —
+     * beat 4.0 is still inside the widened window — it merely re-maps it:
+     * {@code beatToFrame} then measures 4.0 from an origin four beats away,
+     * saturates against the upper clamp, and the note-on lands on the LAST
+     * frame of the segment instead of the first.</p>
+     */
+    @Test
+    void noteAtANonZeroLoopStartFiresOnEveryLapAtTheLapsFirstFrame() {
+        StubSoundFontRenderer instance = renderSessionFrom(
+                4.0,
+                SAMPLE_RATE, LOOP_TEMPO, LOOP_BLOCK_FRAMES, LOOP_BLOCK_COUNT,
+                true, 4.0, 8.0,
+                List.of(MidiNoteData.of(60, 16, 4, 100))); // column 16 → beat 4.0 = loop start
+
+        assertThat(noteOnFrames(instance, 60))
+                .as("the note sitting exactly on a NON-ZERO loop start fires once per "
+                        + "lap, on the lap's first rendered frame")
+                .containsExactlyElementsOf(expectedLapFirstFrames(LOOP_LAP_STARTS));
+    }
+
+    /**
+     * The first rendered frame of each of the first {@code lapCount} laps of
+     * a 82687.5-frame lap: frame 0 for lap 0, and the first whole frame
+     * strictly past the exact boundary {@code k × 82687.5} for every lap
+     * after it. See
+     * {@link #noteAtANonZeroLoopStartFiresOnEveryLapAtTheLapsFirstFrame()}
+     * for the derivation.
+     */
+    private static List<Integer> expectedLapFirstFrames(int lapCount) {
+        List<Integer> frames = new ArrayList<>();
+        for (int lap = 0; lap < lapCount; lap++) {
+            frames.add(lap == 0 ? 0 : (int) Math.floor(lap * LOOP_LAP_FRAMES) + 1);
+        }
+        return frames;
+    }
+
+    /**
+     * Story 315 review — a note whose end lands exactly on the loop end must
+     * be released exactly once per lap while LOOPING, and must not be
+     * released a second time after the wrap.
+     * {@link #noteOffLandingExactlyOnTheSegmentEndIsStillDispatched()} covers
+     * the same clamp with looping switched off; this is the looped case,
+     * where the segment end is the loop boundary rather than a block end.
+     *
+     * <p>The note runs from beat 3.0 to beat 4.0 in the loop [0.0, 4.0), so
+     * its end is the loop's exclusive end. It is admitted by the final
+     * pre-wrap segment, whose event window the caller caps at the loop end,
+     * through {@code noteEndBeat <= endBeat}. It must NOT be admitted again
+     * after the wrap: the post-wrap window starts at the loop start, and
+     * {@code noteEndBeat > startBeat} would hold there, but
+     * {@code noteEndBeat <= endBeat} cannot — the wrapped window ends a few
+     * frames into the lap, four beats short of the note end.</p>
+     *
+     * <p>Derivation of the expected frames, at {@link #SAMPLE_RATE} and
+     * {@link #LOOP_TEMPO} (samplesPerBeat = 20671.875, lap = 82687.5
+     * frames):</p>
+     * <ul>
+     *   <li>The note-ON is an ordinary in-loop event: it lands on the
+     *       nearest frame to its ideal position,
+     *       {@code round(k × 82687.5 + 62015.625)}, where 62015.625 = 3.0 ×
+     *       20671.875 is beat 3.0 within the lap.</li>
+     *   <li>The note-OFF's ideal position is the lap boundary itself,
+     *       {@code (k + 1) × 82687.5}, which belongs to the NEXT lap. The
+     *       upper clamp in {@code beatToFrame} pulls it back into the segment
+     *       that admitted it, so it lands on the last whole frame strictly
+     *       BEFORE the boundary: {@code ceil((k + 1) × 82687.5) − 1}. That
+     *       clamp is the one story 315's review added; without it this
+     *       note-off maps to exactly {@code framesToProcess} and is never
+     *       dispatched at all.</li>
+     * </ul>
+     *
+     * <p>1292 blocks of 512 frames span 8 complete laps, so both counts are
+     * 8 — one note-on and one note-off per completed lap, never two.</p>
+     */
+    @Test
+    void noteEndingExactlyOnTheLoopEndIsReleasedOncePerLapWhileLooping() {
+        StubSoundFontRenderer instance = renderSession(
+                SAMPLE_RATE, LOOP_TEMPO, LOOP_BLOCK_FRAMES, LOOP_BLOCK_COUNT,
+                true, 0.0, 4.0,
+                List.of(MidiNoteData.of(60, 12, 4, 100))); // beats 3.0 → 4.0 = the loop end
+
+        List<Integer> expectedNoteOns = new ArrayList<>();
+        List<Integer> expectedNoteOffs = new ArrayList<>();
+        for (int lap = 0; lap < LOOP_LAPS_REACHING_BEAT_ONE; lap++) {
+            expectedNoteOns.add((int) Math.round(lap * LOOP_LAP_FRAMES + 3.0 * LOOP_SAMPLES_PER_BEAT));
+            expectedNoteOffs.add((int) Math.ceil((lap + 1) * LOOP_LAP_FRAMES) - 1);
+        }
+
+        assertThat(noteOffFrames(instance, 60))
+                .as("a note ending exactly on the (exclusive) loop end is released "
+                        + "exactly once per lap, on the last frame before the wrap — "
+                        + "never dropped by the segment-end mapping, never repeated "
+                        + "after the wrap")
+                .containsExactlyElementsOf(expectedNoteOffs);
+        assertThat(noteOnFrames(instance, 60))
+                .as("the matching note-ons — asserted so the test cannot pass by "
+                        + "breaking note-on dispatch instead")
+                .containsExactlyElementsOf(expectedNoteOns);
+    }
+
+    /**
+     * Story 315 review — the sub-frame guard
+     * ({@code loopLength × samplesPerBeat >= 1.0}) on the content walk's
+     * widening. Without it every segment of a sub-frame loop is a fresh wrap,
+     * so the widening re-admits the loop-start note on every single frame.
+     *
+     * <p>Derivation. At 32768 Hz / 120 BPM samplesPerBeat is exactly 16384,
+     * so one frame is 2⁻¹⁴ beats. The loop starts on beat 4.0 — where the
+     * note sits — and is 0.3 frame long, deliberately NOT an exact binary
+     * fraction. Every segment is therefore clamped to a single frame
+     * ({@code max(1, ceil(0.3 − …))}), and each one wraps: the cursor
+     * advances one frame and the modulo maps it back to
+     * {@code loopStart + ((r + 1) mod 0.3)} frames. That residue orbit —
+     * 0 → 0.1 → 0.2 → 0.3-ish — never returns to the loop start in floating
+     * point, so only the very first segment, whose cursor IS the loop start,
+     * admits the note through the ordinary window test. The guard blocks the
+     * widening on all 1535 later frames, giving exactly one note-on. Without
+     * the guard the widening fires on every frame that follows a wrap, i.e.
+     * on all of them.</p>
+     *
+     * <p>A loop length that DIVIDES a frame is a different, pre-existing
+     * story and this test deliberately does not cover it: with 0.25 frame the
+     * modulo lands the cursor back exactly ON the loop start every frame, so
+     * the ordinary window test admits the note 1536 times with the guard AND
+     * without it. See the comment on the widening.</p>
+     */
+    @Test
+    void subFrameLoopFiresTheLoopStartNoteOnceNotOnEveryFrame() {
+        double subFrameSampleRate = 32_768.0;   // → samplesPerBeat = 16384 at 120 BPM
+        double subFrameLoopStart = 4.0;
+        double subFrameLoopEnd = subFrameLoopStart + 0.3 / 16_384.0; // 0.3 frame
+
+        StubSoundFontRenderer instance = renderSessionFrom(
+                subFrameLoopStart,
+                subFrameSampleRate, TEMPO, 512, 3,
+                true, subFrameLoopStart, subFrameLoopEnd,
+                List.of(MidiNoteData.of(60, 16, 1, 100))); // column 16 → beat 4.0 = loop start
+
+        assertThat(countNoteOns(instance, 60))
+                .as("a loop shorter than one frame whose length is not an exact "
+                        + "binary fraction must not re-trigger its loop-start note on "
+                        + "every one of the 1536 rendered frames")
+                .isEqualTo(1);
+    }
+
+    /**
+     * Story 315 review — the content walk's sub-frame guard
+     * ({@code loopLength × samplesPerBeat >= 1.0}) must stay ENABLED for a
+     * loop of between one and two frames.
+     *
+     * <p>{@link #subFrameLoopFiresTheLoopStartNoteOnceNotOnEveryFrame()} pins
+     * only the lower side of the threshold — it rules out anything at or
+     * below 0.3 frame, so 0.5, 1.0, 2.0 and 4.0 all satisfy it alike, and no
+     * other fixture uses a loop between one and two frames. This test pins
+     * the upper side: the loop is exactly 1.5 frames, so a threshold of 2.0
+     * or 4.0 switches the widening off on a loop that still needs it and the
+     * note-on count collapses from 1023 to <b>0</b>.</p>
+     *
+     * <p>Construction, all quantities exact in binary. At 32768 Hz / 120 BPM
+     * samplesPerBeat is exactly 16384, so one frame is 2⁻¹⁴ beats; the loop
+     * is 3·2⁻¹⁵ beats = 1.5 frames, starting on beat 4.0 where the note
+     * sits. The transport is parked a QUARTER of a frame into the loop rather
+     * than on the loop start, which is what makes the count a clean
+     * discriminator: the residue orbit is then the exact two-cycle
+     * 0.25 → 0.75 → 0.25 frame and never returns to the loop start, so the
+     * note is NEVER admitted by the ordinary window test
+     * ({@code noteStartBeat >= startBeat}). Every note-on counted here is one
+     * the widening recovered.</p>
+     *
+     * <p>Segments alternate 2, 1, 2, 1, … frames long, so over 3 × 512 = 1536
+     * frames there are 1536 ÷ 3 × 2 = 1024 of them. All of them fire except
+     * the very first, which begins before any wrap has set the flag: 1023.
+     * </p>
+     */
+    @Test
+    void oneAndAHalfFrameLoopKeepsTheEventWindowWideningEnabled() {
+        double subFrameSampleRate = 32_768.0;             // → samplesPerBeat = 16384 at 120 BPM
+        double loopStart = 4.0;
+        double loopEnd = loopStart + 3.0 / 32_768.0;      // 1.5 frames, exact in binary
+        double quarterFrameBeats = 1.0 / 65_536.0;        // a quarter of a frame
+
+        StubSoundFontRenderer instance = renderSessionFrom(
+                loopStart + quarterFrameBeats,
+                subFrameSampleRate, TEMPO, 512, 3,
+                true, loopStart, loopEnd,
+                List.of(MidiNoteData.of(60, 16, 1, 100))); // column 16 → beat 4.0 = loop start
+
+        assertThat(countNoteOns(instance, 60))
+                .as("a loop of 1.5 frames must keep the event-window widening enabled: "
+                        + "the cursor never lands on the loop start, so every one of the "
+                        + "1023 note-ons is one the widening recovered")
+                .isEqualTo(1023);
+    }
+
+    /**
+     * Plays {@code notes} through a fresh looping session — see the
+     * loop-boundary fixture constants at the top of this class — and returns
+     * the stub renderer instance that received the MIDI events.
+     *
+     * <p>Each call builds its own {@link AudioFormat}, {@link AudioEngine},
+     * {@link Transport} and {@link Mixer} because the class-level fixture is
+     * an 8-frame buffer at 120 BPM, which cannot express a loop lap.</p>
+     */
+    private static StubSoundFontRenderer renderLoopedSession(List<MidiNoteData> notes) {
+        AudioFormat loopFormat =
+                new AudioFormat(SAMPLE_RATE, CHANNELS, 16, LOOP_BLOCK_FRAMES);
+        AudioEngine loopEngine = new AudioEngine(loopFormat);
+        Transport loopTransport = new Transport();
+        loopTransport.setTempo(LOOP_TEMPO);
+        Mixer loopMixer = new Mixer();
+
+        // These tests are about events, not audio — render silence.
+        StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
+        MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
+                SAMPLE_RATE, LOOP_BLOCK_FRAMES, stubRenderer::newInstance);
+
+        Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
+        midiTrack.setSoundFontAssignment(ASSIGNMENT);
+        for (MidiNoteData note : notes) {
+            midiTrack.getMidiClip().addNote(note);
+        }
+
+        MixerChannel mixerChannel = new MixerChannel("MIDI Track");
+        loopMixer.addChannel(mixerChannel);
+
+        loopTransport.setLoopEnabled(true);
+        loopTransport.setLoopRegion(LOOP_START_BEAT, LOOP_END_BEAT);
+        loopTransport.play();
+        loopEngine.setGraph(loopTransport, loopMixer, List.of(midiTrack));
+        loopEngine.start();
+        midiRenderer.prepareRenderer(midiTrack);
+        loopEngine.setMidiTrackRenderer(midiRenderer);
+
+        float[][] input = new float[CHANNELS][LOOP_BLOCK_FRAMES];
+        float[][] output = new float[CHANNELS][LOOP_BLOCK_FRAMES];
+        for (int block = 0; block < LOOP_BLOCK_COUNT; block++) {
+            loopEngine.processBlock(input, output, LOOP_BLOCK_FRAMES);
+        }
+
+        StubSoundFontRenderer instance = stubRenderer.lastCreatedInstance;
+        assertThat(instance).isNotNull();
+        return instance;
+    }
+
+    /**
+     * Story 315 review — same idea as {@link #renderLoopedSession}, but with
+     * the transport/format constants supplied by the caller. The ulp-level
+     * regressions below each need their own sample rate, tempo, block size
+     * and loop length (the values are chosen so the arithmetic is exact in
+     * binary and the failing frame is reproducible to the last bit), and one
+     * of them runs with looping switched off entirely.
+     *
+     * @param loopEnabled when {@code false} the loop region is left untouched
+     *                    and {@code loopStartBeat}/{@code loopEndBeat} are ignored
+     */
+    private static StubSoundFontRenderer renderSession(double sampleRate, double tempo,
+                                                       int blockFrames, int blockCount,
+                                                       boolean loopEnabled,
+                                                       double loopStartBeat, double loopEndBeat,
+                                                       List<MidiNoteData> notes) {
+        return renderSession(sampleRate, tempo, blockFrames, blockCount,
+                loopEnabled, loopStartBeat, loopEndBeat, 0, notes);
+    }
+
+    /**
+     * Story 315 review — {@link #renderSession(double, double, int, int,
+     * boolean, double, double, List)} with a latent insert on the track's
+     * mixer channel, which is what puts the render pipeline's PDC-shifted
+     * content cursor ahead of the raw transport cursor.
+     *
+     * @param insertLatencyFrames frames of latency the channel's insert chain
+     *                            reports; {@code 0} adds no insert at all
+     */
+    private static StubSoundFontRenderer renderSession(double sampleRate, double tempo,
+                                                       int blockFrames, int blockCount,
+                                                       boolean loopEnabled,
+                                                       double loopStartBeat, double loopEndBeat,
+                                                       int insertLatencyFrames,
+                                                       List<MidiNoteData> notes) {
+        return renderSession(sampleRate, tempo, blockFrames, blockCount, 0, 0,
+                loopEnabled, loopStartBeat, loopEndBeat, insertLatencyFrames, 0.0, notes);
+    }
+
+    /**
+     * Story 315 review — {@link #renderSession(double, double, int, int,
+     * boolean, double, double, List)} starting somewhere other than beat 0.
+     *
+     * <p>The seek is issued while the transport is still STOPPED, so it
+     * applies inline instead of being queued for the next block boundary.</p>
+     *
+     * @param startBeat the beat the transport is parked on before playback
+     */
+    private static StubSoundFontRenderer renderSessionFrom(double startBeat,
+                                                           double sampleRate, double tempo,
+                                                           int blockFrames, int blockCount,
+                                                           boolean loopEnabled,
+                                                           double loopStartBeat,
+                                                           double loopEndBeat,
+                                                           List<MidiNoteData> notes) {
+        return renderSession(sampleRate, tempo, blockFrames, blockCount, 0, 0,
+                loopEnabled, loopStartBeat, loopEndBeat, 0, startBeat, notes);
+    }
+
+    /**
+     * Story 315 review — {@link #renderSession(double, double, int, int,
+     * boolean, double, double, int, List)} with a pause/resume in the middle
+     * of the render.
+     *
+     * <p>The paused blocks are still handed to
+     * {@code AudioEngine.processBlock}, because that is exactly what the
+     * audio backend does: the device callback keeps firing at the buffer
+     * period regardless of transport state, and {@code processBlock} forwards
+     * every one of them to {@code RenderPipeline.renderBlock}. Only
+     * {@code renderBlock}'s own {@code playbackActive} branches are skipped
+     * while paused; the method itself runs. A regression that clears
+     * per-block loop state on the not-playing path therefore fires on every
+     * paused callback, not once at the pause.</p>
+     *
+     * @param pausedBlockCount  blocks pushed through the engine with the
+     *                          transport {@code PAUSED}; {@code 0} pauses
+     *                          nothing
+     * @param resumedBlockCount blocks rendered after {@code play()} resumes
+     * @param startBeat         the beat the transport is parked on before
+     *                          playback starts; the seek is issued while
+     *                          STOPPED so it applies inline
+     */
+    private static StubSoundFontRenderer renderSession(double sampleRate, double tempo,
+                                                       int blockFrames, int blockCount,
+                                                       int pausedBlockCount,
+                                                       int resumedBlockCount,
+                                                       boolean loopEnabled,
+                                                       double loopStartBeat, double loopEndBeat,
+                                                       int insertLatencyFrames,
+                                                       double startBeat,
+                                                       List<MidiNoteData> notes) {
+        AudioFormat sessionFormat = new AudioFormat(sampleRate, CHANNELS, 16, blockFrames);
+        AudioEngine sessionEngine = new AudioEngine(sessionFormat);
+        Transport sessionTransport = new Transport();
+        sessionTransport.setTempo(tempo);
+        Mixer sessionMixer = new Mixer();
+
+        // These tests are about events, not audio — render silence.
+        StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
+        MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
+                sampleRate, blockFrames, stubRenderer::newInstance);
+
+        Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
+        midiTrack.setSoundFontAssignment(ASSIGNMENT);
+        for (MidiNoteData note : notes) {
+            midiTrack.getMidiClip().addNote(note);
+        }
+        MixerChannel sessionChannel = new MixerChannel("MIDI Track");
+        sessionMixer.addChannel(sessionChannel);
+        if (insertLatencyFrames > 0) {
+            // A unity-gain passthrough that only REPORTS latency: the channel
+            // stays gain-neutral while getSystemLatencySamples() rises, so the
+            // render cursor runs insertLatencyFrames ahead of the transport.
+            sessionChannel.addInsert(new InsertSlot("Latent",
+                    new ReportedLatencyProcessor(insertLatencyFrames)));
+            assertThat(sessionMixer.getSystemLatencySamples())
+                    .as("harness precondition: the insert chain must report its latency")
+                    .isEqualTo(insertLatencyFrames);
+        }
+
+        if (loopEnabled) {
+            sessionTransport.setLoopEnabled(true);
+            sessionTransport.setLoopRegion(loopStartBeat, loopEndBeat);
+        }
+        if (startBeat != 0.0) {
+            sessionTransport.setPositionInBeats(startBeat); // inline: applied while STOPPED
+        }
+        sessionTransport.play();
+        sessionEngine.setGraph(sessionTransport, sessionMixer, List.of(midiTrack));
+        sessionEngine.start();
+        midiRenderer.prepareRenderer(midiTrack);
+        sessionEngine.setMidiTrackRenderer(midiRenderer);
+
+        float[][] input = new float[CHANNELS][blockFrames];
+        float[][] output = new float[CHANNELS][blockFrames];
+        for (int block = 0; block < blockCount; block++) {
+            sessionEngine.processBlock(input, output, blockFrames);
+        }
+        if (pausedBlockCount > 0) {
+            // The backend callback does NOT stop at a pause, so neither does
+            // processBlock — see this method's javadoc.
+            sessionTransport.pause();
+            assertThat(sessionTransport.getState())
+                    .as("harness precondition: the transport must actually be paused")
+                    .isEqualTo(TransportState.PAUSED);
+            for (int block = 0; block < pausedBlockCount; block++) {
+                sessionEngine.processBlock(input, output, blockFrames);
+            }
+            sessionTransport.play();
+        }
+        for (int block = 0; block < resumedBlockCount; block++) {
+            sessionEngine.processBlock(input, output, blockFrames);
+        }
+
+        StubSoundFontRenderer instance = stubRenderer.lastCreatedInstance;
+        assertThat(instance).isNotNull();
+        return instance;
+    }
+
+    /** Counts the NOTE_ON events received for a single note number. */
+    private static long countNoteOns(StubSoundFontRenderer instance, int noteNumber) {
+        return instance.receivedEvents.stream()
+                .filter(e -> e.type() == MidiEvent.Type.NOTE_ON && e.data1() == noteNumber)
+                .count();
+    }
+
+    /** Counts the NOTE_OFF events received for a single note number. */
+    private static long countNoteOffs(StubSoundFontRenderer instance, int noteNumber) {
+        return instance.receivedEvents.stream()
+                .filter(e -> e.type() == MidiEvent.Type.NOTE_OFF && e.data1() == noteNumber)
+                .count();
+    }
+
+    /**
+     * The exact frames a single note number's NOTE_ON events were dispatched
+     * at, in dispatch order — see {@link StubSoundFontRenderer.Dispatch}.
+     * Counting events alone cannot see a regression that fires the right
+     * event on the right lap at the WRONG frame, which is precisely what a
+     * change to the widened frame origin does.
+     */
+    private static List<Integer> noteOnFrames(StubSoundFontRenderer instance, int noteNumber) {
+        return dispatchFrames(instance, MidiEvent.Type.NOTE_ON, noteNumber);
+    }
+
+    /** {@link #noteOnFrames} for NOTE_OFF. */
+    private static List<Integer> noteOffFrames(StubSoundFontRenderer instance, int noteNumber) {
+        return dispatchFrames(instance, MidiEvent.Type.NOTE_OFF, noteNumber);
+    }
+
+    private static List<Integer> dispatchFrames(StubSoundFontRenderer instance,
+                                                MidiEvent.Type type, int noteNumber) {
+        return instance.dispatches.stream()
+                .filter(d -> d.event().type() == type && d.event().data1() == noteNumber)
+                .map(StubSoundFontRenderer.Dispatch::frame)
+                .toList();
+    }
+
     // ── MidiTrackRenderer unit tests ────────────────────────────────────────
 
     @Test
@@ -596,8 +1502,33 @@ class AudioEngineMidiPlaybackTest {
      */
     private static class StubSoundFontRenderer implements SoundFontRenderer {
 
+        /**
+         * A dispatched MIDI event together with the renderer's cumulative
+         * frame count at the moment it was dispatched — i.e. the exact frame
+         * the event was placed on.
+         *
+         * <p>{@code MidiTrackRenderer} renders a segment as sub-chunks
+         * partitioned at the event frames: it renders up to the next event's
+         * frame offset, sends the event, then renders the remainder. The
+         * cumulative frame count is therefore incremented by every frame
+         * BEFORE an event and by none after it, so at {@code sendEvent} time
+         * it equals the global frame index the event lands on. Frames the
+         * renderer never sees (blocks in which the MIDI track is not
+         * rendered at all, e.g. while the transport is paused) are not
+         * counted, so this is a rendered-frame index, not a wall-clock one.
+         * </p>
+         *
+         * @param event the event as dispatched
+         * @param frame the rendered-frame index it was dispatched at
+         */
+        record Dispatch(MidiEvent event, int frame) {}
+
         final float renderValue;
         final List<MidiEvent> receivedEvents = new CopyOnWriteArrayList<>();
+        /** Every event of {@link #receivedEvents}, paired with its frame. */
+        final List<Dispatch> dispatches = new CopyOnWriteArrayList<>();
+        /** Frames rendered so far — see {@link Dispatch}. */
+        int renderedFrames;
         int selectedBank;
         int selectedProgram;
         boolean closed;
@@ -650,6 +1581,7 @@ class AudioEngineMidiPlaybackTest {
         @Override
         public void sendEvent(MidiEvent event) {
             receivedEvents.add(event);
+            dispatches.add(new Dispatch(event, renderedFrames));
             if (event.type() == MidiEvent.Type.NOTE_ON) {
                 activeNotes++;
             } else if (event.type() == MidiEvent.Type.NOTE_OFF) {
@@ -659,6 +1591,7 @@ class AudioEngineMidiPlaybackTest {
 
         @Override
         public void render(float[][] outputBuffer, int numFrames) {
+            renderedFrames += numFrames;
             if (activeNotes > 0) {
                 for (int ch = 0; ch < outputBuffer.length; ch++) {
                     for (int i = 0; i < numFrames; i++) {
