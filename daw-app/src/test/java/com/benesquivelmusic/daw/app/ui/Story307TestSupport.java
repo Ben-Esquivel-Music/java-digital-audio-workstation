@@ -27,6 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 final class Story307TestSupport {
 
+    /** Default guard budget for {@link #onFx(Callable)}; ample for a non-blocking callable. */
+    static final long DEFAULT_FX_BUDGET_SECONDS = 5;
+
     private Story307TestSupport() {}
 
     static SettingsModel model(String prefix) {
@@ -34,7 +37,35 @@ final class Story307TestSupport {
                 .node(prefix + "_" + System.nanoTime()));
     }
 
+    /**
+     * Runs {@code callable} on the FX thread and waits up to
+     * {@link #DEFAULT_FX_BUDGET_SECONDS} for it to finish. Callables that
+     * themselves block the FX thread (latch awaits, thread joins) must use
+     * {@link #onFx(Callable, long, TimeUnit)} with a wider budget.
+     */
     static <T> T onFx(Callable<T> callable) throws Exception {
+        return onFx(callable, DEFAULT_FX_BUDGET_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Runs {@code callable} on the FX thread and waits up to the given budget
+     * for it to finish, rethrowing whatever it threw.
+     *
+     * <p>Story 315 review — the budget is a guard against a hung FX thread,
+     * not a correctness tolerance: it must strictly exceed the sum of every
+     * wait the callable itself performs on the FX thread (its own latch
+     * {@code await}s and thread {@code join}s). A budget narrower than the
+     * callable's inner waits misattributes a slow-but-legitimate run to this
+     * guard line and leaks the still-running callable into the next test.</p>
+     *
+     * @param callable work to run on the FX thread
+     * @param timeout  maximum time to wait for the callable to finish
+     * @param unit     unit of {@code timeout}
+     * @return the callable's result
+     * @throws Exception whatever the callable threw, or an assertion error if
+     *                   the callable did not finish within the budget
+     */
+    static <T> T onFx(Callable<T> callable, long timeout, TimeUnit unit) throws Exception {
         AtomicReference<T> result = new AtomicReference<>();
         AtomicReference<Throwable> error = new AtomicReference<>();
         CountDownLatch completed = new CountDownLatch(1);
@@ -47,7 +78,9 @@ final class Story307TestSupport {
                 completed.countDown();
             }
         });
-        assertThat(completed.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(completed.await(timeout, unit))
+                .as("FX callable finished within %d %s", timeout, unit)
+                .isTrue();
         Throwable failure = error.get();
         if (failure instanceof Error e) {
             throw e;

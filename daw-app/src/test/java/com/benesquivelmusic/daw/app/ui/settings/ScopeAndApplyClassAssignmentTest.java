@@ -110,6 +110,20 @@ class ScopeAndApplyClassAssignmentTest {
     }
 
     @Test
+    void returnToStartOnStopShouldBeApplicationScopedLiveToggle() {
+        // Story 315 — one application preference governing every project's
+        // transport (seeded per load, pushed live by LiveSettingsApplier);
+        // the transport reads the volatile flag on each Stop, so the apply
+        // class is LIVE (no engine re-arm).
+        assertThat(scopeOf("transport.returnToStartOnStop"))
+                .isEqualTo(Scope.APPLICATION);
+        assertThat(applyClassOf("transport.returnToStartOnStop"))
+                .isEqualTo(ApplyClass.LIVE);
+        assertThat(descriptor("transport.returnToStartOnStop").controlKind())
+                .isEqualTo(ControlKind.TOGGLE);
+    }
+
+    @Test
     void backendShouldBeTheOnlyRestartRequiredDescriptor() {
         assertThat(applyClassOf("audio.backend")).isEqualTo(ApplyClass.RESTART_REQUIRED);
         assertThat(catalogue.descriptors().stream()

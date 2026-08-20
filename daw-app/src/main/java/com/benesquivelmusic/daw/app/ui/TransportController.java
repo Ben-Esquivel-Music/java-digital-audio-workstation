@@ -4,8 +4,11 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
+import com.benesquivelmusic.daw.app.ui.vm.command.TransportIntentHandler;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.MidiRecorder;
 import com.benesquivelmusic.daw.core.midi.RecordMidiNotesAction;
@@ -20,12 +23,12 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
+import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.PauseTransition;
-import javafx.css.PseudoClass;
 import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -44,6 +47,7 @@ import javax.sound.midi.MidiUnavailableException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.*;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -52,16 +56,27 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Manages transport playback actions and recording pipeline lifecycle.
+ * Manages transport playback actions and recording pipeline lifecycle — the
+ * <em>production</em> {@link TransportIntentHandler} that every story-290
+ * {@code TransportCommand} executes against (story 315 adopted the command
+ * layer; Audio Engine Wiring Design Book §5.1, Stage 2).
  *
- * <p>Extracted from {@link MainController} to isolate transport behavior
- * into a dedicated, independently testable class. Time-ticker animation
- * is delegated to {@link AnimationController} via the {@code startTimeTicker}
- * / {@code pauseTimeTicker} / {@code stopTimeTicker} runnables. All
- * dependencies are received via constructor injection (story 293 retired the
- * former {@code Host} callback-up interface).</p>
+ * <p>Extracted from {@link MainController} to isolate transport behavior into
+ * a dedicated, independently testable class. All dependencies are received via
+ * constructor injection (story 293 retired the former {@code Host} callback-up
+ * interface). Each intent method composes the pure VALIDATE→MUTATE→ANNOUNCE
+ * cascade of {@link CoreTransportIntentHandler} with the engine-lifecycle and
+ * status-bar side effects that belong to this surface; where a flow cannot
+ * delegate (the recording pipeline mutates the transport itself), the ANNOUNCE
+ * is published here at the point where the transport actually transitions.</p>
+ *
+ * <p>The time display is no longer written here: it is bound to the
+ * beats→time projection by {@code TransportControlBinder.bindTimeDisplay}
+ * (story 315 — a bound label throws on {@code setText}). Likewise the
+ * play/record/loop {@code :active} pseudo-classes are driven solely by the
+ * binder from {@code TransportVM} — this class never pokes them.</p>
  */
-final class TransportController {
+final class TransportController implements TransportIntentHandler {
 
     private static final Logger LOG = Logger.getLogger(TransportController.class.getName());
 
@@ -70,13 +85,24 @@ final class TransportController {
     private final UndoManager undoManager;
     private final NotificationBar notificationBar;
     private final Label statusLabel;
-    private final Label timeDisplay;
     private final Label statusBarLabel;
     private final Label recIndicator;
+    /**
+     * Play is disabled during RECORDING by {@link #updateStatus()}; Record's
+     * blink appearance is restored on stop. Stop and Loop are no longer held
+     * here — their state is entirely binder-driven (story 315).
+     */
     private final Button playButton;
-    private final Button stopButton;
     private final Button recordButton;
-    private final Button loopButton;
+
+    /**
+     * Story 315 — the pure VALIDATE→MUTATE→ANNOUNCE cascade over this
+     * controller's transport. Composed (not inherited) so the flows that align
+     * with the neutral cascade delegate to it, while the flows with UI /
+     * engine side effects (stop's recording finalize, record's pipeline) keep
+     * their orchestration here and announce at the true transition points.
+     */
+    private final CoreTransportIntentHandler core;
 
     /**
      * Story 293 — direct collaborators replacing the retired {@code Host}
@@ -94,9 +120,6 @@ final class TransportController {
     private final BooleanSupplier snapEnabled;
     private final Supplier<GridResolution> gridResolution;
     private final Supplier<CountInMode> countInMode;
-    private final Runnable startTimeTicker;
-    private final Runnable pauseTimeTicker;
-    private final Runnable stopTimeTicker;
     private final Consumer<Track> flashMidiActivity;
     private final BooleanSupplier applyLatencyCompensation;
     private final Supplier<RoundTripLatency> reportedLatency;
@@ -109,20 +132,6 @@ final class TransportController {
      * tolerates the null and falls back to the static seam.
      */
     private final FxDispatcher fxDispatcher;
-
-    /**
-     * UI Design Book §2.1 / §7.2 — the {@code :active} pseudo-class is
-     * the single source of truth for "this transport button is in the
-     * one-accent-at-a-time armed state". Wired here on Play (during
-     * playback), Record (while recording) and Loop (while looping); the
-     * stylesheet paints {@code accent} on Play/Loop and {@code danger}
-     * on Record (the §2.1 record exception).
-     *
-     * <p>A custom pseudo-class name is used so we do not collide with
-     * the {@code :armed} pseudo-class that {@code ButtonBase} toggles
-     * automatically while the mouse is pressed.</p>
-     */
-    private static final PseudoClass ACTIVE = PseudoClass.getPseudoClass("active");
 
     private RecordingPipeline recordingPipeline;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
@@ -160,27 +169,21 @@ final class TransportController {
                         UndoManager undoManager,
                         NotificationBar notificationBar,
                         Label statusLabel,
-                        Label timeDisplay,
                         Label statusBarLabel,
                         Label recIndicator,
                         Button playButton,
-                        Button stopButton,
                         Button recordButton,
-                        Button loopButton,
                         BooleanSupplier snapEnabled,
                         Supplier<GridResolution> gridResolution,
                         Supplier<CountInMode> countInMode,
-                        Runnable startTimeTicker,
-                        Runnable pauseTimeTicker,
-                        Runnable stopTimeTicker,
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
                         Supplier<RoundTripLatency> reportedLatency) {
         this(project, audioEngine, undoManager, notificationBar, statusLabel,
-                timeDisplay, statusBarLabel, recIndicator, playButton, stopButton,
-                recordButton, loopButton, snapEnabled, gridResolution, countInMode,
-                startTimeTicker, pauseTimeTicker, stopTimeTicker, flashMidiActivity,
-                applyLatencyCompensation, reportedLatency, FxDispatcher.getDefault());
+                statusBarLabel, recIndicator, playButton,
+                recordButton, snapEnabled, gridResolution, countInMode,
+                flashMidiActivity, applyLatencyCompensation, reportedLatency,
+                FxDispatcher.getDefault());
     }
 
     TransportController(DawProject project,
@@ -188,19 +191,13 @@ final class TransportController {
                         UndoManager undoManager,
                         NotificationBar notificationBar,
                         Label statusLabel,
-                        Label timeDisplay,
                         Label statusBarLabel,
                         Label recIndicator,
                         Button playButton,
-                        Button stopButton,
                         Button recordButton,
-                        Button loopButton,
                         BooleanSupplier snapEnabled,
                         Supplier<GridResolution> gridResolution,
                         Supplier<CountInMode> countInMode,
-                        Runnable startTimeTicker,
-                        Runnable pauseTimeTicker,
-                        Runnable stopTimeTicker,
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
                         Supplier<RoundTripLatency> reportedLatency,
@@ -210,19 +207,13 @@ final class TransportController {
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
         this.notificationBar = Objects.requireNonNull(notificationBar, "notificationBar must not be null");
         this.statusLabel = Objects.requireNonNull(statusLabel, "statusLabel must not be null");
-        this.timeDisplay = Objects.requireNonNull(timeDisplay, "timeDisplay must not be null");
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.recIndicator = Objects.requireNonNull(recIndicator, "recIndicator must not be null");
         this.playButton = Objects.requireNonNull(playButton, "playButton must not be null");
-        this.stopButton = Objects.requireNonNull(stopButton, "stopButton must not be null");
         this.recordButton = Objects.requireNonNull(recordButton, "recordButton must not be null");
-        this.loopButton = Objects.requireNonNull(loopButton, "loopButton must not be null");
         this.snapEnabled = Objects.requireNonNull(snapEnabled, "snapEnabled must not be null");
         this.gridResolution = Objects.requireNonNull(gridResolution, "gridResolution must not be null");
         this.countInMode = Objects.requireNonNull(countInMode, "countInMode must not be null");
-        this.startTimeTicker = Objects.requireNonNull(startTimeTicker, "startTimeTicker must not be null");
-        this.pauseTimeTicker = Objects.requireNonNull(pauseTimeTicker, "pauseTimeTicker must not be null");
-        this.stopTimeTicker = Objects.requireNonNull(stopTimeTicker, "stopTimeTicker must not be null");
         this.flashMidiActivity = Objects.requireNonNull(flashMidiActivity, "flashMidiActivity must not be null");
         this.applyLatencyCompensation = Objects.requireNonNull(
                 applyLatencyCompensation, "applyLatencyCompensation must not be null");
@@ -230,6 +221,12 @@ final class TransportController {
         // May be null in a pure-unit context; postFx() falls back to the
         // static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
+        // Story 315 — the composed VALIDATE→MUTATE→ANNOUNCE cascade over this
+        // controller's (per-project-load) transport. It also owns the single
+        // beats→frames conversion behind every TransportEvent frame field
+        // (core.beatsToFrames); this class keeps no copy.
+        this.core = new CoreTransportIntentHandler(
+                project.getTransport(), project.getFormat().sampleRate());
     }
 
     /**
@@ -241,29 +238,23 @@ final class TransportController {
         FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
-    // ── Transport action handlers ────────────────────────────────────────────
+    // ── Transport intent handlers (story-290 command layer, adopted in 315) ──
 
     /**
-     * Toggle entry point bound to the Play button. UI Design Book §5.1 —
-     * Play-toggles-pause matches every standard DAW (the discrete Pause
-     * button was removed by story 262).
+     * Starts playback from the current position (§5.2 "Start / Play").
      *
-     * <ul>
-     *   <li>STOPPED or PAUSED → start / resume playback</li>
-     *   <li>PLAYING            → pause</li>
-     *   <li>RECORDING          → no-op (Stop is the only way out of record)</li>
-     * </ul>
+     * <p>VALIDATE mirrors the retired {@code onPlay} guard: a no-op while
+     * already PLAYING (a stale Start intent) and while RECORDING (Stop is the
+     * only way out of record). The Play-toggles-pause pairing is resolved by
+     * {@link #togglePlayPause()} — the gesture layer raises the toggle intent
+     * and never decides for itself (story 315 review).</p>
      */
-    void onPlay() {
+    @Override
+    public void start() {
         TransportState state = project.getTransport().getState();
-        if (state == TransportState.PLAYING) {
-            doPause();
-        } else if (state != TransportState.RECORDING) {
-            doPlay();
+        if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
+            return;
         }
-    }
-
-    private void doPlay() {
         try {
             audioEngine.startAudioOutput();
         } catch (RuntimeException e) {
@@ -271,14 +262,115 @@ final class TransportController {
             notificationBar.show(NotificationLevel.ERROR,
                     "Audio device error: " + e.getMessage());
         }
-        project.getTransport().play();
-        startTimeTicker.run();
+        // MUTATE + ANNOUNCE (Transport.play() → TransportEvent.Started).
+        core.start();
         updateStatus();
         statusBarLabel.setText("Playing...");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
     }
 
-    void onStop() {
+    /**
+     * Pauses playback at the current position (§5.2; story 315). VALIDATE (in
+     * {@link CoreTransportIntentHandler#pause()} and re-checked here for the UI
+     * tail): only meaningful from PLAYING or RECORDING — a stale Pause intent
+     * leaves both the transport and the status bar untouched.
+     */
+    @Override
+    public void pause() {
+        TransportState state = project.getTransport().getState();
+        if (state != TransportState.PLAYING && state != TransportState.RECORDING) {
+            return;
+        }
+        core.pause();
+        audioEngine.pauseAudioOutput();
+        updateStatus();
+        statusBarLabel.setText("Paused");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
+    }
+
+    /**
+     * Resolves the Play gesture here, where the authoritative
+     * {@link Transport#getState()} lives (story 315 review): PLAYING pauses,
+     * anything else starts. Delegating to this class's own {@link #pause()} /
+     * {@link #start()} keeps the engine lifecycle and status-bar tails on both
+     * halves — a direct {@code core.togglePlayPause()} would mutate the
+     * transport without ever touching the audio output.
+     *
+     * <p>Every Play surface (toolbar button, spacebar, Performance Stage) now
+     * raises the same {@code TogglePlayPauseCommand} into here, so none of them
+     * can decide from the async {@code TransportVM} mirror and drop a click into
+     * the one-FX-turn lag window (§2.8 "one path").</p>
+     */
+    @Override
+    public void togglePlayPause() {
+        if (project.getTransport().getState() == TransportState.PLAYING) {
+            pause();
+        } else {
+            start();
+        }
+    }
+
+    /**
+     * Stops the transport (§5.2 "Stop"), finalizing any active recording and
+     * honouring a configured post-roll.
+     *
+     * <p><strong>Double-stop gesture</strong> (story 315): a Stop while the
+     * transport is already STOPPED <em>and nothing is recording</em> rewinds the
+     * playhead to zero. This is a gesture-level semantic deliberately NOT in
+     * {@link Transport#stop()} — internal callers (e.g.
+     * {@code RecordingPipeline.stop()}) must be able to stop the transport
+     * without a follow-up UI stop yanking recordings to zero. No
+     * {@link TransportEvent.Stopped} is announced for the rewind: the transport
+     * did not stop again.</p>
+     *
+     * <p>The rewind honours {@link Transport#isReturnToStartOnStop()} (story 315
+     * review): the shipped {@code transport.returnToStartOnStop} preference
+     * promises "when off, the playhead stays where it stopped", so with the
+     * setting off a second Stop leaves the playhead — and the status bar —
+     * alone.</p>
+     *
+     * <p><strong>Why the rewind is gated on "nothing is recording"</strong>: the
+     * pipeline can be ACTIVE while the transport is still STOPPED.
+     * {@code RecordingPipeline.start()} sets {@code active = true} at its top and
+     * only calls {@code Transport.record()} at the very end, so a throw in
+     * between (session creation, temp-file I/O, engine start) escapes
+     * {@link #onRecord()} with the pipeline assigned and running and the
+     * transport untouched. Returning early on that state would leak recording
+     * sessions and temp files, leave per-track recording flags set and the REC
+     * indicator lit forever — every further Stop hitting the same early return.
+     * Falling through instead runs the finalize exactly once: on an
+     * already-STOPPED transport {@link Transport#requestStop()} takes the
+     * {@code stop()} branch, which is an idempotent no-op, so the tail below is
+     * reached with nothing double-stopped.</p>
+     *
+     * <p>{@link TransportEvent.Stopped} carries the position at which the
+     * transport actually stopped, captured <em>before</em> any internal
+     * {@code Transport.stop()} (the recording pipeline's, or the one inside
+     * {@code requestStop()}) rewinds the playhead to the play-start anchor. It
+     * is announced only when the transport was actually rolling on entry: on the
+     * aborted-record path above it never started, so announcing would put a
+     * fiction — an unmatched Stopped — on the bus (the same {@code wasRolling}
+     * rule {@link #finishPostRoll()} follows).</p>
+     */
+    @Override
+    public void stop() {
+        Transport transport = project.getTransport();
+        boolean wasRolling = transport.getState() != TransportState.STOPPED;
+        if (!wasRolling && !isRecordingInFlight()) {
+            // Double-stop: second Stop returns to zero, if the preference says
+            // so. Immediate while stopped — fires POSITION so the VM/playhead/
+            // time display follow.
+            if (transport.isReturnToStartOnStop()) {
+                transport.setPositionInBeats(0.0);
+                statusBarLabel.setText("Returned to start");
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
+            }
+            return;
+        }
+
+        // Captured before the rewind-to-anchor inside any stop() below.
+        long stoppedAtFrames = core.beatsToFrames(transport.getPositionInBeats());
+
         // Finalize recording if a recording pipeline is active
         if (recordingPipeline != null && recordingPipeline.isActive()) {
             List<AudioClip> recordedClips = recordingPipeline.stop();
@@ -324,11 +416,11 @@ final class TransportController {
         // keeps the transport running for postBars × barLength before
         // finally stopping. If no post-roll is configured (or disabled),
         // requestStop() is equivalent to stop().
-        Transport transport = project.getTransport();
         boolean enteredPostRoll = transport.requestStop();
         if (enteredPostRoll) {
             // Transport is still running in post-roll — schedule
-            // finishPostRoll() after the configured duration.
+            // finishPostRoll() after the configured duration. No Stopped
+            // announce yet: the deferred stop announces in finishPostRoll().
             PreRollPostRoll prpr = transport.getPreRollPostRoll();
             double postRollBeats = prpr.postRollBeats(
                     transport.getTimeSignatureNumerator());
@@ -344,16 +436,21 @@ final class TransportController {
                     Duration.seconds(postRollSeconds));
             postRollTimer.setOnFinished(_ -> finishPostRoll());
             postRollTimer.play();
-            // Don't stop the ticker yet — it drives the time display
-            // through the post-roll window.
             updateStatus();
             return;
         }
 
+        // ANNOUNCE (story 315): the transport actually stopped on this path —
+        // either just now inside requestStop(), or earlier inside
+        // RecordingPipeline.stop() (whose internal Transport.stop() makes the
+        // requestStop() above an idempotent no-op). Suppressed when the
+        // transport was already STOPPED on entry (the aborted-record finalize):
+        // nothing transitioned, so nothing may be announced.
+        if (wasRolling) {
+            EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
+        }
         audioEngine.stopAudioOutput();
-        stopTimeTicker.run();
         updateStatus();
-        timeDisplay.setText("00:00:00.0");
         if (statusBarLabel.getText() == null
                 || !stripCellSeparator(statusBarLabel.getText()).startsWith("Recording stopped")) {
             statusBarLabel.setText("Stopped");
@@ -368,17 +465,37 @@ final class TransportController {
     }
 
     /**
-     * Completes a post-roll window: stops the transport, audio engine
-     * and time ticker, and resets UI state. Called automatically by the
-     * {@link #postRollTimer} after the configured post-roll duration.
+     * Whether a recording is in flight and still needs finalizing — an active
+     * audio pipeline or any live MIDI recorder. Read by {@link #stop()} to
+     * decide between the double-stop rewind gesture and the full stop flow: the
+     * pipeline can be active while the transport is STOPPED (see {@link #stop()}
+     * for how {@code RecordingPipeline.start()} leaves that state behind when it
+     * throws), and only the full flow finalizes it.
+     */
+    private boolean isRecordingInFlight() {
+        return (recordingPipeline != null && recordingPipeline.isActive())
+                || !activeMidiRecorders.isEmpty();
+    }
+
+    /**
+     * Completes a post-roll window: stops the transport and audio engine and
+     * resets UI state — the deferred half of the Stop intent. Called
+     * automatically by the {@link #postRollTimer} after the configured
+     * post-roll duration. Announces {@link TransportEvent.Stopped} with the
+     * position at which the tail actually stopped, captured before
+     * {@link Transport#finishPostRoll()} rewinds to the play-start anchor
+     * (story 315); nothing is announced if the transport was already stopped.
      */
     private void finishPostRoll() {
         Transport transport = project.getTransport();
+        long stoppedAtFrames = core.beatsToFrames(transport.getPositionInBeats());
+        boolean wasRolling = transport.getState() != TransportState.STOPPED;
         transport.finishPostRoll();
+        if (wasRolling) {
+            EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
+        }
         audioEngine.stopAudioOutput();
-        stopTimeTicker.run();
         updateStatus();
-        timeDisplay.setText("00:00:00.0");
         statusBarLabel.setText("Stopped");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
         recordButton.setOpacity(1.0);
@@ -387,16 +504,29 @@ final class TransportController {
         recIndicator.setManaged(false);
     }
 
-    private void doPause() {
-        project.getTransport().pause();
-        audioEngine.pauseAudioOutput();
-        pauseTimeTicker.run();
-        updateStatus();
-        statusBarLabel.setText("Paused");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
+    /**
+     * Toggles recording (§5.2 "Record"): while RECORDING, delegates to
+     * {@link #stop()} (Stop is the only way out of record — which also runs
+     * the recording finalize + Stopped announce); otherwise starts the
+     * recording flow below.
+     *
+     * <p>ANNOUNCE (story 315): {@link TransportEvent.Started} is published at
+     * the end of the start flow, and only once the transport is actually in
+     * RECORDING — the audio path mutates the state inside
+     * {@code RecordingPipeline.start()} (possibly deferred by a count-in), the
+     * MIDI-only path via {@link Transport#record()}; announcing on the actual
+     * transition keeps the bus truthful for both.</p>
+     */
+    @Override
+    public void toggleRecord() {
+        if (project.getTransport().getState() == TransportState.RECORDING) {
+            stop();
+            return;
+        }
+        onRecord();
     }
 
-    void onRecord() {
+    private void onRecord() {
         // Validate that at least one track is armed for recording
         List<Track> armedTracks = RecordingPipeline.findArmedTracks(project.getTracks());
         if (armedTracks.isEmpty()) {
@@ -478,7 +608,13 @@ final class TransportController {
             project.getTransport().record();
         }
 
-        startTimeTicker.run();
+        // ANNOUNCE (story 315) — only once the transport actually transitioned
+        // (a count-in pipeline may not be RECORDING yet; announcing then would
+        // put a fiction on the bus).
+        if (project.getTransport().getState() == TransportState.RECORDING) {
+            EventBusPublisher.publish(new TransportEvent.Started(
+                    core.beatsToFrames(project.getTransport().getPositionInBeats()), Instant.now()));
+        }
         updateStatus();
         int trackCount = armedTracks.size();
         statusBarLabel.setText("Recording — " + trackCount + " track"
@@ -491,26 +627,30 @@ final class TransportController {
         recIndicator.setManaged(true);
     }
 
-    void onSkipBack() {
-        Transport transport = project.getTransport();
-        TransportState state = transport.getState();
-        transport.setPositionInBeats(0.0);
-
-        if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
-            // Keep the ticker running while playing/recording; it will update the
-            // time display on the next tick to reflect the new position.
-        } else {
-            stopTimeTicker.run();
-            timeDisplay.setText("00:00:00.0");
-        }
+    @Override
+    public void skipBack() {
+        // While PLAYING/RECORDING the seek is queued and lands at the next
+        // block boundary (story 315); when idle it applies immediately. Either
+        // way the bound time display follows the VM playhead — no direct write.
+        // Absolute target (zero), so no seek base is read at all.
+        project.getTransport().setPositionInBeats(0.0);
         statusBarLabel.setText("Skipped to beginning");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
     }
 
-    void onSkipForward() {
+    @Override
+    public void skipForward() {
         Transport transport = project.getTransport();
         double jump = 4.0 * transport.getTimeSignatureNumerator();
-        double newPosition = transport.getPositionInBeats() + jump;
+        // RELATIVE seek — compose against the pending seek target, not the
+        // committed position (story 315 review). While the RT clock owns the
+        // transport a seek sits in a single-slot, last-writer-wins queue and the
+        // committed position does not move until the next block boundary; two
+        // Skip Forwards inside one block would both add the jump to the same
+        // base and the queue would keep only the second, landing one jump ahead
+        // instead of two. getSeekTargetInBeats() returns the queued target when
+        // one is pending, so successive relative seeks accumulate.
+        double newPosition = transport.getSeekTargetInBeats() + jump;
         if (snapEnabled.getAsBoolean()) {
             newPosition = SnapQuantizer.quantize(newPosition, gridResolution.get(),
                     transport.getTimeSignatureNumerator());
@@ -520,30 +660,36 @@ final class TransportController {
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, 12));
     }
 
-    void onToggleLoop() {
-        Transport transport = project.getTransport();
-        boolean nowEnabled = !transport.isLoopEnabled();
-        transport.setLoopEnabled(nowEnabled);
-        // Active-state styling is driven by the :active pseudo-class on the
-        // single .transport-button rule (UI Design Book §2.1 — one accent at
-        // a time). No inline -fx-background-color is set per button class.
-        loopButton.pseudoClassStateChanged(ACTIVE, nowEnabled);
-        String loopState = nowEnabled ? "Loop: ON" : "Loop: OFF";
-        statusBarLabel.setText(loopState);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
-        LOG.fine(loopState);
+    /**
+     * Sets the initial tempo (§5.2 "Set tempo") — a pure delegate to the
+     * composed cascade: VALIDATE throws {@link IllegalArgumentException} for
+     * an out-of-range/NaN tempo (the contract the tempo-field binder's
+     * snap-back relies on), MUTATE fires the core signal, ANNOUNCE publishes
+     * {@link TransportEvent.TempoChanged}.
+     *
+     * @param bpm the requested tempo in beats per minute
+     */
+    @Override
+    public void setTempo(double bpm) {
+        core.setTempo(bpm);
     }
 
     /**
-     * Synchronizes the Loop button's {@code :active} pseudo-class with
-     * the transport's current loop state. Called during controller init
-     * and after project rebuild so the button reflects loop state set
-     * externally (e.g. by TimelineRuler defining a loop region, or by
-     * project load).
+     * Toggles loop playback (§5.2 "Toggle loop"). MUTATE + ANNOUNCE delegate
+     * to the composed cascade; the Loop button's {@code :active} pseudo-class
+     * is driven solely by {@code TransportControlBinder.bindLoop} observing
+     * {@code TransportVM.loopRegion} — the imperative poke (and the retired
+     * {@code syncLoopButtonState()}) are gone, so a loop defined from ANY
+     * surface (toolbar, ruler Shift-click/drag) lights the button the same way
+     * (story 315).
      */
-    void syncLoopButtonState() {
-        boolean enabled = project.getTransport().isLoopEnabled();
-        loopButton.pseudoClassStateChanged(ACTIVE, enabled);
+    @Override
+    public void toggleLoop() {
+        core.toggleLoop();
+        String loopState = project.getTransport().isLoopEnabled() ? "Loop: ON" : "Loop: OFF";
+        statusBarLabel.setText(loopState);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
+        LOG.fine(loopState);
     }
 
     // ── Pre-Roll / Post-Roll (Story 134) ─────────────────────────────────────
@@ -552,14 +698,36 @@ final class TransportController {
      * Starts playback with pre-roll applied (Story 134). The transport
      * is seeked back by the configured pre-roll bar count and playback
      * begins. If pre-roll is disabled or {@code preBars == 0}, this is
-     * equivalent to {@link #onPlay()}.
+     * equivalent to {@link #start()}.
      *
      * <p>During the pre-roll window the transport's
      * {@link Transport#isInputCaptureGated()} flag is {@code true} —
      * the recording pipeline reads it to suppress capture so the user
      * hears context but no input is recorded.</p>
+     *
+     * <p>VALIDATE (story 315 review): a no-op while RECORDING — Stop is the
+     * only way out of record, exactly as in {@link #start()}. The guard sits
+     * before the engine call so neither the audio output nor the status bar is
+     * touched by a rejected intent; {@link Transport#playWithPreRoll()} itself
+     * is permissive and would otherwise drop the transport out of record
+     * without finalizing the active recording pipeline.</p>
+     *
+     * <p>ANNOUNCE (story 315 review): {@link TransportEvent.Started} is
+     * published here too, carrying the <em>post-rewind</em> position — this was
+     * the one start path that announced nothing, so a bus consumer pairing
+     * Started with Stopped saw an unmatched Stopped whenever the user started
+     * with pre-roll. {@link Transport#playWithPreRoll()} always transitions the
+     * transport to PLAYING (re-anchoring and rewinding when a pre-roll is
+     * configured), so once VALIDATE passes the announce always follows the
+     * actual transition.</p>
      */
-    void onPlayWithPreRoll() {
+    @Override
+    public void playWithPreRoll() {
+        // Story 315 review — VALIDATE before touching the engine (mirrors
+        // start()): Shift+Space while RECORDING must not leave record.
+        if (project.getTransport().getState() == TransportState.RECORDING) {
+            return;
+        }
         try {
             audioEngine.startAudioOutput();
         } catch (RuntimeException e) {
@@ -568,7 +736,8 @@ final class TransportController {
                     "Audio device error: " + e.getMessage());
         }
         double shift = project.getTransport().playWithPreRoll();
-        startTimeTicker.run();
+        EventBusPublisher.publish(new TransportEvent.Started(
+                core.beatsToFrames(project.getTransport().getPositionInBeats()), Instant.now()));
         updateStatus();
         if (shift > 0) {
             statusBarLabel.setText(String.format(
@@ -891,14 +1060,13 @@ final class TransportController {
         // Play is a toggle (UI Design Book §5.1) — it stays enabled while
         // playing so the user can pause. Record stays enabled during
         // recording so the :active pseudo-class (danger fill) is not
-        // undermined by the :disabled 0.35 opacity; onRecord() is a
-        // no-op while already recording because of the state guard.
+        // undermined by the :disabled 0.35 opacity; start() is a no-op
+        // while already recording because of the state guard. Stop stays
+        // enabled while STOPPED so the double-stop rewind-to-zero gesture
+        // remains reachable (story 315). The play/record/loop :active
+        // pseudo-classes are the TransportControlBinder's alone — the
+        // binder observes TransportVM and is the single writer (§4.4).
         playButton.setDisable(state == TransportState.RECORDING);
-        stopButton.setDisable(state == TransportState.STOPPED);
-
-        // Wire the one-accent-at-a-time active state (UI Design Book §2.1).
-        playButton.pseudoClassStateChanged(ACTIVE, state == TransportState.PLAYING);
-        recordButton.pseudoClassStateChanged(ACTIVE, state == TransportState.RECORDING);
     }
 
     /**

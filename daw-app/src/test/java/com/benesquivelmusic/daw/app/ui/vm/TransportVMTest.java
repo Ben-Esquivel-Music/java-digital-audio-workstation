@@ -144,9 +144,43 @@ class TransportVMTest {
                     .as("a coalesced burst drains to the latest position")
                     .isEqualTo(50.0);
 
-            transport.advancePosition(2.0); // POSITION from the render-path method
+            // POSITION from the render-path method. Story 315: advancePosition
+            // only advances a ROLLING transport (the stop/pause back-off), so
+            // the transport must be playing for the block advance to land.
+            transport.play();
+            transport.advancePosition(2.0);
             runOnFx(dispatcher::pulse);
             assertThat(vm.getPlayhead()).isEqualTo(52.0);
+        } finally {
+            vm.dispose();
+        }
+    }
+
+    @Test
+    void stopDeliversTheRewoundAnchorPositionToTheVm() throws InterruptedException {
+        // Story 315 AC — "TransportVM observes the rewound/transitioned position
+        // immediately": stop() rewinds the position to the play-start anchor and
+        // fires STATE, whose handler republishes the playhead; after the drain
+        // the VM must show the anchor, not the position playback had reached.
+        FxDispatcher dispatcher = new FxDispatcher();
+        Transport transport = new Transport();
+        TransportVM vm = new TransportVM(transport, dispatcher);
+        try {
+            transport.setPositionInBeats(8.0); // STOPPED → applied inline
+            runOnFx(dispatcher::pulse);
+            assertThat(vm.getPlayhead()).isEqualTo(8.0);
+
+            transport.play();                  // anchors play-start at 8.0
+            transport.advancePosition(4.0);    // rolls to 12.0
+            runOnFx(dispatcher::pulse);
+            assertThat(vm.getPlayhead()).isEqualTo(12.0);
+
+            transport.stop();                  // rewinds to the anchor
+            runOnFx(dispatcher::pulse);
+            assertThat(vm.getState()).isEqualTo(TransportState.STOPPED);
+            assertThat(vm.getPlayhead())
+                    .as("the STATE-signal republish delivers the rewound anchor")
+                    .isEqualTo(8.0);
         } finally {
             vm.dispose();
         }

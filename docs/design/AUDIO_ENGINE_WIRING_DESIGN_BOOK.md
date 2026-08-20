@@ -801,7 +801,7 @@ dock's floating zone (one surface, one feed).
 |-------------------|---------------------------------------------------------------------|------------|
 | RT audio callback | render, transport advance, tap accumulation, ring writes, store drain | allocate, lock, publish to `SubmissionPublisher`, touch JavaFX, iterate mutable listener lists |
 | Analysis thread   | FFT/loudness/correlation/pitch from rings; snapshot publication      | touch JavaFX directly (publishes via FxDispatcher) |
-| FX thread         | drains (coalesced), VM updates, all control writes, attach/detach    | block on the engine; write RT-owned state except via the defined seams (seek queue, store) |
+| FX thread         | drains (coalesced), VM updates, all control writes, attach/detach    | block on the engine (sole exception: `Transport.stop()`/`pause()` store their state and then spin — nanoseconds, no lock — until the in-flight RT advance retires: the position-ownership protocol); write RT-owned state except via the defined seams (seek queue, store) |
 | Lifecycle/IO      | project bind/rebind, backend open/close orchestration                | mutate the graph while the callback can see a half-state |
 
 ### 6.2 Project switch and disposal

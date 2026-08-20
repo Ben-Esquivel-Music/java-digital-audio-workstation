@@ -9,6 +9,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * PortAudio-based audio backend using Java's FFM API (JEP 454).
@@ -29,6 +31,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * via the standard library path. Use {@link #isAvailable()} to check.</p>
  */
 public final class PortAudioBackend implements NativeAudioBackend {
+
+    private static final Logger LOG = Logger.getLogger(PortAudioBackend.class.getName());
 
     private final PortAudioBindings bindings;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
@@ -183,11 +187,13 @@ public final class PortAudioBackend implements NativeAudioBackend {
         if (streamHandle == null) {
             return;
         }
-        if (streamActive.get()) {
-            stopStream();
-        }
+        stopStreamBeforeClose();
+        // Story 315 review — Pa_CloseStream on a still-active stream discards
+        // pending buffers as if Pa_AbortStream had been called, so close
+        // proceeds even when the graceful stop above failed.
         int result = bindings.closeStream(streamHandle);
         PortAudioException.checkError(result, "Pa_CloseStream");
+        streamActive.set(false);
         streamHandle = null;
         currentConfig = null;
         currentCallback = null;
@@ -259,6 +265,19 @@ public final class PortAudioBackend implements NativeAudioBackend {
     }
 
     // --- Internal helpers ---
+
+    /**
+     * Story 315 review — a failed graceful {@code Pa_StopStream} must not
+     * block {@code Pa_CloseStream}, which is what actually releases the
+     * stream and its callback. The stop failure is logged and close proceeds.
+     */
+    private void stopStreamBeforeClose() {
+        try {
+            stopStream();
+        } catch (AudioBackendException e) {
+            LOG.log(Level.WARNING, "Pa_StopStream failed before close; closing the stream anyway", e);
+        }
+    }
 
     private void ensureInitialized() {
         if (!initialized.get()) {

@@ -1,9 +1,9 @@
 package com.benesquivelmusic.daw.app.ui.vm;
 
 import com.benesquivelmusic.daw.app.ui.vm.command.SetTempoCommand;
-import com.benesquivelmusic.daw.app.ui.vm.command.StartTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.StopTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TogglePlayPauseCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -61,14 +61,28 @@ public final class TransportControlBinder {
 
     /**
      * Binds a Play control: its {@code :active} pseudo-class follows
-     * {@code state == PLAYING}; a click raises {@link StartTransportCommand}.
+     * {@code state == PLAYING}; a click raises {@link TogglePlayPauseCommand} —
+     * Play-toggles-pause (UI Design Book §5.1, story 315).
+     *
+     * <p>The binder deliberately does <em>not</em> resolve the toggle itself.
+     * The VM state is an async mirror: every write is marshalled through
+     * {@code FxDispatcher.onFx}, an unconditional {@code Platform.runLater}, so
+     * it lags the authoritative transport by at least one FX turn. Choosing
+     * Start-or-Pause from that mirror raised a Start against an already-PLAYING
+     * transport inside the lag window, where VALIDATE silently dropped it and
+     * the click did nothing. Raising the toggle moves the decision to the
+     * handler, which reads {@code Transport.getState()} — the same authority the
+     * keyboard and Performance-Stage paths use (§2.8 "one path").</p>
+     *
+     * <p>Only the raised intent changed: the visible {@code :active} binding
+     * stays VM-driven (§4.4 — state flows down from the VM).</p>
      *
      * @param play the play button; must not be {@code null}
      */
     public void bindPlay(ButtonBase play) {
         Objects.requireNonNull(play, "play must not be null");
         bindActiveState(play, TransportState.PLAYING);
-        onAction(play, new StartTransportCommand());
+        onAction(play, new TogglePlayPauseCommand());
     }
 
     /**
@@ -123,6 +137,56 @@ public final class TransportControlBinder {
                 () -> String.format(Locale.ROOT, "%.1f BPM", vm.getTempo()),
                 vm.tempoProperty()));
         disposers.add(() -> tempoLabel.textProperty().unbind());
+    }
+
+    /**
+     * Binds the transport time display: its {@code text} is the beats→time
+     * projection of {@link TransportVM#playheadProperty()} through
+     * {@link TransportVM#tempoProperty()} — one clock, projected (Audio Engine
+     * Wiring Design Book §2.3, story 315; this replaces the deleted wall-clock
+     * {@code TimeTickerAnimator}). Formatted {@code HH:MM:SS.t} with truncated
+     * tenths, exactly like the legacy ticker. One-way; the label never writes
+     * back, and no other writer may {@code setText} a bound label.
+     *
+     * @param timeDisplay the time display label; must not be {@code null}
+     */
+    public void bindTimeDisplay(Label timeDisplay) {
+        Objects.requireNonNull(timeDisplay, "timeDisplay must not be null");
+        timeDisplay.textProperty().bind(Bindings.createStringBinding(
+                () -> formatBeatsAsTime(vm.getPlayhead(), vm.getTempo()),
+                vm.playheadProperty(), vm.tempoProperty()));
+        disposers.add(() -> timeDisplay.textProperty().unbind());
+    }
+
+    /**
+     * The tolerance folded into the tenths truncation below. The projected
+     * seconds are a floating-point product of a playhead the RT path builds by
+     * repeatedly accumulating {@code deltaBeats}, so a value that mathematically
+     * lands exactly on a tenth almost never does in binary — truncating such a
+     * value renders a whole tenth low. One nanosecond is far below the display's
+     * 100 ms resolution, so it can never promote a genuinely lower reading.
+     */
+    private static final double TENTHS_EPSILON = 1e-9;
+
+    /**
+     * Projects a beat position through the tempo into {@code HH:MM:SS.t}
+     * (tenths truncated, matching the retired {@code TimeTickerAnimator}
+     * format so the display is bit-identical for the same elapsed time).
+     *
+     * <p>Truncation is toward zero <em>after</em> {@link #TENTHS_EPSILON} is
+     * added, so an accumulated position that sits a few ulps below a tenth
+     * boundary reads as that tenth rather than the one below it (story 315
+     * review).</p>
+     */
+    private static String formatBeatsAsTime(double beats, double tempoBpm) {
+        double seconds = tempoBpm > 0.0 ? beats * 60.0 / tempoBpm : 0.0;
+        long tenthsTotal = (long) Math.floor(seconds * 10.0 + TENTHS_EPSILON);
+        long tenths = tenthsTotal % 10;
+        long totalSeconds = tenthsTotal / 10;
+        long minutes = totalSeconds / 60;
+        long hours = minutes / 60;
+        return String.format(Locale.ROOT, "%02d:%02d:%02d.%d",
+                hours, minutes % 60, totalSeconds % 60, tenths);
     }
 
     /**

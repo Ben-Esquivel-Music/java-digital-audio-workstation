@@ -3,9 +3,18 @@ package com.benesquivelmusic.daw.core.transport;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class TransportTest {
 
@@ -24,14 +33,84 @@ class TransportTest {
     }
 
     @Test
-    void shouldStopAndResetPosition() {
+    void stopShouldReturnToThePlayStartAnchor() {
+        // Story 315 — play from beat 60, advance, Stop: the playhead sits at
+        // beat 60 again (not zero), so auditioning a section never loses the
+        // engineer's place in the song.
         Transport transport = new Transport();
-        transport.setPositionInBeats(16.0);
+        transport.setPositionInBeats(60.0);
         transport.play();
+        transport.advancePosition(4.0);
+        assertThat(transport.getPositionInBeats()).isEqualTo(64.0);
+
         transport.stop();
 
         assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
-        assertThat(transport.getPositionInBeats()).isZero();
+        assertThat(transport.getPositionInBeats()).isEqualTo(60.0);
+    }
+
+    @Test
+    void stopWhileAlreadyStoppedIsANoOp() {
+        // Story 315 — the "second Stop rewinds to zero" gesture lives in the
+        // UI layer; the model-level stop() is idempotent so internal stops
+        // (e.g. RecordingPipeline.stop()) never double-rewind the playhead.
+        Transport transport = new Transport();
+        transport.setPositionInBeats(60.0);
+        transport.play();
+        transport.stop();
+        assertThat(transport.getPositionInBeats()).isEqualTo(60.0);
+
+        transport.stop();
+
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(60.0);
+    }
+
+    @Test
+    void stopShouldLeaveThePositionWhenReturnToStartIsDisabled() {
+        Transport transport = new Transport();
+        transport.setReturnToStartOnStop(false);
+        transport.setPositionInBeats(60.0);
+        transport.play();
+        transport.advancePosition(4.0);
+
+        transport.stop();
+
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(64.0);
+        assertThat(transport.isReturnToStartOnStop()).isFalse();
+    }
+
+    @Test
+    void returnToStartOnStopDefaultsToTrue() {
+        assertThat(new Transport().isReturnToStartOnStop()).isTrue();
+    }
+
+    @Test
+    void recordShouldAnchorAtTheRecordStartPosition() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(8.0);
+        transport.record();
+        transport.advancePosition(2.0);
+
+        transport.stop();
+
+        assertThat(transport.getPositionInBeats()).isEqualTo(8.0);
+    }
+
+    @Test
+    void resumeFromPauseReAnchorsAtTheResumePosition() {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(10.0);
+        transport.play();               // anchor = 10
+        transport.advancePosition(2.0); // 12
+        transport.pause();
+        transport.play();               // re-anchor = 12
+        transport.advancePosition(1.0); // 13
+
+        transport.stop();
+
+        assertThat(transport.getPositionInBeats()).isEqualTo(12.0);
     }
 
     @Test
@@ -159,9 +238,59 @@ class TransportTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @ParameterizedTest(name = "setLoopRegion({0}, {1})")
+    @MethodSource("nonFiniteLoopBounds")
+    void setLoopRegionRejectsNonFiniteBoundsAndLeavesTheWindowUntouched(double start, double end) {
+        // Story 315 review: comparisons with NaN are all false and a finite
+        // start with +Infinity passes end > start, so the ordering checks alone
+        // let non-finite bounds through into the wrap arithmetic. Reject them
+        // first, leave the installed window alone, fire nothing.
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopRegion(start, end))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("finite");
+
+        assertThat(transport.getLoopWindow()).isSameAs(before);
+        assertThat(fired).as("no LOOP signal on rejection").isEmpty();
+    }
+
+    @ParameterizedTest(name = "setLoopWindow(true, {0}, {1})")
+    @MethodSource("nonFiniteLoopBounds")
+    void setLoopWindowRejectsNonFiniteBoundsAndLeavesTheWindowUntouched(double start, double end) {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopWindow(true, start, end))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("finite");
+
+        assertThat(transport.getLoopWindow()).isSameAs(before);
+        assertThat(fired).as("no LOOP signal on rejection").isEmpty();
+    }
+
+    /** NaN / +Infinity / -Infinity, for the start and for the end. */
+    static Stream<Arguments> nonFiniteLoopBounds() {
+        return Stream.of(
+                Arguments.of(Double.NaN, 16.0),
+                Arguments.of(Double.POSITIVE_INFINITY, 16.0),
+                Arguments.of(Double.NEGATIVE_INFINITY, 16.0),
+                Arguments.of(4.0, Double.NaN),
+                Arguments.of(4.0, Double.POSITIVE_INFINITY),
+                Arguments.of(4.0, Double.NEGATIVE_INFINITY));
+    }
+
     @Test
     void shouldAdvancePositionLinearly() {
         Transport transport = new Transport();
+        transport.play();
         transport.advancePosition(4.0);
         assertThat(transport.getPositionInBeats()).isEqualTo(4.0);
         transport.advancePosition(2.5);
@@ -174,6 +303,7 @@ class TransportTest {
         transport.setLoopEnabled(true);
         transport.setLoopRegion(4.0, 12.0);
         transport.setPositionInBeats(10.0);
+        transport.play();
         transport.advancePosition(3.0);
         // 10 + 3 = 13, loop length = 8, wraps to 13 - 8 = 5
         assertThat(transport.getPositionInBeats()).isEqualTo(5.0);
@@ -185,6 +315,7 @@ class TransportTest {
         transport.setLoopEnabled(true);
         transport.setLoopRegion(0.0, 8.0);
         transport.setPositionInBeats(7.0);
+        transport.play();
         transport.advancePosition(1.0);
         // 7 + 1 = 8 which is exactly loop end, wraps to 0
         assertThat(transport.getPositionInBeats()).isEqualTo(0.0);
@@ -196,6 +327,7 @@ class TransportTest {
         transport.setLoopEnabled(false);
         transport.setLoopRegion(0.0, 8.0);
         transport.setPositionInBeats(7.0);
+        transport.play();
         transport.advancePosition(3.0);
         assertThat(transport.getPositionInBeats()).isEqualTo(10.0);
     }
@@ -206,6 +338,7 @@ class TransportTest {
         transport.setLoopEnabled(true);
         transport.setLoopRegion(0.0, 4.0);
         transport.setPositionInBeats(3.0);
+        transport.play();
         transport.advancePosition(9.0);
         // 3 + 9 = 12, loop length = 4, 12 - 4 = 8, 8 - 4 = 4, 4 - 4 = 0
         assertThat(transport.getPositionInBeats()).isEqualTo(0.0);
@@ -216,6 +349,194 @@ class TransportTest {
         Transport transport = new Transport();
         assertThatThrownBy(() -> transport.advancePosition(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void advancePositionIsANoOpWhenTheTransportIsNotRolling() {
+        // Story 315 — the RT advance backs off unless the transport is
+        // PLAYING or RECORDING, closing the stop-vs-advance race (a CAS retry
+        // that observes stop()'s anchor store also observes STOPPED).
+        Transport transport = new Transport();
+        transport.setPositionInBeats(5.0);
+
+        transport.advancePosition(1.0); // STOPPED
+        assertThat(transport.getPositionInBeats()).isEqualTo(5.0);
+
+        transport.play();
+        transport.pause();
+        transport.advancePosition(1.0); // PAUSED
+        assertThat(transport.getPositionInBeats()).isEqualTo(5.0);
+    }
+
+    @Test
+    void degenerateTinyLoopRegionWrapsInConstantTime() {
+        // Story 315 — the ruler can create a pathological 0.001-beat (or even
+        // smaller) loop region mid-gesture. The closed-form modulo wrap must
+        // terminate in O(1) where the old while-subtract loop would iterate
+        // once per loop length. A large delta over a 1e-9-beat region would
+        // take ~1e12 iterations under the old code.
+        Transport transport = new Transport();
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(0.0, 1e-9);
+        transport.play();
+
+        assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> transport.advancePosition(1000.0));
+
+        assertThat(transport.getPositionInBeats()).isGreaterThanOrEqualTo(0.0);
+        assertThat(transport.getPositionInBeats()).isLessThan(1e-9);
+
+        // And the 0.001-beat region the ruler realistically creates:
+        Transport ruler = new Transport();
+        ruler.setLoopEnabled(true);
+        ruler.setLoopRegion(2.0, 2.001);
+        ruler.setPositionInBeats(2.0);
+        ruler.play();
+        assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> ruler.advancePosition(500.0));
+        assertThat(ruler.getPositionInBeats()).isGreaterThanOrEqualTo(2.0);
+        assertThat(ruler.getPositionInBeats()).isLessThan(2.001);
+    }
+
+    // ── setLoopWindow — atomic loop definition (story 315 review) ──────────
+
+    @Test
+    void setLoopWindowPublishesEnabledAndBothBoundsTogetherWithOneLoopSignal() {
+        Transport transport = new Transport();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.setLoopWindow(true, 4.0, 12.0);
+
+        assertThat(transport.getLoopWindow())
+                .as("one call installs the complete trio")
+                .isEqualTo(new Transport.LoopWindow(true, 4.0, 12.0));
+        assertThat(transport.isLoopEnabled()).isTrue();
+        assertThat(transport.getLoopStartInBeats()).isEqualTo(4.0);
+        assertThat(transport.getLoopEndInBeats()).isEqualTo(12.0);
+        assertThat(fired)
+                .as("exactly one LOOP signal for the whole definition")
+                .containsExactly(Transport.ChangeKind.LOOP);
+    }
+
+    @Test
+    void setLoopWindowWithEnabledFalseStillInstallsTheBounds() {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 1.0, 2.0);
+
+        transport.setLoopWindow(false, 8.0, 24.0);
+
+        assertThat(transport.getLoopWindow())
+                .as("disabling through setLoopWindow also publishes the new bounds")
+                .isEqualTo(new Transport.LoopWindow(false, 8.0, 24.0));
+    }
+
+    @Test
+    void setLoopWindowRejectsNegativeStartAndLeavesThePreviousWindowUntouched() {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopWindow(true, -1.0, 16.0))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(transport.getLoopWindow())
+                .as("a rejected window leaves the previous one installed")
+                .isSameAs(before);
+        assertThat(fired).as("nothing fires on rejection").isEmpty();
+    }
+
+    @Test
+    void setLoopWindowRejectsEndNotGreaterThanStartAndLeavesThePreviousWindowUntouched() {
+        Transport transport = new Transport();
+        transport.setLoopWindow(true, 4.0, 12.0);
+        Transport.LoopWindow before = transport.getLoopWindow();
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        assertThatThrownBy(() -> transport.setLoopWindow(true, 8.0, 8.0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> transport.setLoopWindow(false, 8.0, 4.0))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(transport.getLoopWindow())
+                .as("rejected windows leave the previous one installed")
+                .isSameAs(before);
+        assertThat(fired).as("nothing fires on rejection").isEmpty();
+    }
+
+    @Test
+    void setLoopWindowNeverExposesEnabledOverThePreviousBounds() {
+        // The observable form of the finding: an observer that snapshots the
+        // window on every LOOP signal stands in for the RT thread's single
+        // volatile load. Defining a new loop through setLoopWindow must never
+        // let it see enabled == true paired with the bounds that were installed
+        // before the definition — the old enable-then-region pair does exactly
+        // that for one signal (documented below as the contrast).
+        Transport.LoopWindow previousBounds = new Transport.LoopWindow(false, 0.0, 16.0);
+
+        Transport atomic = new Transport();
+        assertThat(atomic.getLoopWindow()).isEqualTo(previousBounds);
+        List<Transport.LoopWindow> atomicSnapshots = new ArrayList<>();
+        atomic.addChangeListener(kind -> {
+            if (kind == Transport.ChangeKind.LOOP) {
+                atomicSnapshots.add(atomic.getLoopWindow());
+            }
+        });
+
+        atomic.setLoopWindow(true, 4.0, 12.0);
+
+        assertThat(atomicSnapshots)
+                .as("the single snapshot is the fully-defined loop, never enabled over the old bounds")
+                .containsExactly(new Transport.LoopWindow(true, 4.0, 12.0));
+        assertThat(atomicSnapshots)
+                .noneMatch(window -> window.enabled()
+                        && window.startInBeats() == previousBounds.startInBeats()
+                        && window.endInBeats() == previousBounds.endInBeats());
+
+        // Contrast — the two-call sequence the ruler used before this fix.
+        Transport twoCall = new Transport();
+        List<Transport.LoopWindow> twoCallSnapshots = new ArrayList<>();
+        twoCall.addChangeListener(kind -> {
+            if (kind == Transport.ChangeKind.LOOP) {
+                twoCallSnapshots.add(twoCall.getLoopWindow());
+            }
+        });
+
+        twoCall.setLoopEnabled(true);
+        twoCall.setLoopRegion(4.0, 12.0);
+
+        assertThat(twoCallSnapshots)
+                .as("enable-then-region publishes an intermediate enabled-over-old-bounds window")
+                .containsExactly(
+                        new Transport.LoopWindow(true, 0.0, 16.0),
+                        new Transport.LoopWindow(true, 4.0, 12.0));
+    }
+
+    @Test
+    void setLoopEnabledAndSetLoopRegionEachPublishOneCompleteWindowAndOneLoopSignal() {
+        // The toggle keeps the bounds; the drag keeps the flag — both through
+        // the same single store-and-notify path as setLoopWindow.
+        Transport transport = new Transport();
+        transport.setLoopWindow(false, 4.0, 12.0);
+        List<Transport.ChangeKind> fired = new ArrayList<>();
+        transport.addChangeListener(fired::add);
+
+        transport.setLoopEnabled(true);
+        assertThat(transport.getLoopWindow())
+                .as("toggle keeps the bounds")
+                .isEqualTo(new Transport.LoopWindow(true, 4.0, 12.0));
+
+        transport.setLoopRegion(2.0, 6.0);
+        assertThat(transport.getLoopWindow())
+                .as("region change keeps the flag")
+                .isEqualTo(new Transport.LoopWindow(true, 2.0, 6.0));
+
+        assertThat(fired)
+                .as("one LOOP signal per mutator call")
+                .containsExactly(Transport.ChangeKind.LOOP, Transport.ChangeKind.LOOP);
     }
 
     @Test
@@ -424,18 +745,55 @@ class TransportTest {
     }
 
     @Test
-    void finishPostRollShouldStopAndResetPosition() {
+    void finishPostRollShouldStopAndReturnToThePlayStartAnchor() {
+        // Story 315 — finishPostRoll() is the deferred stop, so it aligns
+        // with stop(): the playhead returns to the play-start anchor instead
+        // of hard-resetting to zero.
         Transport transport = new Transport();
         transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
-        transport.play();
         transport.setPositionInBeats(32.0);
+        transport.play();               // anchor = 32
+        transport.advancePosition(2.0); // post-roll playback runs past the stop
         transport.requestStop();
+        transport.advancePosition(1.0); // still rolling through the post-roll
 
         transport.finishPostRoll();
 
         assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
         assertThat(transport.isInPostRoll()).isFalse();
-        assertThat(transport.getPositionInBeats()).isZero();
+        assertThat(transport.getPositionInBeats()).isEqualTo(32.0);
+    }
+
+    @Test
+    void finishPostRollShouldLeaveThePositionWhenReturnToStartIsDisabled() {
+        Transport transport = new Transport();
+        transport.setReturnToStartOnStop(false);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        transport.setPositionInBeats(32.0);
+        transport.play();
+        transport.advancePosition(2.0);
+        transport.requestStop();
+
+        transport.finishPostRoll();
+
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(34.0);
+    }
+
+    @Test
+    void playWithPreRollShouldAnchorAtThePreRewindPosition() {
+        // Story 315 — Stop returns to where the user started Play, not to the
+        // rewound pre-roll spot.
+        Transport transport = new Transport();
+        transport.setTimeSignature(4, 4);
+        transport.setPositionInBeats(96.0);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+
+        transport.playWithPreRoll();
+        assertThat(transport.getPositionInBeats()).isEqualTo(88.0);
+
+        transport.stop();
+        assertThat(transport.getPositionInBeats()).isEqualTo(96.0);
     }
 
     @Test

@@ -9,7 +9,6 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 
 import javafx.animation.AnimationTimer;
 import javafx.scene.control.Button;
-import javafx.scene.control.Label;
 
 import java.util.Objects;
 
@@ -22,10 +21,14 @@ import java.util.Objects;
  *       level-meter data while the engine is idle.</li>
  *   <li>{@link TransportGlowAnimator} — pulsing play-button glow and
  *       blinking record-button glow.</li>
- *   <li>{@link TimeTickerAnimator} — elapsed-time display ticker.</li>
  *   <li>{@link ButtonPressAnimator} — scale-bounce press animations on
  *       toolbar buttons.</li>
  * </ul>
+ *
+ * <p>The former wall-clock {@code TimeTickerAnimator} was deleted by story
+ * 315: the time display is now bound to the beats→time projection of
+ * {@code TransportVM.playhead} by {@code TransportControlBinder.bindTimeDisplay}
+ * — one clock, projected (Audio Engine Wiring Design Book §2.3).</p>
  *
  * <p>This controller is responsible only for owning the single
  * {@link AnimationTimer} that drives those collaborators each frame, plus
@@ -34,7 +37,7 @@ import java.util.Objects;
  * Controllers into Focused Services."</p>
  */
 @FxAnimationTimerAllowed("Owns the single per-frame animation timer driving idle "
-        + "visualization, transport glow, and the time ticker "
+        + "visualization, transport glow, and the per-frame playhead overlay tick "
         + "(javafx-application-design §6 control-owns-timer); not a cross-thread "
         + "seam — story 289 sentinel.")
 final class AnimationController {
@@ -49,7 +52,6 @@ final class AnimationController {
 
     private final IdleVisualizationAnimator idleVisualizationAnimator;
     private final TransportGlowAnimator transportGlowAnimator;
-    private final TimeTickerAnimator timeTickerAnimator;
     private final ButtonPressAnimator buttonPressAnimator;
     private final Host host;
 
@@ -74,7 +76,6 @@ final class AnimationController {
 
     AnimationController(SpectrumDisplay spectrumDisplay,
                         LevelMeterDisplay levelMeterDisplay,
-                        Label timeDisplay,
                         Button playButton,
                         Button recordButton,
                         Button[] animatedButtons,
@@ -82,7 +83,6 @@ final class AnimationController {
         this.idleVisualizationAnimator = new IdleVisualizationAnimator(
                 spectrumDisplay, levelMeterDisplay);
         this.transportGlowAnimator = new TransportGlowAnimator(playButton, recordButton);
-        this.timeTickerAnimator = new TimeTickerAnimator(timeDisplay);
         this.buttonPressAnimator = new ButtonPressAnimator(animatedButtons);
         this.host = Objects.requireNonNull(host, "host must not be null");
     }
@@ -92,7 +92,7 @@ final class AnimationController {
     /**
      * Creates and starts the single {@link AnimationTimer} that drives
      * all continuous frame-by-frame animations: idle visualization demo,
-     * transport glow, and the time-display ticker.
+     * transport glow, and the per-frame playhead overlay tick.
      */
     void start() {
         mainAnimTimer = new AnimationTimer() {
@@ -110,7 +110,6 @@ final class AnimationController {
                 glowAnimPhase += delta;
 
                 TransportState state = host.transportState();
-                timeTickerAnimator.tick(now);
                 transportGlowAnimator.apply(state, glowAnimPhase);
 
                 if (playheadUpdateCallback != null) {
@@ -156,36 +155,6 @@ final class AnimationController {
      */
     AnimationProfile dragAnimationProfile() {
         return dragAnimationProfile;
-    }
-
-    // ── Time ticker ──────────────────────────────────────────────────────────
-
-    /** Starts the time ticker from zero (or resumes from a paused position). */
-    void startTimeTicker() {
-        timeTickerAnimator.start();
-    }
-
-    /** Pauses the time ticker, preserving elapsed time for clean resume. */
-    void pauseTimeTicker() {
-        timeTickerAnimator.pause();
-    }
-
-    /** Stops and resets the time ticker. */
-    void stopTimeTicker() {
-        timeTickerAnimator.stop();
-    }
-
-    /**
-     * Formats elapsed nanoseconds into a {@code HH:MM:SS.t} display string.
-     *
-     * <p>Retained as a static helper for backward compatibility with
-     * existing tests; delegates to {@link TimeTickerAnimator#formatTime}.</p>
-     *
-     * @param elapsedNanos elapsed time in nanoseconds
-     * @return formatted time string
-     */
-    static String formatTime(long elapsedNanos) {
-        return TimeTickerAnimator.formatTime(elapsedNanos);
     }
 
     // ── Button press animations ──────────────────────────────────────────────

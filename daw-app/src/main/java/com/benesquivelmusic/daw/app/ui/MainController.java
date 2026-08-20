@@ -18,7 +18,15 @@ import com.benesquivelmusic.daw.app.ui.vm.ProjectVM;
 import com.benesquivelmusic.daw.app.ui.vm.TransportControlBinder;
 import com.benesquivelmusic.daw.app.ui.vm.TransportVM;
 import com.benesquivelmusic.daw.app.ui.vm.command.HistoryCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.PlayWithPreRollCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.RedoCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.SkipBackCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.SkipForwardCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.StopTransportCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TogglePlayPauseCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.UndoCommand;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
@@ -495,6 +503,22 @@ public final class MainController {
         // against the same live references the engine now renders.
         engineBinder.bind(project);
 
+        // Story 315 — the ruler is built once (createArrangementCanvas) but the
+        // project's Transport is swapped every load; rebind so its loop
+        // gestures and tempo display target the LIVE transport, not the dead
+        // project's (the story-314 epoch rule applied to the ruler).
+        if (timelineRuler != null) {
+            timelineRuler.rebind(project.getTransport());
+        }
+
+        // Story 315 — seed the fresh project's transport from the story-305
+        // settings catalogue preference: a new Transport defaults to true, so
+        // a persisted "off" would silently revert on every project load.
+        if (settingsModel != null) {
+            project.getTransport().setReturnToStartOnStop(
+                    settingsModel.isReturnToStartOnStop());
+        }
+
         FxDispatcher disp = dispatcher();
 
         // Project — the name cells track ProjectVM.name; the arrangement placeholder +
@@ -540,17 +564,29 @@ public final class MainController {
         projectVM.dirtyProperty().addListener(projectDirtyListener);
         vmDisposers.add(() -> projectVM.dirtyProperty().removeListener(projectDirtyListener));
 
-        // Transport — the tempo label binds TransportVM.tempo (§4.3, replaces
-        // updateTempoDisplay()) through the canonical TransportControlBinder, so the
-        // "%.1f BPM" formatting lives in exactly one place. The label is read-only
-        // (it issues no commands), so the binder's command sink is a no-op — the
-        // read-only-binding pattern of TransportBindingTest. The playhead/loop/ruler
-        // are read from the VM by the per-frame tickArrangementOverlays() (the ruler
+        // Transport (story 315 — the command layer is ADOPTED, per the book's
+        // Stage-2 adopt-or-retire decision): the four transport buttons bind
+        // through the canonical TransportControlBinder and raise story-290
+        // TransportCommands into dispatchTransportCommand(), which executes them
+        // against the production handler (the current TransportController). Their
+        // :active pseudo-classes are pure functions of TransportVM — no
+        // imperative sync (syncLoopButtonState is gone), so a loop defined from
+        // the ruler lights the Loop button through the same binding. The tempo
+        // label binds TransportVM.tempo (§4.3) and the time display binds the
+        // beats→time projection of TransportVM.playhead (one clock — §2.3;
+        // TimeTickerAnimator is deleted). The playhead/loop/ruler overlays are
+        // read from the VM by the per-frame tickArrangementOverlays() (the ruler
         // grid has no discrete trigger).
         transportVM = new TransportVM(project.getTransport(), disp);
         vmDisposers.add(transportVM::dispose);
-        TransportControlBinder transportBinder = new TransportControlBinder(transportVM, command -> { });
+        TransportControlBinder transportBinder =
+                new TransportControlBinder(transportVM, this::dispatchTransportCommand);
+        transportBinder.bindPlay(playButton);
+        transportBinder.bindStop(stopButton);
+        transportBinder.bindRecord(recordButton);
+        transportBinder.bindLoop(loopButton);
         transportBinder.bindTempoLabel(tempoLabel);
+        transportBinder.bindTimeDisplay(timeDisplay);
         vmDisposers.add(transportBinder::dispose);
 
         // History (undo/redo) — §6.9; replaces updateUndoRedoState()'s button poke.
@@ -587,6 +623,18 @@ public final class MainController {
             case UndoCommand _ -> onUndo();
             case RedoCommand _ -> onRedo();
         }
+    }
+
+    /**
+     * Story 315 — the single transport-gesture path (§2.8): toolbar buttons
+     * (via the binder), keyboard shortcuts, and the Performance Stage all
+     * raise story-290 {@link TransportCommand}s here, executed against the
+     * production handler. The {@code transportController} field is read at
+     * dispatch time — it is rebuilt on every project load, so a command
+     * always reaches the CURRENT epoch's handler.
+     */
+    private void dispatchTransportCommand(TransportCommand command) {
+        command.execute(transportController);
     }
 
     /**
@@ -929,7 +977,8 @@ public final class MainController {
         createKeyboardShortcutController();
         animationController.applyButtonPressAnimations();
         transportController.updateStatus();
-        transportController.syncLoopButtonState();
+        // Story 315 — no syncLoopButtonState(): the Loop button's :active state
+        // is a pure function of TransportVM via bindLoop (rebuildViewModels).
         applyProjectInfoLabels();
         mountLockStatusIndicator();
         // Story 295 — the old static "Auto-save: ON" checkpointLabel was retired;
@@ -1218,19 +1267,19 @@ public final class MainController {
         // is dropped (it was never invoked). flashMidiActivity is called from
         // the MIDI receiver thread; the controller marshals it via the
         // dispatcher.
+        // Story 315 — the time-ticker runnables are gone (the time display is
+        // bound to the beats→time projection by the binder) and the Stop/Loop
+        // buttons are binder-owned, so the controller no longer receives them.
         transportController = new TransportController(
                 project, audioEngine, undoManager, notificationBar,
-                statusLabel, timeDisplay, statusBarLabel, recIndicator,
-                playButton, stopButton, recordButton, loopButton,
+                statusLabel, statusBarLabel, recIndicator,
+                playButton, recordButton,
                 () -> viewNavigationController != null
                         ? viewNavigationController.isSnapEnabled() : snapEnabled,
                 () -> viewNavigationController != null
                         ? viewNavigationController.getGridResolution() : gridResolution,
                 () -> metronomeController != null
                         ? metronomeController.getCountInMode() : CountInMode.OFF,
-                () -> animationController.startTimeTicker(),
-                () -> animationController.pauseTimeTicker(),
-                () -> animationController.stopTimeTicker(),
                 this::flashTrackArmButton,
                 () -> settingsModel.isApplyLatencyCompensation(),
                 () -> audioEngineController != null
@@ -1307,7 +1356,7 @@ public final class MainController {
 
     private void createAnimationController() {
         animationController = new AnimationController(
-                spectrumDisplay, levelMeterDisplay, timeDisplay,
+                spectrumDisplay, levelMeterDisplay,
                 playButton, recordButton,
                 new Button[]{
                         skipBackButton, playButton, stopButton, recordButton,
@@ -1519,7 +1568,6 @@ public final class MainController {
         mountPreRollPostRollControls();
         createMetronomeController(Preferences.userNodeForPackage(MainController.class));
         transportController.updateStatus();
-        transportController.syncLoopButtonState();
         createTrackStripController();
         if (trackStripController != null) {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
@@ -1724,12 +1772,14 @@ public final class MainController {
                     @Override public void onEditorFadeOut() { clipEditController.onEditorFadeOut(); }
                     @Override public void markProjectDirty() { project.markDirty(); }
                     // ── Performance Stage (story 280) ─────────────────────────
+                    // Story 315 — stage transport gestures ride the SAME
+                    // command path as the toolbar and keyboard (§2.8).
                     @Override public ResourceBundle messages() { return MESSAGES; }
                     @Override public Label timeDisplay() { return timeDisplay; }
-                    @Override public void onPlay() { transportController.onPlay(); }
-                    @Override public void onStop() { transportController.onStop(); }
-                    @Override public void onRecord() { transportController.onRecord(); }
-                    @Override public void onToggleLoop() { transportController.onToggleLoop(); }
+                    @Override public void onPlay() { dispatchTransportCommand(new TogglePlayPauseCommand()); }
+                    @Override public void onStop() { dispatchTransportCommand(new StopTransportCommand()); }
+                    @Override public void onRecord() { dispatchTransportCommand(new ToggleRecordCommand()); }
+                    @Override public void onToggleLoop() { dispatchTransportCommand(new ToggleLoopCommand()); }
                     @Override public void onOpenAudioSettings() { MainController.this.onOpenAudioSettings(); }
                     @Override public void onNewProject() { projectLifecycleController.onNewProject(); }
                     @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
@@ -1762,7 +1812,7 @@ public final class MainController {
                 () -> viewNavigationController.onZoomIn(),
                 () -> viewNavigationController.onZoomOut(),
                 () -> viewNavigationController.onToggleSnap(),
-                () -> transportController.onSkipBack(),
+                () -> dispatchTransportCommand(new SkipBackCommand()),
                 () -> project.markDirty(),
                 () -> viewNavigationController.isSnapEnabled(),
                 () -> viewNavigationController.getZoomLevel(viewNavigationController.getActiveView()),
@@ -1978,16 +2028,18 @@ public final class MainController {
     private void createKeyboardShortcutController() {
         keyboardShortcutController = new KeyboardShortcutController(keyBindingManager,
                 new KeyboardShortcutController.Host() {
+                    // Story 315 — keyboard transport gestures ride the same
+                    // command path as the toolbar buttons (§2.8).
                     @Override public TransportState transportState() { return project.getTransport().getState(); }
-                    @Override public void onPlay() { MainController.this.onPlay(); }
-                    @Override public void onStop() { MainController.this.onStop(); }
-                    @Override public void onRecord() { MainController.this.onRecord(); }
-                    @Override public void onPlayWithPreRoll() { transportController.onPlayWithPreRoll(); }
+                    @Override public void onPlay() { dispatchTransportCommand(new TogglePlayPauseCommand()); }
+                    @Override public void onStop() { dispatchTransportCommand(new StopTransportCommand()); }
+                    @Override public void onRecord() { dispatchTransportCommand(new ToggleRecordCommand()); }
+                    @Override public void onPlayWithPreRoll() { dispatchTransportCommand(new PlayWithPreRollCommand()); }
                     @Override public void onTogglePreRoll() { transportController.onTogglePreRoll(); }
                     @Override public void onTogglePostRoll() { transportController.onTogglePostRoll(); }
-                    @Override public void onSkipBack() { transportController.onSkipBack(); }
-                    @Override public void onSkipForward() { transportController.onSkipForward(); }
-                    @Override public void onToggleLoop() { MainController.this.onToggleLoop(); }
+                    @Override public void onSkipBack() { dispatchTransportCommand(new SkipBackCommand()); }
+                    @Override public void onSkipForward() { dispatchTransportCommand(new SkipForwardCommand()); }
+                    @Override public void onToggleLoop() { dispatchTransportCommand(new ToggleLoopCommand()); }
                     @Override public void onToggleMetronome() { metronomeController.onToggleMetronome(); }
                     @Override public void onUndo() { MainController.this.onUndo(); }
                     @Override public void onRedo() { MainController.this.onRedo(); }
@@ -3749,12 +3801,19 @@ public final class MainController {
         }
     }
 
-    @FXML private void onPlay() { transportController.onPlay(); }
-    @FXML private void onStop() { transportController.onStop(); }
-    @FXML private void onRecord() { transportController.onRecord(); }
-    @FXML private void onSkipBack() { transportController.onSkipBack(); }
-    @FXML private void onSkipForward() { transportController.onSkipForward(); }
-    @FXML private void onToggleLoop() { transportController.onToggleLoop(); applyLoopAndRulerGrid(); }
+    // Story 315 — the Play/Stop/Record/Loop FXML handlers are gone: those
+    // buttons are bound by TransportControlBinder in rebuildViewModels() and
+    // raise TransportCommands into dispatchTransportCommand() (§2.8 one path).
+    // Skip Back/Forward and pre-roll play now ALSO ride the command path
+    // (story 315 review follow-up — the last transport gestures that bypassed
+    // it); only the FXML method names survive, because the FXML references
+    // them. The metronome toggle and the pre/post-roll TOGGLES stay
+    // imperative: they are configuration gestures, not transport-state
+    // transitions. The loop repaint the old onToggleLoop handler forced is
+    // covered by the per-frame tickArrangementOverlays() →
+    // applyLoopAndRulerGrid().
+    @FXML private void onSkipBack() { dispatchTransportCommand(new SkipBackCommand()); }
+    @FXML private void onSkipForward() { dispatchTransportCommand(new SkipForwardCommand()); }
     @FXML private void onToggleMetronome() { metronomeController.onToggleMetronome(); }
     @FXML private void onAddAudioTrack() { trackCreationController.onAddAudioTrack(); }
     @FXML private void onAddMidiTrack() { trackCreationController.onAddMidiTrack(); }
@@ -4573,6 +4632,24 @@ public final class MainController {
         paintCanvasSelection();
     }
 
+    /**
+     * Seeks the transport to {@code beat} (snapped when snap is on) and stops
+     * there — no imperative playhead paint (story 315 review).
+     *
+     * <p>The overlays are painted by {@link #tickArrangementOverlays()} from
+     * {@link TransportVM#getPlayhead()}, the story's single source of truth for
+     * the playhead. Painting the requested beat here as well made the two
+     * writers fight: while the RT clock owns the transport the seek is queued
+     * and lands only at the next block boundary, so the very next frame's tick
+     * repainted the still-old VM playhead. At a small buffer the seek lands
+     * first and nothing shows; at a large one (2048 frames &asymp; 46 ms) the
+     * playhead visibly snaps back for a frame or two before jumping forward.
+     * Letting the tick own the paint means the playhead moves exactly when the
+     * position it reflects actually moves.</p>
+     *
+     * <p>{@code TimelineRuler}'s own click handler still paints itself locally
+     * on the gesture — that is the ruler's business, not this seam's.</p>
+     */
     private void seekToPosition(double beat) {
         double position = Math.max(0.0, beat);
         boolean snap = viewNavigationController != null ? viewNavigationController.isSnapEnabled() : snapEnabled;
@@ -4581,8 +4658,6 @@ public final class MainController {
             position = SnapQuantizer.quantize(position, res, project.getTransport().getTimeSignatureNumerator());
         }
         project.getTransport().setPositionInBeats(position);
-        if (timelineRuler != null) timelineRuler.setPlayheadPositionBeats(position);
-        if (arrangementCanvas != null) arrangementCanvas.setPlayheadBeat(position);
     }
 
     /**
@@ -4606,11 +4681,17 @@ public final class MainController {
      * Story 293 — paints the canvas loop overlay and the ruler snap/grid (renamed from
      * the deleted {@code syncLoopRegionToCanvas()}). Called on the per-frame tick, on a
      * canvas rebuild, and on a loop toggle.
+     *
+     * <p>The loop trio is read as ONE {@link Transport#getLoopWindow()} snapshot
+     * (story 315 review): three separate getters could observe halves of two
+     * different windows if a control write landed between them, painting an
+     * overlay that never existed.</p>
      */
     private void applyLoopAndRulerGrid() {
         Transport transport = project.getTransport();
         if (arrangementCanvas != null) {
-            arrangementCanvas.setLoopRegion(transport.isLoopEnabled(), transport.getLoopStartInBeats(), transport.getLoopEndInBeats());
+            Transport.LoopWindow loop = transport.getLoopWindow();
+            arrangementCanvas.setLoopRegion(loop.enabled(), loop.startInBeats(), loop.endInBeats());
         }
         if (timelineRuler != null) {
             boolean snap = viewNavigationController != null ? viewNavigationController.isSnapEnabled() : snapEnabled;

@@ -2,12 +2,13 @@ package com.benesquivelmusic.daw.app.ui.vm;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
-import com.benesquivelmusic.daw.app.ui.vm.command.StartTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TogglePlayPauseCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportIntentHandler;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.core.transport.TransportState;
 
 import javafx.application.Platform;
 import javafx.css.PseudoClass;
@@ -154,12 +155,66 @@ class TransportBindingTest {
             computeOnFx(() -> { record.fire(); return null; });
             computeOnFx(() -> { loop.fire(); return null; });
 
+            // Story 315 review — Play raises the SAME toggle intent whatever
+            // the VM currently mirrors; the handler resolves Start-or-Pause
+            // from the authoritative transport (§2.8 "one path").
+            transport.play();
+            flushFx();
+            computeOnFx(() -> { play.fire(); return null; });
+
             assertThat(issued)
-                    .as("each control click raises its intent through the command sink")
+                    .as("each control click raises its intent through the command sink; "
+                            + "Play always raises the toggle — the binder never decides")
                     .containsExactly(
-                            new StartTransportCommand(),
+                            new TogglePlayPauseCommand(),
                             new ToggleRecordCommand(),
-                            new ToggleLoopCommand());
+                            new ToggleLoopCommand(),
+                            new TogglePlayPauseCommand());
+        } finally {
+            computeOnFx(() -> { binder.dispose(); return null; });
+            vm.dispose();
+        }
+    }
+
+    @Test
+    void playGestureIsResolvedByTheHandlerNotByTheStaleViewModelMirror() throws Exception {
+        // Story 315 review — the VM is an ASYNC mirror: FxDispatcher.onFx is an
+        // unconditional Platform.runLater, so a transport transition is still
+        // invisible to the VM for at least one FX turn. Firing Play inside that
+        // window used to raise StartTransportCommand against an already-PLAYING
+        // transport, which VALIDATE silently dropped — the click did nothing.
+        Transport transport = new Transport();
+        TransportVM vm = new TransportVM(transport, new FxDispatcher());
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0);
+        List<TransportCommand> issued = new CopyOnWriteArrayList<>();
+
+        Button play = computeOnFx(Button::new);
+        TransportControlBinder binder = new TransportControlBinder(vm, command -> {
+            issued.add(command);
+            command.execute(handler);
+        });
+        try {
+            computeOnFx(() -> { binder.bindPlay(play); return null; });
+
+            // One FX turn: start the transport and click Play before the VM's
+            // queued state update can run.
+            TransportState mirroredWhenClicked = computeOnFx(() -> {
+                transport.play();
+                TransportState mirrored = vm.getState();
+                play.fire();
+                return mirrored;
+            });
+
+            assertThat(mirroredWhenClicked)
+                    .as("the VM mirror really was stale when the click landed")
+                    .isEqualTo(TransportState.STOPPED);
+            assertThat(issued)
+                    .as("the binder raises the toggle intent, never a resolved Start/Pause")
+                    .containsExactly(new TogglePlayPauseCommand());
+            assertThat(transport.getState())
+                    .as("the handler resolved the toggle from the AUTHORITATIVE state and "
+                            + "paused — a VM-resolved Start would have been dropped by VALIDATE")
+                    .isEqualTo(TransportState.PAUSED);
         } finally {
             computeOnFx(() -> { binder.dispose(); return null; });
             vm.dispose();

@@ -73,6 +73,62 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
     }
 
     @Override
+    public void pause() {
+        TransportState state = transport.getState();
+        // VALIDATE: pausing is only meaningful from PLAYING or RECORDING — a
+        // stale intent (the binder reads the async VM mirror, which can lag the
+        // authoritative state by one frame) is absorbed here.
+        if (state != TransportState.PLAYING && state != TransportState.RECORDING) {
+            return;
+        }
+        transport.pause();
+        // ANNOUNCE skipped: the story-283 TransportEvent vocabulary has no
+        // Paused event, and §5.1 permits skipping a phase. Do not invent one —
+        // pause is a UI-local fact until a consumer needs it on the bus.
+    }
+
+    /**
+     * Resolves the Play gesture from the AUTHORITATIVE transport state (story
+     * 315 review): PLAYING pauses, anything else starts. RECORDING therefore
+     * maps to {@link #start()}, whose VALIDATE rejects it — Stop stays the only
+     * way out of record. Resolving here rather than at the gesture layer is the
+     * whole point of {@link TogglePlayPauseCommand}: the binder's
+     * {@code TransportVM} mirror is a frame behind this read.
+     */
+    @Override
+    public void togglePlayPause() {
+        if (transport.getState() == TransportState.PLAYING) {
+            pause();
+        } else {
+            start();
+        }
+    }
+
+    /**
+     * Starts playback with the configured pre-roll applied (Story 134; story
+     * 315 review). VALIDATE rejects the intent while RECORDING — Stop is the
+     * only way out of record, exactly as in {@link #start()}. Otherwise
+     * {@code Transport.playWithPreRoll()} always transitions to PLAYING —
+     * re-anchoring and rewinding when a pre-roll is configured — so the
+     * announce follows every accepted intent and carries the
+     * <em>post-rewind</em> position, i.e. where playback actually begins
+     * (parity with the production controller's path).
+     */
+    @Override
+    public void playWithPreRoll() {
+        // Story 315 review — VALIDATE: no-op while RECORDING. Stop is the only
+        // way out of record (mirrors start()). Transport.playWithPreRoll()
+        // unconditionally sets PLAYING, so without this guard Shift+Space would
+        // silently drop out of record — leaving the recording pipeline active
+        // and un-finalized — and still announce Started.
+        if (transport.getState() == TransportState.RECORDING) {
+            return;
+        }
+        transport.playWithPreRoll();
+        EventBusPublisher.publish(new TransportEvent.Started(positionFrames(), Instant.now()));
+    }
+
+    @Override
     public void stop() {
         TransportState before = transport.getState();
         if (before == TransportState.STOPPED) {
@@ -81,6 +137,37 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
         long stoppedAt = positionFrames();
         transport.stop();
         EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAt, Instant.now()));
+    }
+
+    @Override
+    public void skipBack() {
+        // Absolute seek to zero: queued while the RT clock owns the transport,
+        // immediate otherwise (story 315). No seek base is read at all.
+        transport.setPositionInBeats(0.0);
+        // ANNOUNCE skipped: TransportEvent.Seeked exists in the story-283
+        // vocabulary but has NO production publisher today, and §5.1 permits
+        // skipping a phase. Do not invent bus traffic no consumer reads —
+        // starting to publish Seeked is a deliberate decision for the story
+        // that gives it a consumer.
+    }
+
+    /**
+     * Skips forward by four bars. Snap-to-grid is deliberately absent here:
+     * snap is a UI-layer dependency (grid resolution, snap toggle) owned by the
+     * production controller's override — this neutral cascade knows nothing of
+     * the view-navigation state.
+     */
+    @Override
+    public void skipForward() {
+        // RELATIVE seek — compose against the pending seek target, not the
+        // committed position (story 315 review). While the RT clock owns the
+        // transport a seek sits in a single-slot, last-writer-wins queue and
+        // the committed position does not move until the next block boundary;
+        // getSeekTargetInBeats() returns the queued target when one is pending,
+        // so successive relative seeks accumulate instead of collapsing onto
+        // the same base. ANNOUNCE skipped for the same reason as skipBack().
+        transport.setPositionInBeats(
+                transport.getSeekTargetInBeats() + 4.0 * transport.getTimeSignatureNumerator());
     }
 
     @Override
@@ -121,8 +208,19 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
         return beatsToFrames(transport.getPositionInBeats());
     }
 
-    /** Converts a beat position to a non-negative sample-frame position at the current tempo. */
-    private long beatsToFrames(double beats) {
+    /**
+     * Converts a beat position to a non-negative sample-frame position at this
+     * handler's sample rate and the transport's current tempo — the <em>single</em>
+     * conversion behind every {@link TransportEvent} frame field (story 315
+     * review; {@code TransportController} held a verbatim copy plus its own
+     * {@code sampleRate} field, so a future correction — e.g. honouring the
+     * {@code TempoMap} instead of the initial tempo, which this still does not —
+     * would have had to be made twice).
+     *
+     * @param beats the beat position to convert
+     * @return the equivalent sample-frame position, never negative
+     */
+    public long beatsToFrames(double beats) {
         double secondsPerBeat = 60.0 / transport.getTempo();
         return Math.max(0L, Math.round(beats * secondsPerBeat * sampleRate));
     }

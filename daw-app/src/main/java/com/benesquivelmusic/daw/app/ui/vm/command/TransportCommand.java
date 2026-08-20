@@ -13,10 +13,15 @@ package com.benesquivelmusic.daw.app.ui.vm.command;
  */
 public sealed interface TransportCommand
         permits StartTransportCommand,
+                PauseTransportCommand,
+                TogglePlayPauseCommand,
+                PlayWithPreRollCommand,
                 StopTransportCommand,
                 ToggleRecordCommand,
                 SetTempoCommand,
-                ToggleLoopCommand {
+                ToggleLoopCommand,
+                SkipBackCommand,
+                SkipForwardCommand {
 
     /**
      * Runs this intent against the given handler.
