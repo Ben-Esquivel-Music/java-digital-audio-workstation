@@ -15,6 +15,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Flow;
+import java.util.concurrent.locks.LockSupport;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Cross-platform {@link AudioBackend} built on the JDK's
@@ -22,14 +25,28 @@ import java.util.concurrent.Flow;
  *
  * <p>Always available. Latency is higher than a native driver
  * (typically 30–50&nbsp;ms on Windows) which is why this backend is the
- * graceful-fallback target chosen by {@link AudioBackendSelector} when
- * {@link AsioBackend}, {@link CoreAudioBackend}, {@link WasapiBackend},
- * or {@link JackBackend} cannot open a stream on the current host.</p>
+ * final rung of the engine's {@code StreamingProvision} fallback ladder,
+ * walked when {@link AsioBackend}, {@link CoreAudioBackend},
+ * {@link WasapiBackend}, or {@link JackBackend} cannot open a stream on the
+ * current host (story 316).</p>
  */
 public final class JavaxSoundBackend implements AudioBackend {
 
+    private static final Logger LOG = Logger.getLogger(JavaxSoundBackend.class.getName());
+
     /** Backend name. */
     public static final String NAME = "Java Sound";
+
+    /**
+     * Hard bound on the stop drain — never the JDK's unbounded
+     * {@link SourceDataLine#drain()}, which would stall the lifecycle thread
+     * for as long as the device takes to play its whole buffer out (story 316
+     * review).
+     */
+    private static final long CLOSE_DRAIN_TIMEOUT_MILLIS = 200L;
+
+    /** Poll interval of the bounded stop drain. */
+    private static final long CLOSE_DRAIN_POLL_NANOS = 2_000_000L; // 2 ms
 
     private final AudioBackendSupport support = new AudioBackendSupport();
     private SourceDataLine outputLine;
@@ -48,6 +65,39 @@ public final class JavaxSoundBackend implements AudioBackend {
     @Override
     public boolean isAvailable() {
         return true;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Always {@code true}: {@link #sink(AudioBlock)} writes to a real
+     * {@link SourceDataLine} and {@link #inputBlocks()} republishes captured
+     * audio from a {@link TargetDataLine}. Java Sound is the always-available
+     * final rung of the story-316 fallback ladder.</p>
+     */
+    @Override
+    public boolean supportsStreaming() {
+        return true;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Clamps the bit depth to 16 while preserving the requested sample
+     * rate and channel count, because this backend's output path
+     * ({@link #encodePcm16}) only encodes 16-bit little-endian PCM. Without
+     * this negotiation a 24-bit engine format would open a 24-bit line and
+     * then throw on every {@link #sink(AudioBlock)} — the Java Sound rung
+     * must actually produce sound (story 316; story 317 owns the fuller
+     * line-format negotiation).</p>
+     */
+    @Override
+    public AudioFormat negotiateFormat(AudioFormat requested) {
+        Objects.requireNonNull(requested, "requested must not be null");
+        if (requested.bitDepth() == 16) {
+            return requested;
+        }
+        return new AudioFormat(requested.sampleRate(), requested.channels(), 16);
     }
 
     @Override
@@ -92,6 +142,26 @@ public final class JavaxSoundBackend implements AudioBackend {
         return Math.max(max, 2);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The OUTPUT line is mandatory: when it cannot be opened, any
+     * partially opened line is closed, the open is rolled back, and an
+     * {@link AudioBackendException} propagates — the engine's fallback
+     * ladder must see this rung <em>fail</em>, never "succeed" into a
+     * silent no-output stream (story 316, honest promises). The INPUT line
+     * remains optional-degrade: a capture line that cannot be opened only
+     * disables capture; playback proceeds.</p>
+     *
+     * <p>Both lines are opened with two hardware blocks of buffer
+     * ({@code bufferFrames * bytesPerFrame * 2}): {@link #awaitSinkCapacity}
+     * is a no-op on this backend — the blocking {@link SourceDataLine#write}
+     * is the pacing — so the line's own buffer is the only underrun
+     * headroom; one block would drain to empty the instant a write
+     * returned.</p>
+     *
+     * @throws AudioBackendException if the output line cannot be opened
+     */
     @Override
     public void open(DeviceId device, AudioFormat format, int bufferFrames) {
         Objects.requireNonNull(device, "device must not be null");
@@ -103,21 +173,56 @@ public final class JavaxSoundBackend implements AudioBackend {
                 format.channels(),
                 true,
                 false);
+        // Double-buffer slack (see the method javadoc): line.write blocking
+        // is this backend's pacing, so the line buffer is the only underrun
+        // headroom — match the retired daw-core backend's 2x sizing.
+        int lineBufferBytes = bufferFrames * format.bytesPerFrame() * 2;
         try {
             this.outputLine = AudioSystem.getSourceDataLine(jFormat);
-            this.outputLine.open(jFormat, bufferFrames * format.bytesPerFrame());
+            this.outputLine.open(jFormat, lineBufferBytes);
             this.outputLine.start();
         } catch (LineUnavailableException | IllegalArgumentException e) {
-            // Output-only not available — proceed; output will be a no-op.
+            // Mandatory output line failed: roll the open back and fail the
+            // rung loudly so the ladder can fall through.
+            SourceDataLine partial = this.outputLine;
             this.outputLine = null;
+            if (partial != null) {
+                try {
+                    partial.close();
+                } catch (RuntimeException ignored) {
+                    // best-effort cleanup of a line that never started
+                }
+            }
+            support.markClosed();
+            throw new AudioBackendException(
+                    "Java Sound output line unavailable: " + e.getMessage(), e);
         }
         try {
             this.inputLine = AudioSystem.getTargetDataLine(jFormat);
-            this.inputLine.open(jFormat, bufferFrames * format.bytesPerFrame());
+            this.inputLine.open(jFormat, lineBufferBytes);
             this.inputLine.start();
             startCapture(format, bufferFrames);
         } catch (LineUnavailableException | IllegalArgumentException e) {
+            // Optional capture: input failure never kills playback — but the
+            // partially opened line must still be given back. Java Sound is
+            // the ladder's MANDATORY FINAL RUNG (story 316 review): a line
+            // leaked on every retry walks the mixer's finite line budget down
+            // to zero and turns a transient capture failure into a permanent
+            // "no lines available" for the one backend every machine has.
+            // Same roll-back shape as the mandatory output path above.
+            TargetDataLine partialCapture = this.inputLine;
             this.inputLine = null;
+            if (partialCapture != null) {
+                try {
+                    partialCapture.stop();
+                    partialCapture.close();
+                } catch (RuntimeException ignored) {
+                    // best-effort cleanup of a line that never captured
+                }
+            }
+            LOG.log(Level.WARNING,
+                    "Java Sound capture line unavailable; playback continues without input",
+                    e);
         }
     }
 
@@ -171,6 +276,20 @@ public final class JavaxSoundBackend implements AudioBackend {
         line.write(pcm, 0, pcm.length);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>No-op: {@link #sink(AudioBlock)} already blocks on
+     * {@link SourceDataLine#write}, which <em>is</em> this backend's device
+     * pacing — the line's internal buffer only accepts bytes at the device's
+     * consumption rate. Parking here as well would halve the achievable
+     * throughput.</p>
+     */
+    @Override
+    public void awaitSinkCapacity(long timeoutNanos) {
+        // Intentionally empty — SourceDataLine.write provides the pacing.
+    }
+
     static byte[] encodePcm16(AudioBlock block, int bitDepth) {
         if (bitDepth != 16) {
             // Down-convert to 16-bit LE for simplicity; the SDK allows any bit
@@ -194,6 +313,27 @@ public final class JavaxSoundBackend implements AudioBackend {
         return support.isOpen();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The output line's tail is drained under a hard
+     * {@value #CLOSE_DRAIN_TIMEOUT_MILLIS}&nbsp;ms deadline before the line
+     * is stopped, so a Stop does not truncate the mix mid-block (story 316
+     * review). {@link #open(DeviceId, AudioFormat, int)} sizes the line at
+     * two hardware blocks and {@link #awaitSinkCapacity(long)} is a
+     * deliberate no-op, so that line buffer is the ONLY place rendered audio
+     * can still be sitting when close arrives — discarding it clicked on
+     * every single Stop, on the one backend every machine has.</p>
+     *
+     * <p>The DEADLINE is what keeps the lifecycle thread safe, not the
+     * absence of a drain: {@link #drainBounded(SourceDataLine)} polls the
+     * line's own occupancy and returns unconditionally once the deadline
+     * passes, whereas the JDK's {@link SourceDataLine#drain()} is unbounded
+     * and could stall this thread for a full line buffer on a wedged device.
+     * (The previous "no drain at all" rationale cited the retired daw-core
+     * Java Sound backend, which was never the engine's mandatory final
+     * fallback rung.)</p>
+     */
     @Override
     public void close() {
         support.close();
@@ -207,8 +347,36 @@ public final class JavaxSoundBackend implements AudioBackend {
             inputLine = null;
         }
         if (outputLine != null) {
-            try { outputLine.drain(); outputLine.stop(); outputLine.close(); } catch (RuntimeException ignored) { /* swallow */ }
+            try { drainBounded(outputLine); outputLine.stop(); outputLine.close(); } catch (RuntimeException ignored) { /* swallow */ }
             outputLine = null;
+        }
+    }
+
+    /**
+     * Waits — for at most {@value #CLOSE_DRAIN_TIMEOUT_MILLIS}&nbsp;ms — for
+     * the device to play out whatever is still buffered in {@code line}. A
+     * fully played-out line reports its WHOLE buffer as
+     * {@link SourceDataLine#available() available}, so occupancy is simply
+     * {@code available() < getBufferSize()}.
+     *
+     * <p>Deliberately not {@link SourceDataLine#drain()}: that call is
+     * unbounded and this runs on the lifecycle thread (story 316 review).
+     * Returns unconditionally once the deadline passes, drained or not.</p>
+     *
+     * @param line the output line to drain; must not be null
+     */
+    private static void drainBounded(SourceDataLine line) {
+        if (!line.isOpen()) {
+            return;
+        }
+        long deadline = System.nanoTime()
+                + CLOSE_DRAIN_TIMEOUT_MILLIS * 1_000_000L;
+        while (line.available() < line.getBufferSize()) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0L) {
+                return; // hard bound: never stall the lifecycle thread
+            }
+            LockSupport.parkNanos(Math.min(CLOSE_DRAIN_POLL_NANOS, remaining));
         }
     }
 }

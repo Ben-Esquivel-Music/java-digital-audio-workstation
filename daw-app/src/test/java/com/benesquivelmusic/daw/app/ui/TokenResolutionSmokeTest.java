@@ -37,8 +37,8 @@ import static org.assertj.core.api.Assertions.offset;
  *
  * <p>Note: this fixture does <em>not</em> load {@code main-view.fxml}
  * directly. The full FXML transitively constructs {@link MainController},
- * which {@code @FXML initialize()} spins up an {@code AudioEngine},
- * {@code AudioBackendFactory}, autosave timers, etc. — none of which are
+ * which {@code @FXML initialize()} spins up an {@code AudioEngine}, its
+ * default streaming provision, autosave timers, etc. — none of which are
  * needed (or safe) for a pure CSS-token smoke check. The same
  * {@code .root-pane} anchor is reproduced here so the lookup resolution
  * path is identical to production.

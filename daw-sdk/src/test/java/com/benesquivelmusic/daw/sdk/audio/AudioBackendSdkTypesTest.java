@@ -6,7 +6,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -59,15 +58,22 @@ class AudioBackendSdkTypesTest {
     }
 
     @Test
-    void sealedPermitsAllFiveBackendsPlusMock() {
-        Class<?>[] permitted = AudioBackend.class.getPermittedSubclasses();
-        assertNotNull(permitted);
-        List<String> names = java.util.Arrays.stream(permitted).map(Class::getSimpleName).toList();
-        assertTrue(names.contains("JavaxSoundBackend"), names.toString());
-        assertTrue(names.contains("AsioBackend"), names.toString());
-        assertTrue(names.contains("CoreAudioBackend"), names.toString());
-        assertTrue(names.contains("WasapiBackend"), names.toString());
-        assertTrue(names.contains("JackBackend"), names.toString());
-        assertTrue(names.contains("MockAudioBackend"), names.toString());
+    void audioBackendIsNotSealedAndSixKnownImplementationsImplementIt() {
+        // Story 316 unsealed the interface so daw-core can contribute
+        // callback-driven adapters (e.g. PortAudio) behind it — JPMS sealing
+        // forbids cross-module implementors.
+        assertFalse(AudioBackend.class.isSealed());
+
+        List<Class<?>> known = List.of(
+                JavaxSoundBackend.class,
+                AsioBackend.class,
+                CoreAudioBackend.class,
+                WasapiBackend.class,
+                JackBackend.class,
+                MockAudioBackend.class);
+        for (Class<?> implementation : known) {
+            assertTrue(AudioBackend.class.isAssignableFrom(implementation),
+                    implementation.getSimpleName() + " must implement AudioBackend");
+        }
     }
 }

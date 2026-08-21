@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.sdk.event;
 
+import com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 import org.junit.jupiter.api.Test;
 
@@ -44,6 +45,7 @@ class DawEventExhaustiveSwitchTest {
             case AutomationEvent ignored -> "automation";
             case PluginEvent ignored     -> "plugin";
             case XrunEvent ignored       -> "xrun";
+            case BackendFallbackEvent ignored -> "backendFallback";
         };
     }
 
@@ -121,6 +123,13 @@ class DawEventExhaustiveSwitchTest {
         assertThat(classify(new XrunEvent.BufferLate(1L, Duration.ofMillis(2)))).isEqualTo("xrun");
         assertThat(classify(new XrunEvent.BufferDropped(1L))).isEqualTo("xrun");
         assertThat(classify(new XrunEvent.GraphOverload("node-1", 1.5))).isEqualTo("xrun");
+    }
+
+    @Test
+    void exhaustiveSwitchCoversBackendFallbackEvent() {
+        assertThat(classify(new BackendFallbackEvent(
+                "ASIO", "Scarlett 18i20", "Java Sound", "default", "driver refused open")))
+                .isEqualTo("backendFallback");
     }
 
     @Test

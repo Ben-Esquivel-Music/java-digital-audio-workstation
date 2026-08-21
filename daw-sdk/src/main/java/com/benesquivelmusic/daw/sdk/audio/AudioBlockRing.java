@@ -207,6 +207,22 @@ final class AudioBlockRing {
         return head.get() >= tail.get();
     }
 
+    /**
+     * Returns {@code true} when the ring can accept another
+     * {@link #write(float[], int)} without dropping it — i.e.
+     * {@link #size()} {@code <} {@link #capacity()}.
+     *
+     * <p>Read-only on the head/tail {@link AtomicLong}s, so it is safe to
+     * poll from any thread. Used by {@link
+     * AsioBackend#awaitSinkCapacity(long)} on the non-real-time render pump
+     * side to pace production by output-ring occupancy (story 316); the
+     * answer is naturally racy across threads, which is fine for pacing —
+     * a stale {@code false} just costs one park slice.</p>
+     */
+    boolean hasSpace() {
+        return size() < capacity;
+    }
+
     /** Returns the number of published-but-unconsumed slots. */
     @RealTimeSafe
     int size() {

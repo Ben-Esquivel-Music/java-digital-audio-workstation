@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
@@ -13,8 +14,10 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -41,9 +44,17 @@ import java.util.logging.Logger;
  * entire old graph or the entire new one — never a half-swapped hybrid
  * (story 314 review).</p>
  *
- * <p>An optional {@link NativeAudioBackend} can be attached to provide
- * low-latency audio I/O via PortAudio FFM bindings or Java Sound API.
- * Use {@link AudioBackendFactory} to obtain a backend instance.</p>
+ * <p>Audio I/O streams through ONE slot typed by the SDK
+ * {@link AudioBackend} interface (story 316 — the backend consolidation this
+ * class's former dual-slot javadoc awaited). The application installs a
+ * {@link StreamingProvision} — the requested backend plus an explicit
+ * fallback ladder — via {@link #setStreamingProvision(StreamingProvision)};
+ * {@link #startAudioOutput()} walks the ladder, opens the first rung that
+ * accepts its device and negotiated format, and starts an engine-owned
+ * {@link EngineStreamPump} that calls {@link #processBlock} once per buffer
+ * period, paced by the backend's device-clock backpressure signal. The
+ * reported active backend ({@link #openStreamBackendName()} /
+ * {@link #openStreamDevice()}) is by construction the open stream's.</p>
  */
 public final class AudioEngine {
 
@@ -57,17 +68,32 @@ public final class AudioEngine {
 
     private final EffectsChain masterChain;
     private AudioBufferPool bufferPool;
-    private NativeAudioBackend audioBackend;
+
     /**
-     * SDK sealed {@link AudioBackend} the user has selected (story 130 —
-     * "Audio Backend Selection"). Distinct from {@link #audioBackend}: the
-     * {@code NativeAudioBackend} drives the live PortAudio / Java Sound
-     * I/O stream today, while this slot tracks the platform backend
-     * (ASIO / WASAPI / CoreAudio / JACK / Mock) the
-     * {@link AudioBackendSelector} produced. The two coexist until the
-     * sealed-hierarchy consolidation story lands.
+     * The engine's ONE streaming slot (story 316): the requested backend
+     * plus its explicit fallback ladder.
      */
-    private volatile AudioBackend sdkBackend;
+    private volatile StreamingProvision streamingProvision;
+
+    /**
+     * Backend of the stream the engine currently tracks — the winning
+     * ladder rung after a successful open. Non-null while
+     * {@link StreamState#RUNNING} or {@link StreamState#PAUSED}, and while
+     * {@link StreamState#RELEASE_PENDING} (where it names the backend still
+     * holding the unreleasable handle). {@link #processBlock} snapshots this
+     * once per block for metronome {@code writeToChannel} routing, so the
+     * click side output finally targets an OPEN stream (stories 135/136).
+     */
+    private volatile AudioBackend openBackend;
+
+    /** Device identity of the tracked stream (the winning rung's device). */
+    private volatile DeviceId openDevice;
+
+    /** Negotiated SDK format the tracked stream was actually opened with. */
+    private volatile com.benesquivelmusic.daw.sdk.audio.AudioFormat openSdkFormat;
+
+    /** Render pump of the open stream; non-null only while RUNNING. */
+    private volatile EngineStreamPump pump;
 
     /**
      * Lifecycle state of the backend audio stream (story 315 review). One
@@ -78,16 +104,17 @@ public final class AudioEngine {
      * <p>Transitions, and what each does to the transport's RT-clock claim
      * ({@link Transport#setRealTimeClockActive(boolean)}):</p>
      * <ul>
-     *   <li>{@code CLOSED → RUNNING}: {@code openStream} succeeded; the claim
-     *       is taken <em>before</em> {@code startStream} (the callback may run
-     *       before that call returns).</li>
+     *   <li>{@code CLOSED → RUNNING}: a ladder rung's {@code open} succeeded;
+     *       the claim is taken <em>before</em> the render pump starts (the
+     *       pump may call {@link #processBlock} before the start call
+     *       returns).</li>
      *   <li>{@code RUNNING → CLOSED} / {@code RUNNING → RELEASE_PENDING} on a
      *       start failure: the claim is released (draining any seek queued in
      *       the window), then the handle is closed — {@code CLOSED} if that
      *       close succeeded, {@code RELEASE_PENDING} if not.</li>
      *   <li>{@code RUNNING → PAUSED} ({@link #pauseAudioOutput()}): releases
      *       the claim. {@code PAUSED → RUNNING} ({@link #startAudioOutput()}):
-     *       claims before {@code startStream}; a failed resume returns to
+     *       claims before the pump start; a failed resume returns to
      *       {@code PAUSED} and releases.</li>
      *   <li>{@code RUNNING|PAUSED|RELEASE_PENDING → CLOSED}
      *       ({@link #stopAudioOutput()}, close succeeded): releases the claim.
@@ -99,11 +126,12 @@ public final class AudioEngine {
      *       retrying the close before a fresh open): the claim is already
      *       released; nothing changes until the fresh stream starts.</li>
      *   <li>{@code RUNNING|PAUSED|RELEASE_PENDING → CLOSED}
-     *       ({@link #setAudioBackend(NativeAudioBackend)} re-pointing the
-     *       engine at a <em>different</em> backend): the outgoing backend's
-     *       handle is closed best-effort and abandoned if that fails — a later
-     *       retry would run on the new backend and never reach it — and the
-     *       claim is released.</li>
+     *       ({@link #setStreamingProvision(StreamingProvision)} re-pointing
+     *       the engine at a provision that no longer carries the tracked
+     *       backend instance): the outgoing backend's handle is closed
+     *       best-effort and abandoned if that fails — the controller owns
+     *       the outgoing instances' lifecycles — and the claim is
+     *       released.</li>
      * </ul>
      */
     private enum StreamState {
@@ -133,7 +161,6 @@ public final class AudioEngine {
 
     // Audio output stream state
     private volatile StreamState streamState = StreamState.CLOSED;
-    private volatile boolean backendInitialized;
 
     // Unified per-block render pipeline shared by live playback and offline
     // export. Owns the pre-allocated mix, per-track, and return-bus buffers.
@@ -277,11 +304,53 @@ public final class AudioEngine {
     }
 
     /**
-     * Stops the audio engine. If not running, this method is a no-op.
+     * Stops the audio engine, first quiescing the render drive: a still
+     * {@link StreamState#RUNNING} stream's pump is stopped and joined, the
+     * stream is marked {@link StreamState#RELEASE_PENDING}, and the
+     * transport's RT-clock claim is released (draining any queued seek).
+     * If not running, this method is a no-op.
+     *
+     * <p>The quiesce happens BEFORE the running flag is cleared — i.e. while
+     * {@link #processBlock(float[][], float[][], int)} is still legal — so a
+     * pump caught mid-block finishes that block normally instead of throwing
+     * on the freshly cleared flag.</p>
+     *
+     * <p>Why the quiesce exists (story 316 review): when an earlier
+     * {@link #stopAudioOutput()} took its {@code !stopPump()} early return
+     * (the bounded join timed out), the state stayed {@code RUNNING} with an
+     * orphaned pump still alive. Clearing {@code running} without touching
+     * that pump killed it on its next {@code processBlock}, while
+     * {@link #startAudioOutput()}'s {@code state == RUNNING} early return then
+     * refused to ever restart it — permanent silence behind a UI still
+     * reporting RUNNING.</p>
+     *
+     * <p>{@link StreamState#RELEASE_PENDING} — not {@link StreamState#PAUSED}
+     * — is the honest post-state: the backend handle is still held and must
+     * be released before any new open, {@link #isStreamOpen()} correctly
+     * reports {@code false} (output is stopped and not resumable), and
+     * {@link #startAudioOutput()} already releases a retained handle and then
+     * opens <em>fresh</em> through the ladder — which is exactly what a
+     * caller that changed the format while stopped needs. A pause-shaped
+     * PAUSED would instead resume a stream opened at the old format.</p>
      *
      * @return {@code true} if the engine was stopped, {@code false} if already stopped
      */
     public boolean stop() {
+        if (!running.get()) {
+            return false;
+        }
+        if (this.openBackend != null && streamState == StreamState.RUNNING) {
+            // Quiesce while processBlock is still legal (see the javadoc).
+            boolean joined = stopPump();
+            streamState = StreamState.RELEASE_PENDING;
+            releaseTransportClock();
+            if (!joined) {
+                LOG.severe("Engine stop: the render pump did not join in time and may"
+                        + " still be inside processBlock — the pump reference is kept so"
+                        + " the next open re-joins it instead of starting a second render"
+                        + " thread; the backend handle is retained for release");
+            }
+        }
         if (!running.compareAndSet(true, false)) {
             return false;
         }
@@ -385,112 +454,151 @@ public final class AudioEngine {
     }
 
     /**
-     * Sets the audio backend for native I/O.
+     * Replaces the engine's streaming provision — the requested backend plus
+     * its explicit fallback ladder (story 316). Must be called while the
+     * engine is stopped.
      *
-     * <p>Must be called before {@link #start()}. The backend provides
-     * low-latency audio input/output via PortAudio FFM bindings or the
-     * Java Sound API fallback.</p>
+     * <p>Story 315 review, carried forward — a stream handle the engine
+     * still tracks (running, paused, or retained after a failed close — see
+     * {@link StreamState#RELEASE_PENDING}) belongs to a backend of the
+     * <em>outgoing</em> provision. When the incoming provision no longer
+     * carries that backend instance, this method first closes the tracked
+     * stream best-effort — logging a warning naming the backend if that
+     * close fails, because the handle is then being abandoned — and marks
+     * the stream {@link StreamState#CLOSED}, releasing the transport's RT
+     * clock (which drains any queued seek). A provision that still carries
+     * the tracked instance leaves the stream state untouched: a paused
+     * stream stays paused and resumable.</p>
      *
-     * <p>Story 315 review — a stream handle the engine still tracks (running,
-     * paused, or retained after a failed close — see
-     * {@link StreamState#RELEASE_PENDING}) belongs to the <em>outgoing</em>
-     * backend. Re-pointing the engine at a different backend instance while
-     * one is tracked would make every later close retry run against the new
-     * backend, which holds nothing, silently breaking "retry until the close
-     * actually succeeds" and abandoning the old handle unnoticed. So, when
-     * the incoming backend is a different instance, this method first closes
-     * the outgoing backend's stream best-effort — logging a warning naming
-     * the backend if that close fails, because the handle is then being
-     * abandoned — and marks the stream {@link StreamState#CLOSED}, releasing
-     * the transport's RT clock (which drains any queued seek). Re-setting the
-     * same instance leaves the stream state untouched: a paused stream stays
-     * paused and resumable.</p>
+     * <p>Closing the outgoing provision's backend <em>instances</em> is the
+     * caller's job — the controller owns backend lifecycles.</p>
      *
-     * @param backend the audio backend, or {@code null} to use no backend
+     * @param provision the new provision, or {@code null} to stream nothing
+     *                  (engine-only mode)
      * @throws IllegalStateException if the engine is currently running
      */
-    public void setAudioBackend(NativeAudioBackend backend) {
+    public void setStreamingProvision(StreamingProvision provision) {
         if (running.get()) {
-            throw new IllegalStateException("Cannot change audio backend while engine is running");
+            throw new IllegalStateException(
+                    "Cannot change streaming provision while engine is running");
         }
-        NativeAudioBackend outgoing = this.audioBackend;
-        if (streamState != StreamState.CLOSED && outgoing != null && outgoing != backend) {
+        AudioBackend outgoing = this.openBackend;
+        if (streamState != StreamState.CLOSED && outgoing != null
+                && !ladderContains(provision, outgoing)) {
             abandonStreamOnOutgoingBackend(outgoing);
         }
-        this.audioBackend = backend;
-        this.backendInitialized = false;
+        this.streamingProvision = provision;
+    }
+
+    /**
+     * Returns the currently installed streaming provision, or {@code null}
+     * when the engine streams nothing.
+     */
+    public StreamingProvision getStreamingProvision() {
+        return streamingProvision;
+    }
+
+    private static boolean ladderContains(StreamingProvision provision, AudioBackend backend) {
+        if (provision == null) {
+            return false;
+        }
+        for (BackendStreamRung rung : provision.ladder()) {
+            if (rung.backend() == backend) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
      * Closes, best-effort, the stream the engine still tracks on a backend
-     * that is about to be replaced, then forgets it: the state becomes
-     * {@link StreamState#CLOSED} and the RT clock is released whether or not
-     * the close succeeded, because no later retry could reach this backend
-     * once the engine points elsewhere.
+     * that the incoming provision no longer carries, then forgets it: the
+     * state becomes {@link StreamState#CLOSED} and the RT clock is released
+     * whether or not the close succeeded, because no later retry could
+     * reach this backend once the engine points elsewhere.
+     *
+     * <p>The stream HANDLE is abandoned here; the render PUMP is not. A pump
+     * whose bounded join timed out keeps its reference (story 316 review) —
+     * exactly what {@link #stopPump()} itself does on a failed join — so the
+     * next {@link #startAudioOutput()} re-joins it through
+     * {@link #requireQuiescedPump()} instead of starting a second render
+     * thread into the one shared {@link RenderPipeline}. The abandoned loop
+     * exits on the cleared {@code running} flag, which is already clear here:
+     * {@link #setStreamingProvision(StreamingProvision)} refuses to run while
+     * the engine is running.</p>
      */
-    private void abandonStreamOnOutgoingBackend(NativeAudioBackend outgoing) {
+    private void abandonStreamOnOutgoingBackend(AudioBackend outgoing) {
+        if (!stopPump()) {
+            LOG.severe("Audio stream abandoned on outgoing backend " + outgoing.name()
+                    + " while its render pump had not joined: the pump reference is"
+                    + " RETAINED so the next open re-joins it rather than starting a"
+                    + " second render thread; its loop exits on the cleared running flag");
+        }
         try {
-            outgoing.closeStream();
-        } catch (AudioBackendException closeFailure) {
+            outgoing.close();
+        } catch (RuntimeException closeFailure) {
             LOG.log(Level.WARNING,
-                    "Abandoning the audio stream handle still held by " + outgoing.getBackendName()
+                    "Abandoning the audio stream handle still held by " + outgoing.name()
                             + ": it could not be closed, and the engine is being re-pointed at"
                             + " another backend, so no later retry can release it",
                     closeFailure);
         }
         streamState = StreamState.CLOSED;
+        clearOpenStream();
         releaseTransportClock();
     }
 
     /**
-     * Returns the currently configured audio backend, or {@code null} if none is set.
+     * Returns the backend the engine would honestly answer questions about:
+     * the OPEN stream's backend while a stream is open (running or paused),
+     * else the provision's first rung's backend (the one the next open will
+     * try first — the requested backend when it passed the app layer's
+     * gate), else {@code null}. Capability queries, device enumeration and
+     * metronome routing all read this and thereby follow the open stream by
+     * construction (story 316, book &sect;2.4).
      *
-     * @return the audio backend
-     */
-    public NativeAudioBackend getAudioBackend() {
-        return audioBackend;
-    }
-
-    /**
-     * Returns the SDK sealed {@link AudioBackend} currently selected by
-     * the user, or {@code null} if none has been wired. Set by
-     * {@link #setBackend(AudioBackend)} from
-     * {@code DefaultAudioEngineController} after the
-     * {@link AudioBackendSelector} routes a backend name to an instance.
-     *
-     * @return the active SDK backend, or {@code null}
+     * @return the open backend, the first rung's backend, or {@code null}
      */
     public AudioBackend getBackend() {
-        return sdkBackend;
-    }
-
-    /**
-     * Stores the SDK sealed {@link AudioBackend} the user has selected.
-     * Replacing the previous backend does not close it — the caller owns
-     * the lifecycle. Story 130: this slot is read by tests and by
-     * future engine code that drives I/O through the platform backend
-     * (ASIO / WASAPI / CoreAudio / JACK).
-     *
-     * @param backend the SDK backend, or {@code null} to clear
-     */
-    public void setBackend(AudioBackend backend) {
-        this.sdkBackend = backend;
-    }
-
-    /**
-     * Ensures the audio backend is initialized, calling {@link NativeAudioBackend#initialize()}
-     * if it has not been called yet.
-     *
-     * <p>This is safe to call multiple times — the underlying backends are idempotent.
-     * Use this before querying devices (e.g. {@link NativeAudioBackend#getAvailableDevices()})
-     * when audio output has not yet been started.</p>
-     */
-    public void ensureBackendInitialized() {
-        NativeAudioBackend backend = this.audioBackend;
-        if (backend != null && !backendInitialized) {
-            backend.initialize();
-            backendInitialized = true;
+        AudioBackend backend = this.openBackend;
+        if (backend != null && isStreamOpen()) {
+            return backend;
         }
+        StreamingProvision provision = this.streamingProvision;
+        return provision != null ? provision.firstRung().backend() : null;
+    }
+
+    /**
+     * Returns the name of the backend carrying the OPEN stream, or empty
+     * when no stream is open (a retained {@link StreamState#RELEASE_PENDING}
+     * handle is not an open stream). This is the truth query behind honest
+     * "active backend" reporting: it can never name a backend that is not
+     * actually streaming.
+     */
+    public Optional<String> openStreamBackendName() {
+        AudioBackend backend = this.openBackend;
+        return backend != null && isStreamOpen()
+                ? Optional.of(backend.name())
+                : Optional.empty();
+    }
+
+    /**
+     * Returns the device identity of the OPEN stream, or empty when no
+     * stream is open. The identity is the winning ladder rung's stable
+     * {@link DeviceId}, resolved by the backend on every open (&sect;3.2).
+     */
+    public Optional<DeviceId> openStreamDevice() {
+        DeviceId device = this.openDevice;
+        return device != null && isStreamOpen()
+                ? Optional.of(device)
+                : Optional.empty();
+    }
+
+    /** Forgets the tracked stream's backend, device and negotiated format. */
+    private void clearOpenStream() {
+        this.openBackend = null;
+        this.openDevice = null;
+        this.openSdkFormat = null;
     }
 
     // ── Audio output stream lifecycle ────────────────────────────────────────
@@ -499,137 +607,222 @@ public final class AudioEngine {
     // javadoc for the state machine and for which transitions claim or release
     // the transport's RT clock). Lifecycle methods run on non-RT threads only
     // (controller / UI thread, device-event thread) — never from the audio
-    // callback.
+    // callback or the render pump.
 
     /**
-     * Starts audio output by opening and starting a stream on the configured
-     * {@link NativeAudioBackend}, registering {@link #processBlock} as the
-     * audio callback driven at the hardware buffer rate.
+     * Starts audio output: walks the installed {@link StreamingProvision}'s
+     * fallback ladder, opens the first rung whose backend accepts its device
+     * and negotiated format, and starts the engine-owned render pump that
+     * drives {@link #processBlock} at the device's buffer rate.
+     *
+     * <p>Per rung, the engine calls
+     * {@link AudioBackend#negotiateFormat(com.benesquivelmusic.daw.sdk.audio.AudioFormat)}
+     * and passes the negotiated format to
+     * {@link AudioBackend#open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)}.
+     * Every FAILED hop publishes a {@link BackendFallbackEvent} on the
+     * {@link com.benesquivelmusic.daw.core.event.EventBusPublisher EventBus}
+     * (non-RT, on this caller's thread) so requested &ne; active is always a
+     * visible fact; when every rung fails, the FIRST rung's exception — the
+     * requested backend's failure, the actionable one — is rethrown.</p>
      *
      * <p>If the stream was previously paused via {@link #pauseAudioOutput()},
-     * this resumes it without re-opening the stream. If an earlier stop left
-     * the backend holding an unreleasable stream handle (see
-     * {@link StreamState#RELEASE_PENDING}), that close is retried first and
-     * the method fails — without opening a second stream — when the handle
-     * still cannot be released.</p>
+     * this resumes it (a fresh pump on the same open backend) without
+     * re-opening the stream. If an earlier stop left a backend holding an
+     * unreleasable stream handle (see {@link StreamState#RELEASE_PENDING}),
+     * that close is retried first and the method fails — without opening a
+     * second stream — when the handle still cannot be released.</p>
      *
-     * <p>If no audio backend is configured, the engine is started without
-     * hardware output: no callback calls {@link #processBlock}, so nothing
-     * drives the transport's clock, its RT-clock claim is never taken and
-     * seeks apply inline. Honest playing states for that case are story
-     * 317.</p>
+     * <p>If no provision is installed, the engine is started without
+     * hardware output: nothing drives the transport's clock, its RT-clock
+     * claim is never taken and seeks apply inline. Honest playing states for
+     * that case are story 317.</p>
      *
-     * @throws AudioBackendException if the stream cannot be opened or started,
-     *                               or a previously retained stream handle
-     *                               still cannot be released
+     * @throws AudioBackendException if every ladder rung failed to open (the
+     *                               first rung's failure), or a previously
+     *                               retained stream handle still cannot be
+     *                               released, or a previous render pump has
+     *                               not exited yet (see
+     *                               {@link #requireQuiescedPump()} — this
+     *                               open would otherwise put a SECOND thread
+     *                               into the single shared render pipeline)
      */
     public void startAudioOutput() {
-        startAudioOutput(0);
-    }
-
-    /**
-     * Starts audio output on the specified output device index. Use
-     * {@code 0} to select the backend's default output device.
-     *
-     * @param outputDeviceIndex the output device index reported by
-     *                          {@link NativeAudioBackend#getAvailableDevices()}
-     * @throws AudioBackendException if the stream cannot be opened or started,
-     *                               or a previously retained stream handle
-     *                               still cannot be released
-     */
-    public void startAudioOutput(int outputDeviceIndex) {
         StreamState state = this.streamState;
         if (state == StreamState.RUNNING) {
             return; // already running
         }
+        requireQuiescedPump();
         if (state == StreamState.PAUSED) {
             resumeAudioOutput();
             return;
         }
 
-        NativeAudioBackend backend = this.audioBackend;
-        if (state == StreamState.RELEASE_PENDING && backend != null) {
-            // Both production backends refuse openStream while they still hold
-            // a handle, so the retained one must go before a fresh open.
-            releaseRetainedStreamHandle(backend);
+        AudioBackend retained = this.openBackend;
+        if (state == StreamState.RELEASE_PENDING && retained != null) {
+            // Backends refuse open() while they still hold a handle, so the
+            // retained one must go before a fresh open.
+            releaseRetainedStreamHandle(retained);
         }
 
         // Ensure the engine is running (pre-allocates buffers)
         start();
 
-        if (backend == null) {
+        StreamingProvision provision = this.streamingProvision;
+        if (provision == null) {
             LOG.info("No audio backend configured; playback without hardware output");
             return;
         }
 
-        if (!backendInitialized) {
-            backend.initialize();
-            backendInitialized = true;
-        }
+        OpenedRung opened = openLadder(provision);
+        this.openBackend = opened.rung().backend();
+        this.openDevice = opened.rung().device();
+        this.openSdkFormat = opened.negotiatedFormat();
+        startOpenedStream(opened.rung().backend(), opened.negotiatedFormat());
 
-        AudioStreamConfig config = new AudioStreamConfig(
-                -1,                  // no input device
-                outputDeviceIndex,
-                0,                   // no input channels
-                format.channels(),
-                SampleRate.fromHz((int) format.sampleRate()),
-                BufferSize.fromFrames(format.bufferSize())
-        );
-
-        backend.openStream(config, this::processBlock);
-        startOpenedStream(backend);
-
-        LOG.info("Audio output started via " + backend.getBackendName()
-                + " (output device: " + outputDeviceIndex + ")");
+        LOG.info("Audio output started via " + opened.rung().backend().name()
+                + " (device: " + opened.rung().device().name() + ")");
     }
 
     /**
-     * Starts the stream the backend has just opened on
-     * {@link #processBlock(float[][], float[][], int)}, claiming the transport's
-     * RT clock <em>before</em> {@link NativeAudioBackend#startStream()} and
+     * Guarantees no render pump can still be inside {@link #processBlock}
+     * before this open creates another one (story 316 review). Retries the
+     * bounded join of a pump whose previous stop timed out — the one case
+     * where {@link #stopPump()} deliberately KEEPS the reference — and fails
+     * the open outright when it still has not exited.
+     *
+     * <p>Two live pumps would both call {@link #processBlock}, which renders
+     * through the SINGLE pre-allocated {@link RenderPipeline} allocated once
+     * in {@link #start()} — one set of mix, per-track and return-bus buffers
+     * shared by both threads. The result is interleaved garbage, not a
+     * doubled signal, so this must be a hard failure rather than a warning.
+     * The retry-join also covers the {@link StreamState#RELEASE_PENDING}
+     * release that follows it: the backend is never closed out from under a
+     * live pump thread.</p>
+     *
+     * @throws AudioBackendException if the previous pump has not exited yet
+     */
+    private void requireQuiescedPump() {
+        if (!stopPump()) {
+            throw new AudioBackendException(
+                    "Cannot start audio output: the previous render pump has not exited yet"
+                            + " and may still be inside processBlock; retry once it unblocks");
+        }
+    }
+
+    /** A ladder rung that opened, with the format it actually opened at. */
+    private record OpenedRung(
+            BackendStreamRung rung,
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiatedFormat) {
+    }
+
+    /**
+     * Walks the provision's ladder in order. First successful open wins.
+     * Publishes one {@link BackendFallbackEvent} per failed hop — after the
+     * winner is known, so the events can honestly name the rung that ended
+     * up carrying the stream (or the literal {@code "none"}).
+     *
+     * @throws RuntimeException the FIRST rung's failure when every rung failed
+     */
+    private OpenedRung openLadder(StreamingProvision provision) {
+        com.benesquivelmusic.daw.sdk.audio.AudioFormat requested =
+                new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
+                        format.sampleRate(), format.channels(), format.bitDepth());
+        RuntimeException firstFailure = null;
+        List<String> failedHopCauses = new ArrayList<>();
+        for (BackendStreamRung rung : provision.ladder()) {
+            try {
+                com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated =
+                        rung.backend().negotiateFormat(requested);
+                rung.backend().open(rung.device(), negotiated, format.bufferSize());
+                publishFallbackEvents(provision, failedHopCauses,
+                        rung.backend().name(), rung.device().name());
+                return new OpenedRung(rung, negotiated);
+            } catch (RuntimeException hopFailure) {
+                if (firstFailure == null) {
+                    firstFailure = hopFailure;
+                }
+                failedHopCauses.add(causeMessage(hopFailure));
+                LOG.log(Level.WARNING,
+                        "Backend ladder hop failed: " + rung.backend().name()
+                                + " could not open device '" + rung.device().name() + "'",
+                        hopFailure);
+            }
+        }
+        publishFallbackEvents(provision, failedHopCauses, "none", "none");
+        throw firstFailure;
+    }
+
+    /**
+     * Publishes one {@link BackendFallbackEvent} per failed ladder hop.
+     * Non-RT context — runs on the lifecycle caller's thread.
+     */
+    private static void publishFallbackEvents(StreamingProvision provision,
+                                              List<String> failedHopCauses,
+                                              String activeBackend,
+                                              String activeDevice) {
+        for (String cause : failedHopCauses) {
+            EventBusPublisher.publish(new BackendFallbackEvent(
+                    provision.requestedBackendName(),
+                    // The provision's carried requested device, NOT the first
+                    // rung's: when the app layer's availability/streaming gate
+                    // rejected the requested backend, the ladder already starts
+                    // on a FALLBACK rung, so the first rung's device belongs to
+                    // that fallback and would be paired with the user's
+                    // requested backend name here (story 316 review).
+                    provision.requestedDevice().name(),
+                    activeBackend,
+                    activeDevice,
+                    cause));
+        }
+    }
+
+    private static String causeMessage(RuntimeException failure) {
+        String message = failure.getMessage();
+        return message != null ? message : failure.toString();
+    }
+
+    /**
+     * Starts the render pump on the backend a ladder rung has just opened,
+     * claiming the transport's RT clock <em>before</em> the pump start and
      * unwinding both the claim and the handle when the start fails.
      *
-     * <p>Story 315 review — {@code startStream()} may begin invoking the
-     * callback before it returns (Java Sound spawns its audio-I/O thread
-     * there; {@code Pa_StartStream} may run the callback first too), so
-     * claiming afterwards left a window in which the RT callback advanced the
-     * transport while UI seeks still applied inline. Claiming first closes
-     * that window: a seek issued in it is queued and applied by the first
-     * callback block. Should the start then fail, the claim is released
-     * first — which drains that queued seek inline instead of stranding it —
-     * and the handle is given back best-effort: a close that also fails
-     * leaves the stream {@link StreamState#RELEASE_PENDING} and is attached
-     * as a suppressed exception, never masking the start failure.</p>
+     * <p>Story 315 review, carried onto the pump — the pump may call
+     * {@link #processBlock} before its start call returns, so claiming
+     * afterwards would leave a window in which the render thread advanced
+     * the transport while UI seeks still applied inline. Claiming first
+     * closes that window: a seek issued in it is queued and applied by the
+     * first rendered block. Should the start then fail, the claim is
+     * released first — which drains that queued seek inline instead of
+     * stranding it — and the handle is given back best-effort: a close that
+     * also fails leaves the stream {@link StreamState#RELEASE_PENDING} and
+     * is attached as a suppressed exception, never masking the start
+     * failure. The unwind covers <em>every</em> throwable from the start
+     * call — a start that escaped it would leave the engine {@code RUNNING}
+     * with the clock claimed and nothing driving, a permanent wedge.</p>
      *
-     * <p>The unwind covers <em>every</em> throwable from the start call, not
-     * only {@link AudioBackendException}: Java Sound's {@code line.start()}
-     * and its virtual-thread spawn, and PortAudio's own
-     * {@code IllegalStateException}, are unguarded there. Because the claim
-     * is now taken before the start call, a start that escaped the unwind
-     * would leave the engine {@code RUNNING} with the clock claimed and no
-     * callback driving — and every later {@link #startAudioOutput()} would
-     * return early on that state, a permanent wedge.</p>
-     *
-     * @throws AudioBackendException the start failure, when the backend
-     *                               refused to start the stream
-     * @throws RuntimeException      any other unchecked failure (or {@link Error}) the backend's start
-     *                               call raised, rethrown as-is after the
-     *                               same unwind
+     * @throws RuntimeException the pump-start failure, rethrown as-is after
+     *                          the unwind (an {@link Error} unwinds the same
+     *                          way)
      */
-    private void startOpenedStream(NativeAudioBackend backend) {
+    private void startOpenedStream(AudioBackend backend,
+                                   com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiatedFormat) {
         streamState = StreamState.RUNNING;
         claimTransportClock();
         try {
-            backend.startStream();
+            EngineStreamPump newPump =
+                    new EngineStreamPump(backend, this, format, negotiatedFormat);
+            newPump.start();
+            this.pump = newPump;
         } catch (RuntimeException | Error startFailure) {
-            // The callback is not running; the handle is still held until the
+            // The pump is not running; the handle is still held until the
             // close below succeeds.
             streamState = StreamState.RELEASE_PENDING;
             releaseTransportClock();
             try {
-                backend.closeStream();
+                backend.close();
                 streamState = StreamState.CLOSED;
-            } catch (AudioBackendException closeFailure) {
+                clearOpenStream();
+            } catch (RuntimeException closeFailure) {
                 startFailure.addSuppressed(closeFailure);
                 LOG.log(Level.WARNING,
                         "Audio stream failed to start and its handle could not be released;"
@@ -643,215 +836,155 @@ public final class AudioEngine {
     /**
      * Retries the close a previous stop could not complete, so the backend
      * no longer owns the stale handle and a fresh stream can be opened.
-     * Only called in {@link StreamState#RELEASE_PENDING}, where the callback
-     * is known inactive and the clock is already released.
+     * Only called in {@link StreamState#RELEASE_PENDING}, where the pump is
+     * known stopped and the clock is already released.
      *
      * @throws AudioBackendException if the handle still cannot be released;
      *                               the state stays {@code RELEASE_PENDING}
      */
-    private void releaseRetainedStreamHandle(NativeAudioBackend backend) {
+    private void releaseRetainedStreamHandle(AudioBackend backend) {
         try {
-            backend.closeStream();
-        } catch (AudioBackendException closeFailure) {
+            backend.close();
+        } catch (RuntimeException closeFailure) {
             throw new AudioBackendException(
                     "Cannot open a new audio stream: the previous stream's handle is still"
-                            + " held by " + backend.getBackendName()
+                            + " held by " + backend.name()
                             + " and could not be released",
                     closeFailure);
         }
         streamState = StreamState.CLOSED;
+        clearOpenStream();
+    }
+
+    /**
+     * Stops and joins the render pump, if one is running. Never throws.
+     *
+     * @return {@code true} when no pump thread can call {@link #processBlock}
+     *         any more (no pump existed, or the join was confirmed); on a
+     *         timed-out join the pump reference is KEPT so a later stop can
+     *         retry the join once the abandoned loop exits on its cleared
+     *         running flag
+     */
+    private boolean stopPump() {
+        EngineStreamPump current = this.pump;
+        if (current == null) {
+            return true;
+        }
+        boolean joined = current.stop();
+        if (joined) {
+            this.pump = null;
+        }
+        return joined;
     }
 
     /**
      * Stops the audio output stream and closes it. Best-effort: backend
      * failures are logged, never thrown.
      *
-     * <p>Story 315 review — {@link NativeAudioBackend#stopStream()} and
-     * {@link NativeAudioBackend#closeStream()} are attempted independently,
-     * because close is the operation that actually releases the stream and
-     * its callback. The transport's RT-clock claim is released only once the
-     * callback is known to be gone: close returned normally (the stream is
-     * then {@link StreamState#CLOSED}), or — after a failed close — the
-     * backend reports the stream inactive (the stream is then
-     * {@link StreamState#RELEASE_PENDING}: the claim is released, so a seek
-     * queued microseconds earlier is drained rather than stranded, but the
-     * backend still owns the handle, and a later stop or start retries the
-     * close before anything else is opened). If close failed and the stream
-     * is still active, the current state and the claim are preserved: the
-     * (possibly still running) callback keeps the clock so seeks stay queued
-     * behind it, and a later call to this method retries. If even that
-     * activity probe fails, the callback state is unknown and the claim is
-     * preserved as well (see {@link #callbackStillRunning(NativeAudioBackend)}).</p>
+     * <p>Story 316 — the engine owns the render drive: the pump is stopped
+     * and joined first. Only a <em>confirmed</em> join proves nothing can
+     * call {@link #processBlock} any more; when the bounded join times out
+     * (the pump thread may still be mid-{@code processBlock}), the story-315
+     * conservative-preserve rule applies — the transport's RT-clock claim is
+     * kept, the backend stays open, and the state stays
+     * {@link StreamState#RUNNING} so a later stop retries once the abandoned
+     * loop exits on its cleared running flag. After a confirmed join the
+     * claim is released (draining any seek queued microseconds earlier
+     * rather than stranding it — the story-315 bug class) and the backend
+     * close is attempted best-effort: success is {@link StreamState#CLOSED};
+     * a refused close is {@link StreamState#RELEASE_PENDING} with the
+     * backend retained, and the close is retried by the next stop or before
+     * the next open.</p>
      *
      * <p>A subsequent call to {@link #startAudioOutput()} will open a fresh
      * stream once the handle is released.</p>
      */
     public void stopAudioOutput() {
-        NativeAudioBackend backend = this.audioBackend;
+        AudioBackend backend = this.openBackend;
         if (backend == null || streamState == StreamState.CLOSED) {
             return;
         }
-        AudioBackendException stopFailure = stopStreamBestEffort(backend);
-        boolean closed = closeStreamBestEffort(backend, stopFailure);
-        if (closed) {
+        if (!stopPump()) {
+            LOG.severe("Audio output stop deferred: the render pump did not join in time"
+                    + " and may still be inside processBlock — the RT-clock claim and the"
+                    + " backend handle are preserved; retry the stop");
+            return;
+        }
+        releaseTransportClock();
+        try {
+            backend.close();
             streamState = StreamState.CLOSED;
-            releaseTransportClock();
-        } else if (!callbackStillRunning(backend)) {
-            // No callback drives the transport any more, but the backend kept
-            // the handle. Releasing here is necessary — otherwise every seek
-            // would be stranded in the queue behind a drain that never comes
-            // (the exact story-315 bug); the handle is released by a later
-            // close retry.
+            clearOpenStream();
+        } catch (RuntimeException closeFailure) {
+            // The backend kept the handle; the engine keeps tracking it so a
+            // later stop — or the next start — retries the close.
             streamState = StreamState.RELEASE_PENDING;
-            releaseTransportClock();
-        }
-    }
-
-    /**
-     * Probes the backend for a still-running callback after a failed close.
-     *
-     * <p>Story 315 review — best-effort like the rest of
-     * {@link #stopAudioOutput()}: the probe itself can fail (PortAudio wraps
-     * a refused {@code Pa_IsStreamActive} in an {@link AudioBackendException}),
-     * and unknown is treated as "possibly still running" so the current state
-     * and claim are preserved. That is the conservative choice: a
-     * wrongly-preserved claim is retried by the next
-     * {@link #stopAudioOutput()}, whereas a wrongly-released claim would let
-     * an active callback race inline seeks.</p>
-     *
-     * @return {@code true} when the backend reports the stream active, or
-     *         when the probe failed and the callback state is unknown
-     */
-    private static boolean callbackStillRunning(NativeAudioBackend backend) {
-        try {
-            return backend.isStreamActive();
-        } catch (RuntimeException probeFailure) {
             LOG.log(Level.WARNING,
-                    "Could not probe audio output stream activity after a failed close;"
-                            + " treating the callback as possibly still running",
-                    probeFailure);
-            return true;
-        }
-    }
-
-    /**
-     * Stops the backend stream, returning the failure instead of throwing so
-     * close is still attempted.
-     *
-     * @return the stop failure, or {@code null} when the stream stopped
-     */
-    private static AudioBackendException stopStreamBestEffort(NativeAudioBackend backend) {
-        try {
-            backend.stopStream();
-            return null;
-        } catch (AudioBackendException e) {
-            return e;
-        }
-    }
-
-    /**
-     * Closes the backend stream regardless of whether stop succeeded. A close
-     * that returns normally guarantees the callback has been released (both
-     * production backends null out their callback and stream handle there).
-     *
-     * @return {@code true} when close returned normally, i.e. callback
-     *         shutdown is guaranteed and the handle is released
-     */
-    private static boolean closeStreamBestEffort(NativeAudioBackend backend,
-                                                 AudioBackendException stopFailure) {
-        try {
-            backend.closeStream();
-        } catch (AudioBackendException closeFailure) {
-            if (stopFailure != null) {
-                closeFailure.addSuppressed(stopFailure);
-            }
-            LOG.log(Level.WARNING,
-                    "Error closing audio output stream; the callback may still be running",
+                    "Error closing audio output stream; the backend retains the handle"
+                            + " and the close is retried by the next start or stop",
                     closeFailure);
-            return false;
         }
-        if (stopFailure != null) {
-            LOG.log(Level.WARNING,
-                    "Error stopping audio output stream (stream was still closed)",
-                    stopFailure);
-        }
-        return true;
     }
 
     /**
-     * Starts audio I/O for recording by opening a stream that includes both
-     * input and output channels on the configured {@link NativeAudioBackend}.
+     * Starts audio I/O for recording. Story 316 — the SDK
+     * {@link AudioBackend#open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)}
+     * seam is inherently duplex (backends open capture when the provisioned
+     * device has it, publishing blocks on
+     * {@link AudioBackend#inputBlocks()}), so this runs the same ladder,
+     * device identity and pump as {@link #startAudioOutput()}. The record
+     * path therefore opens the <em>provisioned</em> device — no index
+     * parameter exists any more. Per-track input CHANNEL routing stays on
+     * {@code Track.getInputRouting()}; multi-device capture routing is story
+     * 326, which is why this method keeps its own name and seam.
      *
-     * <p>If a stream is already open, it is closed first so that a new
-     * full-duplex stream can be opened with the specified input device. When
-     * that close does not release the backend's handle (the callback is still
-     * active, its state is unknown, or the stream was already
-     * {@link StreamState#RELEASE_PENDING}), this method fails instead of
-     * attempting a second open that the production backends reject.</p>
+     * <p>Unlike {@code startAudioOutput()}, a stream that is already open
+     * (running or paused) is <em>closed first</em> and reopened: the open
+     * stream may predate the input device — or have been opened by a
+     * backend/rung without capture — and record must never silently proceed
+     * with zero input channels. When that close does not release the
+     * backend's handle, this method fails instead of attempting a second
+     * open that the production backends reject (the pre-316
+     * {@code startAudioInputOutput(int)} contract).</p>
      *
-     * <p>If no audio backend is configured, the engine is started without
-     * hardware I/O: no callback calls {@link #processBlock}, so the recording
-     * callback receives no blocks and nothing drives the transport's clock
-     * (its RT-clock claim is never taken and seeks apply inline). Honest
-     * playing states for that case are story 317.</p>
-     *
-     * @param inputDeviceIndex the index of the input device to open
-     * @throws AudioBackendException if the stream cannot be opened or started,
-     *                               or the previous stream's handle could not
-     *                               be released
+     * @throws AudioBackendException if every ladder rung failed to open, or
+     *                               the previous stream could not be closed
+     *                               first, or a previously retained stream
+     *                               handle still cannot be released
      */
-    public void startAudioInputOutput(int inputDeviceIndex) {
-        // Close existing stream if open
+    public void startAudioInputOutput() {
         if (streamState != StreamState.CLOSED) {
             stopAudioOutput();
             if (streamState != StreamState.CLOSED) {
                 throw new AudioBackendException(
-                        "Cannot open a full-duplex audio stream: the previous stream"
-                                + " could not be closed and its handle is still held by"
-                                + " the backend");
+                        "Cannot open a full-duplex audio stream: the previous stream's"
+                                + " handle is still held by the backend and could not be"
+                                + " released");
             }
         }
-
-        // Ensure the engine is running (pre-allocates buffers)
-        start();
-
-        NativeAudioBackend backend = this.audioBackend;
-        if (backend == null) {
-            LOG.info("No audio backend configured; recording without hardware I/O");
-            return;
-        }
-
-        if (!backendInitialized) {
-            backend.initialize();
-            backendInitialized = true;
-        }
-
-        AudioStreamConfig config = new AudioStreamConfig(
-                inputDeviceIndex,
-                0,                   // default output device
-                format.channels(),   // input channels matching format
-                format.channels(),
-                SampleRate.fromHz((int) format.sampleRate()),
-                BufferSize.fromFrames(format.bufferSize())
-        );
-
-        backend.openStream(config, this::processBlock);
-        startOpenedStream(backend);
-
-        LOG.info("Audio input/output started via " + backend.getBackendName()
-                + " (input device: " + inputDeviceIndex + ")");
+        startAudioOutput();
     }
 
     /**
-     * Pauses audio output by stopping the stream without closing it,
-     * allowing a fast resume via {@link #startAudioOutput()}. Only a
+     * Pauses audio output by stopping the render pump without closing the
+     * backend stream, allowing a fast resume via {@link #startAudioOutput()}
+     * (a fresh pump on the same open backend). Only a
      * {@link StreamState#RUNNING} stream can be paused; in every other state
      * this is a no-op.
+     *
+     * <p>Like {@link #stopAudioOutput()}, a pump whose bounded join timed
+     * out (possibly still inside {@link #processBlock}) preserves the
+     * RT-clock claim and the {@code RUNNING} state — a later pause or stop
+     * retries once the abandoned loop has exited.</p>
      */
     public void pauseAudioOutput() {
-        NativeAudioBackend backend = this.audioBackend;
-        if (backend != null && streamState == StreamState.RUNNING) {
-            backend.stopStream();
+        if (this.openBackend != null && streamState == StreamState.RUNNING) {
+            if (!stopPump()) {
+                LOG.severe("Audio output pause deferred: the render pump did not join in"
+                        + " time and may still be inside processBlock — the RT-clock claim"
+                        + " is preserved; retry the pause or stop");
+                return;
+            }
             streamState = StreamState.PAUSED;
             releaseTransportClock();
         }
@@ -891,26 +1024,39 @@ public final class AudioEngine {
     }
 
     /**
-     * Restarts a paused stream, claiming the RT clock before the backend
-     * start call (see {@link #startOpenedStream(NativeAudioBackend)} for
-     * why). On a start failure of any kind — not only an
-     * {@link AudioBackendException}; see
-     * {@link #startOpenedStream(NativeAudioBackend)} for why the unwind must
-     * catch every throwable — the stream stays open and paused (the resume is
-     * retryable) and the claim is released again.
+     * Restarts a paused stream: claims the RT clock, then starts a fresh
+     * render pump on the SAME still-open backend (see
+     * {@link #startOpenedStream(AudioBackend, com.benesquivelmusic.daw.sdk.audio.AudioFormat)}
+     * for why the claim precedes the start). On a start failure of any kind
+     * the stream stays open and paused (the resume is retryable) and the
+     * claim is released again.
      *
-     * @throws AudioBackendException if the backend refused to restart the stream
-     * @throws RuntimeException      any other unchecked failure (or {@link Error}) the backend's start
-     *                               call raised, rethrown as-is after the
-     *                               same unwind
+     * <p>The engine itself is (re)started first (story 316 review): a stream
+     * can be {@link StreamState#PAUSED} across an {@link #stop()}, because
+     * {@link #pauseAudioOutput()} leaves the engine running and {@code stop()}
+     * only quiesces a {@link StreamState#RUNNING} stream. Resuming against a
+     * stopped engine would start a pump whose every {@link #processBlock}
+     * throws and whose loop then exits — silence. {@link #start()} is a no-op
+     * when the engine is already running, and re-allocates the render buffers
+     * when it is not.</p>
+     *
+     * @throws RuntimeException the pump-start failure, rethrown as-is (an
+     *                          {@link Error} unwinds the same way)
      */
     private void resumeAudioOutput() {
-        NativeAudioBackend backend = this.audioBackend;
-        if (backend != null && streamState == StreamState.PAUSED) {
+        AudioBackend backend = this.openBackend;
+        com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated = this.openSdkFormat;
+        if (backend != null && negotiated != null && streamState == StreamState.PAUSED) {
+            // No-op when already running; re-allocates the render pipeline
+            // when this resume follows a stop() (see the javadoc).
+            start();
             streamState = StreamState.RUNNING;
             claimTransportClock();
             try {
-                backend.startStream();
+                EngineStreamPump newPump =
+                        new EngineStreamPump(backend, this, format, negotiated);
+                newPump.start();
+                this.pump = newPump;
             } catch (RuntimeException | Error startFailure) {
                 streamState = StreamState.PAUSED;
                 releaseTransportClock();
@@ -930,8 +1076,8 @@ public final class AudioEngine {
      * <p>This — not {@link Transport#getState()} — is the truth condition
      * behind {@link Transport#setRealTimeClockActive(boolean)}. The transport
      * can be {@code PLAYING} with no stream at all:
-     * {@link #startAudioOutput(int)} returns early when no backend is
-     * configured, and the UI starts the transport regardless (honest playing
+     * {@link #startAudioOutput()} returns early when no provision is
+     * installed, and the UI starts the transport regardless (honest playing
      * states are story 317).</p>
      */
     private boolean callbackIsDriving() {
@@ -1366,7 +1512,9 @@ public final class AudioEngine {
         Metronome currentMetronome = this.metronome;
         MetronomeSideOutputRouter currentRouter = this.metronomeSideOutputRouter;
         CueBusManager currentCueBusManager = this.cueBusManager;
-        AudioBackend currentBackend = this.sdkBackend;
+        // The OPEN stream's backend (story 316): metronome writeToChannel
+        // routing finally targets the stream that is actually playing.
+        AudioBackend currentBackend = this.openBackend;
 
         // Story 137: tap the raw input signal per armed track BEFORE any
         // processing so the mixer's input-meter column and the clip LED

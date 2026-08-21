@@ -576,6 +576,21 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     }
 
     /**
+     * Returns {@code true} when the {@code sink(...)} &rarr; callback output
+     * ring can accept another rendered block without dropping it.
+     *
+     * <p>The device-clock pacing seam (story 316): {@link
+     * AsioBackend#awaitSinkCapacity(long)} polls this from the engine's
+     * render pump — a non-real-time thread — between blocks, so the pump
+     * produces at exactly the rate {@link #bufferSwitch(int, int)} consumes.
+     * Purely a read of the ring's occupancy counters; it adds no work to the
+     * real-time {@code bufferSwitch} / {@code write} paths.</p>
+     */
+    boolean outputRingHasSpace() {
+        return outputRing.hasSpace();
+    }
+
+    /**
      * Test seam: the {@code asio-input-drain} daemon thread that marshals
      * captured blocks off the driver's real-time thread. Never null.
      */

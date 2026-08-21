@@ -1,0 +1,654 @@
+package com.benesquivelmusic.daw.core.audio;
+
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback;
+import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.LatencyInfo;
+import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.SampleRate;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
+
+/**
+ * Contract of {@link CallbackBackendAdapter} (story 316): a legacy
+ * {@link NativeAudioBackend} adapted behind the SDK {@code AudioBackend}
+ * interface — name-based device resolution against a fresh enumeration
+ * snapshot (real driver defaults, never index&nbsp;0), a lock-free output
+ * ring from {@code sink} to the device callback, and capture published off
+ * the RT thread by the {@code native-input-drain} thread.
+ */
+class CallbackBackendAdapterTest {
+
+    private static final com.benesquivelmusic.daw.sdk.audio.AudioFormat FORMAT =
+            new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 2, 24);
+    private static final int FRAMES = 128;
+
+    /** Guard budget for drain-thread waits — generous, never inner-inflated. */
+    private static final long GUARD_BUDGET_MILLIS = 5_000L;
+
+    private static AudioDeviceInfo device(int index, String name, int in, int out) {
+        return new AudioDeviceInfo(index, name, "Fake", in, out, 48_000.0,
+                List.of(SampleRate.HZ_48000), 0.0, 0.0);
+    }
+
+    // ── Device resolution (§3.2) ─────────────────────────────────────────
+
+    @Test
+    void defaultDeviceIdResolvesThroughTheDriversRealDefaultQueries() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        AudioStreamConfig config = fake.lastConfig;
+        assertThat(config.outputDeviceIndex())
+                .as("the driver's default OUTPUT device, never index 0")
+                .isEqualTo(3);
+        assertThat(config.inputDeviceIndex())
+                .as("blank input name resolves the driver's default INPUT device")
+                .isEqualTo(5);
+        assertThat(config.inputChannels()).isEqualTo(2);
+        assertThat(config.outputChannels()).isEqualTo(2);
+        assertThat(config.bufferSize().getFrames()).isEqualTo(FRAMES);
+        assertThat(adapter.isOpen()).isTrue();
+        adapter.close();
+    }
+
+    @Test
+    void namedDevicesResolveAgainstAFreshEnumerationSnapshotPerOpen() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter =
+                new CallbackBackendAdapter(fake, "Duplex");
+
+        adapter.open(new DeviceId("Fake", "Duplex"), FORMAT, FRAMES);
+        assertThat(fake.lastConfig.outputDeviceIndex()).isEqualTo(7);
+        assertThat(fake.lastConfig.inputDeviceIndex()).isEqualTo(7);
+        int enumerationsAfterFirstOpen = fake.enumerationCount;
+        adapter.close();
+
+        adapter.open(new DeviceId("Fake", "Duplex"), FORMAT, FRAMES);
+        assertThat(fake.enumerationCount)
+                .as("every open re-enumerates; indices are only valid within one snapshot")
+                .isGreaterThan(enumerationsAfterFirstOpen);
+        adapter.close();
+    }
+
+    @Test
+    void aStaleOutputDeviceNameIsAVisibleError() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThatThrownBy(() ->
+                adapter.open(new DeviceId("Fake", "Unplugged Interface"), FORMAT, FRAMES))
+                .as("a name that no longer enumerates must fail loudly, not open index 0")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("Unplugged Interface")
+                .hasMessageContaining("not found");
+
+        assertThat(fake.openStreamCount)
+                .as("no stream was opened on a stale identity")
+                .isZero();
+        assertThat(adapter.isOpen()).isFalse();
+    }
+
+    @Test
+    void aMissingInputDeviceNameDisablesCaptureWithoutFailingTheOpen() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter =
+                new CallbackBackendAdapter(fake, "Gone Mic");
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThat(adapter.isOpen())
+                .as("input failure must not kill playback (326 owns capture truth)")
+                .isTrue();
+        assertThat(fake.lastConfig.inputDeviceIndex()).isEqualTo(-1);
+        assertThat(fake.lastConfig.inputChannels()).isZero();
+        adapter.close();
+    }
+
+    @Test
+    void monoMicClampsTheInputChannelCountInsteadOfFailingTheOpen() {
+        // Story 316 review (F5): the requested input channel count is clamped
+        // to the resolved input device's real capability — a mono mic must
+        // never fail (or over-declare) a stereo-format open.
+        FakeNativeBackend fake = new FakeNativeBackend(List.of(
+                device(3, "Main Out", 0, 2),
+                device(9, "Mono Mic", 1, 0)));
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mono Mic");
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThat(adapter.isOpen()).isTrue();
+        assertThat(fake.lastConfig.inputDeviceIndex()).isEqualTo(9);
+        assertThat(fake.lastConfig.inputChannels())
+                .as("the stereo-format request is clamped to the mic's one channel")
+                .isEqualTo(1);
+        assertThat(fake.lastConfig.outputChannels()).isEqualTo(2);
+        adapter.close();
+    }
+
+    @Test
+    void duplexRefusalRetriesOutputOnlyBeforePropagating() {
+        // Story 316 review (F5): when the driver refuses the duplex open,
+        // the open is retried once output-only — input must never kill
+        // playback.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        fake.refuseDuplexOpens = true;
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThat(adapter.isOpen())
+                .as("the output-only retry carries the open")
+                .isTrue();
+        assertThat(fake.openStreamCount)
+                .as("one refused duplex attempt, one successful retry")
+                .isEqualTo(2);
+        assertThat(fake.lastConfig.inputChannels()).isZero();
+        assertThat(fake.lastConfig.inputDeviceIndex()).isEqualTo(-1);
+        assertThat(fake.lastConfig.outputChannels()).isEqualTo(2);
+        assertThat(fake.lastConfig.outputDeviceIndex())
+                .as("the retry keeps the resolved output device")
+                .isEqualTo(3);
+        adapter.close();
+    }
+
+    @Test
+    void doubleOpenThrows() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES))
+                .isInstanceOf(IllegalStateException.class);
+        adapter.close();
+    }
+
+    // ── Output flow: sink → ring → device callback, in order ─────────────
+
+    @Test
+    void sunkBlocksReachTheDeviceCallbackInOrderWithSilenceWhenEmpty() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        adapter.sink(constantBlock(0.25f));
+        adapter.sink(constantBlock(0.5f));
+
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+        fake.callback.process(in, out, FRAMES);
+        assertThat(out[0][0]).isEqualTo(0.25f);
+        assertThat(out[1][FRAMES - 1]).isEqualTo(0.25f);
+
+        fake.callback.process(in, out, FRAMES);
+        assertThat(out[0][0]).isEqualTo(0.5f);
+        assertThat(out[1][FRAMES - 1]).isEqualTo(0.5f);
+
+        fake.callback.process(in, out, FRAMES);
+        assertThat(out[0][0])
+                .as("an empty ring plays silence, never a stale block")
+                .isEqualTo(0.0f);
+        assertThat(out[1][FRAMES - 1]).isEqualTo(0.0f);
+        adapter.close();
+    }
+
+    @Test
+    void sinkBeyondRingCapacityDropsAndCounts() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        for (int i = 0; i < 10; i++) {
+            adapter.sink(constantBlock(0.1f));
+        }
+
+        assertThat(adapter.droppedOutputBlocks())
+                .as("the output ring holds 4 slots; the excess is dropped, not blocked on")
+                .isGreaterThanOrEqualTo(6);
+        adapter.close();
+    }
+
+    @Test
+    void sinkValidatesBlockShapeAndDropsSilentlyWhenClosed() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        // Closed: silently dropped per the interface contract.
+        adapter.sink(constantBlock(0.1f));
+        assertThat(adapter.droppedOutputBlocks()).isZero();
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        assertThatThrownBy(() -> adapter.sink(AudioBlock.silence(48_000.0, 1, FRAMES)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> adapter.sink(AudioBlock.silence(48_000.0, 2, FRAMES / 2)))
+                .isInstanceOf(IllegalArgumentException.class);
+        adapter.close();
+    }
+
+    @Test
+    void awaitSinkCapacityReturnsPromptlyWhileTheRingHasSpace() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        long start = System.nanoTime();
+        adapter.awaitSinkCapacity(TimeUnit.SECONDS.toNanos(30));
+        long elapsed = System.nanoTime() - start;
+        assertThat(elapsed)
+                .as("space exists, so the poll returns long before the timeout")
+                .isLessThan(TimeUnit.SECONDS.toNanos(5));
+        adapter.close();
+    }
+
+    // ── Input flow: callback → ring → drain thread → publisher ───────────
+
+    @Test
+    void capturedInputIsPublishedByTheDrainThreadNeverTheCallback() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        List<AudioBlock> received = new CopyOnWriteArrayList<>();
+        List<String> deliveryThreads = new CopyOnWriteArrayList<>();
+        CountDownLatch arrived = new CountDownLatch(1);
+        adapter.inputBlocks().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+            @Override public void onNext(AudioBlock item) {
+                received.add(item);
+                deliveryThreads.add(Thread.currentThread().getName());
+                arrived.countDown();
+            }
+            @Override public void onError(Throwable throwable) { }
+            @Override public void onComplete() { }
+        });
+
+        float[][] in = new float[2][FRAMES];
+        for (float[] channel : in) {
+            java.util.Arrays.fill(channel, 0.25f);
+        }
+        float[][] out = new float[2][FRAMES];
+        fake.callback.process(in, out, FRAMES);
+
+        try {
+            assertThat(arrived.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the drain thread publishes the captured block")
+                    .isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("Interrupted awaiting the captured block");
+        }
+        AudioBlock block = received.get(0);
+        assertThat(block.channels()).isEqualTo(2);
+        assertThat(block.frames()).isEqualTo(FRAMES);
+        assertThat(block.samples()[0]).isEqualTo(0.25f);
+        adapter.close();
+    }
+
+    @Test
+    void inputRingOverflowDropsAndCounts() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        // Flood the 32-slot input ring from the (test-driven) callback. The
+        // drain thread consumes concurrently, so a fixed burst can race it —
+        // instead the producer keeps writing (it never parks; the drain must
+        // allocate/clone/publish per block) until an overflow is observed,
+        // bounded by the guard budget.
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(GUARD_BUDGET_MILLIS);
+        while (adapter.droppedInputBlocks() == 0) {
+            if (System.nanoTime() > deadline) {
+                fail("Timed out after " + GUARD_BUDGET_MILLIS
+                        + " ms awaiting: capture beyond the bounded ring is dropped"
+                        + " and counted");
+            }
+            for (int i = 0; i < 100; i++) {
+                fake.callback.process(in, out, FRAMES);
+            }
+        }
+
+        assertThat(adapter.droppedInputBlocks()).isGreaterThan(0);
+        adapter.close();
+    }
+
+    // ── Oversized driver blocks (story 316 review) ───────────────────────
+
+    @Test
+    void anOversizedDriverBlockIsClampedInsteadOfThrowingOnTheCallbackThread() {
+        // The driver's numFrames is ITS truth, not ours: PortAudio under a
+        // host-API-imposed period — or a post-reset size change — can hand
+        // the callback a block LARGER than the buffer we opened. Indexing
+        // past the fixed channels * bufferFrames scratch would throw an
+        // ArrayIndexOutOfBoundsException on the device's real-time thread,
+        // breaking the callback's promise that a momentarily
+        // differently-shaped block never throws.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        adapter.sink(constantBlock(0.75f));
+
+        int oversized = FRAMES * 2;
+        float[][] in = new float[2][oversized];
+        float[][] out = new float[2][oversized];
+        for (float[] plane : out) {
+            java.util.Arrays.fill(plane, 0.5f); // stale data the driver must not hear
+        }
+
+        assertThatCode(() -> fake.callback.process(in, out, oversized))
+                .as("an oversized block must never throw on the RT callback thread")
+                .doesNotThrowAnyException();
+
+        for (int channel = 0; channel < 2; channel++) {
+            for (int frame = 0; frame < FRAMES; frame++) {
+                assertThat(out[channel][frame])
+                        .as("the scratch's frames are played as rendered")
+                        .isEqualTo(0.75f);
+            }
+            for (int frame = FRAMES; frame < oversized; frame++) {
+                assertThat(out[channel][frame])
+                        .as("frames the scratch cannot cover are SILENCE, never stale data")
+                        .isEqualTo(0.0f);
+            }
+        }
+        adapter.close();
+    }
+
+    @Test
+    void anOversizedCaptureBlockIsClampedToTheInputScratch() {
+        // Same clamp, capture direction: the driver's oversized input planes
+        // must not overrun the fixed inScratch. The frames beyond the opened
+        // block are dropped — the published block still has the opened shape.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        List<AudioBlock> received = new CopyOnWriteArrayList<>();
+        adapter.inputBlocks().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+            @Override public void onNext(AudioBlock item) {
+                received.add(item);
+            }
+            @Override public void onError(Throwable throwable) { }
+            @Override public void onComplete() { }
+        });
+
+        int oversized = FRAMES * 2;
+        float[][] in = new float[2][oversized];
+        for (float[] plane : in) {
+            java.util.Arrays.fill(plane, 0.25f);
+        }
+        float[][] out = new float[2][oversized];
+
+        assertThatCode(() -> fake.callback.process(in, out, oversized))
+                .as("an oversized CAPTURE block must never throw on the RT thread either")
+                .doesNotThrowAnyException();
+
+        awaitCondition(() -> !received.isEmpty(),
+                "the drain thread publishes the clamped capture block");
+        AudioBlock block = received.get(0);
+        assertThat(block.frames())
+                .as("the published block keeps the OPENED shape, not the driver's")
+                .isEqualTo(FRAMES);
+        assertThat(block.channels()).isEqualTo(2);
+        assertThat(block.samples())
+                .as("every clamped sample came from the driver's planes")
+                .containsOnly(0.25f);
+        adapter.close();
+    }
+
+    // ── Side-output channel writes are counted, not routed ───────────────
+
+    @Test
+    void writeToChannelValidatesItsArgumentsAndCountsTheDrop() {
+        // Story 316's Non-Goals leave the real hardware side-output routing
+        // to existing stories 136 (metronome side output) and 135 (headphone
+        // cue): the rings carry whole interleaved mix blocks, so this adapter
+        // cannot address individual physical output channels yet. This test
+        // pins the gap as a COUNTED fact so it cannot silently regress to the
+        // interface's invisible inherited no-op — the adapter is the default
+        // provision head on Windows without ASIO, so every routed click and
+        // every cue-bus contribution lands here while the call site looks
+        // fully wired.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThatThrownBy(() -> adapter.writeToChannel(-1, new float[FRAMES]))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("channelIndex");
+        assertThatThrownBy(() -> adapter.writeToChannel(0, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("monoSamples");
+        assertThat(adapter.droppedChannelWrites())
+                .as("a rejected call is a programming error, not a routing drop")
+                .isZero();
+
+        adapter.writeToChannel(0, new float[FRAMES]);
+
+        assertThat(adapter.droppedChannelWrites())
+                .as("the unrouted side-output write is counted, never invisible")
+                .isEqualTo(1);
+        adapter.close();
+    }
+
+    // ── Close ────────────────────────────────────────────────────────────
+
+    @Test
+    void closeIsIdempotentReleasesTheDelegateAndCompletesThePublisher() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        CountDownLatch completed = new CountDownLatch(1);
+        adapter.inputBlocks().subscribe(new Flow.Subscriber<AudioBlock>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+            @Override public void onNext(AudioBlock item) { }
+            @Override public void onError(Throwable throwable) { }
+            @Override public void onComplete() {
+                completed.countDown();
+            }
+        });
+
+        adapter.close();
+        adapter.close(); // idempotent
+
+        assertThat(adapter.isOpen()).isFalse();
+        assertThat(fake.closeStreamCount).isEqualTo(1);
+        assertThat(fake.closed).isTrue();
+        try {
+            assertThat(completed.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("closing completes the input publisher for the closed stream")
+                    .isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("Interrupted awaiting publisher completion");
+        }
+    }
+
+    @Test
+    void enumerateOnlyAdapterCloseStillReleasesTheDelegate() {
+        // Story 316 review (F7): an adapter used only for enumeration (the
+        // Settings dialog's listDevices() probes) still initialized the
+        // delegate (Pa_Initialize) — close() must give that back even though
+        // no stream was ever opened.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        assertThat(adapter.listDevices()).isNotEmpty();
+        assertThat(fake.initializeCount).isEqualTo(1);
+
+        adapter.close();
+
+        assertThat(fake.closed)
+                .as("close() reaches delegate.close() with no stream ever opened")
+                .isTrue();
+        assertThat(fake.openStreamCount).isZero();
+        assertThat(fake.closeStreamCount).isZero();
+    }
+
+    // ── Identity / capability passthrough ────────────────────────────────
+
+    @Test
+    void identityAndCapabilitiesDelegate() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThat(adapter.name()).isEqualTo("Fake");
+        assertThat(adapter.isAvailable()).isTrue();
+        assertThat(adapter.supportsStreaming()).isTrue();
+        assertThat(adapter.listDevices()).hasSize(3);
+    }
+
+    // ── Support ──────────────────────────────────────────────────────────
+
+    private static AudioBlock constantBlock(float value) {
+        float[] samples = new float[2 * FRAMES];
+        java.util.Arrays.fill(samples, value);
+        return new AudioBlock(48_000.0, 2, FRAMES, samples);
+    }
+
+    private static void awaitCondition(BooleanSupplier condition, String description) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GUARD_BUDGET_MILLIS);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() > deadline) {
+                fail("Timed out after " + GUARD_BUDGET_MILLIS + " ms awaiting: " + description);
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
+    }
+
+    /**
+     * Scripted legacy backend: three devices (output-only "Main Out" at
+     * index 3, input-only "Mic In" at index 5, full-duplex "Duplex" at
+     * index 7 — deliberately none at index 0), real default queries, and a
+     * hand-drivable registered callback.
+     */
+    private static final class FakeNativeBackend implements NativeAudioBackend {
+
+        final List<AudioDeviceInfo> devices;
+
+        int initializeCount;
+        int enumerationCount;
+        int openStreamCount;
+        int closeStreamCount;
+        boolean closed;
+        volatile boolean refuseDuplexOpens;
+        AudioStreamConfig lastConfig;
+        AudioStreamCallback callback;
+        private boolean streamOpen;
+
+        FakeNativeBackend() {
+            this(List.of(
+                    device(3, "Main Out", 0, 2),
+                    device(5, "Mic In", 2, 0),
+                    device(7, "Duplex", 2, 2)));
+        }
+
+        FakeNativeBackend(List<AudioDeviceInfo> devices) {
+            this.devices = devices;
+        }
+
+        @Override
+        public void initialize() {
+            initializeCount++;
+        }
+
+        @Override
+        public List<AudioDeviceInfo> getAvailableDevices() {
+            enumerationCount++;
+            return devices;
+        }
+
+        @Override
+        public AudioDeviceInfo getDefaultInputDevice() {
+            return devices.get(1); // "Mic In", index 5 (or the custom list's second device)
+        }
+
+        @Override
+        public AudioDeviceInfo getDefaultOutputDevice() {
+            return devices.get(0); // "Main Out", index 3
+        }
+
+        @Override
+        public void openStream(AudioStreamConfig config, AudioStreamCallback callback) {
+            if (streamOpen) {
+                throw new IllegalStateException("A stream is already open");
+            }
+            openStreamCount++;
+            this.lastConfig = config;
+            if (refuseDuplexOpens && config.inputChannels() > 0) {
+                throw new AudioBackendException("duplex open refused by the driver");
+            }
+            this.callback = callback;
+            this.streamOpen = true;
+        }
+
+        @Override
+        public void startStream() {
+            // no-op — the test drives the callback by hand
+        }
+
+        @Override
+        public void stopStream() {
+            // no-op
+        }
+
+        @Override
+        public void closeStream() {
+            closeStreamCount++;
+            streamOpen = false;
+            callback = null;
+        }
+
+        @Override
+        public LatencyInfo getLatencyInfo() {
+            return LatencyInfo.of(0, 0, FRAMES, 48_000);
+        }
+
+        @Override
+        public boolean isStreamActive() {
+            return streamOpen;
+        }
+
+        @Override
+        public String getBackendName() {
+            return "Fake";
+        }
+
+        @Override
+        public boolean isAvailable() {
+            return true;
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+}

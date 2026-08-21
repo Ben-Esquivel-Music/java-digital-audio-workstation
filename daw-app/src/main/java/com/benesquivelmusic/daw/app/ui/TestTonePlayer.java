@@ -18,9 +18,10 @@ import java.util.logging.Logger;
  * users can verify their audio output configuration without disturbing
  * the running DAW engine.
  *
- * <p>Deliberately uses the Java Sound API directly rather than the active
- * {@link com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend} so that
- * the test tone never clashes with an already-open PortAudio stream.</p>
+ * <p>Deliberately uses the Java Sound API directly rather than the engine's
+ * streaming {@link com.benesquivelmusic.daw.sdk.audio.AudioBackend} seam so
+ * that the test tone never clashes with the stream the engine may already
+ * hold open (ASIO, PortAudio, or Java Sound).</p>
  */
 final class TestTonePlayer {
 

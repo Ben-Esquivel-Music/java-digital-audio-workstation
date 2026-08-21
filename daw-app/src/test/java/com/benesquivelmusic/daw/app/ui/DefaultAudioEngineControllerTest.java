@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
+import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
@@ -21,12 +23,14 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link DefaultAudioEngineController}. Uses a plain
@@ -454,6 +458,97 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
+    void formatChangeReopenWithOpenStreamClosesThenReopensThroughEngineSeam(
+            @TempDir Path projectRoot) throws InterruptedException {
+        // Story 316 — the wasOpen == true arc of the driver-initiated
+        // format-change reopen (the test above runs with NO open stream and
+        // ends STOPPED): a stream that was OPEN before the event must be
+        // closed and then reopened THROUGH the engine's one open/close seam
+        // — never by calling backend.open(...) directly — ending RUNNING
+        // with the engine format carrying the proposed change.
+        AudioFormat starting = new AudioFormat(48_000.0, 2, 24, 256);
+        AudioEngine engine = new AudioEngine(starting);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        List<String> lifecycleLog =
+                java.util.Collections.synchronizedList(new ArrayList<>());
+        SpyStreamingBackend spy = new SpyStreamingBackend("SpyASIO", lifecycleLog);
+        DeviceId active = new DeviceId("SpyASIO", "Dev B");
+        SubmissionPublisher<com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent>
+                deviceEvents = new SubmissionPublisher<>();
+        try {
+            engine.setStreamingProvision(new StreamingProvision("SpyASIO",
+                    List.of(new BackendStreamRung(spy, active))));
+            controller.bindBackendDeviceEvents(spy, active, deviceEvents);
+
+            // Open the stream BEFORE the driver event — the discriminator
+            // against the no-open-stream variant above.
+            engine.startAudioOutput();
+            assertThat(engine.isStreamOpen()).isTrue();
+            assertThat(spy.isOpen()).isTrue();
+
+            List<EngineState> transitions = new ArrayList<>();
+            controller.engineStateEvents().subscribe(new Flow.Subscriber<EngineState>() {
+                @Override public void onSubscribe(Flow.Subscription s) {
+                    s.request(Long.MAX_VALUE);
+                }
+                @Override public void onNext(EngineState s) {
+                    synchronized (transitions) { transitions.add(s); }
+                }
+                @Override public void onError(Throwable t) { /* ignore */ }
+                @Override public void onComplete() { /* ignore */ }
+            });
+
+            // The driver renegotiated to a 512-frame buffer at the same rate.
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat proposed =
+                    new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 2, 24);
+            deviceEvents.submit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .FormatChangeRequested(active, Optional.of(proposed),
+                            new FormatChangeReason.BufferSizeChange(512)));
+
+            // Wait for the RECONFIGURING -> RUNNING arc: a restored stream
+            // reports RUNNING as its terminal state (never a stale STOPPED).
+            waitForLong(() -> {
+                synchronized (transitions) {
+                    return transitions.contains(EngineState.RECONFIGURING)
+                            && transitions.lastIndexOf(EngineState.RUNNING)
+                                    > transitions.indexOf(EngineState.RECONFIGURING);
+                }
+            });
+
+            // The reopen routed through the engine seam: the spy recorded
+            // the OLD stream's close strictly before the second open.
+            assertThat(List.copyOf(lifecycleLog))
+                    .as("format-change reopen must close the old stream and "
+                            + "reopen through the engine's one seam, in order")
+                    .containsExactly("open:SpyASIO", "close:SpyASIO", "open:SpyASIO");
+
+            // The stream is open again afterwards, honestly reported.
+            assertThat(controller.engineState()).isEqualTo(EngineState.RUNNING);
+            assertThat(engine.isStreamOpen()).isTrue();
+            assertThat(spy.isOpen()).isTrue();
+            assertThat(engine.openStreamBackendName()).contains("SpyASIO");
+
+            // The engine format carries the proposed change (new buffer
+            // size; rate and depth retained), and the SECOND open was made
+            // at exactly that format on the configured device.
+            assertThat(engine.getFormat().bufferSize()).isEqualTo(512);
+            assertThat(engine.getFormat().sampleRate()).isEqualTo(48_000.0);
+            assertThat(engine.getFormat().bitDepth()).isEqualTo(24);
+            List<SpyStreamingBackend.OpenRecord> opens = spy.opens();
+            assertThat(opens).hasSize(2);
+            assertThat(opens.get(1).bufferFrames()).isEqualTo(512);
+            assertThat(opens.get(1).device()).isEqualTo(active);
+        } finally {
+            deviceEvents.close();
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
     void sampleRateChangeRequestedFallsBackToSrc(@TempDir Path projectRoot)
             throws InterruptedException {
         // Project session at 48 kHz.
@@ -550,10 +645,10 @@ class DefaultAudioEngineControllerTest {
         }
     }
 
-    // -- Story 130: backend selection & SDK platform-backend wiring ---------
+    // -- Stories 130/316: backend selection & provision wiring ---------------
 
     @Test
-    void applyBackendByNameWiresSdkBackendIntoEngine(@TempDir Path projectRoot) {
+    void applyConfigurationWiresSdkBackendAsProvisionFirstRung(@TempDir Path projectRoot) {
         // Inject a selector whose factory map maps "Mock" to MockAudioBackend
         // (the default selector already does, but threading it explicitly
         // keeps the test deterministic and demonstrates how the selector
@@ -569,13 +664,23 @@ class DefaultAudioEngineControllerTest {
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null, NotificationManager.noop(),
                 new IncompleteTakeStore(projectRoot), selector);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    MockAudioBackend.NAME, "", "", SampleRate.HZ_44100, 512, 16, 1));
 
-        controller.applyBackendByName(MockAudioBackend.NAME);
-
-        // The SDK backend slot on AudioEngine is populated with a fresh
-        // MockAudioBackend instance — the wiring story's headline goal.
-        assertThat(engine.getBackend())
-                .isInstanceOf(MockAudioBackend.class);
+            // Story 316: the engine's ONE streaming slot carries the selected
+            // SDK backend as the provision's requested (first) rung — the
+            // wiring story's headline goal, now on the honest seam.
+            StreamingProvision provision = engine.getStreamingProvision();
+            assertThat(provision).isNotNull();
+            assertThat(provision.requestedBackendName()).isEqualTo(MockAudioBackend.NAME);
+            assertThat(provision.firstRung().backend())
+                    .isInstanceOf(MockAudioBackend.class);
+            assertThat(engine.getBackend()).isInstanceOf(MockAudioBackend.class);
+        } finally {
+            engine.stop();
+            controller.shutdown();
+        }
     }
 
     @Test
@@ -598,7 +703,9 @@ class DefaultAudioEngineControllerTest {
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null, NotificationManager.noop(),
                 new IncompleteTakeStore(projectRoot), selector);
-        controller.applyBackendByName(MockAudioBackend.NAME);
+        controller.applyConfiguration(new AudioEngineController.Request(
+                MockAudioBackend.NAME, "", "Mock Device", SampleRate.HZ_44100, 512, 16, 1));
+        engine.stop();
         DeviceId device = new DeviceId(MockAudioBackend.NAME, "Mock Device");
         controller.bindBackendDeviceEvents(backend, device);
 
@@ -696,30 +803,55 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
-    void wasapiExclusiveNameCreatesExclusiveBackendOrExplicitlyFallsBack(
+    void wasapiExclusiveNameFailsStreamingGateAndExplicitlyFallsBack(
             @TempDir Path projectRoot) {
+        // Story 316: WASAPI's streaming path is not implemented
+        // (supportsStreaming() == false), so requesting "WASAPI
+        // (Exclusive)" must never provision a WASAPI rung — an
+        // honest-looking silent stream — regardless of isAvailable().
+        // The gate produces the same explicit fallback notification the
+        // unavailable-backend path uses.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } },
                 new IncompleteTakeStore(projectRoot));
 
-        controller.applyBackendByName("WASAPI (Exclusive)");
+        controller.applyConfiguration(new AudioEngineController.Request(
+                "WASAPI (Exclusive)", "", "", SampleRate.HZ_44100, 512, 16, 1));
 
-        if (new com.benesquivelmusic.daw.sdk.audio.WasapiBackend(true).isAvailable()) {
-            assertThat(engine.getBackend())
-                    .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.WasapiBackend.class);
-            assertThat(((com.benesquivelmusic.daw.sdk.audio.WasapiBackend) engine.getBackend())
-                    .isExclusive()).isTrue();
-            assertThat(controller.getActiveBackendName()).isEqualTo("WASAPI (Exclusive)");
-        } else {
-            assertThat(engine.getBackend()).isNull();
-            assertThat(engine.getAudioBackend().getBackendName()).isEqualTo("Java Sound");
+        StreamingProvision provision = engine.getStreamingProvision();
+        assertThat(provision).isNotNull();
+        for (BackendStreamRung rung : provision.ladder()) {
+            assertThat(rung.backend())
+                    .isNotInstanceOf(com.benesquivelmusic.daw.sdk.audio.WasapiBackend.class);
         }
+        // Story 316 review (F8): the provision keeps the USER'S request —
+        // the engine stamps it into every BackendFallbackEvent — while the
+        // notification and the reported backend name the ladder's ACTUAL
+        // head (PortAudio when available, else Java Sound).
+        assertThat(provision.requestedBackendName()).isEqualTo("WASAPI (Exclusive)");
+        String headRung = provision.firstRung().backend().name();
+        assertThat(headRung).isIn("PortAudio", "Java Sound");
+        assertThat(controller.getActiveBackendName())
+                .as("closed stream: the reported backend is the ladder's first rung")
+                .isEqualTo(headRung);
+        synchronized (notices) {
+            assertThat(notices)
+                    .filteredOn(m -> m.contains(
+                            "not available — falling back to " + headRung))
+                    .hasSize(1)
+                    .first()
+                    .asString()
+                    .startsWith("WASAPI (Exclusive)");
+        }
+        engine.stop();
         controller.shutdown();
     }
 
     @Test
-    void applyBackendByNameWithUnavailablePlatformBackendFallsBackAndNotifies(
+    void unavailablePlatformBackendRequestFallsBackAndNotifies(
             @TempDir Path projectRoot) {
         // Register a deterministic test-only unavailable backend under the
         // name "ASIO" so this test does not depend on host OS or
@@ -743,22 +875,274 @@ class DefaultAudioEngineControllerTest {
                 message -> { synchronized (notices) { notices.add(message); } },
                 new IncompleteTakeStore(projectRoot), selector);
 
-        controller.applyBackendByName("ASIO");
+        controller.applyConfiguration(new AudioEngineController.Request(
+                "ASIO", "", "", SampleRate.HZ_44100, 512, 16, 1));
 
-        // SDK slot is *not* populated with an unavailable backend — the
-        // user must end up on the live Java Sound path instead.
-        assertThat(engine.getBackend()).isNull();
-        assertThat(engine.getAudioBackend()).isNotNull();
-        assertThat(engine.getAudioBackend().getBackendName())
-                .isEqualTo("Java Sound");
-        // Exactly one fallback notification, matching the issue's wording.
+        // Story 316: the provision does NOT carry the unavailable backend —
+        // its ladder starts at the emergency rungs, so the user ends up on
+        // a backend that actually streams.
+        StreamingProvision provision = engine.getStreamingProvision();
+        assertThat(provision).isNotNull();
+        for (BackendStreamRung rung : provision.ladder()) {
+            assertThat(rung.backend()).isNotInstanceOf(MockAudioBackend.class);
+        }
+        // Story 316 review (F8): requestedBackendName stays the USER'S
+        // request; the notification and the reported backend name the
+        // ladder's ACTUAL head instead of a hardcoded "Java Sound".
+        assertThat(provision.requestedBackendName()).isEqualTo("ASIO");
+        String headRung = provision.firstRung().backend().name();
+        assertThat(headRung).isIn("PortAudio", "Java Sound");
+        assertThat(controller.getActiveBackendName()).isEqualTo(headRung);
+        // Exactly one fallback notification, naming the actual head rung.
         synchronized (notices) {
             assertThat(notices)
-                    .filteredOn(m -> m.contains("not available — falling back to Java Sound"))
+                    .filteredOn(m -> m.contains(
+                            "not available — falling back to " + headRung))
                     .hasSize(1)
                     .first()
                     .asString()
                     .startsWith("ASIO");
+        }
+        engine.stop();
+        controller.shutdown();
+    }
+
+    @Test
+    void gateRejectedProvisionCarriesTheUsersOwnRequestedDevice(
+            @TempDir Path projectRoot) {
+        // Story 316 review: BackendFallbackEvent.requestedDevice is defined
+        // as the device the USER'S configuration asked for. A gate-rejected
+        // request starts the ladder on a FALLBACK rung, so defaulting the
+        // requested device from firstRung() would stamp every published
+        // event with a device the user never chose — the fallback backend's
+        // own default. Same deterministic unavailable-"ASIO" setup as the
+        // test above, but naming an explicit OUTPUT device.
+        java.util.Map<String, java.util.function.Supplier<
+                com.benesquivelmusic.daw.sdk.audio.AudioBackend>> factories =
+                new java.util.LinkedHashMap<>();
+        factories.put("ASIO", () -> {
+            MockAudioBackend unavailable = new MockAudioBackend();
+            unavailable.setAvailable(false);
+            return unavailable;
+        });
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
+
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+
+        controller.applyConfiguration(new AudioEngineController.Request(
+                "ASIO", "", "Studio Interface Out", SampleRate.HZ_44100, 512, 16, 1));
+
+        StreamingProvision provision = engine.getStreamingProvision();
+        assertThat(provision).isNotNull();
+        assertThat(provision.requestedBackendName()).isEqualTo("ASIO");
+        assertThat(provision.requestedDevice())
+                .as("the provision names the OUTPUT device the user asked for")
+                .isEqualTo(new DeviceId("ASIO", "Studio Interface Out"));
+
+        BackendStreamRung head = provision.firstRung();
+        assertThat(head.device())
+                .as("falling back is an emergency: the rung opens its OWN default device")
+                .isEqualTo(DeviceId.defaultFor(head.backend().name()));
+        assertThat(head.device())
+                .as("the fallback's device never masquerades as the user's request")
+                .isNotEqualTo(provision.requestedDevice());
+
+        engine.stop();
+        controller.shutdown();
+    }
+
+    @Test
+    void applyConfigurationAlwaysFinishesEvenWhenTheProvisionBuildThrows(
+            @TempDir Path projectRoot) {
+        // Story 316 review — the finally-block guarantee. Anything escaping
+        // applyConfiguration used to strand the whole flow: neither the
+        // terminal engine state nor the post-reconfigure callback ran, so the
+        // settings dialog stayed disabled forever behind a failure nobody
+        // surfaced. AudioBackendSelector.selectByName calls factory.get() and
+        // propagates whatever the supplier throws, which is the most honest
+        // way to make the provision build blow up from a unit test.
+        //
+        // What this test deliberately does NOT cover: the inner wasOpen
+        // branch's guard around startAudioOutput(). That branch cannot be
+        // driven deterministically from a unit test — the fallback ladder
+        // always ends in a real JavaxSoundBackend rung that opens
+        // successfully on a healthy host, and AudioEngine is final so it
+        // cannot be stubbed. Faking that, or asserting on whether this
+        // particular host has a working output device, would both be worse
+        // than the honest gap.
+        java.util.Map<String, java.util.function.Supplier<
+                com.benesquivelmusic.daw.sdk.audio.AudioBackend>> factories =
+                new java.util.LinkedHashMap<>();
+        factories.put("ASIO", () -> {
+            throw new IllegalStateException("ASIO driver blew up while loading");
+        });
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
+
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        AtomicBoolean callbackRan = new AtomicBoolean();
+        List<String> notices = new ArrayList<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, () -> callbackRan.set(true),
+                message -> { synchronized (notices) { notices.add(message); } },
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            // Leave the initial STOPPED state first so the STOPPED assertion
+            // below is discriminating rather than vacuous: a removal of the
+            // bound device lands in DEVICE_LOST synchronously on the
+            // emitting thread.
+            DeviceId lost = new DeviceId("Mock", "Mock Out");
+            DelayedDeviceEventPublisher events = new DelayedDeviceEventPublisher();
+            controller.bindBackendDeviceEvents(new MockAudioBackend(), lost, events);
+            events.connect();
+            events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .DeviceRemoved(lost));
+            assertThat(controller.engineState()).isEqualTo(EngineState.DEVICE_LOST);
+
+            assertThatThrownBy(() -> controller.applyConfiguration(
+                    new AudioEngineController.Request(
+                            "ASIO", "", "", SampleRate.HZ_44100, 512, 16, 1)))
+                    .as("the failure still reaches the caller")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("ASIO driver blew up while loading");
+
+            assertThat(callbackRan)
+                    .as("the post-reconfigure callback runs on EVERY path — the "
+                            + "settings dialog re-enables even when the apply failed")
+                    .isTrue();
+            assertThat(controller.engineState())
+                    .as("the flow lands in a terminal state, never stranded")
+                    .isEqualTo(EngineState.STOPPED);
+            synchronized (notices) {
+                assertThat(notices)
+                        .as("the user is told why the configuration did not apply")
+                        .anyMatch(m -> m.startsWith(
+                                "Audio configuration could not be applied: "));
+            }
+        } finally {
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void gateFailureNotificationNamesPortAudioWhenPortAudioHeadsTheLadder(
+            @TempDir Path projectRoot) {
+        // Story 316 review (F8): on a PortAudio-capable host the fallback
+        // ladder's head is PortAudio, and the notification must say so —
+        // the pre-fix message dishonestly hardcoded "Java Sound". On a host
+        // without PortAudio this degrades to asserting the actual head.
+        java.util.Map<String, java.util.function.Supplier<
+                com.benesquivelmusic.daw.sdk.audio.AudioBackend>> factories =
+                new java.util.LinkedHashMap<>();
+        factories.put("ASIO", () -> {
+            MockAudioBackend unavailable = new MockAudioBackend();
+            unavailable.setAvailable(false);
+            return unavailable;
+        });
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
+
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } },
+                new IncompleteTakeStore(projectRoot), selector);
+
+        boolean portAudioCapable =
+                controller.getAvailableBackendNames().contains("PortAudio");
+
+        controller.applyConfiguration(new AudioEngineController.Request(
+                "ASIO", "", "", SampleRate.HZ_44100, 512, 16, 1));
+
+        StreamingProvision provision = engine.getStreamingProvision();
+        assertThat(provision).isNotNull();
+        String headRung = provision.firstRung().backend().name();
+        if (portAudioCapable) {
+            assertThat(headRung)
+                    .as("a PortAudio-capable host heads the fallback ladder with PortAudio")
+                    .isEqualTo("PortAudio");
+        } else {
+            assertThat(headRung).isEqualTo("Java Sound");
+        }
+        synchronized (notices) {
+            assertThat(notices)
+                    .filteredOn(m -> m.contains(
+                            "not available — falling back to " + headRung))
+                    .as("the notification names the ladder's actual head: " + headRung)
+                    .hasSize(1)
+                    .first()
+                    .asString()
+                    .startsWith("ASIO");
+        }
+        engine.stop();
+        controller.shutdown();
+    }
+
+    @Test
+    void postGateLadderFailurePublishesEventsNamingTheOriginalRequest(
+            @TempDir Path projectRoot) throws Exception {
+        // Story 316 review (F8): the provision the controller builds stamps
+        // the USER'S requested name into every BackendFallbackEvent the
+        // engine publishes. A spy "ASIO" passes the availability/streaming
+        // gate, then refuses the open — a post-gate ladder-hop failure.
+        SpyStreamingBackend refusing = new SpyStreamingBackend("ASIO");
+        refusing.failOpensWith(
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendException(
+                        "ASIO driver refused the open"));
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> refusing));
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+
+        com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
+                com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
+        com.benesquivelmusic.daw.core.event.DefaultEventBus bus =
+                new com.benesquivelmusic.daw.core.event.DefaultEventBus();
+        List<com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent> events =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        CountDownLatch published = new CountDownLatch(1);
+        bus.on(com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent.class, event -> {
+            events.add(event);
+            published.countDown();
+        });
+        com.benesquivelmusic.daw.core.event.EventBusPublisher.setDefault(bus);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "", SampleRate.HZ_44100, 512, 16, 1));
+            assertThat(engine.getStreamingProvision().requestedBackendName())
+                    .as("the gate passed; the provision names the user's request")
+                    .isEqualTo("ASIO");
+
+            try {
+                engine.startAudioOutput(); // hop 1 fails post-gate; the ladder walks on
+            } catch (RuntimeException everyRungFailed) {
+                // Acceptable on hosts where no fallback rung can open —
+                // the failed hops still published their events, asserted below.
+            }
+
+            assertThat(published.await(5, TimeUnit.SECONDS))
+                    .as("the failed post-gate hop publishes a BackendFallbackEvent")
+                    .isTrue();
+            assertThat(events)
+                    .isNotEmpty()
+                    .allSatisfy(event -> assertThat(event.requestedBackend())
+                            .as("fallback events name the ORIGINAL user request")
+                            .isEqualTo("ASIO"));
+        } finally {
+            com.benesquivelmusic.daw.core.event.EventBusPublisher.setDefault(previousBus);
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+            bus.close();
         }
     }
 
@@ -767,7 +1151,7 @@ class DefaultAudioEngineControllerTest {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
         List<String> names = controller.getAvailableBackendNames();
-        // Java Sound is always present (legacy NativeAudioBackend slot).
+        // Java Sound is always present (the ladder's unconditional floor).
         // The full set is the union with whatever the selector reports
         // available on this host: on Linux that's at least JACK,
         // on Windows ASIO/WASAPI, on macOS CoreAudio. The exact extra

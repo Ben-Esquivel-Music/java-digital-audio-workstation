@@ -152,8 +152,8 @@ class AudioEngineTest {
     void shouldStartAudioInputOutputWithoutBackend() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
-        // With no backend, startAudioInputOutput should still start the engine
-        engine.startAudioInputOutput(0);
+        // With no provision, startAudioInputOutput should still start the engine
+        engine.startAudioInputOutput();
 
         assertThat(engine.isRunning()).isTrue();
     }
@@ -162,37 +162,13 @@ class AudioEngineTest {
     void shouldStartAudioInputOutputAfterOutputIsOpen() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
-        // Start output-only first (no backend, so just starts engine)
+        // Start output-only first (no provision, so just starts engine)
         engine.startAudioOutput();
         assertThat(engine.isRunning()).isTrue();
 
         // Starting input/output should not error
-        engine.startAudioInputOutput(0);
+        engine.startAudioInputOutput();
         assertThat(engine.isRunning()).isTrue();
-    }
-
-    @Test
-    void ensureBackendInitializedShouldInitializeJavaSoundBackend() {
-        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        var backend = new com.benesquivelmusic.daw.core.audio.javasound.JavaSoundBackend();
-        engine.setAudioBackend(backend);
-
-        // Before ensureBackendInitialized, getAvailableDevices should throw
-        assertThatThrownBy(backend::getAvailableDevices)
-                .isInstanceOf(IllegalStateException.class);
-
-        // After ensureBackendInitialized, getAvailableDevices should succeed
-        engine.ensureBackendInitialized();
-        assertThat(backend.getAvailableDevices()).isNotNull();
-    }
-
-    @Test
-    void ensureBackendInitializedShouldBeNoOpWithNoBackend() {
-        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-
-        // Should not throw when no backend is set
-        engine.ensureBackendInitialized();
-        assertThat(engine.getAudioBackend()).isNull();
     }
 
     @Test

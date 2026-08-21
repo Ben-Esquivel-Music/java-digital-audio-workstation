@@ -31,11 +31,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reflection-based verification of the {@link RealTimeSafe} contract.
  *
  * <p>This suite discovers every class under {@code com.benesquivelmusic.daw}
- * at test time and enforces five invariants:</p>
+ * at test time and enforces six invariants:</p>
  * <ol>
  *   <li>Critical-path methods carry {@code @RealTimeSafe}
  *       ({@code Mixer.mixDown}, {@code EffectsChain.process},
  *        {@code AudioEngine.processBlock}).</li>
+ *   <li>EVERY production real-time callback bridge — every method a driver
+ *       enters on ITS real-time thread, listed in
+ *       {@link #RT_CALLBACK_BRIDGES} — carries {@code @RealTimeSafe} and,
+ *       per its own bytecode, never publishes captured audio inline: the
+ *       hand-off to non-RT code is a lock-free ring plus a drain thread.
+ *       The sentinel is parameterized over the bridges rather than pinned
+ *       to the ASIO one, so a new RT callback path is covered by adding a
+ *       single list entry.</li>
  *   <li>Every concrete {@link AudioProcessor} in {@code daw-core/dsp} has
  *       {@code @RealTimeSafe} on its {@code process} method, and every
  *       {@link SidechainAwareProcessor} has it on
@@ -82,6 +90,59 @@ class RealTimeSafeContractTest {
      */
     private static final String ASIO_SAMPLE_TYPE_CLASS =
             "com.benesquivelmusic.daw.sdk.audio.AsioSampleType";
+
+    /**
+     * Story 316 — the second production real-time device-callback bridge:
+     * the adapter that fronts a legacy callback-driven
+     * {@code NativeAudioBackend} (PortAudio) behind the SDK
+     * {@code AudioBackend} interface. PortAudio enters it on ITS real-time
+     * thread, with the same ring + drain-thread discipline — and the same
+     * hazard — as {@link #ASIO_BRIDGE_CLASS}.
+     */
+    private static final String NATIVE_CALLBACK_BRIDGE_CLASS =
+            "com.benesquivelmusic.daw.core.audio.CallbackBackendAdapter";
+
+    /**
+     * Story 316 — the method on {@link #NATIVE_CALLBACK_BRIDGE_CLASS} that
+     * the driver's real-time thread enters. Carries the same rename caveat
+     * as {@link #ASIO_BRIDGE_METHOD}, and the same non-empty scan guard
+     * catches it.
+     */
+    private static final String NATIVE_CALLBACK_BRIDGE_METHOD = "deviceCallback";
+
+    /**
+     * One production real-time callback bridge: the class and the exact
+     * method signature a driver enters on ITS real-time thread.
+     *
+     * @param className      binary name of the declaring class
+     * @param methodName     name of the callback method
+     * @param parameterTypes the callback's exact parameter types, so
+     *                       {@code getDeclaredMethod} throws
+     *                       {@link NoSuchMethodException} on a rename or a
+     *                       signature change rather than passing vacuously
+     */
+    private record RtCallbackBridge(String className, String methodName,
+                                    List<Class<?>> parameterTypes) {
+
+        @Override
+        public String toString() {
+            return className.substring(className.lastIndexOf('.') + 1) + "#" + methodName;
+        }
+    }
+
+    /**
+     * EVERY production real-time callback bridge, scanned by the sentinels
+     * below. A maintainer who "simplified" a bridge's drain loop away and
+     * called {@code inputPublisher.offer(...)} inline would take a
+     * {@link java.util.concurrent.locks.ReentrantLock} on a real-time thread
+     * with a completely green build — which is why the check is structural,
+     * per bridge, and why a new RT callback path belongs in this list.
+     */
+    private static final List<RtCallbackBridge> RT_CALLBACK_BRIDGES = List.of(
+            new RtCallbackBridge(ASIO_BRIDGE_CLASS, ASIO_BRIDGE_METHOD,
+                    List.of(int.class, int.class)),
+            new RtCallbackBridge(NATIVE_CALLBACK_BRIDGE_CLASS, NATIVE_CALLBACK_BRIDGE_METHOD,
+                    List.of(float[][].class, float[][].class, int.class)));
 
     // ------------------------------------------------------------------
     // Discovery
@@ -208,35 +269,84 @@ class RealTimeSafeContractTest {
     }
 
     /**
-     * Story 311 — structural guard for the off-thread input marshalling.
+     * Stories 311 / 316 — every production real-time callback bridge in
+     * {@link #RT_CALLBACK_BRIDGES} carries {@code @RealTimeSafe}.
+     *
+     * <p>The generic bytecode / varargs / boxing sweeps below only look at
+     * methods that already carry the annotation, so a bridge that lost it
+     * would silently drop out of every one of them. The lookup uses
+     * {@code getDeclaredMethod} with the bridge's exact signature — a
+     * rename or a signature change throws {@link NoSuchMethodException}
+     * rather than passing vacuously — and reaches a {@code private}
+     * callback (the {@code CallbackBackendAdapter} one) without
+     * {@code setAccessible}: reading annotations needs no access.</p>
+     */
+    @TestFactory
+    Stream<DynamicTest> everyRtCallbackBridgeMustBeRealTimeSafe() {
+        assertThat(RT_CALLBACK_BRIDGES)
+                .as("at least one production RT callback bridge must be listed")
+                .isNotEmpty();
+        return RT_CALLBACK_BRIDGES.stream().map(bridge -> DynamicTest.dynamicTest(
+                bridge + " must be @RealTimeSafe",
+                () -> {
+                    Class<?> bridgeClass = Class.forName(bridge.className());
+                    Method callback = bridgeClass.getDeclaredMethod(
+                            bridge.methodName(),
+                            bridge.parameterTypes().toArray(new Class<?>[0]));
+                    assertThat(isRealTimeSafe(callback))
+                            .as("%s must be annotated @RealTimeSafe", bridge)
+                            .isTrue();
+                }));
+    }
+
+    /**
+     * Stories 311 / 316 — structural guard for the off-thread input
+     * marshalling, applied to EVERY production real-time callback bridge.
      *
      * <p>{@code SubmissionPublisher.doOffer} acquires a
      * {@link java.util.concurrent.locks.ReentrantLock} (even with zero
      * subscribers, and held across the whole subscriber fan-out),
      * {@code BufferedSubscription.offer} grows an {@code Object[]}, and the
      * delivery {@code Executor} allocates a task. {@link RealTimeSafe} forbids
-     * all three verbatim. The bridge therefore de-interleaves into a lock-free
-     * ring and lets the {@code asio-input-drain} thread do the publishing —
-     * a property no behavioural test can pin down, so it is asserted directly
-     * against the callback's bytecode.</p>
+     * all three verbatim. Each bridge therefore de-interleaves into a
+     * lock-free ring and lets its own drain thread ({@code asio-input-drain},
+     * {@code native-input-drain}) do the publishing — a property no
+     * behavioural test can pin down, so it is asserted directly against each
+     * callback's bytecode.</p>
      *
-     * <p>The scan is by method <em>name</em>, so it would pass vacuously if the
-     * bridge method were renamed or compiled without a {@code Code} attribute:
-     * the loop body would never run and {@code offenders} would be empty. The
-     * scanned-method count is therefore asserted non-empty first, per this
-     * repo's conformance-sentinel convention.</p>
+     * <p>The scan is by method <em>name</em>, so it would pass vacuously if a
+     * bridge method were renamed or compiled without a {@code Code}
+     * attribute: the loop body would never run and {@code offenders} would be
+     * empty. The scanned-method count is therefore asserted non-empty PER
+     * BRIDGE first, per this repo's conformance-sentinel convention.</p>
      */
-    @Test
-    void asioBufferSwitchMustNotPublishFromTheCallbackThread() throws Exception {
-        Class<?> bridge = Class.forName(ASIO_BRIDGE_CLASS);
-        byte[] bytes = readClassBytes(bridge);
-        assertThat(bytes).as("AsioBufferSwitchShim class file must be readable").isNotNull();
+    @TestFactory
+    Stream<DynamicTest> noRtCallbackBridgeMayPublishFromTheCallbackThread() {
+        assertThat(RT_CALLBACK_BRIDGES)
+                .as("at least one production RT callback bridge must be scanned")
+                .isNotEmpty();
+        return RT_CALLBACK_BRIDGES.stream().map(bridge -> DynamicTest.dynamicTest(
+                bridge + " must not publish from the callback thread",
+                () -> assertBridgeNeverPublishesInline(bridge)));
+    }
+
+    /**
+     * Runs the publish sentinel's bytecode scan against one bridge. Reaches
+     * the class file through {@code getResourceAsStream}, which JPMS never
+     * encapsulates for {@code .class} resources — so a {@code daw-core}
+     * bridge is read exactly the way the {@code daw-sdk} one is.
+     */
+    private static void assertBridgeNeverPublishesInline(RtCallbackBridge bridge)
+            throws Exception {
+        Class<?> bridgeClass = Class.forName(bridge.className());
+        byte[] bytes = readClassBytes(bridgeClass);
+        assertThat(bytes).as("%s class file must be readable", bridge).isNotNull();
         ClassModel model = ClassFile.of().parse(bytes);
 
         List<String> offenders = new ArrayList<>();
         int scannedBridgeMethods = 0;
         for (MethodModel mm : model.methods()) {
-            if (!mm.methodName().stringValue().equals(ASIO_BRIDGE_METHOD)) {
+            if (!mm.methodName().stringValue().equals(bridge.methodName())) {
                 continue;
             }
             CodeAttribute code = mm
@@ -257,21 +367,20 @@ class RealTimeSafeContractTest {
                         || name.equals("publishInput")
                         || name.equals("submit")
                         || name.equals("offer")) {
-                    offenders.add("bufferSwitch invokes " + owner + "#" + name);
+                    offenders.add(bridge.methodName() + " invokes " + owner + "#" + name);
                 }
             }
         }
 
         assertThat(scannedBridgeMethods)
                 .as("this sentinel only asserts anything if it actually scanned the "
-                        + "bytecode of AsioBufferSwitchShim#%s, and no such method "
-                        + "with a Code attribute was found, so the check below would "
-                        + "pass vacuously. If the ASIO bridge method was renamed, "
-                        + "update ASIO_BRIDGE_METHOD here.", ASIO_BRIDGE_METHOD)
+                        + "bytecode of %s, and no such method with a Code attribute was "
+                        + "found, so the check below would pass vacuously. If the bridge "
+                        + "method was renamed, update RT_CALLBACK_BRIDGES here.", bridge)
                 .isGreaterThanOrEqualTo(1);
         assertThat(offenders)
-                .as("AsioBufferSwitchShim.bufferSwitch must hand captured audio to the "
-                        + "asio-input-drain thread instead of publishing inline")
+                .as("%s must hand captured audio to its own drain thread instead of "
+                        + "publishing inline on the driver's real-time thread", bridge)
                 .isEmpty();
     }
 

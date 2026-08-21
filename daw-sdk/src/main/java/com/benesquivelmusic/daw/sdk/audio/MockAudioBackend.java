@@ -82,6 +82,23 @@ public final class MockAudioBackend implements AudioBackend {
     }
 
     /**
+     * {@inheritDoc}
+     *
+     * <p>Always {@code true}: the mock "streams" deterministically —
+     * {@link #sink(AudioBlock)} captures into an assertable buffer and
+     * {@link #pumpInput(int)} replays seeded PCM through
+     * {@link #inputBlocks()} — so tests that stand it in for a streaming
+     * backend pass the story-316 {@code supportsStreaming} gate.
+     * {@link #awaitSinkCapacity(long)} deliberately keeps the inherited
+     * full-timeout park: wall-clock pacing keeps pump-driven tests from
+     * spinning the render loop flat out and exhausting memory.</p>
+     */
+    @Override
+    public boolean supportsStreaming() {
+        return true;
+    }
+
+    /**
      * Configures the availability flag returned by {@link #isAvailable()}.
      * Defaults to {@code true}; set to {@code false} to simulate a backend
      * whose native library / driver is absent — useful for testing the

@@ -30,7 +30,6 @@ import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.UndoCommand;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
-import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -857,11 +856,6 @@ public final class MainController {
         // taps the raw input signal per armed track before any processing.
         audioEngine.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
-        try {
-            audioEngine.setAudioBackend(AudioBackendFactory.createDefault());
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to create audio backend; playback will use UI timer only", e);
-        }
         audioEngineController = new DefaultAudioEngineController(audioEngine, () ->
                 postFx(() -> {
                     applyProjectInfoLabels();
@@ -880,6 +874,16 @@ public final class MainController {
                     // path that mutates the engine format.
                     engineBinder.refreshPerformanceMonitor();
                 }));
+        // Story 316: install the blank-name default streaming provision
+        // (PortAudio if available, else Java Sound) so the engine has an
+        // open ladder before the persisted settings refine it below.
+        try {
+            audioEngineController.installDefaultProvision();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING,
+                    "Failed to install the default audio backend provision;"
+                            + " audio output stays unavailable until configured in Settings", e);
+        }
         applyStartupAudioSettings(startupSettings, audioEngineController);
 
         // Apply the persisted mix precision from user preferences to the

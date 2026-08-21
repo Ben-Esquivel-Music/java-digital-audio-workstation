@@ -577,14 +577,13 @@ final class TransportController implements TransportIntentHandler {
             recordingPipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());
             recordingPipeline.start();
 
-            // Open audio input stream with the first armed audio track's input device
+            // Open audio I/O through the engine's provisioned device (story
+            // 316): the settings-configured device identity is honoured on
+            // every open — a per-track input device index no longer reaches
+            // the open path. Per-track input CHANNEL routing stays on
+            // Track.getInputRouting(); multi-device capture is story 326.
             try {
-                int inputDevice = armedAudioTracks.stream()
-                        .mapToInt(Track::getInputDeviceIndex)
-                        .filter(idx -> idx >= 0)
-                        .findFirst()
-                        .orElse(0);
-                audioEngine.startAudioInputOutput(inputDevice);
+                audioEngine.startAudioInputOutput();
             } catch (RuntimeException e) {
                 LOG.log(Level.WARNING, "Failed to start audio input for recording", e);
                 notificationBar.show(NotificationLevel.ERROR,

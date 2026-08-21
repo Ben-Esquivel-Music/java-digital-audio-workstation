@@ -12,6 +12,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -147,6 +148,21 @@ public final class AsioBackend implements AudioBackend {
         } catch (RuntimeException ignored) {
             return false;
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Always {@code true}: the ASIO streaming path is fully implemented —
+     * {@link #sink(AudioBlock)} reaches the driver's output buffers over the
+     * story-311 buffer-switch bridge and {@link #inputBlocks()} republishes
+     * captured audio. (On a build without the native shim, {@code open}
+     * degrades to the story-310 no-streaming path; availability of the shim
+     * is {@link #isAvailable()}'s concern, not this flag's.)</p>
+     */
+    @Override
+    public boolean supportsStreaming() {
+        return true;
     }
 
     @Override
@@ -703,6 +719,39 @@ public final class AsioBackend implements AudioBackend {
                             + "new size rather than resizing silently.");
         }
         bridge.write(block);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>ASIO's real backpressure signal (story 316): polls the buffer-switch
+     * bridge's output-ring occupancy in {@code timeoutNanos / 8} park slices,
+     * returning as soon as the ring can accept another {@link
+     * #sink(AudioBlock)} block — i.e. as soon as the driver's own
+     * {@code bufferSwitch} has consumed one. This is how the render pump ends
+     * up paced by the device clock: the ring only drains at the rate the
+     * hardware calls back. The poll loop itself is the shared
+     * {@link AudioBackend#pollForSinkCapacity(long, java.util.function.BooleanSupplier)}
+     * helper, so this backend and {@code daw-core}'s callback-backend adapter
+     * cannot drift apart (story 316 review).</p>
+     *
+     * <p>Implemented entirely on the calling (non-real-time) side — a
+     * read-only poll of the ring's occupancy counters. It adds no work to the
+     * sentinel-tested real-time {@code bufferSwitch} / {@code write} paths.
+     * When no stream is open (or the native streaming shim is absent) there
+     * is no ring to poll, so this falls back to the default full-timeout
+     * park, which degrades gracefully to wall-clock pacing.</p>
+     */
+    @Override
+    public void awaitSinkCapacity(long timeoutNanos) {
+        // Capture the swappable reference exactly once: close() may null the
+        // field concurrently with a pump-thread wait (house rule).
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        if (bridge == null) {
+            LockSupport.parkNanos(timeoutNanos);
+            return;
+        }
+        AudioBackend.pollForSinkCapacity(timeoutNanos, bridge::outputRingHasSpace);
     }
 
     @Override

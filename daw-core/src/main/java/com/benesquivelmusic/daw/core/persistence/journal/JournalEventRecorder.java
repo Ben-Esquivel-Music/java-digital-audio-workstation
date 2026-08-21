@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.persistence.journal;
 
+import com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 import com.benesquivelmusic.daw.sdk.event.AutomationEvent;
 import com.benesquivelmusic.daw.sdk.event.ClipEvent;
@@ -101,8 +102,12 @@ public final class JournalEventRecorder implements AutoCloseable {
             case AutomationEvent ignored -> "AutomationEvent";
             case PluginEvent ignored -> "PluginEvent";
             case XrunEvent ignored -> "XrunEvent";
+            case BackendFallbackEvent ignored -> "BackendFallbackEvent";
         };
-        return family + "." + event.getClass().getSimpleName();
+        String leaf = event.getClass().getSimpleName();
+        // A family that IS its own leaf record (BackendFallbackEvent) would
+        // otherwise double up as "BackendFallbackEvent.BackendFallbackEvent".
+        return family.equals(leaf) ? family : family + "." + leaf;
     }
 
     /**
@@ -121,6 +126,7 @@ public final class JournalEventRecorder implements AutoCloseable {
             case ProjectEvent ignored -> null;     // whole-project lifecycle, no entity
             case TransportEvent ignored -> null;   // transport state, no entity
             case XrunEvent ignored -> null;        // audio anomaly, no entity
+            case BackendFallbackEvent ignored -> null; // backend hop, no entity
         };
     }
 

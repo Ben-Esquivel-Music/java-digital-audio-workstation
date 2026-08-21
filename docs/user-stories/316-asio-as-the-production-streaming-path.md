@@ -43,7 +43,11 @@ For a studio engineer on the primary platform — Windows with an ASIO-capable m
 
 - **Implements Stage 3 of `docs/design/AUDIO_ENGINE_WIRING_DESIGN_BOOK.md` — "ASIO as the Production Streaming Path"** (§4.2 backend consolidation, §3.2 backend truth, §5.2 backend & device contract).
 - Files: `DefaultAudioEngineController.java` (`:184‑191` name reporting, `:1234‑1251` the admitted consolidation gap — this is "the consolidation story" that comment awaits), `AudioEngine.java` (`:442/:519` legacy-slot opens, `:397‑399/:510‑517` index‑0 defaults), `AsioBackend.java` (`:204` `open`), plus the device-identity resolution per book §3.2 (stable ids resolved per enumeration snapshot; bare indices only within one snapshot).
-- Consolidation direction per book §4.2: adapt the legacy backends (PortAudio native, Java Sound) behind the SDK `AudioBackend` interface (or retire them) rather than teaching the legacy slot about ASIO — the SDK backend already carries the finished 310–312 stack, device events, and `writeToChannel`. Story 317 then fixes Java Sound's correctness on this consolidated seam.
+- Consolidation direction per book §4.2: adapt the legacy backends (PortAudio native, Java Sound) behind the SDK `AudioBackend` interface (or retire them) rather than teaching the legacy slot about ASIO — the SDK backend already carries the finished 310–312 stack and device events, and declares the `writeToChannel` seam. That seam is a `default` no-op that no production backend overrides (`MockAudioBackend` is its only implementor), which is why stories 135/136 still own the actual cue/side-output routing — see this story's Non-Goals. Story 317 then fixes Java Sound's correctness on this consolidated seam.
 - RT-safety of the `bufferSwitch` path was sentinel-tested in story 311 (the `RealTimeSafeContractTest` bytecode sentinel); this story adds routing and lifecycle, not new RT-thread work — keep it that way.
 - The `dawg-native-libs` SKILL maps the asioshim/PortAudio FFM seams this consolidation touches (book Appendix B).
 - Cross-refs: story 314 (Stage 1 — an audible graph to stream, prerequisite), stories 310/311/312 (the stack below the wire), story 317 (the fallback rung and honest states), existing 130 (Audio Backend Selection — its honest completion on the primary platform), existing 135/136/133 (unblocked as above), Book 2 stories 323/326/327 (inherit real device identity and stream lifecycle), Book 4 stories 338/339 (engine health and notification surfacing of the events this story publishes).
+
+## Status
+
+- Complete

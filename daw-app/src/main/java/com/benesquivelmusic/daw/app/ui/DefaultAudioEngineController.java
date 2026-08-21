@@ -1,10 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioEngineSettings;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.core.audio.javasound.JavaSoundBackend;
+import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
+import com.benesquivelmusic.daw.core.audio.CallbackBackendAdapter;
+import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
@@ -17,12 +18,13 @@ import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
+import com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
-import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.WasapiBackend;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -42,12 +44,16 @@ import java.util.logging.Logger;
 /**
  * Default {@link AudioEngineController} that drives a real {@link AudioEngine}.
  *
- * <p>Owns the active {@link NativeAudioBackend} and coordinates
- * reconfiguration: stop the current stream, mutate the engine's format,
- * swap the backend when requested, then restart the stream. Each engine
- * re-configuration reuses the same {@code AudioEngine} instance so that
- * all sub-controllers (transport, mixer, editors) keep their existing
- * engine references intact.</p>
+ * <p>Owns the engine's {@link StreamingProvision} — the requested SDK
+ * {@link AudioBackend} plus its explicit fallback ladder (story 316) — and
+ * coordinates reconfiguration: stop the current stream, mutate the engine's
+ * format, rebuild the provision when the requested backend or device
+ * changed, then restart the stream through the engine's one open seam.
+ * Each engine re-configuration reuses the same {@code AudioEngine} instance
+ * so that all sub-controllers (transport, mixer, editors) keep their
+ * existing engine references intact. The controller owns every provision
+ * backend instance's lifecycle; the engine only opens and closes streams on
+ * them.</p>
  */
 final class DefaultAudioEngineController implements AudioEngineController {
 
@@ -80,6 +86,24 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final AtomicReference<DeviceEventSubscriber> deviceEventSubscriber =
             new AtomicReference<>();
     private final AtomicBoolean controllerClosed = new AtomicBoolean();
+
+    /**
+     * The requested endpoint (backend + device names) the currently
+     * installed {@link StreamingProvision} was built from, or {@code null}
+     * when no provision has been applied through
+     * {@link #applyConfiguration(Request)} yet. Repeated reconfigures that
+     * only change buffer size / sample rate leave the provision (and its
+     * backend instances) untouched so they neither re-create backends nor
+     * re-emit fallback notifications; any endpoint change rebuilds it so
+     * the requested rung's {@link DeviceId} always names the configured
+     * device (story 316 — the device is honoured on every open).
+     */
+    private ProvisionEndpoint appliedProvisionEndpoint;
+
+    /** The (backend, input device, output device) triple a provision serves. */
+    private record ProvisionEndpoint(
+            String backendName, String inputDeviceName, String outputDeviceName) {
+    }
 
     /**
      * Per-device calibration overrides (in sample frames) accepted by
@@ -234,25 +258,40 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public synchronized String getActiveBackendName() {
-        AudioBackend sdkBackend = audioEngine.getBackend();
-        if (sdkBackend != null) {
-            return sdkBackend.name();
+        // Story 316 — honest reporting (book §2.4): the OPEN stream's
+        // backend when one is open; otherwise the installed provision's
+        // FIRST RUNG — the backend the next open will actually try, which
+        // can differ from requestedBackendName() when the requested backend
+        // failed the availability/streaming gate; otherwise "None". This can
+        // never name a backend other than the one (that will be) streaming.
+        Optional<String> open = audioEngine.openStreamBackendName();
+        if (open.isPresent()) {
+            return open.get();
         }
-        NativeAudioBackend backend = audioEngine.getAudioBackend();
-        return backend == null ? BACKEND_NONE : backend.getBackendName();
+        StreamingProvision provision = audioEngine.getStreamingProvision();
+        return provision != null ? provision.firstRung().backend().name() : BACKEND_NONE;
     }
 
     @Override
     public synchronized List<String> getAvailableBackendNames() {
-        // Preserve the historical NativeAudioBackend names (PortAudio + the
-        // daw-core JavaSoundBackend) — those drive the live engine I/O
-        // path today — and union them with the SDK sealed-hierarchy names
-        // (ASIO / WASAPI / CoreAudio / JACK / Mock) reported by the
-        // AudioBackendSelector. Story 130: the dialog must be able to
-        // *select* every backend the controller can *instantiate*.
+        // Union of the adapted legacy PortAudio backend (story 316: it now
+        // streams behind the SDK interface via CallbackBackendAdapter), the
+        // selector's available-and-streamable SDK names, and the Java Sound
+        // floor. The selector's supportsStreaming() gate keeps backends
+        // whose sink() discards (WASAPI / CoreAudio / JACK today) out of
+        // the offered list. Story 130: the dialog must be able to *select*
+        // every backend the controller can *provision*.
         java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
-        try {
-            if (new PortAudioBackend().isAvailable()) {
+        // Story 316 review: the adapter here is an enumeration-only probe and
+        // must not outlive this query. AudioBackend is AutoCloseable, and this
+        // call site used to drop the instance unclosed, leaking a native
+        // PortAudio handle every time the backend list was refreshed (the
+        // Settings dialog, SettingsCatalogue and FirstRunWizard all read it).
+        // try-with-resources releases it on BOTH branches, matching
+        // tryCreatePortAudioAdapter()'s closeQuietly and withSdkBackend()'s
+        // try (probe).
+        try (AudioBackend probe = new CallbackBackendAdapter(new PortAudioBackend())) {
+            if (probe.isAvailable()) {
                 names.add("PortAudio");
             }
         } catch (RuntimeException e) {
@@ -265,22 +304,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public synchronized List<AudioDeviceInfo> listDevices() {
-        AudioBackend sdkBackend = audioEngine.getBackend();
-        if (sdkBackend != null) {
-            try {
-                return sdkBackend.listDevices();
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Failed to list SDK audio devices", e);
-                return List.of();
-            }
-        }
-        NativeAudioBackend backend = audioEngine.getAudioBackend();
+        // Open-aware: AudioEngine.getBackend() answers with the OPEN
+        // stream's backend when one is open, else the provision's requested
+        // rung — so the device list always matches the reported backend.
+        AudioBackend backend = audioEngine.getBackend();
         if (backend == null) {
             return List.of();
         }
         try {
-            audioEngine.ensureBackendInitialized();
-            return backend.getAvailableDevices();
+            return backend.listDevices();
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to list audio devices", e);
             return List.of();
@@ -292,55 +324,21 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (backendName == null || backendName.isBlank() || BACKEND_NONE.equals(backendName)) {
             return List.of();
         }
-        NativeAudioBackend active = audioEngine.getAudioBackend();
-        if (active != null && backendName.equals(active.getBackendName())) {
+        AudioBackend active = audioEngine.getBackend();
+        if (active != null && backendName.equals(active.name())) {
             return listDevices();
         }
-        // Try the SDK sealed-hierarchy first (ASIO / WASAPI / CoreAudio /
-        // JACK / Mock — story 130). These don't implement
-        // NativeAudioBackend, so the legacy probe path below would skip
-        // them. Skip for legacy names ("PortAudio", "Java Sound") to avoid
-        // device-enumeration mismatches between the SDK JavaxSoundBackend
-        // and the daw-core JavaSoundBackend (they enumerate differently).
-        if (!"PortAudio".equals(backendName) && !"Java Sound".equals(backendName)) {
-            AudioBackend activeSdk = audioEngine.getBackend();
-            if (activeSdk != null && backendName.equals(activeSdk.name())) {
-                try {
-                    return activeSdk.listDevices();
-                } catch (RuntimeException e) {
-                    LOG.log(Level.WARNING,
-                            "Failed to enumerate active " + backendName + " devices", e);
-                    return List.of();
-                }
-            }
-            try (AudioBackend sdkProbe = createSdkBackendByName(backendName)) {
-                if (sdkProbe != null) {
-                    return sdkProbe.listDevices();
-                }
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Failed to enumerate " + backendName + " devices via SDK", e);
-                return List.of();
-            }
-        }
-        NativeAudioBackend probe = null;
-        try {
-            probe = createBackendByName(backendName);
+        // Fresh throwaway probe, enumerated and closed. Story 316: every
+        // name — including the adapted "PortAudio" and the SDK "Java
+        // Sound" — resolves to an SDK AudioBackend instance now.
+        try (AudioBackend probe = createStreamingBackendByName(backendName, "")) {
             if (probe == null) {
                 return List.of();
             }
-            probe.initialize();
-            return probe.getAvailableDevices();
+            return probe.listDevices();
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to enumerate " + backendName + " devices", e);
             return List.of();
-        } finally {
-            if (probe != null) {
-                try {
-                    probe.close();
-                } catch (RuntimeException ignored) {
-                    // best-effort cleanup
-                }
-            }
         }
     }
 
@@ -404,90 +402,118 @@ final class DefaultAudioEngineController implements AudioEngineController {
         Objects.requireNonNull(request, "request must not be null");
         LOG.info("Applying audio configuration: " + request);
 
-        boolean wasOpen = audioEngine.isStreamOpen();
-        audioEngine.stopAudioOutput();
-        audioEngine.stop();
+        try {
+            boolean wasOpen = audioEngine.isStreamOpen();
+            audioEngine.stopAudioOutput();
+            audioEngine.stop();
 
-        AudioFormat previous = audioEngine.getFormat();
-        AudioFormat updated = new AudioFormat(
-                request.sampleRate().getHz(),
-                previous.channels(),
-                request.bitDepth(),
-                request.bufferFrames());
-        audioEngine.setFormat(updated);
+            AudioFormat previous = audioEngine.getFormat();
+            AudioFormat updated = new AudioFormat(
+                    request.sampleRate().getHz(),
+                    previous.channels(),
+                    request.bitDepth(),
+                    request.bufferFrames());
+            audioEngine.setFormat(updated);
 
-        // Story 125: apply the new worker-pool size to the engine. The
-        // pool is locked at start() so the swap must happen between
-        // stop() above and the start{,AudioOutput}() calls below.
-        AudioEngineSettings previousSettings = audioEngine.getEngineSettings();
-        if (previousSettings.workerPoolSize() != request.workerPoolSize()) {
-            audioEngine.setEngineSettings(
-                    previousSettings.withWorkerPoolSize(request.workerPoolSize()));
-        }
+            // Story 125: apply the new worker-pool size to the engine. The
+            // pool is locked at start() so the swap must happen between
+            // stop() above and the start{,AudioOutput}() calls below.
+            AudioEngineSettings previousSettings = audioEngine.getEngineSettings();
+            if (previousSettings.workerPoolSize() != request.workerPoolSize()) {
+                audioEngine.setEngineSettings(
+                        previousSettings.withWorkerPoolSize(request.workerPoolSize()));
+            }
 
-        // Buffer size or sample rate may have changed — rebuild the
-        // xrun detector so its deadline matches the new format, and
-        // reset the counter per the issue's reset-on-reconfigure rule.
-        XrunDetector previousDetector = this.xrunDetector;
-        this.xrunDetector = createDetectorFor(updated);
-        if (previousDetector != null) {
-            previousDetector.close();
-        }
+            // Buffer size or sample rate may have changed — rebuild the
+            // xrun detector so its deadline matches the new format, and
+            // reset the counter per the issue's reset-on-reconfigure rule.
+            XrunDetector previousDetector = this.xrunDetector;
+            this.xrunDetector = createDetectorFor(updated);
+            if (previousDetector != null) {
+                previousDetector.close();
+            }
 
-        NativeAudioBackend currentBackend = audioEngine.getAudioBackend();
-        // Include the SDK slot in the comparison so repeated reconfigures
-        // (buffer size / sample rate changes) don't re-create the SDK
-        // backend and re-emit fallback notifications when the selection
-        // hasn't actually changed.
-        // A legacy name ("PortAudio"/"Java Sound") is unchanged only when
-        // the SDK slot is null AND the native slot matches. An SDK name is
-        // unchanged only when the SDK slot's name matches. This ensures
-        // switching between SDK↔legacy always triggers applyBackendByName.
-        AudioBackend currentSdkBackend = audioEngine.getBackend();
-        boolean isLegacyRequest = "PortAudio".equals(request.backendName())
-                || "Java Sound".equals(request.backendName());
-        boolean backendChanged;
-        if (isLegacyRequest) {
-            // Legacy is "unchanged" only when no SDK backend is active
-            // AND the native slot already matches.
-            backendChanged = currentSdkBackend != null
-                    || currentBackend == null
-                    || !request.backendName().equals(currentBackend.getBackendName());
-        } else if (currentSdkBackend != null && request.backendName().equals(currentSdkBackend.name())) {
-            backendChanged = false;
-        } else {
-            backendChanged = true;
-        }
-        if (backendChanged) {
-            applyBackendByName(request.backendName());
-        }
+            // Story 316: the engine streams through ONE provision slot. Rebuild
+            // the provision only when the requested endpoint (backend + device
+            // names) actually changed, so repeated buffer-size / sample-rate
+            // reconfigures neither re-create backend instances nor re-emit
+            // fallback notifications. Any endpoint change rebuilds it — the
+            // requested rung's DeviceId is how the configured device is
+            // honoured on EVERY subsequent open (book §3.2, never index 0).
+            ProvisionEndpoint endpoint = new ProvisionEndpoint(
+                    request.backendName(), request.inputDeviceName(), request.outputDeviceName());
+            StreamingProvision provision = audioEngine.getStreamingProvision();
+            if (provision == null || !endpoint.equals(appliedProvisionEndpoint)) {
+                provision = buildStreamingProvision(request);
+                installProvision(provision);
+                appliedProvisionEndpoint = endpoint;
+            }
 
-        AudioBackend selectedSdkBackend = audioEngine.getBackend();
-        if (selectedSdkBackend != null) {
-            bindBackendDeviceEvents(selectedSdkBackend,
-                    deviceId(request.backendName(), request.outputDeviceName()));
-        } else {
-            clearBoundBackendDeviceEvents();
-        }
+            // Device hot-plug watch follows the requested (first) rung — the
+            // backend the user chose is the one whose device events matter.
+            bindBackendDeviceEvents(
+                    provision.firstRung().backend(), provision.firstRung().device());
 
-        int outputDeviceIndex = resolveDeviceIndex(
-                audioEngine.getAudioBackend(),
-                request.outputDeviceName(),
-                true);
-
-        if (wasOpen) {
-            audioEngine.startAudioOutput(Math.max(0, outputDeviceIndex));
-            setEngineState(EngineState.RUNNING);
-        } else {
-            audioEngine.start();
+            if (wasOpen) {
+                // Story 316 review — the restart is guarded because it can now
+                // genuinely fail: Java Sound stopped degrading to a silent
+                // no-output stream, so an exhausted fallback ladder propagates
+                // (openLadder rethrows the FIRST rung's failure), and
+                // requireQuiescedPump() throws when a previous render pump has
+                // not exited. Deliberately NOT rethrown: the configuration
+                // itself WAS applied (format, worker pool, provision, device
+                // watch) — only the restart failed, so the user keeps the new
+                // settings and simply re-arms transport. Mirrors
+                // runFormatChangeReopen(): notify, then always end up in
+                // STOPPED so the user can re-arm transport even after a
+                // failed reopen.
+                try {
+                    audioEngine.startAudioOutput();
+                    setEngineState(EngineState.RUNNING);
+                    // Honest device truth: the device we watch for hot-unplug is the
+                    // OPEN stream's (which may be a fallback rung's default device),
+                    // not merely the requested one.
+                    audioEngine.openStreamDevice().ifPresent(activeDevice::set);
+                } catch (RuntimeException openFailure) {
+                    LOG.log(Level.SEVERE,
+                            "Audio output could not be restarted after reconfigure",
+                            openFailure);
+                    setEngineState(EngineState.STOPPED);
+                    try {
+                        notifications.notify("Audio output could not be started: "
+                                + openFailure.getMessage());
+                    } catch (RuntimeException e) {
+                        LOG.log(Level.WARNING, "NotificationManager rejected message", e);
+                    }
+                }
+            } else {
+                audioEngine.start();
+                setEngineState(EngineState.STOPPED);
+            }
+        } catch (RuntimeException e) {
+            // Story 316 review: anything else escaping this method used to
+            // strand the flow — neither the terminal state nor the
+            // post-reconfigure callback ran, so the settings dialog stayed
+            // disabled forever. Land in STOPPED, tell the user, then rethrow
+            // so callers still see the failure.
             setEngineState(EngineState.STOPPED);
-        }
-
-        if (postReconfigureCallback != null) {
+            LOG.log(Level.SEVERE, "Audio configuration could not be applied", e);
             try {
-                postReconfigureCallback.run();
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Post-reconfigure callback failed", e);
+                notifications.notify("Audio configuration could not be applied: "
+                        + e.getMessage());
+            } catch (RuntimeException notifyFailure) {
+                LOG.log(Level.WARNING, "NotificationManager rejected message", notifyFailure);
+            }
+            throw e;
+        } finally {
+            // In the finally block so the dialog re-enables on EVERY path,
+            // including the rethrown failure above.
+            if (postReconfigureCallback != null) {
+                try {
+                    postReconfigureCallback.run();
+                } catch (RuntimeException e) {
+                    LOG.log(Level.WARNING, "Post-reconfigure callback failed", e);
+                }
             }
         }
     }
@@ -557,7 +583,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driverReportedLatency() {
-        NativeAudioBackend backend = audioEngine.getAudioBackend();
+        // Open-aware (story 316): the OPEN stream's backend when one is
+        // open, else the provision's requested rung. Backends without a
+        // native latency query — ASIO until its query story lands — report
+        // RoundTripLatency.UNKNOWN honestly instead of a number from a
+        // stream that is not actually playing.
+        AudioBackend backend = audioEngine.getBackend();
         if (backend == null) {
             return com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
         }
@@ -679,9 +710,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (backendName == null || backendName.isBlank() || BACKEND_NONE.equals(backendName)) {
             return;
         }
-        // Skip the legacy NativeAudioBackend names — those backends
-        // negotiate the rate at stream open and have no separate
-        // setter; the dialog's reconfigure step will reopen them.
+        // Skip the legacy backend names — those backends negotiate the
+        // rate at stream open and have no separate setter; the dialog's
+        // reconfigure step will reopen them.
         if ("PortAudio".equals(backendName) || "Java Sound".equals(backendName)) {
             return;
         }
@@ -689,8 +720,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
             if (sdk == null) {
                 return;
             }
-            DeviceId deviceId = new DeviceId(backendName,
-                    outputDeviceName == null ? "" : outputDeviceName);
+            // Story 316 review: route through deviceId() like every sibling
+            // method. A blank outputDeviceName means "the backend's default
+            // device" — not an error — and hand-rolling
+            // new DeviceId(backendName, "") tripped DeviceId's compact
+            // constructor ("name must not be blank"), whose
+            // IllegalArgumentException is not caught below and aborted the
+            // whole sample-rate flow. deviceId() also normalizes the
+            // "WASAPI (Exclusive)" display name to the backend's real name.
+            DeviceId deviceId = deviceId(backendName, outputDeviceName);
             sdk.setSampleRate(deviceId, rate);
         } catch (UnsupportedOperationException ignored) {
             // Backend does not support live sample-rate selection;
@@ -777,20 +815,19 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return;
         }
         LOG.info("Lost audio device returned: " + arrived);
-        AudioBackend backend = boundBackend.get();
-        if (backend != null) {
+        // Story 316 — reopen through the ENGINE's one open/close seam, never
+        // by calling backend.open(...) directly: startAudioOutput() walks
+        // the provision ladder (honouring the configured DeviceId) and then
+        // pauseAudioOutput() parks the stream open-but-not-rendering, which
+        // is the historical post-arrival state — device proven usable, user
+        // re-arms transport manually. A later Play resumes on the same open
+        // stream. With no provision installed there is nothing to reopen.
+        if (audioEngine.getStreamingProvision() != null && !audioEngine.isStreamOpen()) {
             try {
-                if (!backend.isOpen()) {
-                    AudioFormat format = audioEngine.getFormat();
-                    backend.open(arrived,
-                            new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
-                                    format.sampleRate(),
-                                    format.channels(),
-                                    format.bitDepth()),
-                            format.bufferSize());
-                }
+                audioEngine.startAudioOutput();
+                audioEngine.pauseAudioOutput();
             } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Failed to reopen backend after reconnect", e);
+                LOG.log(Level.WARNING, "Failed to reopen audio stream after reconnect", e);
                 try {
                     notifications.notify("Audio device reconnected but reopen failed: " + e.getMessage());
                 } catch (RuntimeException ignored) { /* best-effort */ }
@@ -905,6 +942,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
         setEngineState(EngineState.RECONFIGURING);
 
+        // Whether a stream was open before this reopen — mirrors
+        // applyConfiguration: only a previously-open stream is restored
+        // after the format change (story 316, engine-seam routing).
+        boolean wasOpen = audioEngine.isStreamOpen();
+
         // 1. Pause transport. Best-effort; we are NOT on the RT thread.
         try {
             audioEngine.stopAudioOutput();
@@ -983,29 +1025,19 @@ final class DefaultAudioEngineController implements AudioEngineController {
             previousDetector.close();
         }
 
-        // 6. Reopen the SDK backend's stream — close first since a
-        //    driver-initiated format change occurs while the backend is
-        //    still open, and calling open() without a preceding close()
-        //    would violate AudioBackendSupport.markOpen().
-        if (backend != null) {
+        // 6. Reopen through the ENGINE's one open/close seam (story 316) —
+        //    never by calling backend.open(...) directly. Step 1 already
+        //    closed the stream via stopAudioOutput(); startAudioOutput()
+        //    re-walks the provision ladder at the new format, honouring the
+        //    configured DeviceId. Only a stream that was open before the
+        //    change is restored, mirroring applyConfiguration.
+        boolean streamRestored = false;
+        if (wasOpen) {
             try {
-                if (backend.isOpen()) {
-                    try {
-                        backend.close();
-                    } catch (RuntimeException closeException) {
-                        LOG.log(Level.WARNING,
-                                "Failed to close backend before reopen after format change",
-                                closeException);
-                    }
-                }
-                backend.open(active,
-                        new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
-                                reopenFormat.sampleRate(),
-                                reopenFormat.channels(),
-                                reopenFormat.bitDepth()),
-                        reopenFormat.bufferSize());
+                audioEngine.startAudioOutput();
+                streamRestored = true;
             } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Failed to reopen backend after format change", e);
+                LOG.log(Level.WARNING, "Failed to reopen audio stream after format change", e);
             }
         }
 
@@ -1062,13 +1094,16 @@ final class DefaultAudioEngineController implements AudioEngineController {
             }
         }
 
-        // 9. Resume in STOPPED state. Transport does NOT auto-start —
-        //    user re-arms manually, identical to the onDeviceArrived
-        //    convention. This is the final step so that any observer
-        //    waiting on STOPPED has a reliable happens-before guarantee
-        //    that steps 7-8 (notification + cache invalidation +
-        //    post-reconfigure callback) completed.
-        setEngineState(EngineState.STOPPED);
+        // 9. Terminal state. A stream that was open before the change and
+        //    was successfully restored in step 6 reports RUNNING (mirroring
+        //    applyConfiguration's wasOpen branch); otherwise the engine
+        //    resumes in STOPPED — transport does NOT auto-start, the user
+        //    re-arms manually, identical to the onDeviceArrived convention.
+        //    This is the final step so that any observer waiting on the
+        //    terminal state has a reliable happens-before guarantee that
+        //    steps 7-8 (notification + cache invalidation + post-
+        //    reconfigure callback) completed.
+        setEngineState(streamRestored ? EngineState.RUNNING : EngineState.STOPPED);
     }
 
     /**
@@ -1228,9 +1263,16 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (detector != null) {
             detector.close();
         }
-        // Close any active SDK backend to release native resources on exit.
-        closePreviousSdkBackend();
-        audioEngine.setBackend(null);
+        // Stop any open stream, then close every provision backend instance
+        // to release native resources on exit — the controller owns the
+        // provision's backend lifecycles (story 316).
+        try {
+            audioEngine.stopAudioOutput();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to stop audio output during shutdown", e);
+        }
+        // No incoming provision on the shutdown path: every instance goes.
+        closeProvisionBackends(audioEngine.getStreamingProvision(), null);
     }
 
     private static XrunDetector createDetectorFor(AudioFormat format) {
@@ -1238,131 +1280,262 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     /**
-     * Routes {@code name} through the {@link AudioBackendSelector} (story
-     * 130) and wires the resulting backend into the engine. Two paths
-     * coexist:
+     * Installs the blank-name default {@link StreamingProvision} —
+     * PortAudio (adapted behind the SDK interface) when available, else
+     * Java Sound — exactly the default the retired legacy backend factory
+     * produced, now expressed as an explicit ladder on the engine's one
+     * streaming slot (story 316).
+     * Called by {@code MainController} at startup, before the persisted
+     * audio settings refine the provision via
+     * {@link #applyConfiguration(Request)}.
+     */
+    synchronized void installDefaultProvision() {
+        installProvision(buildDefaultProvision("", ""));
+    }
+
+    /**
+     * Builds the {@link StreamingProvision} for the given request (story
+     * 316) — the requested backend as the first rung plus the explicit
+     * emergency ladder the engine walks when that backend cannot open:
      *
      * <ul>
-     *   <li>{@code "PortAudio"} / {@code "Java Sound"} — legacy
-     *       {@link NativeAudioBackend} I/O drivers; live engine output
-     *       still flows through these.</li>
-     *   <li>Every SDK sealed-hierarchy name returned by
-     *       {@link AudioBackendSelector#availableBackendNames()} —
-     *       {@code "ASIO"}, {@code "WASAPI"}, {@code "CoreAudio"},
-     *       {@code "JACK"}, {@code "Mock"}. The selector hands us a
-     *       fresh {@link AudioBackend}; we store it on
-     *       {@link AudioEngine#setBackend(AudioBackend)}.</li>
+     *   <li>Requested rung: resolved by name — {@code "PortAudio"} becomes
+     *       a {@link CallbackBackendAdapter} over {@link PortAudioBackend};
+     *       {@code "Java Sound"} is the SDK {@link JavaxSoundBackend};
+     *       every other name routes through the
+     *       {@link AudioBackendSelector}. Its {@link DeviceId} is the
+     *       configured output device (blank &rarr; the backend's default),
+     *       honoured on every open.</li>
+     *   <li>Fallback rungs: the PortAudio adapter when available (and not
+     *       itself the requested backend), then Java Sound — each on its
+     *       own DEFAULT device: falling back is an emergency, the default
+     *       device is the honest choice, and the engine's
+     *       {@code BackendFallbackEvent} names it.</li>
      * </ul>
      *
-     * <p>If the SDK platform backend reports
-     * {@link AudioBackend#isAvailable()} {@code == false} (e.g., ASIO
-     * requested on Linux because no native shim is installed), the
-     * controller falls back to the daw-core {@code JavaSoundBackend}
-     * exactly as the issue requires, and emits a single
-     * {@link NotificationManager} warning of the form
-     * {@code "ASIO not available — falling back to Java Sound"} so the
-     * user is never silently routed to a different backend.</p>
+     * <p>If the requested backend is unavailable or its streaming path is
+     * not implemented ({@link AudioBackend#supportsStreaming()} {@code ==
+     * false} — WASAPI / CoreAudio / JACK today), the probe is closed, a
+     * single {@link NotificationManager} warning of the form
+     * {@code "ASIO not available — falling back to <head rung>"} — naming
+     * the fallback ladder's ACTUAL head (PortAudio when available, else
+     * Java Sound) — is emitted so the user is never silently routed
+     * elsewhere, and the ladder starts at that head. The provision's
+     * {@code requestedBackendName} <em>and</em> {@code requestedDevice} both
+     * stay the user's request — passed explicitly on that path rather than
+     * defaulted from the (fallback) first rung — so the engine's
+     * {@code BackendFallbackEvent}s name the true requested endpoint and
+     * never pair the requested backend with a device the user never chose.
+     * A blank / {@link #BACKEND_NONE} / unknown name yields the default
+     * ladder (PortAudio when available, else Java Sound).</p>
      *
-     * @param name the backend name; {@code null} / blank / {@link #BACKEND_NONE}
-     *             clears any installed SDK backend and is a no-op for the
-     *             legacy slot
+     * <p>Pure builder: does not install the provision and does not touch
+     * the engine — {@link #applyConfiguration(Request)} pairs it with
+     * {@link #installProvision(StreamingProvision)}.</p>
      */
-    synchronized void applyBackendByName(String name) {
+    synchronized StreamingProvision buildStreamingProvision(Request request) {
+        Objects.requireNonNull(request, "request must not be null");
+        String name = request.backendName();
         if (name == null || name.isBlank() || BACKEND_NONE.equals(name)) {
-            closePreviousSdkBackend();
-            audioEngine.setBackend(null);
-            return;
+            return buildDefaultProvision(request.inputDeviceName(), request.outputDeviceName());
         }
-        // Legacy NativeAudioBackend names — keep the existing wiring.
-        if ("PortAudio".equals(name) || "Java Sound".equals(name)) {
-            NativeAudioBackend legacy = createBackendByName(name);
-            if (legacy == null) {
-                legacy = AudioBackendFactory.createDefault();
-            }
-            audioEngine.setAudioBackend(legacy);
-            closePreviousSdkBackend();
-            audioEngine.setBackend(null);
-            return;
+        AudioBackend requested = createStreamingBackendByName(name, request.inputDeviceName());
+        if (requested == null) {
+            // Unknown name — preserve historical behaviour: quietly
+            // provision the best available default.
+            return buildDefaultProvision(request.inputDeviceName(), request.outputDeviceName());
         }
-        // SDK sealed-hierarchy names route through the selector.
-        AudioBackend sdk = createSdkBackendByName(name);
-        if (sdk == null) {
-            // Unknown name — preserve historical behaviour: fall back to
-            // AudioBackendFactory.createDefault() on the legacy slot.
-            audioEngine.setAudioBackend(AudioBackendFactory.createDefault());
-            closePreviousSdkBackend();
-            audioEngine.setBackend(null);
-            return;
-        }
-        if (!sdk.isAvailable()) {
-            try {
-                sdk.close();
-            } catch (RuntimeException ignored) {
-                // best-effort cleanup of the unusable probe
+        if (!requested.isAvailable() || !requested.supportsStreaming()) {
+            closeQuietly(requested);
+            List<BackendStreamRung> ladder = new ArrayList<>();
+            appendFallbackRungs(ladder, name, request.inputDeviceName());
+            if (ladder.isEmpty()) {
+                ladder.add(new BackendStreamRung(
+                        new JavaxSoundBackend(), DeviceId.defaultFor("Java Sound")));
             }
             // Fallback notification: the user explicitly asked for a
-            // platform backend that the host can't supply — surface the
-            // switch instead of silently routing them elsewhere.
+            // backend the host can't stream through — surface the switch,
+            // naming the ladder's ACTUAL head (PortAudio when available,
+            // else Java Sound), instead of silently routing them elsewhere.
             try {
-                notifications.notify(name + " not available — falling back to Java Sound");
+                notifications.notify(name + " not available — falling back to "
+                        + ladder.get(0).backend().name());
             } catch (RuntimeException e) {
                 LOG.log(Level.WARNING, "NotificationManager rejected fallback message", e);
             }
-            audioEngine.setAudioBackend(new JavaSoundBackend());
-            closePreviousSdkBackend();
-            audioEngine.setBackend(null);
-            return;
+            // requestedBackendName stays the USER'S request even though it
+            // cannot stream: the engine stamps it into every published
+            // BackendFallbackEvent, and those must name the true request —
+            // getActiveBackendName() reports the first rung (the backend
+            // the user will actually hear) separately. The requested DEVICE
+            // is passed explicitly for exactly the same reason (story 316
+            // review): this ladder starts on a FALLBACK rung, so the two-arg
+            // convenience constructor would default requestedDevice to that
+            // fallback's device and the engine would stamp a
+            // BackendFallbackEvent pairing the user's requested backend name
+            // with a device they never chose.
+            return new StreamingProvision(
+                    name, deviceId(name, request.outputDeviceName()), ladder);
         }
-        // Available platform backend: keep the legacy NativeAudioBackend
-        // slot pointing at JavaSoundBackend so the engine's render path
-        // (still NativeAudioBackend-driven until the consolidation story)
-        // continues to function, while the SDK slot tracks the user's
-        // actual selection. The native shim implementation stories
-        // (220 / 221 / 222 / 223 / 224) will route I/O through the SDK
-        // backend itself.
-        closePreviousSdkBackend();
-        audioEngine.setBackend(sdk);
-        // Don't downgrade an already-installed PortAudio NativeAudioBackend
-        // when the user picks an SDK platform backend; the engine's render
-        // path is NativeAudioBackend-driven until the consolidation story
-        // lands, and PortAudio is still the lowest-latency option for
-        // multi-channel USB hardware (Mac/Linux).
-        NativeAudioBackend nativeSlot = audioEngine.getAudioBackend();
-        if (nativeSlot == null || !"PortAudio".equals(nativeSlot.getBackendName())) {
-            audioEngine.setAudioBackend(new JavaSoundBackend());
+        List<BackendStreamRung> ladder = new ArrayList<>();
+        ladder.add(new BackendStreamRung(requested, deviceId(name, request.outputDeviceName())));
+        appendFallbackRungs(ladder, name, request.inputDeviceName());
+        return new StreamingProvision(name, ladder);
+    }
+
+    /**
+     * The blank-name default ladder: PortAudio (adapted) when available —
+     * with the configured output device on its rung — else Java Sound.
+     */
+    private StreamingProvision buildDefaultProvision(
+            String inputDeviceName, String outputDeviceName) {
+        AudioBackend portAudio = tryCreatePortAudioAdapter(inputDeviceName);
+        if (portAudio != null) {
+            return new StreamingProvision("PortAudio", List.of(
+                    new BackendStreamRung(portAudio, deviceId("PortAudio", outputDeviceName)),
+                    new BackendStreamRung(
+                            new JavaxSoundBackend(), DeviceId.defaultFor("Java Sound"))));
+        }
+        return new StreamingProvision("Java Sound", List.of(
+                new BackendStreamRung(
+                        new JavaxSoundBackend(), deviceId("Java Sound", outputDeviceName))));
+    }
+
+    /**
+     * Appends the emergency fallback rungs — PortAudio when available, then
+     * Java Sound — skipping whichever of them is the requested backend
+     * itself. Fallback rungs open their backend's DEFAULT device.
+     */
+    private void appendFallbackRungs(
+            List<BackendStreamRung> ladder, String requestedName, String inputDeviceName) {
+        if (!"PortAudio".equals(requestedName)) {
+            AudioBackend portAudio = tryCreatePortAudioAdapter(inputDeviceName);
+            if (portAudio != null) {
+                ladder.add(new BackendStreamRung(
+                        portAudio, DeviceId.defaultFor("PortAudio")));
+            }
+        }
+        if (!"Java Sound".equals(requestedName)) {
+            ladder.add(new BackendStreamRung(
+                    new JavaxSoundBackend(), DeviceId.defaultFor("Java Sound")));
         }
     }
 
     /**
-     * Best-effort close of any previously installed SDK backend to avoid
-     * leaking native resources when backends are replaced or cleared.
+     * Returns an available {@link CallbackBackendAdapter} over a fresh
+     * {@link PortAudioBackend}, or {@code null} when PortAudio is not
+     * usable on this host.
      */
-    private void closePreviousSdkBackend() {
-        AudioBackend previous = audioEngine.getBackend();
-        if (previous != null) {
-            try {
-                previous.close();
-            } catch (RuntimeException ignored) {
-                // best-effort cleanup
+    private static AudioBackend tryCreatePortAudioAdapter(String inputDeviceName) {
+        try {
+            CallbackBackendAdapter adapter =
+                    new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName);
+            if (adapter.isAvailable()) {
+                return adapter;
             }
+            closeQuietly(adapter);
+        } catch (RuntimeException e) {
+            LOG.log(Level.FINE, "PortAudio adapter unavailable", e);
+        }
+        return null;
+    }
+
+    /**
+     * Swaps the engine's streaming provision: <b>installs first</b>, then
+     * closes the outgoing backend instances (story 316 review — the order was
+     * previously the other way round).
+     *
+     * <p>{@link AudioEngine#setStreamingProvision(StreamingProvision)} is the
+     * only call that quiesces the render pump: it abandons a stream the
+     * engine still tracks on an outgoing backend the incoming ladder no
+     * longer carries, and that abandonment is what calls {@code stopPump()}.
+     * Closing the outgoing instances first therefore freed native state —
+     * {@code AsioBackend}'s nulled {@code bufferSwitchShim}, a closed
+     * {@code SourceDataLine}, a released {@code Pa_} handle — underneath a
+     * live {@code engine-render-pump} thread that was still calling
+     * {@code sink()} / {@code awaitSinkCapacity()} on it, whenever the engine
+     * still tracked a stream (a {@code stopAudioOutput()} whose pump join
+     * timed out, or a retained {@code RELEASE_PENDING} handle).</p>
+     *
+     * <p>The controller still owns every backend instance's lifecycle, so the
+     * outgoing instances are closed here — but only the ones the incoming
+     * ladder does not reuse: a shared instance is still live on the new
+     * provision and must not be closed.</p>
+     */
+    private void installProvision(StreamingProvision provision) {
+        StreamingProvision outgoing = audioEngine.getStreamingProvision();
+        audioEngine.setStreamingProvision(provision);
+        closeProvisionBackends(outgoing, provision);
+    }
+
+    /**
+     * Best-effort close of every backend instance in {@code outgoing} that
+     * {@code incoming} does not also carry. Reuse is decided by instance
+     * identity, mirroring {@code AudioEngine.ladderContains} — an instance
+     * the incoming ladder still holds is live and closing it would break the
+     * next open.
+     *
+     * @param outgoing the provision being replaced, or {@code null}
+     * @param incoming the provision taking its place, or {@code null} when
+     *                 the engine is being left with nothing to stream
+     */
+    private static void closeProvisionBackends(
+            StreamingProvision outgoing, StreamingProvision incoming) {
+        if (outgoing == null) {
+            return;
+        }
+        for (BackendStreamRung rung : outgoing.ladder()) {
+            if (carries(incoming, rung.backend())) {
+                continue;
+            }
+            closeQuietly(rung.backend());
         }
     }
 
-    private static NativeAudioBackend createBackendByName(String name) {
-        if (name == null || name.isBlank() || BACKEND_NONE.equals(name)) {
-            return null;
+    /**
+     * Returns whether {@code provision}'s ladder carries this exact backend
+     * <em>instance</em> — identity, not equality, matching
+     * {@code AudioEngine.ladderContains}.
+     */
+    private static boolean carries(StreamingProvision provision, AudioBackend backend) {
+        if (provision == null) {
+            return false;
         }
+        for (BackendStreamRung rung : provision.ladder()) {
+            if (rung.backend() == backend) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void closeQuietly(AudioBackend backend) {
+        try {
+            backend.close();
+        } catch (RuntimeException ignored) {
+            // best-effort cleanup
+        }
+    }
+
+    /**
+     * Resolves a UI-facing backend name to a fresh SDK {@link AudioBackend}
+     * instance (story 316: every backend — including the adapted
+     * {@code "PortAudio"} — lives behind the SDK interface now). Returns
+     * {@code null} for unknown names; the caller owns the instance's
+     * lifecycle.
+     */
+    private AudioBackend createStreamingBackendByName(String name, String inputDeviceName) {
         return switch (name) {
             case "PortAudio" -> {
                 try {
-                    yield AudioBackendFactory.createPortAudio();
+                    yield new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName);
                 } catch (RuntimeException e) {
                     LOG.log(Level.WARNING, "PortAudio requested but unavailable", e);
                     yield null;
                 }
             }
-            case "Java Sound" -> new JavaSoundBackend();
-            default -> null;
+            case "Java Sound" -> new JavaxSoundBackend();
+            default -> createSdkBackendByName(name);
         };
     }
 
@@ -1399,27 +1572,5 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return DeviceId.defaultFor(normalizedBackend);
         }
         return new DeviceId(normalizedBackend, deviceName);
-    }
-
-    private static int resolveDeviceIndex(NativeAudioBackend backend, String deviceName, boolean outputRequired) {
-        if (backend == null) {
-            return -1;
-        }
-        if (deviceName == null || deviceName.isBlank()) {
-            return 0;
-        }
-        try {
-            for (AudioDeviceInfo info : backend.getAvailableDevices()) {
-                if (deviceName.equals(info.name())) {
-                    if (outputRequired && !info.supportsOutput()) {
-                        continue;
-                    }
-                    return info.index();
-                }
-            }
-        } catch (RuntimeException e) {
-            LOG.log(Level.FINE, "Failed to resolve device index for " + deviceName, e);
-        }
-        return 0;
     }
 }

@@ -1,22 +1,27 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Flow;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 
 /**
- * Sealed abstraction over the five professional audio I/O backends the DAW
- * targets, plus a deterministic mock for offline tests.
+ * Abstraction over the professional audio I/O backends the DAW targets,
+ * plus a deterministic mock for offline tests.
  *
  * <p>An {@code AudioBackend} is a thin, uniform surface over very different
  * native drivers — ASIO on Windows, CoreAudio on macOS, WASAPI on Windows,
  * JACK on Linux, and the cross-platform {@code javax.sound.sampled} fallback.
  * The application layer (see {@code AudioEngineController}) chooses a
  * backend based on the current OS and the user's saved selection
- * (see {@link AudioSettingsStore}), and transparently falls back to
- * {@link JavaxSoundBackend} when the preferred backend cannot open a stream
- * on this machine (see {@link AudioBackendSelector}).</p>
+ * (see {@link AudioSettingsStore}). Open-time fallback lives in the engine:
+ * it walks its explicit {@code StreamingProvision} ladder of
+ * (backend,&nbsp;device) rungs — typically ending on
+ * {@link JavaxSoundBackend} — and publishes a {@code BackendFallbackEvent}
+ * for every failed hop (story 316).</p>
  *
  * <h2>Lifecycle</h2>
  * <ol>
@@ -37,7 +42,7 @@ import java.util.concurrent.Flow;
  * must not block. {@link #sink(AudioBlock)} may be called from any thread;
  * implementations serialize internally.</p>
  *
- * <h2>Permitted implementations</h2>
+ * <h2>Known implementations</h2>
  * <ul>
  *   <li>{@link JavaxSoundBackend} — always available; built on
  *       {@code javax.sound.sampled}.</li>
@@ -52,16 +57,15 @@ import java.util.concurrent.Flow;
  *       audio card.</li>
  * </ul>
  *
+ * <p>The interface is deliberately <em>not</em> sealed: {@code daw-core}
+ * contributes additional callback-driven adapters (for example the PortAudio
+ * adapter that wraps the legacy native backend behind this interface —
+ * story 316), and JPMS sealing would forbid cross-module implementors.</p>
+ *
  * @see AudioBackendSelector
  * @see AudioSettingsStore
  */
-public sealed interface AudioBackend extends AutoCloseable
-        permits JavaxSoundBackend,
-                AsioBackend,
-                CoreAudioBackend,
-                WasapiBackend,
-                JackBackend,
-                MockAudioBackend {
+public interface AudioBackend extends AutoCloseable {
 
     /**
      * Returns the human-readable name of the backend, used as the
@@ -82,12 +86,48 @@ public sealed interface AudioBackend extends AutoCloseable
     boolean isAvailable();
 
     /**
+     * Whether this backend can actually move audio through
+     * {@link #sink(AudioBlock)} / {@link #inputBlocks()} on this build.
+     * Backends whose streaming path is not yet implemented (WASAPI,
+     * CoreAudio, JACK today) return {@code false} so the application never
+     * offers or opens a stream that would be silent by construction
+     * (book §2.2, honest promises). {@link AudioBackendSelector} filters
+     * its offered/default backends on this flag (story 316).
+     *
+     * @return {@code true} when {@link #sink(AudioBlock)} really reaches an
+     *         output device (or a deterministic capture buffer, for the
+     *         mock) after a successful {@link #open(DeviceId, AudioFormat,
+     *         int)}; {@code false} when sink discards by construction
+     */
+    default boolean supportsStreaming() {
+        return false;
+    }
+
+    /**
      * Enumerates every device the backend exposes on this host. Returns an
      * empty, unmodifiable list when the backend is not available.
      *
      * @return an unmodifiable list of devices
      */
     List<AudioDeviceInfo> listDevices();
+
+    /**
+     * Returns the format this backend will actually open for the requested
+     * format. The engine calls this before {@link #open(DeviceId,
+     * AudioFormat, int)} and passes the negotiated format to {@code open},
+     * so a backend with a narrower native capability (for example
+     * {@link JavaxSoundBackend}, whose output path only encodes 16-bit PCM)
+     * can substitute a format it can honestly deliver instead of throwing on
+     * every sink. The default implementation returns the request unchanged;
+     * story 317 expands this seam into real per-device negotiation.
+     *
+     * @param requested the format the engine wants to open; must not be null
+     * @return the format the backend will actually open — either
+     *         {@code requested} itself or an adjusted variant; never null
+     */
+    default AudioFormat negotiateFormat(AudioFormat requested) {
+        return requested;
+    }
 
     /**
      * Opens a stream on the given device with the given format and
@@ -123,11 +163,92 @@ public sealed interface AudioBackend extends AutoCloseable
      * channel count must match the channel count passed to
      * {@link #open(DeviceId, AudioFormat, int)}.
      *
+     * <p>Implementations must consume (copy or encode) the block
+     * <em>synchronously</em>, before returning: callers may reuse the block
+     * instance and its backing sample array across calls, which is what lets
+     * the engine's render pump run allocation-free (story 316).</p>
+     *
+     * <p>{@code sink} may block the calling thread briefly for device pacing
+     * — {@link JavaxSoundBackend} blocks on the line's internal buffer, for
+     * example. Callers must therefore never invoke it from a real-time
+     * thread; the render pump thread is the intended caller.</p>
+     *
      * @param block the audio to play; must not be null
      * @throws IllegalArgumentException if {@code block} is incompatible with
      *                                  the opened format
      */
     void sink(AudioBlock block);
+
+    /**
+     * Blocks the calling (non-real-time) thread until the device can accept
+     * another {@link #sink(AudioBlock)} block, the timeout elapses, or the
+     * stream closes. The engine's render pump calls this between blocks so
+     * production is paced by the <em>device clock</em> rather than the host
+     * clock (story 316): render, sink, then wait here for the device to make
+     * room before rendering the next block.
+     *
+     * <p>The default implementation parks the calling thread for the full
+     * timeout, which yields wall-clock pacing — the correct behaviour for
+     * backends whose {@code sink} never blocks and exposes no occupancy
+     * signal. Backends with a real backpressure signal override this to
+     * return as soon as capacity exists ({@link AsioBackend} polls its
+     * output-ring occupancy), and backends whose {@code sink} already blocks
+     * for pacing override it as a no-op ({@link JavaxSoundBackend}).</p>
+     *
+     * <p>Must never be called from a real-time thread, and implementations
+     * must return within roughly {@code timeoutNanos} even when no capacity
+     * ever appears (a closed or stalled stream must not hang the pump). A
+     * non-positive timeout returns immediately.</p>
+     *
+     * @param timeoutNanos maximum time to wait, in nanoseconds — typically
+     *                     one block period
+     */
+    default void awaitSinkCapacity(long timeoutNanos) {
+        LockSupport.parkNanos(timeoutNanos);
+    }
+
+    /**
+     * The shared ring-occupancy pacing loop that sits behind every
+     * ring-backed {@link #awaitSinkCapacity(long)} override (story 316
+     * review): polls {@code hasCapacity} in {@code timeoutNanos / 8} park
+     * slices and returns as soon as it reports capacity — i.e. as soon as
+     * the device's own callback has consumed a block. That is what turns the
+     * render pump's production rate into the <em>device</em> clock rather
+     * than the host clock.
+     *
+     * <p>{@link AsioBackend} (its buffer-switch bridge's output ring) and
+     * {@code daw-core}'s callback-backend adapter (its pump&nbsp;&rarr;
+     * callback output ring) had verbatim copies of this loop; it lives here
+     * so the two cannot drift apart.</p>
+     *
+     * <p>Honours both hard clauses of {@link #awaitSinkCapacity(long)}: a
+     * non-positive {@code timeoutNanos} returns immediately, and the wait is
+     * bounded by {@code timeoutNanos} whether or not capacity ever appears,
+     * so a closed or stalled stream can never hang the pump.</p>
+     *
+     * <p>Must never be called from a real-time thread — it parks the calling
+     * thread. The render pump thread is the intended caller.</p>
+     *
+     * @param timeoutNanos maximum time to wait, in nanoseconds — typically
+     *                     one block period; non-positive returns immediately
+     * @param hasCapacity  read-only occupancy probe answering "can the sink
+     *                     accept another block?"; must not be null
+     */
+    static void pollForSinkCapacity(long timeoutNanos, BooleanSupplier hasCapacity) {
+        Objects.requireNonNull(hasCapacity, "hasCapacity must not be null");
+        if (timeoutNanos <= 0L) {
+            return; // the awaitSinkCapacity contract: non-positive returns at once
+        }
+        long deadline = System.nanoTime() + timeoutNanos;
+        long slice = Math.max(1L, timeoutNanos / 8);
+        while (!hasCapacity.getAsBoolean()) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0L) {
+                return; // bounded by the total timeout, capacity or not
+            }
+            LockSupport.parkNanos(Math.min(slice, remaining));
+        }
+    }
 
     /**
      * Writes a mono buffer directly to a single physical output channel,

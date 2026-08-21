@@ -564,9 +564,13 @@ duality of §1.2 is retired.
 Design decisions and why:
 
 - **Consolidate onto the SDK interface rather than teaching the legacy slot about
-  ASIO.** The SDK backend already carries the finished 310–312 stack, device events,
-  and `writeToChannel`; the legacy backends are adapted behind it (or retired), so the
-  engine has one open/start/stop seam and the reported name cannot lie by construction.
+  ASIO.** The SDK backend already carries the finished 310–312 stack and device events,
+  and it declares the `writeToChannel` seam; the legacy backends are adapted behind it
+  (or retired), so the engine has one open/start/stop seam and the reported name cannot
+  lie by construction. The seam is only a seam today: `AudioBackend.writeToChannel` is a
+  `default` no-op whose sole implementor is `MockAudioBackend`, so `AsioBackend`,
+  `JavaxSoundBackend`, and the adapted PortAudio backend all inherit that no-op — see
+  the cue/side-output bullet below.
 - **Device selection is honoured on every open** because the engine holds the resolved
   device identity (§3.2) — the index‑0 default and the cold-start-vs-reconfigure split
   both disappear; Play after Stop reopens the same device.
@@ -579,7 +583,11 @@ Design decisions and why:
   remains the last rung, not the default experience.
 - **Cue/side-output click routing becomes real** once the streaming backend implements
   `writeToChannel` on an open stream — unblocking the existing click-track side-output
-  and headphone-cue stories (136, 135) whose UI already ships.
+  and headphone-cue stories (136, 135) whose UI already ships. No production backend
+  implements it today; Stage 3 makes the call target the OPEN stream and turns the
+  dropped writes into a counted fact (`CallbackBackendAdapter.droppedChannelWrites()`)
+  instead of an invisible inherited no-op. Turning those counts into audio stays owned
+  by stories 136 and 135.
 
 ### 4.3 The metering tap bus
 
