@@ -19,6 +19,7 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 /**
@@ -114,6 +115,33 @@ class EngineStreamPumpTest {
 
         awaitCondition(sawInput::get,
                 "a published capture block is de-interleaved into the input planes");
+    }
+
+    @Test
+    void anOpenedFormatDisagreeingOnShapeIsRejectedAtConstruction() {
+        // Story 316 review (F6), defence in depth: the planes, the interleave
+        // buffer and the reusable block are built from the ENGINE format while
+        // the block is stamped with the OPENED sample rate. A wider channel
+        // count would make every sink reject the block; a different rate would
+        // merely relabel un-resampled audio. The ladder already enforces this
+        // when it picks a rung — asserting it here means no caller can build a
+        // mislabelling pump silently.
+        RecordingBackend backend = new RecordingBackend();
+        engine = new AudioEngine(FORMAT);
+        engine.start();
+
+        assertThatThrownBy(() -> new EngineStreamPump(backend, engine, FORMAT,
+                new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 4, 24)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("channels and sample rate");
+        assertThatThrownBy(() -> new EngineStreamPump(backend, engine, FORMAT,
+                new com.benesquivelmusic.daw.sdk.audio.AudioFormat(44_100.0, 2, 24)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("channels and sample rate");
+        assertThat(new EngineStreamPump(backend, engine, FORMAT,
+                new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 2, 16)))
+                .as("a bit-depth-only renegotiation is still accepted")
+                .isNotNull();
     }
 
     @Test

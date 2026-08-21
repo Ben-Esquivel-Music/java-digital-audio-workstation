@@ -96,6 +96,13 @@ public final class AudioEngine {
     private volatile EngineStreamPump pump;
 
     /**
+     * Notified whenever an open COMPLETES, with the rung that actually won
+     * (story 316 review). See {@link StreamOpenListener}; {@code null} when
+     * nothing is listening.
+     */
+    private volatile StreamOpenListener streamOpenListener;
+
+    /**
      * Lifecycle state of the backend audio stream (story 315 review). One
      * volatile field replaces the former {@code streamOpen}/{@code streamPaused}
      * pair so a stopped-but-unreleasable stream can be told apart from a
@@ -130,8 +137,12 @@ public final class AudioEngine {
      *       the engine at a provision that no longer carries the tracked
      *       backend instance): the outgoing backend's handle is closed
      *       best-effort and abandoned if that fails — the controller owns
-     *       the outgoing instances' lifecycles — and the claim is
-     *       released.</li>
+     *       the outgoing instances' lifecycles — and the claim is released.
+     *       This transition does NOT happen at all while the render pump's
+     *       exit is unconfirmed (story 316 review): the swap is refused with
+     *       an {@link AudioBackendException} rather than close a backend a
+     *       live thread may still be inside, so the state stays exactly as it
+     *       was and the swap is retryable.</li>
      * </ul>
      */
     private enum StreamState {
@@ -221,6 +232,23 @@ public final class AudioEngine {
     private AudioGraphScheduler graphScheduler;
 
     /**
+     * Set by {@link #stop()} when it could not confirm the render pump had
+     * exited, meaning the shared render collaborators — the MIDI renderer,
+     * the graph scheduler and the worker pool — were RETAINED instead of torn
+     * down (story 316 review). A thread already past {@code stop()}'s
+     * {@code running} check and inside
+     * {@link #processBlock(float[][], float[][], int)} still uses all three,
+     * so closing them there would render through a closed worker pool and a
+     * closed MIDI renderer.
+     *
+     * <p>The deferral is DRAINED at the single choke point every lifecycle
+     * path funnels through, {@link #stopPump()} — on both of its
+     * confirmed-quiescence returns — so the retained state cannot be owed
+     * forever. {@link #start()} carries the last-resort backstop.</p>
+     */
+    private volatile boolean collaboratorTeardownDeferred;
+
+    /**
      * Creates a new audio engine with the specified format.
      *
      * @param format the audio format configuration
@@ -254,9 +282,40 @@ public final class AudioEngine {
      * <p>Pre-allocates all processing buffers so that the audio callback
      * path is allocation-free.</p>
      *
+     * <p>Deferred-teardown backstop (story 316 review): a {@link #stop()}
+     * that could not confirm the render pump had exited RETAINED the shared
+     * render collaborators — MIDI renderer, graph scheduler, worker pool —
+     * rather than close them under a thread possibly still inside
+     * {@link #processBlock(float[][], float[][], int)}. Restarting over those
+     * retained references would allocate fresh ones and leak them, so the
+     * join is retried once here (via {@link #stopPump()}, which drains the
+     * deferral when it confirms). If quiescence STILL cannot be confirmed the
+     * collaborators are ABANDONED: the references are dropped without being
+     * closed, and that is logged at {@link Level#SEVERE}. Leaving one worker
+     * pool and one MIDI renderer to the GC is strictly safer than calling
+     * {@code close()} on them under a live render thread, which would strand
+     * the scheduler's in-flight tasks on a closed pool and pull the synth's
+     * handle out mid-block. The retry runs BEFORE the running flag flips
+     * because the drain is gated on the engine being stopped.</p>
+     *
      * @return {@code true} if the engine was started, {@code false} if already running
      */
     public boolean start() {
+        if (collaboratorTeardownDeferred) {
+            stopPump(); // retry join; drains the deferral when it confirms
+            if (collaboratorTeardownDeferred) {
+                LOG.severe("Engine start: the render pump retained by the previous stop has"
+                        + " still not exited, so the retained MIDI renderer, graph scheduler"
+                        + " and worker pool are ABANDONED to the GC rather than closed —"
+                        + " closing them under a live render thread would strand the"
+                        + " scheduler's in-flight tasks on a closed pool and pull the synth"
+                        + " handle out from under the block being rendered");
+                collaboratorTeardownDeferred = false;
+                midiTrackRenderer = null;
+                graphScheduler = null;
+                workerPool = null;
+            }
+        }
         if (!running.compareAndSet(false, true)) {
             return false;
         }
@@ -333,15 +392,37 @@ public final class AudioEngine {
      * caller that changed the format while stopped needs. A pause-shaped
      * PAUSED would instead resume a stream opened at the old format.</p>
      *
+     * <p>Clearing {@code running} stays unconditional — it is the documented
+     * mechanism by which an orphaned pump loop exits ({@code renderLoop}
+     * treats an {@link IllegalStateException} raised while
+     * {@code !engine.isRunning()} as a lifecycle race and returns quietly),
+     * and the {@code RELEASE_PENDING} post-state is what makes the next
+     * {@link #startAudioOutput()} fail LOUDLY through
+     * {@link #requireQuiescedPump()} instead of wedging into silence. What is
+     * NOT unconditional any more is the collaborator teardown (story 316
+     * review): a thread already past the {@code running} check and inside
+     * {@link #processBlock(float[][], float[][], int)} still uses the MIDI
+     * renderer, the graph scheduler and the worker pool, so when the quiesce
+     * could not be CONFIRMED those three are retained and
+     * {@link #tearDownRenderCollaborators()} is deferred. The deferral is
+     * drained at {@link #stopPump()}'s confirmed-quiescence returns — the
+     * choke point every lifecycle path already funnels through — and, failing
+     * that, {@link #start()} abandons them rather than restart over them.</p>
+     *
      * @return {@code true} if the engine was stopped, {@code false} if already stopped
      */
     public boolean stop() {
         if (!running.get()) {
             return false;
         }
+        // Honest quiescence: with no pump reference held, no thread can be
+        // inside processBlock on our behalf; otherwise only a CONFIRMED join
+        // proves it.
+        boolean pumpQuiesced = this.pump == null;
         if (this.openBackend != null && streamState == StreamState.RUNNING) {
             // Quiesce while processBlock is still legal (see the javadoc).
             boolean joined = stopPump();
+            pumpQuiesced = joined;
             streamState = StreamState.RELEASE_PENDING;
             releaseTransportClock();
             if (!joined) {
@@ -354,14 +435,39 @@ public final class AudioEngine {
         if (!running.compareAndSet(true, false)) {
             return false;
         }
+        if (pumpQuiesced) {
+            tearDownRenderCollaborators();
+        } else {
+            collaboratorTeardownDeferred = true;
+            LOG.severe("Engine stop: the MIDI renderer, graph scheduler and worker pool are"
+                    + " RETAINED because the render pump's join was not confirmed — a thread"
+                    + " already past the running check and inside processBlock would"
+                    + " otherwise render through a closed worker pool and a closed MIDI"
+                    + " renderer; the teardown is drained by the next confirmed stopPump()");
+        }
+        return true;
+    }
+
+    /**
+     * Closes and forgets the render collaborators shared by every
+     * {@link #processBlock(float[][], float[][], int)} call — the MIDI
+     * renderer and, since story 125, the multi-core graph scheduling state.
+     * The scheduler is detached from the mixer FIRST so subsequent
+     * {@code mixDown} calls (e.g. via offline export) revert to the
+     * single-threaded path even if the mixer reference outlives the engine
+     * restart.
+     *
+     * <p>Extracted from {@link #stop()} (story 316 review) precisely because
+     * it must be skippable there: run only once no render thread can still be
+     * using these objects — inline when {@code stop()} confirmed the pump's
+     * exit, else from {@link #stopPump()} when a later lifecycle call finally
+     * confirms it.</p>
+     */
+    private void tearDownRenderCollaborators() {
         if (midiTrackRenderer != null) {
             midiTrackRenderer.close();
             midiTrackRenderer = null;
         }
-        // Story 125: tear down the multi-core graph scheduling state.
-        // Detach the scheduler from the mixer first so subsequent mixDown
-        // calls (e.g. via offline export) revert to the single-threaded
-        // path even if the mixer reference outlives the engine restart.
         Mixer currentMixer = this.graph.mixer();
         if (currentMixer != null && currentMixer.getGraphScheduler() == graphScheduler) {
             currentMixer.setGraphScheduler(null);
@@ -371,7 +477,23 @@ public final class AudioEngine {
             workerPool.close();
             workerPool = null;
         }
-        return true;
+    }
+
+    /**
+     * Runs a teardown {@link #stop()} deferred, now that {@link #stopPump()}
+     * has confirmed no thread can be inside
+     * {@link #processBlock(float[][], float[][], int)} any more.
+     *
+     * <p>Gated on the engine being stopped so the inline call from within
+     * {@code stop()} — which runs while {@code running} is still {@code true}
+     * — cannot double-fire the teardown, and so a drain can never close the
+     * collaborators of a RESTARTED engine.</p>
+     */
+    private void drainDeferredCollaboratorTeardown() {
+        if (collaboratorTeardownDeferred && !running.get()) {
+            collaboratorTeardownDeferred = false;
+            tearDownRenderCollaborators();
+        }
     }
 
     /**
@@ -470,12 +592,26 @@ public final class AudioEngine {
      * the tracked instance leaves the stream state untouched: a paused
      * stream stays paused and resumable.</p>
      *
+     * <p>That hand-back is refused OUTRIGHT while the render pump's exit
+     * cannot be confirmed (story 316 review): closing the outgoing backend
+     * under a thread possibly still inside its {@code sink} /
+     * {@code awaitSinkCapacity} would race native state — see
+     * {@link #abandonStreamOnOutgoingBackend(AudioBackend)}. The swap then
+     * fails WHOLE: the outgoing handle stays open, the engine stays pointed
+     * at the outgoing provision, and — because the controller installs the
+     * provision BEFORE closing the outgoing instances — those instances stay
+     * alive too. Retry once the pump unblocks.</p>
+     *
      * <p>Closing the outgoing provision's backend <em>instances</em> is the
      * caller's job — the controller owns backend lifecycles.</p>
      *
      * @param provision the new provision, or {@code null} to stream nothing
      *                  (engine-only mode)
-     * @throws IllegalStateException if the engine is currently running
+     * @throws IllegalStateException  if the engine is currently running
+     * @throws AudioBackendException  if a tracked stream must be handed back
+     *                                but the render pump has not exited yet;
+     *                                the whole swap is aborted, unapplied and
+     *                                retryable
      */
     public void setStreamingProvision(StreamingProvision provision) {
         if (running.get()) {
@@ -517,22 +653,33 @@ public final class AudioEngine {
      * whether or not the close succeeded, because no later retry could
      * reach this backend once the engine points elsewhere.
      *
-     * <p>The stream HANDLE is abandoned here; the render PUMP is not. A pump
-     * whose bounded join timed out keeps its reference (story 316 review) —
-     * exactly what {@link #stopPump()} itself does on a failed join — so the
-     * next {@link #startAudioOutput()} re-joins it through
-     * {@link #requireQuiescedPump()} instead of starting a second render
-     * thread into the one shared {@link RenderPipeline}. The abandoned loop
-     * exits on the cleared {@code running} flag, which is already clear here:
-     * {@link #setStreamingProvision(StreamingProvision)} refuses to run while
-     * the engine is running.</p>
+     * <p>The whole swap is REFUSED — nothing is closed, nothing is
+     * re-pointed — while the render pump's exit cannot be confirmed (story
+     * 316 review). A pump whose bounded join timed out may still be executing
+     * {@link AudioBackend#sink(AudioBlock)} or
+     * {@link AudioBackend#awaitSinkCapacity(long)} on {@code outgoing}, and
+     * this method's next act would be to close exactly that backend: releasing
+     * an ASIO upcall arena and its {@code bufferSwitch} shim, a Java Sound
+     * {@code SourceDataLine}, or a PortAudio stream handle underneath a live
+     * thread already inside the native call is a use-after-free, not a
+     * logged inconvenience. Aborting instead leaves the outgoing handle open
+     * and the engine still pointed at it, so a later retry can join first —
+     * the pump reference is deliberately kept (exactly what
+     * {@link #stopPump()} does on a failed join), and the abandoned loop
+     * exits on the cleared {@code running} flag, which is already clear here
+     * because {@link #setStreamingProvision(StreamingProvision)} refuses to
+     * run while the engine is running.</p>
+     *
+     * @throws AudioBackendException if the render pump has not exited yet;
+     *                               the swap is retryable once it unblocks
      */
     private void abandonStreamOnOutgoingBackend(AudioBackend outgoing) {
         if (!stopPump()) {
-            LOG.severe("Audio stream abandoned on outgoing backend " + outgoing.name()
-                    + " while its render pump had not joined: the pump reference is"
-                    + " RETAINED so the next open re-joins it rather than starting a"
-                    + " second render thread; its loop exits on the cleared running flag");
+            throw new AudioBackendException(
+                    "Cannot replace the streaming provision: the render pump has not exited"
+                            + " yet and may still be inside sink/awaitSinkCapacity on "
+                            + outgoing.name() + ", whose handle this swap would close;"
+                            + " retry the swap once the pump unblocks");
         }
         try {
             outgoing.close();
@@ -619,6 +766,10 @@ public final class AudioEngine {
      * {@link AudioBackend#negotiateFormat(com.benesquivelmusic.daw.sdk.audio.AudioFormat)}
      * and passes the negotiated format to
      * {@link AudioBackend#open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)}.
+     * Only the BIT DEPTH may be renegotiated: a rung that returns a different
+     * sample rate or channel count is treated as a failed hop (story 316
+     * review — see {@link #requireRenderableNegotiation}), because the engine
+     * renders through one pipeline shaped by its own format.
      * Every FAILED hop publishes a {@link BackendFallbackEvent} on the
      * {@link com.benesquivelmusic.daw.core.event.EventBusPublisher EventBus}
      * (non-RT, on this caller's thread) so requested &ne; active is always a
@@ -681,6 +832,78 @@ public final class AudioEngine {
 
         LOG.info("Audio output started via " + opened.rung().backend().name()
                 + " (device: " + opened.rung().device().name() + ")");
+
+        // Announce the WINNER, not the requested rung (story 316 review).
+        // Last, because only a stream that actually started is an open.
+        notifyStreamOpened(opened.rung().backend(), opened.rung().device());
+    }
+
+    /**
+     * Notified when {@link #startAudioOutput()} completes an open, carrying
+     * the ladder rung that actually WON.
+     *
+     * <p>Story 316 review — the app layer subscribes to a backend's
+     * {@code deviceEvents()} and remembers one active {@link DeviceId} to
+     * drive hot-unplug handling, channel queries and latency overrides. It
+     * could only bind that subscription where IT drove the open, but a plain
+     * Play calls {@link #startAudioOutput()} straight from the transport
+     * controller: when ASIO then failed and PortAudio opened, the app layer
+     * stayed subscribed to ASIO and still named the requested device, so
+     * every one of those three consumers targeted a backend/device that was
+     * not the open stream. This seam moves the binding to the one place that
+     * knows the winner.</p>
+     */
+    @FunctionalInterface
+    public interface StreamOpenListener {
+
+        /**
+         * Called on the thread that completed the open, after the render
+         * pump has started, with the winning rung's backend and device.
+         *
+         * @param backend the backend now carrying the stream
+         * @param device  the device it actually opened
+         */
+        void streamOpened(AudioBackend backend, DeviceId device);
+    }
+
+    /**
+     * Installs the listener notified whenever {@link #startAudioOutput()}
+     * completes an open (story 316 review). At most one listener; passing
+     * {@code null} clears it, which is what a shutting-down app layer does
+     * so a dead subscriber is never called back.
+     *
+     * <p>Deliberately NOT fired by {@link #resumeAudioOutput()}: a resume
+     * puts a fresh pump on a stream that is still OPEN on the same backend
+     * and device, so nothing a listener tracks has changed — firing there
+     * would re-subscribe the app layer's device-event consumer for no
+     * reason.</p>
+     *
+     * @param listener the listener, or {@code null} to clear
+     */
+    public void setStreamOpenListener(StreamOpenListener listener) {
+        this.streamOpenListener = listener;
+    }
+
+    /**
+     * Notifies the {@link StreamOpenListener}, if any. A listener failure is
+     * logged and swallowed: the stream IS open and rendering by now, so
+     * letting an app-layer callback throw would fail an open that actually
+     * succeeded — and unwind nothing, because the pump is already running.
+     */
+    private void notifyStreamOpened(AudioBackend backend, DeviceId device) {
+        StreamOpenListener listener = this.streamOpenListener;
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.streamOpened(backend, device);
+        } catch (RuntimeException listenerFailure) {
+            LOG.log(Level.WARNING,
+                    "Stream-open listener failed after " + backend.name()
+                            + " opened device '" + device.name()
+                            + "'; the stream is open and rendering regardless",
+                    listenerFailure);
+        }
     }
 
     /**
@@ -721,6 +944,15 @@ public final class AudioEngine {
      * winner is known, so the events can honestly name the rung that ended
      * up carrying the stream (or the literal {@code "none"}).
      *
+     * <p>The hop list is SEEDED with
+     * {@link StreamingProvision#pendingFailedHopCauses()} (story 316 review):
+     * a request the app layer's availability/streaming gate rejected never
+     * reaches the ladder, so this walk would record no failed hop for it and
+     * a fallback head that opens first try would make {@code requested !=
+     * active} a silent substitution on the EventBus seam. Seeding — rather
+     * than publishing at gate time — is what lets those events name the rung
+     * that actually won, which is only known here.</p>
+     *
      * @throws RuntimeException the FIRST rung's failure when every rung failed
      */
     private OpenedRung openLadder(StreamingProvision provision) {
@@ -728,11 +960,15 @@ public final class AudioEngine {
                 new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
                         format.sampleRate(), format.channels(), format.bitDepth());
         RuntimeException firstFailure = null;
-        List<String> failedHopCauses = new ArrayList<>();
+        // Gate rejections FIRST: they happened before the ladder existed, so
+        // publishing them ahead of this walk's own failures keeps the event
+        // order the chronological order of the fallbacks.
+        List<String> failedHopCauses = new ArrayList<>(provision.pendingFailedHopCauses());
         for (BackendStreamRung rung : provision.ladder()) {
             try {
                 com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated =
                         rung.backend().negotiateFormat(requested);
+                requireRenderableNegotiation(rung, requested, negotiated);
                 rung.backend().open(rung.device(), negotiated, format.bufferSize());
                 publishFallbackEvents(provision, failedHopCauses,
                         rung.backend().name(), rung.device().name());
@@ -750,6 +986,49 @@ public final class AudioEngine {
         }
         publishFallbackEvents(provision, failedHopCauses, "none", "none");
         throw firstFailure;
+    }
+
+    /**
+     * Rejects a negotiated format the engine cannot actually render (story
+     * 316 review). Only the BIT DEPTH may be renegotiated today: the engine
+     * renders through a SINGLE {@link RenderPipeline} allocated in
+     * {@link #start()} for {@code format.channels()} planes at
+     * {@code format.sampleRate()}, and {@link EngineStreamPump} interleaves
+     * exactly that shape. A negotiated format with a different channel count
+     * would therefore make every {@link AudioBackend#sink(AudioBlock)} reject
+     * the block, and a different sample rate would merely RELABEL
+     * un-resampled audio — audible as a pitch shift, with nothing in the log.
+     * Bit depth is safe because it is the backend's own encoding concern:
+     * the pump always hands over normalized floats.
+     *
+     * <p>Called inside {@link #openLadder(StreamingProvision)}'s per-rung
+     * {@code try} on purpose, so a violating rung fails like any refused
+     * open: the ladder falls through to the next rung and the hop publishes a
+     * {@link BackendFallbackEvent} carrying this message as its cause, which
+     * makes the mis-negotiation a visible fact rather than silent breakage.
+     * Real per-device negotiation — with resampling and re-planing — is story
+     * 317.</p>
+     *
+     * @throws AudioBackendException if the sample rate or channel count differs
+     */
+    private static void requireRenderableNegotiation(
+            BackendStreamRung rung,
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat requested,
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated) {
+        boolean channelsDiffer = negotiated.channels() != requested.channels();
+        boolean rateDiffers =
+                Double.compare(negotiated.sampleRate(), requested.sampleRate()) != 0;
+        if (!channelsDiffer && !rateDiffers) {
+            return;
+        }
+        String differed = channelsDiffer && rateDiffers
+                ? "the channel count and the sample rate differ"
+                : channelsDiffer ? "the channel count differs" : "the sample rate differs";
+        throw new AudioBackendException(
+                "Backend " + rung.backend().name() + " negotiated a format the engine"
+                        + " cannot render: requested " + requested + " but negotiated "
+                        + negotiated + " — " + differed
+                        + "; only the bit depth may be renegotiated today");
     }
 
     /**
@@ -859,6 +1138,15 @@ public final class AudioEngine {
     /**
      * Stops and joins the render pump, if one is running. Never throws.
      *
+     * <p>This is also where a {@link #stop()} deferred by an unconfirmed join
+     * is DRAINED (story 316 review): every lifecycle path that can quiesce
+     * the pump — {@link #stop()}, {@link #stopAudioOutput()},
+     * {@link #pauseAudioOutput()}, {@link #requireQuiescedPump()} and
+     * {@link #abandonStreamOnOutgoingBackend(AudioBackend)} — funnels through
+     * this one method, so hanging the drain off its confirmed-quiescence
+     * returns is what makes the deferral legitimate rather than a leak with a
+     * comment.</p>
+     *
      * @return {@code true} when no pump thread can call {@link #processBlock}
      *         any more (no pump existed, or the join was confirmed); on a
      *         timed-out join the pump reference is KEPT so a later stop can
@@ -868,11 +1156,13 @@ public final class AudioEngine {
     private boolean stopPump() {
         EngineStreamPump current = this.pump;
         if (current == null) {
+            drainDeferredCollaboratorTeardown();
             return true;
         }
         boolean joined = current.stop();
         if (joined) {
             this.pump = null;
+            drainDeferredCollaboratorTeardown();
         }
         return joined;
     }
@@ -898,17 +1188,35 @@ public final class AudioEngine {
      *
      * <p>A subsequent call to {@link #startAudioOutput()} will open a fresh
      * stream once the handle is released.</p>
+     *
+     * <p>The return value reports QUIESCENCE, not success (story 316 review):
+     * {@code false} means only that a thread may still be inside
+     * {@link #processBlock(float[][], float[][], int)}, which is the one
+     * condition under which a caller must not tear anything shared down or
+     * open anything new. A failed backend close is deliberately NOT reported
+     * as {@code false} — the pump is confirmed gone, the engine merely
+     * retains a handle it will release itself on the next start or stop, and
+     * conflating the two would make callers defer work that is perfectly safe
+     * to do.</p>
+     *
+     * @return {@code true} when no render thread can call
+     *         {@link #processBlock(float[][], float[][], int)} any more —
+     *         including the no-op early return (no stream, hence no pump of
+     *         ours) and the path where the close failed and left
+     *         {@link StreamState#RELEASE_PENDING}; {@code false} only when
+     *         the pump's bounded join timed out and the whole stop was
+     *         deferred for a retry
      */
-    public void stopAudioOutput() {
+    public boolean stopAudioOutput() {
         AudioBackend backend = this.openBackend;
         if (backend == null || streamState == StreamState.CLOSED) {
-            return;
+            return true;
         }
         if (!stopPump()) {
             LOG.severe("Audio output stop deferred: the render pump did not join in time"
                     + " and may still be inside processBlock — the RT-clock claim and the"
                     + " backend handle are preserved; retry the stop");
-            return;
+            return false;
         }
         releaseTransportClock();
         try {
@@ -924,6 +1232,9 @@ public final class AudioEngine {
                             + " and the close is retried by the next start or stop",
                     closeFailure);
         }
+        // Quiescence was confirmed above; a retained handle is a release
+        // failure, not a reason to tell the caller a thread may still render.
+        return true;
     }
 
     /**

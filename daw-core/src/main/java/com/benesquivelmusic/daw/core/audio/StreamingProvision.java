@@ -34,22 +34,44 @@ import java.util.Objects;
  * (story 316 review), which is why the requested device is carried here
  * rather than re-derived from {@link #firstRung()}.</p>
  *
+ * <p>{@link #pendingFailedHopCauses()} closes the one hole that carriage
+ * leaves open (story 316 review). A gate-rejected request never appears in
+ * the ladder at all, so the engine's ladder walk records no failed hop for
+ * it: when the fallback head then opens on the first try, {@code requested
+ * != active} became a SILENT substitution on the {@code EventBus} seam —
+ * the {@code NotificationManager} message the builder emits is a different
+ * surface (a transient toast), not the durable fact other subscribers read.
+ * The builder therefore hands the rejection forward as a pending failed hop
+ * carrying its own cause, and the engine publishes it — ahead of the
+ * ladder's own failed hops, because it happened first — once the actual
+ * winner is known and the event can honestly name it.</p>
+ *
  * <p>The controller that builds the provision owns every backend instance's
  * lifecycle; replacing the provision via
  * {@link AudioEngine#setStreamingProvision(StreamingProvision)} does not
  * close the outgoing instances.</p>
  *
- * @param requestedBackendName display name of the backend the user's
- *                             configuration requested; must not be null or
- *                             blank
- * @param requestedDevice      the device the user's configuration asked for;
- *                             must not be null
- * @param ladder               the ordered open ladder; must contain at least
- *                             one rung and no nulls; defensively copied
+ * @param requestedBackendName   display name of the backend the user's
+ *                               configuration requested; must not be null or
+ *                               blank
+ * @param requestedDevice        the device the user's configuration asked
+ *                               for; must not be null
+ * @param ladder                 the ordered open ladder; must contain at
+ *                               least one rung and no nulls; defensively
+ *                               copied
+ * @param pendingFailedHopCauses causes for hops the ladder never contains
+ *                               because the app layer's availability /
+ *                               streaming gate rejected them before the
+ *                               engine ever saw them, carried here so the
+ *                               engine can publish them once the actual
+ *                               winner is known; must not be null and must
+ *                               contain no null or blank elements;
+ *                               defensively copied
  */
 public record StreamingProvision(String requestedBackendName,
                                  DeviceId requestedDevice,
-                                 List<BackendStreamRung> ladder) {
+                                 List<BackendStreamRung> ladder,
+                                 List<String> pendingFailedHopCauses) {
 
     public StreamingProvision {
         Objects.requireNonNull(requestedBackendName, "requestedBackendName must not be null");
@@ -62,6 +84,37 @@ public record StreamingProvision(String requestedBackendName,
             throw new IllegalArgumentException("ladder must contain at least one rung");
         }
         ladder = List.copyOf(ladder); // defensive copy; also rejects null elements
+        Objects.requireNonNull(
+                pendingFailedHopCauses, "pendingFailedHopCauses must not be null");
+        // Defensive copy; also rejects null elements. A blank cause would
+        // publish a BackendFallbackEvent that explains nothing, which is
+        // worse than no event: the user sees a substitution with no reason.
+        pendingFailedHopCauses = List.copyOf(pendingFailedHopCauses);
+        for (String cause : pendingFailedHopCauses) {
+            if (cause.isBlank()) {
+                throw new IllegalArgumentException(
+                        "pendingFailedHopCauses must not contain a blank cause");
+            }
+        }
+    }
+
+    /**
+     * Convenience constructor for a provision with nothing pending — the
+     * ladder itself is the whole story, because the app layer's gate
+     * rejected nothing ahead of it. Delegates with an empty pending list.
+     *
+     * @param requestedBackendName display name of the backend the user's
+     *                             configuration requested; must not be null
+     *                             or blank
+     * @param requestedDevice      the device the user's configuration asked
+     *                             for; must not be null
+     * @param ladder               the ordered open ladder; must contain at
+     *                             least one rung and no nulls
+     */
+    public StreamingProvision(String requestedBackendName,
+                              DeviceId requestedDevice,
+                              List<BackendStreamRung> ladder) {
+        this(requestedBackendName, requestedDevice, ladder, List.of());
     }
 
     /**

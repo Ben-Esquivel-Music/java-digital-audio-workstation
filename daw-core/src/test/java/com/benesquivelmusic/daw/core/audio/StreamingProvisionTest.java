@@ -128,4 +128,57 @@ class StreamingProvisionTest {
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("requestedDevice must not be null");
     }
+
+    // ── Pending gate-rejected hops (story 316 review) ────────────────────
+
+    @Test
+    void convenienceConstructorsCarryNoPendingFailedHops() {
+        // Nothing was skipped ahead of the ladder on either convenience
+        // shape, so the ladder itself is the whole story.
+        List<BackendStreamRung> ladder = List.of(headlessRung());
+
+        assertThat(new StreamingProvision("Headless", ladder).pendingFailedHopCauses())
+                .isEmpty();
+        assertThat(new StreamingProvision(
+                "ASIO", new DeviceId("ASIO", "Studio Out"), ladder)
+                        .pendingFailedHopCauses())
+                .isEmpty();
+    }
+
+    @Test
+    void pendingFailedHopCausesAreDefensivelyCopiedAndUnmodifiable() {
+        List<BackendStreamRung> ladder = List.of(headlessRung());
+        List<String> causes = new ArrayList<>();
+        causes.add("ASIO is not available on this host");
+
+        StreamingProvision provision = new StreamingProvision(
+                "ASIO", new DeviceId("ASIO", "Studio Out"), ladder, causes);
+        causes.add("later mutation must not leak in");
+
+        assertThat(provision.pendingFailedHopCauses())
+                .containsExactly("ASIO is not available on this host");
+        assertThatThrownBy(() -> provision.pendingFailedHopCauses().add("nope"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void provisionRejectsNullOrBlankPendingFailedHopCauses() {
+        List<BackendStreamRung> ladder = List.of(headlessRung());
+        DeviceId requested = new DeviceId("ASIO", "Studio Out");
+        assertThatThrownBy(() ->
+                new StreamingProvision("ASIO", requested, ladder, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("pendingFailedHopCauses must not be null");
+        List<String> withNull = new ArrayList<>();
+        withNull.add(null);
+        assertThatThrownBy(() ->
+                new StreamingProvision("ASIO", requested, ladder, withNull))
+                .isInstanceOf(NullPointerException.class);
+        // A blank cause would publish a BackendFallbackEvent that explains
+        // nothing — a visible substitution with no stated reason.
+        assertThatThrownBy(() ->
+                new StreamingProvision("ASIO", requested, ladder, List.of("  ")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("blank cause");
+    }
 }

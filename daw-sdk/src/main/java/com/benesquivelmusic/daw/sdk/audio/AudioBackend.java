@@ -118,12 +118,25 @@ public interface AudioBackend extends AutoCloseable {
      * so a backend with a narrower native capability (for example
      * {@link JavaxSoundBackend}, whose output path only encodes 16-bit PCM)
      * can substitute a format it can honestly deliver instead of throwing on
-     * every sink. The default implementation returns the request unchanged;
-     * story 317 expands this seam into real per-device negotiation.
+     * every sink. The default implementation returns the request unchanged.
+     *
+     * <p><b>Only the BIT DEPTH may be adjusted today (story 316 review).</b>
+     * The engine renders every block through one pipeline shaped by its own
+     * session format, so a backend that returns a different sample rate or
+     * channel count is treated as a FAILED ladder hop: the engine refuses
+     * that rung, publishes a {@link BackendFallbackEvent} naming the
+     * mismatch, and falls through to the next rung. It is not silently
+     * honoured, because it cannot be — a wider channel count would make
+     * every {@link #sink(AudioBlock)} reject the block, and a different rate
+     * would merely relabel un-resampled audio. Bit depth is safe because it
+     * is the backend's own encoding concern: the engine always hands over
+     * normalized floats. Full per-device renegotiation — with resampling and
+     * re-planing — is story 317.</p>
      *
      * @param requested the format the engine wants to open; must not be null
      * @return the format the backend will actually open — either
-     *         {@code requested} itself or an adjusted variant; never null
+     *         {@code requested} itself or a variant differing only in bit
+     *         depth; never null
      */
     default AudioFormat negotiateFormat(AudioFormat requested) {
         return requested;

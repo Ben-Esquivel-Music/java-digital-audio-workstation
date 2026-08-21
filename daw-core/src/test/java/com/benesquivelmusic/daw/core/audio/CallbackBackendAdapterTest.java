@@ -421,6 +421,68 @@ class CallbackBackendAdapterTest {
         adapter.close();
     }
 
+    @Test
+    void aShortCaptureBlockPublishesSilenceInsteadOfThePreviousBlocksTail() {
+        // Story 316 review: the callback queues the WHOLE inScratch and the
+        // drain thread publishes a full bufferFrames block out of it, but a
+        // driver that hands back FEWER frames than we opened only overwrites
+        // the scratch's prefix. Unless the tail is cleared, the frames the
+        // driver never supplied are the PREVIOUS callback's samples,
+        // republished as fresh capture — the recording would hear that tail
+        // twice. This is deinterleave's "never stale samples" rule, owed in
+        // the capture direction too.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        List<AudioBlock> received = new CopyOnWriteArrayList<>();
+        adapter.inputBlocks().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+            @Override public void onNext(AudioBlock item) {
+                received.add(item);
+            }
+            @Override public void onError(Throwable throwable) { }
+            @Override public void onComplete() { }
+        });
+
+        float[][] out = new float[2][FRAMES];
+        float[][] fullPlanes = new float[2][FRAMES];
+        for (float[] plane : fullPlanes) {
+            java.util.Arrays.fill(plane, 0.75f);
+        }
+        fake.callback.process(fullPlanes, out, FRAMES);
+
+        // The driver's SHORT block: full-length planes, but it declares only
+        // `shortFrames` of them valid — exactly what a device does when it
+        // hands back a partial period.
+        int shortFrames = FRAMES / 4;
+        float[][] shortPlanes = new float[2][FRAMES];
+        for (float[] plane : shortPlanes) {
+            java.util.Arrays.fill(plane, -0.5f);
+        }
+        fake.callback.process(shortPlanes, out, shortFrames);
+
+        awaitCondition(() -> received.size() >= 2,
+                "the drain thread publishes both captured blocks");
+        float[] samples = received.get(1).samples();
+        int supplied = shortFrames * 2;
+        for (int i = 0; i < supplied; i++) {
+            assertThat(samples[i])
+                    .as("sample %d: the frames the driver DID supply are published"
+                            + " as captured", i)
+                    .isEqualTo(-0.5f);
+        }
+        for (int i = supplied; i < samples.length; i++) {
+            assertThat(samples[i])
+                    .as("sample %d: a frame the short block never supplied must be"
+                            + " SILENCE, never the previous block's 0.75f tail", i)
+                    .isEqualTo(0.0f);
+        }
+        adapter.close();
+    }
+
     // ── Side-output channel writes are counted, not routed ───────────────
 
     @Test

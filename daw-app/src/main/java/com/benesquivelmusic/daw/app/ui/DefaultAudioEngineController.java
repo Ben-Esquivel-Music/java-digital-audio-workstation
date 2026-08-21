@@ -230,6 +230,20 @@ final class DefaultAudioEngineController implements AudioEngineController {
         this.backendSelector = Objects.requireNonNull(
                 backendSelector, "backendSelector must not be null");
         this.xrunDetector = createDetectorFor(audioEngine.getFormat());
+        // Story 316 review: follow the OPEN stream, not the requested rung.
+        // A plain Play calls AudioEngine.startAudioOutput() directly from
+        // TransportController — this controller is not in that loop at all —
+        // so binding device events only where WE drive the open left the
+        // subscription (and activeDevice) pointed at a backend/device the
+        // engine had already fallen back from: hot-unplug handling, channel
+        // queries and latency overrides then all targeted the wrong endpoint.
+        // The engine's stream-open seam fires on EVERY completed open with
+        // the winning rung, which is the only place the winner is known.
+        // An explicit lambda, not a method reference: bindBackendDeviceEvents
+        // is overloaded (2-arg and 3-arg) and a method ref would silently
+        // re-target if either overload's shape changed.
+        audioEngine.setStreamOpenListener(
+                (backend, device) -> bindBackendDeviceEvents(backend, device));
         monitorEventDrain.scheduleWithFixedDelay(this::drainMonitorEvents,
                 MONITOR_EVENT_DRAIN_MILLIS, MONITOR_EVENT_DRAIN_MILLIS,
                 TimeUnit.MILLISECONDS);
@@ -449,8 +463,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 appliedProvisionEndpoint = endpoint;
             }
 
-            // Device hot-plug watch follows the requested (first) rung — the
-            // backend the user chose is the one whose device events matter.
+            // Device hot-plug watch follows the requested (first) rung —
+            // the backend the user chose is the one whose device events
+            // matter. Correct HERE because the engine is stopped: there is
+            // no open stream to disagree with, so the rung the next open
+            // will try first is the honest thing to watch. Any open that
+            // follows re-points this itself via the engine's stream-open
+            // seam (story 316 review), including a bare Play straight from
+            // TransportController.
             bindBackendDeviceEvents(
                     provision.firstRung().backend(), provision.firstRung().device());
 
@@ -470,10 +490,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 try {
                     audioEngine.startAudioOutput();
                     setEngineState(EngineState.RUNNING);
-                    // Honest device truth: the device we watch for hot-unplug is the
-                    // OPEN stream's (which may be a fallback rung's default device),
-                    // not merely the requested one.
-                    audioEngine.openStreamDevice().ifPresent(activeDevice::set);
+                    // No re-point needed here any more (story 316 review):
+                    // startAudioOutput() fired the engine's stream-open seam
+                    // synchronously, and this controller's listener already
+                    // rebound the whole device-event subscription — not just
+                    // activeDevice, which is all the line that used to sit
+                    // here ever did — to the rung that actually WON. That
+                    // rebind now happens for EVERY open, including a bare
+                    // Play issued straight from TransportController, which
+                    // never reaches this method at all.
                 } catch (RuntimeException openFailure) {
                     LOG.log(Level.SEVERE,
                             "Audio output could not be restarted after reconfigure",
@@ -1246,11 +1271,30 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return xrunDetector;
     }
 
-    /** Closes background resources owned by this controller. */
+    /**
+     * Closes background resources owned by this controller.
+     *
+     * <p>The provision's backend instances are closed here — the controller
+     * owns every backend's lifecycle (story 316) — but only after the engine
+     * CONFIRMS the render pump quiesced (story 316 review). A
+     * {@link AudioEngine#stopAudioOutput()} whose bounded join timed out
+     * deliberately leaves the backend open precisely because the pump may
+     * still be inside {@code sink} / {@code awaitSinkCapacity}; closing every
+     * provision backend anyway would release native state under that live
+     * thread. The stop is retried once — it joins for up to a second and is
+     * documented as retryable — and the close is otherwise skipped: see
+     * {@link #closeProvisionBackendsOnceQuiesced()}.</p>
+     */
     synchronized void shutdown() {
         controllerClosed.set(true);
         tonePlayer.close();
         clearBoundBackendDeviceEvents();
+        // Nothing may call back into a shut-down controller, so the engine's
+        // stream-open seam is cleared alongside the device-event
+        // subscription it drives (story 316 review). bindBackendDeviceEvents
+        // already no-ops on controllerClosed, but leaving a dead listener
+        // installed on a live engine is not the honest lifecycle.
+        audioEngine.setStreamOpenListener(null);
         engineStatePublisher.close();
         deviceEventPublisher.close();
         ScheduledFuture<?> pending = pendingFormatChange.getAndSet(null);
@@ -1263,16 +1307,66 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (detector != null) {
             detector.close();
         }
-        // Stop any open stream, then close every provision backend instance
-        // to release native resources on exit — the controller owns the
-        // provision's backend lifecycles (story 316).
-        try {
-            audioEngine.stopAudioOutput();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to stop audio output during shutdown", e);
+        closeProvisionBackendsOnceQuiesced();
+    }
+
+    /**
+     * Stops any open stream and then closes every provision backend instance
+     * to release native resources on exit — but only once the engine reports
+     * the render pump CONFIRMED quiesced (story 316 review).
+     *
+     * <p>{@link AudioEngine#stopAudioOutput()} returns {@code false} for
+     * exactly one condition: its bounded join timed out, so a thread may
+     * still be inside {@code processBlock} and therefore inside the
+     * backend's {@code sink} / {@code awaitSinkCapacity}. That stop
+     * intentionally leaves the backend open; closing the provision's
+     * instances anyway would free native state under the live
+     * {@code engine-render-pump} thread — {@code AsioBackend}'s
+     * {@code AsioBufferSwitchShim}, whose shared {@link java.lang.foreign.Arena}
+     * backs the {@code bufferSwitch} upcall stub the driver calls into; a
+     * Java Sound {@code SourceDataLine}; a PortAudio {@code Pa_} stream
+     * handle. The stop is retried ONCE (it joins for up to a second and
+     * documents itself as retryable, so this is a real second chance and not
+     * an unbounded shutdown hang); if quiescence still cannot be confirmed
+     * the instances are deliberately left open and the OS reclaims them at
+     * process exit, which is strictly safer than a native use-after-free.</p>
+     *
+     * <p>A thrown stop counts as NOT quiesced: an exception says nothing
+     * about whether the pump exited, and the safe reading of "unknown" here
+     * is the one that does not free anything.</p>
+     */
+    private void closeProvisionBackendsOnceQuiesced() {
+        boolean quiesced = stopAudioOutputForShutdown();
+        if (!quiesced) {
+            quiesced = stopAudioOutputForShutdown();
+        }
+        if (!quiesced) {
+            LOG.severe("Audio shutdown: the render pump did not join in time, so the"
+                    + " provision's backend instances are deliberately NOT closed — a"
+                    + " close would release native state (an ASIO bufferSwitch upcall"
+                    + " arena, a Java Sound SourceDataLine, a PortAudio stream handle)"
+                    + " underneath a still-live engine-render-pump thread. The OS"
+                    + " reclaims them at process exit, which is strictly safer than a"
+                    + " native use-after-free.");
+            return;
         }
         // No incoming provision on the shutdown path: every instance goes.
         closeProvisionBackends(audioEngine.getStreamingProvision(), null);
+    }
+
+    /**
+     * One bounded stop attempt for {@link #closeProvisionBackendsOnceQuiesced()}.
+     *
+     * @return the engine's own quiescence verdict, or {@code false} when the
+     *         stop threw — a failure that leaves pump quiescence unknown
+     */
+    private boolean stopAudioOutputForShutdown() {
+        try {
+            return audioEngine.stopAudioOutput();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to stop audio output during shutdown", e);
+            return false;
+        }
     }
 
     private static XrunDetector createDetectorFor(AudioFormat format) {
@@ -1326,6 +1420,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * defaulted from the (fallback) first rung — so the engine's
      * {@code BackendFallbackEvent}s name the true requested endpoint and
      * never pair the requested backend with a device the user never chose.
+     * The rejection is additionally carried as a single
+     * {@link StreamingProvision#pendingFailedHopCauses() pending failed hop}
+     * (story 316 review) naming WHY the gate rejected it — unavailable on
+     * this host versus available with an unimplemented streaming path — so
+     * the engine publishes a {@code BackendFallbackEvent} for it too once
+     * the winning rung is known; without that, a fallback head opening on
+     * the first try published nothing at all and the substitution was
+     * visible only as a transient notification.
      * A blank / {@link #BACKEND_NONE} / unknown name yields the default
      * ladder (PortAudio when available, else Java Sound).</p>
      *
@@ -1345,7 +1447,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
             // provision the best available default.
             return buildDefaultProvision(request.inputDeviceName(), request.outputDeviceName());
         }
-        if (!requested.isAvailable() || !requested.supportsStreaming()) {
+        boolean requestedIsAvailable = requested.isAvailable();
+        if (!requestedIsAvailable || !requested.supportsStreaming()) {
             closeQuietly(requested);
             List<BackendStreamRung> ladder = new ArrayList<>();
             appendFallbackRungs(ladder, name, request.inputDeviceName());
@@ -1374,8 +1477,27 @@ final class DefaultAudioEngineController implements AudioEngineController {
             // fallback's device and the engine would stamp a
             // BackendFallbackEvent pairing the user's requested backend name
             // with a device they never chose.
+            //
+            // The rejection is ALSO carried forward as a pending failed hop
+            // (story 316 review). This gate removes the requested backend
+            // from the ladder entirely, so the engine's ladder walk records
+            // no failed hop for it and — when the fallback head opens first
+            // try — published NOTHING on the EventBus seam, making requested
+            // != active a silent substitution there. The NotificationManager
+            // message above is a different surface, not a substitute. The
+            // cause distinguishes the two genuinely different user-facing
+            // facts: a backend the host does not have at all, versus one it
+            // has whose streaming path this build has not implemented
+            // (supportsStreaming() == false — WASAPI / CoreAudio / JACK
+            // today).
+            String gateCause = requestedIsAvailable
+                    ? name + " is available on this host but its streaming path is not"
+                            + " implemented, so it was never offered to the open ladder"
+                    : name + " is not available on this host, so it was never offered to"
+                            + " the open ladder";
             return new StreamingProvision(
-                    name, deviceId(name, request.outputDeviceName()), ladder);
+                    name, deviceId(name, request.outputDeviceName()), ladder,
+                    List.of(gateCause));
         }
         List<BackendStreamRung> ladder = new ArrayList<>();
         ladder.add(new BackendStreamRung(requested, deviceId(name, request.outputDeviceName())));
@@ -1461,10 +1583,30 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * outgoing instances are closed here — but only the ones the incoming
      * ladder does not reuse: a shared instance is still live on the new
      * provision and must not be closed.</p>
+     *
+     * <p>That same ownership is why a REFUSED swap closes the INCOMING
+     * instances (story 316 review). {@code setStreamingProvision} now throws
+     * {@link com.benesquivelmusic.daw.sdk.audio.AudioBackendException} when
+     * the outgoing stream's pump cannot be confirmed quiesced, aborting the
+     * swap whole; by then {@code buildStreamingProvision} has already
+     * CONSTRUCTED the incoming backend instances, and an exception that
+     * simply propagated left them neither installed nor closed — a leak of
+     * exactly the native handles this ordering exists to protect (a
+     * PortAudio {@code Pa_} handle per {@code CallbackBackendAdapter}, a
+     * Java Sound {@code SourceDataLine}). They are closed best-effort here,
+     * skipping any instance the OUTGOING provision also carries: the engine
+     * still points at that provision, so a shared instance is live.</p>
      */
     private void installProvision(StreamingProvision provision) {
         StreamingProvision outgoing = audioEngine.getStreamingProvision();
-        audioEngine.setStreamingProvision(provision);
+        try {
+            audioEngine.setStreamingProvision(provision);
+        } catch (RuntimeException swapRefused) {
+            // Roles reversed on purpose: the provision that never got
+            // installed is the one whose instances are now orphaned.
+            closeProvisionBackends(provision, outgoing);
+            throw swapRefused;
+        }
         closeProvisionBackends(outgoing, provision);
     }
 

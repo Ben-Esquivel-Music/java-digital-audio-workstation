@@ -181,9 +181,21 @@ public final class JavaxSoundBackend implements AudioBackend {
             this.outputLine = AudioSystem.getSourceDataLine(jFormat);
             this.outputLine.open(jFormat, lineBufferBytes);
             this.outputLine.start();
-        } catch (LineUnavailableException | IllegalArgumentException e) {
+        } catch (LineUnavailableException | RuntimeException e) {
             // Mandatory output line failed: roll the open back and fail the
-            // rung loudly so the ladder can fall through.
+            // rung loudly so the ladder can fall through. RUNTIME failures
+            // roll back on this same path (story 316 review): getSourceDataLine
+            // / open / start can raise a SecurityException or an
+            // IllegalStateException just as readily as the two originally
+            // listed cases, and one escaping past support.markOpen would leave
+            // isOpen() LYING to the engine while a half-opened SourceDataLine
+            // leaks — the engine, seeing the rung fail, walks on and opens
+            // another backend beside that leaked line. Java Sound is the
+            // ladder's MANDATORY FINAL RUNG: a leaked line walks the mixer's
+            // finite line budget to zero. IllegalArgumentException is a
+            // RuntimeException so it is covered rather than listed (javac
+            // rejects multicatch alternatives related by subclassing); Error
+            // still propagates untouched.
             SourceDataLine partial = this.outputLine;
             this.outputLine = null;
             if (partial != null) {
@@ -202,7 +214,7 @@ public final class JavaxSoundBackend implements AudioBackend {
             this.inputLine.open(jFormat, lineBufferBytes);
             this.inputLine.start();
             startCapture(format, bufferFrames);
-        } catch (LineUnavailableException | IllegalArgumentException e) {
+        } catch (LineUnavailableException | RuntimeException e) {
             // Optional capture: input failure never kills playback — but the
             // partially opened line must still be given back. Java Sound is
             // the ladder's MANDATORY FINAL RUNG (story 316 review): a line
@@ -210,6 +222,16 @@ public final class JavaxSoundBackend implements AudioBackend {
             // to zero and turns a transient capture failure into a permanent
             // "no lines available" for the one backend every machine has.
             // Same roll-back shape as the mandatory output path above.
+            // RUNTIME failures degrade through here too (story 316 review):
+            // the capture setup can raise a security denial, or fail to start
+            // the capture thread, as easily as it can raise the two originally
+            // listed cases. One escaping would kill an open whose MANDATORY
+            // output line had ALREADY succeeded — the engine would read the
+            // whole rung as failed and open a second backend in parallel
+            // against that still-live output line, two streams on one device.
+            // IllegalArgumentException is a RuntimeException so it is covered
+            // rather than listed (javac rejects multicatch alternatives
+            // related by subclassing); Error still propagates untouched.
             TargetDataLine partialCapture = this.inputLine;
             this.inputLine = null;
             if (partialCapture != null) {

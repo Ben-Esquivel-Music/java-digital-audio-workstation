@@ -118,7 +118,12 @@ final class EngineStreamPump {
      *                     sample rate); must not be null
      * @param openedFormat the negotiated SDK format the backend was actually
      *                     opened with — its sample rate stamps the sunk blocks;
-     *                     must not be null
+     *                     must not be null, and its channel count and sample
+     *                     rate must equal {@code format}'s (only the BIT DEPTH
+     *                     may be renegotiated — see the constructor's
+     *                     invariant check)
+     * @throws IllegalArgumentException if {@code openedFormat} disagrees with
+     *                                  {@code format} on channels or sample rate
      */
     EngineStreamPump(AudioBackend backend, AudioEngine engine,
                      AudioFormat format,
@@ -127,6 +132,25 @@ final class EngineStreamPump {
         this.engine = Objects.requireNonNull(engine, "engine must not be null");
         Objects.requireNonNull(format, "format must not be null");
         Objects.requireNonNull(openedFormat, "openedFormat must not be null");
+        // Defence in depth at the exact seam that would otherwise MISLABEL
+        // (story 316 review): the planes, the interleave buffer and the
+        // reusable block below are built from the ENGINE format, while the
+        // block is stamped with the OPENED sample rate. A wider/narrower
+        // negotiated channel count would make every sink reject the block,
+        // and a different negotiated rate would relabel un-resampled audio —
+        // an inaudible-in-code, very audible-in-speakers pitch shift. The
+        // ladder already enforces this invariant when it picks a rung
+        // (AudioEngine.requireRenderableNegotiation); asserting it here means
+        // no future caller can construct a mislabelling pump silently.
+        if (openedFormat.channels() != format.channels()
+                || Double.compare(openedFormat.sampleRate(), format.sampleRate()) != 0) {
+            throw new IllegalArgumentException(
+                    "openedFormat must match the engine format on channels and sample rate"
+                            + " (only the bit depth may be renegotiated): engine "
+                            + format.channels() + " ch @ " + format.sampleRate()
+                            + " Hz, opened " + openedFormat.channels() + " ch @ "
+                            + openedFormat.sampleRate() + " Hz");
+        }
         this.channels = format.channels();
         this.bufferFrames = format.bufferSize();
         this.blockPeriodNanos =

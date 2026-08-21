@@ -23,7 +23,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
-import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -475,12 +474,16 @@ class DefaultAudioEngineControllerTest {
                 java.util.Collections.synchronizedList(new ArrayList<>());
         SpyStreamingBackend spy = new SpyStreamingBackend("SpyASIO", lifecycleLog);
         DeviceId active = new DeviceId("SpyASIO", "Dev B");
-        SubmissionPublisher<com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent>
-                deviceEvents = new SubmissionPublisher<>();
         try {
             engine.setStreamingProvision(new StreamingProvision("SpyASIO",
                     List.of(new BackendStreamRung(spy, active))));
-            controller.bindBackendDeviceEvents(spy, active, deviceEvents);
+            // Driven through the spy's OWN deviceEvents() stream, the way
+            // production does. Story 316 review: the engine's stream-open
+            // seam rebinds this controller to the winning rung's own
+            // deviceEvents() on every open, so an externally injected
+            // publisher handed to the package-private three-argument bind
+            // is unsubscribed the moment the stream opens below.
+            controller.bindBackendDeviceEvents(spy, active);
 
             // Open the stream BEFORE the driver event — the discriminator
             // against the no-open-stream variant above.
@@ -503,7 +506,7 @@ class DefaultAudioEngineControllerTest {
             // The driver renegotiated to a 512-frame buffer at the same rate.
             com.benesquivelmusic.daw.sdk.audio.AudioFormat proposed =
                     new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 2, 24);
-            deviceEvents.submit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+            spy.publishDeviceEvent(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
                     .FormatChangeRequested(active, Optional.of(proposed),
                             new FormatChangeReason.BufferSizeChange(512)));
 
@@ -541,7 +544,6 @@ class DefaultAudioEngineControllerTest {
             assertThat(opens.get(1).bufferFrames()).isEqualTo(512);
             assertThat(opens.get(1).device()).isEqualTo(active);
         } finally {
-            deviceEvents.close();
             engine.stopAudioOutput();
             engine.stop();
             controller.shutdown();
@@ -1143,6 +1145,277 @@ class DefaultAudioEngineControllerTest {
             engine.stop();
             controller.shutdown();
             bus.close();
+        }
+    }
+
+    @Test
+    void gateRejectedRequestPublishesAFallbackEventOnTheEventBusToo(
+            @TempDir Path projectRoot) throws Exception {
+        // Story 316 review: the availability/streaming gate removes an
+        // unavailable / non-streaming requested backend from the ladder
+        // BEFORE the engine sees it, so the ladder walk records no failed
+        // hop for it — and when the fallback head then opens on the first
+        // try, requested != active was published NOWHERE. The story's
+        // contract is that every fallback is a visible fact on the EventBus
+        // seam; the NotificationManager message is a different surface, not
+        // a substitute. The rejection is therefore carried forward as a
+        // pending failed hop the engine publishes once the winner is known.
+        SpyStreamingBackend gated = new SpyStreamingBackend("ASIO");
+        // Present on the host, but with no implemented streaming path —
+        // the WASAPI / CoreAudio / JACK shape, which is a different
+        // user-facing fact from "not installed" and must read differently.
+        gated.setSupportsStreaming(false);
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> gated));
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+
+        com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
+                com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
+        com.benesquivelmusic.daw.core.event.DefaultEventBus bus =
+                new com.benesquivelmusic.daw.core.event.DefaultEventBus();
+        List<com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent> events =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        CountDownLatch published = new CountDownLatch(1);
+        bus.on(com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent.class, event -> {
+            events.add(event);
+            published.countDown();
+        });
+        com.benesquivelmusic.daw.core.event.EventBusPublisher.setDefault(bus);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "", SampleRate.HZ_44100, 512, 16, 1));
+
+            StreamingProvision provision = engine.getStreamingProvision();
+            assertThat(provision.requestedBackendName())
+                    .as("the provision still names the USER'S request")
+                    .isEqualTo("ASIO");
+            assertThat(provision.firstRung().backend().name())
+                    .as("the gate really did drop the request from the ladder")
+                    .isNotEqualTo("ASIO");
+            assertThat(provision.pendingFailedHopCauses())
+                    .as("the gate rejection is carried forward for the engine to publish")
+                    .hasSize(1)
+                    .first().asString()
+                    .contains("ASIO")
+                    .contains("streaming path is not implemented");
+
+            try {
+                engine.startAudioOutput();
+            } catch (RuntimeException everyRungFailed) {
+                // Acceptable on hosts where no fallback rung can open — the
+                // gate hop still published its event, asserted below.
+            }
+
+            assertThat(published.await(5, TimeUnit.SECONDS))
+                    .as("the GATE rejection publishes a BackendFallbackEvent too")
+                    .isTrue();
+            String winner = engine.openStreamBackendName().orElse("none");
+            com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent gateHop = events.get(0);
+            assertThat(gateHop.requestedBackend())
+                    .as("the event names the ORIGINAL user request")
+                    .isEqualTo("ASIO");
+            assertThat(gateHop.requestedDevice())
+                    .as("paired with the device the user asked for, never a fallback's")
+                    .isEqualTo(DeviceId.defaultFor("ASIO").name());
+            assertThat(gateHop.activeBackend())
+                    .as("and with the rung that ACTUALLY opened — known only after the walk")
+                    .isEqualTo(winner)
+                    .isNotEqualTo("ASIO");
+            assertThat(gateHop.cause())
+                    .as("the cause says WHY the gate rejected it")
+                    .contains("ASIO")
+                    .contains("streaming path is not implemented");
+        } finally {
+            com.benesquivelmusic.daw.core.event.EventBusPublisher.setDefault(previousBus);
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+            bus.close();
+        }
+    }
+
+    @Test
+    void aDirectEngineOpenRebindsDeviceEventsToTheWinningRung(@TempDir Path projectRoot)
+            throws Exception {
+        // Story 316 review: a normal Play calls AudioEngine.startAudioOutput()
+        // straight from TransportController — this controller is not in that
+        // loop at all. When the requested rung failed and a fallback opened,
+        // the controller stayed subscribed to the LOSER and kept naming the
+        // requested device, so hot-unplug handling, channel queries and
+        // latency overrides every one targeted a backend/device that was not
+        // the open stream. The engine's stream-open seam re-points them.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        SpyStreamingBackend refusing = new SpyStreamingBackend("Requested");
+        refusing.failOpensWith(
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendException(
+                        "requested rung refused the open"));
+        SpyStreamingBackend winner = new SpyStreamingBackend("Fallback");
+        DeviceId requestedDevice = new DeviceId("Requested", "Requested Out");
+        DeviceId winnerDevice = new DeviceId("Fallback", "Fallback Out");
+        try {
+            engine.setStreamingProvision(new StreamingProvision("Requested", List.of(
+                    new BackendStreamRung(refusing, requestedDevice),
+                    new BackendStreamRung(winner, winnerDevice))));
+            // The pre-open bind applyConfiguration performs while the engine
+            // is stopped: with no open stream the requested rung is the
+            // honest thing to watch.
+            controller.bindBackendDeviceEvents(refusing, requestedDevice);
+            assertThat(controller.getActiveDevice()).contains(requestedDevice);
+
+            // The Play path: straight to the engine, never through this
+            // controller.
+            engine.startAudioOutput();
+
+            assertThat(engine.openStreamBackendName())
+                    .as("non-vacuity guard: the ladder really did fall back")
+                    .contains("Fallback");
+            assertThat(controller.getActiveDevice())
+                    .as("the controller now names the device that is actually open")
+                    .contains(winnerDevice);
+
+            // ...and the SUBSCRIPTION moved with it, not merely the field:
+            // an unplug announced by the WINNER reaches this controller.
+            winner.simulateDeviceRemoved(winnerDevice);
+            waitForLong(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            assertThat(controller.engineState())
+                    .as("the device-event subscription follows the open stream")
+                    .isEqualTo(EngineState.DEVICE_LOST);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void shutdownDoesNotCloseProvisionBackendsWhileThePumpMayStillRender(
+            @TempDir Path projectRoot) throws Exception {
+        // Story 316 review: a timed-out stopAudioOutput() deliberately leaves
+        // the backend open because the pump may still be inside sink /
+        // awaitSinkCapacity. Closing every provision backend anyway would
+        // release native state — an ASIO bufferSwitch upcall arena, a
+        // SourceDataLine, a PortAudio stream handle — under the live render
+        // thread. Deferring to process exit is strictly safer.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        SpyStreamingBackend wedging = new SpyStreamingBackend("Wedging");
+        // Never opened: isolates the CONTROLLER'S provision cleanup from the
+        // engine's own hand-back of the open handle.
+        SpyStreamingBackend spare = new SpyStreamingBackend("Spare");
+        try {
+            engine.setStreamingProvision(new StreamingProvision("Wedging", List.of(
+                    new BackendStreamRung(wedging, new DeviceId("Wedging", "Out")),
+                    new BackendStreamRung(spare, new DeviceId("Spare", "Out")))));
+            wedging.blockAwait = true;
+            engine.startAudioOutput();
+            waitForLong(() -> wedging.blockedAwaitEntries.get() >= 1);
+
+            controller.shutdown();
+
+            assertThat(wedging.closeCount())
+                    .as("the open backend is NOT closed under a possibly-live pump")
+                    .isZero();
+            assertThat(spare.closeCount())
+                    .as("and neither is any other provision instance")
+                    .isZero();
+        } finally {
+            wedging.blockAwait = false;
+            engine.stopAudioOutput();
+            engine.stop();
+        }
+    }
+
+    @Test
+    void shutdownClosesProvisionBackendsOnceQuiescenceIsConfirmed(
+            @TempDir Path projectRoot) {
+        // Companion to the wedged case: the quiescence guard must not
+        // silently disable shutdown cleanup on the normal path.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        SpyStreamingBackend streaming = new SpyStreamingBackend("Streaming");
+        SpyStreamingBackend spare = new SpyStreamingBackend("Spare");
+        try {
+            engine.setStreamingProvision(new StreamingProvision("Streaming", List.of(
+                    new BackendStreamRung(streaming, new DeviceId("Streaming", "Out")),
+                    new BackendStreamRung(spare, new DeviceId("Spare", "Out")))));
+            engine.startAudioOutput();
+            assertThat(engine.isStreamOpen()).isTrue();
+
+            controller.shutdown();
+
+            assertThat(spare.closeCount())
+                    .as("the never-opened rung proves the controller's provision "
+                            + "cleanup ran — the engine only ever hands back the "
+                            + "OPEN handle")
+                    .isEqualTo(1);
+            assertThat(streaming.closeCount())
+                    .as("and the open backend was handed back and closed")
+                    .isGreaterThanOrEqualTo(1);
+            assertThat(streaming.isOpen()).isFalse();
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+        }
+    }
+
+    @Test
+    void refusedProvisionSwapClosesTheIncomingBackendInstances(@TempDir Path projectRoot)
+            throws Exception {
+        // Story 316 review: setStreamingProvision now ABORTS the swap when
+        // the outgoing stream's pump cannot be confirmed quiesced. By then
+        // buildStreamingProvision has already CONSTRUCTED the incoming
+        // backend instances, and an exception that simply propagated left
+        // them neither installed nor closed — leaking exactly the native
+        // handles the refusal exists to protect.
+        SpyStreamingBackend incoming = new SpyStreamingBackend("SpyIncoming");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("SpyIncoming", () -> incoming));
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        SpyStreamingBackend outgoing = new SpyStreamingBackend("Outgoing");
+        StreamingProvision outgoingProvision = new StreamingProvision("Outgoing", List.of(
+                new BackendStreamRung(outgoing, new DeviceId("Outgoing", "Out"))));
+        try {
+            engine.setStreamingProvision(outgoingProvision);
+            outgoing.blockAwait = true;
+            engine.startAudioOutput();
+            waitForLong(() -> outgoing.blockedAwaitEntries.get() >= 1);
+
+            assertThatThrownBy(() -> controller.applyConfiguration(
+                    new AudioEngineController.Request(
+                            "SpyIncoming", "", "", SampleRate.HZ_44100, 512, 16, 1)))
+                    .as("the refused swap still reaches the caller")
+                    .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.AudioBackendException.class)
+                    .hasMessageContaining("render pump");
+
+            assertThat(incoming.closeCount())
+                    .as("the incoming instances the aborted swap orphaned are released")
+                    .isEqualTo(1);
+            assertThat(outgoing.closeCount())
+                    .as("the OUTGOING instance is still live on the engine — untouched")
+                    .isZero();
+            assertThat(engine.getStreamingProvision())
+                    .as("the swap aborted whole; the engine still points at the old provision")
+                    .isSameAs(outgoingProvision);
+        } finally {
+            outgoing.blockAwait = false;
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
         }
     }
 

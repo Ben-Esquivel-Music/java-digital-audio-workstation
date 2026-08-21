@@ -332,6 +332,231 @@ class AudioEngineOutputTest {
         }
     }
 
+    @Test
+    void aGateRejectedHopIsPublishedBeforeTheLaddersOwnFailedHops() {
+        // Story 316 review: the app layer's availability/streaming gate
+        // drops a backend from the ladder before the engine ever sees it,
+        // so this walk records no failed hop for it and a fallback head that
+        // opens first try published NOTHING — a silent substitution on the
+        // seam the story says every fallback is visible on. The provision
+        // carries the rejection forward and the walk SEEDS it, ordered
+        // first because the gate rejection happened first.
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+
+            SynchronousTestBackend failing = new SynchronousTestBackend("Failing");
+            failing.failOnOpen = true;
+            SynchronousTestBackend winner = new SynchronousTestBackend("Winner");
+            engine.setStreamingProvision(new StreamingProvision(
+                    "ASIO",
+                    new DeviceId("ASIO", "Studio Interface Out"),
+                    List.of(
+                            new BackendStreamRung(failing, DeviceId.defaultFor("Failing")),
+                            new BackendStreamRung(winner, DeviceId.defaultFor("Winner"))),
+                    List.of("ASIO is not available on this host")));
+
+            engine.startAudioOutput();
+
+            awaitCondition(() -> received.size() >= 2,
+                    "the gate hop and the ladder's own failed hop both publish");
+            assertThat(received).hasSize(2);
+            assertThat(received.get(0).cause())
+                    .as("the gate rejection is published FIRST — it happened first")
+                    .isEqualTo("ASIO is not available on this host");
+            assertThat(received.get(1).cause()).isEqualTo("open refused by Failing");
+            assertThat(received)
+                    .allSatisfy(event -> {
+                        assertThat(event.requestedBackend()).isEqualTo("ASIO");
+                        assertThat(event.requestedDevice()).isEqualTo("Studio Interface Out");
+                        assertThat(event.activeBackend())
+                                .as("both name the rung that ACTUALLY won")
+                                .isEqualTo("Winner");
+                        assertThat(event.activeDevice())
+                                .isEqualTo(DeviceId.defaultFor("Winner").name());
+                    });
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    @Test
+    void aGateRejectedHopIsPublishedEvenWhenTheLadderHeadOpensFirstTry() {
+        // The exact case the pre-fix code published nothing for.
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+
+            SynchronousTestBackend winner = new SynchronousTestBackend("Winner");
+            engine.setStreamingProvision(new StreamingProvision(
+                    "WASAPI",
+                    new DeviceId("WASAPI", "Speakers"),
+                    List.of(new BackendStreamRung(winner, DeviceId.defaultFor("Winner"))),
+                    List.of("WASAPI is available on this host but its streaming path"
+                            + " is not implemented")));
+
+            engine.startAudioOutput();
+
+            awaitCondition(() -> received.size() >= 1,
+                    "the gate rejection is a visible fact even with no failed hop");
+            assertThat(received).hasSize(1);
+            assertThat(received.get(0).requestedBackend()).isEqualTo("WASAPI");
+            assertThat(received.get(0).activeBackend()).isEqualTo("Winner");
+            assertThat(received.get(0).cause())
+                    .contains("streaming path is not implemented");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    // ── The stream-open seam names the WINNER (story 316 review) ─────────
+
+    @Test
+    void theStreamOpenListenerIsNotifiedWithTheRungThatActuallyOpened() {
+        // Story 316 review: a plain Play calls startAudioOutput() straight
+        // from the transport controller, so the app layer's device-event
+        // subscription can only follow the OPEN stream if the engine tells
+        // it which rung won. The requested rung is exactly the wrong answer
+        // whenever the ladder fell back.
+        SynchronousTestBackend failing = new SynchronousTestBackend("Failing");
+        failing.failOnOpen = true;
+        SynchronousTestBackend winner = new SynchronousTestBackend("Winner");
+        engine.setStreamingProvision(provisionOf("Failing", failing, winner));
+        List<String> opened = new CopyOnWriteArrayList<>();
+        engine.setStreamOpenListener(
+                (backend, device) -> opened.add(backend.name() + "@" + device.name()));
+
+        engine.startAudioOutput();
+
+        assertThat(opened)
+                .as("one notification, naming the winning rung's backend AND device")
+                .containsExactly("Winner@" + DeviceId.defaultFor("Winner").name());
+
+        // A resume is not an open: the stream stays open on the same
+        // backend and device, so nothing a listener tracks has changed.
+        engine.pauseAudioOutput();
+        engine.startAudioOutput();
+
+        assertThat(opened)
+                .as("resuming a paused stream must not re-fire the open seam")
+                .hasSize(1);
+    }
+
+    @Test
+    void aThrowingStreamOpenListenerNeverFailsAnOpenThatSucceeded() {
+        // The stream is open and rendering by the time the listener runs;
+        // letting an app-layer callback throw would fail an open that
+        // actually succeeded, and unwind nothing.
+        engine.setStreamOpenListener((backend, device) -> {
+            throw new IllegalStateException("listener blew up");
+        });
+
+        engine.startAudioOutput();
+
+        assertThat(engine.isStreamOpen()).isTrue();
+        assertThat(engine.openStreamBackendName()).contains("Stub");
+    }
+
+    @Test
+    void clearingTheStreamOpenListenerStopsTheNotifications() {
+        List<String> opened = new CopyOnWriteArrayList<>();
+        engine.setStreamOpenListener((backend, device) -> opened.add(backend.name()));
+        engine.setStreamOpenListener(null);
+
+        engine.startAudioOutput();
+
+        assertThat(opened).isEmpty();
+    }
+
+    // ── Negotiation is bit-depth-only (story 316 review, F6) ─────────────
+
+    @Test
+    void aRungNegotiatingADifferentChannelCountIsTreatedAsAFailedHop() {
+        // The pump builds its planes and its reusable block from the ENGINE
+        // format while the backend opened the NEGOTIATED one, so a rung that
+        // widens the channel count would make every sink reject the block.
+        // Falling through the ladder — visibly, via the hop's event — is the
+        // honest outcome; adapting the render shape is story 317.
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+
+            SynchronousTestBackend widening = new SynchronousTestBackend("Widening");
+            widening.negotiateToChannels = 4; // the engine renders 2 planes
+            SynchronousTestBackend second = new SynchronousTestBackend("Second");
+            engine.setStreamingProvision(provisionOf("Widening", widening, second));
+
+            engine.startAudioOutput();
+
+            assertThat(widening.openCount.get())
+                    .as("refused BEFORE the open — nothing is opened at a shape we cannot feed")
+                    .isZero();
+            assertThat(engine.openStreamBackendName())
+                    .as("the ladder fell through to the next rung")
+                    .contains("Second");
+            awaitCondition(() -> received.size() >= 1,
+                    "the refused hop publishes a fallback event");
+            assertThat(received.get(0).cause())
+                    .as("the event's cause names the rung and what differed")
+                    .contains("Widening")
+                    .contains("the channel count differs");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    @Test
+    void aRungNegotiatingADifferentSampleRateIsTreatedAsAFailedHop() {
+        // A changed rate is worse than a rejection: the block would merely be
+        // RELABELLED, playing un-resampled audio at the wrong pitch with
+        // nothing in the log.
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+
+            SynchronousTestBackend resampling = new SynchronousTestBackend("Resampling");
+            resampling.negotiateToSampleRate = 48_000.0; // the engine renders at 44.1 kHz
+            SynchronousTestBackend second = new SynchronousTestBackend("Second");
+            engine.setStreamingProvision(provisionOf("Resampling", resampling, second));
+
+            engine.startAudioOutput();
+
+            assertThat(resampling.openCount.get()).isZero();
+            assertThat(engine.openStreamBackendName()).contains("Second");
+            awaitCondition(() -> received.size() >= 1,
+                    "the refused hop publishes a fallback event");
+            assertThat(received.get(0).cause())
+                    .contains("Resampling")
+                    .contains("the sample rate differs");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    @Test
+    void aRungNegotiatingOnlyTheBitDepthStillOpens() {
+        // The complement of the two tests above: bit depth IS the backend's
+        // own encoding concern (the pump always hands over normalized
+        // floats), so it must remain renegotiable.
+        SynchronousTestBackend narrow = new SynchronousTestBackend("Narrow");
+        narrow.negotiateToBitDepth = 8;
+        engine.setStreamingProvision(provisionOf("Narrow", narrow));
+
+        engine.startAudioOutput();
+
+        assertThat(narrow.lastOpenFormat)
+                .isEqualTo(new com.benesquivelmusic.daw.sdk.audio.AudioFormat(44_100.0, 2, 8));
+        assertThat(engine.openStreamBackendName()).contains("Narrow");
+    }
+
     // ── Timed-out pump join (story 315 conservative-preserve, F6) ────────
 
     @Test
@@ -352,7 +577,9 @@ class AudioEngineOutputTest {
         awaitCondition(() -> backend.blockedAwaitEntries.get() >= 1,
                 "the pump is wedged inside awaitSinkCapacity");
 
-        engine.stopAudioOutput(); // the bounded join times out
+        assertThat(engine.stopAudioOutput())
+                .as("the stop reports UNCONFIRMED quiescence — a thread may still render")
+                .isFalse();
 
         assertThat(engine.isStreamOpen())
                 .as("the state stays RUNNING — the stop is deferred, not faked")
@@ -368,7 +595,9 @@ class AudioEngineOutputTest {
 
         backend.blockAwait = false; // the wedge clears; the loop exits on its flag
 
-        engine.stopAudioOutput(); // retried stop joins for real and releases
+        assertThat(engine.stopAudioOutput())
+                .as("the retried stop joins for real and reports confirmed quiescence")
+                .isTrue();
 
         assertThat(engine.isStreamOpen()).isFalse();
         assertThat(backend.closeCount.get()).isEqualTo(1);
@@ -460,6 +689,109 @@ class AudioEngineOutputTest {
         assertThat(backend.closeCount.get()).isEqualTo(1);
     }
 
+    // ── Deferred collaborator teardown (story 316 review, F4) ────────────
+
+    @Test
+    void stopWithAnUnjoinedPumpRetainsTheRenderCollaboratorsUntilAConfirmedStop() {
+        // Story 316 review: stop() cleared `running` and then closed the MIDI
+        // renderer, detached the scheduler and closed the worker pool — while
+        // a pump already PAST that running check could still be inside
+        // processBlock, using all three. Clearing `running` stays (it is how
+        // the orphaned loop exits, and RELEASE_PENDING is what makes the next
+        // start fail loudly); the COLLABORATOR teardown is what defers.
+        // The pool size is pinned: defaults() derives it from the CPU count
+        // and is 1 on a 2-core host, which would leave the scheduler null and
+        // make the assertions below vacuous.
+        AudioEngine pinned = new AudioEngine(
+                FORMAT, AudioEngineSettings.defaults().withWorkerPoolSize(4));
+        SynchronousTestBackend wedging = new SynchronousTestBackend("Wedging");
+        pinned.setStreamingProvision(provisionOf("Wedging", wedging));
+        try {
+            wedging.blockAwait = true;
+            pinned.startAudioOutput();
+
+            assertThat(pinned.getGraphScheduler())
+                    .as("non-vacuity guard: parallelism really is on for this engine")
+                    .isNotNull();
+            assertThat(pinned.getMidiTrackRenderer()).isNotNull();
+            awaitCondition(() -> wedging.blockedAwaitEntries.get() >= 1,
+                    "the pump is wedged inside awaitSinkCapacity");
+
+            pinned.stop(); // the quiesce's bounded join times out
+
+            assertThat(pinned.isRunning())
+                    .as("the running flag still clears — the orphaned loop exits on it")
+                    .isFalse();
+            assertThat(pinned.getMidiTrackRenderer())
+                    .as("the MIDI renderer a live processBlock may still use is RETAINED")
+                    .isNotNull();
+            assertThat(pinned.getGraphScheduler())
+                    .as("the graph scheduler is RETAINED")
+                    .isNotNull();
+            assertThat(pinned.getWorkerPool())
+                    .as("the worker pool is RETAINED — a closed pool would strand its tasks")
+                    .isNotNull();
+
+            wedging.blockAwait = false; // the wedge clears; the loop exits on its flag
+
+            pinned.stopAudioOutput(); // the confirming lifecycle call drains the deferral
+
+            assertThat(pinned.getMidiTrackRenderer())
+                    .as("the deferred teardown DRAINED once the pump's exit was confirmed")
+                    .isNull();
+            assertThat(pinned.getGraphScheduler()).isNull();
+            assertThat(pinned.getWorkerPool()).isNull();
+        } finally {
+            wedging.blockAwait = false;
+            pinned.stopAudioOutput();
+            pinned.stop();
+        }
+    }
+
+    // ── The provision swap is refused, not forced (story 316 review, F9) ─
+
+    @Test
+    void replacingTheProvisionIsRefusedWhileThePumpMayStillBeInsideTheOutgoingBackend() {
+        // A failed stopPump() means the retained thread may still be executing
+        // sink / awaitSinkCapacity on the outgoing backend, whose handle this
+        // swap closes next: releasing an ASIO upcall arena, a SourceDataLine
+        // or a PortAudio stream handle under that thread races native state.
+        // The swap is therefore aborted WHOLE and retried later, never forced.
+        StreamingProvision outgoingProvision = engine.getStreamingProvision();
+        SynchronousTestBackend replacement = new SynchronousTestBackend("Replacement");
+        StreamingProvision incomingProvision = provisionOf("Replacement", replacement);
+
+        backend.blockAwait = true;
+        engine.startAudioOutput();
+        awaitCondition(() -> backend.blockedAwaitEntries.get() >= 1,
+                "the pump is wedged inside awaitSinkCapacity");
+        // setStreamingProvision refuses to run while the engine is running;
+        // stop() clears that flag and leaves the pump wedged.
+        engine.stop();
+
+        assertThatThrownBy(() -> engine.setStreamingProvision(incomingProvision))
+                .as("closing a backend a live thread may be inside is a hard refusal")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("render pump");
+
+        assertThat(backend.closeCount.get())
+                .as("the outgoing handle is NOT closed under a possibly-live pump")
+                .isZero();
+        assertThat(engine.getStreamingProvision())
+                .as("the swap aborted whole — the engine still points at the old provision")
+                .isSameAs(outgoingProvision);
+
+        backend.blockAwait = false; // the wedge clears; the loop exits on its flag
+
+        engine.setStreamingProvision(incomingProvision); // the retry joins, then swaps
+
+        assertThat(engine.getStreamingProvision()).isSameAs(incomingProvision);
+        assertThat(backend.closeCount.get())
+                .as("only now is the outgoing handle handed back")
+                .isEqualTo(1);
+        assertThat(engine.isStreamOpen()).isFalse();
+    }
+
     // ── Pump-start failure unwind ────────────────────────────────────────
 
     @Test
@@ -519,6 +851,10 @@ class AudioEngineOutputTest {
         volatile boolean blockAwait;
         final AtomicInteger blockedAwaitEntries = new AtomicInteger();
         volatile Integer negotiateToBitDepth;
+        /** Story 316 review: a negotiation the engine must refuse (channels). */
+        volatile Integer negotiateToChannels;
+        /** Story 316 review: a negotiation the engine must refuse (sample rate). */
+        volatile Double negotiateToSampleRate;
         volatile DeviceId lastOpenDevice;
         volatile com.benesquivelmusic.daw.sdk.audio.AudioFormat lastOpenFormat;
         volatile int lastOpenBufferFrames;
@@ -554,10 +890,15 @@ class AudioEngineOutputTest {
         public com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiateFormat(
                 com.benesquivelmusic.daw.sdk.audio.AudioFormat requested) {
             Integer clamp = negotiateToBitDepth;
-            return clamp == null
-                    ? requested
-                    : new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
-                            requested.sampleRate(), requested.channels(), clamp);
+            Integer channels = negotiateToChannels;
+            Double sampleRate = negotiateToSampleRate;
+            if (clamp == null && channels == null && sampleRate == null) {
+                return requested;
+            }
+            return new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
+                    sampleRate == null ? requested.sampleRate() : sampleRate,
+                    channels == null ? requested.channels() : channels,
+                    clamp == null ? requested.bitDepth() : clamp);
         }
 
         @Override

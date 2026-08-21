@@ -12,6 +12,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -43,8 +44,26 @@ final class SpyStreamingBackend implements AudioBackend {
     private final Semaphore sunkBlocks = new Semaphore(0);
     private final SubmissionPublisher<AudioBlock> inputPublisher =
             new SubmissionPublisher<>();
+    private final SubmissionPublisher<
+            com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent> deviceEventPublisher =
+            new SubmissionPublisher<>();
     private volatile boolean open;
     private volatile RuntimeException openFailure;
+    private volatile boolean available = true;
+    private volatile boolean streamingSupported = true;
+    private final AtomicInteger closeCount = new AtomicInteger();
+
+    /**
+     * Wedges {@link #awaitSinkCapacity(long)} the way
+     * {@code AudioEngineOutputTest.SynchronousTestBackend} does, so the
+     * engine's bounded pump join times out and {@code stopAudioOutput()}
+     * reports UNCONFIRMED quiescence — the one condition under which the
+     * controller must not close this instance (story 316 review).
+     */
+    volatile boolean blockAwait;
+
+    /** Counts entries into the wedge so tests can await it, never sleep. */
+    final AtomicInteger blockedAwaitEntries = new AtomicInteger();
 
     SpyStreamingBackend(String name) {
         this(name, Collections.synchronizedList(new ArrayList<>()));
@@ -57,6 +76,24 @@ final class SpyStreamingBackend implements AudioBackend {
 
     void failOpensWith(RuntimeException failure) {
         this.openFailure = failure;
+    }
+
+    /** Fails the controller's availability half of the provisioning gate. */
+    void setAvailable(boolean available) {
+        this.available = available;
+    }
+
+    /**
+     * Fails the controller's streaming half of the provisioning gate — the
+     * WASAPI / CoreAudio / JACK shape: present on the host, but with no
+     * implemented streaming path.
+     */
+    void setSupportsStreaming(boolean streamingSupported) {
+        this.streamingSupported = streamingSupported;
+    }
+
+    int closeCount() {
+        return closeCount.get();
     }
 
     List<OpenRecord> opens() {
@@ -74,6 +111,35 @@ final class SpyStreamingBackend implements AudioBackend {
         inputPublisher.submit(block);
     }
 
+    /**
+     * Announces a hot-unplug on THIS backend's own device-event stream.
+     * Story 316 review: the only honest way to prove the controller's
+     * subscription actually moved to the rung that won the open — a test
+     * that only reads the reported active device would pass on a controller
+     * that updated the field and left the subscription behind.
+     */
+    void simulateDeviceRemoved(DeviceId device) {
+        publishDeviceEvent(
+                new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent.DeviceRemoved(device));
+    }
+
+    /**
+     * Announces any driver-initiated event on THIS backend's own stream —
+     * the production shape, since the controller subscribes to
+     * {@link #deviceEvents()}. A test that drove an EXTERNAL publisher
+     * through the package-private three-argument bind is now silently
+     * unsubscribed by the engine's stream-open seam, which rebinds to the
+     * winning rung's own {@code deviceEvents()} (story 316 review).
+     */
+    void publishDeviceEvent(com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent event) {
+        deviceEventPublisher.submit(event);
+    }
+
+    @Override
+    public Flow.Publisher<com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent> deviceEvents() {
+        return deviceEventPublisher;
+    }
+
     @Override
     public String name() {
         return name;
@@ -81,12 +147,12 @@ final class SpyStreamingBackend implements AudioBackend {
 
     @Override
     public boolean isAvailable() {
-        return true;
+        return available;
     }
 
     @Override
     public boolean supportsStreaming() {
-        return true;
+        return streamingSupported;
     }
 
     @Override
@@ -125,6 +191,19 @@ final class SpyStreamingBackend implements AudioBackend {
 
     @Override
     public void awaitSinkCapacity(long timeoutNanos) {
+        if (blockAwait) {
+            // Simulates a native wait that swallows interrupts: the pump
+            // stop's interrupt/unpark cannot free it — only clearing
+            // blockAwait can. The interrupt status is cleared each turn so
+            // parkNanos really parks instead of spinning. Mirrors
+            // AudioEngineOutputTest.SynchronousTestBackend's wedge.
+            blockedAwaitEntries.incrementAndGet();
+            while (blockAwait) {
+                Thread.interrupted();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+            }
+            return;
+        }
         // Short bounded park: keeps the pump from hot-spinning while
         // letting tests observe several blocks well inside their
         // await budgets (never a full wall-clock block period).
@@ -139,6 +218,7 @@ final class SpyStreamingBackend implements AudioBackend {
     @Override
     public void close() {
         lifecycleLog.add("close:" + name);
+        closeCount.incrementAndGet();
         open = false;
     }
 }

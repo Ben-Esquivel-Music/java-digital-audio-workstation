@@ -578,6 +578,19 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * {@code channels * bufferFrames} input scratch, and the driver's
      * {@code numFrames} is ITS truth, not ours (story 316 review). Frames
      * beyond the scratch are dropped rather than thrown on the RT thread.</p>
+     *
+     * <p>A SHORT driver block clears the tail it did not supply — the
+     * capture-side half of {@code deinterleave}'s "the frames the scratch
+     * cannot cover are left as SILENCE, never as stale samples" rule (story
+     * 316 review). {@link #deviceCallback} queues the WHOLE scratch and the
+     * drain thread publishes a full {@code bufferFrames} block out of it, so
+     * every sample this callback did not write would otherwise be republished
+     * as FRESH capture audio: the previous callback's tail, recorded a second
+     * time. The fill runs through {@code destination.length} rather than
+     * {@code maxFrames * channels} so a scratch length that is not an exact
+     * multiple of {@code channels} is covered too, and {@code blockFrames} is
+     * floored at zero so a non-positive driver block silences the whole
+     * scratch instead of indexing the fill negatively on the RT thread.</p>
      */
     @RealTimeSafe
     private static void interleave(float[][] planes, float[] destination,
@@ -586,7 +599,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
             return;
         }
         int maxFrames = destination.length / channels; // the scratch is the bound
-        int blockFrames = Math.min(numFrames, maxFrames);
+        int blockFrames = Math.max(0, Math.min(numFrames, maxFrames));
         int usableChannels = Math.min(channels, planes.length);
         for (int ch = 0; ch < usableChannels; ch++) {
             float[] plane = planes[ch];
@@ -604,6 +617,9 @@ public final class CallbackBackendAdapter implements AudioBackend {
                 destination[frame * channels + ch] = 0f;
             }
         }
+        // Short driver BLOCK: the frames it did not supply are silence, never
+        // the previous callback's tail republished as fresh capture (javadoc).
+        java.util.Arrays.fill(destination, blockFrames * channels, destination.length, 0f);
     }
 
     @RealTimeSafe
