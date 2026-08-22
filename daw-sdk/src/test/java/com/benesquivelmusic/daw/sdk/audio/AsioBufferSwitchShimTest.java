@@ -380,6 +380,54 @@ class AsioBufferSwitchShimTest {
     }
 
     // ------------------------------------------------------------------
+    // Callback-consumption signal (story 316 review)
+    // ------------------------------------------------------------------
+
+    @Test
+    void renderedBlocksConsumedStartsAtZero() {
+        buildShim(FLOAT32_LSB);
+
+        assertThat(shim.renderedBlocksConsumed()).isZero();
+    }
+
+    @Test
+    void aCallbackThatEmitsSilenceDoesNotCountAsConsumingARenderedBlock() {
+        buildShim(FLOAT32_LSB);
+
+        shim.bufferSwitch(0, 1);
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.renderedBlocksConsumed())
+                .as("the silence path must not masquerade as drained output")
+                .isZero();
+    }
+
+    @Test
+    void aCallbackThatDrainsAWrittenBlockIncrementsRenderedBlocksConsumed() {
+        buildShim(FLOAT32_LSB);
+        shim.write(new AudioBlock(format.sampleRate(), channels, frames, new float[] {
+                1f, 2f, 1f, 2f, 1f, 2f, 1f, 2f}));
+
+        shim.bufferSwitch(0, 1);
+
+        assertThat(shim.renderedBlocksConsumed()).isEqualTo(1L);
+    }
+
+    @Test
+    void renderedBlocksConsumedHoldsWhenTheNextCallbackFindsNothingNew() {
+        buildShim(FLOAT32_LSB);
+        shim.write(new AudioBlock(format.sampleRate(), channels, frames, new float[] {
+                1f, 2f, 1f, 2f, 1f, 2f, 1f, 2f}));
+
+        shim.bufferSwitch(0, 1);
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.renderedBlocksConsumed())
+                .as("a second callback with no new write emitted silence, not output")
+                .isEqualTo(1L);
+    }
+
+    // ------------------------------------------------------------------
     // Degradation
     // ------------------------------------------------------------------
 

@@ -158,10 +158,23 @@ final class Story307TestSupport {
         volatile RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
         volatile boolean rejectSampleRate;
         volatile String activeBackend = "Java Sound";
+        /**
+         * Story 316 review: the backend the next open will try, when a test
+         * needs it to differ from {@link #activeBackend} (a stopped transport
+         * reports {@code BACKEND_NONE} as active yet still has a provision).
+         * {@code null} keeps the interface default, i.e. provisioned == active.
+         */
+        volatile String provisionedBackend;
 
         @Override
         public String getActiveBackendName() {
             return activeBackend;
+        }
+
+        @Override
+        public String getProvisionedBackendName() {
+            String provisioned = provisionedBackend;
+            return provisioned != null ? provisioned : activeBackend;
         }
 
         @Override

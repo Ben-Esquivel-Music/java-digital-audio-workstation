@@ -97,8 +97,42 @@ public interface AudioEngineController {
         }
     }
 
-    /** Returns the name of the currently active backend, or {@link #BACKEND_NONE}. */
+    /**
+     * Returns the name of the backend the OPEN stream runs on, or
+     * {@link #BACKEND_NONE} when no stream is open.
+     *
+     * <p>"Active" is the design book's word for the backend of the open
+     * stream (AUDIO_ENGINE_WIRING_DESIGN_BOOK §3.2 "Backend truth", §5.2
+     * "Reported active backend/device = the open stream's"). This query
+     * therefore never names a backend that is not streaming right now —
+     * not the installed provision's head rung after Stop, and not a backend
+     * whose open failed. Use it for DISPLAYING what is audible; for "which
+     * backend will the next open try" see
+     * {@link #getProvisionedBackendName()} (story 316 review).</p>
+     */
     String getActiveBackendName();
+
+    /**
+     * Returns the name of the backend the NEXT open will try: the open
+     * stream's backend when one is open, otherwise the installed provision
+     * ladder's first rung, otherwise {@link #BACKEND_NONE}.
+     *
+     * <p>This is the configured / effective backend, distinct from
+     * {@link #getActiveBackendName()} (story 316 review): startup
+     * configuration, device enumeration and live-endpoint resolution need
+     * a backend to query or configure even while the transport is stopped,
+     * and the honest active query answers {@code BACKEND_NONE} then. Never
+     * use this for displaying what is active — a provisioned backend may
+     * not be streaming, and its head rung may differ from the user's
+     * request when that request failed the availability/streaming gate.</p>
+     *
+     * <p>The default delegates to {@link #getActiveBackendName()} so
+     * implementations for which the two coincide (test doubles, stubs with
+     * a single fixed backend) need not override it.</p>
+     */
+    default String getProvisionedBackendName() {
+        return getActiveBackendName();
+    }
 
     /**
      * Returns the list of backend names the user can switch between.

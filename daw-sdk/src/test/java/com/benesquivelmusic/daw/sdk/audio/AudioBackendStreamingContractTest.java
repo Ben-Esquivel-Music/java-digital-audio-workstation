@@ -41,12 +41,31 @@ class AudioBackendStreamingContractTest {
 
     @Test
     void streamingBackendsReportSupportsStreaming() {
-        assertTrue(new AsioBackend().supportsStreaming(),
-                "ASIO streams over the story-311 bufferSwitch bridge");
         assertTrue(new JavaxSoundBackend().supportsStreaming(),
                 "Java Sound streams through SourceDataLine/TargetDataLine");
         assertTrue(new MockAudioBackend().supportsStreaming(),
                 "the mock streams deterministically into assertable buffers");
+    }
+
+    /**
+     * ASIO's flag is not a constant (story 316 review): it must equal what
+     * the production {@link AsioStreamingShim} resolves on <em>this</em>
+     * host — {@code true} on the {@code windows-asioshim.yml} lane where
+     * {@code asioshim.dll} exports the story-311 symbols, {@code false} on a
+     * host without it, where {@code open()} would degrade to the silent
+     * story-310 path and the selector must not offer ASIO. Asserting a
+     * literal {@code true} here was the exact false success the gate exists
+     * to prevent.
+     */
+    @Test
+    void asioSupportsStreamingTracksTheProductionStreamingShim() {
+        boolean shimStreams;
+        try (AsioStreamingShim shim = new AsioStreamingShim()) {
+            shimStreams = shim.isStreamingAvailable();
+        }
+        assertEquals(shimStreams, new AsioBackend().supportsStreaming(),
+                "ASIO may claim streaming only when asioshim exports every "
+                        + "story-311 streaming symbol on this host");
     }
 
     @Test

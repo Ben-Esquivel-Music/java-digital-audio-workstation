@@ -986,15 +986,19 @@ public final class SettingsDialog extends DawgDialog<Void> {
     }
 
     private LiveAudioEndpoint initialLiveAudioEndpoint(AudioEngineController controller) {
-        String activeBackend = controller.getActiveBackendName();
-        if (Objects.equals(activeBackend, model.getAudioBackend())) {
-            return new LiveAudioEndpoint(activeBackend,
+        // Story 316 review: the live endpoints belong to the PROVISIONED
+        // backend — the one the next open will try — not the honest "active"
+        // query, which answers BACKEND_NONE whenever the transport is stopped
+        // and would never match the persisted backend.
+        String liveBackend = controller.getProvisionedBackendName();
+        if (Objects.equals(liveBackend, model.getAudioBackend())) {
+            return new LiveAudioEndpoint(liveBackend,
                     model.getAudioInputDevice(), model.getAudioOutputDevice());
         }
         // Persisted endpoints belong to a backend awaiting restart. Passing
-        // either name to the currently active backend is unsafe; automatic
+        // either name to the provisioned backend is unsafe; automatic
         // endpoints are the only backend-neutral fallback.
-        return new LiveAudioEndpoint(activeBackend, "", "");
+        return new LiveAudioEndpoint(liveBackend, "", "");
     }
 
     private void restartDeviceEnumeration(Object backend, Object outputDevice) {
@@ -1634,9 +1638,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
     }
 
     private LiveAudioEndpoint currentLiveAudioEndpoint(AudioEngineController controller) {
-        String activeBackend = controller.getActiveBackendName();
+        // Story 316 review: same PROVISIONED query as initialLiveAudioEndpoint
+        // — the cached endpoint is keyed on the backend the next open will try.
+        String liveBackend = controller.getProvisionedBackendName();
         LiveAudioEndpoint endpoint = liveAudioEndpoint;
-        if (endpoint == null || !Objects.equals(endpoint.backend(), activeBackend)) {
+        if (endpoint == null || !Objects.equals(endpoint.backend(), liveBackend)) {
             endpoint = initialLiveAudioEndpoint(controller);
             liveAudioEndpoint = endpoint;
         }

@@ -113,6 +113,36 @@ class DeviceEnumerationOffFxThreadTest {
         }
     }
 
+    @Test
+    void blankRequestEnumeratesTheProvisionedBackendNotTheHonestActiveOne() throws Exception {
+        // Story 316 review: getActiveBackendName() is the OPEN stream's
+        // backend and answers BACKEND_NONE whenever the transport is
+        // stopped — which is exactly when the Settings dialog enumerates.
+        // A blank request must therefore resolve to the PROVISIONED backend
+        // (the one the next open will try) for every per-backend query, or
+        // the dialog would enumerate devices, buffer sizes, rates and
+        // clocks for "None".
+        ProvisionedController controller = new ProvisionedController();
+        AtomicReference<DeviceEnumerationTask.Result> result = new AtomicReference<>();
+        CountDownLatch succeeded = new CountDownLatch(1);
+        try (DeviceEnumerationTask task = new DeviceEnumerationTask(controller,
+                enumerated -> { result.set(enumerated); succeeded.countDown(); },
+                _ -> { }, failure -> { throw new AssertionError(failure); },
+                Runnable::run)) {
+            task.start("");
+            assertThat(succeeded.await(10, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(controller.queriedBackends)
+                .as("every per-backend query resolved the blank request to the "
+                        + "provisioned backend")
+                .isNotEmpty()
+                .containsOnly(ProvisionedController.PROVISIONED);
+        assertThat(controller.queriedBackends)
+                .doesNotContain(AudioEngineController.BACKEND_NONE);
+        assertThat(result.get().outputDeviceNames()).containsExactly("", "Provisioned Out");
+    }
+
     private static void runPostedOnFx(Runnable posted) throws Exception {
         assertThat(posted).as("a callback was dispatched").isNotNull();
         onFx(() -> { posted.run(); return null; });
@@ -135,6 +165,61 @@ class DeviceEnumerationOffFxThreadTest {
         if (failure.get() instanceof Error e) throw e;
         if (failure.get() instanceof Exception e) throw e;
         return value.get();
+    }
+
+    /**
+     * A controller whose transport is stopped: nothing is active, but a
+     * backend is provisioned. Records the backend name of every per-backend
+     * query so the test can prove which of the two the task resolved a blank
+     * request to (story 316 review).
+     */
+    private static final class ProvisionedController implements AudioEngineController {
+        static final String PROVISIONED = "Mock";
+        final List<String> queriedBackends = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override public String getActiveBackendName() { return BACKEND_NONE; }
+
+        @Override public String getProvisionedBackendName() { return PROVISIONED; }
+
+        @Override
+        public List<String> getAvailableBackendNames() {
+            return List.of("Java Sound", PROVISIONED);
+        }
+
+        @Override public List<AudioDeviceInfo> listDevices() { return listDevices(PROVISIONED); }
+
+        @Override
+        public List<AudioDeviceInfo> listDevices(String backendName) {
+            queriedBackends.add(backendName);
+            if (!PROVISIONED.equals(backendName)) {
+                return List.of();
+            }
+            return List.of(new AudioDeviceInfo(0, "Provisioned Out", PROVISIONED, 0, 2,
+                    48_000, List.of(SampleRate.fromHz(48_000)), 0, 2));
+        }
+
+        @Override
+        public BufferSizeRange bufferSizeRange(String backendName, String outputDeviceName) {
+            queriedBackends.add(backendName);
+            return BufferSizeRange.singleton(128);
+        }
+
+        @Override
+        public Set<Integer> supportedSampleRates(String backendName, String outputDeviceName) {
+            queriedBackends.add(backendName);
+            return Set.of(48_000);
+        }
+
+        @Override
+        public List<com.benesquivelmusic.daw.sdk.audio.ClockSource> clockSources(
+                String backendName, String outputDeviceName) {
+            queriedBackends.add(backendName);
+            return List.of();
+        }
+
+        @Override public double getCpuLoadPercent() { return 0; }
+        @Override public void applyConfiguration(Request request) { }
+        @Override public void playTestTone(String outputDeviceName) { }
     }
 
     private static final class SlowController implements AudioEngineController {

@@ -272,12 +272,28 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public synchronized String getActiveBackendName() {
-        // Story 316 — honest reporting (book §2.4): the OPEN stream's
-        // backend when one is open; otherwise the installed provision's
-        // FIRST RUNG — the backend the next open will actually try, which
-        // can differ from requestedBackendName() when the requested backend
-        // failed the availability/streaming gate; otherwise "None". This can
-        // never name a backend other than the one (that will be) streaming.
+        // Story 316 review — honest reporting (book §3.2 / §5.2): "active"
+        // is the backend the OPEN stream runs on, full stop. This used to
+        // fall back to the installed provision's first rung when no stream
+        // was open, so the Settings utility panel kept naming a backend as
+        // active after Stop and after an open failure — exactly the
+        // requested-vs-active lie the story exists to remove. The "which
+        // backend will the next open try" question that fallback answered
+        // is a different fact and lives in getProvisionedBackendName().
+        return audioEngine.openStreamBackendName().orElse(BACKEND_NONE);
+    }
+
+    @Override
+    public synchronized String getProvisionedBackendName() {
+        // Story 316 review — the configured / effective backend: the OPEN
+        // stream's backend when one is open; otherwise the installed
+        // provision's FIRST RUNG — the backend the next open will actually
+        // try, which can differ from requestedBackendName() when the
+        // requested backend failed the availability/streaming gate;
+        // otherwise "None". Startup configuration, device enumeration and
+        // the Settings dialog's live-endpoint resolution read this one:
+        // they need a backend to query while the transport is stopped,
+        // when getActiveBackendName() honestly answers "None".
         Optional<String> open = audioEngine.openStreamBackendName();
         if (open.isPresent()) {
             return open.get();
@@ -292,8 +308,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // streams behind the SDK interface via CallbackBackendAdapter), the
         // selector's available-and-streamable SDK names, and the Java Sound
         // floor. The selector's supportsStreaming() gate keeps backends
-        // whose sink() discards (WASAPI / CoreAudio / JACK today) out of
-        // the offered list. Story 130: the dialog must be able to *select*
+        // whose streaming path is not available in this build — sink()
+        // discards (WASAPI / CoreAudio / JACK today), or an ASIO whose
+        // native streaming shim is missing or incomplete (story 316 review)
+        // — out of the offered list. Story 130: the dialog must be able to *select*
         // every backend the controller can *provision*.
         java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
         // Story 316 review: the adapter here is an enumeration-only probe and
@@ -1408,8 +1426,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * </ul>
      *
      * <p>If the requested backend is unavailable or its streaming path is
-     * not implemented ({@link AudioBackend#supportsStreaming()} {@code ==
-     * false} — WASAPI / CoreAudio / JACK today), the probe is closed, a
+     * not available in this build ({@link AudioBackend#supportsStreaming()}
+     * {@code == false} — unimplemented as for WASAPI / CoreAudio / JACK
+     * today, or an ASIO whose native streaming shim is missing or
+     * incomplete), the probe is closed, a
      * single {@link NotificationManager} warning of the form
      * {@code "ASIO not available — falling back to <head rung>"} — naming
      * the fallback ladder's ACTUAL head (PortAudio when available, else
@@ -1423,13 +1443,19 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * The rejection is additionally carried as a single
      * {@link StreamingProvision#pendingFailedHopCauses() pending failed hop}
      * (story 316 review) naming WHY the gate rejected it — unavailable on
-     * this host versus available with an unimplemented streaming path — so
+     * this host versus available with an unavailable streaming path — so
      * the engine publishes a {@code BackendFallbackEvent} for it too once
      * the winning rung is known; without that, a fallback head opening on
      * the first try published nothing at all and the substitution was
      * visible only as a transient notification.
-     * A blank / {@link #BACKEND_NONE} / unknown name yields the default
-     * ladder (PortAudio when available, else Java Sound).</p>
+     * A blank / {@link #BACKEND_NONE} name yields the default ladder
+     * (PortAudio when available, else Java Sound) with no notification and
+     * no pending cause. An unknown or unconstructible name (story 316
+     * review) is treated exactly like an unavailable backend: the request is
+     * preserved, the user is notified, and the rejection rides into the
+     * ladder as a pending failed hop — previously it was silently replaced
+     * by the default ladder, losing the requested backend/device and
+     * publishing nothing.</p>
      *
      * <p>Pure builder: does not install the provision and does not touch
      * the engine — {@link #applyConfiguration(Request)} pairs it with
@@ -1443,66 +1469,94 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
         AudioBackend requested = createStreamingBackendByName(name, request.inputDeviceName());
         if (requested == null) {
-            // Unknown name — preserve historical behaviour: quietly
-            // provision the best available default.
-            return buildDefaultProvision(request.inputDeviceName(), request.outputDeviceName());
+            // Story 316 review: an unknown or unconstructible name used to
+            // be quietly replaced by the default provision, which lost both
+            // the requested backend/device and any failed-hop cause — a
+            // requested != active substitution with neither the fallback
+            // event nor the warning the unavailable path promises. It now
+            // takes exactly that path. createStreamingBackendByName returns
+            // null for two distinct reasons, and the cause names each
+            // honestly: "PortAudio" whose adapter construction threw (the
+            // host cannot load it), versus a name this build has no backend
+            // for at all (a stale persisted setting, a plugin-era name).
+            String cause = "PortAudio".equals(name)
+                    ? name + " is not available on this host, so it was never offered to"
+                            + " the open ladder"
+                    : name + " is not a backend this build knows, so it was never offered"
+                            + " to the open ladder";
+            return rejectedProvision(name, request, cause);
         }
         boolean requestedIsAvailable = requested.isAvailable();
         if (!requestedIsAvailable || !requested.supportsStreaming()) {
             closeQuietly(requested);
-            List<BackendStreamRung> ladder = new ArrayList<>();
-            appendFallbackRungs(ladder, name, request.inputDeviceName());
-            if (ladder.isEmpty()) {
-                ladder.add(new BackendStreamRung(
-                        new JavaxSoundBackend(), DeviceId.defaultFor("Java Sound")));
-            }
-            // Fallback notification: the user explicitly asked for a
-            // backend the host can't stream through — surface the switch,
-            // naming the ladder's ACTUAL head (PortAudio when available,
-            // else Java Sound), instead of silently routing them elsewhere.
-            try {
-                notifications.notify(name + " not available — falling back to "
-                        + ladder.get(0).backend().name());
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "NotificationManager rejected fallback message", e);
-            }
-            // requestedBackendName stays the USER'S request even though it
-            // cannot stream: the engine stamps it into every published
-            // BackendFallbackEvent, and those must name the true request —
-            // getActiveBackendName() reports the first rung (the backend
-            // the user will actually hear) separately. The requested DEVICE
-            // is passed explicitly for exactly the same reason (story 316
-            // review): this ladder starts on a FALLBACK rung, so the two-arg
-            // convenience constructor would default requestedDevice to that
-            // fallback's device and the engine would stamp a
-            // BackendFallbackEvent pairing the user's requested backend name
-            // with a device they never chose.
-            //
-            // The rejection is ALSO carried forward as a pending failed hop
-            // (story 316 review). This gate removes the requested backend
-            // from the ladder entirely, so the engine's ladder walk records
-            // no failed hop for it and — when the fallback head opens first
-            // try — published NOTHING on the EventBus seam, making requested
-            // != active a silent substitution there. The NotificationManager
-            // message above is a different surface, not a substitute. The
-            // cause distinguishes the two genuinely different user-facing
-            // facts: a backend the host does not have at all, versus one it
-            // has whose streaming path this build has not implemented
-            // (supportsStreaming() == false — WASAPI / CoreAudio / JACK
-            // today).
+            // The cause distinguishes the two genuinely different
+            // user-facing facts: a backend the host does not have at all,
+            // versus one it has whose streaming path is not available in
+            // this build — either unimplemented (WASAPI / CoreAudio / JACK
+            // today) or, since the story 316 review, an ASIO whose native
+            // asioshim is missing the story-311 streaming symbols, so
+            // supportsStreaming() is a live probe rather than a constant.
             String gateCause = requestedIsAvailable
                     ? name + " is available on this host but its streaming path is not"
-                            + " implemented, so it was never offered to the open ladder"
+                            + " available in this build (unimplemented, or its native"
+                            + " streaming shim is missing or incomplete), so it was never"
+                            + " offered to the open ladder"
                     : name + " is not available on this host, so it was never offered to"
                             + " the open ladder";
-            return new StreamingProvision(
-                    name, deviceId(name, request.outputDeviceName()), ladder,
-                    List.of(gateCause));
+            return rejectedProvision(name, request, gateCause);
         }
         List<BackendStreamRung> ladder = new ArrayList<>();
         ladder.add(new BackendStreamRung(requested, deviceId(name, request.outputDeviceName())));
         appendFallbackRungs(ladder, name, request.inputDeviceName());
         return new StreamingProvision(name, ladder);
+    }
+
+    /**
+     * The single rejection path of {@link #buildStreamingProvision(Request)}
+     * (story 316 review — extracted so the unavailable, non-streamable,
+     * unconstructible and unknown cases cannot drift apart): builds the
+     * emergency ladder WITHOUT the requested backend, notifies the user of
+     * the switch, and returns a provision that preserves the user's request
+     * and carries {@code cause} as a pending failed hop.
+     *
+     * <p>{@code requestedBackendName} stays the USER'S request even though
+     * it cannot stream: the engine stamps it into every published
+     * {@code BackendFallbackEvent}, and those must name the true request —
+     * {@link #getProvisionedBackendName()} reports the first rung (the
+     * backend the user will actually hear) separately. The requested DEVICE
+     * is passed explicitly for exactly the same reason: this ladder starts on
+     * a FALLBACK rung, so the two-arg convenience constructor would default
+     * {@code requestedDevice} to that fallback's device and the engine would
+     * stamp a {@code BackendFallbackEvent} pairing the user's requested
+     * backend name with a device they never chose.</p>
+     *
+     * <p>The rejection is ALSO carried forward as a pending failed hop. This
+     * path removes the requested backend from the ladder entirely, so the
+     * engine's ladder walk records no failed hop for it and — when the
+     * fallback head opens first try — published NOTHING on the EventBus
+     * seam, making requested != active a silent substitution there. The
+     * {@link NotificationManager} message is a different surface, not a
+     * substitute.</p>
+     */
+    private StreamingProvision rejectedProvision(String name, Request request, String cause) {
+        List<BackendStreamRung> ladder = new ArrayList<>();
+        appendFallbackRungs(ladder, name, request.inputDeviceName());
+        if (ladder.isEmpty()) {
+            ladder.add(new BackendStreamRung(
+                    new JavaxSoundBackend(), DeviceId.defaultFor("Java Sound")));
+        }
+        // Fallback notification: the user explicitly asked for a backend
+        // the host can't stream through — surface the switch, naming the
+        // ladder's ACTUAL head (PortAudio when available, else Java Sound),
+        // instead of silently routing them elsewhere.
+        try {
+            notifications.notify(name + " not available — falling back to "
+                    + ladder.get(0).backend().name());
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "NotificationManager rejected fallback message", e);
+        }
+        return new StreamingProvision(
+                name, deviceId(name, request.outputDeviceName()), ladder, List.of(cause));
     }
 
     /**

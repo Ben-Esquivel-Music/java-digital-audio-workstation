@@ -24,22 +24,33 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * a bound project actually streams through the real installed ASIO driver —
  * the engine opens {@link AsioBackend} via its ladder, the engine-owned
  * render pump cycles {@code processBlock} at device pace over the story-311
- * {@code bufferSwitch} bridge, and the transport position advances under
- * that drive. Then everything stops and closes cleanly.
+ * {@code bufferSwitch} bridge, the transport position advances under that
+ * drive, and the driver's own callback drains at least one rendered block
+ * ({@link AsioBackend#renderedBlocksConsumedByDriver()}). Then everything
+ * stops and closes cleanly.
  *
  * <p>Where {@link AsioStreamingIntegrationTest} proves the raw
  * backend-level {@code open → bufferSwitch → close} path (story 311), this
  * test proves the story-316 <em>production caller</em> on the primary
  * platform: {@code StreamingProvision → startAudioOutput() →
- * EngineStreamPump → processBlock → sink}, with honest
- * {@link AudioEngine#openStreamBackendName()} reporting.</p>
+ * EngineStreamPump → processBlock → sink → bufferSwitch}, with honest
+ * {@link AudioEngine#openStreamBackendName()} reporting. Transport advance
+ * alone is NOT that proof (story 316 review): the pump advances the
+ * transport before it sinks, and its capacity wait times out after one
+ * block period whether or not a device callback ever arrives, so the
+ * advance would also pass with a dead output bridge — the consumed-block
+ * counter is what ties the advance to the hardware.</p>
  *
  * <p>Gating, in order (copied from {@link AsioStreamingIntegrationTest} so
  * both suites gate identically): Windows only (the primary platform — the
  * test never assumes a non-Windows environment), then the
  * {@code requireOrAssumeAsioshim()} pattern (hard failure when
  * {@code DAW_REQUIRE_ASIOSHIM=1}, a clean skip otherwise), then a skip when
- * no ASIO driver is installed on the machine.</p>
+ * no ASIO driver is installed on the machine. A driver that REJECTS the
+ * open is a skip on optional local runs only: under
+ * {@code DAW_REQUIRE_ASIOSHIM=1} it is a hard failure (story 316 review —
+ * on the required lane a regression that stops the production path from
+ * opening must not leave CI green with no streaming proof).</p>
  */
 @EnabledOnOs(OS.WINDOWS)
 class AsioEngineStreamingIntegrationTest {
@@ -86,11 +97,12 @@ class AsioEngineStreamingIntegrationTest {
             engine.startAudioOutput();
         } catch (AudioBackendException rejected) {
             // An exotic driver may reject the portable default buffer size
-            // (or the 48 kHz stereo request) outright. Skipping keeps the
-            // lane honest instead of failing on hardware the story does not
-            // control — mirroring AsioStreamingIntegrationTest.
-            assumeTrue(false, "ASIO driver rejected the engine's open: "
-                    + rejected.getMessage());
+            // (or the 48 kHz stereo request) outright. On an optional local
+            // run, skipping keeps the lane honest instead of failing on
+            // hardware the story does not control — mirroring
+            // AsioStreamingIntegrationTest. On the required lane the open
+            // MUST succeed, so the rejection is rethrown instead.
+            skipUnlessAsioshimRequired(rejected);
             return;
         }
 
@@ -103,11 +115,18 @@ class AsioEngineStreamingIntegrationTest {
             assertThat(backend.isOpen()).isTrue();
 
             // Play. The RT clock is claimed, so the position can only move
-            // when the render pump cycles processBlock — an advance IS the
-            // proof that blocks stream at device pace over bufferSwitch.
+            // when the render pump cycles processBlock — an advance proves
+            // the pump cycles. It does NOT prove the driver took the output:
+            // the pump advances the transport before it sinks, and its
+            // capacity wait times out after one block period even with a
+            // dead callback. The consumed-block counter is what proves the
+            // real bufferSwitch drained what the pump rendered (story 316
+            // review). Sampled BEFORE the close below: close() drops the
+            // bridge and the query reads 0 from then on.
             transport.play();
             double before = transport.getPositionInBeats();
             awaitTransportAdvance(transport, before);
+            awaitDriverConsumedARenderedBlock(backend);
         } finally {
             transport.stop();
             engine.stopAudioOutput();
@@ -145,6 +164,32 @@ class AsioEngineStreamingIntegrationTest {
     }
 
     /**
+     * Awaits (never blind-sleeps) the real ASIO {@code bufferSwitch} having
+     * drained at least one engine-rendered block within
+     * {@link #ADVANCE_BUDGET} — the same guard budget as the transport
+     * advance, which it dominates by the same margin, so no inner wait is
+     * inflated. {@link AsioBackend#renderedBlocksConsumedByDriver()} moves
+     * only on a callback that consumed a sunk block, never on one that
+     * emitted silence.
+     */
+    private static void awaitDriverConsumedARenderedBlock(AsioBackend backend)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + ADVANCE_BUDGET.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (backend.renderedBlocksConsumedByDriver() >= 1L) {
+                return;
+            }
+            Thread.sleep(POLL_INTERVAL.toMillis());
+        }
+        assertThat(backend.renderedBlocksConsumedByDriver())
+                .as("at least one engine-rendered block must be drained by the "
+                        + "real ASIO bufferSwitch within "
+                        + ADVANCE_BUDGET.toSeconds() + " s of play() — transport "
+                        + "advance alone does not prove the output bridge is live")
+                .isGreaterThanOrEqualTo(1L);
+    }
+
+    /**
      * Minimal playable project (the EngineBinderPlaybackTest construction):
      * transport + mixer come with the project; one audio track carries a
      * quiet 440 Hz sine clip so the streamed blocks are genuinely audible
@@ -169,6 +214,23 @@ class AsioEngineStreamingIntegrationTest {
         clip.setAudioData(data);
         track.addClip(clip);
         return project;
+    }
+
+    /**
+     * Story 316 review — an open the real driver rejected is a clean skip
+     * on an optional local run (hardware the story does not control), but
+     * under {@code DAW_REQUIRE_ASIOSHIM=1} it is rethrown as a hard failure:
+     * converting every open failure into a skip would let a regression that
+     * prevents the production path from opening leave the required lane
+     * green with no streaming proof. Copied verbatim into
+     * {@link AsioStreamingIntegrationTest} so both suites gate identically.
+     */
+    private static void skipUnlessAsioshimRequired(AudioBackendException rejected) {
+        if ("1".equals(System.getenv("DAW_REQUIRE_ASIOSHIM"))) {
+            throw rejected;
+        }
+        assumeTrue(false, "ASIO driver rejected the engine's open: "
+                + rejected.getMessage());
     }
 
     /**

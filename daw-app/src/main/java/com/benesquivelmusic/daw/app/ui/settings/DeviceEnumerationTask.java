@@ -121,12 +121,13 @@ public final class DeviceEnumerationTask implements AutoCloseable {
         try (scope) {
             activeScope.set(scope);
             var backends = scope.fork("backends", controller::getAvailableBackendNames);
-            var devices = scope.fork("devices", () -> controller.listDevices(
-                    requestedBackend.isBlank()
-                            ? controller.getActiveBackendName()
-                            : requestedBackend));
+            // Story 316 review: a blank request enumerates the PROVISIONED
+            // backend — the one the next open will try — not the honest
+            // "active" query, which answers BACKEND_NONE whenever the
+            // transport is stopped and would enumerate nothing.
             String effectiveBackend = requestedBackend.isBlank()
-                    ? controller.getActiveBackendName() : requestedBackend;
+                    ? controller.getProvisionedBackendName() : requestedBackend;
+            var devices = scope.fork("devices", () -> controller.listDevices(effectiveBackend));
             var bufferRange = scope.fork("buffer-range",
                     () -> controller.bufferSizeRange(effectiveBackend, requestedOutput));
             var supportedRates = scope.fork("sample-rates",

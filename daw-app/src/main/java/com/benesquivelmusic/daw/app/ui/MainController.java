@@ -1196,8 +1196,12 @@ public final class MainController {
         Thread worker = Thread.ofVirtual().name("daw-startup-audio-configuration").unstarted(() -> {
             try {
                 String persistedBackend = settings.getAudioBackend();
+                // Story 316 review: a blank persisted backend means "keep
+                // what is provisioned" — the backend the next open will try.
+                // Not getActiveBackendName(): nothing is streaming at
+                // startup, so that honestly answers BACKEND_NONE.
                 String backend = persistedBackend.isBlank()
-                        ? controller.getActiveBackendName() : persistedBackend;
+                        ? controller.getProvisionedBackendName() : persistedBackend;
                 controller.applyConfiguration(new AudioEngineController.Request(
                         backend,
                         settings.getAudioInputDevice(),

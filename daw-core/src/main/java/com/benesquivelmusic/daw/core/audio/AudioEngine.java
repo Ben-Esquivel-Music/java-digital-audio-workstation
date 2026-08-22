@@ -776,6 +776,17 @@ public final class AudioEngine {
      * visible fact; when every rung fails, the FIRST rung's exception — the
      * requested backend's failure, the actionable one — is rethrown.</p>
      *
+     * <p>Ordering of the open (story 316 review): the ladder walk opens the
+     * winning rung's handle, {@link #startOpenedStream} then starts the
+     * render pump on it, and only AFTER that start returns are the failed
+     * hops' events published naming the winner as active — an event must
+     * never name as active a stream whose pump never started. When the pump
+     * start fails, {@link #startOpenedStream} has already given the handle
+     * back, so the same causes are published naming {@code "none"} before
+     * the failure is rethrown: the fallbacks still happened, and requested
+     * &ne; active must always leave a published event. The
+     * {@link StreamOpenListener} fires last of all.</p>
+     *
      * <p>If the stream was previously paused via {@link #pauseAudioOutput()},
      * this resumes it (a fresh pump on the same open backend) without
      * re-opening the stream. If an earlier stop left a backend holding an
@@ -828,7 +839,19 @@ public final class AudioEngine {
         this.openBackend = opened.rung().backend();
         this.openDevice = opened.rung().device();
         this.openSdkFormat = opened.negotiatedFormat();
-        startOpenedStream(opened.rung().backend(), opened.negotiatedFormat());
+        try {
+            startOpenedStream(opened.rung().backend(), opened.negotiatedFormat());
+        } catch (RuntimeException | Error startFailure) {
+            // The rung's handle is already unwound (or RELEASE_PENDING); no
+            // stream became active, so the carried fallbacks name "none"
+            // rather than the rung that never started (story 316 review).
+            publishFallbackEvents(provision, opened.failedHopCauses(), "none", "none");
+            throw startFailure;
+        }
+        // Only now is the winner the active stream, so only now may the
+        // failed hops' events name it (story 316 review).
+        publishFallbackEvents(provision, opened.failedHopCauses(),
+                opened.rung().backend().name(), opened.rung().device().name());
 
         LOG.info("Audio output started via " + opened.rung().backend().name()
                 + " (device: " + opened.rung().device().name() + ")");
@@ -932,17 +955,41 @@ public final class AudioEngine {
         }
     }
 
-    /** A ladder rung that opened, with the format it actually opened at. */
+    /**
+     * A ladder rung that opened, with the format it actually opened at and
+     * the causes of every hop that failed before it (gate rejections first,
+     * then this walk's own, in chronological order).
+     *
+     * <p>The causes ride along instead of being published inside
+     * {@link #openLadder(StreamingProvision)} (story 316 review): a
+     * {@link BackendFallbackEvent} names its active backend, and the rung
+     * that opened is not the active stream until
+     * {@link #startOpenedStream(AudioBackend,
+     * com.benesquivelmusic.daw.sdk.audio.AudioFormat)} has started the render
+     * pump on it. Carrying the causes lets {@link #startAudioOutput()}
+     * publish only once it knows whether that pump started — naming the rung
+     * when it did, or {@code "none"} when the start failed and the handle
+     * was given back.</p>
+     */
     private record OpenedRung(
             BackendStreamRung rung,
-            com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiatedFormat) {
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiatedFormat,
+            List<String> failedHopCauses) {
+
+        private OpenedRung {
+            failedHopCauses = List.copyOf(failedHopCauses);
+        }
     }
 
     /**
-     * Walks the provision's ladder in order. First successful open wins.
-     * Publishes one {@link BackendFallbackEvent} per failed hop — after the
-     * winner is known, so the events can honestly name the rung that ended
-     * up carrying the stream (or the literal {@code "none"}).
+     * Walks the provision's ladder in order. First successful open wins and
+     * is returned WITHOUT publishing: the failed-hop causes travel on the
+     * {@link OpenedRung} so {@link #startAudioOutput()} can publish them
+     * after the pump start settles and the events can honestly name the rung
+     * that ended up carrying the stream (story 316 review — an event must
+     * never name as active a stream whose pump never started). Only the
+     * all-rungs-failed path publishes here, with the literal {@code "none"}:
+     * no stream became active, so those events are already truthful.
      *
      * <p>The hop list is SEEDED with
      * {@link StreamingProvision#pendingFailedHopCauses()} (story 316 review):
@@ -951,7 +998,19 @@ public final class AudioEngine {
      * a fallback head that opens first try would make {@code requested !=
      * active} a silent substitution on the EventBus seam. Seeding — rather
      * than publishing at gate time — is what lets those events name the rung
-     * that actually won, which is only known here.</p>
+     * that actually won, which is only known to the caller.</p>
+     *
+     * <p>Each rung is first asked {@link AudioBackend#supportsStreaming()}
+     * (story 316 review, engine-side guard): the app layer's availability
+     * gate keeps non-streaming backends off the ladder in production, but
+     * the engine is the authority that actually opens a stream, and a
+     * backend whose streaming path is unavailable on this host — ASIO with
+     * an {@code asioshim} that lacks the story-311 symbols, say — would
+     * otherwise open an honest-looking handle whose {@code sink} discards
+     * every block: silence with nothing in the log. Refusing it inside the
+     * per-rung {@code try} makes it an ordinary failed hop — a published
+     * {@link BackendFallbackEvent} and a fall-through to the next rung —
+     * rather than a silent stream.</p>
      *
      * @throws RuntimeException the FIRST rung's failure when every rung failed
      */
@@ -966,13 +1025,12 @@ public final class AudioEngine {
         List<String> failedHopCauses = new ArrayList<>(provision.pendingFailedHopCauses());
         for (BackendStreamRung rung : provision.ladder()) {
             try {
+                requireStreamingSupport(rung);
                 com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated =
                         rung.backend().negotiateFormat(requested);
                 requireRenderableNegotiation(rung, requested, negotiated);
                 rung.backend().open(rung.device(), negotiated, format.bufferSize());
-                publishFallbackEvents(provision, failedHopCauses,
-                        rung.backend().name(), rung.device().name());
-                return new OpenedRung(rung, negotiated);
+                return new OpenedRung(rung, negotiated, failedHopCauses);
             } catch (RuntimeException hopFailure) {
                 if (firstFailure == null) {
                     firstFailure = hopFailure;
@@ -986,6 +1044,30 @@ public final class AudioEngine {
         }
         publishFallbackEvents(provision, failedHopCauses, "none", "none");
         throw firstFailure;
+    }
+
+    /**
+     * Refuses a rung whose backend cannot stream on this host (story 316
+     * review). {@link AudioBackend#supportsStreaming()} is the backend's own
+     * word that {@code sink} reaches the device — for ASIO it is now a live
+     * probe of the native shim's streaming symbols rather than a constant —
+     * so the engine, which is the authority that opens streams, asks it
+     * here rather than trusting the app layer's gate to have asked first.
+     *
+     * <p>Called inside {@link #openLadder(StreamingProvision)}'s per-rung
+     * {@code try} BEFORE negotiation, so the refusal costs the rung nothing
+     * and fails like any refused open: the ladder falls through and the hop
+     * publishes a {@link BackendFallbackEvent} carrying this message.</p>
+     *
+     * @throws AudioBackendException if the backend reports no streaming path
+     */
+    private static void requireStreamingSupport(BackendStreamRung rung) {
+        if (rung.backend().supportsStreaming()) {
+            return;
+        }
+        throw new AudioBackendException(
+                rung.backend().name() + " cannot stream on this host: its streaming"
+                        + " path is unavailable, so the ladder skipped it");
     }
 
     /**

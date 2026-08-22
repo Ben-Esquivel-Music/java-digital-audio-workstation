@@ -153,16 +153,37 @@ public final class AsioBackend implements AudioBackend {
     /**
      * {@inheritDoc}
      *
-     * <p>Always {@code true}: the ASIO streaming path is fully implemented —
-     * {@link #sink(AudioBlock)} reaches the driver's output buffers over the
-     * story-311 buffer-switch bridge and {@link #inputBlocks()} republishes
-     * captured audio. (On a build without the native shim, {@code open}
-     * degrades to the story-310 no-streaming path; availability of the shim
-     * is {@link #isAvailable()}'s concern, not this flag's.)</p>
+     * <p>{@code true} only when the native {@code asioshim} exports every
+     * story-311 streaming symbol — the same
+     * {@link AsioStreamingShim#isStreamingAvailable()} probe
+     * {@link #open(DeviceId, AudioFormat, int)} runs before it installs the
+     * buffer-switch bridge (story 316 review).</p>
+     *
+     * <p>{@link #isAvailable()} only proves the enumeration and lifecycle
+     * symbols resolve. A Windows host whose shim predates story 311 — or was
+     * built without its streaming entrypoints — passes that probe, yet
+     * {@code open()} then degrades to the story-310 no-streaming path:
+     * the backend opens, {@link #sink(AudioBlock)} discards every block and
+     * the stream is silent while looking healthy. That is exactly the false
+     * success the selector's streaming gate exists to prevent, so this flag
+     * must answer from the streaming shim rather than from
+     * {@code isAvailable()}. It keeps such an ASIO out of
+     * {@link AudioBackendSelector#availableBackends()} and out of the app
+     * layer's provision ladder; {@code open()}'s own degrade path is
+     * unchanged and remains the backstop for a caller that bypasses the
+     * gate.</p>
+     *
+     * <p>The probe shim is opened and closed per call so no FFM arena
+     * leaks; any failure to construct it counts as "not streamable",
+     * mirroring {@link #isAvailable()}.</p>
      */
     @Override
     public boolean supportsStreaming() {
-        return true;
+        try (AsioStreamingShim shim = streamingShimFactory.get()) {
+            return streamingShimUsable(shim);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     @Override
@@ -406,11 +427,23 @@ public final class AsioBackend implements AudioBackend {
      */
     private static AsioStreamingShim acquireStreamingShim() {
         AsioStreamingShim candidate = streamingShimFactory.get();
-        if (candidate.isStreamingAvailable()) {
+        if (streamingShimUsable(candidate)) {
             return candidate;
         }
         candidate.close();
         return null;
+    }
+
+    /**
+     * The single definition of "this streaming shim can drive the story-311
+     * buffer-switch path" (story 316 review). Both the pre-open probe in
+     * {@link #supportsStreaming()} and the real acquisition in
+     * {@link #acquireStreamingShim()} answer from here, so the selector can
+     * never offer an ASIO that {@code open()} would then degrade to the
+     * story-310 silent path.
+     */
+    private static boolean streamingShimUsable(AsioStreamingShim shim) {
+        return shim.isStreamingAvailable();
     }
 
     /** The opened format's channel set: {@code {0, 1, …, channels - 1}}. */
@@ -752,6 +785,33 @@ public final class AsioBackend implements AudioBackend {
             return;
         }
         AudioBackend.pollForSinkCapacity(timeoutNanos, bridge::outputRingHasSpace);
+    }
+
+    /**
+     * Diagnostic / observability query (story 316 review): how many
+     * engine-rendered blocks the driver's real {@code bufferSwitch} callback
+     * has actually drained into its output buffers since the stream opened.
+     *
+     * <p>Transport advancing, or {@link #sink(AudioBlock)} accepting blocks,
+     * proves only that the engine's render pump ran — the pump advances the
+     * transport before it sinks, and its capacity wait times out after one
+     * block period whether or not a device callback ever arrives. This count
+     * is the signal that distinguishes "audio reached the hardware" from
+     * "the output bridge is dead": it moves only when
+     * {@link AsioBufferSwitchShim#bufferSwitch(int, int)} consumed a rendered
+     * block rather than emitting silence. daw-core's Windows streaming proof
+     * requires it to advance; it is deliberately <em>not</em> part of the
+     * {@link AudioBackend} contract.</p>
+     *
+     * @return rendered blocks consumed by the driver callback, or {@code 0}
+     *         when the backend is closed or the native streaming shim was
+     *         unavailable (no bridge installed)
+     */
+    public long renderedBlocksConsumedByDriver() {
+        // Read the swappable reference exactly once: close() may null the
+        // field concurrently with this query (house rule).
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        return bridge == null ? 0L : bridge.renderedBlocksConsumed();
     }
 
     @Override

@@ -10,10 +10,13 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -456,6 +459,119 @@ class AsioBackendStreamingTest {
                 .isInstanceOf(AudioBackendException.class)
                 .hasMessageContaining("rejected block size 64")
                 .hasMessageContaining("128 frames per buffer");
+    }
+
+    // ------------------------------------------------------------------
+    // supportsStreaming() — the selector's streaming gate (story 316 review)
+    // ------------------------------------------------------------------
+
+    /**
+     * The reviewer's scenario: the enumeration / lifecycle symbols resolve
+     * ({@code isAvailable()} is true) but the shim lacks the story-311
+     * streaming symbols. {@code open()} would degrade to the silent story-310
+     * path, so the flag must say "no" and keep ASIO out of the offered list.
+     */
+    @Test
+    void supportsStreamingIsFalseWhenTheStreamingShimIsUnusable() {
+        streamingAvailable = false;
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(backend.supportsStreaming()).isFalse();
+    }
+
+    @Test
+    void supportsStreamingIsTrueWhenTheStreamingShimExportsEveryStreamingSymbol() {
+        assertThat(backend.supportsStreaming()).isTrue();
+    }
+
+    @Test
+    void supportsStreamingClosesItsProbeShimSoNoArenaLeaks() {
+        backend.supportsStreaming();
+        assertThat(calls)
+                .as("the usable probe shim must be released after the query")
+                .containsExactly("close");
+
+        calls.clear();
+        streamingAvailable = false;
+        backend.supportsStreaming();
+        assertThat(calls)
+                .as("the unusable probe shim must be released after the query")
+                .containsExactly("close");
+    }
+
+    @Test
+    void supportsStreamingIsFalseWhenTheStreamingShimFactoryThrows() {
+        AsioBackend.setStreamingShimFactory(() -> {
+            throw new UnsupportedOperationException("no native access");
+        });
+
+        assertThat(backend.supportsStreaming()).isFalse();
+    }
+
+    /**
+     * End-to-end through the real selector: with the lifecycle probe passing
+     * and the streaming probe failing, ASIO must drop out of
+     * {@link AudioBackendSelector#availableBackends()} and never become the
+     * default; with both passing it is offered. The map is keyed on
+     * {@link AsioBackend#NAME} so the selector's OS preference walk (ASIO is
+     * the Windows head) finds it.
+     */
+    @Test
+    void selectorDropsAsioFromTheOfferedListWhenTheStreamingShimIsUnusable() {
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        factories.put(AsioBackend.NAME, AsioBackend::new);
+        factories.put(JavaxSoundBackend.NAME, JavaxSoundBackend::new);
+        AudioBackendSelector selector = new AudioBackendSelector(factories);
+
+        assertThat(selector.availableBackends()).contains(AsioBackend.NAME);
+
+        streamingAvailable = false;
+
+        assertThat(selector.availableBackends())
+                .as("an ASIO whose open() would be silent must not be offered")
+                .doesNotContain(AsioBackend.NAME)
+                .contains(JavaxSoundBackend.NAME);
+        assertThat(selector.defaultBackendName()).isNotEqualTo(AsioBackend.NAME);
+    }
+
+    // ------------------------------------------------------------------
+    // renderedBlocksConsumedByDriver() (story 316 review)
+    // ------------------------------------------------------------------
+
+    @Test
+    void renderedBlocksConsumedByDriverIsZeroWhileClosed() {
+        assertThat(backend.renderedBlocksConsumedByDriver()).isZero();
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        backend.close();
+
+        assertThat(backend.renderedBlocksConsumedByDriver())
+                .as("no bridge after close: the query must answer 0, not throw")
+                .isZero();
+    }
+
+    @Test
+    void renderedBlocksConsumedByDriverIsZeroWhenOpenedWithoutAStreamingShim() {
+        streamingAvailable = false;
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.activeBufferSwitchShim()).isNull();
+        assertThat(backend.renderedBlocksConsumedByDriver()).isZero();
+    }
+
+    @Test
+    void renderedBlocksConsumedByDriverReportsTheActiveBridgesCount() {
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        assertThat(backend.renderedBlocksConsumedByDriver()).isZero();
+
+        backend.activeBufferSwitchShim().bufferSwitch(0, 1);
+        assertThat(backend.renderedBlocksConsumedByDriver())
+                .as("a callback that found nothing rendered emitted silence")
+                .isZero();
+
+        backend.sink(AudioBlock.silence(48_000.0, 2, FRAMES));
+        backend.activeBufferSwitchShim().bufferSwitch(1, 1);
+        assertThat(backend.renderedBlocksConsumedByDriver()).isEqualTo(1L);
     }
 
     // ------------------------------------------------------------------

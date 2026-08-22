@@ -711,7 +711,11 @@ class DefaultAudioEngineControllerTest {
         DeviceId device = new DeviceId(MockAudioBackend.NAME, "Mock Device");
         controller.bindBackendDeviceEvents(backend, device);
 
-        assertThat(controller.getActiveBackendName()).isEqualTo(MockAudioBackend.NAME);
+        // Story 316 review: no stream is open, so the utilities are driven
+        // by the PROVISIONED backend; the honest active query says "None".
+        assertThat(controller.getProvisionedBackendName()).isEqualTo(MockAudioBackend.NAME);
+        assertThat(controller.getActiveBackendName())
+                .isEqualTo(AudioEngineController.BACKEND_NONE);
         assertThat(controller.listDevices()).extracting("name").containsExactly("Mock Device");
         assertThat(controller.bufferSizeRange(MockAudioBackend.NAME, "Mock Device"))
                 .isEqualTo(range);
@@ -831,13 +835,17 @@ class DefaultAudioEngineControllerTest {
         }
         // Story 316 review (F8): the provision keeps the USER'S request —
         // the engine stamps it into every BackendFallbackEvent — while the
-        // notification and the reported backend name the ladder's ACTUAL
-        // head (PortAudio when available, else Java Sound).
+        // notification and the PROVISIONED backend name the ladder's ACTUAL
+        // head (PortAudio when available, else Java Sound). The ACTIVE
+        // backend is the open stream's, and nothing is streaming here.
         assertThat(provision.requestedBackendName()).isEqualTo("WASAPI (Exclusive)");
         String headRung = provision.firstRung().backend().name();
         assertThat(headRung).isIn("PortAudio", "Java Sound");
         assertThat(controller.getActiveBackendName())
-                .as("closed stream: the reported backend is the ladder's first rung")
+                .as("closed stream: nothing is active (book §3.2 / §5.2)")
+                .isEqualTo(AudioEngineController.BACKEND_NONE);
+        assertThat(controller.getProvisionedBackendName())
+                .as("closed stream: the backend the next open will try is the ladder's head")
                 .isEqualTo(headRung);
         synchronized (notices) {
             assertThat(notices)
@@ -889,12 +897,15 @@ class DefaultAudioEngineControllerTest {
             assertThat(rung.backend()).isNotInstanceOf(MockAudioBackend.class);
         }
         // Story 316 review (F8): requestedBackendName stays the USER'S
-        // request; the notification and the reported backend name the
-        // ladder's ACTUAL head instead of a hardcoded "Java Sound".
+        // request; the notification and the PROVISIONED backend name the
+        // ladder's ACTUAL head instead of a hardcoded "Java Sound". Nothing
+        // is streaming, so the ACTIVE backend is honestly "None".
         assertThat(provision.requestedBackendName()).isEqualTo("ASIO");
         String headRung = provision.firstRung().backend().name();
         assertThat(headRung).isIn("PortAudio", "Java Sound");
-        assertThat(controller.getActiveBackendName()).isEqualTo(headRung);
+        assertThat(controller.getActiveBackendName())
+                .isEqualTo(AudioEngineController.BACKEND_NONE);
+        assertThat(controller.getProvisionedBackendName()).isEqualTo(headRung);
         // Exactly one fallback notification, naming the actual head rung.
         synchronized (notices) {
             assertThat(notices)
@@ -955,6 +966,133 @@ class DefaultAudioEngineControllerTest {
 
         engine.stop();
         controller.shutdown();
+    }
+
+    @Test
+    void stoppingTheStreamMakesActiveNoneWhileProvisionedStillNamesTheRung(
+            @TempDir Path projectRoot) {
+        // Story 316 review: "active" is the OPEN stream's backend (book §3.2
+        // / §5.2). It used to fall back to the provision's head rung after
+        // Stop, so the Settings utility panel kept naming a backend as
+        // active while nothing was streaming. The "which backend will the
+        // next open try" fact is getProvisionedBackendName()'s, and that one
+        // must survive the stop.
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            engine.startAudioOutput();
+            assertThat(spy.isOpen()).isTrue();
+            assertThat(controller.getActiveBackendName())
+                    .as("while the stream is open, active IS the open stream's backend")
+                    .isEqualTo("ASIO");
+            assertThat(controller.getProvisionedBackendName()).isEqualTo("ASIO");
+
+            engine.stopAudioOutput();
+
+            assertThat(spy.isOpen()).isFalse();
+            assertThat(controller.getActiveBackendName())
+                    .as("after Stop nothing is streaming, so nothing is active")
+                    .isEqualTo(AudioEngineController.BACKEND_NONE);
+            assertThat(controller.getProvisionedBackendName())
+                    .as("the provision still names the rung the next open will try")
+                    .isEqualTo("ASIO");
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void unknownBackendNameIsRejectedLikeAnUnavailableOneAndPreservesTheRequest(
+            @TempDir Path projectRoot) {
+        // Story 316 review: a name this build has no backend for (a stale
+        // persisted setting, say) used to be silently swapped for the
+        // default provision — the requested backend/device vanished and no
+        // fallback event or warning was ever produced, so requested !=
+        // active was invisible on every surface. It now takes the same path
+        // as an unavailable backend: request preserved, user notified,
+        // rejection carried as a pending failed hop.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } },
+                new IncompleteTakeStore(projectRoot));
+
+        controller.applyConfiguration(new AudioEngineController.Request(
+                "NoSuchBackend", "", "Studio Interface Out", SampleRate.HZ_44100, 512, 16, 1));
+
+        StreamingProvision provision = engine.getStreamingProvision();
+        assertThat(provision).isNotNull();
+        assertThat(provision.requestedBackendName())
+                .as("the provision still names the USER'S request")
+                .isEqualTo("NoSuchBackend");
+        assertThat(provision.requestedDevice())
+                .as("paired with the OUTPUT device the user asked for")
+                .isEqualTo(new DeviceId("NoSuchBackend", "Studio Interface Out"));
+        String headRung = provision.firstRung().backend().name();
+        assertThat(headRung).isIn("PortAudio", "Java Sound");
+        synchronized (notices) {
+            assertThat(notices)
+                    .as("exactly one fallback notification, naming the ladder's actual head")
+                    .hasSize(1)
+                    .first()
+                    .asString()
+                    .startsWith("NoSuchBackend")
+                    .contains("not available — falling back to " + headRung);
+        }
+        assertThat(provision.pendingFailedHopCauses())
+                .as("the rejection rides into the ladder for the engine to publish")
+                .hasSize(1)
+                .first().asString()
+                .contains("NoSuchBackend")
+                .contains("not a backend this build knows");
+        engine.stop();
+        controller.shutdown();
+    }
+
+    @Test
+    void blankAndNoneBackendNamesStillYieldTheDefaultLadderSilently(
+            @TempDir Path projectRoot) {
+        // Story 316 review: the unknown-name rejection above must not leak
+        // into the "no preference" names — a blank or BACKEND_NONE request
+        // is the default ladder, with nothing to notify and no failed hop.
+        for (String noPreference : List.of("", AudioEngineController.BACKEND_NONE)) {
+            AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+            List<String> notices = new ArrayList<>();
+            DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                    engine, null,
+                    message -> { synchronized (notices) { notices.add(message); } },
+                    new IncompleteTakeStore(projectRoot));
+
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    noPreference, "", "", SampleRate.HZ_44100, 512, 16, 1));
+
+            StreamingProvision provision = engine.getStreamingProvision();
+            assertThat(provision).as(noPreference).isNotNull();
+            assertThat(provision.requestedBackendName())
+                    .as("[%s] the default ladder names its own head as the request", noPreference)
+                    .isIn("PortAudio", "Java Sound");
+            synchronized (notices) {
+                assertThat(notices)
+                        .as("[%s] no preference means nothing to fall back from", noPreference)
+                        .isEmpty();
+            }
+            assertThat(provision.pendingFailedHopCauses())
+                    .as("[%s] no rejection, no pending failed hop", noPreference)
+                    .isEmpty();
+            engine.stop();
+            controller.shutdown();
+        }
     }
 
     @Test
@@ -1201,7 +1339,7 @@ class DefaultAudioEngineControllerTest {
                     .hasSize(1)
                     .first().asString()
                     .contains("ASIO")
-                    .contains("streaming path is not implemented");
+                    .contains("streaming path is not available in this build");
 
             try {
                 engine.startAudioOutput();
@@ -1228,7 +1366,7 @@ class DefaultAudioEngineControllerTest {
             assertThat(gateHop.cause())
                     .as("the cause says WHY the gate rejected it")
                     .contains("ASIO")
-                    .contains("streaming path is not implemented");
+                    .contains("streaming path is not available in this build");
         } finally {
             com.benesquivelmusic.daw.core.event.EventBusPublisher.setDefault(previousBus);
             engine.stopAudioOutput();

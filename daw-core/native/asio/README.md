@@ -320,7 +320,11 @@ That lane exports **`DAW_REQUIRE_ASIOSHIM=1`** so the env-gated
 assertions in `NativeLibraryDetectorTest` and `AsioFormatChangeShimTest`
 flip from `Assumptions.assumeTrue(...)` (skip) to hard `assertTrue(...)`
 checks. Absent `asioshim.dll` therefore fails the CI lane rather than
-silently degrading to the no-shim fallback path. On developer
+silently degrading to the no-shim fallback path. The same variable makes
+a real ASIO driver rejecting the open in `AsioStreamingIntegrationTest`
+and `AsioEngineStreamingIntegrationTest` a hard failure instead of a skip,
+so a regression that stops the production streaming path from opening
+cannot leave that lane green. On developer
 workstations the env var is unset and those same tests remain
 `assumeTrue` skips, so a fresh clone without the SDK still produces a
 green build.

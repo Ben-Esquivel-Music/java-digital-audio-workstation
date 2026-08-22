@@ -815,6 +815,90 @@ class AudioEngineOutputTest {
         assertThat(backend.openCount.get()).isEqualTo(2);
     }
 
+    @Test
+    void aPumpStartFailureNeverPublishesAnEventNamingTheUnstartedRungAsActive() {
+        // Story 316 review: the fallback events used to go out the moment
+        // the rung's open() returned — BEFORE startOpenedStream() put a pump
+        // on it. When subscribing to inputBlocks() then failed, the handle
+        // was closed but subscribers had already been told that rung was
+        // the active stream.
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+
+            SynchronousTestBackend first = new SynchronousTestBackend("First");
+            first.failOnOpen = true;
+            SynchronousTestBackend second = new SynchronousTestBackend("Second");
+            second.failOnPumpStart = true;
+            engine.setStreamingProvision(provisionOf("First", first, second));
+
+            assertThatThrownBy(engine::startAudioOutput)
+                    .as("the pump-start failure still propagates unchanged")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessage("pump start refused by Second");
+
+            assertThat(second.closeCount.get())
+                    .as("the rung whose pump never started gave its handle back")
+                    .isEqualTo(1);
+            assertThat(second.isOpen()).isFalse();
+            assertThat(engine.isStreamOpen()).isFalse();
+
+            awaitCondition(() -> received.size() >= 1,
+                    "the failed first hop is still published — requested != active");
+            assertThat(received).hasSize(1);
+            BackendFallbackEvent event = received.get(0);
+            assertThat(event.cause()).isEqualTo("open refused by First");
+            assertThat(event.activeBackend())
+                    .as("no stream became active, so the event must not name Second")
+                    .isEqualTo("none");
+            assertThat(event.activeDevice()).isEqualTo("none");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    @Test
+    void aRungWhoseBackendCannotStreamIsSkippedAsAFailedHop() {
+        // Story 316 review: supportsStreaming() is the backend's own word
+        // that sink() reaches the device (for ASIO, a live probe of the
+        // native shim). The engine asks it itself instead of trusting the
+        // app layer's gate, so a non-streaming rung can never become an
+        // honest-looking silent stream.
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+
+            SynchronousTestBackend silent = new SynchronousTestBackend("Silent");
+            silent.streamingSupported = false;
+            SynchronousTestBackend second = new SynchronousTestBackend("Second");
+            engine.setStreamingProvision(provisionOf("Silent", silent, second));
+
+            engine.startAudioOutput();
+
+            assertThat(silent.openCount.get())
+                    .as("the guard refuses the rung before it is ever opened")
+                    .isZero();
+            assertThat(second.isOpen()).isTrue();
+            assertThat(engine.openStreamBackendName()).contains("Second");
+
+            awaitCondition(() -> received.size() >= 1,
+                    "the skipped rung is published as an ordinary failed hop");
+            assertThat(received).hasSize(1);
+            BackendFallbackEvent event = received.get(0);
+            assertThat(event.requestedBackend()).isEqualTo("Silent");
+            assertThat(event.activeBackend()).isEqualTo("Second");
+            assertThat(event.cause())
+                    .contains("Silent")
+                    .contains("cannot stream");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
     // ── Async await support ──────────────────────────────────────────────
 
     private static void awaitCondition(BooleanSupplier condition, String description) {
@@ -849,6 +933,8 @@ class AudioEngineOutputTest {
         volatile boolean failOnPumpStart;
         volatile boolean failOnClose;
         volatile boolean blockAwait;
+        /** Story 316 review: what the engine-side streaming guard sees. */
+        volatile boolean streamingSupported = true;
         final AtomicInteger blockedAwaitEntries = new AtomicInteger();
         volatile Integer negotiateToBitDepth;
         /** Story 316 review: a negotiation the engine must refuse (channels). */
@@ -878,7 +964,7 @@ class AudioEngineOutputTest {
 
         @Override
         public boolean supportsStreaming() {
-            return true;
+            return streamingSupported;
         }
 
         @Override

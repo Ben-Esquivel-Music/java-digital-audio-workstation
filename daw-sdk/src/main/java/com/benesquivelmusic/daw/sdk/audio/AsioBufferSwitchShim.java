@@ -170,6 +170,25 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     private volatile boolean closed;
 
     /**
+     * Rendered blocks the driver callback actually consumed (story 316
+     * review): incremented by {@link #bufferSwitch(int, int)} exactly when
+     * {@code outputRing.drainLatestInto} handed it an engine-rendered block,
+     * never on the silence path. It is the observable proof that the output
+     * bridge is alive — that audio written through {@link #write(AudioBlock)}
+     * reached the driver's buffers — as opposed to the transport merely
+     * advancing while the callback starved.
+     *
+     * <p>A plain {@code volatile long} with {@code ++} is real-time safe here
+     * because the driver's callback thread is the <em>only</em> writer; the
+     * increment is a single non-atomic read-modify-write on one thread, so no
+     * update can be lost, and the volatile store publishes each new value to
+     * the control / test threads that read it. No {@code AtomicLong},
+     * {@code LongAdder}, lock or allocation is involved, which keeps the
+     * callback inside the {@code RealTimeSafeContractTest} sentinel.</p>
+     */
+    private volatile long renderedBlocksConsumed;
+
+    /**
      * Pre-allocates every buffer, view and staging array the callback needs,
      * builds the FFM upcall stub, and starts the {@code asio-input-drain}
      * thread. Runs on the calling (control) thread — never on the driver's
@@ -411,7 +430,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         inputRing.write(incoming, incoming.length);
         LockSupport.unpark(drainThread);
 
-        if (!outputRing.drainLatestInto(outputScratch)) {
+        if (outputRing.drainLatestInto(outputScratch)) {
+            // Single-writer counter; the driver thread is the only mutator.
+            renderedBlocksConsumed++;
+        } else {
             // Nothing rendered yet this cycle — emit silence rather than
             // repeating the previous block.
             Arrays.fill(outputScratch, 0f);
@@ -588,6 +610,19 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      */
     boolean outputRingHasSpace() {
         return outputRing.hasSpace();
+    }
+
+    /**
+     * Returns how many engine-rendered blocks {@link #bufferSwitch(int, int)}
+     * has drained into the driver's output buffers (story 316 review). Zero
+     * until the first callback finds a {@link #write(AudioBlock)}-ed block
+     * waiting; callbacks that emitted silence do not count. Surfaced through
+     * {@link AsioBackend#renderedBlocksConsumedByDriver()} for the Windows
+     * streaming proof in daw-core. A volatile read; adds nothing to the
+     * real-time path.
+     */
+    long renderedBlocksConsumed() {
+        return renderedBlocksConsumed;
     }
 
     /**
