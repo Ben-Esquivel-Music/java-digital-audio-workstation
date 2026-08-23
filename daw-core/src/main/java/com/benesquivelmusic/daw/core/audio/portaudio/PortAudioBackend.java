@@ -301,7 +301,19 @@ public final class PortAudioBackend implements NativeAudioBackend {
         return null;
     }
 
-    private AudioDeviceInfo parseDeviceInfo(int index, MemorySegment infoPtr) {
+    /**
+     * Parses one native {@code PaDeviceInfo} struct into an
+     * {@link AudioDeviceInfo}.
+     *
+     * <p>Package-private and static (story 316 re-review) so the
+     * native-boundary normalisation it performs can be exercised against a
+     * hand-built struct without a PortAudio installation on the host.</p>
+     *
+     * @param index   the PortAudio device index this struct describes
+     * @param infoPtr pointer to the {@code PaDeviceInfo} struct
+     * @return the parsed device descriptor
+     */
+    static AudioDeviceInfo parseDeviceInfo(int index, MemorySegment infoPtr) {
         MemorySegment info = infoPtr.reinterpret(
                 PortAudioBindings.PA_DEVICE_INFO_LAYOUT.byteSize());
 
@@ -335,13 +347,59 @@ public final class PortAudioBackend implements NativeAudioBackend {
                 index,
                 name,
                 "PortAudio Host API " + hostApiIndex,
-                maxInputChannels,
-                maxOutputChannels,
+                sanitizeChannelCount(maxInputChannels, "maxInputChannels", name),
+                sanitizeChannelCount(maxOutputChannels, "maxOutputChannels", name),
                 defaultSampleRate,
                 List.of(SampleRate.values()), // PortAudio typically supports all standard rates
                 defaultLowInputLatency * 1000.0,
                 defaultLowOutputLatency * 1000.0
         );
+    }
+
+    /**
+     * Normalises a channel count read straight out of native memory (story
+     * 316 re-review).
+     *
+     * <p>{@link AudioDeviceInfo}'s canonical constructor now REJECTS any
+     * count below {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN}, which makes
+     * this struct read the boundary where a driver reporting garbage either
+     * degrades or crashes. It is a real boundary and not a formality: the
+     * int arrives from a third-party host-API plug-in, and an
+     * {@code IllegalArgumentException} thrown out of the record constructor
+     * here would surface either as a FAILED OPEN — {@code
+     * CallbackBackendAdapter.open} enumerates inside the ladder walk — or as
+     * an empty device list, because {@code
+     * AudioDeviceManager.getAvailableDevices} catches {@code Exception} and
+     * answers {@code List.of()}. Either way the device would vanish and the
+     * user would be told nothing.</p>
+     *
+     * <p>A nonsensical count becomes
+     * {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN} rather than {@code 0}
+     * because those two mean different things. {@code 0} is the record's
+     * statement that the direction is NOT OFFERED, so it would drop the
+     * device out of the settings menu silently — precisely the failure this
+     * story removed for ASIO. "Offered, but the count is not knowable" is
+     * the honest reading of garbage: the device stays selectable, every
+     * consumer already handles the sentinel ({@code clampInputChannels}
+     * defers to the driver), and an open the hardware cannot honour then
+     * fails visibly against the driver instead of disappearing from a menu.
+     * The bogus value is logged so the offending driver is named.</p>
+     *
+     * @param nativeCount the raw value read from the struct
+     * @param field       the struct field name, for the log line
+     * @param deviceName  the device the value came from, for the log line
+     * @return {@code nativeCount} when it is a legal count, else
+     *         {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN}
+     */
+    private static int sanitizeChannelCount(int nativeCount, String field, String deviceName) {
+        if (nativeCount >= 0) {
+            return nativeCount;
+        }
+        LOG.warning("PortAudio device '" + deviceName + "' reported a nonsensical " + field
+                + " of " + nativeCount + "; treating it as CHANNEL_COUNT_UNKNOWN so the device"
+                + " stays selectable and an open fails visibly against the driver, rather than"
+                + " the enumeration throwing and the device vanishing");
+        return AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN;
     }
 
     private MemorySegment allocateStreamParameters(Arena arena, int deviceIndex, int channels) {

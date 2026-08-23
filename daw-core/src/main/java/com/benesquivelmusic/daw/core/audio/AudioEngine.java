@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -63,7 +64,22 @@ public final class AudioEngine {
     /** Maximum number of tracks supported for pre-allocated buffers. */
     static final int MAX_TRACKS = 64;
 
-    private AudioFormat format;
+    /**
+     * The session format the render pipeline, the buffer pool and every
+     * ladder open are shaped from.
+     *
+     * <p>{@code volatile} since the story-316 re-review. It is written by
+     * {@link #setFormat(AudioFormat)} on the settings-apply / device-event
+     * threads and read inside {@link #lifecycleLock} by {@link #startLocked()},
+     * {@link #openLadder}, the {@link EngineStreamPump} constructor and
+     * {@link #handOffMixer}. The lock now serializes the write with those
+     * readers; the volatile is what makes the write VISIBLE to a reader that
+     * takes the lock afterwards on another thread, and — more to the point —
+     * keeps a torn/absent publication impossible for the one reader that
+     * takes a DIFFERENT lock ({@code handOffMixer}, under {@link #graphLock}).
+     * </p>
+     */
+    private volatile AudioFormat format;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private final EffectsChain masterChain;
@@ -192,6 +208,434 @@ public final class AudioEngine {
     // touches this lock — processBlock reads the volatile graph field only.
     private final Object graphLock = new Object();
 
+    /**
+     * Serializes the backend-stream lifecycle transition (story 316
+     * re-review). The {@code streamState} / {@code openBackend} /
+     * {@code openDevice} / {@code openSdkFormat} / {@code pump} quintet is a
+     * multi-step STATE MACHINE, not five independent facts: an open reads the
+     * state, retries a join, releases a retained handle, walks the ladder,
+     * stores four fields and starts a thread. {@code volatile} gives each
+     * field visibility and gives that sequence no atomicity at all — two
+     * callers could both observe {@link StreamState#CLOSED}, open two
+     * different rungs, overwrite each other's {@code openBackend} and
+     * {@code pump}, and leave one stream orphaned on a device nobody will
+     * ever close again. That race is reachable in production: a plain Play
+     * calls {@link #startAudioOutput()} straight from the FX thread while the
+     * application's audio controller drives the same methods from its
+     * device-event and format-change workers.
+     *
+     * <h2>What it guards</h2>
+     * <p>NINE public methods take it, in two shapes.</p>
+     * <p>SEVEN read-then-write the quintet and delegate to a {@code …Locked}
+     * body that holds the whole transition: {@link #start()}, {@link #stop()},
+     * {@link #setStreamingProvision(StreamingProvision)},
+     * {@link #startAudioOutput()}, {@link #startAudioInputOutput()},
+     * {@link #stopAudioOutput()} and {@link #pauseAudioOutput()}.</p>
+     * <p>TWO take it around an INLINE body and have no {@code …Locked} method
+     * of their own — {@link #setFormat(AudioFormat)} and
+     * {@link #setEngineSettings(AudioEngineSettings)}. They are here because
+     * each is a read-then-write (a running check, then a store) over a field
+     * the locked open path consumes; see their own javadoc. Anything that
+     * reasons about this lock from the {@code …Locked} NAMING alone will miss
+     * these two, which is why
+     * {@code AudioEngineLifecycleLockContractTest} derives its root set from
+     * the lock ACQUISITION in the bytecode instead.</p>
+     * <p>{@link #setGraph(Transport, Mixer, List)} is NOT on this lock; it
+     * has its own ({@link #graphLock}), and defers its outward calls with the
+     * same {@link PendingAnnouncements} mechanism.</p>
+     * <p>The RT path is untouched:
+     * {@link #processBlock(float[][], float[][], int)} still reads those
+     * fields volatilely and acquires nothing, so this lock can never be
+     * contended by — or block — the render thread.</p>
+     *
+     * <h2>Internal call graph (and why the lock is REENTRANT)</h2>
+     * <pre>
+     * startAudioOutput      → startAudioOutputLocked
+     *                           → requireQuiescedPump  → stopPump
+     *                           → resumeAudioOutputLocked → startLocked
+     *                           → releaseRetainedStreamHandle
+     *                           → startLocked → stopPump
+     *                           → openLadder → startOpenedStream
+     * startAudioInputOutput → startAudioInputOutputLocked
+     *                           → stopAudioOutputLocked → stopPump
+     *                           → startAudioOutputLocked (as above)
+     * stopAudioOutput       → stopAudioOutputLocked → stopPump
+     * pauseAudioOutput      → pauseAudioOutputLocked → stopPump
+     * setStreamingProvision → setStreamingProvisionLocked
+     *                           → abandonStreamOnOutgoingBackend → stopPump
+     * start                 → startLocked → stopPump
+     * stop                  → stopLocked  → stopPump
+     * </pre>
+     * <p>No internal path calls a PUBLIC wrapper, so every nesting above sits
+     * inside ONE acquisition. {@link ReentrantLock} rather than a bare
+     * monitor for three reasons — try/finally makes each critical section's
+     * extent explicit at the call site,
+     * {@link ReentrantLock#isHeldByCurrentThread()} lets
+     * {@link PendingAnnouncements#deliver()} verify the
+     * deliver-outside-the-lock invariant, and it will not pin a carrier
+     * thread should a lifecycle call ever be issued from a virtual thread.
+     * Re-entrancy is no longer LOAD-BEARING: it used to be, because the
+     * RT-clock release ran inline and fired the transport's change listeners
+     * on this very thread, so a listener that called back into a lifecycle
+     * method would have self-deadlocked on a non-reentrant lock. That release
+     * is now deferred with the rest (see below), which removes the re-entry
+     * rather than tolerating it.</p>
+     *
+     * <h2>What must NOT happen while it is held</h2>
+     * <ol>
+     *   <li><strong>No application callback.</strong> The hazard is always
+     *       the same shape: the app layer's audio controller binds device
+     *       events from a {@code synchronized} method while that same
+     *       monitor's reconfigure path calls this engine's lifecycle methods,
+     *       so ANY outward call under this lock gives one thread [lifecycle →
+     *       controller] and the other [controller → lifecycle], a textbook
+     *       inversion. THREE seams reach APPLICATION-REGISTERED code, and all
+     *       three are RECORDED on a {@link PendingAnnouncements} inside the
+     *       critical section and delivered by the public wrapper after the
+     *       unlock (which also keeps a {@code BLOCK}-strategy event bus from
+     *       parking a lifecycle thread here indefinitely). Enumerated, with
+     *       the disposition of each:
+     *       <ol>
+     *         <li>{@link StreamOpenListener} — goes straight into the app
+     *             layer. Recorded by
+     *             {@link PendingAnnouncements#streamOpened}, delivered by
+     *             {@link #notifyStreamOpened}. DEFERRED.</li>
+     *         <li>The failed hops' {@link BackendFallbackEvent}s — go to the
+     *             {@code EventBus}, whose subscribers are app-layer. Recorded
+     *             by {@link PendingAnnouncements#fallbacks}, delivered by
+     *             {@link #publishFallbackEvents}. DEFERRED.</li>
+     *         <li>The transport's RT-clock RELEASE (story 316 re-review — the
+     *             seam this bullet used to deny existed).
+     *             {@link Transport#setRealTimeClockActive(boolean)} with
+     *             {@code false} drains a queued seek inline and fires the
+     *             transport's {@link Transport.ChangeKind#POSITION}
+     *             observers, which are arbitrary app-registered consumers.
+     *             Recorded by {@link #recordClockRelease}, delivered by
+     *             {@link #deliverClockRelease}. DEFERRED.</li>
+     *       </ol>
+     *       Other calls DO leave this class without being application
+     *       callbacks, and stay inside deliberately. The ones known as of
+     *       this change are catalogued below with the disposition of each.
+     *       Read the catalogue as a RECORD, not as a closure: it is prose, it
+     *       has been wrong before in both directions (it has named a seam
+     *       that does not exist — the pump's construction, seam (2) — and
+     *       omitted one that does — the pump's subscription cancel, seam (7))
+     *       and nothing keeps it complete across the next edit. The
+     *       MECHANICAL guarantee is narrower and does not rot:
+     *       {@code AudioEngineLifecycleLockContractTest} fails the BUILD for
+     *       any call this class's own lock-held code makes to a type that is
+     *       neither on its allow-list nor named in its {@code EXCEPTIONS}
+     *       with a written reason, so a novel outward call written directly
+     *       into a critical section is caught whether or not anyone updates
+     *       this list. What that sentinel cannot see is a call made ONE FRAME
+     *       DEEPER, inside an allow-listed collaborator — which is where
+     *       every entry below that is not a bare field store actually lives.
+     *       So a maintainer adding a call here owes it the RULES rather than
+     *       a lookup: does it reach application-registered code (then DEFER
+     *       it on a {@link PendingAnnouncements} and deliver after the
+     *       unlock), does it reach an SDK extension point or an untimed
+     *       native downcall (then it is unbounded by contract — price it in
+     *       the budget below and say so), and does it take another lock (then
+     *       name that lock, and show that nothing holding it ever waits for
+     *       this one). Absence from this catalogue is not a verdict of
+     *       safety:
+     *       <ol>
+     *         <li>The RT-clock CLAIM ({@code setRealTimeClockActive(true)})
+     *             is a bare volatile store that drains nothing and notifies
+     *             nobody. INWARD in effect; proven by
+     *             {@code AudioEngineLifecycleLockContractTest}, which reads
+     *             the literal {@code true} out of
+     *             {@link #claimTransportClock()}'s bytecode rather than
+     *             trusting this sentence.</li>
+     *         <li>The {@link AudioBackend} calls (open / close /
+     *             negotiateFormat / supportsStreaming) are SDK DRIVER code,
+     *             not application code. They cannot be deferred — the whole
+     *             point of the critical section is that the ladder walk and
+     *             the field stores are one transition — so they are a
+     *             BLOCKING seam rather than a re-entrancy seam; and because
+     *             the interface is deliberately not sealed, every one of them
+     *             is unbounded by contract. Their cost is priced in the
+     *             blocking budget, the next NUMBERED item of the outer list.
+     *             Constructing the {@link EngineStreamPump} is NOT one of
+     *             them, despite an earlier revision of this entry saying so:
+     *             the constructor validates the format pair, allocates the
+     *             render buffers and creates an unstarted thread, and touches
+     *             the backend only to store the reference. The pump's backend
+     *             contact is {@code inputBlocks().subscribe(…)} inside
+     *             {@link EngineStreamPump#start()} — seam (6) — and the
+     *             matching cancel on the way out — seam (7).</li>
+     *         <li>{@link Mixer#prepareForPlayback(int, int)}, from
+     *             {@link #startLocked()}, runs THIRD-PARTY code twice over.
+     *             Its {@code recalculateDelayCompensation()} reaches
+     *             {@code EffectsChain.getTotalLatencySamples()}, which calls
+     *             {@code AudioProcessor.getLatencySamples()} on EVERY
+     *             processor in every channel and return-bus chain; and its
+     *             {@code rebindAllReflectiveParameterBindings()} re-runs
+     *             {@code ReflectiveParameterBinder}'s REFLECTIVE
+     *             {@code @ProcessorParam} discovery
+     *             ({@code Class.getMethods()} per processor) for every
+     *             channel. (The buffer allocation itself is inward — it only
+     *             sizes arrays.) {@code AudioProcessor} is an SDK extension
+     *             point, so a third-party plugin's {@code getLatencySamples}
+     *             can block for as long as it likes, on this lock, with
+     *             nothing bounding it.
+     *             ACCEPTED, not deferred: the mixer must be prepared before
+     *             any pump can render through it (an unprepared mixer means
+     *             null scratch buffers and an NPE inside the FFM upcall), and
+     *             the pump is started inside this same critical section — so
+     *             moving the preparation outside it would let a concurrent
+     *             open start a pump on an unprepared mixer, which is a
+     *             crash rather than a stall. The same call also runs under
+     *             {@link #graphLock} from {@link #handOffMixer(Mixer, Mixer)},
+     *             for the same reason and with the same disposition.</li>
+     *         <li>{@code Mixer.setGraphScheduler} and
+     *             {@code Mixer.getGraphScheduler}, from
+     *             {@link #startLocked()} and
+     *             {@link #tearDownRenderCollaborators()}. INWARD: the mixer
+     *             is engine-owned, and these two are a plain reference store
+     *             and its identity read-back — no foreign code, no lock, no
+     *             allocation, no notification. They are listed not because
+     *             this catalogue is closed — it is not; see its preamble —
+     *             but because a catalogue that skipped its BORING entries
+     *             would teach the next reader to skip them too, and because
+     *             {@code Mixer} is also the type that carries seam (3), so
+     *             "it is only the mixer" is not by itself a verdict. Both
+     *             call sites are already named in
+     *             {@code AudioEngineLifecycleLockContractTest}'s
+     *             {@code EXCEPTIONS}; this bullet is what that catalogue
+     *             points at.</li>
+     *         <li>{@link MidiTrackRenderer}'s CONSTRUCTION in
+     *             {@link #startLocked()} and its {@code close()} from
+     *             {@link #tearDownRenderCollaborators()}. The class is
+     *             engine-owned, but its {@code close()} walks every per-track
+     *             {@code SoundFontRenderer}, which is an SDK EXTENSION POINT
+     *             ({@code com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer}),
+     *             and the in-tree implementations reach native teardown:
+     *             {@code FluidSynthRenderer.close()} issues
+     *             {@code fluid_synth_system_reset}, {@code delete_fluid_synth}
+     *             and {@code delete_fluid_settings} as UNTIMED FFM downcalls
+     *             and closes the render {@link java.lang.foreign.Arena}, and
+     *             {@code JavaSoundRenderer.close()} closes a
+     *             {@code javax.sound.midi.Synthesizer}. That is the SAME
+     *             CATEGORY as seam (3) — unbounded, third-party-implementable
+     *             code running under this lock — and it belongs in the budget
+     *             below, where it now is. The construction side is cheaper
+     *             but not free: {@code MidiTrackRenderer}'s constructor
+     *             builds a {@code FluidSynthBindings}, which LOADS the native
+     *             FluidSynth library through {@code NativeLibraryLoader} and
+     *             binds its symbols — a filesystem and dynamic-loader hit,
+     *             cheap only once the OS has the image cached.
+     *             ACCEPTED, not deferred, and the deferral this class already
+     *             owns does NOT cover it:
+     *             {@link #collaboratorTeardownDeferred} defers the teardown
+     *             along a DIFFERENT axis (until the pump's exit is CONFIRMED)
+     *             and drains it from {@link #stopPump()}, which is itself
+     *             only ever reached with this lock held — so reusing that
+     *             path moves the call in TIME, never OUTSIDE the critical
+     *             section. Moving it outside would require the teardown to
+     *             clear {@code midiTrackRenderer}, {@code graphScheduler} and
+     *             {@code workerPool} only when a concurrent
+     *             {@link #startLocked()} had not already replaced them —
+     *             identity or epoch machinery this class does not have, and
+     *             that a documentation pass must not invent.</li>
+     *         <li>{@link EngineStreamPump#start()}, from
+     *             {@code startOpenedStream} and
+     *             {@code resumeAudioOutputLocked}, executes
+     *             {@code backend.inputBlocks().subscribe(new InputSubscriber())}.
+     *             The subscriber is ENGINE-INTERNAL — no application code is
+     *             registered on it — but the subscribe is a SECOND LOCK taken
+     *             under this one: the production publishers are
+     *             {@link java.util.concurrent.SubmissionPublisher}s (via the
+     *             SDK's {@code AudioBackendSupport}), and its
+     *             {@code subscribe} acquires the publisher's OWN
+     *             {@link ReentrantLock} for the whole registration. What it
+     *             does NOT do is run the subscriber's
+     *             {@code onSubscribe(Flow.Subscription)} on this thread —
+     *             that call is handed to the publisher's executor
+     *             ({@code ForkJoinPool.commonPool()} by default) and arrives
+     *             asynchronously, which is precisely the race
+     *             {@code EngineStreamPump.InputSubscriber.onSubscribe}
+     *             defends against. Only the {@code Executor.execute} handoff
+     *             happens inline, with both locks held. No inversion exists
+     *             today — nothing that holds a publisher's lock ever waits
+     *             for this one — but {@link AudioBackend#inputBlocks()} is a
+     *             third-party-implementable seam, so a custom
+     *             {@link java.util.concurrent.Flow.Publisher} could block, or
+     *             take further locks, right here. INWARD BY CONVENTION rather
+     *             than inward by proof, which is why it carries an entry of
+     *             its own rather than being folded into seam (2): the
+     *             subscribe happens in {@code start()}, and the pump's
+     *             CONSTRUCTOR makes no backend call at all — it validates the
+     *             format pair, allocates the render buffers and creates an
+     *             unstarted thread — so nothing else here would cover it.</li>
+     *         <li>{@link EngineStreamPump#stop()}, from {@link #stopPump()},
+     *             CANCELS that same subscription: its
+     *             {@code cancelInputSubscription()} calls
+     *             {@link java.util.concurrent.Flow.Subscription#cancel()} on
+     *             a subscription object the BACKEND's publisher handed out,
+     *             so the code that runs is the publisher's, not the engine's
+     *             — the mirror image of seam (6), and unbounded for the same
+     *             reason. For the production
+     *             {@link java.util.concurrent.SubmissionPublisher} it is the
+     *             JDK's own buffered-subscription teardown; for a custom
+     *             {@link AudioBackend#inputBlocks()} it is whatever that
+     *             implementation makes it. Unlike the subscribe it cannot
+     *             even fail loudly: {@code EngineStreamPump.cancelQuietly}
+     *             logs and swallows a throwing cancel, because the stop paths
+     *             that reach it must never throw. ACCEPTED, not deferred — it
+     *             runs BEFORE the bounded join in the same {@code stop()}, so
+     *             the upstream stops delivering into a pump that is on its
+     *             way out rather than after it is already gone, and a
+     *             confirmed join is what lets the caller close that backend.
+     *             Only the JOIN is priced as item (1) of the budget below;
+     *             the cancel is priced with seam (6)'s publisher contact,
+     *             which it is the other half of.</li>
+     *       </ol></li>
+     *   <li><strong>How long it can block — the honest budget.</strong> Not
+     *       "no unbounded wait". The general truth first, because it is the
+     *       part that cannot go stale: every call this critical section makes
+     *       into an SDK EXTENSION POINT, and every UNTIMED native downcall it
+     *       issues, is unbounded BY CONTRACT — the interface says nothing
+     *       about how long an implementation may take, so no figure derived
+     *       from today's implementations bounds tomorrow's.
+     *       {@link AudioBackend} is deliberately NOT sealed (see its class
+     *       javadoc: {@code daw-core} contributes adapters and JPMS sealing
+     *       would forbid cross-module implementors), so seam (2)'s
+     *       {@code open} / {@code close} / {@code negotiateFormat} and seam
+     *       (6)'s {@code inputBlocks()} are unbounded for ANY third-party
+     *       backend, whatever the in-tree ones happen to cost; the same holds
+     *       for {@code AudioProcessor}, {@code SoundFontRenderer} and any
+     *       {@link java.util.concurrent.Flow} implementation reached through
+     *       them. The figures below are what the IN-TREE implementations cost
+     *       TODAY, which is worth knowing for capacity work and for triage
+     *       but is not a guarantee. Three of them are unbounded even in-tree
+     *       — one native (PortAudio's untimed downcalls) and two through SDK
+     *       extension points ({@code AudioProcessor.getLatencySamples},
+     *       {@code SoundFontRenderer.close})
+     *       — and the bounded ones are bounded PER CALL, not per transition. A
+     *       maintainer adding code here should assume the following worst
+     *       case, and remember that the application's
+     *       {@code TransportController.start()} — the Play intent handler —
+     *       calls {@link #startAudioOutput()} straight from the JavaFX
+     *       application thread, so every figure below is also a UI freeze:
+     *       <ol>
+     *         <li>{@link EngineStreamPump#stop()}'s join — 1 s, once per
+     *             {@code stopPump()}. A transition can call it more than
+     *             once (an open does: {@code requireQuiescedPump} and then
+     *             {@code startLocked}).</li>
+     *         <li>{@code AudioWorkerPool.close()} — its per-worker join is
+     *             500 ms and the joins are SEQUENTIAL, so the bound is
+     *             (pool size − 1) × 500 ms, not 500 ms. With the default
+     *             sizing of {@code max(1, availableProcessors − 2)} that is
+     *             6.5 s on a 16-core host.</li>
+     *         <li>ASIO — {@code AsioControlThread}'s 15 s budget is PER
+     *             DOWNCALL. One {@code AsioBackend.open()} issues eight or
+     *             more of them (list, load, buffer-size, channel counts,
+     *             createBuffers, getBufferInfos, install callback, start),
+     *             all inside its own {@code DRIVER_LIFECYCLE_LOCK}, and a
+     *             failed open adds its rollback's. Worst case for a single
+     *             ASIO rung is therefore MINUTES, not fifteen seconds — and
+     *             the fallback ladder may walk several rungs. The bound is
+     *             real (a wedged driver cannot stall the application
+     *             forever) but it is not a snappy one.</li>
+     *         <li>{@code CallbackBackendAdapter.close()} joins its
+     *             {@code native-input-drain} thread — 2 s.</li>
+     *         <li>PortAudio — <strong>UNBOUNDED</strong>. There is no
+     *             {@code AsioControlThread} equivalent for it:
+     *             {@code CallbackBackendAdapter.open} calls
+     *             {@code PortAudioBackend.openStream} and
+     *             {@code startStream}, which issue {@code Pa_OpenStream} and
+     *             {@code Pa_StartStream} as UNTIMED FFM downcalls on the
+     *             calling thread — this thread, holding this lock. A device
+     *             whose driver wedges in either one stalls every lifecycle
+     *             transition in the application (Play, Stop, the
+     *             device-event reopen worker, shutdown) for as long as it
+     *             wedges, and freezes the UI with them. The same is true of
+     *             {@code Pa_StopStream} / {@code Pa_CloseStream} on the way
+     *             out. This is a KNOWN, ACCEPTED hole, not an oversight; see
+     *             {@code CallbackBackendAdapter}'s class javadoc for what
+     *             closing it would take and why it was not done inside a
+     *             review round.</li>
+     *         <li>{@link Mixer#prepareForPlayback(int, int)} —
+     *             <strong>UNBOUNDED</strong>, and previously described in
+     *             seam (3) above without ever appearing in this budget. Its
+     *             {@code recalculateDelayCompensation()} calls
+     *             {@code AudioProcessor.getLatencySamples()} once per
+     *             processor across every channel and return-bus chain;
+     *             {@code AudioProcessor} is an SDK extension point, so a
+     *             third-party plugin may take as long as it likes in a method
+     *             the engine calls with this lock held. The reflective
+     *             {@code @ProcessorParam} rebind in the same call is bounded
+     *             only by the number of processors and the cost of
+     *             {@code Class.getMethods()} per processor, which is not a
+     *             figure worth quoting but is not free either.</li>
+     *         <li>{@link MidiTrackRenderer}{@code .close()} from
+     *             {@link #tearDownRenderCollaborators()} —
+     *             <strong>UNBOUNDED</strong>. It closes every per-track
+     *             {@code SoundFontRenderer}, an SDK extension point:
+     *             {@code FluidSynthRenderer.close()} makes untimed FFM
+     *             downcalls into FluidSynth teardown and closes the render
+     *             arena, and {@code JavaSoundRenderer.close()} closes a
+     *             {@code javax.sound.midi.Synthesizer} — neither has an
+     *             {@code AsioControlThread}-style budget. A third-party
+     *             implementation has none either. Runs on every {@code stop()}
+     *             that confirms quiescence, and on the deferred drain inside
+     *             {@link #stopPump()}.</li>
+     *       </ol>
+     *       Joining the pump here is safe because the render loop calls only
+     *       {@link #processBlock(float[][], float[][], int)} and
+     *       {@link #isRunning()}, neither of which touches this lock — a pump
+     *       thread can never be waiting on it while a lifecycle thread waits
+     *       on the pump.</li>
+     *   <li><strong>No graph lock.</strong> {@link #graphLock} and this lock
+     *       are never nested in either direction: the lifecycle paths read
+     *       {@code graph} volatilely, and {@link #setGraph(Transport, Mixer,
+     *       List)} calls no lifecycle method — it reads {@code streamState}
+     *       INSIDE its own monitor, through {@link #callbackIsDriving()}, and
+     *       {@code graph} volatilely, and takes nothing further. Should a
+     *       future path need both, take this one first.
+     *       The rule for fields is one sentence, and it is the part of this
+     *       bullet worth memorising: a field WRITTEN while one of the two
+     *       locks is held and READ while the other is held gets no
+     *       happens-before from either, so it must be {@code volatile} (or
+     *       {@code final}). Every field currently in that set satisfies it —
+     *       {@link #format} and {@link #graphScheduler}, written under this
+     *       lock and read by {@link #handOffMixer(Mixer, Mixer)} under
+     *       {@link #graphLock}, and {@code streamState}, written under this
+     *       lock and read under {@link #graphLock} by
+     *       {@link #setGraph(Transport, Mixer, List)} through
+     *       {@link #callbackIsDriving()}. All three are declared
+     *       {@code volatile}, so an earlier revision of this bullet naming
+     *       only the first two and calling the set TWO was a MISCOUNT in the
+     *       prose, not a missing modifier in the code and not a race. To
+     *       decide whether a NEW field needs the keyword, ask the two
+     *       questions the rule is made of: is it ever stored while this lock
+     *       is held, and is it ever loaded while {@code graphLock} is held —
+     *       INCLUDING through a helper one of the graph bodies calls, which
+     *       is exactly how {@code streamState} hid.
+     *       {@link #workerPool} is volatile for a DIFFERENT reason and must
+     *       not be cited as evidence for this one: it is only ever touched
+     *       under THIS lock, and its cross-thread reader is the lock-free
+     *       {@link #getWorkerPool()}, not the graph lock. Both are valid
+     *       reasons to be volatile; they are not the same reason.
+     *       {@code AudioEngineLifecycleLockContractTest}'s
+     *       {@code everyFieldWrittenUnderOneLockAndReadUnderTheOtherIsVolatile}
+     *       mechanises PART of that rule, and the part it does not mechanise
+     *       is precisely where {@code streamState} slipped through. Its WRITE
+     *       side is derived from bytecode over this lock's regions AND their
+     *       transitive call closure. Its READ side is not: it collects the
+     *       direct {@code GETFIELD}s in three hand-listed bodies
+     *       ({@code setGraph}, {@code setTracks}, {@code handOffMixer}) and
+     *       does NOT follow the calls those bodies make, so a field reached
+     *       through a helper is invisible to it. What the test guarantees is
+     *       "no field directly read in a listed {@code graphLock} body and
+     *       written under this lock is non-volatile" — real, and strictly
+     *       smaller than the rule above. The remainder is a reading
+     *       obligation, which is what this bullet exists to hand over.</li>
+     * </ol>
+     */
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
+
     // Optional callback invoked from processBlock when recording is active
     private volatile RecordingCallback recordingCallback;
 
@@ -228,8 +672,41 @@ public final class AudioEngine {
     // scheduler is also installed on the mixer so its mixDown() path
     // dispatches independent insert chains across the worker pool.
     private volatile AudioEngineSettings engineSettings = AudioEngineSettings.defaults();
-    private AudioWorkerPool workerPool;
-    private AudioGraphScheduler graphScheduler;
+
+    /**
+     * The parallel-dispatch pool, and the scheduler that drives it.
+     *
+     * <p>Both are {@code volatile} since the story-316 re-review, but NOT
+     * for the same reason — a distinction that matters to whoever adds the
+     * next reader. Both are WRITTEN only under {@link #lifecycleLock}:
+     * {@link #startLocked()} creates them, {@link #tearDownRenderCollaborators()}
+     * and {@code startLocked}'s abandon branch clear them.</p>
+     *
+     * <p>{@code graphScheduler} is the CROSS-LOCK one, exactly like
+     * {@link #format}: {@link #handOffMixer(Mixer, Mixer)} reads it inside
+     * {@link #graphLock}. Two different locks establish no happens-before
+     * between the write and the read, so without {@code volatile} an
+     * {@link EngineBinder} rebind could read a stale {@code null} scheduler
+     * and publish a mixer with no parallel dispatch installed, or read a
+     * stale reference to a scheduler whose pool {@code stop()} has already
+     * closed and install THAT on the incoming mixer.</p>
+     *
+     * <p>{@code workerPool} is never read under {@link #graphLock} at all —
+     * {@code handOffMixer} does not touch it. It is {@code volatile} for the
+     * OTHER valid reason: the lock-free reader {@link #getWorkerPool()},
+     * called from threads that hold neither lock. {@link #getGraphScheduler()}
+     * and {@link #getActiveThreadCount()} — which the performance monitor's
+     * timer thread polls — read {@code graphScheduler} the same lock-free
+     * way, so it has both reasons and the pool has one.</p>
+     *
+     * <p>Neither field is on the RT path:
+     * {@link #processBlock(float[][], float[][], int)} reads neither — it
+     * reaches the scheduler only through the mixer it was installed on.</p>
+     */
+    private volatile AudioWorkerPool workerPool;
+
+    /** @see #workerPool */
+    private volatile AudioGraphScheduler graphScheduler;
 
     /**
      * Set by {@link #stop()} when it could not confirm the render pump had
@@ -301,6 +778,21 @@ public final class AudioEngine {
      * @return {@code true} if the engine was started, {@code false} if already running
      */
     public boolean start() {
+        lifecycleLock.lock();
+        try {
+            return startLocked();
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    /**
+     * The {@link #start()} transition, under {@link #lifecycleLock}. Called
+     * directly — never through the public wrapper — by
+     * {@link #startAudioOutputLocked(PendingAnnouncements)} and
+     * {@link #resumeAudioOutputLocked()}, which already hold the lock.
+     */
+    private boolean startLocked() {
         if (collaboratorTeardownDeferred) {
             stopPump(); // retry join; drains the deferral when it confirms
             if (collaboratorTeardownDeferred) {
@@ -412,6 +904,26 @@ public final class AudioEngine {
      * @return {@code true} if the engine was stopped, {@code false} if already stopped
      */
     public boolean stop() {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            return stopLocked(announcements);
+        } finally {
+            lifecycleLock.unlock();
+            announcements.deliver();
+        }
+    }
+
+    /**
+     * The {@link #stop()} transition, under {@link #lifecycleLock} — the
+     * quiesce, the state store, the clock release and the collaborator
+     * teardown are ONE transition, so a concurrent open can neither observe
+     * a half-stopped engine nor start a second pump over this one's join.
+     *
+     * @param announcements collects the RT-clock release this stop owes;
+     *                      delivered by the caller after the unlock
+     */
+    private boolean stopLocked(PendingAnnouncements announcements) {
         if (!running.get()) {
             return false;
         }
@@ -424,7 +936,7 @@ public final class AudioEngine {
             boolean joined = stopPump();
             pumpQuiesced = joined;
             streamState = StreamState.RELEASE_PENDING;
-            releaseTransportClock();
+            recordClockRelease(announcements);
             if (!joined) {
                 LOG.severe("Engine stop: the render pump did not join in time and may"
                         + " still be inside processBlock — the pump reference is kept so"
@@ -519,21 +1031,47 @@ public final class AudioEngine {
      * stopped; a subsequent {@link #start()} will re-allocate buffers to
      * match the new format's channel count and buffer size.
      *
+     * <p>Runs under {@link #lifecycleLock} (story 316 re-review). The body is
+     * a read-then-write — the running check, the sample-rate comparison
+     * against the OLD format, and the store — over a field the whole locked
+     * open path consumes: {@link #startLocked()} sizes the render pipeline
+     * and buffer pool from it, {@link #openLadder} builds the requested SDK
+     * format from it, and the {@link EngineStreamPump} constructor shapes its
+     * planes from it. Unlocked, a settings apply could store a new format
+     * BETWEEN a concurrent open's ladder walk and its pump construction, and
+     * the engine would render a pipeline of one shape into a stream opened
+     * for another. The {@code IllegalStateException} contract is unchanged —
+     * but it is now CHECKED under the lock rather than racing the
+     * {@link #start()} that would invalidate it.</p>
+     *
+     * <p>Callers that already hold the lock: none today. The lock is
+     * reentrant, so a future {@code …Locked} body may call this safely; a
+     * PUBLIC caller must not, since re-entering a public wrapper would defer
+     * announcements while the lock is still held (which
+     * {@link PendingAnnouncements#deliver()} logs at
+     * {@link Level#SEVERE}).</p>
+     *
      * @param format the new audio format (must not be {@code null})
      * @throws IllegalStateException if the engine is currently running
      */
     public void setFormat(AudioFormat format) {
-        if (running.get()) {
-            throw new IllegalStateException("Cannot change format while engine is running");
+        lifecycleLock.lock();
+        try {
+            if (running.get()) {
+                throw new IllegalStateException(
+                        "Cannot change format while engine is running");
+            }
+            Objects.requireNonNull(format, "format must not be null");
+            // Drop every cached SRC entry when the session sample rate
+            // changes — otherwise stale conversions targeting the old rate
+            // would be replayed at the new rate (story 126).
+            if (this.format == null || this.format.sampleRate() != format.sampleRate()) {
+                srcCache.invalidateAll();
+            }
+            this.format = format;
+        } finally {
+            lifecycleLock.unlock();
         }
-        Objects.requireNonNull(format, "format must not be null");
-        // Drop every cached SRC entry when the session sample rate
-        // changes — otherwise stale conversions targeting the old rate
-        // would be replayed at the new rate (story 126).
-        if (this.format == null || this.format.sampleRate() != format.sampleRate()) {
-            srcCache.invalidateAll();
-        }
-        this.format = format;
     }
 
     /**
@@ -614,6 +1152,29 @@ public final class AudioEngine {
      *                                retryable
      */
     public void setStreamingProvision(StreamingProvision provision) {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            setStreamingProvisionLocked(provision, announcements);
+        } finally {
+            lifecycleLock.unlock();
+            announcements.deliver();
+        }
+    }
+
+    /**
+     * The provision swap, under {@link #lifecycleLock} (story 316
+     * re-review): the hand-back of a tracked stream — join, close, forget,
+     * release the clock — and the store of the incoming provision must be
+     * ONE transition, or a concurrent open could walk the incoming ladder
+     * while the outgoing handle is still being closed, putting two backends
+     * on one device.
+     *
+     * @param announcements collects the RT-clock release a hand-back owes;
+     *                      delivered by the caller after the unlock
+     */
+    private void setStreamingProvisionLocked(StreamingProvision provision,
+                                             PendingAnnouncements announcements) {
         if (running.get()) {
             throw new IllegalStateException(
                     "Cannot change streaming provision while engine is running");
@@ -621,7 +1182,7 @@ public final class AudioEngine {
         AudioBackend outgoing = this.openBackend;
         if (streamState != StreamState.CLOSED && outgoing != null
                 && !ladderContains(provision, outgoing)) {
-            abandonStreamOnOutgoingBackend(outgoing);
+            abandonStreamOnOutgoingBackend(outgoing, announcements);
         }
         this.streamingProvision = provision;
     }
@@ -670,10 +1231,14 @@ public final class AudioEngine {
      * because {@link #setStreamingProvision(StreamingProvision)} refuses to
      * run while the engine is running.</p>
      *
+     * @param outgoing      the backend whose tracked handle is handed back
+     * @param announcements collects the RT-clock release; delivered by the
+     *                      caller after the unlock
      * @throws AudioBackendException if the render pump has not exited yet;
      *                               the swap is retryable once it unblocks
      */
-    private void abandonStreamOnOutgoingBackend(AudioBackend outgoing) {
+    private void abandonStreamOnOutgoingBackend(AudioBackend outgoing,
+                                                PendingAnnouncements announcements) {
         if (!stopPump()) {
             throw new AudioBackendException(
                     "Cannot replace the streaming provision: the render pump has not exited"
@@ -692,19 +1257,30 @@ public final class AudioEngine {
         }
         streamState = StreamState.CLOSED;
         clearOpenStream();
-        releaseTransportClock();
+        recordClockRelease(announcements);
     }
 
     /**
-     * Returns the backend the engine would honestly answer questions about:
-     * the OPEN stream's backend while a stream is open (running or paused),
-     * else the provision's first rung's backend (the one the next open will
-     * try first — the requested backend when it passed the app layer's
-     * gate), else {@code null}. Capability queries, device enumeration and
-     * metronome routing all read this and thereby follow the open stream by
-     * construction (story 316, book &sect;2.4).
+     * Returns the PROVISIONED backend — the engine's answer to "which
+     * backend should be queried or configured next": the OPEN stream's
+     * backend while a stream is open (running or paused), else the
+     * provision's first rung's backend (the one the next open will try
+     * first — the requested backend when it passed the app layer's gate),
+     * else {@code null}.
      *
-     * @return the open backend, the first rung's backend, or {@code null}
+     * <p>This is deliberately NOT the "active backend" fact (story 316
+     * review). Book &sect;2.4 / &sect;5.2's "reported state equals the open
+     * stream" governs what a surface may LABEL as active, and the honest
+     * query for that is {@link #openStreamBackendName()}, which is empty
+     * whenever nothing streams. The else-branch here answers from the
+     * installed provision instead, precisely because capability queries,
+     * device enumeration and metronome routing must still resolve a backend
+     * while the transport is stopped — book &sect;3.2's provisioned row.
+     * While a stream IS open the two coincide, so routing that reaches the
+     * hardware never addresses a backend other than the streaming one.</p>
+     *
+     * @return the open stream's backend, the first rung's backend, or
+     *         {@code null}
      */
     public AudioBackend getBackend() {
         AudioBackend backend = this.openBackend;
@@ -719,8 +1295,17 @@ public final class AudioEngine {
      * Returns the name of the backend carrying the OPEN stream, or empty
      * when no stream is open (a retained {@link StreamState#RELEASE_PENDING}
      * handle is not an open stream). This is the truth query behind honest
-     * "active backend" reporting: it can never name a backend that is not
-     * actually streaming.
+     * "active backend" reporting: it can never name a backend that holds no
+     * device.
+     *
+     * <p>Open means {@link StreamState#RUNNING} <em>or</em>
+     * {@link StreamState#PAUSED} — see {@link #isStreamOpen()}. A PAUSED
+     * stream renders nothing, but it still owns the device handle and still
+     * holds the driver, so it is deliberately named: answering empty there
+     * would tell a surface the device is free while the engine is still
+     * holding it, which is the opposite of the honesty this query exists
+     * for. "Nothing is audible" is a TRANSPORT question, not a backend one.
+     * </p>
      */
     public Optional<String> openStreamBackendName() {
         AudioBackend backend = this.openBackend;
@@ -799,6 +1384,13 @@ public final class AudioEngine {
      * claim is never taken and seeks apply inline. Honest playing states for
      * that case are story 317.</p>
      *
+     * <p>The whole transition runs under {@link #lifecycleLock} (story 316
+     * re-review), so two callers — a Play from the FX thread and a reopen
+     * from a device-event worker, say — can never both observe
+     * {@link StreamState#CLOSED}, open two rungs and orphan one of them. The
+     * {@link StreamOpenListener} and the failed hops' events are delivered
+     * only AFTER that lock is released; see {@link PendingAnnouncements}.</p>
+     *
      * @throws AudioBackendException if every ladder rung failed to open (the
      *                               first rung's failure), or a previously
      *                               retained stream handle still cannot be
@@ -809,13 +1401,42 @@ public final class AudioEngine {
      *                               into the single shared render pipeline)
      */
     public void startAudioOutput() {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            startAudioOutputLocked(announcements);
+        } finally {
+            lifecycleLock.unlock();
+            // Outside the lock, on EVERY path — a failed open owes its
+            // fallback events just as a successful one owes the listener.
+            announcements.deliver();
+        }
+    }
+
+    /**
+     * The whole open transition, under {@link #lifecycleLock} (story 316
+     * re-review): the state read, the join retry, the retained-handle
+     * release, the ladder walk, the four field stores and the pump start are
+     * ONE critical section, so two callers can never both see
+     * {@link StreamState#CLOSED} and open two rungs onto one device.
+     *
+     * <p>Nothing here calls out to the application. The failed hops'
+     * {@link BackendFallbackEvent}s and the {@link StreamOpenListener} are
+     * RECORDED on {@code announcements} at exactly the points the old code
+     * published them, and delivered by {@link #startAudioOutput()} once the
+     * lock is released — see {@link PendingAnnouncements}.</p>
+     *
+     * @param announcements collects the facts this open owes the outside
+     *                      world; delivered by the caller after the unlock
+     */
+    private void startAudioOutputLocked(PendingAnnouncements announcements) {
         StreamState state = this.streamState;
         if (state == StreamState.RUNNING) {
             return; // already running
         }
         requireQuiescedPump();
         if (state == StreamState.PAUSED) {
-            resumeAudioOutput();
+            resumeAudioOutputLocked(announcements);
             return;
         }
 
@@ -827,7 +1448,7 @@ public final class AudioEngine {
         }
 
         // Ensure the engine is running (pre-allocates buffers)
-        start();
+        startLocked();
 
         StreamingProvision provision = this.streamingProvision;
         if (provision == null) {
@@ -835,22 +1456,23 @@ public final class AudioEngine {
             return;
         }
 
-        OpenedRung opened = openLadder(provision);
+        OpenedRung opened = openLadder(provision, announcements);
         this.openBackend = opened.rung().backend();
         this.openDevice = opened.rung().device();
         this.openSdkFormat = opened.negotiatedFormat();
         try {
-            startOpenedStream(opened.rung().backend(), opened.negotiatedFormat());
+            startOpenedStream(opened.rung().backend(), opened.negotiatedFormat(),
+                    announcements);
         } catch (RuntimeException | Error startFailure) {
             // The rung's handle is already unwound (or RELEASE_PENDING); no
             // stream became active, so the carried fallbacks name "none"
             // rather than the rung that never started (story 316 review).
-            publishFallbackEvents(provision, opened.failedHopCauses(), "none", "none");
+            announcements.fallbacks(provision, opened.failedHopCauses(), "none", "none");
             throw startFailure;
         }
         // Only now is the winner the active stream, so only now may the
         // failed hops' events name it (story 316 review).
-        publishFallbackEvents(provision, opened.failedHopCauses(),
+        announcements.fallbacks(provision, opened.failedHopCauses(),
                 opened.rung().backend().name(), opened.rung().device().name());
 
         LOG.info("Audio output started via " + opened.rung().backend().name()
@@ -858,7 +1480,7 @@ public final class AudioEngine {
 
         // Announce the WINNER, not the requested rung (story 316 review).
         // Last, because only a stream that actually started is an open.
-        notifyStreamOpened(opened.rung().backend(), opened.rung().device());
+        announcements.streamOpened(opened.rung().backend(), opened.rung().device());
     }
 
     /**
@@ -895,7 +1517,8 @@ public final class AudioEngine {
      * {@code null} clears it, which is what a shutting-down app layer does
      * so a dead subscriber is never called back.
      *
-     * <p>Deliberately NOT fired by {@link #resumeAudioOutput()}: a resume
+     * <p>Deliberately NOT fired by a resume ({@link #startAudioOutput()} on
+     * a {@link StreamState#PAUSED} stream): a resume
      * puts a fresh pump on a stream that is still OPEN on the same backend
      * and device, so nothing a listener tracks has changed — firing there
      * would re-subscribe the app layer's device-event consumer for no
@@ -912,6 +1535,15 @@ public final class AudioEngine {
      * logged and swallowed: the stream IS open and rendering by now, so
      * letting an app-layer callback throw would fail an open that actually
      * succeeded — and unwind nothing, because the pump is already running.
+     *
+     * <p>Called ONLY from {@link PendingAnnouncements#deliver()}, i.e. after
+     * {@link #lifecycleLock} has been released (story 316 re-review). The
+     * application's listener re-enters the app layer's own monitor — the
+     * audio controller's {@code bindBackendDeviceEvents} is
+     * {@code synchronized} — while that same monitor's reconfigure path
+     * calls this engine's lifecycle methods, so notifying under the
+     * lifecycle lock would close a two-lock cycle and hang the pair. Never
+     * call this from inside a {@code …Locked} body.</p>
      */
     private void notifyStreamOpened(AudioBackend backend, DeviceId device) {
         StreamOpenListener listener = this.streamOpenListener;
@@ -926,6 +1558,165 @@ public final class AudioEngine {
                             + " opened device '" + device.name()
                             + "'; the stream is open and rendering regardless",
                     listenerFailure);
+        }
+    }
+
+    /**
+     * What a critical section owes the OUTSIDE WORLD, collected while a lock
+     * is held and delivered after it is released (story 316 re-review).
+     *
+     * <p>Used by BOTH of the engine's locks. The lifecycle transitions under
+     * {@link #lifecycleLock} record all three of the seams that leave the
+     * engine's own code — the failed hops' {@link BackendFallbackEvent}s go
+     * to the {@code EventBus}; the {@link StreamOpenListener} goes straight
+     * into the application layer; and the transport's RT-clock release drains
+     * a queued seek inline, firing {@link Transport.ChangeKind#POSITION} on
+     * observers the application registered. {@link #setGraph(Transport,
+     * Mixer, List)}, under {@link #graphLock}, records the third one twice
+     * (the outgoing transport's release and, when nothing is driving, the
+     * incoming one's). The application's audio controller binds device events
+     * from a {@code synchronized} method and drives this engine from that
+     * same monitor, so calling ANY of them under either lock gives one thread
+     * [engine&nbsp;lock → controller&nbsp;monitor] while the other holds
+     * [controller&nbsp;monitor → engine&nbsp;lock]: a guaranteed deadlock.
+     * Recording them here and delivering afterwards keeps the transition
+     * atomic AND the callbacks lock-free, and it also stops a
+     * {@code BLOCK}-strategy event bus with a full buffer from parking a
+     * lifecycle thread inside the critical section.</p>
+     *
+     * <p>Delivery is outside the ENGINE's locks; it is not outside a CALLER's.
+     * {@link EngineBinder#bind} and {@link EngineBinder#unbind} call
+     * {@code setGraph} while holding their own {@code bindingLock}, so the
+     * observers a rebind's release fires still run under that monitor. The
+     * engine cannot fix that from here — a caller that wraps a publish in its
+     * own lock owns the ordering — and it is materially safer than the
+     * inversion this class removes, because {@code bindingLock} is private to
+     * {@code EngineBinder} and is never taken by a lifecycle path.</p>
+     *
+     * <p>The clock release is the one recorded fact that can be SUPERSEDED
+     * before it is delivered — a concurrent start may claim the clock in the
+     * window — so its delivery re-checks; see
+     * {@link AudioEngine#deliverClockRelease(Transport)}.</p>
+     *
+     * <p>Not thread-safe by design and not required to be: an instance is
+     * created, filled and delivered by ONE call on ONE thread.</p>
+     */
+    private final class PendingAnnouncements {
+
+        private StreamingProvision provision;
+        private List<String> failedHopCauses = List.of();
+        private String activeBackendName = "none";
+        private String activeDeviceName = "none";
+        private AudioBackend openedBackend;
+        private DeviceId openedDevice;
+
+        /**
+         * The transports whose RT-clock release this transition owes, in the
+         * order the pre-deferral code performed them.
+         *
+         * <p>A LIST rather than one slot because {@link #setGraph(Transport,
+         * Mixer, List)} can owe two in a single critical section: the
+         * outgoing transport's release (handing the claim back) and, when no
+         * stream is driving, the incoming transport's (making sure the graph
+         * that arrives is not left holding a claim nothing honours). Every
+         * lifecycle transition still records at most one.</p>
+         */
+        private final List<Transport> clockReleases = new ArrayList<>(2);
+
+        /**
+         * Records the RT-clock release this transition owes, to be performed
+         * once the lock is released — see
+         * {@link AudioEngine#recordClockRelease(PendingAnnouncements)}.
+         *
+         * <p>De-duplicating: the same transport recorded twice would drain
+         * twice, and the second drain would fire a {@code POSITION} the first
+         * already delivered.</p>
+         */
+        void clockReleased(Transport transport) {
+            if (!clockReleases.contains(transport)) {
+                clockReleases.add(transport);
+            }
+        }
+
+        /**
+         * Records the failed hops to publish once the lock is released, with
+         * the active endpoint they may honestly name. Recorded at exactly
+         * the points the pre-lock code published them, so ordering and
+         * content are unchanged.
+         */
+        void fallbacks(StreamingProvision provision, List<String> causes,
+                       String activeBackendName, String activeDeviceName) {
+            this.provision = provision;
+            this.failedHopCauses = causes;
+            this.activeBackendName = activeBackendName;
+            this.activeDeviceName = activeDeviceName;
+        }
+
+        /** Records the winning rung, whose listener callback fires last. */
+        void streamOpened(AudioBackend backend, DeviceId device) {
+            this.openedBackend = backend;
+            this.openedDevice = device;
+        }
+
+        /**
+         * Delivers everything recorded, in the order the pre-lock code used:
+         * the RT-clock release first (it happened at the transition point,
+         * ahead of any event the transition went on to publish), then the
+         * fallback events, then the stream-open listener. Never throws — it
+         * runs in a {@code finally}, where an escaping exception would
+         * REPLACE the lifecycle failure that is already unwinding, hiding the
+         * actionable one.
+         */
+        void deliver() {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                // A programming error, not a race: some internal path called
+                // a PUBLIC lifecycle wrapper from inside the critical
+                // section, so this delivery is about to re-enter the app
+                // layer under the lock. Deliver anyway — the facts are owed
+                // — but say so loudly.
+                LOG.severe("Stream announcements are being delivered while the audio"
+                        + " engine's lifecycle lock is still held by this thread; a"
+                        + " lifecycle path must call the …Locked methods, never the"
+                        + " public wrappers");
+            }
+            if (Thread.holdsLock(graphLock)) {
+                // The graphLock half of the same programming error: a graph
+                // mutator delivered from INSIDE its own monitor. Same
+                // treatment — deliver the owed facts, but say so loudly.
+                LOG.severe("Stream announcements are being delivered while the audio"
+                        + " engine's graph lock is still held by this thread; the"
+                        + " delivery must sit outside the synchronized block, in the"
+                        + " mutator's finally");
+            }
+            while (!clockReleases.isEmpty()) {
+                // Removed BEFORE the call, not after: an observer that throws
+                // must not leave the entry behind for a later deliver() on
+                // this same record to repeat.
+                Transport releasing = clockReleases.remove(0);
+                try {
+                    deliverClockRelease(releasing);
+                } catch (RuntimeException releaseFailure) {
+                    LOG.log(Level.WARNING,
+                            "The transport's real-time clock claim could not be released;"
+                                    + " the stream lifecycle transition itself already"
+                                    + " completed",
+                            releaseFailure);
+                }
+            }
+            if (provision != null) {
+                try {
+                    publishFallbackEvents(provision, failedHopCauses,
+                            activeBackendName, activeDeviceName);
+                } catch (RuntimeException publishFailure) {
+                    LOG.log(Level.WARNING,
+                            "Backend fallback events could not be published; the stream"
+                                    + " lifecycle transition itself already completed",
+                            publishFailure);
+                }
+            }
+            if (openedBackend != null && openedDevice != null) {
+                notifyStreamOpened(openedBackend, openedDevice);
+            }
         }
     }
 
@@ -988,8 +1779,12 @@ public final class AudioEngine {
      * after the pump start settles and the events can honestly name the rung
      * that ended up carrying the stream (story 316 review — an event must
      * never name as active a stream whose pump never started). Only the
-     * all-rungs-failed path publishes here, with the literal {@code "none"}:
-     * no stream became active, so those events are already truthful.
+     * all-rungs-failed path RECORDS its events here, with the literal
+     * {@code "none"}: no stream became active, so those events are already
+     * truthful. Recording rather than publishing is what lets the caller
+     * deliver them once {@link #lifecycleLock} is released (story 316
+     * re-review) — nothing outward-facing may be called from inside this
+     * walk.
      *
      * <p>The hop list is SEEDED with
      * {@link StreamingProvision#pendingFailedHopCauses()} (story 316 review):
@@ -999,6 +1794,17 @@ public final class AudioEngine {
      * active} a silent substitution on the EventBus seam. Seeding — rather
      * than publishing at gate time — is what lets those events name the rung
      * that actually won, which is only known to the caller.</p>
+     *
+     * <p>Those pending causes are re-seeded on EVERY open, not consumed by
+     * the first one: {@link StreamingProvision} is immutable and nothing
+     * clears the list, so a gate-refused request republishes its
+     * {@link BackendFallbackEvent} on every Play for the life of that
+     * provision — until a reconfigure installs a new one. That is deliberate
+     * (the substitution is still true on the tenth open as on the first),
+     * but it means the stream is REPETITIVE rather than one-shot. Today the
+     * only consumer is {@code JournalEventRecorder}, so the cost is
+     * crash-journal noise; anyone adding a UI subscriber must de-duplicate
+     * or it will toast on every Play.</p>
      *
      * <p>Each rung is first asked {@link AudioBackend#supportsStreaming()}
      * (story 316 review, engine-side guard): the app layer's availability
@@ -1012,9 +1818,28 @@ public final class AudioEngine {
      * {@link BackendFallbackEvent} and a fall-through to the next rung —
      * rather than a silent stream.</p>
      *
+     * <p>A rung that FAILED is closed best-effort before the walk advances
+     * (story 316 re-review). {@link AudioBackend#open(DeviceId,
+     * com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)} promises no
+     * rollback of a partial acquisition, so a rung that took a native handle
+     * and then threw would keep holding the device while the next rung opens
+     * it: two backends on one device, which is precisely the
+     * no-parallel-stream invariant this ladder exists to protect. See
+     * {@link #closeFailedHop(BackendStreamRung, Throwable)} for why that
+     * close can never mask — nor be mistaken for — the hop failure.</p>
+     *
+     * @param provision     the ladder to walk
+     * @param announcements collects the failed hops' events when every rung
+     *                      failed; delivered by the caller after the unlock
+     * @return the rung that opened, with its negotiated format and the causes
+     *         of every hop that failed before it
      * @throws RuntimeException the FIRST rung's failure when every rung failed
+     * @throws Error            a hop's own {@code Error}, after that rung's
+     *                          handle has been given back — the walk is
+     *                          ABANDONED rather than continued, see the catch
      */
-    private OpenedRung openLadder(StreamingProvision provision) {
+    private OpenedRung openLadder(StreamingProvision provision,
+                                  PendingAnnouncements announcements) {
         com.benesquivelmusic.daw.sdk.audio.AudioFormat requested =
                 new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
                         format.sampleRate(), format.channels(), format.bitDepth());
@@ -1032,6 +1857,10 @@ public final class AudioEngine {
                 rung.backend().open(rung.device(), negotiated, format.bufferSize());
                 return new OpenedRung(rung, negotiated, failedHopCauses);
             } catch (RuntimeException hopFailure) {
+                // FIRST, before any bookkeeping: give the rung's handle back
+                // so no partial acquisition outlives the hop (story 316
+                // re-review).
+                closeFailedHop(rung, hopFailure);
                 if (firstFailure == null) {
                     firstFailure = hopFailure;
                 }
@@ -1040,10 +1869,99 @@ public final class AudioEngine {
                         "Backend ladder hop failed: " + rung.backend().name()
                                 + " could not open device '" + rung.device().name() + "'",
                         hopFailure);
+            } catch (Error hopError) {
+                // An Error leaks a partial acquisition exactly like a
+                // RuntimeException does, so the handle is given back the same
+                // way — but the walk STOPS here (story 316 re-review, E4).
+                //
+                // Closing and rethrowing, rather than closing and walking on,
+                // is the deliberate half-measure: the leak this unwind exists
+                // for is fixed either way, while continuing would allocate a
+                // second rung's native buffers and render pipeline after an
+                // OutOfMemoryError, and would bury an InternalError under a
+                // fallback that "worked". The ladder's purpose is to route
+                // around a DEVICE refusal, and the SDK contract says a
+                // backend signals those with AudioBackendException — not with
+                // an Error. A rung whose native binding is broken on this
+                // host is not an Error case either: the shims capture their
+                // own linkage failures and report
+                // AudioBackend#supportsStreaming() false, which this walk
+                // already treats as an ordinary failed hop.
+                closeFailedHop(rung, hopError);
+                LOG.log(Level.SEVERE,
+                        "Backend ladder hop failed with an Error: " + rung.backend().name()
+                                + " on device '" + rung.device().name() + "'. The rung's"
+                                + " handle was released, but the ladder walk is ABANDONED"
+                                + " rather than continued onto a fallback rung",
+                        hopError);
+                throw hopError;
             }
         }
-        publishFallbackEvents(provision, failedHopCauses, "none", "none");
+        // Recorded, not published: the caller delivers it once the lifecycle
+        // lock is released (story 316 re-review).
+        announcements.fallbacks(provision, failedHopCauses, "none", "none");
         throw firstFailure;
+    }
+
+    /**
+     * Gives a FAILED ladder rung's handle back before the walk advances
+     * (story 316 re-review). A backend's {@code open} may acquire a native
+     * handle and then throw — the SDK contract promises no rollback — and a
+     * rung left holding one would still own the device while the fallback
+     * rung opens and renders through it: two live streams on one device.
+     * Closing here bounds a partial acquisition to the hop that made it.
+     *
+     * <p>The rung may also have failed BEFORE {@code open} was ever called —
+     * {@link #requireStreamingSupport(BackendStreamRung)} and
+     * {@link #requireRenderableNegotiation} both throw ahead of it — so this
+     * closes backends that were never opened. That is safe: every in-tree
+     * backend's {@code close()} is guarded and idempotent
+     * ({@code AsioBackend} null-guards each shim under its driver lock,
+     * {@code JavaxSoundBackend} null-guards its lines,
+     * {@code CallbackBackendAdapter} gates the stream teardown on its own
+     * {@code open} flag, {@code MockAudioBackend} closes idempotent
+     * publishers) — and a rung that only negotiated may still have
+     * INITIALIZED its driver, which this is the one chance to give back.
+     *
+     * <p>A close that itself fails must never replace the hop failure: it is
+     * attached as a {@linkplain Throwable#addSuppressed suppressed}
+     * exception on {@code hopFailure} — the very exception the caller may
+     * rethrow as {@code firstFailure}, and whose message
+     * {@link #causeMessage(RuntimeException)} records — so the recorded
+     * cause and the published {@link BackendFallbackEvent} keep describing
+     * the OPEN failure, the actionable one, with the close failure carried
+     * alongside rather than in place of it.
+     *
+     * <p>Both catches are widened to {@code Error} (story 316 re-review, E4).
+     * The OUTER one because the leak an {@code Error} leaves behind is the
+     * same partial native acquisition a {@code RuntimeException} leaves — see
+     * {@link #openLadder} for why that hop still aborts the walk. The INNER
+     * one because "a close failure never masks the hop failure" has to hold
+     * for every throwable a {@code close()} can raise: an escaping
+     * {@code Error} here would REPLACE the actionable open failure with a
+     * teardown failure and abort the walk before any fallback rung was tried
+     * — the precise property this helper claims.</p>
+     *
+     * @param rung       the rung whose hop failed
+     * @param hopFailure the hop failure being recorded; a close failure is
+     *                   suppressed onto it
+     */
+    private static void closeFailedHop(BackendStreamRung rung,
+                                       Throwable hopFailure) {
+        try {
+            rung.backend().close();
+        } catch (RuntimeException | Error closeFailure) {
+            if (closeFailure != hopFailure) {
+                // addSuppressed(self) throws, which would REPLACE the hop
+                // failure with an IllegalArgumentException from this unwind.
+                hopFailure.addSuppressed(closeFailure);
+            }
+            LOG.log(Level.WARNING,
+                    "Backend ladder hop failed and its handle could not be released: "
+                            + rung.backend().name() + " may still hold device '"
+                            + rung.device().name() + "'",
+                    closeFailure);
+        }
     }
 
     /**
@@ -1161,12 +2079,17 @@ public final class AudioEngine {
      * call — a start that escaped it would leave the engine {@code RUNNING}
      * with the clock claimed and nothing driving, a permanent wedge.</p>
      *
+     * @param backend          the backend whose handle the ladder just opened
+     * @param negotiatedFormat the format that rung actually opened at
+     * @param announcements    collects the RT-clock release a failed start
+     *                         owes; delivered by the caller after the unlock
      * @throws RuntimeException the pump-start failure, rethrown as-is after
      *                          the unwind (an {@link Error} unwinds the same
      *                          way)
      */
     private void startOpenedStream(AudioBackend backend,
-                                   com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiatedFormat) {
+                                   com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiatedFormat,
+                                   PendingAnnouncements announcements) {
         streamState = StreamState.RUNNING;
         claimTransportClock();
         try {
@@ -1178,12 +2101,18 @@ public final class AudioEngine {
             // The pump is not running; the handle is still held until the
             // close below succeeds.
             streamState = StreamState.RELEASE_PENDING;
-            releaseTransportClock();
+            recordClockRelease(announcements);
             try {
                 backend.close();
                 streamState = StreamState.CLOSED;
                 clearOpenStream();
-            } catch (RuntimeException closeFailure) {
+            } catch (RuntimeException | Error closeFailure) {
+                // Widened with closeFailedHop's inner catch (story 316
+                // re-review, E4): this method's javadoc promises the close
+                // failure is "attached as a suppressed exception, never
+                // masking the start failure", and that promise has to hold
+                // for an Error too — otherwise a teardown failure REPLACES
+                // the actionable start failure on its way out.
                 startFailure.addSuppressed(closeFailure);
                 LOG.log(Level.WARNING,
                         "Audio stream failed to start and its handle could not be released;"
@@ -1281,6 +2210,58 @@ public final class AudioEngine {
      * conflating the two would make callers defer work that is perfectly safe
      * to do.</p>
      *
+     * <p>The result is therefore only interesting to a caller that is about
+     * to do one of those two things. A caller that merely stops the transport
+     * and refreshes its own UI state — {@code TransportController}'s stop and
+     * post-roll paths, say — owns nothing shared, releases nothing and opens
+     * nothing, so DISCARDING the result is correct there rather than a
+     * dropped error: a deferred stop retries on its own (the next stop, or
+     * before the next open), and there is nothing for such a caller to do
+     * differently in the meantime.</p>
+     *
+     * <p>The two paths that DO tear down or reopen are each protected
+     * differently, and only one of them reads this value:</p>
+     * <ul>
+     *   <li><strong>Application shutdown</strong> BRANCHES on it. It is the
+     *       one caller that frees backend instances outright, and nothing
+     *       downstream can re-check quiescence for it, so
+     *       {@code DefaultAudioEngineController.closeProvisionBackendsOnceQuiesced()}
+     *       retries the stop and skips the closes entirely when the verdict
+     *       stays {@code false}.</li>
+     *   <li><strong>The settings-apply reconfigure</strong> BRANCHES on it
+     *       too (story 316 re-review — this bullet used to claim the
+     *       opposite, and the claim was false). The engine's own two
+     *       refusals cover only PART
+     *       of a reconfigure: {@link #setStreamingProvision(StreamingProvision)}
+     *       refuses the whole swap while a tracked stream's pump cannot be
+     *       confirmed gone ({@link #abandonStreamOnOutgoingBackend(AudioBackend)}
+     *       throws {@code AudioBackendException}), and
+     *       {@link #requireQuiescedPump()} refuses the reopen inside
+     *       {@link #startAudioOutput()}. Neither runs on a FORMAT-ONLY
+     *       change: no provision is rebuilt when the requested endpoint is
+     *       unchanged, and nothing is reopened while output was not open.
+     *       That path's only gate is {@link #setFormat(AudioFormat)}, which
+     *       refuses solely while {@link #isRunning()} — and the reconfigure
+     *       has just cleared that flag via {@link #stop()}. A pump whose
+     *       bounded join timed out could therefore still be inside
+     *       {@link #processBlock(float[][], float[][], int)}, rendering
+     *       through a {@link RenderPipeline} shaped by the OLD format, while
+     *       the new format is stored under it. So
+     *       {@code DefaultAudioEngineController.applyConfiguration()} keeps
+     *       this verdict, gives {@link #stop()}'s own retry-join a chance,
+     *       re-checks once — and refuses the whole reconfigure rather than
+     *       mutate the format over a possibly live render. Its sibling, the
+     *       device-driven {@code performFormatChangeReopen}, BRANCHES on this
+     *       verdict too, through the same shared predicate
+     *       ({@code stopAndConfirmPumpQuiesced()}) and refusing through
+     *       {@code refuseFormatChangeReopen()} before it reaches its own
+     *       {@link #setFormat(AudioFormat)} — so both format-mutating paths
+     *       are covered by the same rule. The fixed drain sleep that path
+     *       used to stand on instead is gone; a timed sleep never proved the
+     *       pump had left {@link #processBlock(float[][], float[][], int)},
+     *       and a confirmed join does.</li>
+     * </ul>
+     *
      * @return {@code true} when no render thread can call
      *         {@link #processBlock(float[][], float[][], int)} any more —
      *         including the no-op early return (no stream, hence no pump of
@@ -1290,6 +2271,27 @@ public final class AudioEngine {
      *         deferred for a retry
      */
     public boolean stopAudioOutput() {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            return stopAudioOutputLocked(announcements);
+        } finally {
+            lifecycleLock.unlock();
+            announcements.deliver();
+        }
+    }
+
+    /**
+     * The stop transition, under {@link #lifecycleLock}. Called directly —
+     * never through the public wrapper — by
+     * {@link #startAudioInputOutputLocked(PendingAnnouncements)}, which
+     * already holds the lock and must not let another caller open a stream
+     * between its close and its reopen.
+     *
+     * @param announcements collects the RT-clock release this stop owes;
+     *                      delivered by the outermost caller after the unlock
+     */
+    private boolean stopAudioOutputLocked(PendingAnnouncements announcements) {
         AudioBackend backend = this.openBackend;
         if (backend == null || streamState == StreamState.CLOSED) {
             return true;
@@ -1300,7 +2302,7 @@ public final class AudioEngine {
                     + " backend handle are preserved; retry the stop");
             return false;
         }
-        releaseTransportClock();
+        recordClockRelease(announcements);
         try {
             backend.close();
             streamState = StreamState.CLOSED;
@@ -1346,8 +2348,28 @@ public final class AudioEngine {
      *                               handle still cannot be released
      */
     public void startAudioInputOutput() {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            startAudioInputOutputLocked(announcements);
+        } finally {
+            lifecycleLock.unlock();
+            announcements.deliver();
+        }
+    }
+
+    /**
+     * The close-then-reopen duplex transition, under {@link #lifecycleLock}
+     * (story 316 re-review) — ONE critical section covering both halves, so
+     * no other caller can slip an open in between the close and the reopen
+     * and take the very device the record path is about to ask for.
+     *
+     * @param announcements collects the reopen's outward-facing facts;
+     *                      delivered by the caller after the unlock
+     */
+    private void startAudioInputOutputLocked(PendingAnnouncements announcements) {
         if (streamState != StreamState.CLOSED) {
-            stopAudioOutput();
+            stopAudioOutputLocked(announcements);
             if (streamState != StreamState.CLOSED) {
                 throw new AudioBackendException(
                         "Cannot open a full-duplex audio stream: the previous stream's"
@@ -1355,7 +2377,7 @@ public final class AudioEngine {
                                 + " released");
             }
         }
-        startAudioOutput();
+        startAudioOutputLocked(announcements);
     }
 
     /**
@@ -1371,6 +2393,23 @@ public final class AudioEngine {
      * retries once the abandoned loop has exited.</p>
      */
     public void pauseAudioOutput() {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            pauseAudioOutputLocked(announcements);
+        } finally {
+            lifecycleLock.unlock();
+            announcements.deliver();
+        }
+    }
+
+    /**
+     * The pause transition, under {@link #lifecycleLock}.
+     *
+     * @param announcements collects the RT-clock release this pause owes;
+     *                      delivered by the caller after the unlock
+     */
+    private void pauseAudioOutputLocked(PendingAnnouncements announcements) {
         if (this.openBackend != null && streamState == StreamState.RUNNING) {
             if (!stopPump()) {
                 LOG.severe("Audio output pause deferred: the render pump did not join in"
@@ -1379,7 +2418,7 @@ public final class AudioEngine {
                 return;
             }
             streamState = StreamState.PAUSED;
-            releaseTransportClock();
+            recordClockRelease(announcements);
         }
     }
 
@@ -1433,16 +2472,18 @@ public final class AudioEngine {
      * when the engine is already running, and re-allocates the render buffers
      * when it is not.</p>
      *
+     * @param announcements collects the RT-clock release a failed resume
+     *                      owes; delivered by the caller after the unlock
      * @throws RuntimeException the pump-start failure, rethrown as-is (an
      *                          {@link Error} unwinds the same way)
      */
-    private void resumeAudioOutput() {
+    private void resumeAudioOutputLocked(PendingAnnouncements announcements) {
         AudioBackend backend = this.openBackend;
         com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated = this.openSdkFormat;
         if (backend != null && negotiated != null && streamState == StreamState.PAUSED) {
             // No-op when already running; re-allocates the render pipeline
             // when this resume follows a stop() (see the javadoc).
-            start();
+            startLocked();
             streamState = StreamState.RUNNING;
             claimTransportClock();
             try {
@@ -1452,7 +2493,7 @@ public final class AudioEngine {
                 this.pump = newPump;
             } catch (RuntimeException | Error startFailure) {
                 streamState = StreamState.PAUSED;
-                releaseTransportClock();
+                recordClockRelease(announcements);
                 throw startFailure;
             }
         }
@@ -1483,6 +2524,20 @@ public final class AudioEngine {
      * {@link #processBlock(float[][], float[][], int)} — immediately before
      * the start call, so the very first callback block cannot race an inline
      * seek. The same paths release the claim again should the start fail.
+     *
+     * <p>Claiming is safe INSIDE {@link #lifecycleLock}:
+     * {@link Transport#setRealTimeClockActive(boolean)} with {@code true} is
+     * a bare volatile store — it drains nothing and notifies nobody, so no
+     * application code can run on this thread. Only the RELEASE is
+     * outward-facing; see {@link #recordClockRelease(PendingAnnouncements)}.
+     * </p>
+     *
+     * <p>A claim taken AFTER a release was recorded in the same critical
+     * section — {@link #startAudioInputOutputLocked(PendingAnnouncements)}
+     * closes and reopens inside ONE — needs no bookkeeping here: the recorded
+     * release is dropped by {@link #deliverClockRelease(Transport)}'s
+     * pre-check, which sees the fresh {@link StreamState#RUNNING} and leaves
+     * the claim (and any seek the new pump now owns) alone.</p>
      */
     private void claimTransportClock() {
         Transport transport = this.graph.transport();
@@ -1492,16 +2547,111 @@ public final class AudioEngine {
     }
 
     /**
-     * Releases the RT clock on the currently published transport, draining any
-     * seek queued while the claim was held. Called from every path that stops
-     * or pauses the stream, and from the start paths when the backend refused
-     * to start the stream.
+     * RECORDS the RT-clock release a stop, a pause or a failed start owes,
+     * for delivery once {@link #lifecycleLock} has been released (story 316
+     * re-review).
+     *
+     * <p>This is the THIRD outward seam, and the one the lock's javadoc used
+     * to deny existed. {@link Transport#setRealTimeClockActive(boolean)} with
+     * {@code false} drains any queued seek INLINE, and that drain fires the
+     * transport's {@link Transport.ChangeKind#POSITION} observers — arbitrary
+     * {@link java.util.function.Consumer}s registered through
+     * {@link Transport#addChangeListener(java.util.function.Consumer)} by the
+     * application layer, whose audio controller binds device events from a
+     * {@code synchronized} method and drives this engine's lifecycle from
+     * that same monitor. Running it under the lifecycle lock gives one thread
+     * [lifecycle&nbsp;lock → controller&nbsp;monitor] while the other holds
+     * [controller&nbsp;monitor → lifecycle&nbsp;lock]: the same inversion the
+     * {@link StreamOpenListener} is deferred for.</p>
+     *
+     * <p>Deferring costs only that the claim stays set for the handful of
+     * statements between the unlock and the delivery. A seek issued in that
+     * window is QUEUED rather than applied inline, and the delivery's own
+     * drain applies it — nothing is lost, which is the whole point of
+     * draining on release.</p>
+     *
+     * @param announcements the current call's deferred-announcement record
      */
-    private void releaseTransportClock() {
+    private void recordClockRelease(PendingAnnouncements announcements) {
         Transport transport = this.graph.transport();
         if (transport != null) {
-            transport.setRealTimeClockActive(false);
+            announcements.clockReleased(transport);
         }
+    }
+
+    /**
+     * Performs a recorded RT-clock release, OUTSIDE {@link #lifecycleLock}.
+     *
+     * <p>Deferral opens one window the inline call did not have: another
+     * thread may take the lock and START a stream between this call's unlock
+     * and this delivery, claiming the very clock the delivery is about to
+     * release. The pre-check skips a release such a restart has already
+     * superseded; the post-check REPAIRS the case the pre-check cannot see.
+     * </p>
+     *
+     * <h2>What the repair guarantees, and what it does not</h2>
+     * <p>The CLAIM FLAG is repaired exactly. {@link #startOpenedStream} and
+     * {@link #resumeAudioOutputLocked} both store
+     * {@code streamState = RUNNING} <em>before</em> they claim, and every
+     * access here is volatile, so the two outcomes are total-order
+     * exhaustive: if the post-check does not observe {@code RUNNING} then
+     * this release precedes the competing {@code RUNNING} store, which
+     * precedes the competing claim, so that claim lands last and stands; if
+     * it does observe {@code RUNNING}, this re-assert restores the claim. The
+     * re-assert calls nothing outward — a {@code true} claim is a bare
+     * volatile store (see {@link #claimTransportClock()}).</p>
+     *
+     * <p>The release's SIDE EFFECT is NOT repaired, and this is
+     * check-then-act, not atomic. A start that claims between the pre-check
+     * and the {@code false} store makes that store run against a transport
+     * whose pump is already live, and the store's inline
+     * {@code drainPendingSeekInline()} then applies one queued seek on THIS
+     * thread and fires {@link Transport.ChangeKind#POSITION} for it. The
+     * re-assert puts the flag back; it cannot un-apply the seek. The residual
+     * exposure is therefore exactly: at most one queued seek applied by a
+     * lifecycle thread instead of by the render pump, in a window a few
+     * statements wide, on a transport a competing start claimed inside it.
+     * The seek's VALUE is the same either way (the pump's drain would have
+     * applied the same queued target), and {@code POSITION} observers already
+     * receive that event from several threads, so the consequence is an
+     * out-of-order position notification rather than a lost or wrong seek.
+     * </p>
+     *
+     * <p>Closing it properly would mean holding {@link #lifecycleLock} across
+     * the release — which is the deadlock this deferral exists to remove — or
+     * giving {@link Transport} a compare-and-release primitive that tests the
+     * engine's {@code streamState} atomically with its own flag, i.e. moving
+     * the engine's state machine into the transport. Neither is worth the
+     * cost of the window described above, so the window is documented rather
+     * than eliminated. Do not restate this method as exact.</p>
+     *
+     * @param transport the transport whose claim this release owes
+     */
+    private void deliverClockRelease(Transport transport) {
+        if (claimSupersededBy(transport)) {
+            // Not merely an optimisation: releasing here would DRAIN a queued
+            // seek inline while the superseding pump is already advancing the
+            // same transport — the very interleaving the claim exists to
+            // prevent. The reachable case is not even a race:
+            // startAudioInputOutput closes and reopens inside ONE critical
+            // section, so its stop's recorded release arrives with the
+            // reopen's pump already running.
+            return;
+        }
+        transport.setRealTimeClockActive(false);
+        if (claimSupersededBy(transport)) {
+            transport.setRealTimeClockActive(true);
+        }
+    }
+
+    /**
+     * Whether a stream is driving {@code transport} right now — i.e. whether
+     * a concurrent (re)start has claimed the clock a deferred release still
+     * owes. Reads {@code streamState} and the published graph volatilely and
+     * takes no lock, so it is safe to call outside {@link #lifecycleLock}.
+     */
+    private boolean claimSupersededBy(Transport transport) {
+        return callbackIsDriving() && this.graph.transport() == transport;
     }
 
     // ── Project graph publication (story 314) ────────────────────────────
@@ -1533,6 +2683,30 @@ public final class AudioEngine {
      * running, so an {@link EngineBinder} rebind mid-playback leaves exactly
      * one claimed transport, and a rebind with no stream open leaves none.</p>
      *
+     * <p>Both RELEASES are DEFERRED past the monitor (story 316 re-review).
+     * {@link Transport#setRealTimeClockActive(boolean)} with {@code false}
+     * drains a queued seek inline and fires
+     * {@link Transport.ChangeKind#POSITION} on arbitrary app-registered
+     * consumers — the same [engine lock → app observer] inversion the
+     * lifecycle lock defers its three seams for, and one this monitor is no
+     * more entitled to than that lock is. Only the CLAIM ({@code true}) stays
+     * inside, because it is a bare volatile store that drains nothing and
+     * notifies nobody.</p>
+     *
+     * <p>Deferring does NOT weaken the atomic publish. Both releases target
+     * the clock flag, never the {@code graph} field: the RT thread reads only
+     * {@code graph}, still sees exactly one store, and by the time it renders
+     * the new graph the outgoing transport is out of it whether its claim has
+     * been handed back yet or not. What the deferral does open is a window of
+     * a few statements, on this thread only, in which BOTH transports look
+     * claimed (the outgoing one still holds the claim it is about to give up,
+     * the incoming one has already taken its own). Nothing is lost in it: a
+     * seek issued against a still-claimed transport is QUEUED, and the
+     * delivery's own drain applies it. The window closes before this method
+     * returns — {@code deliver()} runs in the {@code finally} — so no caller
+     * can observe it except from inside an observer callback the delivery
+     * itself is running.</p>
+     *
      * <p>Lifecycle-thread only — never call from the audio callback.</p>
      *
      * @param transport the transport, or {@code null} to disable playback rendering
@@ -1541,16 +2715,25 @@ public final class AudioEngine {
      *                  disable playback rendering
      */
     public void setGraph(Transport transport, Mixer mixer, List<Track> tracks) {
-        synchronized (graphLock) {
-            handOffMixer(this.graph.mixer(), mixer);
-            Transport outgoing = this.graph.transport();
-            if (outgoing != null && outgoing != transport) {
-                outgoing.setRealTimeClockActive(false);
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        try {
+            synchronized (graphLock) {
+                handOffMixer(this.graph.mixer(), mixer);
+                Transport outgoing = this.graph.transport();
+                if (outgoing != null && outgoing != transport) {
+                    announcements.clockReleased(outgoing);
+                }
+                this.graph = new EngineGraph(transport, mixer, tracks);
+                if (transport != null) {
+                    if (callbackIsDriving()) {
+                        transport.setRealTimeClockActive(true);
+                    } else {
+                        announcements.clockReleased(transport);
+                    }
+                }
             }
-            this.graph = new EngineGraph(transport, mixer, tracks);
-            if (transport != null) {
-                transport.setRealTimeClockActive(callbackIsDriving());
-            }
+        } finally {
+            announcements.deliver();
         }
     }
 
@@ -1584,6 +2767,17 @@ public final class AudioEngine {
      * FFM upcall) for the whole multi-ms prepare window, and the scheduler
      * is re-installed so parallel insert dispatch keeps working after a
      * hot mixer swap.
+     *
+     * <p>{@code prepareForPlayback} runs THIRD-PARTY code — one
+     * {@code AudioProcessor.getLatencySamples()} per insert and a reflective
+     * {@code @ProcessorParam} rebind per channel — and it runs here inside
+     * {@link #graphLock}, exactly as it does inside {@link #lifecycleLock}
+     * from {@link #startLocked()}. Same disposition, same reason: an
+     * unprepared mixer must never be published to the render thread, so the
+     * preparation cannot move outside the critical section that publishes it.
+     * It is enumerated in {@link #lifecycleLock}'s "No application callback"
+     * bullet, among the calls that leave this class without being application
+     * callbacks.</p>
      */
     private void handOffMixer(Mixer previousMixer, Mixer incomingMixer) {
         if (previousMixer != null && graphScheduler != null
@@ -1999,15 +3193,32 @@ public final class AudioEngine {
      * {@link #start()} time so changing it requires a stop/start cycle.
      * Story 125.
      *
+     * <p>Under {@link #lifecycleLock} for the same reason as
+     * {@link #setFormat(AudioFormat)} (story 316 re-review): the running
+     * check and the store are a read-then-write over a field
+     * {@link #startLocked()} consumes inside the lock to size the worker pool
+     * and the graph scheduler. Unlocked, a settings apply could pass the
+     * check against a stopped engine and land its store after a concurrent
+     * {@link #startAudioOutput()} had already read the OLD settings — a pool
+     * sized from settings the caller believes were superseded, with nothing
+     * in the log. The field stays {@code volatile} because
+     * {@link #getWorkerPoolSize()} reads it lock-free.</p>
+     *
      * @param settings the new settings; must not be null
      * @throws IllegalStateException if the engine is currently running
      */
     public void setEngineSettings(AudioEngineSettings settings) {
-        if (running.get()) {
-            throw new IllegalStateException(
-                    "Cannot change engine settings while engine is running");
+        lifecycleLock.lock();
+        try {
+            if (running.get()) {
+                throw new IllegalStateException(
+                        "Cannot change engine settings while engine is running");
+            }
+            this.engineSettings =
+                    Objects.requireNonNull(settings, "settings must not be null");
+        } finally {
+            lifecycleLock.unlock();
         }
-        this.engineSettings = Objects.requireNonNull(settings, "settings must not be null");
     }
 
     /**

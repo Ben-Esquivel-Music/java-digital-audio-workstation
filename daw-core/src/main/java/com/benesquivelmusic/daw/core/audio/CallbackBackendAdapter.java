@@ -73,6 +73,53 @@ import java.util.logging.Logger;
  * silently discarded by the interface's inherited no-op default (story 316
  * review); the real hardware routing belongs to existing stories 136 and
  * 135.</p>
+ *
+ * <h2>Open and close are UNBOUNDED, and they run under the engine's
+ * lifecycle lock (story 316 re-review)</h2>
+ * <p>{@link #open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)}
+ * calls {@code PortAudioBackend.openStream} and {@code startStream}, which
+ * issue {@code Pa_OpenStream} and {@code Pa_StartStream} as UNTIMED FFM
+ * downcalls on the CALLING thread. {@link #close()} does the same with
+ * {@code Pa_StopStream} / {@code Pa_CloseStream}. All of them are invoked
+ * from inside {@code AudioEngine}'s {@code lifecycleLock}, and the
+ * application's Play handler calls {@code AudioEngine.startAudioOutput()}
+ * from the JavaFX application thread. A device whose driver wedges in any of
+ * those calls therefore stalls EVERY lifecycle transition in the application
+ * — Play, Stop, the device-event reopen worker, shutdown — and freezes the
+ * UI with them. There is no timeout anywhere on this path.</p>
+ *
+ * <p>ASIO's equivalent hazard was closed in the same review by giving
+ * {@code AsioControlThread} a per-downcall budget. That was affordable
+ * because ASIO ALREADY had a dedicated control thread (COM apartment
+ * affinity forced one), so bounding it meant adding a timeout to an existing
+ * {@code Future.get()}. PortAudio has no such thread, and giving it one is
+ * not a wrapper — it is a subsystem:</p>
+ * <ol>
+ *   <li>{@code PortAudioBackend.openStream} allocates the stream's
+ *       {@link java.lang.foreign.Arena#ofConfined() confined} arena and
+ *       {@code closeStream} closes it. A confined arena may only be closed by
+ *       the thread that opened it, so moving the OPEN onto a control thread
+ *       forces the close, and every other access to that arena, onto the same
+ *       thread. The callback upcall stub lives in that arena too.</li>
+ *   <li>The same {@code PortAudioBackend} instance answers
+ *       {@code Pa_Initialize}, device enumeration and the default-device
+ *       queries, which the application deliberately runs on a BACKGROUND
+ *       worker so the settings dialog does not block. Funnelling only the
+ *       stream calls onto a control thread would split one native library
+ *       across two threads; funnelling all of them would mean a wedged open
+ *       also wedges device enumeration — a behaviour change well outside the
+ *       lock this was meant to protect.</li>
+ *   <li>PortAudio's Windows host APIs initialize COM on the calling thread,
+ *       so "which thread" is a correctness question for the whole backend,
+ *       not a detail of the open call.</li>
+ * </ol>
+ * <p>So the exposure is DOCUMENTED rather than half-fixed. A real fix is a
+ * story of its own: a {@code PortAudioControlThread} that owns initialize,
+ * enumerate, open, start, stop, close and terminate, with a bounded wait on
+ * each and an enumeration path that tolerates the queue; plus the honest
+ * failure message and the fallback-ladder behaviour that
+ * {@code AsioControlThread} already models. Until then, treat any PortAudio
+ * downcall as capable of blocking a lifecycle transition indefinitely.</p>
  */
 public final class CallbackBackendAdapter implements AudioBackend {
 
@@ -180,6 +227,34 @@ public final class CallbackBackendAdapter implements AudioBackend {
         }
     }
 
+    /**
+     * Opens a stream on the named device, resolving it against a fresh
+     * enumeration snapshot and starting the capture drain thread when the
+     * resolved input device can supply channels.
+     *
+     * <p>ORDERING (story 316 re-review): every check that can still refuse
+     * this open — the argument guards, the device resolution and the whole
+     * {@link AudioStreamConfig} construction, whose {@link SampleRate} and
+     * {@link BufferSize} lookups reject values outside their enums — runs
+     * BEFORE {@code startDrainThread()}. A refusal thrown after that start
+     * escapes the {@code try} that would have stopped the thread, and
+     * {@link #close()} skips the teardown as well because the adapter never
+     * became open: the daemon thread would then outlive the failed open
+     * while the engine's fallback ladder streams through another backend.
+     * Keep new validation above the drain-thread start.</p>
+     *
+     * @param device       the device to open; {@link DeviceId#isDefault()}
+     *                     resolves through the driver's real default query
+     * @param format       the negotiated format to open with
+     * @param bufferFrames the buffer size in sample frames
+     * @throws IllegalArgumentException if {@code bufferFrames} is not
+     *                                  positive, or the format's sample rate
+     *                                  or buffer size is not one this backend
+     *                                  supports
+     * @throws IllegalStateException    if a stream is already open
+     * @throws AudioBackendException    if the device cannot be resolved or
+     *                                  the driver refuses the stream
+     */
     @Override
     public void open(DeviceId device,
                      com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
@@ -206,14 +281,40 @@ public final class CallbackBackendAdapter implements AudioBackend {
         this.outChannels = format.channels();
         // Clamp to what the resolved input device can actually supply — a
         // mono mic must not fail (or over-declare) a stereo-format open.
+        // Via clampInputChannels, not a bare Math.min: a device whose count
+        // is AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN ("offered, but not
+        // knowable until the driver is loaded" — an enumerated ASIO driver)
+        // would otherwise clamp to -1, which AudioStreamConfig's own
+        // validation then refuses outright ("inputChannels must be >= 0"),
+        // failing a PLAYBACK open over an input-side unknown (story 316
+        // review). PortAudio always reports real counts, so this is a
+        // contract guard rather than a live path today.
         this.inChannels = inputDevice != null
-                ? Math.min(format.channels(), inputDevice.maxInputChannels())
+                ? inputDevice.clampInputChannels(format.channels())
                 : 0;
         this.bufferFrames = bufferFrames;
         this.openedSampleRate = format.sampleRate();
         this.outScratch = new float[outChannels * bufferFrames];
         this.outputRing = new InterleavedBlockRing(OUTPUT_RING_SLOTS,
                 outChannels * bufferFrames);
+        // ORDERING CONSTRAINT (story 316 re-review) — do not move this below
+        // startDrainThread(). Everything here can still REFUSE the open:
+        // SampleRate.fromHz and BufferSize.fromFrames reject any value
+        // outside their enums, and the record's canonical constructor
+        // validates the indices and channel counts. Built after the drain
+        // thread had started, such a refusal escaped past the try whose
+        // catch calls stopDrainThread() — and close() skips that teardown
+        // too, because it is gated on `open`, which is still false — so the
+        // daemon thread outlived the failed open for the life of the JVM
+        // while the engine's ladder moved on to another backend.
+        AudioStreamConfig config = new AudioStreamConfig(
+                inputIndex,
+                outputIndex,
+                inChannels,
+                outChannels,
+                SampleRate.fromHz((int) format.sampleRate()),
+                BufferSize.fromFrames(bufferFrames));
+
         if (inChannels > 0) {
             this.inScratch = new float[inChannels * bufferFrames];
             this.drainScratch = new float[inChannels * bufferFrames];
@@ -226,13 +327,6 @@ public final class CallbackBackendAdapter implements AudioBackend {
             this.inputRing = null;
         }
 
-        AudioStreamConfig config = new AudioStreamConfig(
-                inputIndex,
-                outputIndex,
-                inChannels,
-                outChannels,
-                SampleRate.fromHz((int) format.sampleRate()),
-                BufferSize.fromFrames(bufferFrames));
         try {
             openStreamWithInputRetry(config);
             try {

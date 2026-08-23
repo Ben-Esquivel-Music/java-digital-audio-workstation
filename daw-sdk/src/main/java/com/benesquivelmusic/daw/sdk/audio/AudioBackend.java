@@ -77,8 +77,18 @@ public interface AudioBackend extends AutoCloseable {
 
     /**
      * Returns {@code true} if the backend's native library / driver is usable
-     * on this host. Cheap and side-effect-free: callers rely on this when
-     * building the list shown in the Audio Settings dialog (story 098).
+     * on this host. Callers rely on this when building the list shown in the
+     * Audio Settings dialog (story 098).
+     *
+     * <p>Leaves no lasting state behind — it never opens a stream and never
+     * changes what a later {@link #open(DeviceId, AudioFormat, int)} will do
+     * — but it is not guaranteed cheap, and carries exactly the same caveat
+     * as {@link #supportsStreaming()}: an implementation may answer by
+     * probing native resources on THIS host, on every call.
+     * {@link AsioBackend#isAvailable()} opens an FFM arena and a
+     * {@code SymbolLookup} over {@code asioshim} and closes them again. Call
+     * it from enumeration / provisioning paths only, never from a render
+     * callback or any other hot path.</p>
      *
      * @return true when {@link #open(DeviceId, AudioFormat, int)} has a
      *         realistic chance of succeeding
@@ -93,6 +103,13 @@ public interface AudioBackend extends AutoCloseable {
      * offers or opens a stream that would be silent by construction
      * (book §2.2, honest promises). {@link AudioBackendSelector} filters
      * its offered/default backends on this flag (story 316).
+     *
+     * <p>Not necessarily a per-build constant, and not guaranteed cheap:
+     * an implementation may answer by probing native resources on THIS
+     * host, on every call — {@link AsioBackend} opens an FFM arena and a
+     * {@code SymbolLookup} over {@code asioshim} and closes them again.
+     * Call it from enumeration / provisioning paths only, never from a
+     * render callback or any other hot path.</p>
      *
      * @return {@code true} when {@link #sink(AudioBlock)} really reaches an
      *         output device (or a deterministic capture buffer, for the

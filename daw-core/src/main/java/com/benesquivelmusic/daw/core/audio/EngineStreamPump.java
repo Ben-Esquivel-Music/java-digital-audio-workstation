@@ -258,15 +258,33 @@ final class EngineStreamPump {
         return renderFaults.get();
     }
 
+    /**
+     * Cancels and forgets the capture subscription, if one was ever stored.
+     * Null-tolerant and idempotent: the stop path and a late
+     * {@link InputSubscriber#onSubscribe(Flow.Subscription)} may both reach
+     * it for the same subscription, and whichever loses the race finds the
+     * field already cleared.
+     */
     private void cancelInputSubscription() {
         Flow.Subscription subscription = this.inputSubscription;
         if (subscription != null) {
             this.inputSubscription = null;
-            try {
-                subscription.cancel();
-            } catch (RuntimeException e) {
-                LOG.log(Level.FINE, "Input subscription cancel failed", e);
-            }
+            cancelQuietly(subscription);
+        }
+    }
+
+    /**
+     * Cancels a subscription, logging rather than propagating a refusal: a
+     * cancel is best-effort teardown of a stream that is going away, and
+     * this runs on stop paths that must never throw.
+     *
+     * @param subscription the subscription to cancel; must not be null
+     */
+    private static void cancelQuietly(Flow.Subscription subscription) {
+        try {
+            subscription.cancel();
+        } catch (RuntimeException e) {
+            LOG.log(Level.FINE, "Input subscription cancel failed", e);
         }
     }
 
@@ -395,9 +413,55 @@ final class EngineStreamPump {
      */
     private final class InputSubscriber implements Flow.Subscriber<AudioBlock> {
 
+        /**
+         * Stores the capture subscription and opens the flow — unless the
+         * pump has already stopped (story 316 re-review).
+         *
+         * <p>{@link java.util.concurrent.SubmissionPublisher} may deliver
+         * this callback ASYNCHRONOUSLY, so a pause or a stop can run between
+         * {@link EngineStreamPump#start()}'s {@code subscribe} call and this
+         * method. {@link EngineStreamPump#cancelInputSubscription()} then
+         * finds a {@code null} field and cancels nothing, and this callback
+         * would go on to store the subscription and request from it on a
+         * dead pump: a stale capture subscriber left attached, filling a
+         * bounded queue nobody drains and surviving the very pause that was
+         * meant to detach it — until the next resume replaced it, silently
+         * doubling the subscribers.</p>
+         *
+         * <p>BOTH checks are needed. The first is the cheap common case —
+         * the pump had already stopped when this callback arrived, so the
+         * subscription is cancelled without ever being published to the
+         * field. The second closes the window in which the stop ran BETWEEN
+         * that check and the store: it saw the field still {@code null}, so
+         * only this thread can clean up.</p>
+         *
+         * <p>A volatile cannot make check-and-store atomic, and this is
+         * deliberately not locked — the stop path must stay non-blocking.
+         * The residual window is a stop landing between the store and the
+         * second check: both sides then reach
+         * {@link EngineStreamPump#cancelInputSubscription()} and, because
+         * its read-clear-cancel is not atomic either, may both cancel the
+         * same subscription. That is benign —
+         * {@link Flow.Subscription#cancel()} must tolerate repeated calls
+         * (Reactive Streams rule 3.7, which {@code Flow} mirrors), and
+         * {@link EngineStreamPump#cancelQuietly(Flow.Subscription)}
+         * swallows a refusal either way. What can no longer happen once
+         * this method returns is a stopped pump holding a requested,
+         * uncancelled subscription.</p>
+         *
+         * @param subscription the capture subscription the backend granted
+         */
         @Override
         public void onSubscribe(Flow.Subscription subscription) {
+            if (!running) {
+                cancelQuietly(subscription);
+                return;
+            }
             inputSubscription = subscription;
+            if (!running) {
+                cancelInputSubscription();
+                return;
+            }
             subscription.request(Long.MAX_VALUE);
         }
 

@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
@@ -141,6 +142,33 @@ class CallbackBackendAdapterTest {
                 .as("the stereo-format request is clamped to the mic's one channel")
                 .isEqualTo(1);
         assertThat(fake.lastConfig.outputChannels()).isEqualTo(2);
+        adapter.close();
+    }
+
+    @Test
+    void anInputDeviceWithAnUnknownChannelCountOpensWithTheRequestedCount() {
+        // Story 316 review (R4): AudioDeviceInfo grew a third channel-count
+        // state — CHANNEL_COUNT_UNKNOWN, "this direction is offered but the
+        // count needs the driver loaded" (an enumerated ASIO driver). A bare
+        // Math.min against that sentinel clamps to -1, which AudioStreamConfig
+        // then refuses ("inputChannels must be >= 0: -1") — an input-side
+        // unknown would fail a PLAYBACK open. The clamp must go through
+        // clampInputChannels, which cannot clamp what it does not know.
+        FakeNativeBackend fake = new FakeNativeBackend(List.of(
+                device(3, "Main Out", 0, 2),
+                AudioDeviceInfo.unprobed(9, "Unprobed Interface", "Fake")));
+        CallbackBackendAdapter adapter =
+                new CallbackBackendAdapter(fake, "Unprobed Interface");
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThat(adapter.isOpen()).isTrue();
+        assertThat(fake.lastConfig.inputDeviceIndex())
+                .as("a device whose count is unknown is still a resolvable input")
+                .isEqualTo(9);
+        assertThat(fake.lastConfig.inputChannels())
+                .as("the request stands; the driver clamps it once it can")
+                .isEqualTo(FORMAT.channels());
         adapter.close();
     }
 
@@ -572,6 +600,78 @@ class CallbackBackendAdapterTest {
                 .isTrue();
         assertThat(fake.openStreamCount).isZero();
         assertThat(fake.closeStreamCount).isZero();
+    }
+
+    // ── A refused open must leak nothing ─────────────────────────────────
+
+    @Test
+    void anUnsupportedSampleRateLeavesNoDrainThreadBehind() {
+        assertRefusedOpenLeavesNoDrainThread(
+                new com.benesquivelmusic.daw.sdk.audio.AudioFormat(22_050.0, 2, 24),
+                FRAMES,
+                "Unsupported sample rate");
+    }
+
+    @Test
+    void anUnsupportedBufferSizeLeavesNoDrainThreadBehind() {
+        assertRefusedOpenLeavesNoDrainThread(FORMAT, 100, "Unsupported buffer size");
+    }
+
+    /**
+     * Story 316 re-review: {@code SampleRate.fromHz} and
+     * {@code BufferSize.fromFrames} used to run AFTER
+     * {@code startDrainThread()} and OUTSIDE the {@code try} whose catch
+     * stops it — and {@code close()} skips that teardown too, because it is
+     * gated on the {@code open} flag this refused open never set. The daemon
+     * thread therefore outlived the failed open for the whole JVM while the
+     * engine's fallback ladder moved on to another backend.
+     *
+     * <p>Asserts on the DIFFERENCE against the drain threads already live,
+     * so an adapter another test left open cannot make this pass or fail by
+     * accident; the wait is bounded and condition-driven because the thread
+     * is a daemon that exits on its own schedule.</p>
+     */
+    private void assertRefusedOpenLeavesNoDrainThread(
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+            int bufferFrames,
+            String expectedMessage) {
+        Set<Thread> preexisting = liveDrainThreads();
+        // The fake's default input device supplies 2 channels, so this open
+        // is the duplex one that starts the drain thread.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThatThrownBy(() ->
+                adapter.open(DeviceId.defaultFor("Fake"), format, bufferFrames))
+                .as("the refused open still fails, and says why")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(expectedMessage);
+
+        awaitCondition(() -> drainThreadsStartedSince(preexisting).isEmpty(),
+                "no " + CallbackBackendAdapter.DRAIN_THREAD_NAME
+                        + " thread outlives the refused open");
+        assertThat(fake.openStreamCount)
+                .as("the driver was never asked to open a stream")
+                .isZero();
+
+        adapter.close();
+        assertThat(drainThreadsStartedSince(preexisting))
+                .as("and closing the adapter afterwards resurrects nothing")
+                .isEmpty();
+    }
+
+    /** Mutable by construction: {@link #drainThreadsStartedSince} subtracts from it. */
+    private static Set<Thread> liveDrainThreads() {
+        return Thread.getAllStackTraces().keySet().stream()
+                .filter(thread ->
+                        CallbackBackendAdapter.DRAIN_THREAD_NAME.equals(thread.getName()))
+                .collect(java.util.stream.Collectors.toCollection(java.util.HashSet::new));
+    }
+
+    private static Set<Thread> drainThreadsStartedSince(Set<Thread> preexisting) {
+        Set<Thread> live = liveDrainThreads();
+        live.removeAll(preexisting);
+        return live;
     }
 
     // ── Identity / capability passthrough ────────────────────────────────

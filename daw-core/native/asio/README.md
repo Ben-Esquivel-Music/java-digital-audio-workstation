@@ -293,10 +293,42 @@ licence forbids us from redistributing. To build:
    existing `copy-native-libs-to-dist` antrun execution.
 
 If `ASIO_SDK_DIR` is not set, the CMake configure step **silently skips
-the asioshim target**. The Java backend already degrades to its
-fallback range / canonical rate set when the library is absent, so a
-local build without the SDK still produces a fully working DAW (just
-without driver-reported capability menus).
+the asioshim target**. A local build without the SDK still produces a
+fully working DAW — it simply has no ASIO in it.
+`AsioBackend.isAvailable()` needs the shim's enumeration and lifecycle
+symbols to resolve, so it answers `false`, and `AudioBackendSelector`'s
+availability + streaming gate (`probe.isAvailable() &&
+probe.supportsStreaming()`) drops ASIO from the offered backend list
+entirely. ASIO is never *offered* as a choice on such a host, and
+the provision ladder heads on PortAudio (else Java Sound).
+
+There is one state in which the user still sees ASIO, and it is
+deliberate: a **previously persisted** `audio.backend=ASIO` is retained
+rather than silently discarded. `SettingRow.replaceChoiceOptions`
+re-inserts a current value that the freshly enumerated options no longer
+contain, so the Settings dialog keeps showing the stored choice on a
+host that cannot honour it — install the shim (or move the project to a
+machine that has it) and the selection is still there. In that state the
+row's own value is what drives the capability enumeration:
+`DeviceEnumerationTask` asks the controller for `bufferSizeRange` /
+`supportedSampleRates` under the name `ASIO`,
+`DefaultAudioEngineController.withSdkBackend` constructs a probe
+`AsioBackend` by name (`AudioBackendSelector.selectByName` instantiates
+regardless of availability — the gate is on the *offered list*, not on
+construction), and the shim-less backend answers
+`BufferSizeRange.DEFAULT_RANGE` and the canonical sample-rate set,
+logging the reason once. So those fallbacks are user-visible in exactly
+that one case: menus behind a stale persisted selection, never behind a
+freshly offered one.
+
+Nothing opens on it, and nothing about the substitution is silent. At
+open time the provisioning gate refuses the request:
+`DefaultAudioEngineController.buildStreamingProvision` closes the probe,
+raises one `NotificationManager` warning naming the ladder's actual head
+("ASIO not available — falling back to PortAudio"), and carries the
+refusal as a pending failed hop so a `BackendFallbackEvent` is published
+for it once the winning rung is known. The stream then runs on that head
+rung, and the user's ASIO request stays persisted for the next start.
 
 ## Non-Windows hosts
 
@@ -312,22 +344,49 @@ provisions the Steinberg ASIO SDK from the `ASIO_SDK_ZIP_BASE64`
 repository secret, sets `ASIO_SDK_DIR`, runs `mvn -B verify`, and
 asserts that `daw-app/target/dist/native/windows-x64/asioshim.dll`
 exists after the assembly phase. The job is path-filtered so it only
-runs when the ASIO surface (`daw-core/native/asio/`,
-`daw-sdk/.../Asio*.java`, `lib/CMakeLists.txt`, the workflow itself)
-changes — the rest of the PR feedback loop stays on `ci.yml`.
+runs when the ASIO surface changes: `daw-core/native/asio/`, the
+`daw-sdk` `Asio*.java` classes and their tests, the `AudioBlockRing`
+pair (`daw-sdk` main class plus `AudioBlockRingTest` — the lock-free
+hand-off the `bufferSwitch` bridge is built on), the three env-gated
+`daw-core` suites named below, `lib/CMakeLists.txt`, and the workflow
+itself. The rest of the PR feedback loop stays on `ci.yml`.
 
-That lane exports **`DAW_REQUIRE_ASIOSHIM=1`** so the env-gated
-assertions in `NativeLibraryDetectorTest` and `AsioFormatChangeShimTest`
-flip from `Assumptions.assumeTrue(...)` (skip) to hard `assertTrue(...)`
-checks. Absent `asioshim.dll` therefore fails the CI lane rather than
-silently degrading to the no-shim fallback path. The same variable makes
-a real ASIO driver rejecting the open in `AsioStreamingIntegrationTest`
-and `AsioEngineStreamingIntegrationTest` a hard failure instead of a skip,
-so a regression that stops the production streaming path from opening
-cannot leave that lane green. On developer
-workstations the env var is unset and those same tests remain
-`assumeTrue` skips, so a fresh clone without the SDK still produces a
-green build.
+That lane exports **`DAW_REQUIRE_ASIOSHIM=1`**. Three suites read it —
+`NativeLibraryDetectorTest`, `AsioStreamingIntegrationTest` (story 311)
+and `AsioEngineStreamingIntegrationTest` (story 316) — and in each the
+guard on `asioshim.dll` being on the FFM library path flips from
+`Assumptions.assumeTrue(...)` (skip) to a hard `assertTrue(...)`. Absent
+`asioshim.dll` therefore fails the CI lane rather than silently degrading
+to the no-shim fallback path. All three live in `daw-core`, the only
+module whose Surefire sets `-Djava.library.path=${native.libs.dir}` and
+which runs *after* the CMake native build. `AsioFormatChangeShimTest`
+sits in `daw-sdk` and deliberately does *not* read the variable — not
+because it could not (`System.getenv` works there like anywhere else),
+but because nothing in `daw-sdk`'s own build *guarantees* the DLL is
+there. `daw-sdk` is built and tested *before* the CMake native build in
+reactor order, so on a cold clone or any clean CI lane the shim does not
+exist yet when those tests run, and a hard assertion would fail even
+though the shim builds perfectly minutes later. (The stronger claim that
+the DLL "cannot exist yet" when `daw-sdk` runs would be wrong: on a warm
+local tree whose earlier build had `ASIO_SDK_DIR` set,
+`target/build/native/asioshim.dll` survives from that build and is
+present the whole time. Its presence is just not something `daw-sdk` can
+*rely* on — which reaches the same conclusion by the honest route.) Its
+asioshim guard can therefore only ever be an unconditional `assumeTrue`.
+
+What that proves depends on the host. The lane runs on a GitHub-hosted
+`windows-latest` runner, which has no ASIO driver installed, so both
+streaming integration tests stop at their "no ASIO driver installed"
+assumption and never attempt an open — on that lane it is the
+DLL-presence assertions above that hard-fail. The same variable also
+turns a real driver *rejecting* the open into a hard failure instead of
+a skip, but that half only bites where a driver is actually present: a
+self-hosted Windows runner with an interface, or a developer running
+with `DAW_REQUIRE_ASIOSHIM=1`. That is the environment in which a
+regression stopping the production streaming path from opening becomes
+a failure rather than a skip. On developer workstations with the
+variable unset every one of these guards stays an `assumeTrue` skip, so
+a fresh clone without the SDK still produces a green build.
 
 ## Threading
 
@@ -384,4 +443,16 @@ cooperating mechanisms:
   precisely because the callback path never takes that mutex.
 
 `ASIOOutputReady()` is likewise called natively from the trampoline rather
-than from Java, keeping the JVM upcall a pure memory copy.
+than from Java, so no part of the ASIO driver API is ever invoked from
+inside the upcall — the Java side never calls back down into the SDK.
+
+That is a statement about the *native* boundary, not a claim that the
+upcall is nothing but `memcpy`. `AsioBufferSwitchShim.bufferSwitch` also
+does two non-copy things, both deliberate and both RT-admissible:
+`LockSupport.unpark(drainThread)` after the input hand-off (wait-free, and
+the reason a stalled drain thread never holds up the driver), and, since
+the story-316 review, a `volatile long renderedBlocksConsumed++` on the
+branch where it takes an engine-rendered block — a single-writer
+load-add-store, since the driver's callback thread is the only mutator.
+Nothing that allocates, locks or CAS-retries may join them; such work
+belongs on the drain thread.

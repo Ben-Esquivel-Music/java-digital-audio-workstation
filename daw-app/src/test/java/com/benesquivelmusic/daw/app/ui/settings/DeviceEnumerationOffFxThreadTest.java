@@ -11,11 +11,16 @@ import javafx.application.Platform;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -143,6 +148,110 @@ class DeviceEnumerationOffFxThreadTest {
         assertThat(result.get().outputDeviceNames()).containsExactly("", "Provisioned Out");
     }
 
+    @Test
+    void anUnprobedAsioDriverIsOfferedInTheOutputChoicesWithoutAFabricatedCount()
+            throws Exception {
+        // Story 316 review (R4): AsioBackend.listDevices() cannot know a
+        // driver's channel counts without loading it, so it reports
+        // AudioDeviceInfo.unprobed(...) — the exact shape built here. While
+        // that meant "0 channels", supportsOutput() was false and this task
+        // filtered every ASIO driver out of both menus, leaving the user with
+        // nothing but the blank default to select and persist.
+        UnprobedDeviceController controller = new UnprobedDeviceController();
+        AtomicReference<DeviceEnumerationTask.Result> result = new AtomicReference<>();
+        CountDownLatch succeeded = new CountDownLatch(1);
+        try (DeviceEnumerationTask task = new DeviceEnumerationTask(controller,
+                enumerated -> { result.set(enumerated); succeeded.countDown(); },
+                _ -> { }, failure -> { throw new AssertionError(failure); },
+                Runnable::run)) {
+            task.start("ASIO");
+            assertThat(succeeded.await(10, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(result.get().outputDeviceNames())
+                .as("a specific ASIO driver is selectable and persistable as the output")
+                .containsExactly("", "Driver A", "Driver B");
+        assertThat(result.get().inputDeviceNames())
+                .containsExactly("", "Driver A", "Driver B");
+        assertThat(controller.enumerated)
+                .as("nothing the task offered claims a channel count it does not have")
+                .isNotEmpty()
+                .allSatisfy(device -> assertThat(device.maxOutputChannels())
+                        .isEqualTo(AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN)
+                        .isNotPositive());
+    }
+
+    @Test
+    void aWedgedEnumerationIsAbandonedAtTheBudgetAndItsLateCallbacksAreDropped()
+            throws Exception {
+        // Story 316 re-review, stall audit A2. cancelAndAwait() used to do a
+        // bare worker.join(). Both callers hold
+        // SettingsDialog.audioControllerOperationLock across it, so a single
+        // enumeration parked in a driver query froze every later Apply, test
+        // tone, clock-source switch and driver-panel launch for the lifetime
+        // of the dialog, and there was no timeout anywhere on that path:
+        // DawScope.close() joins its forks unbounded, and by the time it runs
+        // the coordinator's interrupt has already been consumed by joinAll.
+        //
+        // The wait around cancelAndAwait is bounded here, so the regression
+        // FAILS on a timeout instead of hanging the suite.
+        CountDownLatch release = new CountDownLatch(1);
+        SlowController controller = new SlowController(release, new AtomicBoolean(true));
+        BlockingQueue<Runnable> posts = new LinkedBlockingQueue<>();
+        AtomicBoolean succeeded = new AtomicBoolean();
+        List<Boolean> runningChanges = Collections.synchronizedList(new ArrayList<>());
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        DeviceEnumerationTask task = new DeviceEnumerationTask(controller,
+                _ -> succeeded.set(true), runningChanges::add,
+                failure -> { throw new AssertionError(failure); },
+                posted -> { posts.add(posted); posted.run(); });
+        try {
+            task.start("ASIO");
+            assertThat(controller.entered.await(10, TimeUnit.SECONDS))
+                    .as("precondition: a fork is parked in a device query that "
+                            + "ignores interruption, exactly like a wedged native "
+                            + "enumeration")
+                    .isTrue();
+            assertThat(posts.poll(10, TimeUnit.SECONDS))
+                    .as("start() dispatched its busy-state callback")
+                    .isNotNull();
+
+            Callable<Boolean> cancelWithBudget = () -> {
+                task.cancelAndAwait(Duration.ofMillis(200));
+                return Boolean.TRUE;
+            };
+            assertThat(caller.submit(cancelWithBudget).get(5, TimeUnit.SECONDS))
+                    .as("the caller is released at its budget instead of waiting on "
+                            + "a wedged driver for the rest of the session")
+                    .isTrue();
+            assertThat(release.getCount())
+                    .as("and it really was ABANDONED rather than joined: the "
+                            + "enumeration fork is still parked, so the coordinator "
+                            + "cannot have terminated")
+                    .isEqualTo(1);
+
+            release.countDown();
+            assertThat(posts.poll(10, TimeUnit.SECONDS))
+                    .as("the abandoned coordinator does eventually unwind and does "
+                            + "dispatch — being dropped is the generation gate's "
+                            + "doing, not an absence of callbacks")
+                    .isNotNull();
+            assertThat(succeeded)
+                    .as("no stale enumeration result reaches the dialog")
+                    .isFalse();
+            assertThat(runningChanges)
+                    .as("nor does the abandoned coordinator's busy-state CLEAR, "
+                            + "which would otherwise stop the spinner belonging to "
+                            + "whichever enumeration replaced it")
+                    .containsExactly(true);
+        } finally {
+            release.countDown();
+            caller.shutdown();
+            assertThat(caller.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+            task.close();
+        }
+    }
+
     private static void runPostedOnFx(Runnable posted) throws Exception {
         assertThat(posted).as("a callback was dispatched").isNotNull();
         onFx(() -> { posted.run(); return null; });
@@ -215,6 +324,41 @@ class DeviceEnumerationOffFxThreadTest {
                 String backendName, String outputDeviceName) {
             queriedBackends.add(backendName);
             return List.of();
+        }
+
+        @Override public double getCpuLoadPercent() { return 0; }
+        @Override public void applyConfiguration(Request request) { }
+        @Override public void playTestTone(String outputDeviceName) { }
+    }
+
+    /**
+     * A controller whose backend enumerates drivers it has not loaded — the
+     * production {@code AsioBackend.listDevices()} shape (story 316 review).
+     */
+    private static final class UnprobedDeviceController implements AudioEngineController {
+        final List<AudioDeviceInfo> enumerated = List.of(
+                AudioDeviceInfo.unprobed(0, "Driver A", "ASIO"),
+                AudioDeviceInfo.unprobed(1, "Driver B", "ASIO"));
+
+        @Override public String getActiveBackendName() { return "ASIO"; }
+
+        @Override
+        public List<String> getAvailableBackendNames() { return List.of("Java Sound", "ASIO"); }
+
+        @Override public List<AudioDeviceInfo> listDevices() { return enumerated; }
+
+        @Override public List<AudioDeviceInfo> listDevices(String backendName) {
+            return enumerated;
+        }
+
+        @Override
+        public BufferSizeRange bufferSizeRange(String backendName, String outputDeviceName) {
+            return BufferSizeRange.singleton(256);
+        }
+
+        @Override
+        public Set<Integer> supportedSampleRates(String backendName, String outputDeviceName) {
+            return Set.of(48_000);
         }
 
         @Override public double getCpuLoadPercent() { return 0; }

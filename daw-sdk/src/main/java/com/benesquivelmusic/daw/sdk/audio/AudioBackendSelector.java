@@ -109,15 +109,33 @@ public final class AudioBackendSelector {
 
     /**
      * Returns the names of every backend whose native library / driver is
-     * available on this host <em>and</em> whose streaming path is actually
-     * implemented ({@link AudioBackend#supportsStreaming()}), in OS-default
-     * priority order.
+     * available on this host <em>and</em> which reports it can actually
+     * stream on this host ({@link AudioBackend#supportsStreaming()}), in
+     * OS-default priority order.
      *
-     * <p>The streaming gate (story 316) keeps backends whose
-     * {@code sink(...)} discards by construction — WASAPI, CoreAudio and
-     * JACK today — out of the offered list, so the application never opens a
-     * stream that would be silent while looking healthy. They return here as
-     * their streaming stories land.</p>
+     * <p>The streaming gate (story 316) exists so the application never
+     * opens a stream that would be silent while looking healthy. It drops
+     * two different kinds of backend:</p>
+     * <ul>
+     *   <li>Backends whose {@code sink(...)} discards <em>by
+     *       construction</em> — WASAPI, CoreAudio and JACK today. They
+     *       return to this list as their streaming stories land.</li>
+     *   <li>Backends whose streaming path is a <em>per-host</em> fact
+     *       (story 316 review). {@code AsioBackend.supportsStreaming()} is a
+     *       live probe of the native {@code asioshim}'s story-311 streaming
+     *       symbols, so a Windows host whose shim is PRESENT — its
+     *       enumeration and lifecycle symbols resolve, so
+     *       {@code isAvailable()} passes — but was built without those
+     *       streaming entrypoints, or predates them, drops ASIO here. A
+     *       host with no {@code asioshim} at all never reaches this half of
+     *       the gate: {@code isAvailable()} already answers {@code false}
+     *       and the availability test below short-circuits, so a missing
+     *       shim is an AVAILABILITY drop and only a stale one is a
+     *       streaming-gate drop.</li>
+     * </ul>
+     *
+     * <p>The gate is therefore a query about THIS host at THIS moment, not
+     * a static capability table; it is re-probed on every call.</p>
      *
      * @return list of available, streamable backend names (never empty —
      *         Java Sound is always present)
@@ -147,6 +165,12 @@ public final class AudioBackendSelector {
      * first entry of the OS preference order that is both available and
      * streamable ({@link AudioBackend#supportsStreaming()}, story 316), so
      * the default is never a backend that would open a silent stream.
+     *
+     * <p>Same host-specific gate as {@link #availableBackends()}: on
+     * Windows the ASIO head is skipped when the native {@code asioshim} is
+     * missing or lacks the story-311 streaming symbols (story 316 review),
+     * and the preference order falls through to the next streamable entry —
+     * ultimately Java Sound, which is always present.</p>
      *
      * @return preferred backend name
      */

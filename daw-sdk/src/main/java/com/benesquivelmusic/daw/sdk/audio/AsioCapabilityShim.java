@@ -353,6 +353,15 @@ class AsioCapabilityShim implements AutoCloseable {
      * thread until the user closes the modal panel. Callers should still invoke
      * the supervising action off JavaFX because it waits for that result.</p>
      *
+     * <p>This is the ONE operation exempted from
+     * {@link AsioControlThread#DEFAULT_BUDGET} (story 316 re-review): it goes
+     * through {@link AsioControlThread#callUnbounded} because a user reading
+     * a driver dialog is not a wedged driver. Every other ASIO downcall is
+     * bounded, and any of them submitted while this panel is open will
+     * exhaust its budget rather than queue behind the user — see
+     * {@link AsioControlThread} for why one COM apartment makes that the
+     * honest outcome.</p>
+     *
      * <p>If the shim or the {@code openControlPanel} symbol is
      * unavailable, returns a generic failure (negative). FFM-level
      * exceptions are also normalised to a generic failure rather than
@@ -365,7 +374,7 @@ class AsioCapabilityShim implements AutoCloseable {
             return -1;
         }
         try {
-            return AsioControlThread.call(
+            return AsioControlThread.callUnbounded(
                     () -> (int) openControlPanel.invokeExact());
         } catch (Throwable ignored) {
             return -1;

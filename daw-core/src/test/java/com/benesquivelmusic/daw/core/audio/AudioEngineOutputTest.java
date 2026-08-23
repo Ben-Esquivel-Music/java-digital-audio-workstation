@@ -13,18 +13,22 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Tests for the audio output stream lifecycle on {@link AudioEngine} after
@@ -41,6 +45,22 @@ class AudioEngineOutputTest {
 
     /** Guard budget for pump-driven conditions — generous, never inner-inflated. */
     private static final long GUARD_BUDGET_MILLIS = 5_000L;
+
+    /**
+     * How long a racing thread parks INSIDE a backend call to widen a
+     * lifecycle race window. Bounded on purpose: when the lifecycle is
+     * correctly serialized the other thread is blocked on the engine's lock
+     * and can never signal, so the parked thread must proceed on its own
+     * rather than hang. Never used as an assertion budget.
+     */
+    private static final long RACE_WINDOW_MILLIS = 250L;
+
+    /**
+     * Quiet window used to assert an ABSENCE (no orphaned pump still
+     * rendering). The pump paces at ~1 ms per block through the fake, so a
+     * survivor pushes well over a hundred blocks through this window.
+     */
+    private static final long QUIET_WINDOW_MILLIS = 150L;
 
     private AudioEngine engine;
     private SynchronousTestBackend backend;
@@ -899,7 +919,321 @@ class AudioEngineOutputTest {
         }
     }
 
+    @Test
+    void aRungThatFailsToOpenIsClosedBeforeTheLadderAdvances() {
+        // Story 316 re-review: AudioBackend.open promises no rollback, so a
+        // rung that took a partial native handle and then threw kept holding
+        // the device while the fallback rung opened and rendered through it
+        // — two backends on one device.
+        List<String> timeline = new CopyOnWriteArrayList<>();
+        SynchronousTestBackend first = new SynchronousTestBackend("First");
+        first.timeline = timeline;
+        first.failOnOpen = true;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        second.timeline = timeline;
+        engine.setStreamingProvision(provisionOf("First", first, second));
+
+        engine.startAudioOutput();
+
+        assertThat(first.closeCount.get())
+                .as("the failed rung's handle was given back")
+                .isEqualTo(1);
+        assertThat(timeline)
+                .as("the failed rung is closed BEFORE the next rung is opened")
+                .containsSubsequence("First:open", "First:close", "Second:open");
+        assertThat(second.isOpen()).isTrue();
+    }
+
+    @Test
+    void aRungRefusedBeforeItWasEverOpenedIsStillClosedWithoutError() {
+        // The streaming guard (and the negotiation guard) throw BEFORE
+        // open() is ever called, so this rung never held a stream handle —
+        // but it may well have initialized its driver, and closing a
+        // never-opened backend is safe on every in-tree backend.
+        List<String> timeline = new CopyOnWriteArrayList<>();
+        SynchronousTestBackend silent = new SynchronousTestBackend("Silent");
+        silent.timeline = timeline;
+        silent.streamingSupported = false;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        second.timeline = timeline;
+        engine.setStreamingProvision(provisionOf("Silent", silent, second));
+
+        engine.startAudioOutput();
+
+        assertThat(silent.openCount.get())
+                .as("the guard refused the rung before it was ever opened")
+                .isZero();
+        assertThat(silent.closeCount.get())
+                .as("the never-opened rung is closed anyway, and the close does not fail the hop")
+                .isEqualTo(1);
+        assertThat(timeline)
+                .as("that release happens before the fallback rung opens")
+                .containsSubsequence("Silent:close", "Second:open");
+        assertThat(second.isOpen()).isTrue();
+    }
+
+    @Test
+    void aFailedRungWhoseCloseAlsoFailsStillReportsTheOpenFailure() {
+        // The best-effort close must never MASK the hop failure: it travels
+        // as a suppressed exception, and the recorded cause — the one the
+        // BackendFallbackEvent carries — still describes the OPEN failure.
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+
+            SynchronousTestBackend first = new SynchronousTestBackend("First");
+            first.failOnOpen = true;
+            first.failOnClose = true;
+            SynchronousTestBackend second = new SynchronousTestBackend("Second");
+            second.failOnOpen = true;
+            engine.setStreamingProvision(provisionOf("First", first, second));
+
+            assertThatThrownBy(engine::startAudioOutput)
+                    .as("the requested rung's OPEN failure is still the one that propagates")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessage("open refused by First")
+                    .satisfies(failure -> assertThat(failure.getSuppressed())
+                            .as("the close failure travels alongside it, never in place of it")
+                            .extracting(Throwable::getMessage)
+                            .contains("close refused by First"));
+
+            awaitCondition(() -> received.size() >= 2,
+                    "every failed hop publishes an event");
+            assertThat(received)
+                    .extracting(BackendFallbackEvent::cause)
+                    .as("the published cause describes the open failure, not the close")
+                    .containsExactlyInAnyOrder(
+                            "open refused by First", "open refused by Second");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    // ── Lifecycle serialization (story 316 re-review) ────────────────────
+
+    @Test
+    void twoCallersRacingOneOpenLeaveExactlyOneStreamAndNoOrphanedBackend()
+            throws Exception {
+        // startAudioOutput() is called straight from the FX thread on Play
+        // while the app layer drives the same method from its device-event
+        // and format-change workers. The quintet it mutates — state,
+        // backend, device, negotiated format, pump — is a multi-step
+        // transition, and volatile visibility gives it no atomicity: both
+        // callers could observe CLOSED, open two different rungs, overwrite
+        // each other's fields, and strand one stream on a device nobody
+        // would ever close again.
+        SynchronousTestBackend first = new SynchronousTestBackend("First");
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        engine.setStreamingProvision(provisionOf("First", first, second));
+
+        CountDownLatch firstIsInsideOpen = new CountDownLatch(1);
+        CountDownLatch secondCallReturned = new CountDownLatch(1);
+        first.openBarrier = () -> {
+            firstIsInsideOpen.countDown();
+            awaitRaceWindow(secondCallReturned);
+        };
+        AtomicReference<Throwable> raceFailure = new AtomicReference<>();
+
+        Thread opener = daemon("race-opener", engine::startAudioOutput, raceFailure);
+        opener.start();
+        assertThat(firstIsInsideOpen.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("the first caller reached the device open")
+                .isTrue();
+        Thread racer = daemon("race-second-opener", () -> {
+            try {
+                engine.startAudioOutput();
+            } finally {
+                secondCallReturned.countDown();
+            }
+        }, raceFailure);
+        racer.start();
+
+        joinOrFail(opener);
+        joinOrFail(racer);
+
+        assertThat(first.openCount.get())
+                .as("exactly one open reached the device")
+                .isEqualTo(1);
+        assertThat(second.openCount.get())
+                .as("no second rung was opened behind the first caller's back")
+                .isZero();
+        assertThat(first.closeCount.get())
+                .as("and nothing was closed to make room for a second open")
+                .isZero();
+        assertThat(first.pumpStarts.get())
+                .as("exactly one render pump drives the one shared render pipeline")
+                .isEqualTo(1);
+        assertThat(engine.openStreamBackendName()).contains("First");
+        assertThat(raceFailure.get())
+                .as("neither caller failed: the loser simply found the stream running")
+                .isNull();
+    }
+
+    @Test
+    void aStopRacingAnOpenNeverLeavesAPumpRenderingIntoAClosedDevice()
+            throws Exception {
+        // The nastiest interleaving of the same race: the stop lands while
+        // the open is starting its pump — after the state says RUNNING and
+        // the backend is stored, but before the pump reference is published.
+        // Unserialized, stopPump() then finds a null pump, reports confirmed
+        // quiescence, closes the device and forgets the stream, and the open
+        // finishes by publishing a live pump onto a CLOSED backend: a render
+        // thread nobody tracks, streaming into a released handle.
+        SynchronousTestBackend raced = new SynchronousTestBackend("Raced");
+        engine.setStreamingProvision(provisionOf("Raced", raced));
+
+        CountDownLatch insidePumpStart = new CountDownLatch(1);
+        CountDownLatch stopReturned = new CountDownLatch(1);
+        raced.pumpStartBarrier = () -> {
+            insidePumpStart.countDown();
+            awaitRaceWindow(stopReturned);
+        };
+        AtomicReference<Throwable> raceFailure = new AtomicReference<>();
+
+        Thread opener = daemon("stop-race-opener", engine::startAudioOutput, raceFailure);
+        opener.start();
+        assertThat(insidePumpStart.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("the opening caller reached the pump start")
+                .isTrue();
+        Thread stopper = daemon("stop-race-stopper", () -> {
+            try {
+                engine.stopAudioOutput();
+            } finally {
+                stopReturned.countDown();
+            }
+        }, raceFailure);
+        stopper.start();
+
+        joinOrFail(opener);
+        joinOrFail(stopper);
+
+        assertThat(engine.isStreamOpen())
+                .as("the stop ran whole, after the open: no stream is reported open")
+                .isFalse();
+        assertThat(raced.isOpen())
+                .as("and the device was really released — never a stream the engine forgot")
+                .isFalse();
+        // Absence needs a window, not a condition to await: an orphaned pump
+        // would push blocks into the closed backend for as long as it lives.
+        int sunkAtRest = raced.sunkBlockCount.get();
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(QUIET_WINDOW_MILLIS));
+        assertThat(raced.sunkBlockCount.get())
+                .as("nothing still renders into a device the engine has closed")
+                .isEqualTo(sunkAtRest);
+        assertThat(raceFailure.get())
+                .as("neither caller failed")
+                .isNull();
+    }
+
+    @Test
+    void aStreamOpenListenerTakingASecondLockCannotDeadlockTheLifecycle()
+            throws Exception {
+        // Regression guard for the lock-order inversion that serializing the
+        // lifecycle could otherwise introduce. The app layer's stream-open
+        // listener binds device events from a SYNCHRONIZED method, while
+        // that same monitor's reconfigure path calls back into the engine's
+        // lifecycle. Notifying the listener while the engine's lifecycle
+        // lock is held therefore gives one thread [engine → app] and the
+        // other [app → engine]: a guaranteed deadlock. The announcement must
+        // be delivered only AFTER the lock is released.
+        //
+        // Deliberately NOT the shared engine field: a regression wedges both
+        // threads for good, and @AfterEach must not join them.
+        AudioEngine racedEngine = new AudioEngine(FORMAT);
+        SynchronousTestBackend racedBackend = new SynchronousTestBackend("Listener");
+        racedEngine.setStreamingProvision(provisionOf("Listener", racedBackend));
+        Object appMonitor = new Object();
+        AtomicInteger listenerEntries = new AtomicInteger();
+        racedEngine.setStreamOpenListener((backend, device) -> {
+            synchronized (appMonitor) {
+                listenerEntries.incrementAndGet();
+            }
+        });
+
+        CountDownLatch insideOpen = new CountDownLatch(1);
+        CountDownLatch appMonitorHeld = new CountDownLatch(1);
+        racedBackend.openBarrier = () -> {
+            insideOpen.countDown();
+            awaitRaceWindow(appMonitorHeld);
+        };
+        AtomicReference<Throwable> raceFailure = new AtomicReference<>();
+
+        Thread play = daemon("listener-deadlock-play",
+                racedEngine::startAudioOutput, raceFailure);
+        Thread appThread = daemon("listener-deadlock-app", () -> {
+            synchronized (appMonitor) {
+                appMonitorHeld.countDown();
+                racedEngine.stopAudioOutput();
+            }
+        }, raceFailure);
+
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> {
+            play.start();
+            assertThat(insideOpen.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the opening thread reached the device open")
+                    .isTrue();
+            appThread.start();
+            play.join(GUARD_BUDGET_MILLIS);
+            appThread.join(GUARD_BUDGET_MILLIS);
+            assertThat(play.isAlive())
+                    .as("the opening thread finished: its stream-open listener runs"
+                            + " only after the engine's lifecycle lock is released")
+                    .isFalse();
+            assertThat(appThread.isAlive())
+                    .as("and the thread holding the app-layer monitor was never"
+                            + " blocked behind that listener")
+                    .isFalse();
+        });
+
+        assertThat(listenerEntries.get())
+                .as("the listener really did run — the open was not skipped")
+                .isEqualTo(1);
+        assertThat(raceFailure.get())
+                .as("neither thread failed")
+                .isNull();
+        // Only reached when nothing deadlocked, so this can never hang.
+        racedEngine.stopAudioOutput();
+        racedEngine.stop();
+    }
+
     // ── Async await support ──────────────────────────────────────────────
+
+    /** Creates an unstarted DAEMON thread: a wedged run must never hold the JVM. */
+    private static Thread daemon(String name, Runnable body,
+                                 AtomicReference<Throwable> failure) {
+        return Thread.ofPlatform().name(name).daemon(true).unstarted(() -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                failure.compareAndSet(null, t);
+            }
+        });
+    }
+
+    private static void joinOrFail(Thread thread) throws InterruptedException {
+        thread.join(GUARD_BUDGET_MILLIS);
+        assertThat(thread.isAlive())
+                .as("thread '" + thread.getName() + "' finished within "
+                        + GUARD_BUDGET_MILLIS + " ms")
+                .isFalse();
+    }
+
+    /**
+     * Parks a racing thread inside a backend call just long enough for the
+     * other thread to reach the same transition. Bounded on purpose: when
+     * the lifecycle IS serialized the other thread is blocked on the
+     * engine's lock and can never signal, so this must proceed on its own.
+     */
+    private static void awaitRaceWindow(CountDownLatch signal) {
+        try {
+            signal.await(RACE_WINDOW_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
 
     private static void awaitCondition(BooleanSupplier condition, String description) {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GUARD_BUDGET_MILLIS);
@@ -923,6 +1257,23 @@ class AudioEngineOutputTest {
 
         private final String name;
         final List<String> events = new CopyOnWriteArrayList<>();
+        /**
+         * Optional CROSS-backend timeline (story 316 re-review): when two
+         * rungs share one list, its {@code name:event} entries make the
+         * order of one backend's close against another backend's open
+         * assertable — something per-backend counters cannot express.
+         */
+        volatile List<String> timeline;
+        /**
+         * Optional ONE-SHOT gate run inside {@code open()}, before the
+         * handle is taken (story 316 re-review). Parking a caller there is
+         * the only way to make a two-thread lifecycle race wide enough to
+         * assert an INVARIANT on rather than a timing. Cleared as it is
+         * read so a racing second caller runs straight through.
+         */
+        volatile Runnable openBarrier;
+        /** The same one-shot gate inside {@code inputBlocks()} — a pump start. */
+        volatile Runnable pumpStartBarrier;
         final AtomicInteger openCount = new AtomicInteger();
         final AtomicInteger closeCount = new AtomicInteger();
         final AtomicInteger pumpStarts = new AtomicInteger();
@@ -950,6 +1301,21 @@ class AudioEngineOutputTest {
 
         SynchronousTestBackend(String name) {
             this.name = name;
+        }
+
+        /** Runs a race gate once, clearing it first so it cannot re-trap. */
+        private void crossOnce(Runnable barrier) {
+            if (barrier != null) {
+                barrier.run();
+            }
+        }
+
+        private void record(String event) {
+            events.add(event);
+            List<String> shared = this.timeline;
+            if (shared != null) {
+                shared.add(name + ":" + event);
+            }
         }
 
         @Override
@@ -991,8 +1357,11 @@ class AudioEngineOutputTest {
         public void open(DeviceId device,
                          com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
                          int bufferFrames) {
-            events.add("open");
+            record("open");
             openCount.incrementAndGet();
+            Runnable gate = openBarrier;
+            openBarrier = null;
+            crossOnce(gate);
             if (failOnOpen) {
                 throw new AudioBackendException("open refused by " + name);
             }
@@ -1007,8 +1376,11 @@ class AudioEngineOutputTest {
 
         @Override
         public Flow.Publisher<AudioBlock> inputBlocks() {
-            events.add("pumpStart");
+            record("pumpStart");
             pumpStarts.incrementAndGet();
+            Runnable gate = pumpStartBarrier;
+            pumpStartBarrier = null;
+            crossOnce(gate);
             if (failOnPumpStart) {
                 throw new AudioBackendException("pump start refused by " + name);
             }
@@ -1047,7 +1419,7 @@ class AudioEngineOutputTest {
 
         @Override
         public void close() {
-            events.add("close");
+            record("close");
             closeCount.incrementAndGet();
             if (failOnClose) {
                 throw new AudioBackendException("close refused by " + name);

@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
 /**
  * Lifecycle-owned audio-device discovery for the Settings Audio category.
@@ -29,6 +31,29 @@ import java.util.function.Consumer;
  * thread; the coordinator performs the blocking scope cleanup itself.</p>
  */
 public final class DeviceEnumerationTask implements AutoCloseable {
+
+    private static final Logger LOG =
+            Logger.getLogger(DeviceEnumerationTask.class.getName());
+
+    /**
+     * How long {@link #cancelAndAwait()} waits for an ALREADY-CANCELLED
+     * coordinator to unwind before abandoning it.
+     *
+     * <p>This is deliberately not "how long a device enumeration takes". By
+     * the time the join starts, the scope has been cancelled and the
+     * coordinator interrupted, so the only thing that can legitimately delay
+     * its exit is a forked query parked in a call that does not observe
+     * interruption &mdash; and the longest such call this codebase permits is
+     * one ASIO control-thread downcall, budgeted at fifteen seconds
+     * ({@code AsioControlThread.DEFAULT_BUDGET}, which is package-private in
+     * {@code daw-sdk} and so cannot be referenced here). Matching that budget
+     * means a cancelled enumeration whose last query is merely slow still
+     * unwinds cleanly and is joined, while a genuinely wedged driver can no
+     * longer hold the caller &mdash; and the Settings dialog's
+     * {@code audioControllerOperationLock}, which both callers hold across
+     * this call &mdash; for the rest of the session.</p>
+     */
+    static final Duration CANCEL_JOIN_BUDGET = Duration.ofSeconds(15);
 
     /** Immutable choice lists ready for the three generic setting rows. */
     public record Result(List<String> backendNames,
@@ -238,16 +263,63 @@ public final class DeviceEnumerationTask implements AutoCloseable {
     }
 
     /**
-     * Cancels discovery and waits for its coordinator to finish. This is for
-     * background engine-reconfigure workers only; callers must never invoke it
-     * on the JavaFX application thread.
+     * Cancels discovery and waits &mdash; for a BOUNDED time &mdash; for its
+     * coordinator to finish. This is for background engine-reconfigure
+     * workers only; callers must never invoke it on the JavaFX application
+     * thread.
+     *
+     * <p>The wait is bounded at {@link #CANCEL_JOIN_BUDGET} (story 316
+     * re-review). The unbounded {@code join()} this replaced was a stall
+     * hazard rather than a safety property: both callers &mdash;
+     * {@code SettingsDialog}'s serialized audio-utility worker and its audio
+     * reconfigure worker &mdash; hold {@code audioControllerOperationLock}
+     * across this call, so one enumeration wedged in a driver query froze
+     * every subsequent Apply, test tone, clock-source switch and
+     * driver-panel launch for the lifetime of the dialog, with no timeout
+     * anywhere on the path to break it.</p>
+     *
+     * <p>Abandoning the coordinator on timeout is the CORRECT outcome here,
+     * not a lesser evil. It is a virtual thread parked in I/O (JEP 444), so
+     * it costs a stack rather than an OS thread; and it cannot publish a
+     * stale result, because {@link #generation} is incremented BEFORE the
+     * cancel and every callback this class makes goes through
+     * {@link #dispatchIfCurrent(long, Runnable)}, which drops any dispatch
+     * whose generation is no longer current. An abandoned coordinator's
+     * {@code onSucceeded}, {@code onFailed} and {@code onRunningChanged}
+     * therefore never reach the dialog. Its {@code finally} clears
+     * {@link #activeScope} and {@link #coordinator} with compare-and-set, so
+     * it cannot clobber a newer enumeration on its way out either.</p>
+     *
+     * <p>Note that the two hazards compose: a coordinator can only be
+     * interruptible if the controller monitor it needs is free, which is why
+     * the driver control panel no longer runs under that monitor
+     * ({@code DefaultAudioEngineController#openControlPanel()}).</p>
      */
     public void cancelAndAwait() throws InterruptedException {
+        cancelAndAwait(CANCEL_JOIN_BUDGET);
+    }
+
+    /**
+     * {@link #cancelAndAwait()} with an explicit budget, so a test can pin
+     * the boundedness without waiting {@link #CANCEL_JOIN_BUDGET}.
+     *
+     * @param budget how long to wait for the cancelled coordinator to exit
+     * @throws InterruptedException if the caller is interrupted while waiting
+     */
+    void cancelAndAwait(Duration budget) throws InterruptedException {
         generation.incrementAndGet();
         Thread worker = cancelActive();
-        if (worker != null && worker != Thread.currentThread()) {
-            worker.join();
+        if (worker == null || worker == Thread.currentThread()) {
+            return;
         }
+        if (worker.join(budget)) {
+            return;
+        }
+        LOG.warning(() -> "Audio device enumeration did not unwind within "
+                + budget.toMillis() + " ms of being cancelled; abandoning "
+                + worker + ". Its result is already stale (generation "
+                + generation.get() + ") and is dropped rather than reaching"
+                + " the Settings dialog.");
     }
 
     /**

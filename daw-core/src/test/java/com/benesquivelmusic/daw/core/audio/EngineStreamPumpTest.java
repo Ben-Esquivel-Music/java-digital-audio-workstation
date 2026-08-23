@@ -15,6 +15,7 @@ import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
@@ -277,6 +278,39 @@ class EngineStreamPumpTest {
         assertThat(pump.isRunning()).isTrue();
     }
 
+    @Test
+    void anOnSubscribeArrivingAfterTheStopIsCancelledAndNeverRequestedFrom() {
+        // Story 316 re-review: SubmissionPublisher may deliver onSubscribe
+        // ASYNCHRONOUSLY, so a pause or stop can land between the pump's
+        // subscribe() call and the callback. cancelInputSubscription() then
+        // finds a null field and cancels nothing, and the late callback used
+        // to store the subscription and request Long.MAX_VALUE from it on a
+        // dead pump — leaving a stale capture subscriber attached across the
+        // pause that was supposed to detach it.
+        RecordingBackend backend = new RecordingBackend();
+        backend.deferSubscribe = true;
+        engine = new AudioEngine(FORMAT);
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+        pump.start();
+
+        awaitCondition(() -> backend.lastSubscriber.get() != null,
+                "the pump subscribed to the capture stream");
+        assertThat(pump.stop())
+                .as("the pump stops before the subscription is ever granted")
+                .isTrue();
+
+        RecordingSubscription subscription = new RecordingSubscription();
+        backend.lastSubscriber.get().onSubscribe(subscription);
+
+        assertThat(subscription.cancels.get())
+                .as("a subscription granted after the stop is cancelled at once")
+                .isEqualTo(1);
+        assertThat(subscription.requests.get())
+                .as("and is never requested from — nothing drains the pump's queue now")
+                .isZero();
+    }
+
     // ── Await support ────────────────────────────────────────────────────
 
     private static void awaitCondition(BooleanSupplier condition, String description) {
@@ -286,6 +320,23 @@ class EngineStreamPumpTest {
                 fail("Timed out after " + GUARD_BUDGET_MILLIS + " ms awaiting: " + description);
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
+    }
+
+    /** {@link Flow.Subscription} counting what the pump did with it. */
+    private static final class RecordingSubscription implements Flow.Subscription {
+
+        final AtomicInteger requests = new AtomicInteger();
+        final AtomicInteger cancels = new AtomicInteger();
+
+        @Override
+        public void request(long n) {
+            requests.incrementAndGet();
+        }
+
+        @Override
+        public void cancel() {
+            cancels.incrementAndGet();
         }
     }
 
@@ -302,6 +353,16 @@ class EngineStreamPumpTest {
         final SubmissionPublisher<AudioBlock> inputPublisher = new SubmissionPublisher<>();
         volatile boolean failSink;
         volatile boolean failAwait;
+        /**
+         * Story 316 re-review: when set, {@link #inputBlocks()} hands back a
+         * publisher that only CAPTURES the subscriber and never calls
+         * {@code onSubscribe} — the test grants the subscription by hand,
+         * standing in for a {@link SubmissionPublisher} that delivers the
+         * callback asynchronously, after a stop has already run.
+         */
+        volatile boolean deferSubscribe;
+        final AtomicReference<Flow.Subscriber<? super AudioBlock>> lastSubscriber =
+                new AtomicReference<>();
 
         @Override
         public String name() {
@@ -332,6 +393,9 @@ class EngineStreamPumpTest {
 
         @Override
         public Flow.Publisher<AudioBlock> inputBlocks() {
+            if (deferSubscribe) {
+                return subscriber -> lastSubscriber.set(subscriber);
+            }
             return inputPublisher;
         }
 

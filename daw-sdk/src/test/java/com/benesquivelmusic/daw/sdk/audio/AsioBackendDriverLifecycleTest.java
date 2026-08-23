@@ -46,6 +46,45 @@ class AsioBackendDriverLifecycleTest {
     }
 
     @Test
+    void enumeratedDriversAreSelectableOutputsWithoutFabricatingAChannelCount() {
+        // Story 316 review (R4): every enumerated driver used to be built
+        // with maxInputChannels == maxOutputChannels == 0, and 0 means "this
+        // direction is not offered" — so AudioDeviceInfo::supportsOutput was
+        // false for all of them and the Settings device menus (which filter
+        // on exactly that) offered nothing but the blank default. A specific
+        // ASIO driver could not be selected or persisted at all.
+        AsioBackend.setDriverShimFactory(StubDriverShim::available);
+
+        List<AudioDeviceInfo> devices = new AsioBackend().listDevices();
+
+        assertThat(devices)
+                .as("both installed drivers are offered as OUTPUT devices")
+                .filteredOn(AudioDeviceInfo::supportsOutput)
+                .extracting(AudioDeviceInfo::name)
+                .containsExactly("Driver A", "Driver B");
+        assertThat(devices)
+                .filteredOn(AudioDeviceInfo::supportsInput)
+                .extracting(AudioDeviceInfo::name)
+                .containsExactly("Driver A", "Driver B");
+        // Honesty invariant: enumeration never loads a driver, so
+        // ASIOGetChannels has never been called and no count is knowable.
+        assertThat(devices)
+                .allSatisfy(device -> {
+                    assertThat(device.hasKnownOutputChannelCount())
+                            .as("an unloaded driver's output count is not knowable")
+                            .isFalse();
+                    assertThat(device.hasKnownInputChannelCount()).isFalse();
+                    assertThat(device.maxOutputChannels())
+                            .as("no fabricated positive count is ever reported")
+                            .isNotPositive()
+                            .isEqualTo(AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN);
+                    assertThat(device.maxInputChannels())
+                            .isNotPositive()
+                            .isEqualTo(AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN);
+                });
+    }
+
+    @Test
     void listDevicesReturnsEmptyWhenEnumerationSymbolIsAbsent() {
         StubDriverShim shim = StubDriverShim.unavailable();
         AsioBackend.setDriverShimFactory(() -> shim);

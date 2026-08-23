@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.SubmissionPublisher;
@@ -51,7 +52,9 @@ final class SpyStreamingBackend implements AudioBackend {
     private volatile RuntimeException openFailure;
     private volatile boolean available = true;
     private volatile boolean streamingSupported = true;
+    private volatile List<AudioDeviceInfo> devices = List.of();
     private final AtomicInteger closeCount = new AtomicInteger();
+    private volatile Runnable controlPanelAction;
 
     /**
      * Wedges {@link #awaitSinkCapacity(long)} the way
@@ -157,7 +160,18 @@ final class SpyStreamingBackend implements AudioBackend {
 
     @Override
     public List<AudioDeviceInfo> listDevices() {
-        return List.of();
+        return devices;
+    }
+
+    /**
+     * Seeds the enumeration this spy answers with, so a test can drive the
+     * real settings chain — enumerate, filter to selectable outputs, choose
+     * a name, apply — end to end (story 316 review, R4).
+     *
+     * @param enumerated the devices this backend should report
+     */
+    void setDevices(List<AudioDeviceInfo> enumerated) {
+        this.devices = List.copyOf(enumerated);
     }
 
     @Override
@@ -208,6 +222,23 @@ final class SpyStreamingBackend implements AudioBackend {
         // letting tests observe several blocks well inside their
         // await budgets (never a full wall-clock block period).
         LockSupport.parkNanos(Math.min(timeoutNanos, 1_000_000L));
+    }
+
+    /**
+     * Installs the native driver control-panel action this spy offers, so a
+     * test can make it block the way a real modal driver dialog does (story
+     * 316 re-review, stall audit A1).
+     *
+     * @param action the action {@link #openControlPanel()} should hand out,
+     *               or {@code null} for a backend with no panel
+     */
+    void setControlPanelAction(Runnable action) {
+        this.controlPanelAction = action;
+    }
+
+    @Override
+    public Optional<Runnable> openControlPanel() {
+        return Optional.ofNullable(controlPanelAction);
     }
 
     @Override

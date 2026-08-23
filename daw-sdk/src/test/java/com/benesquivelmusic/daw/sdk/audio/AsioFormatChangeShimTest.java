@@ -58,9 +58,12 @@ class AsioFormatChangeShimTest {
      * {@code daw-sdk} executes in the Maven reactor before
      * {@code daw-core}'s {@code generate-resources} phase, which is
      * where the CMake native build produces the DLL. The hard-failure
-     * env-gated assertions live in {@code NativeLibraryDetectorTest}
-     * inside {@code daw-core} (which runs after the native build and
-     * has {@code -Djava.library.path=${native.libs.dir}} set).
+     * {@code DAW_REQUIRE_ASIOSHIM} assertions live in the three
+     * {@code daw-core} suites that run after that native build with
+     * {@code -Djava.library.path=${native.libs.dir}} set:
+     * {@code NativeLibraryDetectorTest}, {@code AsioStreamingIntegrationTest}
+     * (story 311) and {@code AsioEngineStreamingIntegrationTest}
+     * (story 316).
      */
     @Test
     @EnabledOnOs(OS.WINDOWS)

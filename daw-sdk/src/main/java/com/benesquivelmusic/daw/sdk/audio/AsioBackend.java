@@ -30,10 +30,16 @@ import java.util.logging.Logger;
  * and {@link AudioBackendSelector} will fall back to
  * {@link JavaxSoundBackend}.</p>
  *
- * <p>The SDK itself only declares the public surface defined by
- * {@link AudioBackend}; wiring the ASIO buffer-switch callback into
- * {@link #inputBlocks()} / {@link #sink(AudioBlock)} lives in the
- * implementation layer that ships the native shim.</p>
+ * <p>Since story 311 the buffer-switch bridge lives here in the SDK:
+ * {@link #open(DeviceId, AudioFormat, int)} installs an
+ * {@code AsioBufferSwitchShim} that pumps the driver's callback into
+ * {@link #inputBlocks()} and {@link #sink(AudioBlock)}, so this class —
+ * not some downstream layer — is what really moves audio. The bridge
+ * needs the native shim's story-311 streaming symbols; when they are
+ * absent {@code open()} degrades to the story-310 lifecycle-only path,
+ * whose {@code sink} discards. {@link #supportsStreaming()} probes for
+ * exactly those symbols so a caller can refuse such a host before
+ * opening a stream that would be silent by construction (story 316).</p>
  */
 public final class AsioBackend implements AudioBackend {
 
@@ -186,6 +192,32 @@ public final class AsioBackend implements AudioBackend {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One entry per installed x64 ASIO driver, straight from the registry
+     * enumeration — no driver is loaded to produce this list.</p>
+     *
+     * <p>Each entry is therefore
+     * {@linkplain AudioDeviceInfo#unprobed(int, String, String) unprobed}:
+     * its channel counts are {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN}
+     * rather than a number (story 316 review). {@code ASIOGetChannels} only
+     * answers after {@code loadDriver} + {@code ASIOInit}, and loading every
+     * installed driver to fill a settings menu is not acceptable: an ASIO
+     * driver may take exclusive control of its hardware and may open a modal
+     * control panel. So the count is genuinely unknown here, and inventing
+     * a plausible one (2) would be a lie.</p>
+     *
+     * <p>Reporting {@code 0} — the previous behaviour — was equally wrong in
+     * the other direction: {@code 0} means "this direction is not offered",
+     * so {@link AudioDeviceInfo#supportsOutput()} answered {@code false} for
+     * every ASIO driver and the Settings device menus filtered them all out.
+     * The user could not select or persist a specific driver, which is the
+     * whole point of enumerating them. The unknown sentinel offers both
+     * directions without claiming a count; the real counts are read from the
+     * driver in {@link #open(DeviceId, AudioFormat, int)}, which clamps the
+     * requested channel set against them.</p>
+     */
     @Override
     public List<AudioDeviceInfo> listDevices() {
         try (AsioDriverShim shim = driverShimFactory.get()) {
@@ -196,9 +228,7 @@ public final class AsioBackend implements AudioBackend {
             List<AudioDeviceInfo> devices = new java.util.ArrayList<>(drivers.size());
             for (int index = 0; index < drivers.size(); index++) {
                 AsioDriverShim.DriverDescriptor driver = drivers.get(index);
-                devices.add(new AudioDeviceInfo(
-                        index, driver.name(), NAME,
-                        0, 0, 0.0, List.of(), 0.0, 0.0));
+                devices.add(AudioDeviceInfo.unprobed(index, driver.name(), NAME));
             }
             return List.copyOf(devices);
         } catch (RuntimeException ignored) {
@@ -799,9 +829,24 @@ public final class AsioBackend implements AudioBackend {
      * is the signal that distinguishes "audio reached the hardware" from
      * "the output bridge is dead": it moves only when
      * {@link AsioBufferSwitchShim#bufferSwitch(int, int)} consumed a rendered
-     * block rather than emitting silence. daw-core's Windows streaming proof
-     * requires it to advance; it is deliberately <em>not</em> part of the
-     * {@link AudioBackend} contract.</p>
+     * block rather than emitting silence. It is deliberately <em>not</em>
+     * part of the {@link AudioBackend} contract.</p>
+     *
+     * <p>What exercises it, honestly (story 316 review): today, only
+     * STUBBED tests — {@code AsioBackendStreamingTest} pins the closed /
+     * no-bridge / live-bridge answers and {@code AsioBufferSwitchShimTest}
+     * pins the counter's own advance-and-hold behaviour, both driving a fake
+     * shim with no driver anywhere. daw-core's engine-level Windows proof,
+     * {@code AsioEngineStreamingIntegrationTest}, asserts this count
+     * strictly increases, but it runs in no environment this project
+     * currently has: it is gated on Windows, then on {@code asioshim.dll}
+     * being on the FFM library path, then on an ASIO driver actually being
+     * installed — and the hosted {@code windows-latest} lane in
+     * {@code .github/workflows/windows-asioshim.yml} has no driver, so it
+     * stops at that assumption. Real proof needs a Windows host with BOTH
+     * an ASIO driver and the shim: a developer machine with an interface,
+     * or a self-hosted runner with one. Treat green CI as evidence about the
+     * counter's plumbing, never as evidence that audio reached hardware.</p>
      *
      * @return rendered blocks consumed by the driver callback, or {@code 0}
      *         when the backend is closed or the native streaming shim was

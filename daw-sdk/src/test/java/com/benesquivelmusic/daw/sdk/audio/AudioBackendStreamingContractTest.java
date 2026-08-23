@@ -48,24 +48,64 @@ class AudioBackendStreamingContractTest {
     }
 
     /**
-     * ASIO's flag is not a constant (story 316 review): it must equal what
-     * the production {@link AsioStreamingShim} resolves on <em>this</em>
-     * host — {@code true} on the {@code windows-asioshim.yml} lane where
-     * {@code asioshim.dll} exports the story-311 symbols, {@code false} on a
-     * host without it, where {@code open()} would degrade to the silent
-     * story-310 path and the selector must not offer ASIO. Asserting a
-     * literal {@code true} here was the exact false success the gate exists
-     * to prevent.
+     * ASIO's flag is not a constant (story 316 review): it must answer from
+     * a live probe of the native {@code asioshim}'s streaming symbols —
+     * {@code true} on the {@code windows-asioshim.yml} lane where the DLL
+     * exports them, {@code false} on a host without it, where {@code open()}
+     * would degrade to the silent story-310 path and the selector must not
+     * offer ASIO. Asserting a literal {@code true} here would be the exact
+     * false success the gate exists to prevent.
+     *
+     * <p>Deriving the expected value from {@code new
+     * AsioStreamingShim().isStreamingAvailable()} is no better, and is what
+     * this test used to do: that is the very call
+     * {@link AsioBackend#supportsStreaming()} makes, so the assertion holds
+     * for <em>any</em> implementation of the method on <em>every</em> host —
+     * a tautology, not a test. Both answers are pinned through the
+     * package-private shim seam instead, which is host-independent and
+     * fails the moment the flag stops tracking the probe. Only the
+     * STREAMING shim is substituted: the driver / lifecycle shim stays the
+     * production one, so this also pins that the capability is answered by
+     * the streaming probe alone (where {@code AsioBackendStreamingTest}
+     * asks the same question of a backend whose driver shim is stubbed
+     * too).</p>
      */
     @Test
-    void asioSupportsStreamingTracksTheProductionStreamingShim() {
-        boolean shimStreams;
-        try (AsioStreamingShim shim = new AsioStreamingShim()) {
-            shimStreams = shim.isStreamingAvailable();
+    void asioSupportsStreamingTracksTheStreamingShimProbeOnBothBranches() {
+        try {
+            AsioBackend.setStreamingShimFactory(() -> new ProbeStreamingShim(false));
+            assertFalse(new AsioBackend().supportsStreaming(),
+                    "an asioshim missing the story-311 streaming symbols must not be "
+                            + "offered as a streaming backend: open() would degrade to "
+                            + "the silent story-310 path");
+
+            AsioBackend.setStreamingShimFactory(() -> new ProbeStreamingShim(true));
+            assertTrue(new AsioBackend().supportsStreaming(),
+                    "an asioshim exporting every story-311 streaming symbol makes ASIO "
+                            + "a real streaming backend");
+        } finally {
+            AsioBackend.resetStreamingShimFactory();
         }
-        assertEquals(shimStreams, new AsioBackend().supportsStreaming(),
-                "ASIO may claim streaming only when asioshim exports every "
-                        + "story-311 streaming symbol on this host");
+    }
+
+    /**
+     * Streaming shim whose availability probe answers a fixed value. Nothing
+     * else is overridden — {@code supportsStreaming()} calls the probe and
+     * closes the shim, and the inherited {@code close()} releases the real
+     * superclass arena.
+     */
+    private static final class ProbeStreamingShim extends AsioStreamingShim {
+
+        private final boolean streamingAvailable;
+
+        ProbeStreamingShim(boolean streamingAvailable) {
+            this.streamingAvailable = streamingAvailable;
+        }
+
+        @Override
+        boolean isStreamingAvailable() {
+            return streamingAvailable;
+        }
     }
 
     @Test

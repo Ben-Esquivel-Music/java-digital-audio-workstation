@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
@@ -21,7 +23,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -30,6 +35,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Tests for {@link DefaultAudioEngineController}. Uses a plain
@@ -634,7 +640,19 @@ class DefaultAudioEngineControllerTest {
      * 200 ms drain, so the total wait is at least ~450 ms before STOPPED. */
     private static void waitForLong(java.util.function.BooleanSupplier condition)
             throws InterruptedException {
-        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(3).toNanos();
+        waitFor(condition, java.time.Duration.ofSeconds(3));
+    }
+
+    /**
+     * Explicit-budget wait. A guard whose budget is SHORTER than the waits
+     * the production path itself performs turns a correct implementation
+     * into a flake, so the format-change tests below — which sit behind a
+     * 250 ms coalesce plus up to two bounded 1 s render-pump joins — pass
+     * their own budget instead of borrowing the 3 s default.
+     */
+    private static void waitFor(java.util.function.BooleanSupplier condition,
+                                java.time.Duration budget) throws InterruptedException {
+        long deadline = System.nanoTime() + budget.toNanos();
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {
                 return;
@@ -642,8 +660,8 @@ class DefaultAudioEngineControllerTest {
             Thread.sleep(10);
         }
         if (!condition.getAsBoolean()) {
-            throw new AssertionError(
-                    "Timed out after 3 s waiting for condition to become true");
+            throw new AssertionError("Timed out after " + budget
+                    + " waiting for condition to become true");
         }
     }
 
@@ -969,6 +987,68 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
+    void theEnumeratedDriverTheUserSelectsBecomesTheOpenLaddersDeviceId(
+            @TempDir Path projectRoot) {
+        // Story 316 review (R4) — the whole selection chain, end to end, on
+        // the shape AsioBackend.listDevices() really produces: drivers whose
+        // channel counts are unknown because nothing has loaded them.
+        // Reporting them as 0-channel devices took them out of the settings
+        // menus (supportsOutput() was false), so "device B" could never be
+        // selected, never be persisted, and never reach a rung's DeviceId.
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> {
+                            SpyStreamingBackend asio = new SpyStreamingBackend("ASIO");
+                            asio.setDevices(List.of(
+                                    AudioDeviceInfo.unprobed(0, "Driver A", "ASIO"),
+                                    AudioDeviceInfo.unprobed(1, "Driver B", "ASIO")));
+                            return asio;
+                        }));
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            // 1. What the Settings output menu is built from: the enumeration,
+            //    filtered by supportsOutput() exactly as DeviceEnumerationTask
+            //    filters it.
+            List<String> selectableOutputs = controller.listDevices("ASIO").stream()
+                    .filter(AudioDeviceInfo::supportsOutput)
+                    .map(AudioDeviceInfo::name)
+                    .toList();
+            assertThat(selectableOutputs)
+                    .as("a specific driver is offered, not just the blank default")
+                    .containsExactly("Driver A", "Driver B");
+            assertThat(controller.listDevices("ASIO"))
+                    .as("and nothing claims a channel count it has not read from a driver")
+                    .allSatisfy(device -> assertThat(device.maxOutputChannels())
+                            .isEqualTo(AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN)
+                            .isNotPositive());
+
+            // 2. The user picks the second driver; the name is what persists.
+            String chosen = selectableOutputs.get(1);
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", chosen, SampleRate.HZ_44100, 512, 16, 1));
+
+            // 3. It survives into the rung the next open will actually use.
+            StreamingProvision provision = engine.getStreamingProvision();
+            assertThat(provision).isNotNull();
+            assertThat(provision.firstRung().backend().name())
+                    .as("the requested backend passed the gate and heads the ladder")
+                    .isEqualTo("ASIO");
+            assertThat(provision.firstRung().device())
+                    .as("the head rung opens the DRIVER THE USER CHOSE, never the default")
+                    .isEqualTo(new DeviceId("ASIO", "Driver B"))
+                    .isNotEqualTo(DeviceId.defaultFor("ASIO"));
+            assertThat(provision.requestedDevice())
+                    .isEqualTo(new DeviceId("ASIO", "Driver B"));
+        } finally {
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
     void stoppingTheStreamMakesActiveNoneWhileProvisionedStillNamesTheRung(
             @TempDir Path projectRoot) {
         // Story 316 review: "active" is the OPEN stream's backend (book §3.2
@@ -1008,6 +1088,370 @@ class DefaultAudioEngineControllerTest {
             engine.stopAudioOutput();
             engine.stop();
             controller.shutdown();
+        }
+    }
+
+    @Test
+    void aPausedStreamStillNamesItsBackendAsActive(@TempDir Path projectRoot) {
+        // Story 316 review — the PAUSED edge, decided deliberately rather
+        // than left to whatever isStreamOpen() happens to return.
+        //
+        // A paused stream renders nothing, so "active" could arguably read
+        // BACKEND_NONE. It must not. Pause stops the render pump but never
+        // closes the backend: the device handle is still held, the driver is
+        // still ours, and no other application can take it. Answering "None"
+        // there would tell the Settings utility panel that the device is
+        // free while the engine is still holding it — a NEW lie of exactly
+        // the kind this story removed from the after-Stop path, only
+        // pointing the other way. "Nothing is audible right now" is a
+        // transport question, not a backend one.
+        //
+        // Pinned so a future change to isStreamOpen(),
+        // openStreamBackendName() or getActiveBackendName() has to be
+        // deliberate: narrowing "open" to RUNNING alone fails here.
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            engine.startAudioOutput();
+            assertThat(controller.getActiveBackendName()).isEqualTo("ASIO");
+
+            engine.pauseAudioOutput();
+
+            assertThat(engine.isStreamPaused())
+                    .as("precondition: the engine really is PAUSED, not stopped")
+                    .isTrue();
+            assertThat(spy.isOpen())
+                    .as("pause never closes the backend — the device handle is held")
+                    .isTrue();
+            assertThat(spy.closeCount())
+                    .as("and nothing was released")
+                    .isZero();
+            assertThat(controller.getActiveBackendName())
+                    .as("a PAUSED stream still owns the device, so it is still "
+                            + "the active backend — 'None' would claim the "
+                            + "device is free while the engine holds it")
+                    .isEqualTo("ASIO");
+            assertThat(controller.getProvisionedBackendName())
+                    .as("provisioned agrees while a stream is open, paused or not")
+                    .isEqualTo("ASIO");
+
+            engine.stopAudioOutput();
+
+            assertThat(spy.isOpen())
+                    .as("Stop DOES close it — the contrast that makes the "
+                            + "paused answer above a decision and not an accident")
+                    .isFalse();
+            assertThat(controller.getActiveBackendName())
+                    .as("only a closed stream frees the device, and only then "
+                            + "is nothing active")
+                    .isEqualTo(AudioEngineController.BACKEND_NONE);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void theDriverControlPanelStaysReachableAcrossAStop(@TempDir Path projectRoot) {
+        // Story 316 review — pins the entire justification for openControlPanel()
+        // resolving the PROVISIONED backend (AudioEngine.getBackend()'s
+        // else-branch) rather than the ACTIVE one. Driver settings are what a
+        // user reaches for while the transport is STOPPED, which is precisely
+        // when getActiveBackendName() honestly answers BACKEND_NONE: sourcing
+        // the panel from the active fact would make the action disappear after
+        // every Stop, and nothing else in the suite would have noticed.
+        MockAudioBackend backend = new MockAudioBackend();
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of(MockAudioBackend.NAME, () -> backend));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 16, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    MockAudioBackend.NAME, "", "Mock Device",
+                    SampleRate.HZ_48000, 64, 16, 1));
+            engine.startAudioOutput();
+
+            assertThat(controller.getActiveBackendName())
+                    .as("precondition: the stream really opened on the mock")
+                    .isEqualTo(MockAudioBackend.NAME);
+            controller.openControlPanel().orElseThrow().run();
+            assertThat(backend.controlPanelInvocationCount())
+                    .as("while streaming, the panel action reaches the open backend")
+                    .isEqualTo(1);
+
+            engine.stopAudioOutput();
+
+            assertThat(controller.getActiveBackendName())
+                    .as("Stop closes the stream, so nothing holds a device and "
+                            + "nothing is active")
+                    .isEqualTo(AudioEngineController.BACKEND_NONE);
+            assertThat(controller.getProvisionedBackendName())
+                    .as("the provision survives the Stop and still names the "
+                            + "head rung")
+                    .isEqualTo(MockAudioBackend.NAME);
+
+            Optional<Runnable> afterStop = controller.openControlPanel();
+            assertThat(afterStop)
+                    .as("the driver panel is still offered with nothing active — "
+                            + "it is sourced from the PROVISIONED backend")
+                    .isPresent();
+            afterStop.orElseThrow().run();
+            assertThat(backend.controlPanelInvocationCount())
+                    .as("and the returned action really reaches that provisioned "
+                            + "backend rather than being an empty gesture")
+                    .isEqualTo(2);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void anOpenDriverControlPanelDoesNotBlockTheRestOfTheController(
+            @TempDir Path projectRoot) throws Exception {
+        // Story 316 re-review, stall audit A1. The panel action used to run
+        // inside `synchronized (DefaultAudioEngineController.this)`. That call
+        // blocks for as long as the user leaves the driver's MODAL dialog
+        // open — the SDK exempts this one downcall from AsioControlThread's
+        // fifteen-second budget for exactly that reason ("a user reading a
+        // driver dialog is not a wedged driver") — so every synchronized
+        // controller method queued behind the user's attention span. Worst of
+        // all, SettingsDialog.updateAudioUtilityDisabledState() calls
+        // openControlPanel() ON THE FX THREAD to decide whether to enable the
+        // button, so an open driver panel froze the entire UI.
+        //
+        // Every wait below is bounded, so a regression FAILS on a timeout
+        // rather than hanging the suite.
+        CountDownLatch panelRunning = new CountDownLatch(1);
+        CountDownLatch releasePanel = new CountDownLatch(1);
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        spy.setControlPanelAction(() -> {
+            panelRunning.countDown();
+            try {
+                // Stands in for the modal driver dialog: returns only when
+                // this test says so. The bound is a suite safety net only;
+                // the finally block below always releases it first.
+                releasePanel.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        ExecutorService workers = Executors.newFixedThreadPool(3);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            workers.execute(controller.openControlPanel().orElseThrow());
+            assertThat(panelRunning.await(5, TimeUnit.SECONDS))
+                    .as("precondition: the driver panel really is up and will not "
+                            + "return until this test releases it")
+                    .isTrue();
+
+            Callable<String> provisionedQuery = controller::getProvisionedBackendName;
+            assertThat(workers.submit(provisionedQuery).get(5, TimeUnit.SECONDS))
+                    .as("an ordinary synchronized controller query must not queue "
+                            + "behind the user's attention span")
+                    .isEqualTo("ASIO");
+
+            Callable<Optional<Runnable>> panelQuery = controller::openControlPanel;
+            assertThat(workers.submit(panelQuery).get(5, TimeUnit.SECONDS))
+                    .as("this is the exact call SettingsDialog makes on the FX "
+                            + "thread from updateAudioUtilityDisabledState()")
+                    .isPresent();
+        } finally {
+            releasePanel.countDown();
+            workers.shutdown();
+            assertThat(workers.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void aBackendIsNotClosedWhileItsDriverControlPanelIsOpen(@TempDir Path projectRoot) {
+        // Story 316 re-review, stall audit A1, second half. Taking the modal
+        // panel action out from under the controller monitor removed a real
+        // protection: the monitor made a concurrent close IMPOSSIBLE for the
+        // dialog's lifetime. Closing a backend frees exactly the native state
+        // the dialog is running on (an AsioBufferSwitchShim upcall arena, a
+        // SourceDataLine, a Pa_ handle), so without a replacement the fix
+        // would have traded a UI freeze for a native use-after-free. The
+        // narrow replacement is a registration every close path consults,
+        // mirroring the refusal closeProvisionBackendsOnceQuiesced() already
+        // makes for a render pump that will not confirm quiescence.
+        //
+        // The close is issued FROM INSIDE the panel action deliberately: that
+        // makes this test independent of which lock the panel holds, so it
+        // pins the close-skip guard alone. The sibling test above pins the
+        // monitor removal.
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        AtomicInteger closesSeenWhileThePanelWasOpen = new AtomicInteger(-1);
+        spy.setControlPanelAction(() -> {
+            controller.shutdown();
+            closesSeenWhileThePanelWasOpen.set(spy.closeCount());
+        });
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+
+            controller.openControlPanel().orElseThrow().run();
+
+            assertThat(closesSeenWhileThePanelWasOpen)
+                    .as("a shutdown that lands while the driver's modal dialog is up "
+                            + "must refuse to free the native state that dialog is "
+                            + "running on")
+                    .hasValue(0);
+
+            controller.shutdown();
+            assertThat(spy.closeCount())
+                    .as("and the refusal is scoped to the dialog's lifetime — once "
+                            + "the panel returns the instance is closeable again, or "
+                            + "the guard would leak every backend a user ever opened "
+                            + "a panel on")
+                    .isEqualTo(1);
+        } finally {
+            engine.stop();
+        }
+    }
+
+    @Test
+    void aFailedOpenLeavesActiveNoneWhileProvisionedStillNamesTheHeadRung(
+            @TempDir Path projectRoot) throws InterruptedException {
+        // Story 316 review, the OTHER half of the same finding as the test
+        // above: the Settings utility panel used to keep naming a backend as
+        // active not just after Stop but after an open FAILURE, because
+        // getActiveBackendName() fell back to the provision's head rung when
+        // no stream was open. Here EVERY rung refuses, so startAudioOutput()
+        // throws and nothing is streaming at all — yet the pre-fix body
+        // would still have answered "ASIO".
+        SpyStreamingBackend head = new SpyStreamingBackend("ASIO");
+        head.failOpensWith(new AudioBackendException("ASIO driver refused the open"));
+        SpyStreamingBackend fallback = new SpyStreamingBackend("SpyFallback");
+        fallback.failOpensWith(new AudioBackendException("fallback refused it too"));
+
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        // Hand-built all-failing ladder: no real hardware, and the failure
+        // is the ladder's own, not a provisioning-gate rejection.
+        engine.setStreamingProvision(new StreamingProvision("ASIO", List.of(
+                new BackendStreamRung(head, new DeviceId("ASIO", "Dev B")),
+                new BackendStreamRung(fallback, DeviceId.defaultFor("SpyFallback")))));
+
+        // Both rungs publish a fallback event on the way down, and the
+        // spies carry DISTINCT messages so "the first failure" is an
+        // assertable fact rather than a claim about an exception type.
+        com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
+                com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
+        com.benesquivelmusic.daw.core.event.DefaultEventBus bus =
+                new com.benesquivelmusic.daw.core.event.DefaultEventBus();
+        List<com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent> events =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        CountDownLatch published = new CountDownLatch(2);
+        bus.on(com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent.class, event -> {
+            events.add(event);
+            published.countDown();
+        });
+        com.benesquivelmusic.daw.core.event.EventBusPublisher.setDefault(bus);
+        try {
+            assertThatThrownBy(engine::startAudioOutput)
+                    .as("every rung refused, so the open must surface the FIRST "
+                            + "rung's failure rather than pretend a stream exists "
+                            + "or report the last rung's")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessage("ASIO driver refused the open");
+
+            assertThat(engine.openStreamBackendName()).isEmpty();
+            assertThat(head.isOpen()).isFalse();
+            assertThat(fallback.isOpen()).isFalse();
+
+            assertThat(controller.getActiveBackendName())
+                    .as("no rung opened, so nothing is active — the utility "
+                            + "panel must not name a backend after a failed open")
+                    .isEqualTo(AudioEngineController.BACKEND_NONE);
+            assertThat(controller.getProvisionedBackendName())
+                    .as("the provision still names the head rung the next open "
+                            + "will try")
+                    .isEqualTo("ASIO");
+
+            // The EventBus half of the same honesty contract: with no rung
+            // streaming, every published hop must say so — "none" for both
+            // active components — while still naming the user's request.
+            assertThat(published.await(5, TimeUnit.SECONDS))
+                    .as("both failed hops must publish a BackendFallbackEvent")
+                    .isTrue();
+            assertThat(events).hasSize(2);
+            assertThat(events).allSatisfy(event -> {
+                assertThat(event.requestedBackend()).isEqualTo("ASIO");
+                assertThat(event.requestedDevice()).isEqualTo("Dev B");
+                assertThat(event.activeBackend())
+                        .as("nothing opened, so no event may name an active backend")
+                        .isEqualTo("none");
+                assertThat(event.activeDevice())
+                        .as("nothing opened, so no event may name an active device")
+                        .isEqualTo("none");
+            });
+            assertThat(events.get(0).cause())
+                    .as("the hops publish in ladder order")
+                    .isEqualTo("ASIO driver refused the open");
+            assertThat(events.get(1).cause()).isEqualTo("fallback refused it too");
+        } finally {
+            com.benesquivelmusic.daw.core.event.EventBusPublisher.setDefault(previousBus);
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+            bus.close();
+        }
+    }
+
+    @Test
+    void provisionedBackendIsNoneWhenNothingIsProvisionedAtAll(
+            @TempDir Path projectRoot) {
+        // The third branch of getProvisionedBackendName(): no open stream AND
+        // no installed provision — a controller nobody has configured yet.
+        // Every other test of this query either installs a provision or
+        // overrides the method, so the BACKEND_NONE floor was untested.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        try {
+            assertThat(engine.getStreamingProvision())
+                    .as("construction must not install a provision — that is what "
+                            + "makes this the untested branch")
+                    .isNull();
+            assertThat(controller.getProvisionedBackendName())
+                    .isEqualTo(AudioEngineController.BACKEND_NONE);
+        } finally {
+            controller.shutdown();
+            engine.stop();
         }
     }
 
@@ -1508,21 +1952,37 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
-    void refusedProvisionSwapClosesTheIncomingBackendInstances(@TempDir Path projectRoot)
-            throws Exception {
-        // Story 316 review: setStreamingProvision now ABORTS the swap when
-        // the outgoing stream's pump cannot be confirmed quiesced. By then
-        // buildStreamingProvision has already CONSTRUCTED the incoming
-        // backend instances, and an exception that simply propagated left
-        // them neither installed nor closed — leaking exactly the native
-        // handles the refusal exists to protect.
+    void aReconfigureIsRefusedWholeWhileTheRenderPumpMayStillBeRendering(
+            @TempDir Path projectRoot) throws Exception {
+        // Story 316 re-review: applyConfiguration DISCARDED stopAudioOutput()'s
+        // quiescence verdict and then mutated the engine FORMAT. A
+        // format-only change reaches neither engine-side guard —
+        // setStreamingProvision refuses a SWAP, requireQuiescedPump refuses a
+        // REOPEN — and setFormat itself refuses only while isRunning(), which
+        // the stop() just above it has already cleared. A pump whose bounded
+        // join timed out could therefore still be inside processBlock,
+        // rendering through the RenderPipeline shaped by the OLD format,
+        // while the new format was stored under it.
+        //
+        // This replaces the story-316 'refusedProvisionSwapClosesTheIncoming
+        // BackendInstances' test, whose premise this fix preempts: the
+        // reconfigure is now refused BEFORE it builds the incoming provision,
+        // so there is no orphaned incoming instance left to close.
+        // installProvision's close-the-orphans catch stays as the defence for
+        // its other caller (installDefaultProvision) and any future one.
+        AtomicInteger incomingBuilds = new AtomicInteger();
         SpyStreamingBackend incoming = new SpyStreamingBackend("SpyIncoming");
         com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
                 new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
-                        java.util.Map.of("SpyIncoming", () -> incoming));
+                        java.util.Map.of("SpyIncoming", () -> {
+                            incomingBuilds.incrementAndGet();
+                            return incoming;
+                        }));
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        AtomicInteger postReconfigureRuns = new AtomicInteger();
+        List<String> notified = java.util.Collections.synchronizedList(new ArrayList<>());
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
+                engine, postReconfigureRuns::incrementAndGet, notified::add,
                 new IncompleteTakeStore(projectRoot), selector);
         SpyStreamingBackend outgoing = new SpyStreamingBackend("Outgoing");
         StreamingProvision outgoingProvision = new StreamingProvision("Outgoing", List.of(
@@ -1532,23 +1992,40 @@ class DefaultAudioEngineControllerTest {
             outgoing.blockAwait = true;
             engine.startAudioOutput();
             waitForLong(() -> outgoing.blockedAwaitEntries.get() >= 1);
+            AudioFormat before = engine.getFormat();
 
-            assertThatThrownBy(() -> controller.applyConfiguration(
+            Throwable failure = catchThrowable(() -> controller.applyConfiguration(
                     new AudioEngineController.Request(
-                            "SpyIncoming", "", "", SampleRate.HZ_44100, 512, 16, 1)))
-                    .as("the refused swap still reaches the caller")
-                    .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.AudioBackendException.class)
-                    .hasMessageContaining("render pump");
+                            "SpyIncoming", "", "", SampleRate.HZ_48000, 256, 24, 1)));
 
-            assertThat(incoming.closeCount())
-                    .as("the incoming instances the aborted swap orphaned are released")
-                    .isEqualTo(1);
-            assertThat(outgoing.closeCount())
-                    .as("the OUTGOING instance is still live on the engine — untouched")
+            assertThat(engine.getFormat())
+                    .as("the engine format is NOT mutated while a render pump may still"
+                            + " be inside processBlock")
+                    .isEqualTo(before);
+            assertThat(failure)
+                    .as("and the refusal reaches the caller")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("render pump");
+            assertThat(incomingBuilds.get())
+                    .as("the refusal precedes the provision rebuild, so no incoming"
+                            + " backend instance is constructed and then orphaned")
                     .isZero();
             assertThat(engine.getStreamingProvision())
-                    .as("the swap aborted whole; the engine still points at the old provision")
+                    .as("the engine still points at the provision it was streaming")
                     .isSameAs(outgoingProvision);
+            assertThat(outgoing.closeCount())
+                    .as("and the wedged backend's handle is untouched")
+                    .isZero();
+            assertThat(postReconfigureRuns.get())
+                    .as("the post-reconfigure callback still runs on the refusal path —"
+                            + " the settings dialog must re-enable on EVERY path")
+                    .isEqualTo(1);
+            assertThat(controller.engineState())
+                    .as("the controller lands in STOPPED so the user can retry")
+                    .isEqualTo(EngineState.STOPPED);
+            assertThat(notified)
+                    .as("and the user is told why")
+                    .anyMatch(message -> message.contains("render pump"));
         } finally {
             outgoing.blockAwait = false;
             engine.stopAudioOutput();
@@ -1620,6 +2097,244 @@ class DefaultAudioEngineControllerTest {
         controller.setSampleRate("", "", 48_000.0);
         controller.setSampleRate("Java Sound", "", 48_000.0);
         controller.setSampleRate("PortAudio", "", 48_000.0);
+    }
+
+    // -- Story 316 re-review: the R5 sibling path (A1) ---------------------
+
+    @Test
+    void aDriverFormatChangeDoesNotTouchTheEngineFormatWhileTheRenderPumpMayStillBeRendering(
+            @TempDir Path projectRoot) throws InterruptedException {
+        // The SIBLING of aReconfigureIsRefusedWholeWhileTheRenderPumpMayStill
+        // BeRendering. applyConfiguration was made to honour
+        // stopAudioOutput()'s quiescence verdict; performFormatChangeReopen
+        // discarded the very same verdict and then mutated the very same
+        // engine format field, from the device-event worker instead of the
+        // settings thread. Its only extra protection was a fixed 200 ms
+        // sleep, which proves nothing about whether the render pump left
+        // processBlock. Closing one caller of a shared predicate and leaving
+        // the other open leaves the hazard fully reachable.
+        WedgedRig rig = wedgedFormatChangeRig(projectRoot);
+        try {
+            AudioFormat before = rig.engine().getFormat();
+
+            publishBufferSizeChange(rig, 24);
+
+            // Wait on the callback, not on a delay: it is the one side effect
+            // BOTH outcomes produce (step 8 of a completed reopen, and the
+            // refusal path), so this wait cannot mask either result.
+            waitFor(() -> rig.postReconfigureRuns().get() >= 1,
+                    java.time.Duration.ofSeconds(20));
+
+            assertThat(rig.engine().getFormat())
+                    .as("the engine format must NOT be rewritten while a render pump may"
+                            + " still be inside processBlock, rendering through the"
+                            + " RenderPipeline, buffer pool and pump planes this format"
+                            + " sizes")
+                    .isEqualTo(before);
+            assertThat(rig.backend().closeCount())
+                    .as("and nothing the wedged pump is still calling into was torn down")
+                    .isZero();
+            assertThat(rig.backend().isOpen())
+                    .as("the stream the engine could not confirm quiesced is left alone")
+                    .isTrue();
+        } finally {
+            releaseWedgedRig(rig);
+        }
+    }
+
+    @Test
+    void aRefusedDriverFormatChangeTellsTheUserAndComesToRestInStopped(
+            @TempDir Path projectRoot) throws InterruptedException {
+        // How the refusal SURFACES on this path is a decision, not a
+        // leftover: performFormatChangeReopen runs on the format-change
+        // worker with no caller to throw at, and its existing failure
+        // handling logs. A refusal that only logged would be invisible to
+        // the user whose driver just renegotiated - indistinguishable from a
+        // reconfigure that silently did nothing.
+        WedgedRig rig = wedgedFormatChangeRig(projectRoot);
+        try {
+            publishBufferSizeChange(rig, 24);
+
+            waitFor(() -> rig.postReconfigureRuns().get() >= 1
+                            && rig.controller().engineState() == EngineState.STOPPED,
+                    java.time.Duration.ofSeconds(20));
+
+            List<String> messages;
+            synchronized (rig.notified()) {
+                messages = List.copyOf(rig.notified());
+            }
+            assertThat(messages)
+                    .as("the user is told the reconfigure was refused, and why")
+                    .anyMatch(message -> message.contains("render pump"));
+            assertThat(messages)
+                    .as("and is never also told it succeeded - nothing was reconfigured")
+                    .noneMatch(message -> message.equals("Audio engine reconfigured"));
+            assertThat(rig.postReconfigureRuns().get())
+                    .as("the post-reconfigure callback runs on EVERY terminal path of this"
+                            + " method, refusals included, so a surface that disabled itself"
+                            + " for the reconfigure re-enables")
+                    .isEqualTo(1);
+            assertThat(rig.stateWhenCallbackRan().get())
+                    .as("and it runs BEFORE the terminal state, per this codebase's"
+                            + " side-effects-precede-terminal-state rule")
+                    .isEqualTo(EngineState.RECONFIGURING);
+            assertThat(rig.controller().engineState())
+                    .as("STOPPED is the honest resting state - stop() cleared the engine's"
+                            + " running flag - and it leaves the user able to re-arm"
+                            + " transport and retry once the pump unblocks; RECONFIGURING"
+                            + " would strand every surface in a transition that has ended")
+                    .isEqualTo(EngineState.STOPPED);
+        } finally {
+            releaseWedgedRig(rig);
+        }
+    }
+
+    // -- Story 316 re-review: restored orphan-cleanup coverage (A2) --------
+
+    @Test
+    void aPlayRacingTheReconfigureRefusesTheSwapAndClosesTheIncomingBackendInstances(
+            @TempDir Path projectRoot) {
+        // Restores the coverage the R5 fix removed. installProvision's
+        // orphan-cleanup catch closes the INCOMING backend instances when the
+        // engine refuses a provision swap; its only test was deleted on the
+        // premise that applyConfiguration's new quiescence gate preempts every
+        // such refusal. It does not - it only moves the window.
+        //
+        // The gate runs BEFORE buildStreamingProvision; the swap runs AFTER
+        // it. A plain Play occupies exactly that window: TransportController
+        // calls AudioEngine.startAudioOutput() DIRECTLY (three call sites) and
+        // never takes this controller's monitor. That open runs startLocked(),
+        // so by the time installProvision reaches setStreamingProvision the
+        // engine is RUNNING and the swap is refused outright - a different
+        // refusal from the wedged-pump one, orphaning exactly the same
+        // freshly-constructed incoming instances.
+        //
+        // The interleaving is driven deterministically through the backend
+        // factory, which the production code invokes inside that very window,
+        // so no production test-seam is added for it.
+        SpyStreamingBackend outgoing = new SpyStreamingBackend("Outgoing");
+        SpyStreamingBackend incoming = new SpyStreamingBackend("SpyIncoming");
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        AtomicBoolean raced = new AtomicBoolean();
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("SpyIncoming", () -> {
+                            if (raced.compareAndSet(false, true)) {
+                                engine.startAudioOutput();
+                            }
+                            return incoming;
+                        }));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        StreamingProvision outgoingProvision = new StreamingProvision("Outgoing", List.of(
+                new BackendStreamRung(outgoing, DeviceId.defaultFor("Outgoing"))));
+        engine.setStreamingProvision(outgoingProvision);
+        try {
+            Throwable failure = catchThrowable(() -> controller.applyConfiguration(
+                    new AudioEngineController.Request(
+                            "SpyIncoming", "", "", SampleRate.HZ_44100, 512, 16, 1)));
+
+            assertThat(raced)
+                    .as("precondition: the racing open really did land inside the window")
+                    .isTrue();
+            assertThat(engine.isRunning())
+                    .as("precondition: that open left the engine RUNNING, which is what "
+                            + "makes the swap refusable at all")
+                    .isTrue();
+            assertThat(failure)
+                    .as("the engine refuses the swap whole rather than re-pointing itself "
+                            + "at a new ladder while a stream renders through the old one")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("while engine is running");
+            assertThat(incoming.closeCount())
+                    .as("buildStreamingProvision had already CONSTRUCTED the incoming"
+                            + " instances by then, so an exception that simply propagated"
+                            + " left them neither installed nor closed - a leak of exactly"
+                            + " the native handles this ordering exists to protect")
+                    .isEqualTo(1);
+            assertThat(outgoing.closeCount())
+                    .as("the OUTGOING instance is still live on the engine - untouched")
+                    .isZero();
+            assertThat(engine.getStreamingProvision())
+                    .as("the swap aborted whole; the engine still points at the old"
+                            + " provision")
+                    .isSameAs(outgoingProvision);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    /**
+     * A controller whose engine is streaming through a render pump that
+     * cannot be joined: {@code stopAudioOutput()} answers {@code false}, the
+     * one condition under which no caller may change the engine format.
+     */
+    private record WedgedRig(AudioEngine engine,
+                             DefaultAudioEngineController controller,
+                             SpyStreamingBackend backend,
+                             DeviceId device,
+                             List<String> notified,
+                             AtomicInteger postReconfigureRuns,
+                             AtomicReference<EngineState> stateWhenCallbackRan) {
+    }
+
+    private static WedgedRig wedgedFormatChangeRig(Path projectRoot)
+            throws InterruptedException {
+        SpyStreamingBackend wedged = new SpyStreamingBackend("SpyWedged");
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 16, 64));
+        List<String> notified = java.util.Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger postReconfigureRuns = new AtomicInteger();
+        AtomicReference<EngineState> stateWhenCallbackRan = new AtomicReference<>();
+        AtomicReference<DefaultAudioEngineController> controllerRef = new AtomicReference<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine,
+                () -> {
+                    stateWhenCallbackRan.compareAndSet(
+                            null, controllerRef.get().engineState());
+                    postReconfigureRuns.incrementAndGet();
+                },
+                notified::add,
+                new IncompleteTakeStore(projectRoot));
+        controllerRef.set(controller);
+        DeviceId device = new DeviceId("SpyWedged", "Wedged Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyWedged",
+                List.of(new BackendStreamRung(wedged, device))));
+        wedged.blockAwait = true;
+        // The engine's stream-open seam binds this rung's device events to the
+        // controller, which is what makes the published FormatChangeRequested
+        // below reach performFormatChangeReopen at all.
+        engine.startAudioOutput();
+        awaitWedgedPump(wedged);
+        return new WedgedRig(engine, controller, wedged, device, notified,
+                postReconfigureRuns, stateWhenCallbackRan);
+    }
+
+    private static void releaseWedgedRig(WedgedRig rig) {
+        rig.backend().blockAwait = false;
+        rig.engine().stopAudioOutput();
+        rig.engine().stop();
+        rig.controller().shutdown();
+    }
+
+    private static void publishBufferSizeChange(WedgedRig rig, int bitDepth) {
+        rig.backend().publishDeviceEvent(
+                new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent.FormatChangeRequested(
+                        rig.device(),
+                        Optional.of(new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
+                                48_000.0, 2, bitDepth)),
+                        new FormatChangeReason.BufferSizeChange()));
+    }
+
+    private static void awaitWedgedPump(SpyStreamingBackend backend) {
+        try {
+            waitForLong(() -> backend.blockedAwaitEntries.get() >= 1);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted waiting for the render pump to wedge", e);
+        }
     }
 
     private static final class DelayedDeviceEventPublisher

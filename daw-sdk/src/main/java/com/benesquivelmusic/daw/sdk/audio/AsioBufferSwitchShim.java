@@ -36,9 +36,12 @@ import java.util.concurrent.locks.LockSupport;
  * and interleaved scratch arrays, and both {@link AudioBlockRing}s — is
  * allocated in the constructor, on the calling (control) thread. The callback
  * body therefore performs only {@code MemorySegment} bulk copies,
- * {@code float[]} writes and {@link java.util.concurrent.atomic.AtomicLong}
- * {@code lazySet} release stores: no allocation, no lock, no blocking call, no
- * logging.</p>
+ * {@code float[]} writes, {@link java.util.concurrent.atomic.AtomicLong}
+ * {@code lazySet} release stores, and one increment of the {@code volatile
+ * long} {@code renderedBlocksConsumed} counter — a plain load-add-store by
+ * its single writer (the driver thread is the only mutator), so it is
+ * wait-free and allocates nothing even though the store is volatile. No
+ * allocation, no lock, no blocking call, no logging.</p>
  *
  * <h2>Off-thread input marshalling</h2>
  * <p>{@code SubmissionPublisher.offer(...)} acquires a
@@ -178,13 +181,29 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * reached the driver's buffers — as opposed to the transport merely
      * advancing while the callback starved.
      *
-     * <p>A plain {@code volatile long} with {@code ++} is real-time safe here
-     * because the driver's callback thread is the <em>only</em> writer; the
-     * increment is a single non-atomic read-modify-write on one thread, so no
-     * update can be lost, and the volatile store publishes each new value to
-     * the control / test threads that read it. No {@code AtomicLong},
-     * {@code LongAdder}, lock or allocation is involved, which keeps the
-     * callback inside the {@code RealTimeSafeContractTest} sentinel.</p>
+     * <p>A plain {@code volatile long} with {@code ++} is real-time safe
+     * here because the driver's callback thread is the <em>only</em>
+     * writer. The increment compiles to a volatile load, an add and a
+     * volatile store — no CAS retry loop, so it is wait-free with a bounded
+     * instruction count; no lock, so it cannot block on a control thread;
+     * and no object is created, so it cannot trigger an allocation or a GC
+     * pause on the RT thread. The non-atomicity of the read-modify-write
+     * costs nothing with one writer (no update can be lost), and the
+     * volatile store still publishes each new value to the control / test
+     * threads that read it — which is exactly why an {@code AtomicLong} or
+     * {@code LongAdder} would buy nothing and a {@code LongAdder} would
+     * additionally allocate cells.</p>
+     *
+     * <p>That reasoning stands on its own: {@code RealTimeSafeContractTest}
+     * does not check it. Its bytecode sentinel scans
+     * {@link #bufferSwitch(int, int)} for <em>inline publication</em> —
+     * invocations of {@code SubmissionPublisher}, {@code publishInput},
+     * {@code submit} or {@code offer} — and its other goals check for
+     * {@code synchronized}, varargs and boxed types on
+     * {@code @RealTimeSafe} methods. A counter that allocated or took a
+     * lock through some other API would pass it, so the field's RT-safety
+     * is a design property maintained here, not one the sentinel
+     * enforces.</p>
      */
     private volatile long renderedBlocksConsumed;
 

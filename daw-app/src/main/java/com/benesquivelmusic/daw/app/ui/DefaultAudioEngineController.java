@@ -37,6 +37,7 @@ import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -179,11 +180,22 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private static final long FORMAT_CHANGE_COALESCE_MILLIS = 250L;
 
     /**
-     * Drain deadline applied between transport stop and stream close
-     * during a {@link AudioDeviceEvent.FormatChangeRequested} reopen
-     * (story 218 — Pro Tools' ~200&nbsp;ms transport freeze).
+     * Why a format change is refused while the render pump's exit cannot be
+     * confirmed — shared by BOTH paths that mutate the engine format
+     * ({@link #applyConfiguration(Request)} and the device-event reopen), so
+     * the two wordings cannot drift apart (story 316 re-review).
+     *
+     * <p>This replaced the fixed {@code FORMAT_CHANGE_DRAIN_MILLIS = 200L}
+     * sleep the reopen path used to take between its stop and its reopen. A
+     * fixed sleep is not quiescence: it proved nothing about whether the
+     * render pump had left {@code processBlock}, and it paid its full cost
+     * even when the pump had already gone. {@link #stopAndConfirmPumpQuiesced()}
+     * asks the engine instead, and answers as soon as the pump is really
+     * out.</p>
      */
-    private static final long FORMAT_CHANGE_DRAIN_MILLIS = 200L;
+    private static final String PUMP_STILL_RENDERING =
+            "it did not exit in time and may still be inside processBlock, so the engine"
+                    + " format must not be changed under it; retry once the pump unblocks";
 
     /** Holds the currently-pending coalesced reopen task, if any. */
     private final AtomicReference<ScheduledFuture<?>> pendingFormatChange =
@@ -196,6 +208,92 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     private final AtomicReference<AudioDeviceEvent.FormatChangeRequested> latestFormatChange =
             new AtomicReference<>();
+
+    /**
+     * Serializes native driver control-panel launches against EACH OTHER,
+     * without serializing them against the rest of the controller (story 316
+     * re-review).
+     *
+     * <p>This replaced a {@code synchronized (DefaultAudioEngineController.this)}
+     * block wrapped around the panel action. That monitor supplied two
+     * properties, only one of which is worth its cost:</p>
+     *
+     * <ul>
+     *   <li><strong>Serialization of the panel action against itself</strong>
+     *       &mdash; two concurrent {@code ASIOControlPanel()} downcalls into
+     *       one driver is undefined native behaviour. Kept, here.</li>
+     *   <li><strong>Serialization of the panel against every other controller
+     *       operation</strong> &mdash; dropped. The action blocks for as long
+     *       as the user leaves a MODAL driver dialog open, which is unbounded
+     *       by construction: the SDK exempts precisely this one downcall from
+     *       {@code AsioControlThread}'s fifteen-second budget because "a user
+     *       reading a driver dialog is not a wedged driver". Held across the
+     *       controller monitor, that unbounded wait froze every
+     *       {@code synchronized} method behind the user's attention span
+     *       &mdash; device-arrival and device-removal handling, the settings
+     *       dialog's enumeration queries, {@link #applyConfiguration(Request)},
+     *       {@link #shutdown()}, and {@link #openControlPanel()} itself, which
+     *       {@code SettingsDialog.updateAudioUtilityDisabledState()} calls on
+     *       the JavaFX application thread. An open driver panel therefore
+     *       froze the entire UI until the user closed it.</li>
+     * </ul>
+     *
+     * <p>A {@link ReentrantLock} rather than a second monitor because the
+     * panel action runs on one of the settings dialog's virtual threads (JEP
+     * 444): blocking on a monitor pins the carrier thread, blocking on a
+     * {@code ReentrantLock} does not. There is no lock-order hazard with the
+     * controller monitor either &mdash; this lock is only ever acquired by a
+     * thread that holds no monitor, and no monitor-holding path waits for
+     * it.</p>
+     */
+    private final ReentrantLock controlPanelLock = new ReentrantLock();
+
+    /**
+     * The backend instance whose native control panel is open right now, or
+     * {@code null}. Guarded by this controller's monitor; read by
+     * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)},
+     * which always runs under that monitor.
+     *
+     * <p>This is the ONE property the monitor-wrapped panel action genuinely
+     * provided and that had to survive its removal — stated here at the size
+     * it is actually delivered at, which is smaller than "no close may ever
+     * reach a backend whose dialog is up". The promise is scoped to
+     * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)},
+     * the controller's own best-effort close of the backend INSTANCES it
+     * owns: on a provision swap and on shutdown alike, an instance registered
+     * here is skipped, because that close frees exactly the native state the
+     * dialog is running on. Registration happens under the monitor, and every
+     * path that reaches that method enters through a {@code synchronized} one
+     * ({@link #applyConfiguration(Request)},
+     * {@link #installDefaultProvision()}, {@link #shutdown()}) and holds the
+     * monitor for its whole duration,
+     * so a close either observes the registration and skips the instance, or
+     * completes strictly before the panel begins. The latter is not a new
+     * exposure: the monitor-wrapped version also resolved its backend before
+     * waiting for the monitor, so it too could launch a panel on an instance
+     * a just-finished swap had closed.</p>
+     *
+     * <p>What this field does NOT cover, deliberately, is the ENGINE's own
+     * handle closes: they run inside {@link AudioEngine}, which has never
+     * been told about this registration. Both reconfigure orders reach one.
+     * A swap calls
+     * {@link AudioEngine#setStreamingProvision(StreamingProvision)} FIRST
+     * (see {@link #installProvision(StreamingProvision)}), and its
+     * {@code abandonStreamOnOutgoingBackend} closes the tracked stream on an
+     * outgoing backend the incoming ladder no longer carries — that path now
+     * THROWS instead of closing while the render pump cannot be confirmed
+     * gone, but it still closes once the pump IS gone. Shutdown calls
+     * {@link AudioEngine#stopAudioOutput()} first, which closes the tracked
+     * stream's backend itself before this guard is ever consulted. The
+     * exposure is reachable rather than theoretical, because
+     * {@link #openControlPanel()} resolves its instance from
+     * {@link AudioEngine#getBackend()}, which IS the tracked open backend
+     * whenever a stream is open. Closing it would take a panel-aware refusal
+     * inside the engine — an engine-side seam this controller does not have.
+     * It is written down here rather than papered over by the absolute this
+     * paragraph replaced.</p>
+     */
+    private AudioBackend controlPanelBackend;
 
     DefaultAudioEngineController(AudioEngine audioEngine, Runnable postReconfigureCallback) {
         this(audioEngine, postReconfigureCallback,
@@ -273,13 +371,17 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public synchronized String getActiveBackendName() {
         // Story 316 review — honest reporting (book §3.2 / §5.2): "active"
-        // is the backend the OPEN stream runs on, full stop. This used to
-        // fall back to the installed provision's first rung when no stream
-        // was open, so the Settings utility panel kept naming a backend as
-        // active after Stop and after an open failure — exactly the
+        // is the backend whose stream is OPEN, full stop. Open means
+        // RUNNING or PAUSED: a paused stream renders nothing but still owns
+        // the device handle, so it is named — "None" would claim the device
+        // is free while the engine still holds it. This used to fall back to
+        // the installed provision's first rung when no stream was open at
+        // all, so the Settings utility panel kept naming a backend as active
+        // after Stop and after an open failure — exactly the
         // requested-vs-active lie the story exists to remove. The "which
-        // backend will the next open try" question that fallback answered
-        // is a different fact and lives in getProvisionedBackendName().
+        // backend should be queried or configured" question that fallback
+        // answered is a different fact and lives in
+        // getProvisionedBackendName().
         return audioEngine.openStreamBackendName().orElse(BACKEND_NONE);
     }
 
@@ -317,8 +419,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // Story 316 review: the adapter here is an enumeration-only probe and
         // must not outlive this query. AudioBackend is AutoCloseable, and this
         // call site used to drop the instance unclosed, leaking a native
-        // PortAudio handle every time the backend list was refreshed (the
-        // Settings dialog, SettingsCatalogue and FirstRunWizard all read it).
+        // PortAudio handle every time the backend list was refreshed. The one
+        // production caller is DeviceEnumerationTask, which both the Settings
+        // dialog and the FirstRunWizard run off the FX thread on every device
+        // refresh — so the leak recurred per refresh, not once per session.
         // try-with-resources releases it on BOTH branches, matching
         // tryCreatePortAudioAdapter()'s closeQuietly and withSdkBackend()'s
         // try (probe).
@@ -337,8 +441,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public synchronized List<AudioDeviceInfo> listDevices() {
         // Open-aware: AudioEngine.getBackend() answers with the OPEN
-        // stream's backend when one is open, else the provision's requested
-        // rung — so the device list always matches the reported backend.
+        // stream's backend when one is open, else the provision's FIRST
+        // RUNG — which is not necessarily the requested one, since a
+        // gate-rejected request starts the ladder on a fallback. That is
+        // exactly getProvisionedBackendName()'s rule, so the device list
+        // always matches THAT reported backend — never the ACTIVE one,
+        // which is "None" whenever no stream is open.
         AudioBackend backend = audioEngine.getBackend();
         if (backend == null) {
             return List.of();
@@ -356,8 +464,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (backendName == null || backendName.isBlank() || BACKEND_NONE.equals(backendName)) {
             return List.of();
         }
-        AudioBackend active = audioEngine.getBackend();
-        if (active != null && backendName.equals(active.name())) {
+        AudioBackend provisioned = audioEngine.getBackend();
+        if (provisioned != null && backendName.equals(provisioned.name())) {
             return listDevices();
         }
         // Fresh throwaway probe, enumerated and closed. Story 316: every
@@ -436,8 +544,27 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
         try {
             boolean wasOpen = audioEngine.isStreamOpen();
-            audioEngine.stopAudioOutput();
-            audioEngine.stop();
+            // Story 316 re-review — this verdict is LOAD-BEARING and used to
+            // be discarded. The predicate itself lives in
+            // stopAndConfirmPumpQuiesced() because BOTH paths that mutate the
+            // engine format have to consult it: this one and
+            // performFormatChangeReopen(), which mutates the same field on
+            // the same engine from the device-event worker. Guarding one
+            // caller of a shared predicate and leaving the sibling open would
+            // have left the hazard fully reachable.
+            //
+            // Refusing WHOLE is the honest outcome here: the rest of this
+            // method — worker-pool size, xrun detector, provision rebuild,
+            // restart — all presumes a stopped, quiesced engine. The throw
+            // lands in the catch below, so the user is notified, the
+            // controller ends in STOPPED, and the finally still runs
+            // postReconfigureCallback: the settings dialog re-enables and the
+            // reconfigure is retryable once the pump unblocks.
+            if (!stopAndConfirmPumpQuiesced()) {
+                throw new IllegalStateException(
+                        "Cannot apply audio configuration while the render pump is still"
+                                + " active: " + PUMP_STILL_RENDERING);
+            }
 
             AudioFormat previous = audioEngine.getFormat();
             AudioFormat updated = new AudioFormat(
@@ -551,13 +678,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         } finally {
             // In the finally block so the dialog re-enables on EVERY path,
             // including the rethrown failure above.
-            if (postReconfigureCallback != null) {
-                try {
-                    postReconfigureCallback.run();
-                } catch (RuntimeException e) {
-                    LOG.log(Level.WARNING, "Post-reconfigure callback failed", e);
-                }
-            }
+            runPostReconfigureCallback();
         }
     }
 
@@ -978,11 +1099,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         boolean rateActuallyDiffers = proposed.isPresent()
                 && Double.compare(proposed.get().sampleRate(), currentFormat.sampleRate()) != 0;
 
-        try {
-            notifications.notify("Reconfiguring audio engine…");
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "NotificationManager rejected message", e);
-        }
+        notifyQuietly("Reconfiguring audio engine…");
         setEngineState(EngineState.RECONFIGURING);
 
         // Whether a stream was open before this reopen — mirrors
@@ -990,26 +1107,31 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // after the format change (story 316, engine-seam routing).
         boolean wasOpen = audioEngine.isStreamOpen();
 
-        // 1. Pause transport. Best-effort; we are NOT on the RT thread.
+        // 1. Stop the transport AND confirm the render pump left
+        //    processBlock. Story 316 re-review: this path discarded that
+        //    verdict and then mutated the engine format at step 5, exactly
+        //    the hazard applyConfiguration was fixed for — same field, same
+        //    engine, same absent engine-side guard (setStreamingProvision
+        //    refuses a SWAP, requireQuiescedPump refuses a REOPEN, setFormat
+        //    refuses only while isRunning(), which the stop just cleared).
+        //    The shared predicate is stopAndConfirmPumpQuiesced(); it also
+        //    subsumes the fixed FORMAT_CHANGE_DRAIN_MILLIS sleep that used
+        //    to stand in for a drain here (see PUMP_STILL_RENDERING).
+        //
+        //    A stop that THROWS counts as NOT quiesced: this path logs
+        //    rather than throws, and an exception says nothing about whether
+        //    the pump exited — the safe reading of "unknown" is the one that
+        //    changes no format (same rule as stopAudioOutputForShutdown()).
+        boolean quiesced;
         try {
-            audioEngine.stopAudioOutput();
+            quiesced = stopAndConfirmPumpQuiesced();
         } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to stop audio output during format-change reopen", e);
+            LOG.log(Level.WARNING, "Failed to stop the engine during format-change reopen", e);
+            quiesced = false;
         }
-        try {
-            audioEngine.stop();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to stop engine during format-change reopen", e);
-        }
-
-        // 2. Drain — short, fixed-deadline pause to give any in-flight
-        //    callback time to return. We are not on the RT thread, so
-        //    Thread.sleep is acceptable here. Pro Tools' ~200ms freeze
-        //    is the reference behaviour.
-        try {
-            Thread.sleep(FORMAT_CHANGE_DRAIN_MILLIS);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
+        if (!quiesced) {
+            refuseFormatChangeReopen();
+            return;
         }
 
         // 3. If recording was active, behave like DeviceRemoved for the
@@ -1100,21 +1222,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (isSampleRateChange && rateActuallyDiffers) {
             int newRateKhz = (int) Math.round(proposed.get().sampleRate() / 1000.0);
             audioEngine.getSampleRateConversionCache().invalidateAll();
-            try {
-                notifications.notify(
-                        "Driver moved to " + newRateKhz
-                                + "kHz — SRC inserted at device boundary. "
-                                + "Pick the matching project rate from the driver "
-                                + "panel to avoid SRC.");
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "NotificationManager rejected message", e);
-            }
+            notifyQuietly("Driver moved to " + newRateKhz
+                    + "kHz — SRC inserted at device boundary. "
+                    + "Pick the matching project rate from the driver "
+                    + "panel to avoid SRC.");
         } else {
-            try {
-                notifications.notify("Audio engine reconfigured");
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "NotificationManager rejected message", e);
-            }
+            notifyQuietly("Audio engine reconfigured");
         }
 
         // 8. Run the post-reconfigure callback — the same hook
@@ -1129,13 +1242,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    in step 6 logged a failure — setFormat already happened
         //    either way. Must precede the STOPPED transition (step 9)
         //    so observers gating on STOPPED see the refreshed monitor.
-        if (postReconfigureCallback != null) {
-            try {
-                postReconfigureCallback.run();
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Post-reconfigure callback failed", e);
-            }
-        }
+        runPostReconfigureCallback();
 
         // 9. Terminal state. A stream that was open before the change and
         //    was successfully restored in step 6 reports RUNNING (mirroring
@@ -1147,6 +1254,110 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    steps 7-8 (notification + cache invalidation + post-
         //    reconfigure callback) completed.
         setEngineState(streamRestored ? EngineState.RUNNING : EngineState.STOPPED);
+    }
+
+    /**
+     * Stops any open stream and the engine, and reports whether the engine
+     * CONFIRMED that the render pump left {@code processBlock} (story 316
+     * re-review). This is the ONE predicate every path that mutates the
+     * engine format must consult before calling
+     * {@link AudioEngine#setFormat(AudioFormat)}, and it is shared rather
+     * than inlined precisely because there are two such paths —
+     * {@link #applyConfiguration(Request)} on the settings thread and
+     * {@link #performFormatChangeReopen} on the format-change worker.
+     *
+     * <p>{@code false} means a render pump may STILL be inside
+     * {@link AudioEngine#processBlock}, rendering through the
+     * {@code RenderPipeline} that a {@code setFormat} is about to
+     * invalidate. No engine-side guard covers a format-only reconfigure:
+     * {@code setStreamingProvision} refuses a SWAP,
+     * {@code requireQuiescedPump} refuses a REOPEN, and {@code setFormat}
+     * itself refuses only while {@link AudioEngine#isRunning()} — which the
+     * {@code stop()} here has just cleared.</p>
+     *
+     * <p>Bounded retry, then the verdict. The retry is nearly free and often
+     * decisive: {@code stop()} re-joins a still-RUNNING stream's pump on its
+     * own, and the second {@code stopAudioOutput()} costs at most one more
+     * bounded join ({@code EngineStreamPump.STOP_JOIN_MILLIS}) — exactly
+     * what a pump that was merely mid-block when the first stop landed needs
+     * in order to exit. Only a genuinely wedged pump answers {@code false}.</p>
+     *
+     * <p>A stop that THROWS is deliberately not caught here: the two callers
+     * wrap it differently on purpose. {@code applyConfiguration} lets it
+     * propagate to its own catch (notify, STOPPED, rethrow to the caller
+     * that asked for the change); the device-event reopen has no caller to
+     * throw at and logs instead, counting the throw as NOT quiesced.</p>
+     *
+     * @return {@code true} when the render pump is confirmed gone
+     */
+    private boolean stopAndConfirmPumpQuiesced() {
+        boolean quiesced = audioEngine.stopAudioOutput();
+        audioEngine.stop();
+        return quiesced || audioEngine.stopAudioOutput();
+    }
+
+    /**
+     * The device-event reopen's refusal path (story 316 re-review): the
+     * render pump could not be confirmed out of {@code processBlock}, so
+     * nothing here may touch the engine format.
+     *
+     * <p>How the refusal SURFACES is a decision, not an accident. This
+     * method runs on {@code formatChangeWorker} with no caller to throw at,
+     * and this path's contract is to log rather than throw — but a refusal
+     * that only logged would be invisible to the user whose driver just
+     * renegotiated. So it does exactly what every other terminal path of
+     * {@link #performFormatChangeReopen} does, in the same order: the
+     * user-facing notification and the post-reconfigure callback FIRST, then
+     * the terminal state that observers gate on (side effects precede the
+     * terminal state). The callback runs for the same reason it runs on
+     * {@code applyConfiguration}'s refusal path — a surface that disabled
+     * itself for the reconfigure must re-enable on EVERY path, including
+     * this one.</p>
+     *
+     * <p>STOPPED is the honest terminal state: {@code stop()} has cleared
+     * the engine's running flag, so transport really is stopped and the user
+     * can re-arm and retry once the pump unblocks. RUNNING would claim a
+     * transport that is not running, and leaving the controller in
+     * RECONFIGURING would strand every surface in a transition that has
+     * ended. Nothing here claims the reconfigure happened: the engine keeps
+     * the format, the buffer size and the stream it already had.</p>
+     */
+    private void refuseFormatChangeReopen() {
+        LOG.severe("Format-change reopen refused: " + PUMP_STILL_RENDERING);
+        notifyQuietly("Audio device reconfiguration was refused because the render pump"
+                + " is still active: " + PUMP_STILL_RENDERING);
+        runPostReconfigureCallback();
+        setEngineState(EngineState.STOPPED);
+    }
+
+    /**
+     * Runs {@link #postReconfigureCallback} when one is installed, never
+     * letting its failure break the reconfigure flow. Shared by every
+     * reconfigure path so the "the callback runs on EVERY path" rule cannot
+     * be honoured by some of them and forgotten by others.
+     */
+    private void runPostReconfigureCallback() {
+        if (postReconfigureCallback == null) {
+            return;
+        }
+        try {
+            postReconfigureCallback.run();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Post-reconfigure callback failed", e);
+        }
+    }
+
+    /**
+     * Tells the user, never letting a rejected message break the flow.
+     *
+     * @param message the user-facing message
+     */
+    private void notifyQuietly(String message) {
+        try {
+            notifications.notify(message);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "NotificationManager rejected message", e);
+        }
     }
 
     /**
@@ -1267,18 +1478,77 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
     }
 
-    /** Returns the active SDK backend's serialized native control-panel action. */
+    /**
+     * Returns the PROVISIONED SDK backend's serialized native control-panel
+     * action (story 316 review). {@link AudioEngine#getBackend()} answers
+     * with the OPEN stream's backend while one is open and the provision's
+     * head rung otherwise — {@link #getProvisionedBackendName()}'s rule, not
+     * {@link #getActiveBackendName()}'s — so the driver panel stays
+     * reachable with the transport stopped, which is when a user goes
+     * looking for it.
+     *
+     * <p>Resolving the backend and asking it for its action is all this
+     * method does under the controller monitor. The returned action itself
+     * runs OUTSIDE it (story 316 re-review) &mdash; see
+     * {@link #controlPanelLock} for why holding a monitor across a modal
+     * native dialog froze the UI, and {@link #runControlPanel} for what
+     * still protects the backend instance while the dialog is up.</p>
+     */
     @Override
     public synchronized Optional<Runnable> openControlPanel() {
         AudioBackend backend = audioEngine.getBackend();
         if (backend == null) {
             return Optional.empty();
         }
-        return backend.openControlPanel().map(action -> () -> {
-            synchronized (DefaultAudioEngineController.this) {
-                action.run();
-            }
-        });
+        return backend.openControlPanel()
+                .map(action -> () -> runControlPanel(backend, action));
+    }
+
+    /**
+     * Runs a resolved control-panel action serialized against other panel
+     * launches and registered against concurrent backend closes, but NOT
+     * under this controller's monitor.
+     *
+     * <p>Everything the monitor was needed for has already happened by the
+     * time this runs: {@link #openControlPanel()} resolved the backend
+     * instance and its action under the monitor, and both are captured. What
+     * remains is the modal, user-paced native call, which is exactly the part
+     * that must not hold a lock the FX thread takes.</p>
+     *
+     * @param panelBackend the instance whose panel is being opened; registered
+     *                     for the call's duration so a concurrent provision
+     *                     swap or shutdown will not close the INSTANCE
+     *                     underneath the dialog in
+     *                     {@link #closeProvisionBackends(StreamingProvision,
+     *                     StreamingProvision)}. The engine's own handle
+     *                     closes are outside that guard — see
+     *                     {@link #controlPanelBackend}
+     * @param action       the backend's own panel action
+     */
+    private void runControlPanel(AudioBackend panelBackend, Runnable action) {
+        controlPanelLock.lock();
+        try {
+            registerOpenControlPanel(panelBackend);
+            action.run();
+        } finally {
+            releaseOpenControlPanel(panelBackend);
+            controlPanelLock.unlock();
+        }
+    }
+
+    /** Publishes {@code panelBackend} as un-closeable, under the monitor. */
+    private synchronized void registerOpenControlPanel(AudioBackend panelBackend) {
+        controlPanelBackend = panelBackend;
+    }
+
+    /**
+     * Withdraws the registration, under the monitor. Compares by identity so
+     * a late release can never clear a newer registration.
+     */
+    private synchronized void releaseOpenControlPanel(AudioBackend panelBackend) {
+        if (controlPanelBackend == panelBackend) {
+            controlPanelBackend = null;
+        }
     }
 
     /**
@@ -1671,17 +1941,53 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * the incoming ladder still holds is live and closing it would break the
      * next open.
      *
+     * <p>An instance whose native driver control panel is OPEN is skipped
+     * too (story 316 re-review). That guard is what replaced holding the
+     * controller monitor across the modal dialog: closing a backend frees
+     * exactly the native state the dialog is running on, so the close is
+     * refused and logged rather than performed. This is the same trade
+     * {@link #closeProvisionBackendsOnceQuiesced()} already makes for a
+     * render pump that would not confirm quiescence &mdash; the OS reclaims
+     * the handle at process exit, which is strictly safer than a native
+     * use-after-free. This method always runs under the controller monitor,
+     * which is what makes the {@link #controlPanelBackend} read sound — but
+     * NOT because its own callers are {@code synchronized}: none of the three
+     * is. Two of them are in {@link #installProvision(StreamingProvision)}
+     * and the third in {@link #closeProvisionBackendsOnceQuiesced()}, both
+     * plain private methods. The monitor is held TRANSITIVELY, by the only
+     * entry points that reach them — {@link #applyConfiguration(Request)} and
+     * {@link #installDefaultProvision()} into the first, {@link #shutdown()}
+     * into the second — each of which is {@code synchronized} for its whole
+     * duration. That is the property to re-establish if a FOURTH call site is
+     * added: it is sound only when EVERY path into it also enters through a
+     * {@code synchronized} method of this controller. Being reached from
+     * something that merely looks internal proves nothing, and no compiler
+     * check enforces it. The guard covers THIS
+     * close and no other: the engine closes the tracked stream's handle on
+     * its own, ahead of every call to this method, without consulting the
+     * registration — see {@link #controlPanelBackend}'s javadoc for the exact
+     * boundary.</p>
+     *
      * @param outgoing the provision being replaced, or {@code null}
      * @param incoming the provision taking its place, or {@code null} when
      *                 the engine is being left with nothing to stream
      */
-    private static void closeProvisionBackends(
+    private void closeProvisionBackends(
             StreamingProvision outgoing, StreamingProvision incoming) {
         if (outgoing == null) {
             return;
         }
         for (BackendStreamRung rung : outgoing.ladder()) {
             if (carries(incoming, rung.backend())) {
+                continue;
+            }
+            if (rung.backend() == controlPanelBackend) {
+                LOG.severe("Backend " + rung.backend().name() + " is deliberately"
+                        + " NOT closed: its native driver control panel is open, and"
+                        + " the close would free the native state that modal dialog"
+                        + " is running on. The OS reclaims the handle at process"
+                        + " exit, which is strictly safer than a use-after-free"
+                        + " underneath a live driver dialog.");
                 continue;
             }
             closeQuietly(rung.backend());
@@ -1748,9 +2054,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 || "PortAudio".equals(backendName) || "Java Sound".equals(backendName)) {
             return fallback;
         }
-        AudioBackend active = audioEngine.getBackend();
-        if (active != null && backendName.equals(active.name())) {
-            return operation.apply(active);
+        AudioBackend provisioned = audioEngine.getBackend();
+        if (provisioned != null && backendName.equals(provisioned.name())) {
+            return operation.apply(provisioned);
         }
         AudioBackend probe = createSdkBackendByName(backendName);
         if (probe == null) {

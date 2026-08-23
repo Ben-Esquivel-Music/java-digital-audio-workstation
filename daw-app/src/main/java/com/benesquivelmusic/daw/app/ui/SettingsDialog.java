@@ -724,13 +724,33 @@ public final class SettingsDialog extends DawgDialog<Void> {
             latencyValue.setText(msg("audio.utility.unavailable"));
             return;
         }
-        activeBackendValue.setText(controller.getActiveBackendName());
+        activeBackendValue.setText(displayActiveBackend(controller.getActiveBackendName()));
         double load = controller.getCpuLoadPercent();
         cpuLoadValue.setText(load < 0 ? msg("audio.utility.cpuUnavailable")
                 : String.format(Locale.ROOT, "CPU: %.1f%%", load));
         threadsInUseValue.setText(String.format(Locale.ROOT, "Threads: %d / %d",
                 controller.getActiveThreadCount(), controller.getWorkerPoolSize()));
         refreshLatencyReadout();
+    }
+
+    /**
+     * Renders the "Active backend" readout. Since the story-316 review
+     * {@link AudioEngineController#getActiveBackendName()} honestly answers
+     * {@link AudioEngineController#BACKEND_NONE} whenever no stream is open —
+     * the NORMAL state of a stopped transport, with a perfectly good backend
+     * provisioned. That untranslated contract literal must therefore never
+     * reach this label: next to a localized caption it reads like a missing
+     * device or an error. The contract value is left exactly as it is; only
+     * the display is mapped, to a localized phrase that says what is
+     * actually true.
+     *
+     * <p>Package-private so the mapping can be asserted directly, without
+     * standing up the dialog's telemetry refresh.</p>
+     */
+    static String displayActiveBackend(String activeBackendName) {
+        return AudioEngineController.BACKEND_NONE.equals(activeBackendName)
+                ? msg("audio.utility.activeBackend.none")
+                : activeBackendName;
     }
 
     private void refreshLatencyReadout() {
@@ -1690,7 +1710,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
     private record AudioReconfigureSnapshot(
             AudioEngineController controller,
-            String activeBackend,
+            String provisionedBackend,
             String inputDevice,
             String outputDevice,
             double sampleRate,
@@ -1785,7 +1805,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
                             snapshot.bitDepth(), snapshot.workerPoolSize(),
                             model.getMixPrecision(), model.getSrcQuality());
             if (previousEndpoint == null) {
-                previousEndpoint = new LiveAudioEndpoint(snapshot.activeBackend(),
+                previousEndpoint = new LiveAudioEndpoint(snapshot.provisionedBackend(),
                         snapshot.inputDevice(), snapshot.outputDevice());
             }
             double effectiveSampleRate = snapshot.applySampleRate()
@@ -1802,7 +1822,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     ? snapshot.srcQuality() : previousState.srcQuality();
 
             if (snapshot.applySampleRate()) {
-                snapshot.controller().setSampleRate(snapshot.activeBackend(),
+                snapshot.controller().setSampleRate(snapshot.provisionedBackend(),
                         snapshot.outputDevice(), effectiveSampleRate);
                 sampleRateApplied = true;
                 if (Thread.currentThread().isInterrupted()) {
@@ -1820,14 +1840,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
             if (snapshot.reconfigureEngine()) {
                 reconfigureAttempted = true;
                 snapshot.controller().applyConfiguration(new AudioEngineController.Request(
-                        snapshot.activeBackend(), snapshot.inputDevice(), snapshot.outputDevice(),
+                        snapshot.provisionedBackend(), snapshot.inputDevice(), snapshot.outputDevice(),
                         SampleRate.fromHz((int) effectiveSampleRate), effectiveBufferFrames,
                         effectiveBitDepth, effectiveWorkerPoolSize));
             }
             commitDeferredAudioEdits(snapshot);
             deferredCommitted = true;
             if (snapshot.reconfigureEngine()) {
-                liveAudioEndpoint = new LiveAudioEndpoint(snapshot.activeBackend(),
+                liveAudioEndpoint = new LiveAudioEndpoint(snapshot.provisionedBackend(),
                         snapshot.inputDevice(), snapshot.outputDevice());
             }
             audioRuntimeState = new AudioRuntimeState(effectiveSampleRate,
