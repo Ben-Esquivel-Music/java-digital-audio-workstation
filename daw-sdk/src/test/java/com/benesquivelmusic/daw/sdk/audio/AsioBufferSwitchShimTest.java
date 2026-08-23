@@ -847,10 +847,12 @@ class AsioBufferSwitchShimTest {
     /**
      * {@link AsioBufferSwitchShim#closeRetainingUpcallStub()} is
      * {@link AsioBufferSwitchShim#close()} minus exactly one step. It exists for
-     * the teardown that could not even attempt
-     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()}: the driver
-     * still holds the stub's address, so unmapping it would turn the next
-     * {@code bufferSwitch} into a jump into released memory.
+     * the teardown that could not CONFIRM
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} — it answered
+     * {@code false}, so the shim's registered buffer-switch callback may still
+     * be the stub's address and unmapping it would turn the next
+     * {@code bufferSwitch}, which reaches the stub through the shim's own
+     * trampoline, into a jump into released memory.
      *
      * <p>The stub this test leaves mapped is never reclaimed — that permanent,
      * bounded leak <em>is</em> the behaviour under test, and the

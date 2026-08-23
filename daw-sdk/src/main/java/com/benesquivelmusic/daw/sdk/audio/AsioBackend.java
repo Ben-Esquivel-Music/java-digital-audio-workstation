@@ -564,11 +564,13 @@ public final class AsioBackend implements AudioBackend {
      * the reason documented there; every Java-side field is cleared here
      * regardless, so a failed open never leaves a half-live backend behind.
      *
-     * <p>When the uninstall could not be ATTEMPTED — the control thread is
-     * still executing a call that outlived its budget, so every bounded
-     * downcall is refused on arrival — the stub's arena is retained rather than
-     * freed, exactly as in {@link #close()}. See
-     * {@link #tearDownStreaming(AsioStreamingShim)}.</p>
+     * <p>When the uninstall could not be CONFIRMED — the call could not be
+     * made, was refused on arrival, did not complete within its budget, was
+     * interrupted, or failed at the FFM boundary; see
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} for the full
+     * list, and note that the driver is not involved in any of them — the
+     * stub's arena is retained rather than freed, exactly as in
+     * {@link #close()}. See {@link #tearDownStreaming(AsioStreamingShim)}.</p>
      */
     private void rollbackOpen(AsioDriverShim candidate, AsioStreamingShim streaming,
                               AsioBufferSwitchShim bridge, AsioFormatChangeShim callback,
@@ -581,12 +583,12 @@ public final class AsioBackend implements AudioBackend {
         }
         // No streaming shim means no upcall was ever installed, so nothing can
         // be holding the stub's address and the full release is safe.
-        boolean uninstallAttempted = true;
+        boolean upcallUninstalled = true;
         if (streaming != null) {
-            uninstallAttempted = tearDownStreaming(streaming);
+            upcallUninstalled = tearDownStreaming(streaming);
         }
         if (bridge != null) {
-            if (uninstallAttempted) {
+            if (upcallUninstalled) {
                 bridge.close();
             } else {
                 logRetainedUpcallStub();
@@ -609,7 +611,8 @@ public final class AsioBackend implements AudioBackend {
     /**
      * Runs the driver-side half of the story-311 teardown — {@code ASIOStop},
      * {@code ASIODisposeBuffers}, then uninstalling the buffer-switch upcall —
-     * and reports a driver that refused either of the first two.
+     * logs a driver that refused either of the first two, and reports whether
+     * the upcall was provably uninstalled.
      *
      * <p>The native shim propagates the driver's own status rather than always
      * answering "OK": {@code asioshim_stop} and {@code asioshim_disposeBuffers}
@@ -620,9 +623,10 @@ public final class AsioBackend implements AudioBackend {
      * logged at {@link Level#WARNING} naming the refused call and the driver.</p>
      *
      * <p><strong>Why the teardown then continues instead of bailing out.</strong>
-     * The caller frees the upcall stub's arena immediately after this returns, so
-     * the question a refusal raises is whether a still-running driver can reach
-     * that stub. It cannot, because the native shim closes both windows:</p>
+     * The caller frees the upcall stub's arena immediately after this returns
+     * {@code true}, so the question a refusal raises is whether a still-running
+     * driver can reach that stub. It cannot, because the native shim closes
+     * both windows:</p>
      * <ul>
      *   <li>{@code asioshim_disposeBuffers} publishes "no buffers created"
      *       before it re-enters the SDK and then waits on a bounded in-flight
@@ -647,59 +651,111 @@ public final class AsioBackend implements AudioBackend {
      * downcall that outlived its budget is still executing they are refused on
      * arrival by {@link AsioControlThread#isQuiesced()} and never reach the
      * driver at all — no buffer gate is closed and no callback pointer is
-     * nulled. The warning says "not attempted" rather than blaming the driver
-     * for that, which is the whole point of sampling the gate here, and the
-     * driver shim's own release is deferred by
+     * nulled. That state is also self-inflicted mid-teardown: a
+     * {@code streaming.stop()} the control thread has already STARTED and that
+     * then outlives its budget is abandoned in flight, which is precisely what
+     * makes the {@code disposeBuffers()} and the uninstall behind it
+     * refusable. Starting is the condition, not submission — a budget that
+     * expires while the operation is still QUEUED withdraws it instead
+     * ({@code AsioControlThread.budgetExhausted} wins {@code QUEUED ->
+     * WITHDRAWN} before the task's own {@code QUEUED -> RUNNING}), which never
+     * touches {@code ABANDONED_IN_FLIGHT}, so {@link AsioControlThread#isQuiesced()}
+     * stays true and the calls behind it are NOT refused. The
+     * warnings below say "not attempted" rather than blaming the driver for
+     * that, and the driver shim's own release is deferred by
      * {@link #releaseDriverShim(AsioDriverShim)} so that
      * {@code asioshim_unloadDriver}'s backstop teardown still runs once the
      * driver returns.</p>
      *
-     * <p><strong>The upcall stub must then NOT be freed</strong>, which is why
-     * that same sample is RETURNED rather than only logged. The driver still
-     * holds the stub's address and may fire {@code bufferSwitch} again, so
-     * releasing its arena would turn the next callback into a jump into
-     * released memory — a crash, not a leak. {@link #close()} and
+     * <p><strong>The fate of the upcall stub is decided by the uninstall's own
+     * outcome, never by a quiescence sample.</strong>
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} answers
+     * {@code true} only when the shim's registered buffer-switch callback is
+     * provably no longer the stub's address, and that answer is what this
+     * method returns. No sample can stand in for it: taken before the call it
+     * cannot see the call be skipped, refused, time out, be interrupted or
+     * fail at the FFM boundary, and taken after it reads {@code true} again
+     * the moment an abandoned call returns — reporting a clean teardown for an
+     * uninstall that never ran, and freeing an arena the shim's callback
+     * pointer still holds. {@link #close()} and
      * {@code rollbackOpen(...)} therefore end the bridge with
-     * {@link AsioBufferSwitchShim#closeRetainingUpcallStub()} in that case,
-     * leaking one stub for the life of the process. It is the same trade this
-     * method already makes by continuing past a refused {@code ASIOStop}
-     * instead of skipping "the actual protection".</p>
+     * {@link AsioBufferSwitchShim#closeRetainingUpcallStub()} whenever this
+     * answers {@code false}, leaking one stub for the life of the process: the
+     * driver may still fire {@code bufferSwitch} into the shim's trampoline,
+     * which forwards through that pointer, and releasing its arena would
+     * turn the next callback into a jump into released memory — a crash, not a
+     * leak. It is the same trade this method already makes by continuing past a
+     * refused {@code ASIOStop} instead of skipping "the actual protection".</p>
      *
-     * @return whether the uninstall was actually ATTEMPTED, i.e. whether the
-     *         control thread was free of abandoned calls when this teardown
-     *         began. {@code false} means none of the three calls reached the
-     *         driver and the caller must retain the upcall stub.
+     * <p>The two {@link AsioControlThread#isQuiesced()} samples below are
+     * DIAGNOSTIC ONLY, and they PREDICT rather than decide: the gate is
+     * re-read inside {@code AsioControlThread.call(...)}, which is what
+     * actually refuses a bounded operation. They exist so that a refused
+     * {@code ASIOStop} or {@code ASIODisposeBuffers} can be attributed to the
+     * host's own fail-fast gate rather than to the driver, and each is taken
+     * immediately before the call it describes because the preceding call can
+     * change the answer. A benign race remains between each sample and its
+     * submission — {@code AsioControlThread.call(...)} itself is the only
+     * authority on what became of a call — but nothing load-bearing rests on
+     * them: the one decision that can crash the process reads the uninstall's
+     * return value instead.</p>
+     *
+     * @return whether the uninstall provably completed, so the caller may free
+     *         the upcall stub's arena. {@code false} means the shim's
+     *         registered buffer-switch callback may still be the stub's
+     *         address and the caller must retain it.
      */
     private boolean tearDownStreaming(AsioStreamingShim streaming) {
-        // Sampled BEFORE the downcalls, because it is what decides whether they
-        // are submitted at all rather than how they fare once submitted. The
-        // caller's decision about the upcall stub reads this same sample, so
-        // the warning below and the fate of the stub cannot disagree.
-        boolean controlThreadQuiesced = AsioControlThread.isQuiesced();
+        boolean stopAttempted = AsioControlThread.isQuiesced();
         boolean stopped = streaming.stop();
+        // Re-sampled: a stop() the control thread had already STARTED and that
+        // then outlived its budget is abandoned in flight, so the dispose
+        // behind it is refused on arrival by the host rather than by the
+        // driver. (A budget that expires while the stop is still queued
+        // withdraws it instead and leaves the gate open.)
+        boolean disposeAttempted = AsioControlThread.isQuiesced();
         boolean disposed = streaming.disposeBuffers();
-        warnIfDriverRefusedTeardown(stopped, disposed, controlThreadQuiesced);
-        streaming.uninstallBufferSwitchCallback();
-        return controlThreadQuiesced;
+        warnIfDriverRefusedTeardown(stopped, stopAttempted, disposed, disposeAttempted);
+        // The uninstall's OWN outcome, not a sample: it is what tells the
+        // caller whether freeing the upcall stub's arena is a release or a
+        // crash.
+        return streaming.uninstallBufferSwitchCallback();
     }
 
     /**
      * Records the one case in which the buffer-switch upcall stub is
      * deliberately leaked: {@link #tearDownStreaming(AsioStreamingShim)} could
-     * not attempt the uninstall, so the driver's {@code ASIOCallbacks} table
-     * still points at the stub. {@link Level#SEVERE} because the alternative
+     * not CONFIRM the uninstall, so the shim's registered buffer-switch
+     * callback may still be the stub's address.
+     * {@link Level#SEVERE} because the alternative
      * the process just avoided is a crash, and because the leak is permanent —
      * nothing later in this process can reclaim that arena.
+     *
+     * <p>The message describes the SHAPE of the failure rather than picking
+     * one cause, because {@link AsioStreamingShim#uninstallBufferSwitchCallback()}
+     * cannot distinguish its five and a maintainer reading this line must not
+     * be sent after the wrong one. It must also not name the driver: the
+     * native {@code uninstallAsioBufferSwitchCallback} nulls a pointer and
+     * drains in-flight callbacks without entering the ASIO SDK at all, so the
+     * driver has no way to refuse the uninstall or to throw out of it (story
+     * 316 review, round 4 — this line previously said it did).</p>
      */
     private void logRetainedUpcallStub() {
         String driver = activeDriverName;
         String named = driver == null ? "<no driver loaded>" : driver;
         LOG.log(Level.SEVERE,
                 "ASIO upcall stub RETAINED (deliberately leaked) for " + named
-                        + ": the asio-control thread is still executing an ASIO call"
-                        + " that outlived its budget, so the buffer-switch callback"
-                        + " could not be uninstalled and the driver may still hold the"
-                        + " stub's address. Freeing its arena now would turn the next"
+                        + ": uninstalling the buffer-switch callback could not be"
+                        + " CONFIRMED — the call could not be made, was refused on"
+                        + " arrival while an earlier ASIO call executed past its"
+                        + " budget, did not complete within its own budget, was"
+                        + " interrupted, or failed at the FFM boundary. The driver is"
+                        + " NOT involved either way: the uninstall nulls a callback"
+                        + " pointer and drains in-flight callbacks without entering"
+                        + " the ASIO SDK. What is unknown is whether that pointer is"
+                        + " still the stub's address, so a bufferSwitch may still"
+                        + " reach it through the shim's trampoline."
+                        + " Freeing its arena now would turn the next"
                         + " bufferSwitch into a jump into released memory, so the stub"
                         + " and its arena are leaked for the life of the process"
                         + " instead. The bridge is quiesced and its asio-input-drain"
@@ -708,12 +764,15 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
-     * Logs a teardown that did not fully succeed. Shared by {@link #close()} /
-     * {@code rollbackOpen(...)} — via {@link #tearDownStreaming} — and by the
-     * asynchronous {@link #stopStreamingForDriverReset()} teardown, which runs
-     * the same two calls and would otherwise discard the same information.
+     * Logs a teardown that did not fully succeed, splitting the calls the HOST
+     * most likely never submitted from the calls that most likely reached the
+     * DRIVER and were refused. Shared by
+     * {@link #close()} / {@code rollbackOpen(...)} — via
+     * {@link #tearDownStreaming} — and by the asynchronous
+     * {@link #stopStreamingForDriverReset()} teardown, which runs the same two
+     * calls and would otherwise discard the same information.
      *
-     * <p>{@code controlThreadQuiesced} is what keeps the attribution honest.
+     * <p>The two {@code Attempted} flags are what keep the attribution honest.
      * {@link AsioStreamingShim#stop()} and
      * {@link AsioStreamingShim#disposeBuffers()} answer {@code false} both for a
      * driver that ran the call and refused it and for a call the HOST never
@@ -723,46 +782,114 @@ public final class AsioBackend implements AudioBackend {
      * host's own gate as "the ASIO driver refused ASIOStop" would send a
      * maintainer after the wrong component and hide the one fact that matters —
      * that a named call is still wedged inside the driver — so the two get
-     * different messages. The driver-refused wording is reserved for a teardown
-     * that provably reached the driver.</p>
+     * different messages.</p>
      *
-     * @param controlThreadQuiesced whether the control thread was free of
-     *                              abandoned calls when the teardown began,
-     *                              i.e. whether these calls were submitted at
-     *                              all
+     * <p><strong>Both attributions are best guesses, not proofs</strong>
+     * (story 316 review, round 4 — this javadoc previously claimed the
+     * driver-refused wording was "reserved for a call that provably reached
+     * the driver", which the gate cannot establish). Each flag records only
+     * that {@link AsioControlThread#isQuiesced()} was true immediately before
+     * the call, i.e. that the host believed it could submit. The gate is
+     * re-read inside {@code AsioControlThread.call(...)}, so the sample
+     * predicts rather than decides; and even a call that IS submitted through
+     * an open gate can exhaust its own budget while still queued, in which
+     * case {@code budgetExhausted} moves it {@code QUEUED -> WITHDRAWN} and
+     * the driver never sees it. That is reachable whenever the control thread
+     * is busy with a call the host has NOT given up on — the unbounded modal
+     * control panel being the obvious one — because such a call leaves
+     * {@code isQuiesced()} true. The driver-refused message therefore carries
+     * its own hedge.</p>
+     *
+     * <p>Each flag is sampled immediately before the call it describes rather
+     * than once for the pair, because a {@code stop()} the control thread has
+     * already STARTED and that then outlives its budget is abandoned in
+     * flight: the {@code disposeBuffers()} behind it is then refused on
+     * arrival by the host, and one earlier sample would blame the driver for
+     * that refusal. (Starting is the condition:
+     * {@code abandonWhileRunning} only counts an operation abandoned on a
+     * winning {@code RUNNING -> ABANDONED} compare-and-set, so a budget that
+     * expires while the call is still queued withdraws it and leaves the gate
+     * open.) For the same reason this emits up to TWO warnings — one naming
+     * the calls the host most likely never submitted, one naming the calls
+     * that most likely reached the driver and were refused — so a mixed
+     * teardown reports both instead of picking one. Nothing that can crash the
+     * process depends on either: the fate of the upcall stub is decided by the
+     * uninstall's own return value, see
+     * {@link #tearDownStreaming(AsioStreamingShim)}.</p>
+     *
+     * @param stopped          whether {@code ASIOStop} reported success
+     * @param stopAttempted    whether the host's fail-fast gate
+     *                         ({@link AsioControlThread#isQuiesced()}) was open
+     *                         immediately before {@code ASIOStop} — i.e.
+     *                         whether the host believed it could submit that
+     *                         call, not whether the driver received it
+     * @param disposed         whether {@code ASIODisposeBuffers} reported success
+     * @param disposeAttempted the same reading taken immediately before
+     *                         {@code ASIODisposeBuffers}
      */
-    private void warnIfDriverRefusedTeardown(boolean stopped, boolean disposed,
-                                             boolean controlThreadQuiesced) {
+    private void warnIfDriverRefusedTeardown(boolean stopped, boolean stopAttempted,
+                                             boolean disposed, boolean disposeAttempted) {
         if (stopped && disposed) {
             return;
         }
-        String refused;
-        if (!stopped && !disposed) {
-            refused = "ASIOStop and ASIODisposeBuffers";
-        } else if (!stopped) {
-            refused = "ASIOStop";
-        } else {
-            refused = "ASIODisposeBuffers";
-        }
         String driver = activeDriverName;
         String named = driver == null ? "<no driver loaded>" : driver;
-        if (!controlThreadQuiesced) {
+        String neverSubmitted = nameCalls(!stopped && !stopAttempted,
+                !disposed && !disposeAttempted);
+        if (!neverSubmitted.isEmpty()) {
             LOG.log(Level.WARNING,
-                    "ASIO teardown NOT ATTEMPTED (" + refused + ") for " + named
+                    "ASIO teardown NOT ATTEMPTED (" + neverSubmitted + ") for " + named
                             + ": the asio-control thread is still executing an earlier"
                             + " ASIO call that outlived its budget, so the host refused"
                             + " to submit these calls. This is the host's own fail-fast"
-                            + " gate, NOT a driver refusal — the driver never saw them."
-                            + " The driver's buffers stay created and it may still be"
-                            + " firing bufferSwitch until that earlier call returns.");
-            return;
+                            + " gate, NOT a driver refusal — the driver almost certainly"
+                            + " never saw them. The driver's buffers stay created and it"
+                            + " may still be firing bufferSwitch until that earlier call"
+                            + " returns. Attribution caveat: the gate is sampled just"
+                            + " before each call, so an earlier call that returned in"
+                            + " between could have let one through after all.");
         }
-        LOG.log(Level.WARNING,
-                "ASIO driver refused " + refused + " during teardown: " + named
-                        + ". The driver may still be firing bufferSwitch. The "
-                        + "teardown continues: the native shim closes its buffer "
-                        + "gate and waits on a bounded in-flight callback barrier "
-                        + "before anything a callback touches is released.");
+        String refusedByDriver = nameCalls(!stopped && stopAttempted,
+                !disposed && disposeAttempted);
+        if (!refusedByDriver.isEmpty()) {
+            LOG.log(Level.WARNING,
+                    "ASIO driver refused " + refusedByDriver + " during teardown: " + named
+                            + ". The driver may still be firing bufferSwitch. The "
+                            + "teardown continues: the native shim closes its buffer "
+                            + "gate and waits on a bounded in-flight callback barrier "
+                            + "before anything a callback touches is released. "
+                            + "Attribution caveat: this is inferred from the host's "
+                            + "fail-fast gate being OPEN just before the call, which "
+                            + "means the host believed it could submit — not that the "
+                            + "driver received it. A call that queued behind a healthy "
+                            + "long-running downcall (the driver's modal control panel, "
+                            + "typically) and then exhausted its own budget is withdrawn "
+                            + "unseen and reported here too.");
+        }
+    }
+
+    /**
+     * Names the selected subset of the teardown's two calls exactly as the
+     * single pre-split message worded them, so a maintainer's existing log
+     * grep keeps matching. The empty string means "neither", which is how
+     * {@link #warnIfDriverRefusedTeardown(boolean, boolean, boolean, boolean)}
+     * decides that one of its two attributions has nothing to report.
+     *
+     * @param stop    include {@code ASIOStop}
+     * @param dispose include {@code ASIODisposeBuffers}
+     * @return the joined call names, or the empty string when neither is selected
+     */
+    private static String nameCalls(boolean stop, boolean dispose) {
+        if (stop && dispose) {
+            return "ASIOStop and ASIODisposeBuffers";
+        }
+        if (stop) {
+            return "ASIOStop";
+        }
+        if (dispose) {
+            return "ASIODisposeBuffers";
+        }
+        return "";
     }
 
     private static String resolveDriverName(AsioDriverShim shim, DeviceId device) {
@@ -1128,11 +1255,15 @@ public final class AsioBackend implements AudioBackend {
      * {@link #tearDownStreaming(AsioStreamingShim)} for why continuing is the
      * safe response and aborting is not.</p>
      *
-     * <p>A teardown that could not even ATTEMPT the uninstall — because the
-     * control thread is still executing a call that outlived its budget, so
-     * every bounded downcall is refused on arrival — ends the bridge with
+     * <p>A teardown that could not CONFIRM the uninstall — the call could not
+     * be made, was refused on arrival while an earlier call executed past its
+     * budget, did not complete within its own budget, was interrupted, or
+     * failed at the FFM boundary; the driver is a party to none of these, see
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} — ends the
+     * bridge with
      * {@link AsioBufferSwitchShim#closeRetainingUpcallStub()} instead. The
-     * driver still holds the stub's address, so freeing its arena would be a
+     * shim's registered buffer-switch callback may still be the stub's
+     * address, so freeing its arena would be a
      * crash rather than a leak; the stub is retained for the life of the
      * process and the choice is logged at {@link Level#SEVERE}.</p>
      */
@@ -1148,12 +1279,12 @@ public final class AsioBackend implements AudioBackend {
             }
             // No streaming shim means no upcall was ever installed, so nothing
             // can be holding the stub's address and the full release is safe.
-            boolean uninstallAttempted = true;
+            boolean upcallUninstalled = true;
             if (streaming != null) {
-                uninstallAttempted = tearDownStreaming(streaming);
+                upcallUninstalled = tearDownStreaming(streaming);
             }
             if (bridge != null) {
-                if (uninstallAttempted) {
+                if (upcallUninstalled) {
                     bridge.close();
                 } else {
                     logRetainedUpcallStub();
@@ -1310,14 +1441,21 @@ public final class AsioBackend implements AudioBackend {
                 if (streamingShim != streaming) {
                     return;
                 }
-                // Sampled before the downcalls for the same reason as in
-                // tearDownStreaming: it decides whether they are submitted at
-                // all, and a refusal by the host must not be logged as one by
-                // the driver.
-                boolean controlThreadQuiesced = AsioControlThread.isQuiesced();
+                // Sampled immediately before each downcall for the same reason
+                // as in tearDownStreaming: a refusal by the host must not be
+                // logged as one by the driver, and a stop() the control thread
+                // has already STARTED and that then outlives its budget is
+                // abandoned in flight — which is what makes the dispose behind
+                // it refused on arrival rather than by the driver. The sample
+                // only PREDICTS: AsioControlThread.call re-reads the gate
+                // itself, and that read is what actually refuses a bounded
+                // operation. Diagnostic only; nothing here frees anything.
+                boolean stopAttempted = AsioControlThread.isQuiesced();
                 boolean stopped = streaming.stop();
+                boolean disposeAttempted = AsioControlThread.isQuiesced();
                 boolean disposed = streaming.disposeBuffers();
-                warnIfDriverRefusedTeardown(stopped, disposed, controlThreadQuiesced);
+                warnIfDriverRefusedTeardown(
+                        stopped, stopAttempted, disposed, disposeAttempted);
             }
         });
     }

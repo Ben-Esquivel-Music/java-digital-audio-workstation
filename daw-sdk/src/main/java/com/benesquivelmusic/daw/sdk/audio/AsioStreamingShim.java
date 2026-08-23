@@ -351,21 +351,89 @@ class AsioStreamingShim implements AutoCloseable {
     }
 
     /**
-     * Clears the registered buffer-switch upcall. Must be called before the
+     * Clears the registered buffer-switch upcall and reports whether that
+     * provably happened. Must be called before the
      * {@link AsioBufferSwitchShim}'s arena is freed, or a late callback would
-     * jump into a released stub. Best-effort and idempotent.
+     * jump into a released stub. Best-effort and idempotent; never throws.
+     *
+     * <p><strong>The caller may free the upcall stub's arena only when this
+     * returns {@code true}</strong>, and must read THIS value rather than an
+     * {@link AsioControlThread#isQuiesced()} sample taken around the call. A
+     * sample answers a different question — whether the control thread was free
+     * of abandoned calls at the instant it was read — and it is wrong in both
+     * directions here. Taken BEFORE, it cannot see this call be skipped,
+     * refused, time out, be interrupted, or fail at the FFM boundary. Taken
+     * AFTER, it reads {@code true} again the moment an abandoned call that
+     * caused a refusal finally returns, reporting a clean teardown for an
+     * uninstall that never ran. Only this call's own outcome distinguishes
+     * "the shim no longer holds the stub's address" from "it may still".</p>
+     *
+     * <p><strong>The vendor driver is not a party to this call</strong>
+     * (story 316 review, round 4 — earlier wording here blamed it, wrongly).
+     * The native {@code uninstallAsioBufferSwitchCallback} stores
+     * {@code nullptr} into the shim's own buffer-switch callback pointer and
+     * then drains in-flight callbacks; it takes no driver lock, enters no ASIO
+     * SDK entry point, and returns {@code void}. The driver's
+     * {@code ASIOCallbacks} table is wired to the shim's exported
+     * {@code asioshim_bufferSwitchTrampoline}, never to the JVM stub — it is
+     * that trampoline's read of the pointer this call nulls that reaches the
+     * stub. The driver therefore has no channel through which to refuse this
+     * call or to throw out of it, and nothing written here or in the callers
+     * may suggest that it has.</p>
+     *
+     * @return {@code true} when the shim's registered buffer-switch callback
+     *         is provably no longer the stub's address, which covers two
+     *         cases. First, the
+     *         {@code uninstallAsioBufferSwitchCallback} symbol never resolved:
+     *         {@link #isStreamingAvailable()} requires
+     *         {@code uninstallCallback != null}, and
+     *         {@link #installBufferSwitchCallback(MemorySegment)} answers
+     *         {@code false} without invoking anything when streaming is
+     *         unavailable, so such a shim can never have installed a stub in
+     *         the first place. Second, the downcall ran and returned normally,
+     *         having nulled the pointer and then waited on the native shim's
+     *         bounded in-flight callback barrier for any callback that had
+     *         already read it.
+     *         <p>{@code false} in five cases, none of which this method can
+     *         tell apart and none of which involve the driver: this shim is
+     *         already closed, so the call is not made at all — the same answer
+     *         {@code invokeStatus} gives for a closed shim;
+     *         {@link AsioControlThread} refuses it on arrival because an
+     *         earlier downcall outlived its budget and is still executing;
+     *         this call's own budget expires, leaving it withdrawn before it
+     *         ran or abandoned after it started; the calling thread is
+     *         interrupted, which {@code AsioControlThread.call} re-interrupts
+     *         and rethrows straight into the {@code catch} below; or the FFM
+     *         downcall itself fails — {@link #close()} racing it and closing
+     *         the arena that backs the handle, for instance. The caller must
+     *         then retain the stub's arena.</p>
      */
-    void uninstallBufferSwitchCallback() {
-        if (uninstallCallback == null || closed) {
-            return;
+    boolean uninstallBufferSwitchCallback() {
+        if (uninstallCallback == null) {
+            // No symbol means isStreamingAvailable() is false, which means
+            // installBufferSwitchCallback() answered false without ever
+            // installing anything: no stub address was ever registered, so
+            // the caller's full release is safe.
+            return true;
+        }
+        if (closed) {
+            // The handles are no longer usable, so the call is not made at
+            // all. A stub installed before the close is therefore still the
+            // shim's registered callback: report failure.
+            return false;
         }
         try {
             AsioControlThread.call(() -> {
                 uninstallCallback.invokeExact();
                 return null;
             });
+            return true;
         } catch (Throwable ignored) {
-            // Best-effort: never throw from the teardown path.
+            // Best-effort: never throw from the teardown path. The failure is
+            // reported through the return value instead, and the caller keeps
+            // the upcall stub mapped rather than freeing an arena the shim's
+            // callback pointer may still hold.
+            return false;
         }
     }
 

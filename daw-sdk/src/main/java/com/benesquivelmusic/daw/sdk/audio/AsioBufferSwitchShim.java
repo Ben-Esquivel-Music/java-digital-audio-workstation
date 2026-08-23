@@ -679,9 +679,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
 
     /**
      * Quiesces the bridge, stops the {@code asio-input-drain} thread and frees
-     * the upcall stub's arena. The caller must have uninstalled the callback
-     * first, or a late driver callback would jump into released memory; a
-     * teardown that could not even attempt the uninstall must end the bridge
+     * the upcall stub's arena. The caller must have CONFIRMED the uninstall
+     * first — {@link AsioStreamingShim#uninstallBufferSwitchCallback()}
+     * answering {@code true} — or a late driver callback would jump into
+     * released memory; a teardown that could not confirm it must end the bridge
      * with {@link #closeRetainingUpcallStub()} instead. Idempotent.
      */
     @Override
@@ -697,18 +698,25 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * exclusive with {@link #close()}: whichever runs first decides the
      * arena's fate.
      *
-     * <p>This is the only safe ending for a teardown that could not uninstall
-     * the callback. {@code AsioBackend.tearDownStreaming(...)} reports exactly
-     * that case: while an earlier downcall has outlived its budget and is still
-     * executing, {@link AsioControlThread#isQuiesced()} is false and every
-     * bounded operation — including
-     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} — is refused on
-     * arrival and never reaches the driver. The driver therefore still holds
-     * this stub's address in its {@code ASIOCallbacks} table and may fire
-     * {@code bufferSwitch} at any moment. {@link #stopStreaming()} makes such a
-     * callback harmless, but only while the stub is still mapped: freeing the
-     * arena unmaps it, and the next callback jumps into released memory — a JVM
-     * crash whose native stack names neither this class nor the driver.</p>
+     * <p>This is the only safe ending for a teardown whose uninstall could not
+     * be CONFIRMED, which {@code AsioBackend.tearDownStreaming(...)} reports by
+     * returning what
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} answered. A
+     * {@code false} there means the call was not made at all, was refused on
+     * arrival while an earlier downcall executed past its budget (so
+     * {@link AsioControlThread#isQuiesced()} was false and every bounded
+     * operation is rejected), did not complete within its own budget, was
+     * interrupted, or failed at the FFM boundary. That method enumerates all
+     * five; out here they cannot be told apart, and the vendor driver is a
+     * party to none of them — it is never invoked by the uninstall (story 316
+     * review, round 4). What they share is the only thing this method needs:
+     * the shim's registered buffer-switch callback may still be this stub's
+     * address, so the driver's next {@code bufferSwitch} — which enters the
+     * shim's own trampoline and reads that pointer — may still reach it.
+     * {@link #stopStreaming()} makes such a callback harmless, but only while
+     * the stub is still mapped: freeing the arena unmaps it, and the next
+     * callback jumps into released memory — a JVM crash whose native stack
+     * names neither this class nor the driver.</p>
      *
      * <p>The leak is one upcall stub and its arena, bounded and static for the
      * life of the process, which is the same trade
@@ -727,8 +735,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * what makes both idempotent and mutually exclusive.
      *
      * @param releaseUpcallArena whether the upcall stub's arena may be freed;
-     *                           {@code false} when the driver may still hold
-     *                           the stub's address
+     *                           {@code false} when the shim's registered
+     *                           buffer-switch callback may still be the stub's
+     *                           address, so a driver callback could still
+     *                           reach it through the shim's trampoline
      */
     private void shutDown(boolean releaseUpcallArena) {
         if (closed) {

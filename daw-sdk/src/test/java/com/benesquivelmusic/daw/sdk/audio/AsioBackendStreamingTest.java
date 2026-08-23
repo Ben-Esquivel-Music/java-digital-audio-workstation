@@ -69,6 +69,19 @@ class AsioBackendStreamingTest {
     private boolean startSucceeds = true;
     private boolean stopSucceeds = true;
     private boolean disposeSucceeds = true;
+    /**
+     * Whether {@code uninstallBufferSwitchCallback} reports that the shim's
+     * registered buffer-switch callback is provably no longer the upcall
+     * stub's address. {@code false} stands in for every way that call can fail
+     * to be confirmed — the shim already closed so the call is not made,
+     * refused on arrival by {@code AsioControlThread}'s fail-fast gate,
+     * withdrawn or abandoned when its own budget expired, interrupted, or
+     * failed at the FFM boundary — because the backend's decision about the
+     * upcall stub cannot tell them apart and must not try. None of them
+     * involve the vendor driver: the native uninstall nulls a pointer and
+     * drains in-flight callbacks without entering the ASIO SDK.
+     */
+    private boolean uninstallSucceeds = true;
     private boolean resetFromInsideCreateBuffers;
 
     // Capture of AsioBackend's own logger, for the teardown-refusal warnings.
@@ -177,6 +190,87 @@ class AsioBackendStreamingTest {
         assertThat(backend.activeBufferSwitchShim()).isNull();
         assertThat(driver.unloaded).isTrue();
         assertWarningLogged("refused ASIOStop during teardown", "Driver A");
+    }
+
+    /**
+     * Story 316 review (round 3): the one decision in this teardown that can
+     * crash the process reads the UNINSTALL'S OWN outcome, not a quiescence
+     * sample taken around it.
+     *
+     * <p>The defect this pins: {@code tearDownStreaming} used to return a
+     * {@code AsioControlThread.isQuiesced()} sample taken before the downcalls.
+     * A {@code stop()} the control thread has already STARTED and that then
+     * outlives its budget is abandoned in flight, which makes the
+     * {@code disposeBuffers()} and the uninstall behind it refused on
+     * arrival — yet the pre-sample still said {@code true}, so {@code close()}
+     * freed the upcall stub's arena while the shim's registered buffer-switch
+     * callback was still the stub's address. The next {@code bufferSwitch},
+     * arriving at the shim's trampoline and forwarding through that pointer,
+     * would then jump into released memory. Re-sampling AFTER the uninstall is
+     * no fix either: the abandoned call returns and the sample flips back to
+     * {@code true}.</p>
+     *
+     * <p>The stub this test leaves mapped is never reclaimed. That permanent,
+     * bounded leak <em>is</em> the behaviour under test — it is exactly the
+     * trade {@code AsioBufferSwitchShim.closeRetainingUpcallStub()} documents:
+     * a leaked stub costs memory, a freed-but-installed stub costs the
+     * process.</p>
+     */
+    @Test
+    void anUnconfirmedUninstallRetainsTheUpcallStubsArena() {
+        uninstallSucceeds = false;
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        MemorySegment stub = backend.activeBufferSwitchShim().upcallStub();
+        assertThat(stub.equals(MemorySegment.NULL))
+                .as("a NULL stub would make the scope assertions meaningless")
+                .isFalse();
+        assertThat(stub.scope().isAlive()).isTrue();
+        calls.clear();
+
+        backend.close();
+
+        assertThat(stub.scope().isAlive())
+                .as("the shim's registered buffer-switch callback may still be "
+                        + "this address, so the arena must NOT be freed — leaking "
+                        + "it beats crashing on the next bufferSwitch")
+                .isTrue();
+        assertThat(calls)
+                .as("the rest of the teardown still runs to completion")
+                .containsExactly(
+                        "stop", "disposeBuffers", "uninstallBufferSwitchCallback",
+                        "close", "unload");
+        assertThat(logRecords)
+                .as("the deliberate leak is loud: SEVERE, because nothing later "
+                        + "in this process can reclaim that arena")
+                .anySatisfy(record -> {
+                    assertThat(record.getLevel()).isEqualTo(Level.SEVERE);
+                    assertThat(record.getMessage())
+                            .contains("ASIO upcall stub RETAINED", "Driver A");
+                });
+    }
+
+    /**
+     * The mirror of {@link #anUnconfirmedUninstallRetainsTheUpcallStubsArena()}
+     * on the same observable: a CONFIRMED uninstall means no callback can reach
+     * the stub any more, so the arena is freed rather than leaked. Without this
+     * pair, a {@code tearDownStreaming} that simply always retained would pass
+     * the retention test while leaking a stub on every close.
+     */
+    @Test
+    void aConfirmedUninstallFreesTheUpcallStubsArena() {
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        MemorySegment stub = backend.activeBufferSwitchShim().upcallStub();
+        assertThat(stub.equals(MemorySegment.NULL))
+                .as("a NULL stub would make the scope assertions meaningless")
+                .isFalse();
+        assertThat(stub.scope().isAlive()).isTrue();
+
+        backend.close();
+
+        assertThat(stub.scope().isAlive())
+                .as("uninstallBufferSwitchCallback answered true: the shim's "
+                        + "registered callback is provably no longer this address")
+                .isFalse();
     }
 
     @Test
@@ -974,8 +1068,9 @@ class AsioBackendStreamingTest {
         }
 
         @Override
-        void uninstallBufferSwitchCallback() {
+        boolean uninstallBufferSwitchCallback() {
             calls.add("uninstallBufferSwitchCallback");
+            return uninstallSucceeds;
         }
 
         @Override

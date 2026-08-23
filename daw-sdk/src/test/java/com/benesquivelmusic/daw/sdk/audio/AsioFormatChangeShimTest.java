@@ -428,7 +428,10 @@ class AsioFormatChangeShimTest {
             return true;
         }
         @Override boolean installBufferSwitchCallback(MemorySegment stub) { return true; }
-        @Override void uninstallBufferSwitchCallback() { }
+        // true: this stub never installed anything, so no driver can be
+        // holding an upcall stub's address and the caller's full release of
+        // the bridge's arena is safe.
+        @Override boolean uninstallBufferSwitchCallback() { return true; }
         @Override public void close() {
             // Release the real superclass's Arena.ofShared().
             super.close();

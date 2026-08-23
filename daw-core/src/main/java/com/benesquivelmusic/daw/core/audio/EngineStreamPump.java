@@ -49,10 +49,38 @@ import java.util.logging.Logger;
  *   <li>{@code sink} throwing (for example a frame-size mismatch after a
  *       driver reset) is logged once at {@link Level#WARNING}, counted, and
  *       the loop keeps running: the reopen path fixes the shape; a transient
- *       fault must not kill the render drive.</li>
+ *       fault must not kill the render drive. That iteration is then held to
+ *       a <em>floor</em> of one block period ({@link #parkUntil(long)}) — a
+ *       floor rather than an extra wait, because what the following
+ *       {@code awaitSinkCapacity} costs after a failed {@code sink} depends
+ *       entirely on the backend (see below).</li>
  *   <li>{@code awaitSinkCapacity} throwing is logged once at
- *       {@link Level#SEVERE} and the loop continues un-paced for that
- *       period rather than dying silently.</li>
+ *       {@link Level#SEVERE} and the same floor applies. This is the harsher
+ *       fault: a seam that threw cannot be credited with any of the wait it
+ *       was asked for, so the loop re-arms the deadline at the throw and the
+ *       floor supplies the whole period rather than the loop dying silently
+ *       or spinning un-paced.</li>
+ *   <li><strong>Why a floor and not a park.</strong> The loop's pacing comes
+ *       from {@link AudioBackend#awaitSinkCapacity(long)}, and its behaviour
+ *       after a failed {@code sink} is BACKEND-SPECIFIC (story 316 review,
+ *       round 4). The interface's default implementation parks the full
+ *       timeout unconditionally, and {@code WasapiBackend},
+ *       {@code CoreAudioBackend}, {@code JackBackend} and
+ *       {@code MockAudioBackend} all inherit it while overriding a
+ *       {@code sink} that can throw — those iterations are already paced, and
+ *       a second park would run the loop at HALF real time. Others supply
+ *       nothing: {@code JavaxSoundBackend}'s override is empty (its blocking
+ *       {@code sink} IS its pacing, and that {@code sink} is what just
+ *       failed), and {@code AsioBackend}'s ring poll returns the moment its
+ *       output ring reads drained — and a thrown {@code sink} put nothing
+ *       into that ring to wait on. Parking only the REMAINDER of the period
+ *       covers both: it adds nothing where the backend already paced the
+ *       iteration and supplies the shortfall where it did not.</li>
+ *   <li>That floor exists for the PERSISTENT case (story 316 review, round
+ *       3): an un-paced loop would burn a core and — worse — advance
+ *       transport one block per iteration with no hardware clock behind it,
+ *       running the timeline far faster than real time for the duration of
+ *       the fault.</li>
  *   <li>An {@link Error} still kills the pump thread; the installed
  *       uncaught-exception handler logs it at {@link Level#SEVERE} so the
  *       death is at least visible.</li>
@@ -104,7 +132,10 @@ final class EngineStreamPump {
     private final Thread thread;
     private volatile boolean running;
     private volatile Flow.Subscription inputSubscription;
-    /** True once the input planes hold non-zero data and need re-zeroing. */
+    /**
+     * True once the input planes were written from a captured block and so
+     * need re-zeroing when no capture arrives.
+     */
     private boolean inputPlanesDirty;
 
     /**
@@ -179,8 +210,10 @@ final class EngineStreamPump {
     /**
      * Subscribes to the backend's capture stream and starts the render
      * thread. Any {@link RuntimeException} the subscription raises propagates
-     * to the caller — {@link AudioEngine} treats it as a pump-start failure
-     * and unwinds exactly like a refused backend start.
+     * to the caller — {@link AudioEngine} treats it as a pump-start failure,
+     * unwinds what its start had claimed and rethrows. That unwind is not a
+     * fallback: unlike a rung whose OPEN is refused, a failed pump start does
+     * not move on to the next ladder rung.
      *
      * @throws IllegalStateException if the pump was already started
      */
@@ -262,8 +295,11 @@ final class EngineStreamPump {
      * Cancels and forgets the capture subscription, if one was ever stored.
      * Null-tolerant and idempotent: the stop path and a late
      * {@link InputSubscriber#onSubscribe(Flow.Subscription)} may both reach
-     * it for the same subscription, and whichever loses the race finds the
-     * field already cleared.
+     * it for the same subscription. The read-clear-cancel is deliberately
+     * not atomic — the stop path must stay non-blocking — so a caller that
+     * arrives after the field is cleared cancels nothing, while two that
+     * read the same non-null reference first both cancel it; see
+     * {@code onSubscribe}'s note on why that is benign.
      */
     private void cancelInputSubscription() {
         Flow.Subscription subscription = this.inputSubscription;
@@ -324,6 +360,12 @@ final class EngineStreamPump {
                 zeroOutputPlanes();
             }
             interleaveOutput();
+            // A fault below owes this iteration a FLOOR of one block period,
+            // measured from the moment the fault happened. It is deliberately
+            // not an extra park: the awaitSinkCapacity that follows may pace
+            // the iteration in full by itself (see parkUntil).
+            boolean pacingOwed = false;
+            long paceDeadlineNanos = 0L;
             try {
                 backend.sink(reusableBlock);
             } catch (RuntimeException sinkFailure) {
@@ -335,6 +377,8 @@ final class EngineStreamPump {
                                     + " (a driver reset/reopen fixes the shape)",
                             sinkFailure);
                 }
+                pacingOwed = true;
+                paceDeadlineNanos = System.nanoTime() + blockPeriodNanos;
             }
             if (!running) {
                 return;
@@ -343,15 +387,102 @@ final class EngineStreamPump {
                 backend.awaitSinkCapacity(blockPeriodNanos);
             } catch (RuntimeException pacingFault) {
                 // A throwing pacing seam must not kill the render drive
-                // either — log once and continue (un-paced for this period).
+                // either — log once and stand in for the wait that threw.
+                // The loop cannot know how much of that wait the seam had
+                // actually performed before it threw, so it credits none of
+                // it: the deadline is re-armed here and the floor below pays
+                // a whole period. Deliberately conservative — a seam that
+                // parked most of a period first is then paced slightly long,
+                // which is the safe direction.
                 if (!pacingFaultLogged) {
                     pacingFaultLogged = true;
                     LOG.log(Level.SEVERE,
-                            "awaitSinkCapacity threw; the pump continues without"
-                                    + " pacing for this period",
+                            "awaitSinkCapacity threw; the pump holds each iteration to"
+                                    + " a floor of one block period until the seam"
+                                    + " recovers",
                             pacingFault);
                 }
+                pacingOwed = true;
+                paceDeadlineNanos = System.nanoTime() + blockPeriodNanos;
             }
+            if (pacingOwed) {
+                parkUntil(paceDeadlineNanos);
+            }
+        }
+    }
+
+    /**
+     * Holds a faulted iteration to a FLOOR of one buffer period: parks for
+     * whatever is LEFT of {@code deadlineNanos}, and not at all once that
+     * deadline has passed.
+     *
+     * <p><strong>Why a floor rather than a park</strong> (story 316 review,
+     * round 4). The loop's cadence comes from
+     * {@link AudioBackend#awaitSinkCapacity(long)}, and how much time that
+     * seam costs an iteration whose {@code sink} just threw depends on the
+     * backend, so an unconditional park here would be right for some and
+     * exactly wrong for others:</p>
+     * <ul>
+     *   <li>The interface's own default implementation is
+     *       {@code LockSupport.parkNanos(timeoutNanos)} — a full-period park
+     *       taken whether or not anything was enqueued.
+     *       {@code WasapiBackend}, {@code CoreAudioBackend},
+     *       {@code JackBackend} and {@code MockAudioBackend} all inherit it
+     *       while overriding a {@code sink} that can throw, as does
+     *       {@code AsioBackend} whenever its buffer-switch bridge is absent.
+     *       Those iterations are already paced in full; adding a park would
+     *       run the loop at half real time for the duration of the fault.</li>
+     *   <li>{@code AsioBackend} with a live bridge polls its output ring and
+     *       returns the moment that ring reads drained — and a {@code sink}
+     *       that threw put nothing into the ring for it to wait on, having
+     *       thrown before {@code bridge.write(...)}.</li>
+     *   <li>{@code JavaxSoundBackend}'s override is empty: its blocking
+     *       {@code sink} <em>is</em> its pacing, and that {@code sink} is
+     *       precisely what failed.</li>
+     *   <li>An {@code awaitSinkCapacity} that itself throws cannot be credited
+     *       with any of the wait it was asked for — the loop has no way to
+     *       know how far it got — which is why the deadline is re-armed at
+     *       that throw and the floor pays the whole period.</li>
+     * </ul>
+     *
+     * <p>Parking only the remainder covers every one of them: time the backend
+     * spent counts towards the period, and this supplies only the shortfall.
+     * Without it, a PERSISTENT fault on one of the no-wait backends turns the
+     * loop into a hot spin that burns a core and — the real damage — advances
+     * transport one block per iteration with no hardware clock behind it,
+     * running the timeline far faster than real time until the fault clears.</p>
+     *
+     * <p>The remaining time is a {@link System#nanoTime()} DIFFERENCE tested
+     * against zero, never an absolute {@code <} comparison of two readings, so
+     * it stays correct across that counter's wraparound.</p>
+     *
+     * <p>The single {@code parkNanos} may return early — a spurious wakeup, or
+     * an unpark from anywhere — and this deliberately does NOT loop to re-park.
+     * A floor on the fault path is a pacing measure, not a hard guarantee, and
+     * a re-parking loop would fight {@link #stop()}'s unpark.</p>
+     *
+     * <p><strong>This cannot delay {@link #stop()}.</strong> That method clears
+     * {@code running}, then interrupts AND unparks this thread.
+     * {@link LockSupport#parkNanos(Object, long)} returns immediately for an
+     * already-interrupted thread and leaves the interrupt flag set — it never
+     * throws {@link InterruptedException} and never clears the flag — and an
+     * unpark permit issued before the park begins is consumed by that park
+     * rather than lost. Either signal therefore ends the park at once, and the
+     * {@code while (running)} test ends the loop on the next pass.</p>
+     *
+     * <p>The blocker overload is used deliberately: a thread dump then reports
+     * this pump as the park's blocker instead of a bare {@code LockSupport},
+     * which is the difference between "the render pump is pacing itself" and
+     * an unattributed park when someone is diagnosing silent output.</p>
+     *
+     * @param deadlineNanos the {@link System#nanoTime()} reading at which this
+     *                      iteration's floor expires — a deadline already in
+     *                      the past parks not at all
+     */
+    private void parkUntil(long deadlineNanos) {
+        long remaining = deadlineNanos - System.nanoTime();
+        if (remaining > 0L) {
+            LockSupport.parkNanos(this, remaining);
         }
     }
 
