@@ -533,11 +533,24 @@ public final class AudioEngine {
      *             more of them (list, load, buffer-size, channel counts,
      *             createBuffers, getBufferInfos, install callback, start),
      *             all inside its own {@code DRIVER_LIFECYCLE_LOCK}, and a
-     *             failed open adds its rollback's. Worst case for a single
-     *             ASIO rung is therefore MINUTES, not fifteen seconds — and
-     *             the fallback ladder may walk several rungs. The bound is
-     *             real (a wedged driver cannot stall the application
-     *             forever) but it is not a snappy one.</li>
+     *             failed open adds its rollback's. A driver that is SLOW BUT
+     *             RETURNING — every call answering just inside its own
+     *             budget — therefore still costs MINUTES on a single ASIO
+     *             rung, and the fallback ladder may walk several rungs. A
+     *             driver that WEDGES costs ONE budget, not eight: the caller
+     *             whose budget expires while the downcall is still executing
+     *             marks that operation abandoned, and
+     *             {@code AsioControlThread.call} then refuses every further
+     *             BOUNDED call on arrival while it remains outstanding
+     *             ({@code isQuiesced()}), so the rest of the open and the
+     *             whole of its rollback fail instantly instead of queueing
+     *             behind it. {@code AsioBackend.open()} refuses on the same
+     *             check, so a later rung cannot re-enter the wedge either,
+     *             and the one teardown that cannot be retried — the driver
+     *             shim's {@code ASIOExit} — is handed to a background
+     *             executor rather than waited for here. The bound is real (a
+     *             wedged driver cannot stall the application forever) but it
+     *             is not a snappy one.</li>
      *         <li>{@code CallbackBackendAdapter.close()} joins its
      *             {@code native-input-drain} thread — 2 s.</li>
      *         <li>PortAudio — <strong>UNBOUNDED</strong>. There is no

@@ -141,8 +141,43 @@ class AsioDriverShim implements AutoCloseable {
     }
 
     /**
-     * Loads and initializes the named driver. A successful call transfers the
-     * process-global driver ownership to this wrapper.
+     * Loads and initializes the named driver, holding the process-global driver
+     * ownership for the whole attempt.
+     *
+     * <p><strong>The claim is taken BEFORE the downcall, not after it.</strong>
+     * {@link AsioControlThread#call(AsioControlThread.Operation)} is bounded, and
+     * an expired budget is not proof that {@code asioshim_loadDriver} failed —
+     * {@code AsioControlThread}'s class javadoc notes that {@code ASIOInit}
+     * legitimately takes seconds on a class-compliant USB interface, so the
+     * likeliest reason this throws is a driver that is STILL LOADING and may
+     * yet hand this process an initialized driver. Claiming only on success
+     * left exactly that driver disowned: {@link #unloadDriver()} early-returns
+     * when {@code ownsActiveDriver} is false, so {@code ASIOExit} would never be
+     * issued for a driver that may now hold the device, while the fallback
+     * ladder opened another host over it.</p>
+     *
+     * <p>A refusal and a timeout are therefore treated as the DIFFERENT FACTS
+     * they are. A driver that answers {@code status != SHIM_OK} refused the
+     * load, which is positive proof of non-ownership, so
+     * {@link #clearOwnershipAfterFailedLoad()} drops the claim. Anything
+     * THROWN — the budget expiring, the fail-fast refusal raised while an
+     * abandoned call is still executing, or an ABI failure — leaves the outcome
+     * UNKNOWN, and the claim is kept.</p>
+     *
+     * <p>The asymmetry is the safe direction, not an oversight: an unnecessary
+     * {@code ASIOExit} on a driver that never loaded is a no-op (see
+     * {@link #unloadDriver()} — the ABI itself is idempotent), whereas a missing
+     * one leaks the device to another process for the life of this one. Keeping
+     * the claim is also what makes the process-wide invariant real, because the
+     * guard above refuses a second wrapper while this one still owns the
+     * driver: a re-open attempted while the outcome is unknown fails cleanly
+     * instead of loading a second driver over a live one.</p>
+     *
+     * @param driverName the registry name of the driver to initialize
+     * @return {@code true} only when the driver itself reported success. A
+     *         {@code false} leaves this wrapper either provably unowning (the
+     *         driver refused) or presumed owning (the outcome is unknown), so
+     *         the caller must still release the shim rather than drop it
      */
     boolean loadDriver(String driverName) {
         Objects.requireNonNull(driverName, "driverName must not be null");
@@ -153,6 +188,10 @@ class AsioDriverShim implements AutoCloseable {
             if (activeOwner != null && activeOwner != this) {
                 return false;
             }
+            // Claimed here, before the call, so the claim covers the window in
+            // which the outcome is unknown. See the javadoc.
+            activeOwner = this;
+            ownsActiveDriver = true;
             try {
                 int status = AsioControlThread.call(() -> {
                     try (Arena call = Arena.ofConfined()) {
@@ -165,16 +204,25 @@ class AsioDriverShim implements AutoCloseable {
                     clearOwnershipAfterFailedLoad();
                     return false;
                 }
-                activeOwner = this;
-                ownsActiveDriver = true;
                 return true;
             } catch (Throwable ignored) {
-                clearOwnershipAfterFailedLoad();
+                // The claim deliberately STAYS. Nothing here proves the driver
+                // never initialized, and presumed-owned is the direction whose
+                // worst case is a redundant ASIOExit rather than a held device.
                 return false;
             }
         }
     }
 
+    /**
+     * Drops the ownership claim {@link #loadDriver(String)} took before its
+     * downcall.
+     *
+     * <p>Called from the ONE branch that proves this wrapper owns nothing: the
+     * driver answered {@code status != SHIM_OK}, i.e. it ran the load and
+     * refused it. A thrown call is not that fact — it says only that the host
+     * stopped waiting — so it deliberately does not reach here.</p>
+     */
     private void clearOwnershipAfterFailedLoad() {
         ownsActiveDriver = false;
         if (activeOwner == this) {

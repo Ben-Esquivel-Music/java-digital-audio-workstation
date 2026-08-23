@@ -1722,10 +1722,10 @@ public final class MainController {
             return List.of();
         }
         DeviceId device = audioEngineController != null
-                ? audioEngineController.getActiveDevice().orElse(null)
+                ? audioEngineController.getWatchedDevice().orElse(null)
                 : null;
         if (device == null) {
-            // No active device bound yet — use a placeholder that
+            // No device watched yet — use a placeholder that
             // satisfies the non-null contract; ASIO's implementation
             // enumerates the currently-open device regardless of the id.
             device = DeviceId.defaultFor(backend.name());
@@ -4369,20 +4369,22 @@ public final class MainController {
 
     /**
      * Returns the input channels the calibration dialog offers in its
-     * source combo. Queries the active backend's input channels for the
-     * currently bound device (story 215 / 223). Falls back to a single
+     * source combo. Queries the engine's backend for the input channels of
+     * the currently WATCHED device (story 215 / 223). Falls back to a single
      * synthetic "Loopback / measurement input" entry when no real
      * channel info is available, so the dialog is always usable.
      */
     private java.util.List<com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo>
             listInputChannelsForCalibration() {
-        // Try to query the real backend's input channels for the active device.
+        // Try to query the real backend's input channels for the watched
+        // device — calibration runs with the transport stopped, so there is
+        // deliberately no open stream to read an "active" device from.
         if (audioEngineController != null) {
             com.benesquivelmusic.daw.core.audio.AudioEngine engine = audioEngine;
             com.benesquivelmusic.daw.sdk.audio.AudioBackend backend = engine.getBackend();
             if (backend != null) {
                 com.benesquivelmusic.daw.sdk.audio.DeviceId device =
-                        audioEngineController.getActiveDevice().orElse(null);
+                        audioEngineController.getWatchedDevice().orElse(null);
                 if (device != null) {
                     java.util.List<com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo> channels =
                             backend.inputChannels(device);

@@ -473,8 +473,13 @@ public interface AudioEngineController {
     /**
      * Returns the per-device calibration override (in sample frames)
      * the user accepted via {@code LatencyCalibrationDialog} for the
-     * currently opened device, or {@link Optional#empty()} when no
-     * override is active for that device. The
+     * currently WATCHED device — the endpoint last passed to
+     * {@link #bindBackendDeviceEvents(AudioBackend, DeviceId)}, which need
+     * not have an open stream — or {@link Optional#empty()} when no
+     * override is set for that endpoint. Calibration is performed with the
+     * transport stopped, so keying it on an open stream would make every
+     * override taken from a stopped transport unreadable (story 316
+     * review). The
      * {@code IoLatencyDetailsPopup} uses this to choose between the
      * <em>"reported by driver"</em> and <em>"calibrated by user"</em>
      * source-label badges.
@@ -490,11 +495,16 @@ public interface AudioEngineController {
 
     /**
      * Sets (or clears) the per-device calibration override for the
-     * currently opened device. Pass {@link Optional#empty()} to clear
+     * currently WATCHED device. Pass {@link Optional#empty()} to clear
      * the override and return to the driver-reported value.
      *
-     * <p>The override is keyed by the active {@link DeviceId} so it
-     * does not bleed across devices within the same session.
+     * <p>The override is keyed by the watched {@link DeviceId} — the
+     * endpoint last bound through
+     * {@link #bindBackendDeviceEvents(AudioBackend, DeviceId)}, open stream
+     * or not — so it does not bleed across devices within the same session.
+     * Deliberately not the open stream's device (story 316 review): this is
+     * called from the calibration dialog with the transport STOPPED, when
+     * no stream is open at all.
      * Implementations store the value in memory; the
      * {@code MainController} persists it to
      * {@code AudioSettingsStore.latencyOverrideFramesByDeviceKey}
@@ -615,24 +625,36 @@ public interface AudioEngineController {
      * to {@code DeviceArrived}, {@code DeviceRemoved}, and
      * {@code DeviceFormatChanged}.
      *
-     * <p>On {@code DeviceRemoved} for the active device, the controller
-     * transitions to {@link EngineState#DEVICE_LOST}, halts the render
-     * thread, persists the in-flight recording take to
-     * {@code .daw/incomplete-takes/}, and notifies the user. On a
-     * matching {@code DeviceArrived}, the stream is reopened with the
-     * previously configured format and the engine returns to
-     * {@link EngineState#STOPPED}.</p>
+     * <p>Binding is a WATCH, not a claim that {@code watchedDevice} is
+     * ACTIVE (story 316 review). Callers bind it BEFORE any stream exists —
+     * {@link #applyConfiguration(Request)} binds the provisioned first rung
+     * while the engine is stopped — so that the configured endpoint's
+     * hot-plug is noticed at all; an implementation must therefore treat
+     * "is a stream open" as a separate fact and not infer it from having
+     * been bound.</p>
+     *
+     * <p>On {@code DeviceRemoved} for the watched device <em>while a stream
+     * is open on it</em>, the controller transitions to
+     * {@link EngineState#DEVICE_LOST}, halts the render thread, persists the
+     * in-flight recording take to {@code .daw/incomplete-takes/}, and
+     * notifies the user. A removal with no stream open is a routine unplug
+     * of an idle endpoint and changes no state. On a matching
+     * {@code DeviceArrived} after {@code DEVICE_LOST}, the stream is
+     * reopened with the previously configured format and the engine returns
+     * to {@link EngineState#STOPPED} — which is why the subscription and the
+     * watched identity deliberately survive the close that
+     * {@code DEVICE_LOST} performs.</p>
      *
      * <p>The default implementation is a no-op which is safe for test
      * stubs.</p>
      *
      * @param backend       the backend whose hot-plug events to consume;
      *                      must not be null
-     * @param activeDevice  the currently opened device (the one whose
-     *                      removal should trigger {@code DEVICE_LOST});
-     *                      must not be null
+     * @param watchedDevice the endpoint whose hot-plug events are matched —
+     *                      the provisioned rung while stopped, the open
+     *                      stream's device once one is open; must not be null
      */
-    default void bindBackendDeviceEvents(AudioBackend backend, DeviceId activeDevice) {
+    default void bindBackendDeviceEvents(AudioBackend backend, DeviceId watchedDevice) {
         // no-op for test stubs
     }
 

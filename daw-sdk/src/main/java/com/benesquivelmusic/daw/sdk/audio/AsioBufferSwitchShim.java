@@ -114,7 +114,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     /** Backstop park interval for the drain thread when the ring runs dry. */
     private static final long DRAIN_PARK_NANOS = 20_000_000L; // 20 ms
 
-    /** How long {@link #close()} waits for the drain thread to finish. */
+    /**
+     * How long {@link #close()} and {@link #closeRetainingUpcallStub()} wait
+     * for the drain thread to finish.
+     */
     private static final long DRAIN_SHUTDOWN_TIMEOUT_MILLIS = 2_000L;
 
     /** ASIO's double-buffer index is always 0 or 1. */
@@ -587,7 +590,8 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * Idempotent.
      *
      * <p>The drain thread keeps running so already-captured blocks still reach
-     * subscribers; it is stopped by {@link #close()}.</p>
+     * subscribers; it is stopped by {@link #close()} or by
+     * {@link #closeRetainingUpcallStub()}, whichever ends the bridge.</p>
      */
     void stopStreaming() {
         streaming = false;
@@ -618,7 +622,19 @@ final class AsioBufferSwitchShim implements AutoCloseable {
 
     /**
      * Returns {@code true} when the {@code sink(...)} &rarr; callback output
-     * ring can accept another rendered block without dropping it.
+     * ring holds no block the driver has still to consume.
+     *
+     * <p>Emptiness rather than spare capacity is the question, because
+     * {@link #bufferSwitch(int, int)} consumes the ring through
+     * {@link AudioBlockRing#drainLatestInto(float[])}, which takes the
+     * <em>whole</em> queue and plays only its newest block. A free slot
+     * therefore does not mean the driver wants another block: a single
+     * callback empties all {@value #OUTPUT_RING_SLOTS} slots at once, so a
+     * spare-capacity gate would release the render pump four times per
+     * callback — advancing playback and the transport at roughly four times
+     * device time while three of every four rendered blocks were discarded
+     * unheard. Only an <em>empty</em> ring proves that a {@code bufferSwitch}
+     * actually consumed the block {@link #write(AudioBlock)} last queued.</p>
      *
      * <p>The device-clock pacing seam (story 316): {@link
      * AsioBackend#awaitSinkCapacity(long)} polls this from the engine's
@@ -626,9 +642,18 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * produces at exactly the rate {@link #bufferSwitch(int, int)} consumes.
      * Purely a read of the ring's occupancy counters; it adds no work to the
      * real-time {@code bufferSwitch} / {@code write} paths.</p>
+     *
+     * <p>Two consequences are worth naming. In steady state at most one
+     * rendered block is ever in flight, so {@code drainLatestInto}'s discard
+     * stops being the norm and becomes the overload valve it was meant to be:
+     * it bites only when the pump ran ahead of a late callback. And the
+     * pacing is still bounded from the other side — {@code awaitSinkCapacity}
+     * parks for at most one block period whether or not this ever answers
+     * {@code true}, which is what keeps the transport advancing at wall-clock
+     * rate when no callback arrives at all.</p>
      */
-    boolean outputRingHasSpace() {
-        return outputRing.hasSpace();
+    boolean outputRingDrained() {
+        return outputRing.isEmpty();
     }
 
     /**
@@ -655,11 +680,57 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     /**
      * Quiesces the bridge, stops the {@code asio-input-drain} thread and frees
      * the upcall stub's arena. The caller must have uninstalled the callback
-     * first, or a late driver callback would jump into released memory.
-     * Idempotent.
+     * first, or a late driver callback would jump into released memory; a
+     * teardown that could not even attempt the uninstall must end the bridge
+     * with {@link #closeRetainingUpcallStub()} instead. Idempotent.
      */
     @Override
     public void close() {
+        shutDown(true);
+    }
+
+    /**
+     * Ends the bridge exactly as {@link #close()} does — {@code closed} and
+     * {@code streaming} latched, the {@code asio-input-drain} thread stopped
+     * and joined after its final flush — but deliberately LEAKS the upcall
+     * stub's arena for the life of the process. Idempotent, and mutually
+     * exclusive with {@link #close()}: whichever runs first decides the
+     * arena's fate.
+     *
+     * <p>This is the only safe ending for a teardown that could not uninstall
+     * the callback. {@code AsioBackend.tearDownStreaming(...)} reports exactly
+     * that case: while an earlier downcall has outlived its budget and is still
+     * executing, {@link AsioControlThread#isQuiesced()} is false and every
+     * bounded operation — including
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} — is refused on
+     * arrival and never reaches the driver. The driver therefore still holds
+     * this stub's address in its {@code ASIOCallbacks} table and may fire
+     * {@code bufferSwitch} at any moment. {@link #stopStreaming()} makes such a
+     * callback harmless, but only while the stub is still mapped: freeing the
+     * arena unmaps it, and the next callback jumps into released memory — a JVM
+     * crash whose native stack names neither this class nor the driver.</p>
+     *
+     * <p>The leak is one upcall stub and its arena, bounded and static for the
+     * life of the process, which is the same trade
+     * {@code AsioBackend.tearDownStreaming(...)} already documents when it
+     * calls the uninstall "the actual protection": a leaked stub costs memory,
+     * a freed-but-installed stub costs the process.</p>
+     */
+    void closeRetainingUpcallStub() {
+        shutDown(false);
+    }
+
+    /**
+     * Shared body of {@link #close()} and {@link #closeRetainingUpcallStub()}.
+     * Everything but the arena is identical, so one implementation keeps the
+     * two endings from drifting apart, and latching {@code closed} first is
+     * what makes both idempotent and mutually exclusive.
+     *
+     * @param releaseUpcallArena whether the upcall stub's arena may be freed;
+     *                           {@code false} when the driver may still hold
+     *                           the stub's address
+     */
+    private void shutDown(boolean releaseUpcallArena) {
         if (closed) {
             return;
         }
@@ -671,6 +742,9 @@ final class AsioBufferSwitchShim implements AutoCloseable {
             drainThread.join(DRAIN_SHUTDOWN_TIMEOUT_MILLIS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+        }
+        if (!releaseUpcallArena) {
+            return;
         }
         try {
             arena.close();

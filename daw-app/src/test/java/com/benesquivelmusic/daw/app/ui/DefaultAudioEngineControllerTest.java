@@ -251,40 +251,58 @@ class DefaultAudioEngineControllerTest {
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null, message -> { synchronized (notifications) { notifications.add(message); } }, takeStore);
 
-        MockAudioBackend backend = new MockAudioBackend();
-        DeviceId active = new DeviceId(MockAudioBackend.NAME, "Mock Device");
+        // Story 316 review: DEVICE_LOST is reserved for the device of an OPEN
+        // stream, so this test opens one — being merely WATCHED no longer
+        // authorises the transition (see
+        // unpluggingAWatchedDeviceWhileNoStreamIsOpenChangesNothing below,
+        // the discriminating counterpart of this test).
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyHotplug");
+        DeviceId active = new DeviceId("SpyHotplug", "Mock Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyHotplug",
+                List.of(new BackendStreamRung(backend, active))));
         controller.bindBackendDeviceEvents(backend, active);
+        engine.startAudioOutput();
+        assertThat(engine.isStreamOpen()).isTrue();
 
-        // Simulate that some audio was already captured into the take buffer.
-        controller.captureRecordingFrames(new float[][]{{0.1f, 0.2f}, {0.3f, 0.4f}}, 2);
-        assertThat(takeStore.bufferedByteCount()).isGreaterThan(0);
+        try {
+            // Simulate that some audio was already captured into the take buffer.
+            controller.captureRecordingFrames(new float[][]{{0.1f, 0.2f}, {0.3f, 0.4f}}, 2);
+            assertThat(takeStore.bufferedByteCount()).isGreaterThan(0);
 
-        // Yank the device.
-        backend.simulateDeviceRemoved(active);
+            // Yank the device.
+            backend.simulateDeviceRemoved(active);
 
-        // The state-flip and the notification are emitted from the same
-        // device-event thread but in two separate steps; polling on state
-        // alone races with the notify call. Wait for both.
-        waitFor(() -> {
-            if (controller.engineState() != EngineState.DEVICE_LOST) {
-                return false;
-            }
+            // The state-flip and the notification are emitted from the same
+            // device-event thread but in two separate steps; polling on state
+            // alone races with the notify call. Wait for both.
+            waitFor(() -> {
+                if (controller.engineState() != EngineState.DEVICE_LOST) {
+                    return false;
+                }
+                synchronized (notifications) {
+                    return notifications.stream().anyMatch(m -> m.contains("disconnected"));
+                }
+            });
+            assertThat(controller.engineState()).isEqualTo(EngineState.DEVICE_LOST);
             synchronized (notifications) {
-                return notifications.stream().anyMatch(m -> m.contains("disconnected"));
+                assertThat(notifications).anyMatch(m -> m.contains("disconnected"));
             }
-        });
-        assertThat(controller.engineState()).isEqualTo(EngineState.DEVICE_LOST);
-        synchronized (notifications) {
-            assertThat(notifications).anyMatch(m -> m.contains("disconnected"));
-        }
-        // Take buffer must have been flushed to disk under .daw/incomplete-takes/
-        assertThat(takeStore.bufferedByteCount()).isZero();
-        Path takesDir = projectRoot.resolve(".daw").resolve("incomplete-takes");
-        assertThat(takesDir).exists();
-        try (java.util.stream.Stream<Path> takeEntries = Files.list(takesDir)) {
-            assertThat(takeEntries.count()).isPositive();
-        } catch (IOException e) {
-            throw new AssertionError(e);
+            assertThat(engine.isStreamOpen())
+                    .as("the lost device's stream is closed, not left claiming the hardware")
+                    .isFalse();
+            // Take buffer must have been flushed to disk under .daw/incomplete-takes/
+            assertThat(takeStore.bufferedByteCount()).isZero();
+            Path takesDir = projectRoot.resolve(".daw").resolve("incomplete-takes");
+            assertThat(takesDir).exists();
+            try (java.util.stream.Stream<Path> takeEntries = Files.list(takesDir)) {
+                assertThat(takeEntries.count()).isPositive();
+            } catch (IOException e) {
+                throw new AssertionError(e);
+            }
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
         }
     }
 
@@ -296,40 +314,55 @@ class DefaultAudioEngineControllerTest {
                 engine, null, NotificationManager.noop(),
                 new IncompleteTakeStore(projectRoot));
 
-        MockAudioBackend backend = new MockAudioBackend();
-        DeviceId active = new DeviceId(MockAudioBackend.NAME, "Mock Device");
+        // An OPEN stream is the precondition for DEVICE_LOST (story 316
+        // review) — a merely watched device that vanishes is inert, so the
+        // DEVICE_LOST -> STOPPED arc this test asserts can only be reached
+        // from a real open.
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyReturn");
+        DeviceId active = new DeviceId("SpyReturn", "Mock Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyReturn",
+                List.of(new BackendStreamRung(backend, active))));
         controller.bindBackendDeviceEvents(backend, active);
+        engine.startAudioOutput();
+        assertThat(engine.isStreamOpen()).isTrue();
 
-        // Subscribe to engine-state events to verify the published transitions.
-        List<EngineState> seen = new ArrayList<>();
-        controller.engineStateEvents().subscribe(new java.util.concurrent.Flow.Subscriber<>() {
-            @Override public void onSubscribe(java.util.concurrent.Flow.Subscription s) {
-                s.request(Long.MAX_VALUE);
-            }
-            @Override public void onNext(EngineState state) {
-                synchronized (seen) { seen.add(state); }
-            }
-            @Override public void onError(Throwable t) { /* ignore */ }
-            @Override public void onComplete() { /* ignore */ }
-        });
+        try {
+            // Subscribe to engine-state events to verify the published transitions.
+            List<EngineState> seen = new ArrayList<>();
+            controller.engineStateEvents().subscribe(new java.util.concurrent.Flow.Subscriber<>() {
+                @Override public void onSubscribe(java.util.concurrent.Flow.Subscription s) {
+                    s.request(Long.MAX_VALUE);
+                }
+                @Override public void onNext(EngineState state) {
+                    synchronized (seen) { seen.add(state); }
+                }
+                @Override public void onError(Throwable t) { /* ignore */ }
+                @Override public void onComplete() { /* ignore */ }
+            });
 
-        backend.simulateDeviceRemoved(active);
-        waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
 
-        backend.simulateDeviceArrived(active);
-        waitFor(() -> controller.engineState() == EngineState.STOPPED);
+            backend.publishDeviceEvent(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .DeviceArrived(active));
+            waitFor(() -> controller.engineState() == EngineState.STOPPED);
 
-        assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
-        // The SubmissionPublisher delivers events asynchronously, so the
-        // subscriber may observe the STOPPED transition slightly after the
-        // controller's state field flips — wait for delivery before asserting.
-        waitFor(() -> {
+            assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+            // The SubmissionPublisher delivers events asynchronously, so the
+            // subscriber may observe the STOPPED transition slightly after the
+            // controller's state field flips — wait for delivery before asserting.
+            waitFor(() -> {
+                synchronized (seen) {
+                    return seen.contains(EngineState.STOPPED);
+                }
+            });
             synchronized (seen) {
-                return seen.contains(EngineState.STOPPED);
+                assertThat(seen).contains(EngineState.DEVICE_LOST, EngineState.STOPPED);
             }
-        });
-        synchronized (seen) {
-            assertThat(seen).contains(EngineState.DEVICE_LOST, EngineState.STOPPED);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
         }
     }
 
@@ -341,16 +374,34 @@ class DefaultAudioEngineControllerTest {
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null, lastNotice::set, new IncompleteTakeStore(projectRoot));
 
-        MockAudioBackend backend = new MockAudioBackend();
-        controller.bindBackendDeviceEvents(backend,
-                new DeviceId(MockAudioBackend.NAME, "Active Mock"));
+        // A stream IS open here on purpose (story 316 review): with the
+        // open-stream gate in onDeviceRemoved, a stopped engine would ignore
+        // every removal, so this test would pass without exercising the
+        // endpoint-IDENTITY check it exists for. Opening first makes the
+        // device name the only thing that can hold the transition back.
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyUnrelated");
+        DeviceId active = new DeviceId("SpyUnrelated", "Active Mock");
+        engine.setStreamingProvision(new StreamingProvision("SpyUnrelated",
+                List.of(new BackendStreamRung(backend, active))));
+        controller.bindBackendDeviceEvents(backend, active);
+        engine.startAudioOutput();
+        assertThat(engine.isStreamOpen()).isTrue();
 
-        backend.simulateDeviceRemoved(new DeviceId(MockAudioBackend.NAME, "Some Other Device"));
+        try {
+            backend.simulateDeviceRemoved(new DeviceId("SpyUnrelated", "Some Other Device"));
 
-        // Give the publisher a moment, then assert no transition happened.
-        Thread.sleep(50);
-        assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
-        assertThat(lastNotice.get()).isNull();
+            // Give the publisher a moment, then assert no transition happened.
+            Thread.sleep(50);
+            assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+            assertThat(lastNotice.get()).isNull();
+            assertThat(engine.isStreamOpen())
+                    .as("an unrelated device's removal leaves our stream alone")
+                    .isTrue();
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
     }
 
     @Test
@@ -360,20 +411,177 @@ class DefaultAudioEngineControllerTest {
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null, NotificationManager.noop(),
                 new IncompleteTakeStore(projectRoot));
-        MockAudioBackend backend = new MockAudioBackend();
-        DeviceId active = new DeviceId(MockAudioBackend.NAME, "Mock Device");
+        // Open a stream first: the flush this test guards is only reached for
+        // the device of an OPEN stream (story 316 review).
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyEmptyTake");
+        DeviceId active = new DeviceId("SpyEmptyTake", "Mock Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyEmptyTake",
+                List.of(new BackendStreamRung(backend, active))));
         controller.bindBackendDeviceEvents(backend, active);
+        engine.startAudioOutput();
 
-        backend.simulateDeviceRemoved(active);
-        waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
-        // Nothing buffered → no file should have been written, but no exception either.
-        Path takesDir = projectRoot.resolve(".daw").resolve("incomplete-takes");
-        if (java.nio.file.Files.exists(takesDir)) {
-            try (var stream = java.nio.file.Files.list(takesDir)) {
-                assertThat(stream.count()).isZero();
-            } catch (IOException e) {
-                throw new AssertionError(e);
+        try {
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            // Nothing buffered → no file should have been written, but no exception either.
+            Path takesDir = projectRoot.resolve(".daw").resolve("incomplete-takes");
+            if (java.nio.file.Files.exists(takesDir)) {
+                try (var stream = java.nio.file.Files.list(takesDir)) {
+                    assertThat(stream.count()).isZero();
+                } catch (IOException e) {
+                    throw new AssertionError(e);
+                }
             }
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void unpluggingAWatchedDeviceWhileNoStreamIsOpenChangesNothing(@TempDir Path projectRoot) {
+        // Story 316 review — the watched endpoint and the OPEN stream's device
+        // are two different facts. applyConfiguration() binds the watch BEFORE
+        // any open (and no seam clears it on close), so treating "bound" as
+        // "active" made an idle interface's hot-unplug drive a perfectly
+        // stopped engine into DEVICE_LOST, stop it, and flush an incomplete
+        // take that no stream had ever recorded.
+        //
+        // A provision IS installed and the take store IS non-empty, so every
+        // side effect the old code performed is reachable here — the only
+        // reason none of them happens is the open-stream gate.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
+        IncompleteTakeStore takeStore = new IncompleteTakeStore(projectRoot);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } },
+                takeStore);
+        SpyStreamingBackend spy = new SpyStreamingBackend("SpyWatchedOnly");
+        DeviceId watched = new DeviceId("SpyWatchedOnly", "Idle Interface");
+        try {
+            engine.setStreamingProvision(new StreamingProvision("SpyWatchedOnly",
+                    List.of(new BackendStreamRung(spy, watched))));
+            // The pre-open bind applyConfiguration performs while stopped,
+            // driven through an injected publisher so both events below are
+            // delivered synchronously on this thread — asserting that nothing
+            // happened must not depend on a sleep.
+            DelayedDeviceEventPublisher events = new DelayedDeviceEventPublisher();
+            controller.bindBackendDeviceEvents(spy, watched, events);
+            events.connect();
+            engine.start();
+            controller.captureRecordingFrames(new float[][]{{0.1f, 0.2f}, {0.3f, 0.4f}}, 2);
+            assertThat(engine.isStreamOpen())
+                    .as("premise: watched, but nothing open")
+                    .isFalse();
+            int bufferedBefore = takeStore.bufferedByteCount();
+            assertThat(bufferedBefore).isPositive();
+
+            events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .DeviceRemoved(watched));
+
+            // Delivered synchronously through the injected publisher, so this
+            // needs no sleep and no polling.
+            assertThat(controller.engineState())
+                    .as("a removal with no stream open is a routine unplug, not DEVICE_LOST")
+                    .isEqualTo(EngineState.STOPPED);
+            assertThat(engine.isRunning())
+                    .as("the engine is not stopped out from under the user")
+                    .isTrue();
+            assertThat(takeStore.bufferedByteCount())
+                    .as("no stream recorded anything, so nothing is flushed")
+                    .isEqualTo(bufferedBefore);
+            synchronized (notices) {
+                assertThat(notices)
+                        .as("the user is not told playback paused when nothing was playing")
+                        .isEmpty();
+            }
+
+            // ...and the return of that device must not open a stream either.
+            // onDeviceArrived is gated on DEVICE_LOST, so this is the
+            // transitive half of the same defect: the unsolicited open.
+            events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .DeviceArrived(watched));
+
+            assertThat(spy.opens())
+                    .as("a replug of a device we merely watch must not open a stream")
+                    .isEmpty();
+            assertThat(engine.isStreamOpen()).isFalse();
+            assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+        } finally {
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void anOpenStreamsDeviceStillLosesAndRecoversAcrossTheClose(@TempDir Path projectRoot) {
+        // The behaviour the gate above must NOT have broken, plus the reason
+        // the review's "clear the active device and subscription on close" was
+        // implemented as a derived fact instead: onDeviceRemoved closes the
+        // stream on its way into DEVICE_LOST, so a close-cleared identity
+        // would be gone exactly when the arrival needs it and the auto-reopen
+        // could never fire. The subscription and the watched identity
+        // deliberately outlive the close.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
+        IncompleteTakeStore takeStore = new IncompleteTakeStore(projectRoot);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } },
+                takeStore);
+        SpyStreamingBackend spy = new SpyStreamingBackend("SpyLossRecovery");
+        DeviceId watched = new DeviceId("SpyLossRecovery", "Live Interface");
+        try {
+            engine.setStreamingProvision(new StreamingProvision("SpyLossRecovery",
+                    List.of(new BackendStreamRung(spy, watched))));
+            engine.startAudioOutput();
+            assertThat(engine.isStreamOpen())
+                    .as("premise: a stream really is open on the watched device")
+                    .isTrue();
+            // Re-bind AFTER the open so the events are delivered synchronously
+            // on this thread: the engine's stream-open seam has just rebound
+            // the controller to the spy's own asynchronous publisher.
+            DelayedDeviceEventPublisher events = new DelayedDeviceEventPublisher();
+            controller.bindBackendDeviceEvents(spy, watched, events);
+            events.connect();
+            controller.captureRecordingFrames(new float[][]{{0.1f, 0.2f}, {0.3f, 0.4f}}, 2);
+            assertThat(takeStore.bufferedByteCount()).isPositive();
+
+            events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .DeviceRemoved(watched));
+
+            assertThat(controller.engineState())
+                    .as("the OPEN stream's device vanished — this IS device loss")
+                    .isEqualTo(EngineState.DEVICE_LOST);
+            assertThat(engine.isStreamOpen())
+                    .as("output is stopped, not left claiming absent hardware")
+                    .isFalse();
+            assertThat(takeStore.bufferedByteCount())
+                    .as("the in-flight take is flushed so the user can recover it")
+                    .isZero();
+            synchronized (notices) {
+                assertThat(notices).anyMatch(m -> m.contains("disconnected"));
+            }
+
+            events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .DeviceArrived(watched));
+
+            assertThat(spy.opens())
+                    .as("the subscription and the watched identity survived the "
+                            + "close, so the device's return reopened the stream")
+                    .hasSize(2);
+            assertThat(spy.opens().get(1).device()).isEqualTo(watched);
+            assertThat(engine.isStreamOpen())
+                    .as("reopened open-but-parked; the user re-arms transport")
+                    .isTrue();
+            assertThat(engine.isStreamPaused()).isTrue();
+            assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
         }
     }
 
@@ -1577,11 +1785,19 @@ class DefaultAudioEngineControllerTest {
         try {
             // Leave the initial STOPPED state first so the STOPPED assertion
             // below is discriminating rather than vacuous: a removal of the
-            // bound device lands in DEVICE_LOST synchronously on the
-            // emitting thread.
+            // OPEN stream's device lands in DEVICE_LOST synchronously on the
+            // emitting thread. The stream really has to be open — story 316
+            // review gated DEVICE_LOST on AudioEngine.isStreamOpen(), so a
+            // removal against a merely-watched endpoint would leave this test
+            // in STOPPED and make its own premise vacuous.
+            SpyStreamingBackend spy = new SpyStreamingBackend("Mock");
             DeviceId lost = new DeviceId("Mock", "Mock Out");
+            engine.setStreamingProvision(new StreamingProvision("Mock",
+                    List.of(new BackendStreamRung(spy, lost))));
+            engine.startAudioOutput();
+            assertThat(engine.isStreamOpen()).isTrue();
             DelayedDeviceEventPublisher events = new DelayedDeviceEventPublisher();
-            controller.bindBackendDeviceEvents(new MockAudioBackend(), lost, events);
+            controller.bindBackendDeviceEvents(spy, lost, events);
             events.connect();
             events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
                     .DeviceRemoved(lost));
@@ -1849,7 +2065,7 @@ class DefaultAudioEngineControllerTest {
             // is stopped: with no open stream the requested rung is the
             // honest thing to watch.
             controller.bindBackendDeviceEvents(refusing, requestedDevice);
-            assertThat(controller.getActiveDevice()).contains(requestedDevice);
+            assertThat(controller.getWatchedDevice()).contains(requestedDevice);
 
             // The Play path: straight to the engine, never through this
             // controller.
@@ -1858,7 +2074,7 @@ class DefaultAudioEngineControllerTest {
             assertThat(engine.openStreamBackendName())
                     .as("non-vacuity guard: the ladder really did fall back")
                     .contains("Fallback");
-            assertThat(controller.getActiveDevice())
+            assertThat(controller.getWatchedDevice())
                     .as("the controller now names the device that is actually open")
                     .contains(winnerDevice);
 

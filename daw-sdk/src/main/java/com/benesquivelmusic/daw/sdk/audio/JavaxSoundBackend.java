@@ -160,12 +160,29 @@ public final class JavaxSoundBackend implements AudioBackend {
      * headroom; one block would drain to empty the instant a write
      * returned.</p>
      *
-     * @throws AudioBackendException if the output line cannot be opened
+     * <p>A line RETAINED by a previous {@link #close()} — one whose
+     * {@link Line#close()} threw, so the backend kept the handle rather than
+     * report a release it never made — is retried HERE, before anything is
+     * opened, and this open is REFUSED while it still cannot be released:
+     * {@code this.outputLine} is assigned unconditionally below, so opening
+     * over a retained line would drop the only reference to it and leak it
+     * for the life of the process. The guard runs before
+     * {@code support.markOpen} for exactly the reason the rollbacks below
+     * restore it — a refused open must never leave {@link #isOpen()}
+     * reporting {@code true}.</p>
+     *
+     * @throws AudioBackendException if a line retained by a failed
+     *                               {@link #close()} still cannot be released,
+     *                               or if the output line cannot be opened
      */
     @Override
     public void open(DeviceId device, AudioFormat format, int bufferFrames) {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
+        AudioBackendException retained = releaseLines("refusing to open over it");
+        if (retained != null) {
+            throw retained;
+        }
         support.markOpen(format, bufferFrames);
         javax.sound.sampled.AudioFormat jFormat = new javax.sound.sampled.AudioFormat(
                 (float) format.sampleRate(),
@@ -355,6 +372,37 @@ public final class JavaxSoundBackend implements AudioBackend {
      * (The previous "no drain at all" rationale cited the retired daw-core
      * Java Sound backend, which was never the engine's mandatory final
      * fallback rung.)</p>
+     *
+     * <p>A failed {@link Line#close()} PROPAGATES instead of being swallowed,
+     * because the engine treats a throwing {@code close()} as a first-class
+     * outcome (story 316 review): the stream becomes {@code RELEASE_PENDING}
+     * rather than {@code CLOSED}, is deliberately not reported open, and the
+     * engine retries the release itself — on the next {@code stopAudioOutput}
+     * or before the next open. Reporting a successful close while Java Sound
+     * still holds the device would instead let the engine open another rung
+     * BESIDE the leaked line, and this is the ladder's MANDATORY FINAL RUNG:
+     * a line leaked on every stop walks the mixer's finite line budget to
+     * zero.</p>
+     *
+     * <p>The line whose close threw is therefore RETAINED in its field, so a
+     * later {@code close()} — or the guard at the top of
+     * {@link #open(DeviceId, AudioFormat, int)} — reaches that same handle
+     * again; only a close that returned normally drops its field. The drain
+     * and {@link DataLine#stop()} ahead of it are attempted independently and
+     * merely logged when they fail: {@code close()} is the call that actually
+     * gives the device back, so a failed drain or stop must never skip it.
+     * The two directions are released independently too — a capture line that
+     * cannot be closed must not strand the output line.</p>
+     *
+     * <p>{@code support.close()} and the capture-thread interrupt run first on
+     * every path, so {@link #isOpen()} is {@code false} even while a handle is
+     * retained. That is precisely the {@code RELEASE_PENDING} shape: not open,
+     * not resumable, not yet released.</p>
+     *
+     * @throws AudioBackendException if either line could not be closed — the
+     *                               un-released line(s) are named, the first
+     *                               failure is the cause, and a second is
+     *                               attached as a suppressed exception
      */
     @Override
     public void close() {
@@ -364,14 +412,127 @@ public final class JavaxSoundBackend implements AudioBackend {
             t.interrupt();
             this.captureThread = null;
         }
-        if (inputLine != null) {
-            try { inputLine.stop(); inputLine.close(); } catch (RuntimeException ignored) { /* swallow */ }
-            inputLine = null;
+        AudioBackendException failure = releaseLines("on close");
+        if (failure != null) {
+            throw failure;
         }
-        if (outputLine != null) {
-            try { drainBounded(outputLine); outputLine.stop(); outputLine.close(); } catch (RuntimeException ignored) { /* swallow */ }
-            outputLine = null;
+    }
+
+    /**
+     * Attempts to release BOTH directions and reports whether the device is
+     * still held.
+     *
+     * <p>Both attempts always run: one direction's failure must never strand
+     * the other direction's line. A line that closed is dropped from its
+     * field; a line whose {@link Line#close()} threw stays there, so the next
+     * attempt — the next {@link #close()}, or the guard in
+     * {@link #open(DeviceId, AudioFormat, int)} — reaches the same handle
+     * instead of leaking it. Doing nothing when both fields are already null
+     * is what keeps {@link #close()} idempotent on a never-opened or
+     * already-closed backend.</p>
+     *
+     * @param phase what this attempt is, named in the failure message so a
+     *              stop that could not release reads differently from an open
+     *              refused over a retained line
+     * @return {@code null} when nothing is held any more; otherwise the
+     *         exception the caller must throw, naming the un-released
+     *         line(s), carrying the first failure as its cause and any second
+     *         one as a suppressed exception
+     */
+    private AudioBackendException releaseLines(String phase) {
+        RuntimeException inputFailure = releaseInputLine();
+        RuntimeException outputFailure = releaseOutputLine();
+        if (inputFailure == null && outputFailure == null) {
+            return null;
         }
+        String held;
+        if (inputFailure != null && outputFailure != null) {
+            held = "capture line and output line";
+        } else if (inputFailure != null) {
+            held = "capture line";
+        } else {
+            held = "output line";
+        }
+        RuntimeException first = inputFailure != null ? inputFailure : outputFailure;
+        AudioBackendException failure = new AudioBackendException(
+                "Java Sound could not release its " + held + " (" + phase
+                        + "); the device is still held", first);
+        if (inputFailure != null && outputFailure != null) {
+            failure.addSuppressed(outputFailure);
+        }
+        return failure;
+    }
+
+    /**
+     * Stops and closes the capture line, each in its own attempt.
+     *
+     * <p>A {@link DataLine#stop()} that throws is logged and the close is
+     * tried anyway — stop only pauses the transfer, {@code close} is what
+     * hands the line back to the mixer, so treating a failed stop as a reason
+     * to skip the close would leak the very handle this method exists to
+     * release.</p>
+     *
+     * @return the {@link Line#close()} failure, leaving {@code inputLine} set
+     *         for a later retry, or {@code null} when the line was released
+     *         (or there was none)
+     */
+    private RuntimeException releaseInputLine() {
+        TargetDataLine line = this.inputLine;
+        if (line == null) {
+            return null;
+        }
+        try {
+            line.stop();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING,
+                    "Java Sound capture line could not be stopped; closing it anyway", e);
+        }
+        try {
+            line.close();
+        } catch (RuntimeException e) {
+            return e; // RETAINED in this.inputLine — a later close retries it
+        }
+        this.inputLine = null;
+        return null;
+    }
+
+    /**
+     * Drains, stops and closes the output line, each in its own attempt.
+     *
+     * <p>Same independence as {@link #releaseInputLine()}, with the bounded
+     * drain ahead of the stop: {@link #drainBounded(SourceDataLine)} reads the
+     * line's own occupancy, so a line the driver has already invalidated can
+     * throw from there — and a tail that cannot be played out is no reason to
+     * keep the device.</p>
+     *
+     * @return the {@link Line#close()} failure, leaving {@code outputLine} set
+     *         for a later retry, or {@code null} when the line was released
+     *         (or there was none)
+     */
+    private RuntimeException releaseOutputLine() {
+        SourceDataLine line = this.outputLine;
+        if (line == null) {
+            return null;
+        }
+        try {
+            drainBounded(line);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING,
+                    "Java Sound output line could not be drained; closing it anyway", e);
+        }
+        try {
+            line.stop();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING,
+                    "Java Sound output line could not be stopped; closing it anyway", e);
+        }
+        try {
+            line.close();
+        } catch (RuntimeException e) {
+            return e; // RETAINED in this.outputLine — a later close retries it
+        }
+        this.outputLine = null;
+        return null;
     }
 
     /**

@@ -512,26 +512,33 @@ class AsioBackendStreamingTest {
      * End-to-end through the real selector: with the lifecycle probe passing
      * and the streaming probe failing, ASIO must drop out of
      * {@link AudioBackendSelector#availableBackends()} and never become the
-     * default; with both passing it is offered. The map is keyed on
-     * {@link AsioBackend#NAME} so the selector's OS preference walk (ASIO is
-     * the Windows head) finds it.
+     * default; with both passing it is offered. The real backend is keyed on
+     * the head of THIS host's preference order rather than on a hard-coded
+     * {@link AsioBackend#NAME}, because the selector only probes names its OS
+     * preference walk visits: the head is ASIO on Windows and the platform's
+     * own first rung on the Linux / macOS CI runners, so the same assertions
+     * describe the streaming gate wherever the suite runs.
      */
     @Test
     void selectorDropsAsioFromTheOfferedListWhenTheStreamingShimIsUnusable() {
+        String head = new AudioBackendSelector().preferenceOrderForCurrentOs().get(0);
+        assumeFalse(JavaxSoundBackend.NAME.equals(head),
+                "this host's preference order has no non-Java-Sound rung for ASIO to stand in for");
+
         Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
-        factories.put(AsioBackend.NAME, AsioBackend::new);
+        factories.put(head, AsioBackend::new);
         factories.put(JavaxSoundBackend.NAME, JavaxSoundBackend::new);
         AudioBackendSelector selector = new AudioBackendSelector(factories);
 
-        assertThat(selector.availableBackends()).contains(AsioBackend.NAME);
+        assertThat(selector.availableBackends()).contains(head);
 
         streamingAvailable = false;
 
         assertThat(selector.availableBackends())
                 .as("an ASIO whose open() would be silent must not be offered")
-                .doesNotContain(AsioBackend.NAME)
+                .doesNotContain(head)
                 .contains(JavaxSoundBackend.NAME);
-        assertThat(selector.defaultBackendName()).isNotEqualTo(AsioBackend.NAME);
+        assertThat(selector.defaultBackendName()).isNotEqualTo(head);
     }
 
     // ------------------------------------------------------------------

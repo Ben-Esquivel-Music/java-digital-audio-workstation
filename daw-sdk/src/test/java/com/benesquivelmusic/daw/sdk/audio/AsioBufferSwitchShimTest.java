@@ -75,6 +75,11 @@ class AsioBufferSwitchShimTest {
     private static final int HALVES = 2;
     private static final long AWAIT_SECONDS = 10;
     private static final float SENTINEL = 12_345f;
+    /**
+     * Ceiling on the emulated render-pump loop. A gate that never closes must
+     * fail an assertion, not hang the suite.
+     */
+    private static final int PUMP_LOOP_LIMIT = 16;
 
     private Arena arena;
     private AudioBackendSupport support;
@@ -428,6 +433,67 @@ class AsioBufferSwitchShimTest {
     }
 
     // ------------------------------------------------------------------
+    // Render-pump pacing gate (story 316 review)
+    // ------------------------------------------------------------------
+
+    @Test
+    void theGateIsOpenOnAFreshlyOpenedBridgeSoTheFirstBlockIsRenderedAtOnce() {
+        buildShim(FLOAT32_LSB);
+
+        assertThat(shim.outputRingDrained())
+                .as("nothing has been written, so the driver owes no consumption")
+                .isTrue();
+    }
+
+    @Test
+    void oneWrittenBlockClosesTheGateUntilACallbackConsumesIt() {
+        buildShim(FLOAT32_LSB);
+
+        shim.write(renderedBlock(1f));
+
+        assertThat(shim.outputRingDrained())
+                .as("a queued block the driver has not taken must hold the pump")
+                .isFalse();
+
+        shim.bufferSwitch(0, 1);
+
+        assertThat(shim.outputRingDrained())
+                .as("the callback consumed it, so the next block may be rendered")
+                .isTrue();
+    }
+
+    /**
+     * The headline of the story 316 gate fix: the pump is paced by
+     * <em>consumption</em>, not by free slots.
+     *
+     * <p>Against the previous {@code outputRing.hasSpace()} gate this loop
+     * admitted four blocks per callback — the ring's full slot count — and the
+     * next {@code bufferSwitch} played the newest and discarded the other
+     * three, so playback and the transport advanced at roughly four times
+     * device time. One block per callback, with the consumption counter
+     * matching the number of callbacks, is the fix.</p>
+     */
+    @Test
+    void thePumpLoopAdmitsExactlyOneBlockPerCallbackInsteadOfRefillingTheRing() {
+        buildShim(FLOAT32_LSB);
+
+        int beforeAnyCallback = renderWhileTheGateIsOpen();
+        shim.bufferSwitch(0, 1);
+        int betweenCallbacks = renderWhileTheGateIsOpen();
+        shim.bufferSwitch(1, 1);
+
+        assertThat(beforeAnyCallback)
+                .as("the pump may run one block ahead of the driver, not four")
+                .isEqualTo(1);
+        assertThat(betweenCallbacks)
+                .as("one consumed block releases the pump for exactly one more")
+                .isEqualTo(1);
+        assertThat(shim.renderedBlocksConsumed())
+                .as("both rendered blocks reached the driver; none was discarded")
+                .isEqualTo(2L);
+    }
+
+    // ------------------------------------------------------------------
     // Degradation
     // ------------------------------------------------------------------
 
@@ -751,12 +817,128 @@ class AsioBufferSwitchShimTest {
     }
 
     // ------------------------------------------------------------------
+    // Teardown: freeing the upcall stub vs. retaining it (story 316 re-review)
+    // ------------------------------------------------------------------
+
+    /**
+     * The arena {@link AsioBufferSwitchShim#close()} frees is the one that owns
+     * the upcall stub, and the stub's own {@link MemorySegment#scope()} is the
+     * observable proof of it: the scope is alive exactly while the stub is
+     * still mapped, i.e. while a late driver callback could still land in it.
+     */
+    @Test
+    void closeReleasesTheUpcallStubsArenaAndStopsTheDrainThread() {
+        buildShim(FLOAT32_LSB);
+        MemorySegment stub = shim.upcallStub();
+        assertThat(stub.equals(MemorySegment.NULL))
+                .as("a NULL stub would make the scope assertions meaningless")
+                .isFalse();
+        assertThat(stub.scope().isAlive()).isTrue();
+        Thread drain = shim.drainThread();
+
+        shim.close();
+
+        assertThat(stub.scope().isAlive())
+                .as("close() frees the arena: its caller uninstalled the callback first")
+                .isFalse();
+        assertThat(drain.isAlive()).isFalse();
+    }
+
+    /**
+     * {@link AsioBufferSwitchShim#closeRetainingUpcallStub()} is
+     * {@link AsioBufferSwitchShim#close()} minus exactly one step. It exists for
+     * the teardown that could not even attempt
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()}: the driver
+     * still holds the stub's address, so unmapping it would turn the next
+     * {@code bufferSwitch} into a jump into released memory.
+     *
+     * <p>The stub this test leaves mapped is never reclaimed — that permanent,
+     * bounded leak <em>is</em> the behaviour under test, and the
+     * {@code tearDown} {@code close()} is a no-op on an already-closed
+     * bridge.</p>
+     */
+    @Test
+    void retainingCloseQuiescesTheBridgeAndDrainThreadYetKeepsTheStubMapped() {
+        buildShim(FLOAT32_LSB);
+        MemorySegment stub = shim.upcallStub();
+        assertThat(stub.equals(MemorySegment.NULL)).isFalse();
+        Thread drain = shim.drainThread();
+        writeDriverBuffer(driverOutputs[0][0], 7f, 7f, 7f, 7f);
+
+        shim.closeRetainingUpcallStub();
+
+        assertThat(shim.isStreaming())
+                .as("no further callback may touch the driver's buffers")
+                .isFalse();
+        assertThat(drain.isAlive())
+                .as("the retain variant still stops and joins the drain thread")
+                .isFalse();
+        assertThat(stub.scope().isAlive())
+                .as("the driver may still hold this address, so it must stay mapped")
+                .isTrue();
+        shim.bufferSwitch(0, 1);
+        assertThat(readDriverBuffer(driverOutputs[0][0], frames))
+                .as("a callback arriving after the retaining close writes nothing")
+                .containsOnly(7f);
+    }
+
+    /**
+     * Idempotent, and the first ending wins. A {@code close()} that arrives
+     * after the retaining one must not free the arena the retaining one
+     * deliberately kept, or the crash it just prevented would simply happen
+     * later.
+     */
+    @Test
+    void retainingCloseIsIdempotentAndALaterCloseStillDoesNotFreeTheStub() {
+        buildShim(FLOAT32_LSB);
+        MemorySegment stub = shim.upcallStub();
+        Thread drain = shim.drainThread();
+
+        shim.closeRetainingUpcallStub();
+        shim.closeRetainingUpcallStub();
+        shim.close();
+
+        assertThat(stub.scope().isAlive())
+                .as("the retained stub outlives every later close")
+                .isTrue();
+        assertThat(drain.isAlive()).isFalse();
+        assertThat(shim.isStreaming()).isFalse();
+    }
+
+    // ------------------------------------------------------------------
     // Fixture helpers
     // ------------------------------------------------------------------
 
     /** A distinct, non-zero value per (channel, frame) pair. */
     private static float cell(int channel, int frame) {
         return (channel + 1) * 100f + (frame + 1);
+    }
+
+    /** A full-geometry rendered block whose every sample is {@code value}. */
+    private AudioBlock renderedBlock(float value) {
+        float[] samples = new float[channels * frames];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = value;
+        }
+        return new AudioBlock(format.sampleRate(), channels, frames, samples);
+    }
+
+    /**
+     * Emulates the engine render pump's inner loop: render and sink a block
+     * for as long as {@link AsioBufferSwitchShim#outputRingDrained()} says the
+     * driver has taken what it was already given. Bounded by
+     * {@link #PUMP_LOOP_LIMIT} so a gate that never closes fails an assertion
+     * instead of spinning forever.
+     *
+     * @return how many blocks the pump was allowed to render
+     */
+    private int renderWhileTheGateIsOpen() {
+        int rendered = 0;
+        while (shim.outputRingDrained() && rendered < PUMP_LOOP_LIMIT) {
+            shim.write(renderedBlock(rendered + 1f));
+            rendered++;
+        }
+        return rendered;
     }
 
     /**

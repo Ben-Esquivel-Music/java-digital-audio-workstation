@@ -201,26 +201,23 @@ final class AudioBlockRing {
         return samplesPerBlock;
     }
 
-    /** Returns {@code true} when no published slot is pending. */
+    /**
+     * Returns {@code true} when no published slot is pending — every written
+     * block has been consumed.
+     *
+     * <p>Read-only on the head/tail {@link AtomicLong}s, so it is safe to
+     * poll from any thread. {@link AsioBufferSwitchShim#outputRingDrained()}
+     * polls exactly this from the non-real-time render pump to pace
+     * production by the device clock (story 316): on the output ring, whose
+     * consumer {@link #drainLatestInto(float[])} swallows the entire queue in
+     * one call, an empty ring is the only evidence a poller has that a driver
+     * callback really took the block the pump last wrote. The answer is
+     * naturally racy across threads, which is fine for pacing — a stale
+     * {@code false} just costs one park slice.</p>
+     */
     @RealTimeSafe
     boolean isEmpty() {
         return head.get() >= tail.get();
-    }
-
-    /**
-     * Returns {@code true} when the ring can accept another
-     * {@link #write(float[], int)} without dropping it — i.e.
-     * {@link #size()} {@code <} {@link #capacity()}.
-     *
-     * <p>Read-only on the head/tail {@link AtomicLong}s, so it is safe to
-     * poll from any thread. Used by {@link
-     * AsioBackend#awaitSinkCapacity(long)} on the non-real-time render pump
-     * side to pace production by output-ring occupancy (story 316); the
-     * answer is naturally racy across threads, which is fine for pacing —
-     * a stale {@code false} just costs one park slice.</p>
-     */
-    boolean hasSpace() {
-        return size() < capacity;
     }
 
     /** Returns the number of published-but-unconsumed slots. */

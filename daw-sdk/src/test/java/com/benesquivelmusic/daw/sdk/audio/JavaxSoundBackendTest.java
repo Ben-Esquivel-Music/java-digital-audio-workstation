@@ -2,6 +2,11 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.Test;
 
+import javax.sound.sampled.Control;
+import javax.sound.sampled.Line;
+import javax.sound.sampled.LineListener;
+import javax.sound.sampled.SourceDataLine;
+import javax.sound.sampled.TargetDataLine;
 import java.io.IOException;
 import java.lang.classfile.Attributes;
 import java.lang.classfile.ClassFile;
@@ -10,6 +15,7 @@ import java.lang.classfile.MethodModel;
 import java.lang.classfile.attribute.CodeAttribute;
 import java.lang.classfile.constantpool.ClassEntry;
 import java.lang.classfile.instruction.ExceptionCatch;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -18,6 +24,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -26,8 +33,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * engine's {@code StreamingProvision} ladder can fall through — never
  * "succeed" into a silent no-output stream, and never leave the rung marked
  * open behind an escaped failure.
+ *
+ * <p>And the release contract its {@link JavaxSoundBackend#close()} owes that
+ * same ladder: a line whose {@link Line#close()} fails is RETAINED and the
+ * failure PROPAGATES, so the engine can hold the stream in
+ * {@code RELEASE_PENDING} and retry the release — instead of being told the
+ * device is free and opening a second rung beside a line the mixer still
+ * counts as taken.</p>
  */
 class JavaxSoundBackendTest {
+
+    /** Field holding the backend's capture line; planted by {@link #plantLine}. */
+    private static final String INPUT_LINE = "inputLine";
+
+    /** Field holding the backend's playback line; planted by {@link #plantLine}. */
+    private static final String OUTPUT_LINE = "outputLine";
 
     /** Internal name of the checked alternative on both recovery paths. */
     private static final String LINE_UNAVAILABLE =
@@ -186,6 +206,350 @@ class JavaxSoundBackendTest {
         String resource = "/" + type.getName().replace('.', '/') + ".class";
         try (var in = type.getResourceAsStream(resource)) {
             return in == null ? null : in.readAllBytes();
+        }
+    }
+
+    /**
+     * A {@link Line#close()} that fails must FAIL
+     * {@link JavaxSoundBackend#close()}, because the engine treats a throwing
+     * {@code backend.close()} as a first-class outcome: the stream becomes
+     * {@code RELEASE_PENDING} rather than {@code CLOSED}, is deliberately not
+     * reported open, and the engine retries the release itself. Swallowing the
+     * failure reports a release that never happened — the engine then opens
+     * another rung BESIDE the line Java Sound still holds, and on the ladder's
+     * MANDATORY FINAL RUNG a line leaked on every stop walks the mixer's
+     * finite line budget to zero.
+     */
+    @Test
+    void anOutputLineThatCannotBeClosedFailsTheCloseInsteadOfBeingSwallowed() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        StubLine line = StubLine.refusingCloses(1);
+        plantLine(backend, OUTPUT_LINE, line);
+
+        assertThatThrownBy(backend::close)
+                .as("a close that never gave the device back must not report success")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("output line")
+                .hasMessageContaining("still held")
+                .cause()
+                .as("the line's own refusal is the cause, not a re-worded summary")
+                .isSameAs(line.closeFailure());
+    }
+
+    @Test
+    void aLineThatCouldNotBeClosedIsRetainedAndReleasedByTheNextClose() {
+        // The other half of RELEASE_PENDING: propagating the failure is only
+        // useful if the engine's retry can still REACH the handle. Nulling the
+        // field would drop the sole reference to a line the mixer still counts
+        // as taken, and no later close could ever give it back.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        StubLine line = StubLine.refusingCloses(1);
+        plantLine(backend, OUTPUT_LINE, line);
+
+        assertThatThrownBy(backend::close).isInstanceOf(AudioBackendException.class);
+        assertThat(retainedLine(backend, OUTPUT_LINE))
+                .as("the line whose close failed stays in its field")
+                .isSameAs(line);
+
+        assertThatCode(backend::close)
+                .as("the retry succeeds, so this close reports the truth")
+                .doesNotThrowAnyException();
+        assertThat(line.closeAttempts())
+                .as("the retry REACHED the same line — not just cleared a flag")
+                .isEqualTo(2);
+        assertThat(retainedLine(backend, OUTPUT_LINE))
+                .as("only a close that returned normally drops the field")
+                .isNull();
+
+        backend.close();
+        assertThat(line.closeAttempts())
+                .as("close is a silent no-op again once the device is back")
+                .isEqualTo(2);
+    }
+
+    @Test
+    void aFailingDrainOrStopStillReachesTheCloseThatReleasesTheDevice() {
+        // The drain and the stop are not the release: close() is the call that
+        // hands the line back to the mixer. Chaining all three in one try —
+        // the shape this replaced — let a throwing drain or stop skip the one
+        // call that mattered, leaking the line the recovery existed to free.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        StubLine line = StubLine.releasable().failingDrain().failingStop();
+        plantLine(backend, OUTPUT_LINE, line);
+
+        assertThatCode(backend::close)
+                .as("a failed drain/stop is logged, not propagated: the device came back")
+                .doesNotThrowAnyException();
+        assertThat(line.stopAttempts())
+                .as("the stop was attempted — a failing drain must not skip it either")
+                .isEqualTo(1);
+        assertThat(line.closeAttempts())
+                .as("and the close ran despite both failures")
+                .isEqualTo(1);
+        assertThat(retainedLine(backend, OUTPUT_LINE)).isNull();
+    }
+
+    @Test
+    void oneDirectionRefusingToCloseStillReleasesTheOther() {
+        // Capture is the OPTIONAL direction; a capture line the driver will not
+        // take back must not strand the mandatory output line, which is the one
+        // the next rung would collide with.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        StubLine capture = StubLine.refusingCloses(1);
+        StubLine playback = StubLine.releasable();
+        plantLine(backend, INPUT_LINE, capture);
+        plantLine(backend, OUTPUT_LINE, playback);
+
+        assertThatThrownBy(backend::close)
+                .as("the failure names the line that is still held, and only that one")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("capture line")
+                .hasMessageNotContaining("output line");
+        assertThat(playback.closeAttempts())
+                .as("the output line's release was attempted despite the capture failure")
+                .isEqualTo(1);
+        assertThat(retainedLine(backend, OUTPUT_LINE))
+                .as("and it was released, so no later close can leak it")
+                .isNull();
+        assertThat(retainedLine(backend, INPUT_LINE)).isSameAs(capture);
+    }
+
+    @Test
+    void bothDirectionsRefusingAreNamedTogetherAndNeitherFailureIsDropped() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        StubLine capture = StubLine.refusingCloses(1);
+        StubLine playback = StubLine.refusingCloses(1);
+        plantLine(backend, INPUT_LINE, capture);
+        plantLine(backend, OUTPUT_LINE, playback);
+
+        assertThatThrownBy(backend::close)
+                .as("both lines are held, so both are named in the diagnosis")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("capture line and output line")
+                .satisfies(thrown -> {
+                    assertThat(thrown.getCause())
+                            .as("the first refusal is the cause")
+                            .isSameAs(capture.closeFailure());
+                    assertThat(thrown.getSuppressed())
+                            .as("and the second is carried alongside, never dropped —"
+                                    + " two dead lines have two different reasons")
+                            .containsExactly(playback.closeFailure());
+                });
+        assertThat(retainedLine(backend, INPUT_LINE)).isSameAs(capture);
+        assertThat(retainedLine(backend, OUTPUT_LINE)).isSameAs(playback);
+    }
+
+    @Test
+    void closeOnANeverOpenedBackendIsASilentNoOp() {
+        // Every ladder walk closes rungs it never opened
+        // (AudioEngine.closeFailedHop does it deliberately), so a backend with
+        // no lines must stay silent — propagation is for a device actually held.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+
+        assertThatCode(backend::close)
+                .as("both line fields are null: nothing is held, nothing to report")
+                .doesNotThrowAnyException();
+        assertThatCode(backend::close)
+                .as("and it stays idempotent")
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void openIsRefusedWhileALineFromAFailedCloseIsStillHeld() {
+        // The hazard retention creates: open() assigns this.outputLine
+        // unconditionally, so opening over a retained line would drop the only
+        // reference to it and leak it for the life of the process.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        StubLine line = StubLine.refusingCloses(2); // the close, then the guard's retry
+        plantLine(backend, OUTPUT_LINE, line);
+        DeviceId device = DeviceId.defaultFor(JavaxSoundBackend.NAME);
+        AudioFormat absurd = new AudioFormat(48_000.0, 192, 16);
+
+        assertThatThrownBy(backend::close).isInstanceOf(AudioBackendException.class);
+
+        assertThatThrownBy(() -> backend.open(device, absurd, 512))
+                .as("a line that cannot be released refuses the open rather than being"
+                        + " overwritten by a fresh one")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("output line")
+                .hasMessageContaining("refusing to open over it");
+        assertThat(line.closeAttempts())
+                .as("the guard RETRIES the release before it refuses")
+                .isEqualTo(2);
+        assertThat(backend.isOpen())
+                .as("the refusal lands before support.markOpen, so isOpen never lies")
+                .isFalse();
+
+        // The stub now releases. The open therefore reaches the real device and
+        // fails there instead — a DIFFERENT message, which is what proves the
+        // guard let it through rather than silently refusing forever.
+        assertThatThrownBy(() -> backend.open(device, absurd, 512))
+                .as("once the retained line is gone the open proceeds to the device")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("output line unavailable");
+        assertThat(line.closeAttempts()).isEqualTo(3);
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    /**
+     * Plants {@code line} in one of the backend's private line fields.
+     *
+     * <p>{@code javax.sound.sampled.AudioSystem} is a static JDK factory and
+     * this backend takes no injectable mixer, so a line whose {@code close()}
+     * refuses cannot be reached through {@link JavaxSoundBackend#open}. The
+     * stub is therefore planted directly rather than behind a production seam
+     * that would exist only for these tests — the same private-field injection
+     * {@code SnapshotDiffTest} uses in daw-core. Surefire patches this test
+     * into {@code daw.sdk} (the ASIO tests already call package-private
+     * factory setters on production classes), so {@code setAccessible} here is
+     * the same-module case {@code AccessibleObject} permits outright.</p>
+     */
+    private static void plantLine(JavaxSoundBackend backend, String field, StubLine line) {
+        try {
+            Field declared = JavaxSoundBackend.class.getDeclaredField(field);
+            declared.setAccessible(true);
+            declared.set(backend, line);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("JavaxSoundBackend." + field + " must exist —"
+                    + " retention has nowhere to keep a line without it", e);
+        }
+    }
+
+    /** Reads back a line field: non-null means the backend still holds it. */
+    private static Object retainedLine(JavaxSoundBackend backend, String field) {
+        try {
+            Field declared = JavaxSoundBackend.class.getDeclaredField(field);
+            declared.setAccessible(true);
+            return declared.get(backend);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("JavaxSoundBackend." + field + " must exist —"
+                    + " retention has nowhere to keep a line without it", e);
+        }
+    }
+
+    /**
+     * A line that can be told to refuse its {@link Line#close()}, its
+     * {@link javax.sound.sampled.DataLine#stop()}, or the occupancy read the
+     * bounded drain makes — and that counts what the backend actually did to
+     * it, so a "retry" that never touched the line cannot pass.
+     *
+     * <p>One class implements BOTH directions: {@link SourceDataLine} and
+     * {@link TargetDataLine} differ only in {@code write} versus {@code read},
+     * neither of which the release path calls, so the same stub can be planted
+     * in either field. It reports itself fully played out
+     * ({@code available() == getBufferSize()}) so the bounded drain returns at
+     * once instead of parking for its deadline, and every method the release
+     * path has no business calling — {@link javax.sound.sampled.DataLine#drain()}
+     * above all, the unbounded JDK call this backend must never make — throws
+     * loudly.</p>
+     */
+    private static final class StubLine implements SourceDataLine, TargetDataLine {
+
+        private static final int BUFFER_BYTES = 4096;
+
+        private final IllegalStateException closeFailure =
+                new IllegalStateException("stub line refuses to close");
+        private int refusedCloses;
+        private boolean failStop;
+        private boolean failDrain;
+        private int closeAttempts;
+        private int stopAttempts;
+        private boolean closed;
+
+        static StubLine releasable() {
+            return new StubLine();
+        }
+
+        static StubLine refusingCloses(int closes) {
+            StubLine line = new StubLine();
+            line.refusedCloses = closes;
+            return line;
+        }
+
+        StubLine failingStop() {
+            this.failStop = true;
+            return this;
+        }
+
+        StubLine failingDrain() {
+            this.failDrain = true;
+            return this;
+        }
+
+        IllegalStateException closeFailure() {
+            return closeFailure;
+        }
+
+        int closeAttempts() {
+            return closeAttempts;
+        }
+
+        int stopAttempts() {
+            return stopAttempts;
+        }
+
+        @Override
+        public void close() {
+            closeAttempts++;
+            if (refusedCloses > 0) {
+                refusedCloses--;
+                throw closeFailure;
+            }
+            closed = true;
+        }
+
+        @Override
+        public void stop() {
+            stopAttempts++;
+            if (failStop) {
+                throw new IllegalStateException("stub line refuses to stop");
+            }
+        }
+
+        @Override
+        public int available() {
+            if (failDrain) {
+                throw new IllegalStateException("stub line cannot report its occupancy");
+            }
+            return BUFFER_BYTES; // fully played out: the bounded drain returns at once
+        }
+
+        @Override
+        public int getBufferSize() {
+            return BUFFER_BYTES;
+        }
+
+        @Override
+        public boolean isOpen() {
+            return !closed;
+        }
+
+        // ── Never called by the release path; loud if that ever changes ─────
+        @Override public void open() { throw unused(); }
+        @Override public void open(javax.sound.sampled.AudioFormat f) { throw unused(); }
+        @Override public void open(javax.sound.sampled.AudioFormat f, int size) { throw unused(); }
+        @Override public int write(byte[] b, int off, int len) { throw unused(); }
+        @Override public int read(byte[] b, int off, int len) { throw unused(); }
+        @Override public void drain() { throw unused(); }
+        @Override public void flush() { throw unused(); }
+        @Override public void start() { throw unused(); }
+        @Override public boolean isRunning() { throw unused(); }
+        @Override public boolean isActive() { throw unused(); }
+        @Override public javax.sound.sampled.AudioFormat getFormat() { throw unused(); }
+        @Override public int getFramePosition() { throw unused(); }
+        @Override public long getLongFramePosition() { throw unused(); }
+        @Override public long getMicrosecondPosition() { throw unused(); }
+        @Override public float getLevel() { throw unused(); }
+        @Override public Line.Info getLineInfo() { throw unused(); }
+        @Override public Control[] getControls() { throw unused(); }
+        @Override public boolean isControlSupported(Control.Type control) { throw unused(); }
+        @Override public Control getControl(Control.Type control) { throw unused(); }
+        @Override public void addLineListener(LineListener listener) { throw unused(); }
+        @Override public void removeLineListener(LineListener listener) { throw unused(); }
+
+        private static UnsupportedOperationException unused() {
+            return new UnsupportedOperationException(
+                    "the backend's release path must not call this");
         }
     }
 }

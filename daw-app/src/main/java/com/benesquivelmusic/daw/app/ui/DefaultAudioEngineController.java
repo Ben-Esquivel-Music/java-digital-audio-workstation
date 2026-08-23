@@ -81,8 +81,22 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private volatile EngineState engineState = EngineState.STOPPED;
     /** Backend whose deviceEvents() we are currently subscribed to. */
     private final AtomicReference<AudioBackend> boundBackend = new AtomicReference<>();
-    /** Currently-opened device — if it disappears we transition to DEVICE_LOST. */
-    private final AtomicReference<DeviceId> activeDevice = new AtomicReference<>();
+    /**
+     * The endpoint whose hot-plug events this controller is SUBSCRIBED to —
+     * the provisioned first rung while the engine is stopped, then the rung
+     * that actually won once an open completes, because the engine's
+     * stream-open seam re-points it on every open.
+     *
+     * <p>It is an identity used to answer "is this incoming
+     * {@link AudioDeviceEvent} about my endpoint?", and deliberately NOT a
+     * claim that a stream is open: nothing clears it on close, so after an
+     * ordinary Stop it still names the last endpoint watched.
+     * {@link AudioEngine#isStreamOpen()} is the only authority for whether a
+     * stream is open, so a handler whose behaviour presumes one —
+     * {@link #onDeviceRemoved(DeviceId)} — asks the engine in addition to
+     * matching on this value (story 316 review).</p>
+     */
+    private final AtomicReference<DeviceId> watchedDevice = new AtomicReference<>();
     /** Lifecycle-owned subscriber for the currently bound backend generation. */
     private final AtomicReference<DeviceEventSubscriber> deviceEventSubscriber =
             new AtomicReference<>();
@@ -110,7 +124,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * Per-device calibration overrides (in sample frames) accepted by
      * the user via {@code LatencyCalibrationDialog} — story 217. Keyed
      * by the device-key encoding used by {@link AudioSettingsStore.Settings#deviceKey(DeviceId)}.
-     * The override for the currently active device is folded into
+     * The override for the currently {@linkplain #watchedDevice watched}
+     * device — calibration is accepted while the transport is STOPPED, so
+     * it cannot be keyed on an open stream — is folded into
      * {@link #reportedLatency()} so the recording pipeline shifts
      * captured clips by the calibrated value rather than by the
      * driver's (mistrusted) report. Persisted to
@@ -332,8 +348,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // A plain Play calls AudioEngine.startAudioOutput() directly from
         // TransportController — this controller is not in that loop at all —
         // so binding device events only where WE drive the open left the
-        // subscription (and activeDevice) pointed at a backend/device the
-        // engine had already fallen back from: hot-unplug handling, channel
+        // subscription (and watchedDevice with it) pointed at a backend/device
+        // the engine had already fallen back from: hot-unplug handling, channel
         // queries and latency overrides then all targeted the wrong endpoint.
         // The engine's stream-open seam fires on EVERY completed open with
         // the winning rung, which is the only place the winner is known.
@@ -610,12 +626,18 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
             // Device hot-plug watch follows the requested (first) rung —
             // the backend the user chose is the one whose device events
-            // matter. Correct HERE because the engine is stopped: there is
-            // no open stream to disagree with, so the rung the next open
-            // will try first is the honest thing to watch. Any open that
-            // follows re-points this itself via the engine's stream-open
-            // seam (story 316 review), including a bare Play straight from
+            // matter. Binding it HERE, before any open, is what lets the
+            // configured endpoint's hot-plug be noticed at all while the
+            // transport is stopped; the alternative is a controller deaf to
+            // its own device until the first Play. Any open that follows
+            // re-points the watch itself via the engine's stream-open seam
+            // (story 316 review), including a bare Play straight from
             // TransportController.
+            //
+            // WATCHING is explicitly not a claim that the device is ACTIVE:
+            // no stream is open here, so a removal now no longer forces
+            // DEVICE_LOST — onDeviceRemoved() gates on
+            // AudioEngine.isStreamOpen(), the only authority for that fact.
             bindBackendDeviceEvents(
                     provision.firstRung().backend(), provision.firstRung().device());
 
@@ -639,8 +661,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
                     // startAudioOutput() fired the engine's stream-open seam
                     // synchronously, and this controller's listener already
                     // rebound the whole device-event subscription — not just
-                    // activeDevice, which is all the line that used to sit
-                    // here ever did — to the rung that actually WON. That
+                    // the watched DeviceId, which is all the line that used
+                    // to sit here ever did — to the rung that actually WON. That
                     // rebind now happens for EVERY open, including a bare
                     // Play issued straight from TransportController, which
                     // never reaches this method at all.
@@ -771,9 +793,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
             throw new IllegalArgumentException(
                     "override frames must be >= 0: " + frames.get());
         }
-        DeviceId device = activeDevice.get();
+        DeviceId device = watchedDevice.get();
         if (device == null) {
-            // No active device — nothing to key by; ignore silently.
+            // Nothing watched yet — no endpoint to key the override by;
+            // ignore silently.
             return;
         }
         String key = com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore
@@ -790,11 +813,19 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     /**
-     * Returns the override for the currently active device, or null if
-     * no override is set for this device.
+     * Returns the calibration override for the {@link #watchedDevice}, or
+     * {@code null} if no override is set for that endpoint.
+     *
+     * <p>Keyed by the WATCHED endpoint on purpose, not by an open stream's
+     * device: latency calibration is something the user performs and accepts
+     * while the transport is STOPPED (story 217's
+     * {@code LatencyCalibrationDialog}), and the value is consumed later, at
+     * recording start, through {@link #reportedLatency()}. Keying it on a
+     * fact that is only true while a stream is open would make every
+     * calibration made from a stopped transport unaddressable.</p>
      */
     private Integer activeDeviceOverride() {
-        DeviceId device = activeDevice.get();
+        DeviceId device = watchedDevice.get();
         if (device == null) {
             return null;
         }
@@ -804,29 +835,36 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     /**
-     * Subscribes to {@code backend.deviceEvents()} so the controller
-     * can transition to {@link EngineState#DEVICE_LOST} when
-     * {@code activeDevice} disappears, persist the in-flight recording
-     * take, notify the user, and automatically reopen the stream when
-     * the matching device returns.
+     * Subscribes to {@code backend.deviceEvents()} and records
+     * {@code watchedDevice} as the endpoint those events are matched
+     * against, so the controller can transition to
+     * {@link EngineState#DEVICE_LOST} when the device of an OPEN stream
+     * disappears, persist the in-flight recording take, notify the user, and
+     * automatically reopen the stream when the matching device returns.
+     *
+     * <p>Binding is a WATCH, not a claim that {@code watchedDevice} is
+     * active: this runs pre-open from {@link #applyConfiguration(Request)}
+     * while the engine is stopped, so {@link #onDeviceRemoved(DeviceId)}
+     * additionally consults {@link AudioEngine#isStreamOpen()} before
+     * declaring the device lost (story 316 review).</p>
      *
      * <p>Calling this method again replaces any previously bound
      * backend; the previous subscription is cancelled.</p>
      */
     @Override
     public synchronized void bindBackendDeviceEvents(
-            AudioBackend backend, DeviceId activeDevice) {
+            AudioBackend backend, DeviceId watchedDevice) {
         Objects.requireNonNull(backend, "backend must not be null");
-        Objects.requireNonNull(activeDevice, "activeDevice must not be null");
-        bindBackendDeviceEvents(backend, activeDevice, backend.deviceEvents());
+        Objects.requireNonNull(watchedDevice, "watchedDevice must not be null");
+        bindBackendDeviceEvents(backend, watchedDevice, backend.deviceEvents());
     }
 
     synchronized void bindBackendDeviceEvents(
             AudioBackend backend,
-            DeviceId activeDevice,
+            DeviceId watchedDevice,
             Flow.Publisher<AudioDeviceEvent> events) {
         Objects.requireNonNull(backend, "backend must not be null");
-        Objects.requireNonNull(activeDevice, "activeDevice must not be null");
+        Objects.requireNonNull(watchedDevice, "watchedDevice must not be null");
         Objects.requireNonNull(events, "events must not be null");
         DeviceEventSubscriber next = new DeviceEventSubscriber();
         DeviceEventSubscriber previous = deviceEventSubscriber.getAndSet(next);
@@ -834,7 +872,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             previous.close();
         }
         boundBackend.set(backend);
-        this.activeDevice.set(activeDevice);
+        this.watchedDevice.set(watchedDevice);
         if (controllerClosed.get()) {
             clearBoundBackendDeviceEvents();
             return;
@@ -848,7 +886,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             previous.close();
         }
         boundBackend.set(null);
-        activeDevice.set(null);
+        watchedDevice.set(null);
     }
 
     /**
@@ -900,9 +938,17 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
     }
 
-    /** Returns the device this controller is currently watching, or empty when none is bound. */
-    Optional<DeviceId> getActiveDevice() {
-        return Optional.ofNullable(activeDevice.get());
+    /**
+     * Returns the device this controller is currently watching, or empty when
+     * none is bound. It does NOT imply a stream is open on that device — the
+     * watch is bound pre-open and never cleared on close, so this still names
+     * the last watched endpoint after an ordinary Stop. Ask
+     * {@link AudioEngine#isStreamOpen()} for the open fact; use this answer
+     * for "which endpoint do I query channels / capabilities on", which must
+     * keep working while the transport is stopped.
+     */
+    Optional<DeviceId> getWatchedDevice() {
+        return Optional.ofNullable(watchedDevice.get());
     }
 
     /**
@@ -935,9 +981,35 @@ final class DefaultAudioEngineController implements AudioEngineController {
         LOG.info("Engine state " + previous + " -> " + newState);
     }
 
+    /**
+     * Handles a hot-unplug. Declares {@link EngineState#DEVICE_LOST} only for
+     * the device of an OPEN stream: BOTH the endpoint identity
+     * ({@link #watchedDevice}) and {@link AudioEngine#isStreamOpen()} must
+     * hold.
+     *
+     * <p>Story 316 review — the open check is not redundant with the identity
+     * check. The watch is bound pre-open by
+     * {@link #applyConfiguration(Request)} and no seam clears it on close, so
+     * the watched endpoint is also the merely-configured device while the
+     * transport is stopped and the last-used device after an ordinary Stop.
+     * Without this gate, unplugging an idle interface drove a stopped engine
+     * into {@code DEVICE_LOST} and flushed an incomplete take that no stream
+     * had recorded — and because {@link #onDeviceArrived(DeviceId)} is gated
+     * on {@code DEVICE_LOST}, re-plugging it then OPENED a stream the user
+     * never asked for.</p>
+     */
     private synchronized void onDeviceRemoved(DeviceId removed) {
-        DeviceId active = activeDevice.get();
-        if (active == null || !matches(active, removed)) {
+        if (!audioEngine.isStreamOpen()) {
+            // Routine hot-unplug of an endpoint we merely watch — no stream
+            // is holding it, so nothing was interrupted and there is nothing
+            // to recover. FINE, not WARNING: this is the ordinary case for a
+            // user unplugging an idle interface.
+            LOG.log(Level.FINE,
+                    () -> "Audio device removed while no stream is open: " + removed);
+            return;
+        }
+        DeviceId watched = watchedDevice.get();
+        if (watched == null || !matches(watched, removed)) {
             // Some other device went away — nothing to do.
             return;
         }
@@ -970,12 +1042,29 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
     }
 
+    /**
+     * Reopens the stream when the device lost in
+     * {@link #onDeviceRemoved(DeviceId)} comes back.
+     *
+     * <p>Story 316 review — this matches on {@link #watchedDevice} and
+     * deliberately NOT on a fact cleared when the stream closes. The review
+     * that added the open-gate above also proposed clearing an active-device
+     * field (and its subscription) at close; that is unimplementable here in
+     * the direction that matters, because {@code onDeviceRemoved} closes the
+     * stream on its way into {@code DEVICE_LOST}. A close-cleared fact would
+     * therefore be gone at exactly the moment this handler needs it, and the
+     * auto-reopen could never fire. The SUBSCRIPTION and the watched identity
+     * must outlive the close by design — what was removed instead is the
+     * STORED "active" claim: whether a stream is open is now derived from
+     * {@link AudioEngine#isStreamOpen()}, the authority, rather than
+     * mirrored into a field nothing clears.</p>
+     */
     private synchronized void onDeviceArrived(DeviceId arrived) {
         if (engineState != EngineState.DEVICE_LOST) {
             return;
         }
-        DeviceId active = activeDevice.get();
-        if (active == null || !matches(active, arrived)) {
+        DeviceId watched = watchedDevice.get();
+        if (watched == null || !matches(watched, arrived)) {
             return;
         }
         LOG.info("Lost audio device returned: " + arrived);
@@ -1026,8 +1115,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * @param requested the request to handle; must not be null
      */
     private void onFormatChangeRequested(AudioDeviceEvent.FormatChangeRequested requested) {
-        DeviceId active = activeDevice.get();
-        if (active == null || !matches(active, requested.device())) {
+        // Endpoint identity only — no open-stream gate. A driver may
+        // renegotiate the format of a device we merely watch (the user
+        // spinning buffer size in the control panel with the transport
+        // stopped), and that new format must still reach the engine.
+        // performFormatChangeReopen() re-opens only what
+        // AudioEngine.isStreamOpen() said was open (its wasOpen).
+        DeviceId watched = watchedDevice.get();
+        if (watched == null || !matches(watched, requested.device())) {
             // Some other device — nothing to do.
             return;
         }
@@ -1067,12 +1162,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
             // Coalesced into a later task that already ran — nothing to do.
             return;
         }
-        DeviceId active = activeDevice.get();
-        if (active == null || !matches(active, requested.device())) {
+        DeviceId watched = watchedDevice.get();
+        if (watched == null || !matches(watched, requested.device())) {
             return;
         }
         try {
-            performFormatChangeReopen(active, requested);
+            performFormatChangeReopen(watched, requested);
         } catch (RuntimeException e) {
             // Never let the worker thread die because of one bad reopen —
             // the next event must still be handleable.
@@ -1087,7 +1182,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     private synchronized void performFormatChangeReopen(
-            DeviceId active, AudioDeviceEvent.FormatChangeRequested requested) {
+            DeviceId watched, AudioDeviceEvent.FormatChangeRequested requested) {
         AudioBackend backend = boundBackend.get();
         AudioFormat currentFormat = audioEngine.getFormat();
 
@@ -1138,7 +1233,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    in-flight take — flush partially captured frames so the
         //    user can review them after the reopen.
         try {
-            incompleteTakeStore.flushIfNotEmpty(active, audioEngine.getFormat());
+            incompleteTakeStore.flushIfNotEmpty(watched, audioEngine.getFormat());
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to persist incomplete take during reopen", e);
         }
@@ -1150,9 +1245,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    exercises the same path the FFM-bound version will.
         if (backend != null) {
             try {
-                BufferSizeRange range = backend.bufferSizeRange(active);
-                Set<Integer> rates = backend.supportedSampleRates(active);
-                LOG.fine("Re-queried capabilities for " + active
+                BufferSizeRange range = backend.bufferSizeRange(watched);
+                Set<Integer> rates = backend.supportedSampleRates(watched);
+                LOG.fine("Re-queried capabilities for " + watched
                         + ": bufferSizeRange=" + range + " sampleRates=" + rates);
             } catch (RuntimeException e) {
                 LOG.log(Level.WARNING, "Failed to re-query backend capabilities", e);
@@ -1169,7 +1264,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
                     sdkFmt.sampleRate(),
                     currentFormat.channels(),
                     sdkFmt.bitDepth() > 0 ? sdkFmt.bitDepth() : currentFormat.bitDepth(),
-                    deriveBufferFrames(requested.reason(), currentFormat, backend, active));
+                    deriveBufferFrames(requested.reason(), currentFormat, backend, watched));
         } else if (proposed.isPresent() /* sample-rate change — keep project rate */) {
             reopenFormat = currentFormat;
         } else {
@@ -1395,15 +1490,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return current.bufferSize();
     }
 
-    private static boolean matches(DeviceId active, DeviceId other) {
-        if (active.equals(other)) {
+    private static boolean matches(DeviceId watched, DeviceId other) {
+        if (watched.equals(other)) {
             return true;
         }
         // Fall back to friendly-name match across backends — vendor +
         // product + serial cross-checks would happen in a more advanced
         // identity-matching layer, but the issue allows friendly-name
         // fallback when serial information is unavailable.
-        return active.name().equals(other.name());
+        return watched.name().equals(other.name());
     }
 
     private final class DeviceEventSubscriber
