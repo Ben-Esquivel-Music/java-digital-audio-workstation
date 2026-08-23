@@ -13,8 +13,8 @@ import java.util.logging.Logger;
  *
  * <p>Enumerates through the engine's honest backend answer
  * ({@link AudioEngine#getBackend()} — the open stream's backend when a
- * stream is open, else the provisioned requested backend; story 316),
- * handling error recovery so that callers need not manage backend lifecycle
+ * stream is open, else the provisioned ladder head; story 316), handling
+ * error recovery so that callers need not manage backend lifecycle
  * directly.</p>
  */
 public final class AudioDeviceManager {

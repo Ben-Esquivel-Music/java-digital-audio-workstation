@@ -560,6 +560,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
         try {
             boolean wasOpen = audioEngine.isStreamOpen();
+            // Story 316 review — isStreamOpen() is true for RUNNING *or*
+            // PAUSED, so "was open" alone does not describe the lifecycle
+            // state this reconfigure is about to destroy. The pause fact has
+            // to be read HERE, before stopAndConfirmPumpQuiesced() clears
+            // it: a user who paused transport and then changed buffer size,
+            // device or backend used to get the stream back RUNNING, which
+            // restarts the render pump AND the RT clock underneath a
+            // transport they deliberately left paused.
+            boolean wasPaused = audioEngine.isStreamPaused();
             // Story 316 re-review — this verdict is LOAD-BEARING and used to
             // be discarded. The predicate itself lives in
             // stopAndConfirmPumpQuiesced() because BOTH paths that mutate the
@@ -656,7 +665,6 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 // failed reopen.
                 try {
                     audioEngine.startAudioOutput();
-                    setEngineState(EngineState.RUNNING);
                     // No re-point needed here any more (story 316 review):
                     // startAudioOutput() fired the engine's stream-open seam
                     // synchronously, and this controller's listener already
@@ -666,6 +674,39 @@ final class DefaultAudioEngineController implements AudioEngineController {
                     // rebind now happens for EVERY open, including a bare
                     // Play issued straight from TransportController, which
                     // never reaches this method at all.
+                    //
+                    // Story 316 review — restore the PAUSED lifecycle state
+                    // the reconfigure destroyed. startAudioOutput() always
+                    // comes back RUNNING, so without this a stream the user
+                    // had paused resumes rendering behind a paused
+                    // transport. It runs BEFORE the terminal
+                    // setEngineState(...) below so that observers gating on
+                    // that state already see the restored pause (side
+                    // effects precede the terminal state).
+                    //
+                    // The reported EngineState deliberately does NOT change:
+                    // a transport pause never moved it off RUNNING in the
+                    // first place, so RUNNING plus a re-paused stream is
+                    // exactly the pre-reconfigure pair. STOPPED means
+                    // "intentionally closed", which a PAUSED stream is not —
+                    // onDeviceArrived's STOPPED is a different convention,
+                    // for a device that just came back and needs manual
+                    // re-arming.
+                    if (wasPaused) {
+                        try {
+                            audioEngine.pauseAudioOutput();
+                        } catch (RuntimeException pauseFailure) {
+                            // Falls through on purpose: a failed re-pause
+                            // leaves the stream genuinely open and
+                            // rendering, which is exactly what the RUNNING
+                            // state below then honestly reports.
+                            LOG.log(Level.WARNING,
+                                    "Audio output could not be re-paused after reconfigure;"
+                                            + " the stream is open and rendering",
+                                    pauseFailure);
+                        }
+                    }
+                    setEngineState(EngineState.RUNNING);
                 } catch (RuntimeException openFailure) {
                     LOG.log(Level.SEVERE,
                             "Audio output could not be restarted after reconfigure",
@@ -1201,6 +1242,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // applyConfiguration: only a previously-open stream is restored
         // after the format change (story 316, engine-seam routing).
         boolean wasOpen = audioEngine.isStreamOpen();
+        // ...and WHICH open state it was in, snapshotted here for the same
+        // reason and in the same place as applyConfiguration's (story 316
+        // review): isStreamOpen() covers RUNNING *and* PAUSED, and the stop
+        // at step 1 erases the distinction, so a driver-initiated format
+        // change silently promoted a paused stream back to rendering.
+        boolean wasPaused = audioEngine.isStreamPaused();
 
         // 1. Stop the transport AND confirm the render pump left
         //    processBlock. Story 316 re-review: this path discarded that
@@ -1290,12 +1337,36 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    closed the stream via stopAudioOutput(); startAudioOutput()
         //    re-walks the provision ladder at the new format, honouring the
         //    configured DeviceId. Only a stream that was open before the
-        //    change is restored, mirroring applyConfiguration.
+        //    change is restored, mirroring applyConfiguration — and a stream
+        //    that was PAUSED before the change is restored PAUSED.
+        //
+        //    Story 316 review: startAudioOutput() always returns a RUNNING
+        //    stream, so reopening a previously paused one without the
+        //    re-pause below restarts the render pump AND the RT clock under
+        //    a transport the user deliberately left paused. The re-pause is
+        //    part of the restore, so it lands here — well before step 9's
+        //    terminal state (side effects precede the terminal state
+        //    observers gate on).
         boolean streamRestored = false;
         if (wasOpen) {
             try {
                 audioEngine.startAudioOutput();
                 streamRestored = true;
+                if (wasPaused) {
+                    try {
+                        audioEngine.pauseAudioOutput();
+                    } catch (RuntimeException pauseFailure) {
+                        // Deliberately does NOT clear streamRestored: the
+                        // stream really WAS reopened, so step 9's RUNNING
+                        // stays the correct terminal state — it now reports
+                        // a stream that is open and rendering, which is the
+                        // truth after a failed re-pause.
+                        LOG.log(Level.WARNING,
+                                "Failed to re-pause the reopened audio stream after a"
+                                        + " format change; it is open and rendering",
+                                pauseFailure);
+                    }
+                }
             } catch (RuntimeException e) {
                 LOG.log(Level.WARNING, "Failed to reopen audio stream after format change", e);
             }
@@ -1348,6 +1419,13 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    terminal state has a reliable happens-before guarantee that
         //    steps 7-8 (notification + cache invalidation + post-
         //    reconfigure callback) completed.
+        //
+        //    RUNNING here means "the stream was RESTORED", not "the stream
+        //    is rendering" (story 316 review). A stream restored to PAUSED
+        //    holds its device and renders nothing — exactly as it did before
+        //    the change — and still reports RUNNING, because a transport
+        //    pause never moved this controller's EngineState in the first
+        //    place. STOPPED stays reserved for "no stream was restored".
         setEngineState(streamRestored ? EngineState.RUNNING : EngineState.STOPPED);
     }
 
@@ -1872,7 +1950,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
         List<BackendStreamRung> ladder = new ArrayList<>();
         ladder.add(new BackendStreamRung(requested, deviceId(name, request.outputDeviceName())));
-        appendFallbackRungs(ladder, name, request.inputDeviceName());
+        appendFallbackRungs(ladder, name);
         return new StreamingProvision(name, ladder);
     }
 
@@ -1905,7 +1983,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     private StreamingProvision rejectedProvision(String name, Request request, String cause) {
         List<BackendStreamRung> ladder = new ArrayList<>();
-        appendFallbackRungs(ladder, name, request.inputDeviceName());
+        appendFallbackRungs(ladder, name);
         if (ladder.isEmpty()) {
             ladder.add(new BackendStreamRung(
                     new JavaxSoundBackend(), DeviceId.defaultFor("Java Sound")));
@@ -1945,12 +2023,44 @@ final class DefaultAudioEngineController implements AudioEngineController {
     /**
      * Appends the emergency fallback rungs — PortAudio when available, then
      * Java Sound — skipping whichever of them is the requested backend
-     * itself. Fallback rungs open their backend's DEFAULT device.
+     * itself. Fallback rungs open their backend's DEFAULT device: the
+     * default OUTPUT, and — story 316 review — deliberately the default
+     * INPUT too, which is why the PortAudio adapter below is constructed
+     * with a BLANK input-device name instead of the one the user configured.
+     *
+     * <p>There is no configured input name that could legitimately reach a
+     * rung built here. The requested backend's input-device name belongs to
+     * THAT backend's namespace, and this method only ever appends a
+     * PortAudio rung when PortAudio is NOT the requested backend — so the
+     * name it would have carried is always foreign (an ASIO device name is
+     * generally absent from PortAudio's own enumeration). That is why the
+     * parameter was removed outright rather than left unused: no caller has
+     * one to pass.</p>
+     *
+     * <p>The mismatch was not cosmetic.
+     * {@code CallbackBackendAdapter.resolveInputDevice} matches the
+     * configured name against the adapted backend's OWN device snapshot and
+     * answers a miss by logging a warning and returning {@code null} — which
+     * DISABLES CAPTURE for the stream while the rung still opens perfectly
+     * well for playback. A session that fell back from ASIO to PortAudio
+     * therefore recorded a SILENT TAKE, and it bit hardest through
+     * {@link #rejectedProvision(String, Request, String)}, where this
+     * PortAudio rung is the ladder HEAD: the backend the user actually hears
+     * and records through. A blank name takes {@code resolveInputDevice}'s
+     * {@code inputDeviceName.isBlank()} branch, which resolves PortAudio's
+     * own default input device instead.</p>
+     *
+     * <p>{@link #buildDefaultProvision(String, String)} is the deliberate
+     * counter-example: there PortAudio IS the provisioned head for a request
+     * that named no backend at all, so the configured input name genuinely
+     * belongs to it and is passed through.</p>
      */
-    private void appendFallbackRungs(
-            List<BackendStreamRung> ladder, String requestedName, String inputDeviceName) {
+    private void appendFallbackRungs(List<BackendStreamRung> ladder, String requestedName) {
         if (!"PortAudio".equals(requestedName)) {
-            AudioBackend portAudio = tryCreatePortAudioAdapter(inputDeviceName);
+            // Blank on purpose (story 316 review) — see the javadoc above: a
+            // foreign backend's input-device name silently disables capture
+            // on this rung, turning a fallback into a silent recording take.
+            AudioBackend portAudio = tryCreatePortAudioAdapter("");
             if (portAudio != null) {
                 ladder.add(new BackendStreamRung(
                         portAudio, DeviceId.defaultFor("PortAudio")));

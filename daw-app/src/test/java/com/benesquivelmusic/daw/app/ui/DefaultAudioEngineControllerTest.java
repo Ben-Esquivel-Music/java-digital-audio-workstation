@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -1366,6 +1367,273 @@ class DefaultAudioEngineControllerTest {
             engine.stop();
             controller.shutdown();
         }
+    }
+
+    // -- Story 316 review: a reconfigure must preserve a PAUSED stream ------
+
+    @Test
+    void reconfiguringAPausedStreamBringsItBackPaused(@TempDir Path projectRoot) {
+        // Story 316 review. AudioEngine.isStreamOpen() is true for RUNNING
+        // *or* PAUSED, and applyConfiguration restored on that single fact
+        // with startAudioOutput(), which always comes back RUNNING. So a
+        // user who paused transport and then changed the buffer size got the
+        // render pump AND the RT clock restarted behind a transport they had
+        // deliberately left paused — the paused lifecycle state was silently
+        // lost by the reconfigure.
+        //
+        // The controller's EngineState is asserted to stay RUNNING on
+        // purpose: a transport pause never moved it off RUNNING in the first
+        // place, so RUNNING plus a re-paused stream is exactly the
+        // pre-reconfigure pair. STOPPED would claim an intentional close.
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            engine.startAudioOutput();
+            engine.pauseAudioOutput();
+            assertThat(engine.isStreamPaused())
+                    .as("precondition: the stream really is PAUSED, not merely stopped")
+                    .isTrue();
+
+            // A buffer-size-only change: same endpoint, so the provision is
+            // NOT rebuilt and the very same backend instance is reopened —
+            // the narrowest reconfigure that still runs the stop/restore arc.
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 128, 24, 1));
+
+            assertThat(engine.getFormat().bufferSize())
+                    .as("precondition: the reconfigure really was applied")
+                    .isEqualTo(128);
+            assertThat(engine.isStreamOpen())
+                    .as("a stream that was open before the change is restored")
+                    .isTrue();
+            assertThat(engine.isStreamPaused())
+                    .as("and a stream that was PAUSED comes back PAUSED — "
+                            + "reopening it RUNNING restarts the render pump and "
+                            + "the RT clock under a transport the user paused")
+                    .isTrue();
+            assertThat(spy.isOpen())
+                    .as("PAUSED still owns the device handle, so the backend is open")
+                    .isTrue();
+            assertThat(controller.engineState())
+                    .as("the reported state is unchanged by the pause restore: a "
+                            + "transport pause never moved it off RUNNING")
+                    .isEqualTo(EngineState.RUNNING);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void reconfiguringARunningStreamDoesNotPauseIt(@TempDir Path projectRoot) {
+        // The control case for the test above: the restore must consult the
+        // SNAPSHOTTED pause state, not pause unconditionally. Without this
+        // the fix could "pass" by pausing every reconfigured stream, which
+        // would silence playback for every user who never paused at all.
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            engine.startAudioOutput();
+            assertThat(engine.isStreamPaused())
+                    .as("precondition: this stream is RUNNING, never paused")
+                    .isFalse();
+
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 128, 24, 1));
+
+            assertThat(engine.isStreamOpen())
+                    .as("the previously-open stream is restored")
+                    .isTrue();
+            assertThat(engine.isStreamPaused())
+                    .as("and it comes back RENDERING — the restore reads the "
+                            + "snapshotted pause state, it does not pause everything")
+                    .isFalse();
+            assertThat(controller.engineState()).isEqualTo(EngineState.RUNNING);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void aDriverFormatChangeBringsAPausedStreamBackPaused(@TempDir Path projectRoot)
+            throws InterruptedException {
+        // The same loss on the OTHER reconfigure path (story 316 review):
+        // performFormatChangeReopen runs on the coalescing format-change
+        // worker and snapshotted the identical wasOpen-only fact. A driver
+        // that renegotiates its buffer size while the user has transport
+        // paused must not hand the stream back rendering.
+        AudioFormat starting = new AudioFormat(48_000.0, 2, 24, 256);
+        AudioEngine engine = new AudioEngine(starting);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot));
+        SpyStreamingBackend spy = new SpyStreamingBackend("SpyPausedReopen");
+        DeviceId active = new DeviceId("SpyPausedReopen", "Dev B");
+        try {
+            engine.setStreamingProvision(new StreamingProvision("SpyPausedReopen",
+                    List.of(new BackendStreamRung(spy, active))));
+            controller.bindBackendDeviceEvents(spy, active);
+
+            engine.startAudioOutput();
+            engine.pauseAudioOutput();
+            assertThat(engine.isStreamOpen())
+                    .as("precondition: PAUSED still counts as open")
+                    .isTrue();
+            assertThat(engine.isStreamPaused())
+                    .as("precondition: and it really is PAUSED")
+                    .isTrue();
+
+            List<EngineState> transitions = new ArrayList<>();
+            controller.engineStateEvents().subscribe(new Flow.Subscriber<EngineState>() {
+                @Override public void onSubscribe(Flow.Subscription s) {
+                    s.request(Long.MAX_VALUE);
+                }
+                @Override public void onNext(EngineState s) {
+                    synchronized (transitions) { transitions.add(s); }
+                }
+                @Override public void onError(Throwable t) { /* ignore */ }
+                @Override public void onComplete() { /* ignore */ }
+            });
+
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat proposed =
+                    new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 2, 24);
+            spy.publishDeviceEvent(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
+                    .FormatChangeRequested(active, Optional.of(proposed),
+                            new FormatChangeReason.BufferSizeChange(512)));
+
+            // Same waiting mechanism as the sibling reopen tests: the
+            // RECONFIGURING -> RUNNING arc. The re-pause is a step-6 side
+            // effect, so it has already landed by the time step 9 publishes
+            // the terminal state this wait observes.
+            waitForLong(() -> {
+                synchronized (transitions) {
+                    return transitions.contains(EngineState.RECONFIGURING)
+                            && transitions.lastIndexOf(EngineState.RUNNING)
+                                    > transitions.indexOf(EngineState.RECONFIGURING);
+                }
+            });
+
+            assertThat(engine.getFormat().bufferSize())
+                    .as("precondition: the driver's format change really was applied")
+                    .isEqualTo(512);
+            assertThat(engine.isStreamOpen())
+                    .as("the previously-open stream was reopened through the engine seam")
+                    .isTrue();
+            assertThat(engine.isStreamPaused())
+                    .as("and it is PAUSED again — a driver-initiated reopen must not "
+                            + "promote a paused stream back to rendering")
+                    .isTrue();
+            assertThat(spy.isOpen())
+                    .as("the backend holds its device across the restored pause")
+                    .isTrue();
+            assertThat(controller.engineState())
+                    .as("RUNNING here means 'the stream was restored', not 'it is "
+                            + "rendering' — STOPPED is reserved for a stream that "
+                            + "could not be restored at all")
+                    .isEqualTo(EngineState.RUNNING);
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void thePortAudioFallbackRungIsBuiltWithABlankInputDeviceName() throws IOException {
+        // Story 316 review, pinned as a SOURCE scan rather than a live test:
+        // PortAudio is a native library that is routinely absent from CI
+        // (ubuntu-latest), so tryCreatePortAudioAdapter(...) returns null
+        // there and no runtime assertion could ever observe the rung.
+        //
+        // WHY it matters: appendFallbackRungs used to forward the REQUESTED
+        // backend's configured input-device name into the PortAudio adapter.
+        // That rung is only ever appended when PortAudio is NOT the requested
+        // backend, so the name was always from a foreign namespace (an ASIO
+        // device name is generally absent from PortAudio's enumeration).
+        // CallbackBackendAdapter.resolveInputDevice answers such a miss by
+        // logging a warning and returning null, which DISABLES CAPTURE while
+        // the rung still opens fine for playback — so a recording that fell
+        // back from ASIO to PortAudio produced a SILENT TAKE, worst of all
+        // through rejectedProvision(...) where this rung is the ladder HEAD.
+        Path source = SourceScanSupport.locateDawAppModule().resolve(
+                "src/main/java/com/benesquivelmusic/daw/app/ui/"
+                        + "DefaultAudioEngineController.java");
+        assertThat(Files.isRegularFile(source))
+                .as("DefaultAudioEngineController source must exist at %s", source)
+                .isTrue();
+        String code = SourceScanSupport.stripComments(
+                Files.readString(source, StandardCharsets.UTF_8));
+
+        // Non-empty guard: without it an unreadable or relocated file would
+        // let every containment assertion below pass vacuously.
+        assertThat(code)
+                .as("the scan must have real code to read, otherwise this sentinel "
+                        + "passes vacuously")
+                .isNotBlank()
+                .contains("private void appendFallbackRungs(");
+
+        assertThat(code)
+                .as("appendFallbackRungs must declare NO input-device parameter: the "
+                        + "rung it builds is only reached when PortAudio is not the "
+                        + "requested backend, so any name a caller could pass belongs "
+                        + "to a foreign backend and would disable capture")
+                .contains("private void appendFallbackRungs("
+                        + "List<BackendStreamRung> ladder, String requestedName) {")
+                .doesNotContain("appendFallbackRungs(ladder, name, ");
+
+        String body = methodBody(code, "private void appendFallbackRungs(");
+        assertThat(body)
+                .as("the fallback PortAudio adapter must be constructed with a BLANK "
+                        + "input name so resolveInputDevice takes its isBlank() branch "
+                        + "and resolves PortAudio's OWN default input — a foreign name "
+                        + "silently disables capture and turns a fallback into a "
+                        + "silent recording take")
+                .contains("tryCreatePortAudioAdapter(\"\")")
+                .doesNotContain("tryCreatePortAudioAdapter(inputDeviceName)");
+    }
+
+    /** Brace-matched body of the first method whose declaration starts with
+     * {@code signature} — keeps the source-scan sentinel above from matching a
+     * literal that lives in some other method of the same file. */
+    private static String methodBody(String code, String signature) {
+        int start = code.indexOf(signature);
+        assertThat(start)
+                .as("DefaultAudioEngineController must declare `%s`", signature)
+                .isNotNegative();
+        int open = code.indexOf('{', start);
+        assertThat(open).as("`%s` must have a body", signature).isNotNegative();
+        int depth = 0;
+        for (int i = open; i < code.length(); i++) {
+            char c = code.charAt(i);
+            if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return code.substring(open, i + 1);
+                }
+            }
+        }
+        throw new AssertionError("Unbalanced braces after " + signature);
     }
 
     @Test
