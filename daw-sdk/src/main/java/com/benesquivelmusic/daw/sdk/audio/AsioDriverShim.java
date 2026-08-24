@@ -173,6 +173,15 @@ class AsioDriverShim implements AutoCloseable {
      * driver: a re-open attempted while the outcome is unknown fails cleanly
      * instead of loading a second driver over a live one.</p>
      *
+     * <p>The kept claim is also what the release the caller then performs may
+     * have to DEFER, and that deferral is no longer silent (story 316
+     * re-review): the same abandoned downcall that made this outcome unknown
+     * makes {@code AsioBackend.releaseDriverShim} queue the shim close instead
+     * of issuing it, and {@link AudioBackend#isReleasePending()} is how the
+     * backend then tells a caller that the {@link AudioBackendException} it
+     * just raised came from a rung that may still be acquiring the device —
+     * rather than from an ordinary refusal it may open past.</p>
+     *
      * @param driverName the registry name of the driver to initialize
      * @return {@code true} only when the driver itself reported success. A
      *         {@code false} leaves this wrapper either provably unowning (the

@@ -219,6 +219,32 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private final AtomicBoolean audioQueueFailed = new AtomicBoolean();
     private boolean closeAfterAudioApply;
     private volatile LiveAudioEndpoint liveAudioEndpoint;
+    /**
+     * Story 316 re-review — the endpoint the engine was last successfully
+     * asked to OPEN, which is a different fact from {@link #liveAudioEndpoint}
+     * (the PROVISIONED/capability endpoint) and must not be derived from it.
+     *
+     * <p>{@code getProvisionedBackendName()} answers "the open stream's
+     * backend while one is open, else the installed provision's first rung",
+     * so after a ladder fallback it flips with TRANSPORT STATE — Java Sound
+     * while the fallback stream is open, the requested head rung once it is
+     * stopped. That is the right authority for capability work (enumerate
+     * devices, query buffer sizes, set a driver's sample rate) and the wrong
+     * one for "which endpoint should the engine be reconfigured to open":
+     * building the reconfigure request from it made a buffer-size-only Apply
+     * target a different backend depending on whether the transport happened
+     * to be running, silently promoting a fallback back to the request or
+     * pinning the engine to the fallback.
+     *
+     * <p>This field is sticky instead: seeded from the persisted settings when
+     * the controller is attached — the same values
+     * {@code MainController.applyStartupAudioSettings} configured the engine
+     * with — and advanced only when a reconfigure actually succeeds. It is
+     * therefore also the correct rollback target: restoring the provisioned
+     * endpoint after a failed reconfigure would "roll back" onto an endpoint
+     * that was never in effect.
+     */
+    private volatile RequestedAudioEndpoint appliedRequestedEndpoint;
     private volatile AudioRuntimeState audioRuntimeState;
     private volatile boolean backgroundWorkClosed;
 
@@ -809,6 +835,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
             clockSourceCombo.getItems().clear();
         }
         liveAudioEndpoint = controller == null ? null : initialLiveAudioEndpoint(controller);
+        appliedRequestedEndpoint =
+                controller == null ? null : initialRequestedAudioEndpoint(controller);
         audioRuntimeState = controller == null ? null : new AudioRuntimeState(
                 model.getSampleRate(), model.getBufferSize(), model.getBitDepth(),
                 model.getWorkerPoolSize(), model.getMixPrecision(), model.getSrcQuality());
@@ -1019,6 +1047,34 @@ public final class SettingsDialog extends DawgDialog<Void> {
         // either name to the provisioned backend is unsafe; automatic
         // endpoints are the only backend-neutral fallback.
         return new LiveAudioEndpoint(liveBackend, "", "");
+    }
+
+    /**
+     * Seeds the story 316 re-review REQUESTED endpoint: the endpoint the
+     * engine was configured to open before this dialog touched anything.
+     *
+     * <p>That is the persisted triple, because
+     * {@code MainController.applyStartupAudioSettings} configured the engine
+     * from exactly these three settings. The one wrinkle is its blank rule,
+     * mirrored here so the seed matches the request that actually ran: a
+     * blank persisted backend means "keep what is provisioned" — the user
+     * expressed no driver preference — and resolving it to the provisioned
+     * name is what startup did. Deliberately NOT the provisioned name in
+     * every case: a non-blank persisted backend is the user's request, and
+     * the provisioned answer would substitute the ladder's current fallback
+     * for it whenever a stream happens to be open.
+     *
+     * <p>The blank is resolved ONCE, here, rather than on every Apply, so
+     * that a later Apply cannot re-resolve it to a different rung just
+     * because the transport started or stopped in between.
+     */
+    private RequestedAudioEndpoint initialRequestedAudioEndpoint(
+            AudioEngineController controller) {
+        String persistedBackend = model.getAudioBackend();
+        String requestedBackend = persistedBackend == null || persistedBackend.isBlank()
+                ? controller.getProvisionedBackendName() : persistedBackend;
+        return new RequestedAudioEndpoint(requestedBackend,
+                model.getAudioInputDevice(), model.getAudioOutputDevice());
     }
 
     private void restartDeviceEnumeration(Object backend, Object outputDevice) {
@@ -1604,20 +1660,79 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         if (controller != null
                 && (engineReconfigureRequested || !deferredAudioEdits.isEmpty())) {
+            // Story 316 re-review — TWO endpoints are computed here and they
+            // are not interchangeable (see AudioReconfigureSnapshot's javadoc).
+            // The REQUESTED endpoint is what the engine is asked to open; the
+            // PROVISIONED endpoint is what driver-level capability calls
+            // target. Conflating them made a buffer-only Apply retarget the
+            // engine at whichever rung the ladder happened to be streaming.
+            //
+            // Both rules read model.getAudioBackend() and NOT
+            // currentPersistedValue("audio.backend"): asynchronousPersistedValues
+            // has already absorbed deferredAudioEdits earlier in this method, so
+            // that reader would answer with the PENDING backend — exactly the
+            // restart-required value neither endpoint may adopt. The model
+            // itself is still untouched here; commitDeferredAudioEdits() only
+            // writes it after the driver call succeeds.
             LiveAudioEndpoint liveEndpoint = currentLiveAudioEndpoint(controller);
+            RequestedAudioEndpoint requestedEndpoint =
+                    currentRequestedAudioEndpoint(controller);
+            // null means "no pending edit for this device row"; both endpoints
+            // below decide separately whether they may adopt it.
+            String pendingInputDevice =
+                    pendingEdits.get("audio.inputDevice") instanceof String input
+                            ? input : null;
+            String pendingOutputDevice =
+                    pendingEdits.get("audio.outputDevice") instanceof String output
+                            ? output : null;
+            // Pending device edits may only join the REQUEST while the
+            // persisted backend is still the requested one. Both halves guard
+            // the same restart-required contract from opposite sides: a
+            // backend edit pending in THIS Apply (audio.backend is the
+            // catalogue's only RESTART_REQUIRED descriptor, Settings View
+            // Design Book §6.4), and a backend edit persisted by an EARLIER
+            // Apply that is still awaiting the restart — in which case the
+            // model already holds the future backend's device names while the
+            // engine keeps running the requested one.
+            boolean pendingDevicesBelongToRequest =
+                    !pendingEdits.containsKey("audio.backend")
+                            && Objects.equals(model.getAudioBackend(),
+                                    requestedEndpoint.backend());
+            // The fallback is the last successfully requested endpoint's own
+            // device names — never liveEndpoint's, which
+            // initialLiveAudioEndpoint() blanks to "" whenever the provisioned
+            // backend differs from the persisted one. Blanking is right for
+            // the capability endpoint (an unrelated backend's device name must
+            // not reach a driver) and wrong for a request, where it would
+            // silently reopen on automatic devices.
+            String requestedInput = pendingDevicesBelongToRequest
+                    && pendingInputDevice != null
+                            ? pendingInputDevice : requestedEndpoint.inputDevice();
+            String requestedOutput = pendingDevicesBelongToRequest
+                    && pendingOutputDevice != null
+                            ? pendingOutputDevice : requestedEndpoint.outputDevice();
+            // The capability pair is unchanged by the split: the provisioned
+            // backend plus a device name that is guaranteed to belong to it.
+            // DefaultAudioEngineController.setSampleRate builds a throwaway
+            // backend from the backend NAME and hands it
+            // deviceId(backendName, outputDeviceName) — a DeviceId stamped
+            // with that same backend name — so the pair has to be internally
+            // consistent: a device name belonging to another backend would be
+            // presented to this one as if it were its own.
             boolean backendRemainsActive = !pendingEdits.containsKey("audio.backend")
                     && Objects.equals(model.getAudioBackend(), liveEndpoint.backend());
-            String requestedInput = backendRemainsActive
-                    && pendingEdits.get("audio.inputDevice") instanceof String input
-                            ? input : liveEndpoint.inputDevice();
-            String requestedOutput = backendRemainsActive
-                    && pendingEdits.get("audio.outputDevice") instanceof String output
-                            ? output : liveEndpoint.outputDevice();
+            String capabilityInput = backendRemainsActive && pendingInputDevice != null
+                    ? pendingInputDevice : liveEndpoint.inputDevice();
+            String capabilityOutput = backendRemainsActive && pendingOutputDevice != null
+                    ? pendingOutputDevice : liveEndpoint.outputDevice();
             enqueueAudioReconfigure(new AudioReconfigureSnapshot(
                     controller,
-                    liveEndpoint.backend(),
+                    requestedEndpoint.backend(),
                     requestedInput,
                     requestedOutput,
+                    liveEndpoint.backend(),
+                    capabilityInput,
+                    capabilityOutput,
                     effectiveNumber(pendingEdits, "audio.sampleRate").doubleValue(),
                     effectiveNumber(pendingEdits, "audio.bufferSize").intValue(),
                     effectiveNumber(pendingEdits, "audio.bitDepth").intValue(),
@@ -1669,6 +1784,28 @@ public final class SettingsDialog extends DawgDialog<Void> {
         return endpoint;
     }
 
+    /**
+     * The endpoint the engine was last successfully asked to open — story 316
+     * re-review. Unlike {@link #currentLiveAudioEndpoint(AudioEngineController)}
+     * this is deliberately NOT re-derived from the controller when it looks
+     * stale: it has no provisioned-backend key to compare against, precisely
+     * because a request must not follow the ladder around. It is only ever
+     * re-seeded when the field is missing entirely, which
+     * {@link #setAudioEngineController(AudioEngineController)} makes a
+     * defensive path rather than a supported one: it seeds this field and
+     * {@link #liveAudioEndpoint} in the same breath as the controller itself,
+     * so the field can only be absent for a controller detached mid-apply.
+     */
+    private RequestedAudioEndpoint currentRequestedAudioEndpoint(
+            AudioEngineController controller) {
+        RequestedAudioEndpoint endpoint = appliedRequestedEndpoint;
+        if (endpoint == null) {
+            endpoint = initialRequestedAudioEndpoint(controller);
+            appliedRequestedEndpoint = endpoint;
+        }
+        return endpoint;
+    }
+
     private Number effectiveNumber(Map<String, Object> pendingEdits, String id) {
         Object value = pendingEdits.containsKey(id)
                 ? pendingEdits.get(id) : currentPersistedValue(id);
@@ -1686,7 +1823,33 @@ public final class SettingsDialog extends DawgDialog<Void> {
         return valueType.cast(value);
     }
 
+    /**
+     * The PROVISIONED (capability) endpoint: the backend
+     * {@code getProvisionedBackendName()} names plus device names that are
+     * guaranteed to belong to it — blanked to {@code ""} by
+     * {@link #initialLiveAudioEndpoint(AudioEngineController)} when they do
+     * not. Driver-level calls that address a device THROUGH a named backend
+     * (today {@code setSampleRate}) target this endpoint. It is NOT what the
+     * engine should be reconfigured to open: see
+     * {@link RequestedAudioEndpoint}.
+     */
     private record LiveAudioEndpoint(
+            String backend, String inputDevice, String outputDevice) {}
+
+    /**
+     * The REQUESTED endpoint: the backend and devices the engine is asked to
+     * OPEN — story 316 re-review. Distinct from {@link LiveAudioEndpoint} in
+     * two ways that matter:
+     *
+     * <ul>
+     *   <li>its backend never follows the fallback ladder, so it does not
+     *       flip with transport state;</li>
+     *   <li>its device names are never blanked, because they are the names
+     *       the request itself is built from rather than names being handed
+     *       to a foreign driver.</li>
+     * </ul>
+     */
+    private record RequestedAudioEndpoint(
             String backend, String inputDevice, String outputDevice) {}
 
     private record AudioRuntimeState(
@@ -1708,11 +1871,54 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 .anyMatch(descriptor -> descriptor.applyClass() == ApplyClass.ENGINE_RECONFIGURE);
     }
 
+    /**
+     * One Apply's worth of audio work, captured on the FX thread and handed
+     * to the reconfigure worker.
+     *
+     * <h2>Two endpoints, never one (story 316 re-review)</h2>
+     *
+     * <p>This record carries TWO endpoints, and confusing them is the whole
+     * point of the distinction:</p>
+     *
+     * <ul>
+     *   <li><b>The REQUESTED endpoint</b> — {@code requestedBackend},
+     *       {@code inputDevice}, {@code outputDevice}. This is what the
+     *       engine is asked to OPEN, i.e. what
+     *       {@code applyConfiguration(Request)} receives, which
+     *       {@code DefaultAudioEngineController} turns into the provision's
+     *       head rung. It follows the persisted/applied backend and the
+     *       user's own pending device edits — never
+     *       {@code getProvisionedBackendName()}, whose answer is the OPEN
+     *       stream's backend while a stream is open, so a request built from
+     *       it would silently pin the engine to whatever rung the fallback
+     *       ladder happened to be streaming, or promote a fallback back to
+     *       the requested backend, depending purely on whether the transport
+     *       was running when Apply was pressed.</li>
+     *   <li><b>The PROVISIONED (capability) endpoint</b> —
+     *       {@code provisionedBackend}, {@code capabilityInputDevice},
+     *       {@code capabilityOutputDevice}. This is what driver-level calls
+     *       target: today {@code setSampleRate(backend, outputDevice, rate)},
+     *       which builds a throwaway backend from the backend NAME and hands
+     *       it a {@code DeviceId} stamped with that same name, so the pair
+     *       must be internally consistent — a device name belonging to
+     *       another backend is presented to this one as if it were its own.
+     *       Capability work has to reach
+     *       the driver that is actually there, which is exactly what
+     *       {@code getProvisionedBackendName()} answers.</li>
+     * </ul>
+     *
+     * <p>The two agree in the ordinary case and diverge precisely when the
+     * ladder has fallen back or a backend change is awaiting restart — the
+     * cases where getting this wrong is user-visible.</p>
+     */
     private record AudioReconfigureSnapshot(
             AudioEngineController controller,
-            String provisionedBackend,
+            String requestedBackend,
             String inputDevice,
             String outputDevice,
+            String provisionedBackend,
+            String capabilityInputDevice,
+            String capabilityOutputDevice,
             double sampleRate,
             int bufferFrames,
             int bitDepth,
@@ -1792,6 +1998,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
         boolean srcQualityApplied = false;
         boolean reconfigureAttempted = false;
         AudioRuntimeState previousState = null;
+        // Story 316 re-review — the REQUESTED endpoint is read FIRST of the
+        // two, for the same reason its capability sibling is read before the
+        // lock: a dialog detached mid-apply nulls both fields, and the
+        // rollback still owes the engine the endpoint that was in effect when
+        // this attempt started. Of the two rollbacks, reopening the engine on
+        // an endpoint that was never in effect is the damaging one, so that
+        // field gets the earlier read.
+        RequestedAudioEndpoint previousRequestedEndpoint = appliedRequestedEndpoint;
         LiveAudioEndpoint previousEndpoint = liveAudioEndpoint;
         try {
             audioControllerOperationLock.lockInterruptibly();
@@ -1806,6 +2020,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
                             model.getMixPrecision(), model.getSrcQuality());
             if (previousEndpoint == null) {
                 previousEndpoint = new LiveAudioEndpoint(snapshot.provisionedBackend(),
+                        snapshot.capabilityInputDevice(), snapshot.capabilityOutputDevice());
+            }
+            if (previousRequestedEndpoint == null) {
+                previousRequestedEndpoint = new RequestedAudioEndpoint(
+                        snapshot.requestedBackend(),
                         snapshot.inputDevice(), snapshot.outputDevice());
             }
             double effectiveSampleRate = snapshot.applySampleRate()
@@ -1822,8 +2041,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     ? snapshot.srcQuality() : previousState.srcQuality();
 
             if (snapshot.applySampleRate()) {
+                // CAPABILITY pair, not the requested one: this call reaches a
+                // driver by name and addresses the device through it, so it
+                // has to name the backend that is actually provisioned.
                 snapshot.controller().setSampleRate(snapshot.provisionedBackend(),
-                        snapshot.outputDevice(), effectiveSampleRate);
+                        snapshot.capabilityOutputDevice(), effectiveSampleRate);
                 sampleRateApplied = true;
                 if (Thread.currentThread().isInterrupted()) {
                     throw new InterruptedException("audio configuration interrupted");
@@ -1839,8 +2061,12 @@ public final class SettingsDialog extends DawgDialog<Void> {
             }
             if (snapshot.reconfigureEngine()) {
                 reconfigureAttempted = true;
+                // REQUESTED endpoint: what the engine should open. The
+                // controller makes this triple the provision's head rung, so
+                // naming the provisioned backend here would rewrite the
+                // request to whichever rung the ladder is currently streaming.
                 snapshot.controller().applyConfiguration(new AudioEngineController.Request(
-                        snapshot.provisionedBackend(), snapshot.inputDevice(), snapshot.outputDevice(),
+                        snapshot.requestedBackend(), snapshot.inputDevice(), snapshot.outputDevice(),
                         SampleRate.fromHz((int) effectiveSampleRate), effectiveBufferFrames,
                         effectiveBitDepth, effectiveWorkerPoolSize));
             }
@@ -1848,6 +2074,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
             deferredCommitted = true;
             if (snapshot.reconfigureEngine()) {
                 liveAudioEndpoint = new LiveAudioEndpoint(snapshot.provisionedBackend(),
+                        snapshot.capabilityInputDevice(), snapshot.capabilityOutputDevice());
+                appliedRequestedEndpoint = new RequestedAudioEndpoint(
+                        snapshot.requestedBackend(),
                         snapshot.inputDevice(), snapshot.outputDevice());
             }
             audioRuntimeState = new AudioRuntimeState(effectiveSampleRate,
@@ -1857,8 +2086,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
         } catch (AudioBackendException rejected) {
             audioQueueFailed.set(true);
             restoreAudioRuntime(snapshot, previousState, previousEndpoint,
-                    sampleRateApplied, mixPrecisionApplied, srcQualityApplied,
-                    reconfigureAttempted);
+                    previousRequestedEndpoint, sampleRateApplied, mixPrecisionApplied,
+                    srcQualityApplied, reconfigureAttempted);
             if (!deferredCommitted && snapshot.applySampleRate() && !sampleRateApplied) {
                 LOG.log(Level.WARNING,
                         "Sample rate selection rejected by the audio driver", rejected);
@@ -1880,8 +2109,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
             audioQueueFailed.set(true);
             Thread.currentThread().interrupt();
             restoreAudioRuntime(snapshot, previousState, previousEndpoint,
-                    sampleRateApplied, mixPrecisionApplied, srcQualityApplied,
-                    reconfigureAttempted);
+                    previousRequestedEndpoint, sampleRateApplied, mixPrecisionApplied,
+                    srcQualityApplied, reconfigureAttempted);
             if (!deferredCommitted) {
                 String notice = "Audio configuration was cancelled.";
                 rejectDeferredAudioEdits(snapshot, notice);
@@ -1892,8 +2121,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
             audioQueueFailed.set(true);
             LOG.log(Level.WARNING, "Failed to reconfigure the audio engine", failure);
             restoreAudioRuntime(snapshot, previousState, previousEndpoint,
-                    sampleRateApplied, mixPrecisionApplied, srcQualityApplied,
-                    reconfigureAttempted);
+                    previousRequestedEndpoint, sampleRateApplied, mixPrecisionApplied,
+                    srcQualityApplied, reconfigureAttempted);
             if (!deferredCommitted) {
                 String notice = "Could not apply audio configuration: "
                         + failureMessage(failure);
@@ -1908,10 +2137,22 @@ public final class SettingsDialog extends DawgDialog<Void> {
         }
     }
 
+    /**
+     * Undoes whatever a failed {@link #applyAudioReconfigure} got as far as
+     * doing. Story 316 re-review: it takes BOTH endpoints because the two
+     * rollback calls target different things — the driver-level sample-rate
+     * call goes back to the PROVISIONED pair it was issued against, while the
+     * engine reconfigure goes back to the endpoint the engine was last
+     * successfully asked to open. Rolling the reconfigure back onto the
+     * provisioned endpoint would "restore" an endpoint that was never in
+     * effect, and would do it with the same transport-dependent backend name
+     * the forward path deliberately stopped using.
+     */
     private void restoreAudioRuntime(
             AudioReconfigureSnapshot snapshot,
             AudioRuntimeState previousState,
             LiveAudioEndpoint previousEndpoint,
+            RequestedAudioEndpoint previousRequestedEndpoint,
             boolean sampleRateApplied,
             boolean mixPrecisionApplied,
             boolean srcQualityApplied,
@@ -1927,11 +2168,17 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 LOG.log(Level.WARNING, "Failed to restore the previous sample rate", rollbackFailure);
             }
         }
-        if (reconfigureAttempted) {
+        // The null check is belt-and-braces and is expected never to fire:
+        // the two endpoint fields are seeded and cleared together, and
+        // applyAudioReconfigure fills this one from the snapshot before any
+        // reconfigure can be attempted. It is a guard against an NPE, not a
+        // supported path — there is no endpoint worth reopening without it.
+        if (reconfigureAttempted && previousRequestedEndpoint != null) {
             try {
                 snapshot.controller().applyConfiguration(new AudioEngineController.Request(
-                        previousEndpoint.backend(), previousEndpoint.inputDevice(),
-                        previousEndpoint.outputDevice(),
+                        previousRequestedEndpoint.backend(),
+                        previousRequestedEndpoint.inputDevice(),
+                        previousRequestedEndpoint.outputDevice(),
                         SampleRate.fromHz((int) previousState.sampleRate()),
                         previousState.bufferFrames(), previousState.bitDepth(),
                         previousState.workerPoolSize()));
@@ -1956,6 +2203,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
             }
         }
         liveAudioEndpoint = previousEndpoint;
+        if (previousRequestedEndpoint != null) {
+            appliedRequestedEndpoint = previousRequestedEndpoint;
+        }
         audioRuntimeState = previousState;
     }
 

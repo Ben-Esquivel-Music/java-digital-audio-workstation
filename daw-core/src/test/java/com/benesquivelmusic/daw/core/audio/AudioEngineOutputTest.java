@@ -1234,6 +1234,261 @@ class AudioEngineOutputTest {
         engine.endControlPanelSession(first);
     }
 
+    // ── Backend-DEFERRED handle releases (story 316 re-review) ──────────
+    //
+    // A close that returns normally is not proof the device came back.
+    // AsioBackend.open() can fail while DEFERRING its driver-shim release —
+    // the load timed out, so the shim deliberately keeps its ownership claim
+    // and queues the ASIOExit until the driver returns — and its close() then
+    // returns normally over Java-side fields it had already cleared. Read as
+    // a release, that is how the engine ends up opening PortAudio or Java
+    // Sound over a device the ASIO driver may still be acquiring. Every
+    // engine-owned close now reads the verdict through
+    // AudioBackend#isReleasePending() and answers it exactly as it answers a
+    // close that THREW.
+
+    @Test
+    void aFailedRungWhoseCloseDefersTheReleaseAbandonsTheLadderWalk() {
+        // The REPORTED finding. `First` reached open() and failed, and its
+        // close returned normally while the backend kept the handle — so it
+        // may still hold the device, and opening `Second` beside it is the
+        // two-backends-on-one-device outcome the abandonment rule exists to
+        // prevent.
+        SynchronousTestBackend first = new SynchronousTestBackend("First");
+        first.failOnOpen = true;
+        first.deferReleaseOnClose = true;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        engine.setStreamingProvision(provisionOf("First", first, second));
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("a close that RETURNED without the handle stops the walk exactly as a"
+                        + " close that threw does")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("First")
+                .hasMessageContaining("could not be released")
+                .hasMessageContaining("two backends on one device")
+                .satisfies(failure -> {
+                    assertThat(failure.getCause())
+                            .as("the OPEN failure is still the cause — a deferred release"
+                                    + " carries no exception of its own, so nothing"
+                                    + " replaces or masks it")
+                            .isInstanceOf(AudioBackendException.class)
+                            .hasMessage("open refused by First");
+                    assertThat(failure.getCause().getSuppressed())
+                            .as("and nothing is attached to it either: there was no close"
+                                    + " failure to suppress")
+                            .isEmpty();
+                });
+
+        assertThat(first.closeCount.get())
+                .as("the close WAS attempted — it simply did not give the handle back")
+                .isEqualTo(1);
+        assertThat(second.openCount.get())
+                .as("no fallback rung was opened beside a rung whose driver may still be"
+                        + " taking the device")
+                .isZero();
+        assertThat(engine.isStreamOpen()).isFalse();
+    }
+
+    @Test
+    void aRungRefusedBeforeOpenWhoseCloseDefersTheReleaseStillFallsThroughToTheNextRung() {
+        // The openAttempted distinction, carried onto the new verdict. This
+        // rung was refused by the streaming guard BEFORE open() was ever
+        // called, so it was never asked for the device and whatever its
+        // backend is still holding is not this walk's to wait for. In
+        // production this is ASIO being refused because asioshim lacks the
+        // story-311 streaming symbols, and that refusal has to reach
+        // PortAudio / Java Sound.
+        SynchronousTestBackend silent = new SynchronousTestBackend("Silent");
+        silent.streamingSupported = false;
+        silent.deferReleaseOnClose = true;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        engine.setStreamingProvision(provisionOf("Silent", silent, second));
+
+        engine.startAudioOutput();
+
+        assertThat(silent.openCount.get())
+                .as("the guard refused the rung before it was ever opened, so it holds no"
+                        + " device however its release behaves")
+                .isZero();
+        assertThat(silent.closeCount.get())
+                .as("the close was still attempted, and still deferred")
+                .isEqualTo(1);
+        assertThat(second.isOpen())
+                .as("a spurious deferred release must not abandon the walk")
+                .isTrue();
+        assertThat(engine.openStreamBackendName()).contains("Second");
+    }
+
+    @Test
+    void aStopWhoseCloseDefersTheReleaseRetainsTheHandleAndTheNextStartRetriesIt() {
+        engine.startAudioOutput();
+        backend.deferReleaseOnClose = true;
+
+        assertThat(engine.stopAudioOutput())
+                .as("the return value reports QUIESCENCE, and the pump really did join;"
+                        + " a handle the backend has not finished releasing is not a"
+                        + " reason to tell callers a thread may still render")
+                .isTrue();
+
+        assertThat(backend.closeCount.get())
+                .as("the close was attempted")
+                .isEqualTo(1);
+        assertThat(engine.isStreamOpen())
+                .as("output is stopped and not resumable, whatever the backend still holds")
+                .isFalse();
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("the engine is still TRACKING the handle, so it retries the close"
+                        + " before a fresh open and refuses the open while the release is"
+                        + " still outstanding — opening now would put a second backend on"
+                        + " the device this one has not let go of")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("still")
+                .hasMessageContaining("DEFERRED");
+        assertThat(backend.openCount.get())
+                .as("no second open reached the device")
+                .isEqualTo(1);
+        assertThat(backend.closeCount.get())
+                .as("that refusal came from a RETRIED close, which is the whole point of"
+                        + " keeping the handle tracked")
+                .isEqualTo(2);
+
+        backend.completeDeferredRelease(); // the driver's queued teardown lands
+
+        engine.startAudioOutput();
+
+        assertThat(backend.closeCount.get())
+                .as("the condition is self-clearing, so the next retry finds the handle"
+                        + " really released")
+                .isEqualTo(3);
+        assertThat(backend.openCount.get())
+                .as("and only then does a fresh stream open")
+                .isEqualTo(2);
+        assertThat(engine.isStreamOpen()).isTrue();
+    }
+
+    @Test
+    void aProvisionSwapIsRefusedWhenTheOutgoingBackendsCloseDefersTheRelease() {
+        StreamingProvision outgoingProvision = engine.getStreamingProvision();
+        SynchronousTestBackend replacement = new SynchronousTestBackend("Replacement");
+        StreamingProvision incomingProvision = provisionOf("Replacement", replacement);
+        engine.startAudioOutput();
+        backend.deferReleaseOnClose = true;
+        engine.stop(); // setStreamingProvision refuses while the engine runs
+
+        assertThatThrownBy(() -> engine.setStreamingProvision(incomingProvision))
+                .as("pointing the engine at a new provision while the outgoing backend may"
+                        + " still hold the device is exactly what this refusal exists for")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("Stub")
+                .hasMessageContaining("DEFERRED");
+
+        assertThat(engine.getStreamingProvision())
+                .as("the swap is refused WHOLE — the engine still points at the outgoing"
+                        + " provision, so the outgoing backend stays reachable for the"
+                        + " retry that is its only release path")
+                .isSameAs(outgoingProvision);
+        assertThat(replacement.openCount.get())
+                .as("and nothing from the incoming provision was opened")
+                .isZero();
+
+        backend.completeDeferredRelease();
+
+        engine.setStreamingProvision(incomingProvision);
+        assertThat(engine.getStreamingProvision()).isSameAs(incomingProvision);
+    }
+
+    @Test
+    void aPumpStartFailureWhoseCloseDefersTheReleaseKeepsTrackingTheHandle() {
+        backend.failOnPumpStart = true;
+        backend.deferReleaseOnClose = true;
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("the start failure still propagates unchanged through the unwind")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessage("pump start refused by Stub")
+                .satisfies(failure -> assertThat(failure.getSuppressed())
+                        .as("a deferred release carries no exception, so nothing is"
+                                + " suppressed onto the start failure")
+                        .isEmpty());
+
+        assertThat(backend.closeCount.get())
+                .as("the unwind attempted the close")
+                .isEqualTo(1);
+        assertThat(engine.isStreamOpen()).isFalse();
+
+        backend.failOnPumpStart = false;
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("the handle is still TRACKED rather than forgotten, so the next start"
+                        + " retries its release instead of opening over it")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("DEFERRED");
+        assertThat(backend.openCount.get())
+                .as("no second open reached the device")
+                .isEqualTo(1);
+
+        backend.completeDeferredRelease();
+        engine.startAudioOutput();
+        assertThat(engine.isStreamOpen()).isTrue();
+        assertThat(backend.openCount.get()).isEqualTo(2);
+    }
+
+    @Test
+    void aControlPanelDrainWhoseCloseDefersTheReleaseKeepsTrackingTheHandle() {
+        engine.startAudioOutput();
+        engine.beginControlPanelSession(backend);
+        engine.stopAudioOutput(); // close DEFERRED by the panel, handle retained
+        backend.deferReleaseOnClose = true;
+
+        engine.endControlPanelSession(backend);
+
+        assertThat(backend.closeCount.get())
+                .as("the drain attempted the close the panel deferred")
+                .isEqualTo(1);
+        assertThat(engine.isStreamOpen()).isFalse();
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("the drain met a handle that was not ready yet, so it left the engine"
+                        + " tracking it — the next start is simply the next retry")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("DEFERRED");
+
+        backend.completeDeferredRelease();
+        engine.startAudioOutput();
+        assertThat(engine.isStreamOpen()).isTrue();
+        assertThat(backend.openCount.get()).isEqualTo(2);
+    }
+
+    @Test
+    void aBackendThatCannotSayWhetherItReleasedIsTreatedAsStillHoldingTheDevice() {
+        // The guarding decision in releaseDeferredBy. AudioBackend is
+        // deliberately not sealed, so the engine cannot assume the query is
+        // as well-behaved as the contract asks. A backend that cannot say
+        // whether it gave the handle back has not shown that it did, and the
+        // conservative answer costs one deferred close where the other would
+        // forget a handle a driver may still hold.
+        SynchronousTestBackend first = new SynchronousTestBackend("First");
+        first.failOnOpen = true;
+        first.failOnReleasePendingQuery = true;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        engine.setStreamingProvision(provisionOf("First", first, second));
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("an unanswerable query is a non-release, so the walk is abandoned")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("First")
+                .hasMessageContaining("could not be released")
+                .satisfies(failure -> assertThat(failure.getCause())
+                        .as("and the query failure never masks the actionable OPEN failure")
+                        .isInstanceOf(AudioBackendException.class)
+                        .hasMessage("open refused by First"));
+
+        assertThat(second.openCount.get())
+                .as("no fallback rung opened beside it")
+                .isZero();
+    }
+
     // ── Lifecycle serialization (story 316 re-review) ────────────────────
 
     @Test
@@ -1506,6 +1761,28 @@ class AudioEngineOutputTest {
         volatile boolean failOnOpen;
         volatile boolean failOnPumpStart;
         volatile boolean failOnClose;
+        /**
+         * Story 316 re-review: {@code close()} returns NORMALLY but the
+         * handle does not come back. Models {@code AsioBackend} deferring its
+         * driver-shim release while the asio-control thread is still inside a
+         * downcall that outlived its budget — the Java-side fields are
+         * cleared, so the close looks ordinary, while
+         * {@link AudioBackend#isReleasePending()} reports the truth.
+         *
+         * <p>While this is set, EVERY close defers, which is what a driver
+         * that is still wedged does. {@link #completeDeferredRelease()} is
+         * the deferred release finally landing.</p>
+         */
+        volatile boolean deferReleaseOnClose;
+        /**
+         * Story 316 re-review: {@code isReleasePending()} itself throws. The
+         * interface is deliberately not sealed, so the engine cannot assume
+         * the query is as well-behaved as the contract asks; this pins what
+         * it does when a backend cannot answer.
+         */
+        volatile boolean failOnReleasePendingQuery;
+        /** Set by a DEFERRED close, cleared when that release completes. */
+        private volatile boolean releaseDeferred;
         volatile boolean blockAwait;
         /** Story 316 review: what the engine-side streaming guard sees. */
         volatile boolean streamingSupported = true;
@@ -1641,13 +1918,37 @@ class AudioEngineOutputTest {
         }
 
         @Override
+        public boolean isReleasePending() {
+            if (failOnReleasePendingQuery) {
+                throw new IllegalStateException(
+                        name + " cannot say whether its close released the handle");
+            }
+            return releaseDeferred;
+        }
+
+        /**
+         * The deferred driver teardown finally completing: the condition is
+         * transient and SELF-CLEARING, so a later close finds the handle
+         * really released and the engine's retry succeeds.
+         */
+        void completeDeferredRelease() {
+            deferReleaseOnClose = false;
+            releaseDeferred = false;
+        }
+
+        @Override
         public void close() {
             record("close");
             closeCount.incrementAndGet();
             if (failOnClose) {
                 throw new AudioBackendException("close refused by " + name);
             }
+            // The Java-side fields go back whatever the native release did —
+            // which is exactly why a normal return is not proof of a release.
             open = false;
+            if (deferReleaseOnClose) {
+                releaseDeferred = true;
+            }
         }
     }
 }

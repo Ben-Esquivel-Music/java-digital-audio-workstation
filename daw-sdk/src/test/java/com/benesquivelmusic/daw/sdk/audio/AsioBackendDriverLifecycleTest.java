@@ -4,17 +4,21 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** Driver enumeration and lifecycle acceptance tests for story 310. */
 class AsioBackendDriverLifecycleTest {
@@ -22,13 +26,39 @@ class AsioBackendDriverLifecycleTest {
     private static final DeviceId DRIVER_A = new DeviceId("ASIO", "Driver A");
     private static final DeviceId DRIVER_B = new DeviceId("ASIO", "Driver B");
 
+    private static final Duration TINY_BUDGET = Duration.ofMillis(200);
+    private static final long GUARD_BUDGET_MILLIS = 5_000L;
+
     private final List<AsioBackend> openedBackends = new ArrayList<>();
+
+    /**
+     * Released by {@link #cleanUp()} for EVERY test. A test that has to stall
+     * the process-wide control thread blocks its operation on this latch rather
+     * than on one of its own, so releasing it cannot be forgotten — the idiom
+     * {@code AsioControlThreadTest} established.
+     */
+    private final CountDownLatch wedgeRelease = new CountDownLatch(1);
 
     @AfterEach
     void cleanUp() {
+        // Released FIRST, and unconditionally. AsioControlThread is process-wide
+        // static state — one executor, one platform thread, one abandoned-call
+        // count shared by every ASIO test in this surefire JVM — so a test that
+        // returned while an operation it abandoned was still executing would
+        // make unrelated tests fail fast, or silently defer their driver
+        // releases, for a reason they cannot see. The tracked backends are
+        // closed only after quiescence returns, which keeps their closes on the
+        // synchronous release path.
+        wedgeRelease.countDown();
+        boolean quiesced = AsioControlThread.awaitQuiescence(
+                Duration.ofMillis(GUARD_BUDGET_MILLIS));
         openedBackends.forEach(AsioBackend::close);
         AsioBackend.resetDriverShimFactory();
         AsioBackend.resetCapabilityShimFactory();
+        assertThat(quiesced)
+                .as("a test must not return while an operation it abandoned is still"
+                        + " executing on the process-wide control thread")
+                .isTrue();
     }
 
     @Test
@@ -259,9 +289,160 @@ class AsioBackendDriverLifecycleTest {
         assertThat(second.isOpen()).isFalse();
     }
 
+    /**
+     * Story 316 re-review — a driver release the backend had to DEFER is
+     * visible to the caller instead of being silent.
+     *
+     * <p>{@code releaseDriverShim} already deferred the shim close while the
+     * control thread was executing a call the host had abandoned, and that is
+     * correct: the shim can only ever be closed once, so spending that single
+     * chance on downcalls that fail fast would leak {@code ASIOExit} and the
+     * arena for the life of the process. What was missing is that
+     * {@link AsioBackend#close()} then returned NORMALLY, so a caller walking a
+     * fallback ladder read an ordinary released rung and opened another host
+     * over a device this driver may still hold — the exact
+     * two-backends-on-one-device outcome the walk is supposed to refuse.</p>
+     *
+     * <p>The condition must also be transient: a caller that abandoned a device
+     * on account of it may retry, so the count has to clear itself once the
+     * queued close has actually run.</p>
+     */
+    @Test
+    void aDeferredDriverReleaseIsReportedUntilTheQueuedCloseHasRun() throws Exception {
+        StubDriverShim shim = StubDriverShim.available();
+        AsioBackend.setDriverShimFactory(() -> shim);
+        QueuedReleaseExecutor deferredReleases = new QueuedReleaseExecutor();
+        AsioBackend backend = new AsioBackend(deferredReleases);
+        backend.open(DRIVER_A, AudioFormat.CD_QUALITY, 128);
+
+        assertThat(backend.isReleasePending())
+                .as("nothing is owed while the backend is simply open")
+                .isFalse();
+
+        abandonARunningControlThreadOperation();
+
+        // The deferral logs at SEVERE by design; muting the backend's logger
+        // for the one call that provokes it keeps an EXPECTED diagnostic from
+        // reading as a build failure in the console.
+        Logger backendLog = Logger.getLogger(AsioBackend.class.getName());
+        boolean useParentHandlers = backendLog.getUseParentHandlers();
+        backendLog.setUseParentHandlers(false);
+        try {
+            backend.close();
+        } finally {
+            backendLog.setUseParentHandlers(useParentHandlers);
+        }
+
+        assertThat(backend.isReleasePending())
+                .as("close() returned normally, but the driver was NOT given back —"
+                        + " a caller that reads this as a release opens its next rung"
+                        + " over a device this driver may still hold")
+                .isTrue();
+        assertThat(shim.closeCalls.get())
+                .as("the close really was deferred rather than merely reported")
+                .isZero();
+        assertThat(deferredReleases.pending())
+                .as("exactly one release is owed, and it is queued rather than lost")
+                .isEqualTo(1);
+
+        wedgeRelease.countDown();
+        assertThat(AsioControlThread.awaitQuiescence(
+                Duration.ofMillis(GUARD_BUDGET_MILLIS)))
+                .as("the driver returning is what lets the queued release proceed")
+                .isTrue();
+        deferredReleases.runQueued();
+
+        assertThat(shim.closeCalls.get())
+                .as("the deferred task is what finally issues ASIOExit")
+                .isEqualTo(1);
+        assertThat(backend.isReleasePending())
+                .as("the condition is transient and self-clearing, so a caller that"
+                        + " gave up on this device may retry it rather than treat it as"
+                        + " lost for the life of the process")
+                .isFalse();
+    }
+
+    /**
+     * Story 316 re-review — the {@link AudioBackend#isReleasePending()} default
+     * is {@code false}, and every backend that releases synchronously inside
+     * {@code close()} is CORRECT to inherit it rather than missing an override.
+     *
+     * <p>Pinned as an enumeration because the method's javadoc names these
+     * implementors, and a named list that nobody checks goes stale silently.
+     * {@code JavaxSoundBackend} is in it for a different reason than the rest:
+     * its {@code close()} THROWS when a line could not be released and retains
+     * the handle, and callers already read a close that threw as a non-release,
+     * so the fact is reported through the exception instead of through this
+     * flag. ({@code daw-core}'s {@code CallbackBackendAdapter} inherits it too;
+     * this module cannot see it.)</p>
+     */
+    @Test
+    void backendsThatReleaseInsideCloseInheritTheFalseDefault() {
+        assertThat(new JavaxSoundBackend().isReleasePending()).isFalse();
+        assertThat(new MockAudioBackend().isReleasePending()).isFalse();
+        assertThat(new WasapiBackend().isReleasePending()).isFalse();
+        assertThat(new CoreAudioBackend().isReleasePending()).isFalse();
+        assertThat(new JackBackend().isReleasePending()).isFalse();
+    }
+
+    /**
+     * Occupies the process-wide control thread with an operation that blocks
+     * until {@link #wedgeRelease} and lets its caller's budget expire while it
+     * is provably EXECUTING, which is what leaves
+     * {@link AsioControlThread#isQuiesced()} false — the state in which
+     * {@code AsioBackend.releaseDriverShim} must defer. The started latch
+     * asserts the operation reached the driver rather than assuming it: an
+     * operation still QUEUED when its budget expires is WITHDRAWN instead, and
+     * leaves the thread quiesced.
+     */
+    private void abandonARunningControlThreadOperation() throws InterruptedException {
+        CountDownLatch started = new CountDownLatch(1);
+        Throwable thrown = catchThrowable(() -> AsioControlThread.call(() -> {
+            started.countDown();
+            wedgeRelease.await();
+            return 1;
+        }, TINY_BUDGET));
+
+        assertThat(started.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("the operation must have STARTED, or this is the queued case and"
+                        + " the control thread stays quiesced")
+                .isTrue();
+        assertThat(thrown).isInstanceOf(AudioBackendException.class);
+        assertThat(AsioControlThread.isQuiesced())
+                .as("an operation the host gave up on is still inside the driver")
+                .isFalse();
+    }
+
     private AsioBackend track(AsioBackend backend) {
         openedBackends.add(backend);
         return backend;
+    }
+
+    /**
+     * Stand-in for the shared {@code asio-reset-teardown} executor that runs a
+     * queued release only when the test says so. Deferral is otherwise
+     * unobservable: the production executor would race the assertions, and a
+     * test that waited for it could not distinguish "reported pending" from
+     * "already finished".
+     */
+    private static final class QueuedReleaseExecutor implements Executor {
+
+        private final List<Runnable> queued = new ArrayList<>();
+
+        @Override
+        public void execute(Runnable command) {
+            queued.add(command);
+        }
+
+        int pending() {
+            return queued.size();
+        }
+
+        void runQueued() {
+            List<Runnable> tasks = List.copyOf(queued);
+            queued.clear();
+            tasks.forEach(Runnable::run);
+        }
     }
 
     private static final class StubDriverShim extends AsioDriverShim {

@@ -44,6 +44,28 @@ import java.util.concurrent.locks.LockSupport;
  * driver dialog is not a wedge, so that ONE operation goes through
  * {@link #callUnbounded(Operation)} and waits indefinitely by design.</p>
  *
+ * <p>The exemption covers BOTH the budget and INTERRUPTION (story 316
+ * re-review). Interrupting the caller cannot end the downcall for exactly the
+ * reason a budget cannot: a thread parked in {@code ASIOControlPanel()} is
+ * parked inside the driver, and nothing the host does reaches it. So honouring
+ * the interrupt would not stop the panel — it would only make
+ * {@link #callUnbounded(Operation)} RETURN while the driver is still inside
+ * the call, which is a lie the callers act on. {@code controlPanelOpen} would
+ * be cleared and nothing would be recorded in the abandoned count, so
+ * {@link #isQuiesced()} would answer {@code true} about a live downcall;
+ * {@code AsioCapabilityShim.openControlPanel()} normalises every throw to a
+ * generic failure, which the application layer reads as "the panel is closed"
+ * and uses to release the guards that keep the backend alive for the dialog's
+ * lifetime — tearing down native state the modal dialog is running on. The
+ * unbounded wait is therefore UNINTERRUPTIBLE, and returns only once the
+ * driver really has returned.</p>
+ *
+ * <p>The interrupt is DEFERRED, never lost: the wait absorbs it, keeps
+ * waiting, and re-asserts the calling thread's interrupt status before it
+ * hands the result back, so a shutdown that arrives while the panel is open is
+ * honoured at the first interruptible point AFTER the driver returns rather
+ * than being discarded.</p>
+ *
  * <p>The apartment affinity that makes this class necessary also means the
  * exemption cannot be isolated behind its own executor: a second thread would
  * be a second COM apartment, and the driver object lives in this one. So a
@@ -128,6 +150,13 @@ final class AsioControlThread {
      * True while {@link #callUnbounded(Operation)} is executing — i.e. while
      * the driver's modal control panel owns the control thread. Read only to
      * make a timeout message truthful about WHY the thread was busy.
+     *
+     * <p>It is cleared only once the native call has REALLY returned (story
+     * 316 re-review). That is a property of the uninterruptible wait behind
+     * {@link #callUnbounded(Operation)}, not of the assignment: while the wait
+     * was interruptible this flag went false — and the caller returned — with
+     * {@code ASIOControlPanel()} still executing on this thread, which is the
+     * state every reader of it treats as "the panel is closed".</p>
      */
     private static volatile boolean controlPanelOpen;
 
@@ -161,9 +190,27 @@ final class AsioControlThread {
 
     /**
      * Runs {@code operation} on the control thread and waits for it
-     * INDEFINITELY. Reserved for the modal control panel, whose duration is
-     * the user's to choose; every other caller must use
+     * INDEFINITELY and UNINTERRUPTIBLY. Reserved for the modal control panel,
+     * whose duration is the user's to choose; every other caller must use
      * {@link #call(Operation)}.
+     *
+     * <p>Neither a budget nor an interrupt can end a downcall the driver is
+     * already inside, so this waits out both — see the class javadoc for why
+     * honouring an interrupt here would not close the panel, only make this
+     * method report a finished driver call that is still running, and hand the
+     * application layer the "the panel closed" answer it uses to release the
+     * guards keeping this backend alive.</p>
+     *
+     * <p>An interrupt that arrives during the wait is DEFERRED rather than
+     * swallowed: it is re-asserted on the calling thread before this returns,
+     * so a shutdown is honoured at the first interruptible point after the
+     * driver lets go. The caller may therefore observe
+     * {@link Thread#isInterrupted()} on a NORMAL return, which is the only
+     * shape in which both facts — the driver returned, and someone asked this
+     * thread to stop — can be reported truthfully at once.</p>
+     *
+     * <p>{@code controlPanelOpen} consequently goes false only after the
+     * native call has really returned.</p>
      *
      * @param operation the modal downcall to serialize onto the control thread
      * @param <T>       the operation's result type
@@ -199,7 +246,20 @@ final class AsioControlThread {
      * wedge — and so is a re-entrant call from the control thread itself,
      * which would otherwise be refused on account of its own operation.</p>
      *
-     * @param budget the wait budget, or {@code null} to wait indefinitely
+     * <p>The two waits differ in one further respect (story 316 re-review).
+     * The BOUNDED wait stays interruptible, because an interrupt is how a
+     * shutdown breaks a caller out of a wait it is entitled to abandon — the
+     * budget already says this caller may stop waiting. The UNBOUNDED wait is
+     * uninterruptible, because that caller is entitled to no such thing: the
+     * only honest moment for it to return is when the driver returns, and
+     * returning any earlier is the guard-release bug the class javadoc
+     * describes. {@link #awaitUninterruptibly(Future)} is where the difference
+     * lives; the {@link ExecutionException} unwrap is shared by both so a
+     * driver's own failure propagates identically either way.</p>
+     *
+     * @param budget the wait budget, or {@code null} to wait indefinitely and
+     *               uninterruptibly — reserved for
+     *               {@link #callUnbounded(Operation)}
      */
     static <T> T call(Operation<T> operation, Duration budget) throws Throwable {
         if (Thread.currentThread() == controlThread) {
@@ -233,22 +293,83 @@ final class AsioControlThread {
                 }
             }
         });
+        if (budget == null) {
+            return awaitUninterruptibly(pending);
+        }
         try {
-            return budget == null
-                    ? pending.get()
-                    : pending.get(budget.toMillis(), TimeUnit.MILLISECONDS);
+            return pending.get(budget.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw interrupted;
         } catch (TimeoutException timedOut) {
             throw budgetExhausted(pending, phase, budget, timedOut);
         } catch (ExecutionException execution) {
-            Throwable cause = execution.getCause();
-            if (cause instanceof OperationFailure wrapped) {
-                throw wrapped.getCause();
-            }
-            throw cause;
+            throw unwrapOperationFailure(execution);
         }
+    }
+
+    /**
+     * Waits for the modal control panel's operation without letting an
+     * interrupt cut the wait short (story 316 re-review).
+     *
+     * <p>{@code Future.get()} is interruptible, and on the unbounded path that
+     * was a correctness bug rather than a nicety. Interrupting a thread parked
+     * in {@code ASIOControlPanel()} does nothing to the driver, so an
+     * interrupted {@code get()} could only make the CALLER report a finished
+     * downcall while the driver was still inside it: {@code controlPanelOpen}
+     * cleared, nothing counted in {@code ABANDONED_IN_FLIGHT} so
+     * {@link #isQuiesced()} answered {@code true}, and
+     * {@code AsioCapabilityShim.openControlPanel()} — which normalises every
+     * throw to a generic failure — handing the application layer the "the
+     * panel is closed or failed" answer it uses to drop the guards that keep
+     * the backend alive for the dialog's lifetime. Backend teardown would then
+     * run underneath a live driver call.</p>
+     *
+     * <p>So the interrupt is recorded and the wait resumes. Re-asserting it in
+     * the {@code finally} is what keeps this a DEFERRAL rather than a
+     * swallowing: whoever asked this thread to stop still gets their answer,
+     * at the first interruptible point after the driver returns. The
+     * {@link ExecutionException} unwrap is the shared
+     * {@link #unwrapOperationFailure(ExecutionException)}, so a driver failure
+     * surfaces here exactly as it does on the bounded path.</p>
+     */
+    private static <T> T awaitUninterruptibly(Future<T> pending) throws Throwable {
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    return pending.get();
+                } catch (InterruptedException deferred) {
+                    interrupted = true;
+                } catch (ExecutionException execution) {
+                    throw unwrapOperationFailure(execution);
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * Strips the {@link ExecutionException} the executor wraps every failure
+     * in, plus the {@link OperationFailure} the task wraps the operation's own
+     * throwable in, so a caller sees exactly what the driver call threw.
+     *
+     * <p>Factored out rather than duplicated so the bounded and the
+     * uninterruptible waits cannot drift into unwrapping a driver failure
+     * differently — the two waits are allowed to differ about WAITING, never
+     * about what the operation threw.</p>
+     *
+     * @return the throwable the caller must throw; never the wrapper
+     */
+    private static Throwable unwrapOperationFailure(ExecutionException execution) {
+        Throwable cause = execution.getCause();
+        if (cause instanceof OperationFailure wrapped) {
+            return wrapped.getCause();
+        }
+        return cause;
     }
 
     /**

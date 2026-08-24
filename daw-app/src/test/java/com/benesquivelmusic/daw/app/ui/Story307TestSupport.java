@@ -106,9 +106,20 @@ final class Story307TestSupport {
     }
 
     static final class StubController implements AudioEngineController {
+
+        /**
+         * One {@code setSampleRate(backend, outputDevice, rate)} invocation.
+         * Story 316 re-review: the CAPABILITY call's endpoint pair is a fact
+         * tests have to be able to assert on independently of the reconfigure
+         * Request's, because the two now come from different endpoints and
+         * only one of them may follow the provisioned backend.
+         */
+        record SampleRateCall(String backendName, String outputDeviceName, double rate) {}
+
         final AtomicInteger configurationCount = new AtomicInteger();
         final AtomicReference<Request> lastRequest = new AtomicReference<>();
         final CopyOnWriteArrayList<Request> requests = new CopyOnWriteArrayList<>();
+        final CopyOnWriteArrayList<SampleRateCall> sampleRateCalls = new CopyOnWriteArrayList<>();
         final AtomicReference<Thread> applyThread = new AtomicReference<>();
         final AtomicReference<MixPrecision> lastMixPrecision = new AtomicReference<>();
         final AtomicReference<QualityTier> lastSrcQuality = new AtomicReference<>();
@@ -343,6 +354,7 @@ final class Story307TestSupport {
         public void setSampleRate(String backendName, String outputDeviceName, double rate) {
             enterNativeOperation();
             try {
+                sampleRateCalls.add(new SampleRateCall(backendName, outputDeviceName, rate));
                 sampleRateAttempted.countDown();
                 sampleRateEntered.countDown();
                 if (blockSampleRate) {

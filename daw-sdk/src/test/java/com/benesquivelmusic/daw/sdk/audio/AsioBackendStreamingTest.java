@@ -355,15 +355,44 @@ class AsioBackendStreamingTest {
                 .contains("createBuffers:in=[]:out=[0, 1]:frames=128");
     }
 
+    /**
+     * Story 316 re-review — a capture-only driver FAILS this rung instead of
+     * opening a stream nobody can hear.
+     *
+     * <p>This test used to assert the opposite: that the backend opened with
+     * {@code out=[]} and {@link AsioBackend#isOpen()} true. Everything
+     * downstream then succeeds — {@code ASIOCreateBuffers} accepts the inputs
+     * alone, {@code getBufferInfos()} is non-empty, and the bridge advances
+     * {@code renderedBlocksConsumedByDriver()} while every output buffer is
+     * {@code MemorySegment.NULL} — so the failure is invisible to the engine
+     * and to the Windows integration proof alike. {@code open()} is a PLAYBACK
+     * open; the ladder must see this rung fail and fall through, exactly as it
+     * does when {@code JavaxSoundBackend}'s mandatory output line cannot be
+     * opened.</p>
+     */
     @Test
-    void aCaptureOnlyDriverIsAskedForNoOutputChannels() {
+    void aCaptureOnlyDriverFailsTheRungInsteadOfOpeningASilentStream() {
         AsioBackend.setCapabilityShimFactory(
                 () -> StubCapabilityShim.withChannels(8, 0));
 
-        backend.open(DRIVER_A, FORMAT, FRAMES);
-
-        assertThat(backend.isOpen()).isTrue();
-        assertThat(calls).contains("createBuffers:in=[0, 1]:out=[]:frames=128");
+        assertThatThrownBy(() -> backend.open(DRIVER_A, FORMAT, FRAMES))
+                .as("a playback open negotiated down to zero outputs must fail the"
+                        + " rung, naming the driver and the counts that did it")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no output channels")
+                .hasMessageContaining("8 input(s) / 0 output(s)")
+                .hasMessageContaining("Driver A");
+        assertThat(backend.isOpen())
+                .as("a rung that failed must not be left open")
+                .isFalse();
+        assertThat(driver.unloaded)
+                .as("the driver acquired by this rung is given back before the ladder"
+                        + " walks on")
+                .isTrue();
+        assertThat(calls)
+                .as("the refusal must happen before ASIOCreateBuffers, not after a"
+                        + " half-created buffer set")
+                .noneMatch(call -> call.startsWith("createBuffers"));
     }
 
     @Test
@@ -374,6 +403,33 @@ class AsioBackendStreamingTest {
         backend.open(DRIVER_A, FORMAT, FRAMES);
 
         assertThat(calls).contains("createBuffers:in=[0]:out=[0]:frames=128");
+        assertThat(backend.isOpen())
+                .as("a PARTIAL output shortfall is still a clamp, not a failure"
+                        + " (story 316 re-review): a driver with fewer outputs than the"
+                        + " format asks for carries audio on the outputs it does have,"
+                        + " and only a TOTAL absence of outputs fails the rung")
+                .isTrue();
+    }
+
+    /**
+     * Story 316 re-review — the zero-output guard reads the DRIVER's reported
+     * count, so a host that reports none is untouched by it.
+     *
+     * <p>{@code driverChannelCounts()} answers empty on every non-Windows host,
+     * on a Windows build without the Steinberg SDK, and whenever
+     * {@code ASIOGetChannels} itself fails. {@code outputs} then stays at the
+     * requested channel count and the guard cannot fire — a regression that
+     * keyed the guard off the clamped value alone would refuse every one of
+     * those hosts.</p>
+     */
+    @Test
+    void aDriverThatReportsNoChannelCountsOpensTheFullRequestedSet() {
+        AsioBackend.setCapabilityShimFactory(StubCapabilityShim::withNothingReported);
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.isOpen()).isTrue();
+        assertThat(calls).contains("createBuffers:in=[0, 1]:out=[0, 1]:frames=128");
     }
 
     @Test
@@ -1149,6 +1205,14 @@ class AsioBackendStreamingTest {
         static StubCapabilityShim withChannels(int inputs, int outputs) {
             return new StubCapabilityShim(Optional.empty(),
                     Optional.of(new int[] {inputs, outputs}));
+        }
+
+        /**
+         * Available, but with nothing to report — what every non-Windows host
+         * and every {@code ASIOGetChannels} failure looks like to the backend.
+         */
+        static StubCapabilityShim withNothingReported() {
+            return new StubCapabilityShim(Optional.empty(), Optional.empty());
         }
 
         @Override

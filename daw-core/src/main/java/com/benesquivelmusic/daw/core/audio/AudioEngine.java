@@ -134,9 +134,13 @@ public final class AudioEngine {
      *   <li>{@code RUNNING → CLOSED} / {@code RUNNING → RELEASE_PENDING} on a
      *       start failure: the claim is released (draining any seek queued in
      *       the window), then the handle is closed — {@code CLOSED} if that
-     *       close succeeded, {@code RELEASE_PENDING} if it failed or if it was
-     *       DEFERRED because the backend's control panel is open (see
-     *       {@link #beginControlPanelSession(AudioBackend)}).</li>
+     *       close succeeded AND actually gave the handle back,
+     *       {@code RELEASE_PENDING} if it failed, if it was DEFERRED because
+     *       the backend's control panel is open (see
+     *       {@link #beginControlPanelSession(AudioBackend)}), or if the close
+     *       RETURNED with the backend still holding the handle
+     *       ({@link AudioBackend#isReleasePending()} — see
+     *       {@link #releaseDeferredBy(AudioBackend)}).</li>
      *   <li>{@code RUNNING → PAUSED} ({@link #pauseAudioOutput()}): releases
      *       the claim. {@code PAUSED → RUNNING} ({@link #startAudioOutput()}):
      *       claims before the pump start; a failed resume returns to
@@ -144,15 +148,17 @@ public final class AudioEngine {
      *   <li>{@code RUNNING|PAUSED|RELEASE_PENDING → CLOSED}
      *       ({@link #stopAudioOutput()}, close succeeded): releases the claim.
      *       {@code RUNNING|PAUSED → RELEASE_PENDING}: releases the claim, in
-     *       two cases — the render pump's exit was CONFIRMED and the close
-     *       FAILED, or the exit was confirmed and the close was DEFERRED
-     *       because the backend's control panel is open. When the bounded
+     *       three cases, all of them past a CONFIRMED render-pump exit — the
+     *       close FAILED, the close was DEFERRED because the backend's
+     *       control panel is open, or the close RETURNED and the BACKEND
+     *       reported the release deferred
+     *       ({@link AudioBackend#isReleasePending()}). When the bounded
      *       join does NOT confirm the exit, NO close is attempted at all:
      *       {@link #stopAudioOutputLocked} returns early on
      *       {@code !stopPump()}, ahead of both the clock release and any
      *       {@code close()}, so the state and the claim are preserved
      *       untouched for a later retry.</li>
-     *   <li>{@code RUNNING → RELEASE_PENDING} ({@link #stop()}): the third
+     *   <li>{@code RUNNING → RELEASE_PENDING} ({@link #stop()}): another
      *       way into that state, and the one that attempts no close either.
      *       {@link #stopLocked(PendingAnnouncements)} quiesces the pump,
      *       releases the claim and leaves the handle with the backend for a
@@ -170,16 +176,18 @@ public final class AudioEngine {
      *       ({@link #setStreamingProvision(StreamingProvision)} re-pointing
      *       the engine at a provision that no longer carries the tracked
      *       backend instance): reached only when the outgoing backend's handle
-     *       actually CLOSES. Three things refuse the whole swap instead, with
+     *       actually CLOSES. Four things refuse the whole swap instead, with
      *       an {@link AudioBackendException} — an unconfirmed render-pump
      *       exit (story 316 review: nothing is touched, so the state AND the
      *       claim stay exactly as they were rather than close a backend a
      *       live thread may still be inside), an open control panel on the
-     *       outgoing backend, and a close that FAILED. The latter two leave
+     *       outgoing backend, a close that FAILED, and a close that RETURNED
+     *       with the release deferred by the backend itself
+     *       ({@link AudioBackend#isReleasePending()}). The latter three leave
      *       {@code RELEASE_PENDING} with that backend still tracked, so the
-     *       engine keeps its retry path; all three are retryable. The claim
+     *       engine keeps its retry path; all four are retryable. The claim
      *       is released the moment the pump's exit is CONFIRMED — so on those
-     *       two refusal paths exactly as on the success path, since a
+     *       three refusal paths exactly as on the success path, since a
      *       confirmed exit means nothing is driving the transport any
      *       more.</li>
      * </ul>
@@ -199,9 +207,9 @@ public final class AudioEngine {
          */
         PAUSED,
         /**
-         * The stream is stopped but the backend still owns the handle. Three
+         * The stream is stopped but the backend still owns the handle. Four
          * ways in, and they are worth telling apart because only the first
-         * two imply the pump is confirmed gone:
+         * three imply the pump is confirmed gone:
          * <ul>
          *   <li>a close was attempted after a CONFIRMED join and FAILED
          *       ({@link #stopAudioOutputLocked},
@@ -211,6 +219,18 @@ public final class AudioEngine {
          *   <li>that same close was DEFERRED rather than attempted, because
          *       the backend's native control panel is open (see
          *       {@link #beginControlPanelSession(AudioBackend)});</li>
+         *   <li>that close WAS attempted, it RETURNED NORMALLY, and the
+         *       BACKEND then reported that it had not actually given the
+         *       handle back ({@link AudioBackend#isReleasePending()},
+         *       consulted through {@link #releaseDeferredBy(AudioBackend)}).
+         *       This is the ASIO case: {@code AsioBackend} DEFERS the release
+         *       of its driver shim while the asio-control thread is still
+         *       executing a call the host abandoned, so the shim keeps its
+         *       ownership claim while the Java-side fields the close cleared
+         *       let {@code close()} return normally. A close that returns is
+         *       therefore NOT proof of a release, and reading it as one would
+         *       point the engine's next open at a device the driver may still
+         *       be holding (story 316 re-review);</li>
          *   <li>{@link #stopLocked(PendingAnnouncements)} quiesced a
          *       {@code RUNNING} stream on {@link #stop()} and left the handle
          *       for a later release WITHOUT attempting a close — and it does
@@ -219,7 +239,7 @@ public final class AudioEngine {
          *       about to close the retained handle must re-confirm that
          *       itself; see {@link #stopPump()}.</li>
          * </ul>
-         * The clock is released in all three; the handle must be released by
+         * The clock is released in all four; the handle must be released by
          * a later close retry before any new stream can be opened. Not
          * resumable, and not reported by {@link #isStreamOpen()} — to
          * callers, output is simply stopped; the retained handle is the
@@ -460,8 +480,14 @@ public final class AudioEngine {
      *             {@link #claimTransportClock()}'s bytecode rather than
      *             trusting this sentence.</li>
      *         <li>The {@link AudioBackend} calls (open / close /
-     *             negotiateFormat / supportsStreaming) are SDK DRIVER code,
-     *             not application code. They cannot be deferred — the whole
+     *             negotiateFormat / supportsStreaming / isReleasePending —
+     *             the last added by the story-316 re-review, which reads
+     *             every close's verdict through
+     *             {@link #releaseDeferredBy(AudioBackend)} — and
+     *             {@code name()}, which the lock-held log lines and failure
+     *             messages call and which is an SDK call like any other; see
+     *             {@link #drainDeferredHandleRelease()}) are SDK DRIVER
+     *             code, not application code. They cannot be deferred — the whole
      *             point of the critical section is that the ladder walk and
      *             the field stores are one transition — so they are a
      *             BLOCKING seam rather than a re-entrancy seam; and because
@@ -612,10 +638,15 @@ public final class AudioEngine {
      *       from today's implementations bounds tomorrow's.
      *       {@link AudioBackend} is deliberately NOT sealed (see its class
      *       javadoc: {@code daw-core} contributes adapters and JPMS sealing
-     *       would forbid cross-module implementors), so seam (2)'s
-     *       {@code open} / {@code close} / {@code negotiateFormat} and seam
+     *       would forbid cross-module implementors), so EVERY backend call
+     *       seam (2) enumerates — the list is not restated here, because two
+     *       copies of it would rot against each other — and seam
      *       (6)'s {@code inputBlocks()} are unbounded for ANY third-party
-     *       backend, whatever the in-tree ones happen to cost; the same holds
+     *       backend, whatever the in-tree ones happen to cost. That includes
+     *       the {@code isReleasePending()} the SDK contract REQUIRES to be
+     *       cheap and non-blocking — a requirement nothing enforces, and this
+     *       paragraph's whole point is that no property of today's
+     *       implementations bounds tomorrow's. The same holds
      *       for {@code AudioProcessor}, {@code SoundFontRenderer} and any
      *       {@link java.util.concurrent.Flow} implementation reached through
      *       them. The figures below are what the IN-TREE implementations cost
@@ -1245,7 +1276,8 @@ public final class AudioEngine {
      *
      * <p>Story 315 review, carried forward — a stream handle the engine
      * still tracks (running, paused, or RETAINED: a close that failed, a
-     * close DEFERRED for an open control panel, or a {@link #stop()} that
+     * close DEFERRED for an open control panel, a close the BACKEND returned
+     * from without releasing, or a {@link #stop()} that
      * attempted none at all — see
      * {@link StreamState#RELEASE_PENDING}) belongs to a backend of the
      * <em>outgoing</em> provision. When the incoming provision no longer
@@ -1257,19 +1289,24 @@ public final class AudioEngine {
      * state untouched: a paused stream stays paused and resumable.</p>
      *
      * <p>That hand-back is refused OUTRIGHT — and with it the whole swap —
-     * in three cases, all of them an {@link AudioBackendException} and all of
+     * in four cases, all of them an {@link AudioBackendException} and all of
      * them retryable; see
      * {@link #abandonStreamOnOutgoingBackend(AudioBackend, PendingAnnouncements)}
      * for each. The render pump's exit cannot be confirmed (story 316
      * review): closing the outgoing backend under a thread possibly still
      * inside its {@code sink} / {@code awaitSinkCapacity} would race native
      * state. The backend's native control panel is open: closing its handle
-     * would free the native state that modal dialog is running on. Or the
+     * would free the native state that modal dialog is running on. The
      * close was attempted and FAILED: an unreleasable handle is exactly the
      * case in which re-pointing the engine at another provision would let the
      * next open put a second backend on the same device, so the engine keeps
      * tracking the handle ({@link StreamState#RELEASE_PENDING}) and retries
-     * the release on the next start or stop instead of abandoning it.</p>
+     * the release on the next start or stop instead of abandoning it. Or the
+     * close RETURNED and the backend reported the release DEFERRED
+     * ({@link AudioBackend#isReleasePending()}): the handle is just as
+     * retained, and reading a quiet return as a release is how an
+     * {@code AsioBackend} whose driver shim queued its teardown would slip
+     * past the previous case.</p>
      *
      * <p>The swap then fails WHOLE: the incoming provision is never stored,
      * the engine stays pointed at the outgoing provision, and — because the
@@ -1285,9 +1322,10 @@ public final class AudioEngine {
      * @throws AudioBackendException  if a tracked stream must be handed back
      *                                but the render pump has not exited yet,
      *                                the outgoing backend's control panel is
-     *                                open, or its handle could not be
-     *                                released; the whole swap is aborted,
-     *                                unapplied and retryable
+     *                                open, its handle could not be
+     *                                released, or its close returned with the
+     *                                release still deferred; the whole swap is
+     *                                aborted, unapplied and retryable
      */
     public void setStreamingProvision(StreamingProvision provision) {
         PendingAnnouncements announcements = new PendingAnnouncements();
@@ -1312,7 +1350,8 @@ public final class AudioEngine {
      * guarded: an {@link AudioBackendException} out of
      * {@link #abandonStreamOnOutgoingBackend(AudioBackend, PendingAnnouncements)}
      * — the pump is not confirmed gone, the outgoing backend's control panel
-     * is open, or its handle could not be released — propagates straight
+     * is open, its handle could not be released, or its close returned with
+     * the release deferred — propagates straight
      * through this body, so {@code streamingProvision} is never assigned and
      * the engine stays pointed at the outgoing provision. The swap is refused
      * whole rather than applied over an unreleased handle.</p>
@@ -1358,12 +1397,13 @@ public final class AudioEngine {
     /**
      * Hands back the stream the engine still tracks on a backend that the
      * incoming provision no longer carries: joins the pump, releases the RT
-     * clock, and closes the handle. Only a close that actually SUCCEEDS
+     * clock, and closes the handle. Only a close that actually SUCCEEDS —
+     * and that the backend does not then report as a DEFERRED release —
      * reaches {@link StreamState#CLOSED} and forgets the backend; every
      * other outcome REFUSES the swap and leaves the engine tracking the
      * outgoing handle so it can retry the release later.
      *
-     * <p>Three refusals, in the order they are checked, all of them
+     * <p>Four refusals, in the order they are checked, all of them
      * {@link AudioBackendException} out of
      * {@link #setStreamingProvisionLocked(StreamingProvision, PendingAnnouncements)}
      * — which is what aborts the swap WHOLE, since the incoming provision is
@@ -1402,12 +1442,27 @@ public final class AudioEngine {
      *       reach this backend once the engine points elsewhere" — discarded
      *       the engine's ONLY retry path and then let the next open put a
      *       second backend on the same device.</li>
+     *   <li><strong>The close RETURNED, but the backend deferred the actual
+     *       release</strong> ({@link AudioBackend#isReleasePending()}, read
+     *       through {@link #releaseDeferredBy(AudioBackend)} — story 316
+     *       re-review). Indistinguishable from the previous case in every way
+     *       that matters here: the handle is still out with {@code outgoing},
+     *       so the state becomes {@link StreamState#RELEASE_PENDING} with it
+     *       still tracked and the engine retries the release on the next
+     *       start or stop. It is reached where the case above is not — an
+     *       {@code AsioBackend} whose driver shim queued its teardown behind
+     *       an over-budget downcall clears its Java-side fields and returns
+     *       from {@code close()} without complaint, so treating a normal
+     *       return as a release would let this swap succeed while the ASIO
+     *       driver was still holding the device.</li>
      * </ol>
      *
      * <p>The RT-clock release is recorded immediately after the CONFIRMED
-     * join and before any of that, exactly as
+     * join — so before every refusal that can follow one, though necessarily
+     * after the join refusal itself, which is the one path that touches
+     * nothing — exactly as
      * {@link #stopAudioOutputLocked(PendingAnnouncements)} orders it: the
-     * pump is provably gone at that point, so the claim is owed on the
+     * pump is provably gone at that point, so the claim is owed on those
      * refusal paths just as much as on the success path — recording it only
      * after a successful close would strand the claim, and any seek queued
      * behind it, whenever the close is deferred or refused. The public
@@ -1418,9 +1473,11 @@ public final class AudioEngine {
      * @param announcements collects the RT-clock release; delivered by the
      *                      caller after the unlock, on the throwing path too
      * @throws AudioBackendException if the render pump has not exited yet, if
-     *                               the backend's control panel is open, or
-     *                               if the handle could not be released; the
-     *                               swap is refused whole and is retryable
+     *                               the backend's control panel is open, if
+     *                               the handle could not be released, or if
+     *                               the close returned with the backend still
+     *                               holding it; the swap is refused whole and
+     *                               is retryable
      */
     private void abandonStreamOnOutgoingBackend(AudioBackend outgoing,
                                                 PendingAnnouncements announcements) {
@@ -1432,7 +1489,7 @@ public final class AudioEngine {
                             + " retry the swap once the pump unblocks");
         }
         // The join is CONFIRMED, so the claim is owed whatever happens to the
-        // handle below — including on the two refusal paths, which throw.
+        // handle below — including on the three refusal paths, which throw.
         recordClockRelease(announcements);
         if (controlPanelOpenOn(outgoing)) {
             streamState = StreamState.RELEASE_PENDING;
@@ -1445,8 +1502,6 @@ public final class AudioEngine {
         }
         try {
             outgoing.close();
-            streamState = StreamState.CLOSED;
-            clearOpenStream();
         } catch (RuntimeException closeFailure) {
             // NOT cleared: the engine must keep tracking `outgoing`, because
             // the retained handle's only release path is the engine's own
@@ -1461,6 +1516,26 @@ public final class AudioEngine {
                             + " backend that may still hold the device",
                     closeFailure);
         }
+        if (releaseDeferredBy(outgoing)) {
+            // The close RETURNED, and the handle still did not come back:
+            // the backend deferred its own release (story 316 re-review).
+            // Identical treatment to a close that threw, for an identical
+            // reason — `outgoing` may still hold the device, and pointing the
+            // engine at a provision it could open a second backend from is
+            // precisely what this refusal exists to prevent. NOT cleared,
+            // for the same reason as above.
+            streamState = StreamState.RELEASE_PENDING;
+            throw new AudioBackendException(
+                    "Cannot replace the streaming provision: " + outgoing.name()
+                            + " returned from close() without releasing the audio stream"
+                            + " handle — the release is DEFERRED, so it may still hold the"
+                            + " device. The engine retains the handle and retries the"
+                            + " release on the next start or stop; the swap is refused"
+                            + " rather than point the engine at a provision it could open a"
+                            + " second backend from, beside a backend that has not let go");
+        }
+        streamState = StreamState.CLOSED;
+        clearOpenStream();
     }
 
     /**
@@ -1534,6 +1609,129 @@ public final class AudioEngine {
         this.openBackend = null;
         this.openDevice = null;
         this.openSdkFormat = null;
+    }
+
+    /**
+     * Whether a {@code close()} that has just returned NORMALLY actually gave
+     * the stream handle back, or only promised to (story 316 re-review). This
+     * is the ONE definition of "that close was not a release" that all SIX
+     * engine-owned closes share, so the outcome cannot mean one thing on the
+     * ladder walk and another on a stop.
+     *
+     * <p>A normal return from {@link AudioBackend#close()} is not proof of a
+     * release. {@code AsioBackend} can DEFER the release of its driver shim:
+     * while the asio-control thread is still executing a call the host
+     * abandoned, the shim deliberately keeps its ownership claim and the
+     * teardown is queued until that call returns, while the Java-side fields
+     * the close already cleared let {@code close()} itself
+     * return normally. {@link AudioBackend#isReleasePending()} is how a
+     * backend says so. Read that outcome as a release and the engine's very
+     * next act — advancing the ladder onto a fallback rung, forgetting the
+     * tracked backend, opening a fresh stream — lands beside a driver that
+     * may still be acquiring or holding the device: the
+     * two-backends-on-one-device outcome every retained-handle guard in this
+     * class exists to prevent. A retained handle is a non-release however it
+     * came about, so every caller answers a {@code true} here exactly as it
+     * answers a close that THREW.</p>
+     *
+     * <p>Call this only AFTER a {@code close()} that returned normally. A
+     * close that threw has already answered the question, and asking a
+     * backend that has just failed a teardown to introspect its own state
+     * buys nothing.</p>
+     *
+     * <p>The condition is TRANSIENT and self-clearing — the backend answers
+     * {@code false} again once the deferred release completes — which is what
+     * makes every caller's response a RETRY rather than a permanent refusal.
+     * Wherever the engine is holding a TRACKED handle the retry is its own:
+     * the handle stays in {@link StreamState#RELEASE_PENDING}, and the next
+     * start, the next stop or a control-panel drain closes it again and finds
+     * it released. {@link #closeFailedHop(BackendStreamRung, Throwable)} is
+     * the one caller for which that is NOT the shape — a failed hop happens
+     * mid-open, before {@code openBackend} is assigned, so the engine tracks
+     * nothing and there is no {@code RELEASE_PENDING} to drain; the retry
+     * there is simply the next open, which walks the ladder again (see
+     * {@link #drainDeferredHandleRelease()}, which says the same about the
+     * panel-deferred variant of that hop).</p>
+     *
+     * <h2>Why it GUARDS, and why only against {@link RuntimeException}</h2>
+     * <p>It guards because this helper must not become a new way for an SDK
+     * call to break a lifecycle path, and the call sites are not all equally
+     * exposed. Story 316 re-review, checked site by site:</p>
+     * <ul>
+     *   <li>{@link #abandonStreamOnOutgoingBackend(AudioBackend,
+     *       PendingAnnouncements)} and
+     *       {@link #releaseRetainedStreamHandle(AudioBackend)} ask the
+     *       question AFTER their own {@code catch} has closed. This is where
+     *       the guard actually earns its keep: unguarded, a throw from the
+     *       query would leave a swap or an open half-done and escape as
+     *       neither an {@link AudioBackendException} nor a release
+     *       verdict.</li>
+     *   <li>{@link #closeFailedHop(BackendStreamRung, Throwable)},
+     *       {@link #startOpenedStream},
+     *       {@link #stopAudioOutputLocked(PendingAnnouncements)} and
+     *       {@link #drainDeferredHandleRelease()} ask it from INSIDE a
+     *       {@code catch} region of their own, which would absorb an
+     *       unguarded throw and treat it as a failed close. The explicit
+     *       promises some of them carry — that a teardown seam never MASKS
+     *       the hop failure it is unwinding, the same of the start failure,
+     *       and that no {@code RuntimeException} reaches
+     *       {@link #endControlPanelSession(AudioBackend)}'s {@code finally}
+     *       caller — would therefore survive without this guard. Here it is
+     *       belt and braces, and it buys honest reporting rather than
+     *       correctness: a query that failed is logged as a query that
+     *       failed, instead of being suppressed onto an unrelated failure as
+     *       though the {@code close()} had thrown.</li>
+     * </ul>
+     * <p>Since the interface is deliberately not sealed, a third-party
+     * backend really can throw out of what the contract calls a cheap,
+     * non-blocking read, so neither shape is hypothetical.</p>
+     *
+     * <p>A throw is reported as {@code true} — NOT released — because that is
+     * the conservative answer to the only question being asked: a backend
+     * that cannot say whether it gave the handle back has not shown that it
+     * did. {@code true} keeps the handle treated as RETAINED and the release
+     * retryable, which costs one deferred close; {@code false} would let the engine
+     * forget a handle a driver may still hold, and nothing would ever come
+     * back for it. The throwable is LOGGED rather than attached to anything:
+     * this helper has no in-flight failure to suppress it onto, and its catch
+     * deliberately makes no further SDK call — not even
+     * {@link AudioBackend#name()} — because the backend that has just thrown
+     * is the last thing to trust for a log message, and whatever it chose to
+     * say travels on the throwable. That is
+     * {@link #drainDeferredHandleRelease()}'s own rule, applied here so that
+     * method keeps it while calling this one.</p>
+     *
+     * <p>{@link Error} is deliberately NOT caught, which is the established
+     * policy rather than a new one: {@link #stopAudioOutputLocked},
+     * {@link #releaseRetainedStreamHandle} and
+     * {@link #drainDeferredHandleRelease} all catch {@link RuntimeException}
+     * only and let an {@code Error} propagate. The two callers an escaping
+     * {@code Error} could actually mask — the ladder hop's unwind and the
+     * pump start's — call this from INSIDE their existing
+     * {@code catch (RuntimeException | Error)} region, so an {@code Error}
+     * raised by the query unwinds there exactly as an {@code Error} raised by
+     * the close does: suppressed onto the in-flight failure, logged, and
+     * treated as a non-release.</p>
+     *
+     * @param backend the backend whose {@code close()} has just returned
+     *                normally
+     * @return {@code true} when the handle was NOT given back — the backend
+     *         deferred the release, or could not say — so the caller must
+     *         treat this close exactly as it treats one that failed;
+     *         {@code false} when the handle really is released
+     */
+    private static boolean releaseDeferredBy(AudioBackend backend) {
+        try {
+            return backend.isReleasePending();
+        } catch (RuntimeException queryFailure) {
+            LOG.log(Level.WARNING,
+                    "A backend could not say whether its close released the audio stream"
+                            + " handle, so the handle is treated as RETAINED: the engine"
+                            + " keeps tracking it and retries the release rather than open"
+                            + " a second backend on a device this one may still hold",
+                    queryFailure);
+            return true;
+        }
     }
 
     // ── Audio output stream lifecycle ────────────────────────────────────────
@@ -1615,7 +1813,10 @@ public final class AudioEngine {
      *                               still cannot be released — including
      *                               because that backend's native control
      *                               panel is open (see
-     *                               {@link #beginControlPanelSession(AudioBackend)}),
+     *                               {@link #beginControlPanelSession(AudioBackend)})
+     *                               and including because its close RETURNED
+     *                               with the backend still holding the handle
+     *                               ({@link AudioBackend#isReleasePending()}),
      *                               or a previous render pump has
      *                               not exited yet (see
      *                               {@link #requireQuiescedPump()} — this
@@ -2051,7 +2252,17 @@ public final class AudioEngine {
      * close can never mask — nor be mistaken for — the hop failure.</p>
      *
      * <p>When that release does NOT succeed, the walk is ABANDONED rather
-     * than continued — but only for a rung that actually reached
+     * than continued. "Does not succeed" is
+     * {@link #closeFailedHop(BackendStreamRung, Throwable)} answering
+     * {@code false}, and it covers THREE outcomes: the close threw, the close
+     * was skipped because that backend's control panel is open, or the close
+     * RETURNED and the backend reported that it had not actually given the
+     * handle back ({@link AudioBackend#isReleasePending()} — story 316
+     * re-review). The third is why a quiet return from {@code close()} is not
+     * enough to justify advancing: {@code AsioBackend.open()} can fail while
+     * DEFERRING its driver-shim release, and its {@code close()} then returns
+     * normally over a shim that still holds its ownership claim. The walk
+     * stops in all three — but only for a rung that actually reached
      * {@code open()}, which is what the {@code openAttempted} local tracks.
      * The distinction is the whole point, and it is load-bearing in
      * production:</p>
@@ -2063,15 +2274,23 @@ public final class AudioEngine {
      *       and this method throws a new {@link AudioBackendException} naming
      *       the rung, with the hop failure as its cause — so when a close was
      *       attempted and threw, that close failure travels too, suppressed
-     *       on the cause. The failed hops recorded so far, this one included,
-     *       are still recorded for publication naming {@code "none"} active:
-     *       nothing became active.</li>
+     *       on the cause. A close that RETURNED with the release deferred
+     *       carries no exception of its own, so nothing is suppressed and the
+     *       cause is simply the hop failure; the log line
+     *       {@link #closeFailedHop(BackendStreamRung, Throwable)} writes is
+     *       what tells the two apart. The failed hops recorded so far, this
+     *       one included, are still recorded for publication naming
+     *       {@code "none"} active: nothing became active.</li>
      *   <li>A rung refused BEFORE {@code open()} —
      *       {@link #requireStreamingSupport(BackendStreamRung)} and
      *       {@link #requireRenderableNegotiation} both throw ahead of it —
-     *       holds no device, so a close failure on it is spurious and the
+     *       holds no device, so a NON-release on it is spurious and the
      *       walk falls through to the next rung exactly as it always has.
-     *       This is the ASIO path: when {@code asioshim} lacks the story-311
+     *       That is true whichever of the three shapes the non-release takes,
+     *       a deferred release included: the rung was never asked for the
+     *       device, so whatever its backend is still holding is not this
+     *       walk's to wait for. This is the ASIO path: when {@code asioshim}
+     *       lacks the story-311
      *       streaming symbols, {@code requireStreamingSupport} refuses that
      *       rung, and that refusal must still reach PortAudio or Java
      *       Sound.</li>
@@ -2097,12 +2316,13 @@ public final class AudioEngine {
      *                          give it back has been reported as failed —
      *                          {@link #closeFailedHop(BackendStreamRung,
      *                          Throwable)} answers {@code false} when the
-     *                          close threw and when a control panel made it
-     *                          unsafe to attempt, and the log records which
-     *                          of the two happened. The walk is ABANDONED
-     *                          either way, which is what makes the
-     *                          unreleased case safe to report rather than
-     *                          act on; see the catch
+     *                          close threw, when a control panel made it
+     *                          unsafe to attempt, and when it returned with
+     *                          the backend still holding the handle, and the
+     *                          log records which of the three happened. The
+     *                          walk is ABANDONED in every case, which is what
+     *                          makes the unreleased case safe to report
+     *                          rather than act on; see the catch
      */
     private OpenedRung openLadder(StreamingProvision provision,
                                   PendingAnnouncements announcements) {
@@ -2189,10 +2409,12 @@ public final class AudioEngine {
                 // already treats as an ordinary failed hop.
                 //
                 // The verdict is KEPT rather than discarded: closeFailedHop
-                // answers false when the close threw and when a control
-                // panel made it unsafe to attempt (the two-backends-on-one-
-                // device case), and a maintainer reading this SEVERE line is
-                // reading it to find out whether the device is free.
+                // answers false when the close threw, when a control panel
+                // made it unsafe to attempt, and when the close RETURNED
+                // with the backend still holding the handle (all three the
+                // two-backends-on-one-device case), and a maintainer reading
+                // this SEVERE line is reading it to find out whether the
+                // device is free.
                 boolean released = closeFailedHop(rung, hopError);
                 LOG.log(Level.SEVERE,
                         "Backend ladder hop failed with an Error: " + rung.backend().name()
@@ -2249,6 +2471,21 @@ public final class AudioEngine {
      * the honest answer and the one that stops the walk from opening a
      * fallback rung beside it.
      *
+     * <p>A close that RETURNS is not automatically a release either (story
+     * 316 re-review). {@link #releaseDeferredBy(AudioBackend)} asks the
+     * backend, and a {@code true} there is reported as the same
+     * {@code false} verdict, for the same reason. This is the case the
+     * REPORTED finding was about, and it is reachable in production exactly
+     * where it hurts most: {@code AsioBackend.open()} is where a driver-shim
+     * release gets deferred, so the rung whose {@code open} just failed is
+     * the likeliest one to be holding a queued teardown. Its {@code close()}
+     * then returns normally — the Java-side fields were already cleared — and
+     * before this check the walk read that as an ordinary released hop and
+     * opened PortAudio or Java Sound over a device the ASIO driver may still
+     * have been acquiring. Nothing is attached to {@code hopFailure} on this
+     * path: there is no exception to attach, and the recorded cause must keep
+     * describing the OPEN failure.
+     *
      * <p>A close that itself fails must never replace the hop failure: it is
      * attached as a {@linkplain Throwable#addSuppressed suppressed}
      * exception on {@code hopFailure} — the very exception the caller may
@@ -2277,7 +2514,9 @@ public final class AudioEngine {
      * @param hopFailure the hop failure being recorded; a close failure is
      *                   suppressed onto it
      * @return {@code true} when the rung's handle was released, {@code false}
-     *         when the close threw or was skipped for an open control panel
+     *         in three cases — the close threw, it was skipped for an open
+     *         control panel, or it returned with the backend still holding
+     *         the handle
      */
     private boolean closeFailedHop(BackendStreamRung rung,
                                    Throwable hopFailure) {
@@ -2290,6 +2529,18 @@ public final class AudioEngine {
         }
         try {
             rung.backend().close();
+            if (releaseDeferredBy(rung.backend())) {
+                // The close RETURNED and the handle still did not come back.
+                // Nothing is attached to hopFailure: there is no exception to
+                // attach, and the recorded cause must keep describing the
+                // OPEN failure.
+                LOG.severe("Backend ladder hop failed and its handle is deliberately"
+                        + " RETAINED: " + rung.backend().name() + " returned from close()"
+                        + " with the release DEFERRED — its driver teardown is queued"
+                        + " behind a downcall that has not returned. The rung may still"
+                        + " hold device '" + rung.device().name() + "'");
+                return false;
+            }
             return true;
         } catch (RuntimeException | Error closeFailure) {
             if (closeFailure != hopFailure) {
@@ -2422,7 +2673,12 @@ public final class AudioEngine {
      * backend's native control panel is open
      * ({@link #beginControlPanelSession(AudioBackend)}) — closing the handle
      * would free the native state the modal dialog is running on, and
-     * {@link #endControlPanelSession(AudioBackend)} drains it instead. The
+     * {@link #endControlPanelSession(AudioBackend)} drains it instead. A
+     * close that RETURNS is not read as a release either (story 316
+     * re-review): when {@link #releaseDeferredBy(AudioBackend)} reports the
+     * backend still holding the handle, the unwind leaves that same
+     * {@code RELEASE_PENDING} with the backend TRACKED rather than forgetting
+     * it, because a handle nobody tracks is a handle nobody retries. The
      * start failure is rethrown unchanged on every one of those paths. The
      * unwind covers <em>every</em> throwable from the start
      * call — a start that escaped it would leave the engine {@code RUNNING}
@@ -2448,8 +2704,10 @@ public final class AudioEngine {
             this.pump = newPump;
         } catch (RuntimeException | Error startFailure) {
             // The pump is not running, and the backend still holds the
-            // handle — until one of the two branches below releases it, or
-            // neither does and the engine keeps tracking it for a retry.
+            // handle — until the close below both RUNS and actually gives it
+            // back. Every other outcome (skipped for an open panel, thrown,
+            // or returned with the release deferred) leaves this state
+            // standing and the engine tracking the handle for a retry.
             streamState = StreamState.RELEASE_PENDING;
             recordClockRelease(announcements);
             if (controlPanelOpenOn(backend)) {
@@ -2464,8 +2722,21 @@ public final class AudioEngine {
             } else {
                 try {
                     backend.close();
-                    streamState = StreamState.CLOSED;
-                    clearOpenStream();
+                    if (releaseDeferredBy(backend)) {
+                        // The close RETURNED and the handle still did not
+                        // come back. RELEASE_PENDING is already set above and
+                        // the backend stays TRACKED — deliberately no
+                        // clearOpenStream() — so the retry path survives,
+                        // exactly as when the close throws.
+                        LOG.severe("Audio stream failed to start and its handle was NOT"
+                                + " released: " + backend.name() + " returned from close()"
+                                + " with the release DEFERRED, so it may still hold the"
+                                + " device. The engine retains the handle; the release is"
+                                + " retried by the next start or stop");
+                    } else {
+                        streamState = StreamState.CLOSED;
+                        clearOpenStream();
+                    }
                 } catch (RuntimeException | Error closeFailure) {
                     // Widened with closeFailedHop's inner catch (story 316
                     // re-review, E4): this method's javadoc promises the close
@@ -2501,10 +2772,21 @@ public final class AudioEngine {
      * {@link #endControlPanelSession(AudioBackend)} drains the close when the
      * dialog returns.</p>
      *
-     * @throws AudioBackendException if the backend's control panel is open, or
-     *                               if the handle still cannot be released;
-     *                               the state stays {@code RELEASE_PENDING}
-     *                               either way
+     * <p>A close that RETURNS refuses the open just as firmly when the
+     * backend then reports that it kept the handle
+     * ({@link #releaseDeferredBy(AudioBackend)} — story 316 re-review).
+     * Proceeding on a quiet return would be the whole point of this method
+     * undone: the fresh ladder open would be the second backend on a device
+     * the previous one has not let go of. The state stays
+     * {@code RELEASE_PENDING} with the backend tracked there too, so the next
+     * start retries — and, the condition being self-clearing, succeeds once
+     * the driver's queued teardown completes.</p>
+     *
+     * @throws AudioBackendException if the backend's control panel is open,
+     *                               if the handle still cannot be released,
+     *                               or if the close returned with the release
+     *                               deferred; the state stays
+     *                               {@code RELEASE_PENDING} in all three
      */
     private void releaseRetainedStreamHandle(AudioBackend backend) {
         if (controlPanelOpenOn(backend)) {
@@ -2524,6 +2806,20 @@ public final class AudioEngine {
                             + " held by " + backend.name()
                             + " and could not be released",
                     closeFailure);
+        }
+        if (releaseDeferredBy(backend)) {
+            // The close RETURNED and the handle still did not come back, so
+            // the open is refused exactly as it is when the close throws.
+            // Neither the state nor the tracking is touched: this method is
+            // only ever called in RELEASE_PENDING with `backend` tracked, and
+            // leaving both standing is what keeps the retry reachable.
+            throw new AudioBackendException(
+                    "Cannot open a new audio stream: the previous stream's handle is still"
+                            + " held by " + backend.name() + ", which returned from close()"
+                            + " with the release DEFERRED — its driver teardown is queued"
+                            + " behind a downcall that has not returned, and opening"
+                            + " without releasing it would put a second backend on the same"
+                            + " device. Retry once the release completes");
         }
         streamState = StreamState.CLOSED;
         clearOpenStream();
@@ -2609,6 +2905,18 @@ public final class AudioEngine {
      * {@link #endControlPanelSession(AudioBackend)} drains that close when
      * the panel returns.</p>
      *
+     * <p>The BACKEND can defer it too, and that one is the close's own
+     * verdict rather than the engine's (story 316 re-review). An
+     * {@code AsioBackend} whose driver shim has queued its teardown behind an
+     * over-budget downcall returns from {@code close()} normally and then
+     * reports {@link AudioBackend#isReleasePending()} — so a close that
+     * returned is read through {@link #releaseDeferredBy(AudioBackend)}
+     * before it is believed. A deferred release lands in exactly the state a
+     * FAILED close does: {@link StreamState#RELEASE_PENDING} with the backend
+     * retained, the release retried by the next start or stop, and this
+     * method still returning {@code true} — the pump has joined either
+     * way.</p>
+     *
      * <p>A subsequent call to {@link #startAudioOutput()} will open a fresh
      * stream once the handle is released.</p>
      *
@@ -2616,8 +2924,9 @@ public final class AudioEngine {
      * {@code false} means only that a thread may still be inside
      * {@link #processBlock(float[][], float[][], int)}, which is the one
      * condition under which a caller must not tear anything shared down or
-     * open anything new. Neither a failed backend close NOR a panel-deferred
-     * one is reported as {@code false} — in both the pump is confirmed gone
+     * open anything new. No retained handle is reported as {@code false} —
+     * not a failed close, not a panel-deferred one, and not one the BACKEND
+     * deferred: in all three the pump is confirmed gone
      * and the engine merely retains a handle it will release itself (on the
      * next start or stop, or from
      * {@link #endControlPanelSession(AudioBackend)}), and conflating that
@@ -2648,8 +2957,9 @@ public final class AudioEngine {
      *       SITES — FOUR of them now — cover only PART
      *       of a reconfigure: {@link #setStreamingProvision(StreamingProvision)}
      *       refuses the whole swap whenever the outgoing handle cannot be
-     *       given back — an unconfirmed pump exit, an open control panel, or
-     *       a close that failed, all three throwing
+     *       given back — an unconfirmed pump exit, an open control panel, a
+     *       close that failed, or a close that returned with the backend
+     *       still holding the handle, every one of them throwing
      *       {@code AudioBackendException} out of
      *       {@link #abandonStreamOnOutgoingBackend(AudioBackend, PendingAnnouncements)}
      *       — {@link #requireQuiescedPump()} refuses the reopen inside
@@ -2689,9 +2999,11 @@ public final class AudioEngine {
      *         {@link #processBlock(float[][], float[][], int)} any more —
      *         including the no-op early return (no stream, hence no pump of
      *         ours), the path where the close FAILED and left
-     *         {@link StreamState#RELEASE_PENDING}, and the path where the
+     *         {@link StreamState#RELEASE_PENDING}, the path where the
      *         close was DEFERRED for an open control panel and left the same
-     *         state; {@code false} only when the pump's bounded join timed
+     *         state, and the path where the close RETURNED but the backend
+     *         deferred the release and left the same state again;
+     *         {@code false} only when the pump's bounded join timed
      *         out and the whole stop was deferred for a retry
      */
     public boolean stopAudioOutput() {
@@ -2742,8 +3054,21 @@ public final class AudioEngine {
         }
         try {
             backend.close();
-            streamState = StreamState.CLOSED;
-            clearOpenStream();
+            if (releaseDeferredBy(backend)) {
+                // The close RETURNED and the handle still did not come back:
+                // the backend deferred its own release. Identical handling to
+                // the failed close below — the engine keeps tracking the
+                // handle so a later stop, the next start, or a control-panel
+                // drain retries it.
+                streamState = StreamState.RELEASE_PENDING;
+                LOG.severe("Audio output stopped, but the stream handle was NOT released: "
+                        + backend.name() + " returned from close() with the release"
+                        + " DEFERRED, so it may still hold the device. The engine retains"
+                        + " the handle and retries the release on the next start or stop");
+            } else {
+                streamState = StreamState.CLOSED;
+                clearOpenStream();
+            }
         } catch (RuntimeException closeFailure) {
             // The backend kept the handle; the engine keeps tracking it so a
             // later stop — or the next start — retries the close.
@@ -2754,8 +3079,9 @@ public final class AudioEngine {
                     closeFailure);
         }
         // Quiescence was confirmed above; a retained handle is a release
-        // failure (or a deliberate panel deferral), not a reason to tell the
-        // caller a thread may still render.
+        // failure, a deliberate panel deferral, or a release the BACKEND
+        // deferred over a driver teardown it has queued — never a reason to
+        // tell the caller a thread may still render.
         return true;
     }
 
@@ -2789,9 +3115,12 @@ public final class AudioEngine {
      *                               released — including because that
      *                               backend's native control panel is open
      *                               (see
-     *                               {@link #beginControlPanelSession(AudioBackend)}),
-     *                               which is also what makes the close-first
-     *                               step above fail
+     *                               {@link #beginControlPanelSession(AudioBackend)})
+     *                               and including because its close RETURNED
+     *                               with the release still deferred
+     *                               ({@link AudioBackend#isReleasePending()});
+     *                               either of those is also what makes the
+     *                               close-first step above fail
      */
     public void startAudioInputOutput() {
         PendingAnnouncements announcements = new PendingAnnouncements();
@@ -2976,7 +3305,9 @@ public final class AudioEngine {
      * with the handle still tracked; this retries that close while still
      * holding {@link #lifecycleLock}, reaching {@link StreamState#CLOSED} on
      * success and staying {@code RELEASE_PENDING} when the backend still
-     * refuses (logged at WARNING) or when the render pump's exit still
+     * refuses (logged at WARNING), when the backend RETURNS from the close
+     * with its own release still deferred (logged at SEVERE), or when the
+     * render pump's exit still
      * cannot be confirmed (logged at SEVERE — see
      * {@link #drainDeferredHandleRelease()}, which re-joins rather than
      * trusting the state). Without it the only owner of that deferral would
@@ -3085,12 +3416,27 @@ public final class AudioEngine {
      * is the same protection {@link #releaseRetainedStreamHandle} gets from
      * {@link #requireQuiescedPump()} on the open path.</p>
      *
+     * <p>A close that RETURNS is not taken for a release here either (story
+     * 316 re-review): {@link #releaseDeferredBy(AudioBackend)} is consulted,
+     * and a backend that reports the release still DEFERRED leaves the state
+     * {@code RELEASE_PENDING} with the handle still tracked, logged at
+     * SEVERE. Nothing about that outcome is special to a control panel —
+     * this is simply the earliest of the engine's retries meeting a handle
+     * that is not ready yet, and the next start or stop retries again.</p>
+     *
      * <p>Catches {@link RuntimeException} only, and the guarded region is
      * the WHOLE body rather than just the close: {@link AudioBackend#name()}
-     * is an SDK call like any other, and
+     * is an SDK call like any other — as is the
+     * {@link AudioBackend#isReleasePending()} behind
+     * {@link #releaseDeferredBy(AudioBackend)}, which is why that check sits
+     * inside this {@code try} and not after it — and
      * {@link #endControlPanelSession(AudioBackend)} promises the
      * controller's {@code finally} that no {@code RuntimeException} escapes,
-     * so building a log message must not be the one seam that breaks it. An
+     * so neither building a log message nor asking a backend how its close
+     * went may be the one seam that breaks it. (The helper guards itself as
+     * well, for the callers that have no such {@code try}; the two guards are
+     * belt and braces, not redundancy to remove — deleting this one would
+     * still leave {@code name()} unguarded.) An
      * {@link Error} still propagates, exactly as it does out of
      * {@link #releaseRetainedStreamHandle} and
      * {@link #stopAudioOutputLocked}. {@link #stopPump()} never throws.</p>
@@ -3111,6 +3457,22 @@ public final class AudioEngine {
                 return;
             }
             retained.close();
+            if (releaseDeferredBy(retained)) {
+                // The close RETURNED and the handle still did not come back:
+                // the backend deferred its own release. The state stays
+                // RELEASE_PENDING with `retained` still tracked — no
+                // clearOpenStream() — so the next start or stop retries it,
+                // exactly as when the close throws. The query lives INSIDE
+                // this guarded region because it is an SDK call like any
+                // other, and this method promises no RuntimeException
+                // escapes.
+                LOG.severe("A control-panel session ended and the audio stream handle the"
+                        + " engine still holds was NOT released: " + retained.name()
+                        + " returned from close() with the release DEFERRED, so it may"
+                        + " still hold the device. The engine keeps tracking the handle;"
+                        + " the next start or stop retries the release");
+                return;
+            }
             streamState = StreamState.CLOSED;
             clearOpenStream();
         } catch (RuntimeException drainFailure) {

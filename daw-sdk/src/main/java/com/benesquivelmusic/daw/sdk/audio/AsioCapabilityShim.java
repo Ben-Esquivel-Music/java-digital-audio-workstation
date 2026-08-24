@@ -354,13 +354,27 @@ class AsioCapabilityShim implements AutoCloseable {
      * the supervising action off JavaFX because it waits for that result.</p>
      *
      * <p>This is the ONE operation exempted from
-     * {@link AsioControlThread#DEFAULT_BUDGET} (story 316 re-review): it goes
-     * through {@link AsioControlThread#callUnbounded} because a user reading
-     * a driver dialog is not a wedged driver. Every other ASIO downcall is
-     * bounded, and any of them submitted while this panel is open will
-     * exhaust its budget rather than queue behind the user — see
-     * {@link AsioControlThread} for why one COM apartment makes that the
-     * honest outcome.</p>
+     * {@link AsioControlThread#DEFAULT_BUDGET} <em>and</em> from INTERRUPTION
+     * (story 316 re-review): it goes through
+     * {@link AsioControlThread#callUnbounded} because a user reading a driver
+     * dialog is not a wedged driver. Every other ASIO downcall is bounded, and
+     * any of them submitted while this panel is open will exhaust its budget
+     * rather than queue behind the user — see {@link AsioControlThread} for
+     * why one COM apartment makes that the honest outcome.</p>
+     *
+     * <p>The interrupt half of that exemption is load-bearing for THIS method
+     * in particular, because of what the {@code catch} below does. Neither a
+     * budget nor an interrupt can end a call the driver is already inside, so
+     * an interruptible wait could only return early — and this method
+     * normalises every throw to a generic negative, which the supervising
+     * {@link AsioBackend#openControlPanel()} runnable turns into an
+     * {@link AudioBackendException} and the application layer reads as "the
+     * panel closed or failed". It then releases the guards that keep this
+     * backend alive for the dialog's lifetime, and the backend is torn down
+     * while {@code ASIOControlPanel()} is still executing on the
+     * {@code asio-control} thread. The unbounded wait therefore defers the
+     * interrupt — re-asserting it on the calling thread — instead of honouring
+     * it, and this method returns only once the driver really has.</p>
      *
      * <p>If the shim or the {@code openControlPanel} symbol is
      * unavailable, returns a generic failure (negative). FFM-level

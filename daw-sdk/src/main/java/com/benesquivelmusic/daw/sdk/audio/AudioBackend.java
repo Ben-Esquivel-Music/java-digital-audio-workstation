@@ -784,7 +784,74 @@ public interface AudioBackend extends AutoCloseable {
     }
 
     /**
+     * The backend's own answer to "did my {@link #close()} actually give the
+     * device back?" (story 316 re-review).
+     *
+     * <p>{@code close()} returning normally is not, on its own, proof of a
+     * release. A backend may hold native state it cannot free at the moment it
+     * is asked to — {@link AsioBackend} defers its {@code ASIOExit} while the
+     * {@code asio-control} thread is still executing a call the host abandoned,
+     * because that shim can only ever be closed ONCE and closing it then would
+     * spend that single chance on downcalls that fail fast. The deferral is
+     * correct; being SILENT about it was not, because the caller then reads an
+     * ordinary successful close and moves on.</p>
+     *
+     * <p><strong>The contract, point by point.</strong></p>
+     * <ul>
+     *   <li>Meaningful only AFTER {@link #close()} has returned normally, or
+     *       after an {@link #open(DeviceId, AudioFormat, int)} that failed and
+     *       rolled itself back. At any other moment it answers about nothing in
+     *       particular.</li>
+     *   <li>{@code true} means the backend returned from {@code close()}
+     *       WITHOUT having released native state that may still hold — or may
+     *       still be about to take — the device. The caller must treat the
+     *       handle as RETAINED: the same disposition it already gives a
+     *       {@code close()} that THREW, which is the only other way a backend
+     *       can report "you do not have this device back".</li>
+     *   <li>It is transient and SELF-CLEARING. It answers {@code false} again
+     *       once the deferred release completes, so a caller that abandoned a
+     *       device on account of it may retry rather than treat the device as
+     *       lost for the life of the process.</li>
+     *   <li>Cheap and non-blocking, unlike {@link #isAvailable()} and
+     *       {@link #supportsStreaming()} — it reads host-side state and never
+     *       probes native resources. That is deliberate: the intended callers
+     *       ask it on a lifecycle path immediately after {@code close()}, often
+     *       under a lifecycle lock, where a probing query would be a stall.</li>
+     * </ul>
+     *
+     * <p>The default is {@code false} because a backend that releases
+     * SYNCHRONOUSLY inside {@code close()} has nothing outstanding by the time
+     * {@code close()} returns, and inheriting the default is the correct
+     * answer rather than a missing override:
+     * {@link CoreAudioBackend}, {@link JackBackend}, {@link WasapiBackend},
+     * {@link MockAudioBackend} and {@code daw-core}'s
+     * {@code CallbackBackendAdapter} all release inline.
+     * {@link JavaxSoundBackend} needs no override for a different reason worth
+     * spelling out: its {@code close()} THROWS when a line could not be
+     * released and RETAINS the handle, and callers already read a close that
+     * threw as a non-release — so the fact is reported through the exception
+     * instead of through this flag, and the two never disagree.</p>
+     *
+     * <p>This is the SDK half of the contract: it gives a backend a way to
+     * SAY that its close deferred. Acting on it — refusing to walk a fallback
+     * ladder past a rung that still may hold the device — belongs to the
+     * engine in {@code daw-core}.</p>
+     *
+     * @return {@code true} when a release this backend owes has not completed
+     *         yet, so the device must be treated as still held; {@code false}
+     *         when nothing is outstanding
+     */
+    default boolean isReleasePending() {
+        return false;
+    }
+
+    /**
      * Closes any open stream and releases native resources. Idempotent.
+     *
+     * <p>Returning normally does not always mean the device was given back:
+     * a backend that had to DEFER part of its release says so through
+     * {@link #isReleasePending()}, which callers on a lifecycle path should
+     * consult before treating the handle as gone.</p>
      */
     @Override
     void close();

@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -132,6 +133,98 @@ class AsioControlThreadTest {
                 .as("the unbounded path must have waited past what the bounded path"
                         + " would have refused, or this test proves no exemption")
                 .isGreaterThanOrEqualTo(TINY_BUDGET.toMillis());
+    }
+
+    /**
+     * Story 316 re-review — the modal exemption covers INTERRUPTION as well as
+     * the budget.
+     *
+     * <p>The unbounded path used to wait on an interruptible
+     * {@code Future.get()}, so an interrupt made {@code callUnbounded} return
+     * (by throwing) while {@code ASIOControlPanel()} was still executing on
+     * the control thread. Nothing recorded that: the panel flag was cleared in
+     * a {@code finally}, and an unbounded operation never touches the
+     * abandoned count, so {@link AsioControlThread#isQuiesced()} answered
+     * {@code true} about a live downcall.
+     * {@code AsioCapabilityShim.openControlPanel()} normalises every throw to
+     * a generic failure, which the application layer reads as "the panel
+     * closed", releasing the guards that keep the backend alive for the
+     * dialog — backend teardown underneath a running driver call.</p>
+     *
+     * <p>Interrupting a thread parked inside the driver does nothing, so
+     * honouring the interrupt could never have closed the panel; it could only
+     * lie about the driver being finished. The wait is now uninterruptible and
+     * the interrupt is DEFERRED, which is what this test's CLOSING assertions
+     * pin: the caller is told both facts — the driver returned (it gets the
+     * operation's real result), and someone asked this thread to stop (the
+     * interrupt status is still set on return).</p>
+     */
+    @Test
+    void anInterruptCannotCutTheModalControlPanelWaitShort() throws Exception {
+        CountDownLatch panelOpen = new CountDownLatch(1);
+        CountDownLatch callReturned = new CountDownLatch(1);
+        AtomicBoolean panelFinished = new AtomicBoolean();
+        AtomicBoolean interruptedOnReturn = new AtomicBoolean();
+        AtomicReference<Integer> result = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread caller = Thread.ofPlatform().daemon(true).name("panel-caller").start(() -> {
+            try {
+                // Blocks on the shared wedgeRelease so @AfterEach frees the
+                // control thread even if an assertion below fails first.
+                result.set(AsioControlThread.callUnbounded(() -> {
+                    panelOpen.countDown();
+                    wedgeRelease.await();
+                    panelFinished.set(true);
+                    return 7;
+                }));
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            } finally {
+                interruptedOnReturn.set(Thread.currentThread().isInterrupted());
+                callReturned.countDown();
+            }
+        });
+        try {
+            assertThat(panelOpen.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the modal operation must be EXECUTING before it is interrupted,"
+                            + " or this test proves nothing about a live downcall")
+                    .isTrue();
+
+            caller.interrupt();
+
+            assertThat(callReturned.await(TINY_BUDGET.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("an interrupt cannot end a call the driver is inside, so"
+                            + " returning here would report a finished downcall that is"
+                            + " still running — and the app layer would release the"
+                            + " guards keeping this backend alive for the dialog")
+                    .isFalse();
+            assertThat(panelFinished)
+                    .as("the operation must still be inside the driver at this point")
+                    .isFalse();
+
+            wedgeRelease.countDown();
+
+            assertThat(callReturned.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the driver returning is what ends the wait")
+                    .isTrue();
+            assertThat(failure.get())
+                    .as("the deferred interrupt must not be reported as a failure of the"
+                            + " panel operation")
+                    .isNull();
+            assertThat(result.get())
+                    .as("the caller gets the operation's REAL result, not an"
+                            + " interruption")
+                    .isEqualTo(7);
+            assertThat(interruptedOnReturn)
+                    .as("the interrupt is deferred, never swallowed: a shutdown that"
+                            + " arrived while the panel was open must still be honoured"
+                            + " at the first interruptible point after the driver"
+                            + " returned")
+                    .isTrue();
+        } finally {
+            wedgeRelease.countDown();
+            caller.join(GUARD_BUDGET_MILLIS);
+        }
     }
 
     @Test
