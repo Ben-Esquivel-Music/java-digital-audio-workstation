@@ -197,16 +197,18 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * {@code LongAdder} would buy nothing and a {@code LongAdder} would
      * additionally allocate cells.</p>
      *
-     * <p>That reasoning stands on its own: {@code RealTimeSafeContractTest}
-     * does not check it. Its bytecode sentinel scans
-     * {@link #bufferSwitch(int, int)} for <em>inline publication</em> —
-     * invocations of {@code SubmissionPublisher}, {@code publishInput},
-     * {@code submit} or {@code offer} — and its other goals check for
-     * {@code synchronized}, varargs and boxed types on
+     * <p>{@code RealTimeSafeContractTest} enforces only part of that.
+     * Its bytecode sentinels scan {@link #bufferSwitch(int, int)}, and
+     * every method it reaches inside this class, for <em>inline
+     * publication</em> — invocations of {@code SubmissionPublisher},
+     * {@code publishInput}, {@code submit} or {@code offer} — and for
+     * <em>atomic read-modify-writes</em>, which is what would fail if this
+     * counter were turned back into an {@code AtomicLong}; its other goals
+     * check for {@code synchronized}, varargs and boxed types on
      * {@code @RealTimeSafe} methods. A counter that allocated or took a
-     * lock through some other API would pass it, so the field's RT-safety
-     * is a design property maintained here, not one the sentinel
-     * enforces.</p>
+     * lock through some other API would still pass all of them, so the
+     * remainder of the field's RT-safety is a design property maintained
+     * here, not one the sentinels enforce.</p>
      */
     private volatile long renderedBlocksConsumed;
 

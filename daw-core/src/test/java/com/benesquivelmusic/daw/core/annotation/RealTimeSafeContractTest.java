@@ -16,12 +16,17 @@ import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.MonitorInstruction;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -39,9 +44,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>EVERY production real-time callback bridge — every method a driver
  *       enters on ITS real-time thread, listed in
  *       {@link #RT_CALLBACK_BRIDGES} — carries {@code @RealTimeSafe} and,
- *       per its own bytecode, never publishes captured audio inline: the
- *       hand-off to non-RT code is a lock-free ring plus a drain thread.
- *       The sentinel is parameterized over the bridges rather than pinned
+ *       per the bytecode of the bridge method AND of every method it can
+ *       reach inside the same class, neither publishes captured audio
+ *       inline (the hand-off to non-RT code is a lock-free ring plus a
+ *       drain thread) nor performs an atomic read-modify-write. The
+ *       sentinels are parameterized over the bridges rather than pinned
  *       to the ASIO one, so a new RT callback path is covered by adding a
  *       single list entry.</li>
  *   <li>Every concrete {@link AudioProcessor} in {@code daw-core/dsp} has
@@ -69,6 +76,26 @@ class RealTimeSafeContractTest {
     private static final Set<Class<?>> BOXED_TYPES = Set.of(
             Boolean.class, Byte.class, Character.class, Short.class,
             Integer.class, Long.class, Float.class, Double.class);
+
+    /**
+     * Story 316 — every {@code java.util.concurrent.atomic} /
+     * {@link java.lang.invoke.VarHandle} operation that is a read-modify-write
+     * rather than a plain load or store.
+     *
+     * <p>Named exhaustively rather than matched by prefix so that
+     * {@code get()}, {@code set()}, {@code getPlain}, {@code setRelease},
+     * {@code getAcquire} and friends stay legal on a callback thread: those
+     * are single instructions, and it is only the CAS-loop family that is
+     * unbounded.</p>
+     */
+    private static final Set<String> ATOMIC_RMW_METHODS = Set.of(
+            "incrementAndGet", "decrementAndGet", "getAndIncrement", "getAndDecrement",
+            "addAndGet", "getAndAdd", "getAndSet", "getAndUpdate", "updateAndGet",
+            "getAndAccumulate", "accumulateAndGet", "compareAndSet", "compareAndExchange",
+            "compareAndExchangeAcquire", "compareAndExchangeRelease", "weakCompareAndSet",
+            "weakCompareAndSetPlain", "weakCompareAndSetAcquire", "weakCompareAndSetRelease",
+            "getAndBitwiseAnd", "getAndBitwiseOr", "getAndBitwiseXor",
+            "increment", "add", "sum", "reset", "sumThenReset");
 
     /** Story 311 — the ASIO real-time bridge scanned by the sentinels below. */
     private static final String ASIO_BRIDGE_CLASS =
@@ -316,9 +343,9 @@ class RealTimeSafeContractTest {
      *
      * <p>The scan is by method <em>name</em>, so it would pass vacuously if a
      * bridge method were renamed or compiled without a {@code Code}
-     * attribute: the loop body would never run and {@code offenders} would be
-     * empty. The scanned-method count is therefore asserted non-empty PER
-     * BRIDGE first, per this repo's conformance-sentinel convention.</p>
+     * attribute: the walk would start from nothing and {@code offenders}
+     * would be empty. The scanned-root count is therefore asserted non-empty
+     * PER BRIDGE first, per this repo's conformance-sentinel convention.</p>
      */
     @TestFactory
     Stream<DynamicTest> noRtCallbackBridgeMayPublishFromTheCallbackThread() {
@@ -327,47 +354,139 @@ class RealTimeSafeContractTest {
                 .isNotEmpty();
         return RT_CALLBACK_BRIDGES.stream().map(bridge -> DynamicTest.dynamicTest(
                 bridge + " must not publish from the callback thread",
-                () -> assertBridgeNeverPublishesInline(bridge)));
+                () -> assertNoBridgeMethodInvokes(bridge,
+                        (owner, name) -> owner.contains("SubmissionPublisher")
+                                || name.equals("publishInput")
+                                || name.equals("submit")
+                                || name.equals("offer"),
+                        "must hand captured audio to its own drain thread instead of "
+                                + "publishing inline on the driver's real-time thread")));
     }
 
     /**
-     * Runs the publish sentinel's bytecode scan against one bridge. Reaches
-     * the class file through {@code getResourceAsStream}, which JPMS never
-     * encapsulates for {@code .class} resources — so a {@code daw-core}
-     * bridge is read exactly the way the {@code daw-sdk} one is.
+     * Story 316 — structural guard against an atomic read-modify-write on a
+     * driver's real-time thread, applied to EVERY bridge in
+     * {@link #RT_CALLBACK_BRIDGES}.
+     *
+     * <p>{@code AtomicLong.incrementAndGet} and every other operation in
+     * {@link #ATOMIC_RMW_METHODS} is a CAS retry loop. Its worst-case
+     * iteration count is unbounded under contention, so it is NOT wait-free,
+     * so it has no bounded upper cost — which is exactly the property a
+     * driver callback needs and the reason such a counter does not belong
+     * here. A driver-callback counter has exactly ONE writer by construction
+     * (the callback thread), so the correct shape is a plain
+     * {@code volatile long} with {@code ++}: a volatile load, an add and a
+     * volatile store, with nothing to lose to a concurrent update and a
+     * publishing store for the control thread that reads it. See
+     * {@code AsioBufferSwitchShim.renderedBlocksConsumed} and
+     * {@code CallbackBackendAdapter.droppedInputBlocks}.</p>
+     *
+     * <h2>Deliberate scope</h2>
+     * <p>This rule binds the DRIVER CALLBACK BRIDGES only — not every
+     * {@code @RealTimeSafe} method. The engine render path
+     * ({@code AudioBufferPool}, {@code AudioWorkerPool},
+     * {@code NativeAudioBufferPool}, {@code MidiEventPool},
+     * {@code Transport.advancePosition}) uses CAS deliberately, as its
+     * lock-free pool / slot-claim discipline, and is explicitly OUT of this
+     * sentinel's scope: there the CAS <em>is</em> the algorithm, whereas on a
+     * callback thread it would only be a counter paying for atomicity it
+     * cannot use.</p>
      */
-    private static void assertBridgeNeverPublishesInline(RtCallbackBridge bridge)
+    @TestFactory
+    Stream<DynamicTest> noRtCallbackBridgeMayUseAtomicReadModifyWrite() {
+        assertThat(RT_CALLBACK_BRIDGES)
+                .as("at least one production RT callback bridge must be scanned")
+                .isNotEmpty();
+        return RT_CALLBACK_BRIDGES.stream().map(bridge -> DynamicTest.dynamicTest(
+                bridge + " must not perform an atomic read-modify-write",
+                () -> assertNoBridgeMethodInvokes(bridge,
+                        (owner, name) ->
+                                (owner.startsWith("java/util/concurrent/atomic/")
+                                        || owner.equals("java/lang/invoke/VarHandle"))
+                                        && ATOMIC_RMW_METHODS.contains(name),
+                        "must not perform an unbounded CAS retry loop on the driver's "
+                                + "real-time thread; a single-writer callback counter is a "
+                                + "plain volatile long with ++")));
+    }
+
+    /**
+     * Shared bytecode walk behind both bridge sentinels: collects every
+     * invocation reachable from a bridge method that {@code isOffender}
+     * rejects, and fails with {@code because} if any is found.
+     *
+     * <p>The walk is a BFS over the methods the bridge can reach WITHIN ITS
+     * OWN CLASS: every {@link InvokeInstruction} whose owner is the class's
+     * own internal name enqueues the callee for scanning. Scanning only the
+     * bridge method's own bytecode — which is what this did before story
+     * 316's re-review — would be silently defeated by extracting the
+     * offending call into a private helper, which is precisely the refactor a
+     * maintainer would reach for.</p>
+     *
+     * <p>Limitation, unchanged from the original scan: {@code invokedynamic}
+     * is not followed, so a call made from inside a lambda body is not
+     * reached. Neither production bridge uses one on its hot path.</p>
+     *
+     * <p>The class file is reached through {@code getResourceAsStream}, which
+     * JPMS never encapsulates for {@code .class} resources — so a
+     * {@code daw-core} bridge is read exactly the way the {@code daw-sdk} one
+     * is.</p>
+     *
+     * @param bridge     the callback bridge to scan
+     * @param isOffender predicate over (owner internal name, method name)
+     * @param because    the assertion message tail explaining the rule
+     */
+    private static void assertNoBridgeMethodInvokes(
+            RtCallbackBridge bridge, BiPredicate<String, String> isOffender, String because)
             throws Exception {
         Class<?> bridgeClass = Class.forName(bridge.className());
         byte[] bytes = readClassBytes(bridgeClass);
         assertThat(bytes).as("%s class file must be readable", bridge).isNotNull();
         ClassModel model = ClassFile.of().parse(bytes);
+        String ownInternalName = model.thisClass().asInternalName();
 
-        List<String> offenders = new ArrayList<>();
-        int scannedBridgeMethods = 0;
+        Map<String, MethodModel> methodsByKey = new LinkedHashMap<>();
         for (MethodModel mm : model.methods()) {
-            if (!mm.methodName().stringValue().equals(bridge.methodName())) {
-                continue;
-            }
-            CodeAttribute code = mm
-                    .findAttribute(java.lang.classfile.Attributes.code())
-                    .map(CodeAttribute.class::cast)
-                    .orElse(null);
-            if (code == null) {
+            methodsByKey.put(
+                    mm.methodName().stringValue() + mm.methodType().stringValue(), mm);
+        }
+
+        Set<String> reached = new LinkedHashSet<>();
+        Deque<String> pending = new ArrayDeque<>();
+        int scannedBridgeMethods = 0;
+        for (Map.Entry<String, MethodModel> entry : methodsByKey.entrySet()) {
+            MethodModel mm = entry.getValue();
+            if (!mm.methodName().stringValue().equals(bridge.methodName())
+                    || codeOf(mm) == null) {
                 continue;
             }
             scannedBridgeMethods++;
+            if (reached.add(entry.getKey())) {
+                pending.add(entry.getKey());
+            }
+        }
+
+        List<String> offenders = new ArrayList<>();
+        while (!pending.isEmpty()) {
+            MethodModel mm = methodsByKey.get(pending.poll());
+            CodeAttribute code = mm == null ? null : codeOf(mm);
+            if (code == null) {
+                continue;
+            }
+            String from = mm.methodName().stringValue();
             for (var element : code) {
                 if (!(element instanceof InvokeInstruction invoke)) {
                     continue;
                 }
                 String owner = invoke.owner().asInternalName();
                 String name = invoke.name().stringValue();
-                if (owner.contains("SubmissionPublisher")
-                        || name.equals("publishInput")
-                        || name.equals("submit")
-                        || name.equals("offer")) {
-                    offenders.add(bridge.methodName() + " invokes " + owner + "#" + name);
+                if (isOffender.test(owner, name)) {
+                    offenders.add(from + " invokes " + owner + "#" + name);
+                }
+                if (owner.equals(ownInternalName)) {
+                    String calleeKey = name + invoke.type().stringValue();
+                    if (methodsByKey.containsKey(calleeKey) && reached.add(calleeKey)) {
+                        pending.add(calleeKey);
+                    }
                 }
             }
         }
@@ -379,9 +498,16 @@ class RealTimeSafeContractTest {
                         + "method was renamed, update RT_CALLBACK_BRIDGES here.", bridge)
                 .isGreaterThanOrEqualTo(1);
         assertThat(offenders)
-                .as("%s must hand captured audio to its own drain thread instead of "
-                        + "publishing inline on the driver's real-time thread", bridge)
+                .as("%s (and everything it calls in its own class: %s) %s",
+                        bridge, reached, because)
                 .isEmpty();
+    }
+
+    /** The {@code Code} attribute of a class-file method, or {@code null} for an abstract one. */
+    private static CodeAttribute codeOf(MethodModel mm) {
+        return mm.findAttribute(java.lang.classfile.Attributes.code())
+                .map(CodeAttribute.class::cast)
+                .orElse(null);
     }
 
     // ------------------------------------------------------------------

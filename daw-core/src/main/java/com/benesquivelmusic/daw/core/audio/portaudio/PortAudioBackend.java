@@ -41,6 +41,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
     private List<AudioDeviceInfo> cachedDevices;
     private AudioStreamConfig currentConfig;
     private AudioStreamCallback currentCallback;
+    private CallbackInvoker currentInvoker;
     private MemorySegment streamHandle;
     private Arena streamArena;
 
@@ -160,6 +161,10 @@ public final class PortAudioBackend implements NativeAudioBackend {
         } catch (RuntimeException | Error e) {
             streamArena.close();
             streamArena = null;
+            // The invoker was published by createCallbackStub before the open
+            // failed; it belongs to a stream that never existed, so it must not
+            // survive into the next open's clamp report.
+            currentInvoker = null;
             throw e;
         }
     }
@@ -195,6 +200,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
         PortAudioException.checkError(result, "Pa_CloseStream");
         streamActive.set(false);
         streamHandle = null;
+        reportClampedOversizedPeriods();
         currentConfig = null;
         currentCallback = null;
         if (streamArena != null) {
@@ -277,6 +283,34 @@ public final class PortAudioBackend implements NativeAudioBackend {
         } catch (AudioBackendException e) {
             LOG.log(Level.WARNING, "Pa_StopStream failed before close; closing the stream anyway", e);
         }
+    }
+
+    /**
+     * Reports, once per stream, how many host periods the callback bridge had
+     * to clamp (story 316 review).
+     *
+     * <p>{@link CallbackInvoker#invoke} cannot log: it runs on PortAudio's
+     * real-time thread, where a {@link Logger} call would take a lock and
+     * allocate. It therefore only counts, and the count is drained here — on
+     * the closing thread, by construction, because {@link #closeStream()} is
+     * called by the owner and never by the driver.</p>
+     *
+     * <p>The requested frame count is read back off the invoker rather than
+     * off {@link #currentConfig}, because the invoker's value is the one the
+     * clamp actually measured against.</p>
+     */
+    private void reportClampedOversizedPeriods() {
+        CallbackInvoker invoker = this.currentInvoker;
+        if (invoker != null && invoker.clampedOversizedPeriods() > 0) {
+            LOG.warning("PortAudio delivered " + invoker.clampedOversizedPeriods()
+                    + " callback period(s) larger than the " + invoker.framesPerBuffer()
+                    + " frames this stream was opened with; each was clamped to "
+                    + invoker.framesPerBuffer() + " frames and the excess frames were"
+                    + " played as silence, because indexing past the pre-allocated"
+                    + " channel planes would have thrown out of an upcall on the"
+                    + " driver's real-time thread");
+        }
+        this.currentInvoker = null;
     }
 
     private void ensureInitialized() {
@@ -441,9 +475,13 @@ public final class PortAudioBackend implements NativeAudioBackend {
                 ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS
         );
 
+        CallbackInvoker invoker = CallbackInvoker.forStream(
+                callback, inputChannels, outputChannels, framesPerBuffer);
+        this.currentInvoker = invoker;
+
         // Create an upcall stub that bridges the C callback to the Java callback
         return Linker.nativeLinker().upcallStub(
-                CallbackBridge.createHandle(callback, inputChannels, outputChannels, framesPerBuffer),
+                CallbackBridge.createHandle(invoker),
                 callbackDescriptor,
                 arena
         );
@@ -458,17 +496,11 @@ public final class PortAudioBackend implements NativeAudioBackend {
 
         private CallbackBridge() {}
 
-        static java.lang.invoke.MethodHandle createHandle(
-                AudioStreamCallback callback, int inputChannels, int outputChannels, int framesPerBuffer) {
-            // Pre-allocate the Java-side buffers once
-            float[][] inputBuffer = inputChannels > 0 ? new float[inputChannels][framesPerBuffer] : new float[0][];
-            float[][] outputBuffer = outputChannels > 0 ? new float[outputChannels][framesPerBuffer] : new float[0][];
-
+        static java.lang.invoke.MethodHandle createHandle(CallbackInvoker invoker) {
             try {
                 MethodHandles.Lookup lookup = java.lang.invoke.MethodHandles.lookup();
                 return lookup.bind(
-                        new CallbackInvoker(callback, inputBuffer, outputBuffer,
-                                inputChannels, outputChannels),
+                        invoker,
                         "invoke",
                         java.lang.invoke.MethodType.methodType(
                                 int.class,
@@ -484,6 +516,37 @@ public final class PortAudioBackend implements NativeAudioBackend {
     /**
      * Invokable object that processes PortAudio callbacks by converting between
      * native interleaved float buffers and the Java {@code float[][]} format.
+     *
+     * <p>{@link #invoke} runs on PortAudio's real-time thread. The Java-side
+     * channel planes are allocated ONCE, at
+     * {@link #forStream(AudioStreamCallback, int, int, int)}, and sized to the
+     * {@code framesPerBuffer} the stream was opened with — so the callback
+     * itself allocates no array.</p>
+     *
+     * <h2>Why the frame count is clamped</h2>
+     * <p>PortAudio's contract is that when {@code Pa_OpenStream} is given a
+     * NON-ZERO {@code framesPerBuffer}, every callback receives exactly that
+     * many frames. This codebase always requests one — the request comes from
+     * {@link com.benesquivelmusic.daw.sdk.audio.BufferSize}, whose constants
+     * run 32..2048 and never include {@code paFramesPerBufferUnspecified} — so
+     * a host that hands us a LARGER period is a host API breaking that
+     * contract, not a configuration we chose.</p>
+     *
+     * <p>{@link #invoke} clamps rather than trusting {@code frameCount}
+     * because it indexes the pre-allocated planes BEFORE any downstream
+     * consumer sees the block: {@code CallbackBackendAdapter}'s own oversized
+     * -block clamp sits behind {@code AudioStreamCallback.process} and can
+     * protect nothing here. An {@link ArrayIndexOutOfBoundsException} thrown
+     * back through an FFM upcall into a native driver is not a recoverable
+     * outcome — it unwinds into C code that has no handler — so the bridge
+     * absorbs the oversized period, processes the frames it can, silences the
+     * remainder, and counts the event for
+     * {@link PortAudioBackend#closeStream()} to report.</p>
+     *
+     * <p>{@link #invoke} is deliberately NOT annotated
+     * {@code @RealTimeSafe}: it calls {@link MemorySegment#reinterpret(long)},
+     * which creates a segment object, so the annotation would be a promise
+     * this method does not keep.</p>
      */
     static final class CallbackInvoker {
 
@@ -492,23 +555,110 @@ public final class PortAudioBackend implements NativeAudioBackend {
         private final float[][] outputBuffer;
         private final int inputChannels;
         private final int outputChannels;
+        private final int framesPerBuffer;
+
+        /**
+         * Host periods this stream had to clamp down to
+         * {@link #framesPerBuffer} — that is, callbacks where PortAudio
+         * delivered MORE frames than the stream was opened with.
+         *
+         * <p>A plain {@code volatile long} with {@code ++} is the right
+         * counter here because PortAudio's callback thread is the
+         * <em>only</em> writer. The increment is a volatile load, an add and
+         * a volatile store: no CAS retry loop, so its cost is a bounded
+         * instruction count rather than something that can spin under
+         * contention; no lock, so it cannot block behind a control thread;
+         * and no object is created, so it cannot provoke an allocation or a
+         * GC pause inside the callback. With a single writer the
+         * non-atomicity of the read-modify-write loses nothing — there is no
+         * concurrent update to lose to — while the volatile store still
+         * publishes each value to the closing thread that reads it in
+         * {@link PortAudioBackend#reportClampedOversizedPeriods()} and to
+         * tests. An {@code AtomicLong} would buy no correctness and pay a
+         * CAS for it; a {@code LongAdder} would additionally allocate
+         * cells.</p>
+         *
+         * <p>This is the same idiom, for the same reason, as
+         * {@code AsioBufferSwitchShim.renderedBlocksConsumed}.</p>
+         */
+        private volatile long clampedOversizedPeriods;
+
+        /**
+         * Creates an invoker with its channel planes pre-allocated at
+         * {@code framesPerBuffer}.
+         *
+         * @param callback       the Java callback to drive
+         * @param inputChannels  capture channel count; {@code 0} for none
+         * @param outputChannels playback channel count; {@code 0} for none
+         * @param framesPerBuffer the frame count the stream is being opened
+         *                        with, and therefore the plane length every
+         *                        callback is clamped to
+         * @return the invoker to bind into the upcall stub
+         */
+        static CallbackInvoker forStream(AudioStreamCallback callback, int inputChannels,
+                                         int outputChannels, int framesPerBuffer) {
+            float[][] inputBuffer = inputChannels > 0
+                    ? new float[inputChannels][framesPerBuffer] : new float[0][];
+            float[][] outputBuffer = outputChannels > 0
+                    ? new float[outputChannels][framesPerBuffer] : new float[0][];
+            return new CallbackInvoker(callback, inputBuffer, outputBuffer,
+                    inputChannels, outputChannels, framesPerBuffer);
+        }
 
         CallbackInvoker(AudioStreamCallback callback, float[][] inputBuffer, float[][] outputBuffer,
-                        int inputChannels, int outputChannels) {
+                        int inputChannels, int outputChannels, int framesPerBuffer) {
             this.callback = callback;
             this.inputBuffer = inputBuffer;
             this.outputBuffer = outputBuffer;
             this.inputChannels = inputChannels;
             this.outputChannels = outputChannels;
+            this.framesPerBuffer = framesPerBuffer;
         }
 
         /**
-         * Called from native code via the upcall stub.
+         * Called from native code via the upcall stub, on PortAudio's
+         * real-time thread.
+         *
+         * <p>See the class javadoc for why {@code frameCount} is clamped to
+         * {@link #framesPerBuffer} instead of trusted.</p>
+         *
+         * <h2>Why the output size is computed the long way</h2>
+         * <p>{@code frameCount} is a raw {@code long}: the upcall descriptor
+         * declares {@link ValueLayout#JAVA_LONG} for PortAudio's C
+         * {@code unsigned long frameCount}, which is a 32-bit type on Windows,
+         * so the high half of that register is not architecturally guaranteed
+         * to be zero. Multiplying it by the frame stride to size the output
+         * segment can therefore overflow to a NEGATIVE byte count, and
+         * {@link MemorySegment#reinterpret(long)} answers a negative size with
+         * an {@link IllegalArgumentException} — thrown straight back out of
+         * this upcall into the driver, which is the exact failure class the
+         * clamp exists to remove. The product is guarded against overflow
+         * instead of being taken on trust.</p>
+         *
+         * <p>Everything else about the host's claim IS taken on trust, and
+         * deliberately so. Zeroing the frames beyond the ones we rendered
+         * writes into memory only the host says it owns — the same trust the
+         * sample-write loop has always placed in {@code frameCount}. The only
+         * claim rejected here is one that cannot be represented at all: when
+         * the byte count would overflow, the segment is sized to what was
+         * actually rendered and the silencing fill is skipped, so nothing is
+         * written past a buffer whose extent the host never described. There
+         * is no plausibility ceiling and no magic multiple of
+         * {@link #framesPerBuffer} — representability is the whole test.</p>
+         *
+         * @param frameCount the host's frame count for this period; any
+         *                   {@code long} value is accepted, including a
+         *                   negative one, which is read as zero frames
+         * @return {@link PortAudioBindings#PA_CONTINUE}
          */
         @SuppressWarnings("unused") // invoked reflectively via MethodHandle
         public int invoke(MemorySegment input, MemorySegment output, long frameCount,
                           MemorySegment timeInfo, long statusFlags, MemorySegment userData) {
-            int frames = (int) frameCount;
+            long hostFrames = Math.max(0L, frameCount);
+            int frames = (int) Math.min(hostFrames, framesPerBuffer);
+            if (hostFrames > framesPerBuffer) {
+                clampedOversizedPeriods++; // single writer: the driver's callback thread
+            }
 
             // De-interleave input: native interleaved float buffer → float[][]
             if (inputChannels > 0 && !input.equals(MemorySegment.NULL)) {
@@ -521,12 +671,20 @@ public final class PortAudioBackend implements NativeAudioBackend {
                 }
             }
 
-            // Invoke the Java callback
+            // Invoke the Java callback with the CLAMPED count — the planes are
+            // only framesPerBuffer long.
             callback.process(inputBuffer, outputBuffer, frames);
 
             // Interleave output: float[][] → native interleaved float buffer
             if (outputChannels > 0 && !output.equals(MemorySegment.NULL)) {
-                MemorySegment outputSeg = output.reinterpret((long) frames * outputChannels * Float.BYTES);
+                // outputChannels > 0 is guaranteed by the enclosing test, so
+                // perFrameBytes is positive and the division cannot trap.
+                long renderedBytes = (long) frames * outputChannels * Float.BYTES;
+                long perFrameBytes = (long) outputChannels * Float.BYTES;
+                long hostBytes = hostFrames <= Long.MAX_VALUE / perFrameBytes
+                        ? hostFrames * perFrameBytes
+                        : renderedBytes; // not a period we can believe - write only what we rendered
+                MemorySegment outputSeg = output.reinterpret(Math.max(hostBytes, renderedBytes));
                 for (int f = 0; f < frames; f++) {
                     for (int ch = 0; ch < outputChannels; ch++) {
                         outputSeg.set(ValueLayout.JAVA_FLOAT,
@@ -534,9 +692,34 @@ public final class PortAudioBackend implements NativeAudioBackend {
                                 outputBuffer[ch][f]);
                     }
                 }
+                if (hostBytes > renderedBytes) {
+                    // The frames we could not render are SILENCE, not whatever
+                    // the driver left in its buffer.
+                    outputSeg.asSlice(renderedBytes).fill((byte) 0);
+                }
             }
 
             return PortAudioBindings.PA_CONTINUE;
+        }
+
+        /**
+         * The frame count this stream was opened with, and therefore the
+         * length of every channel plane.
+         *
+         * @return the requested frames per buffer
+         */
+        int framesPerBuffer() {
+            return framesPerBuffer;
+        }
+
+        /**
+         * How many host periods this stream clamped.
+         *
+         * @return the clamp count, {@code 0} when the host honoured the
+         *         requested period on every callback
+         */
+        long clampedOversizedPeriods() {
+            return clampedOversizedPeriods;
         }
     }
 }

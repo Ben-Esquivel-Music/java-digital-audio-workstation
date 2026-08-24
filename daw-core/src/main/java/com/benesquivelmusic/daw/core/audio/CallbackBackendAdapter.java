@@ -169,9 +169,34 @@ public final class CallbackBackendAdapter implements AudioBackend {
     private volatile SubmissionPublisher<AudioBlock> inputPublisher =
             new SubmissionPublisher<>();
 
+    // Written by the ENGINE render thread (sink / writeToChannel), never by
+    // the device callback — an atomic read-modify-write is fine off the
+    // driver's real-time thread.
     private final AtomicLong droppedOutputBlocks = new AtomicLong();
-    private final AtomicLong droppedInputBlocks = new AtomicLong();
     private final AtomicLong droppedChannelWrites = new AtomicLong();
+
+    /**
+     * Captured input blocks dropped because the input ring was full.
+     *
+     * <p>A plain {@code volatile long} with {@code ++} rather than an
+     * {@link AtomicLong} (story 316 review), because
+     * {@link #deviceCallback(float[][], float[][], int)} — the ONLY writer —
+     * runs on the device's real-time thread. {@code
+     * AtomicLong.incrementAndGet} is a CAS retry loop: its worst-case
+     * iteration count is unbounded under contention, so it is not wait-free
+     * and does not belong on a driver callback thread. The plain increment
+     * compiles to a volatile load, an add and a volatile store — bounded
+     * instruction count, no lock, no allocation — and with a single writer
+     * the non-atomic read-modify-write can lose nothing, while the volatile
+     * store still publishes each value to the control / test threads that
+     * read it through {@link #droppedInputBlocks()}.</p>
+     *
+     * <p>Same idiom, same reasoning, as
+     * {@code AsioBufferSwitchShim.renderedBlocksConsumed}. The two sibling
+     * counters above stay {@code AtomicLong}: they are written by the engine
+     * render thread, which is not the driver's callback thread.</p>
+     */
+    private volatile long droppedInputBlocks;
 
     /**
      * Creates an adapter over the given legacy backend that opens its input
@@ -525,7 +550,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
 
     /** Captured input blocks dropped because the input ring was full. */
     long droppedInputBlocks() {
-        return droppedInputBlocks.get();
+        return droppedInputBlocks;
     }
 
     /** Rendered output blocks dropped because the output ring was full. */
@@ -617,7 +642,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
                 && inputBuffer != null && inputBuffer.length > 0) {
             interleave(inputBuffer, inBlock, numFrames, inChannels);
             if (!in.write(inBlock, inBlock.length)) {
-                droppedInputBlocks.incrementAndGet();
+                droppedInputBlocks++;
             }
             Thread drain = this.drainThread;
             if (drain != null) {
