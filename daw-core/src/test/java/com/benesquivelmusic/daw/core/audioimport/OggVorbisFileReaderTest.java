@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audioimport;
 
+import com.benesquivelmusic.daw.core.audio.NativeAbi;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
 import com.benesquivelmusic.daw.core.export.NativeCodecAvailability;
@@ -20,6 +21,26 @@ class OggVorbisFileReaderTest {
 
     @TempDir
     Path tempDir;
+
+    /**
+     * Story 316 re-review — the reader no longer performs its own
+     * {@code Linker.canonicalLayouts()} lookup; it forwards to
+     * {@link NativeAbi}, which owns that fact for every FFM binding here.
+     *
+     * <p>Asserted from inside the reader's own package because
+     * {@code C_LONG} is package-private, so the {@code core.audio} test that
+     * covers {@link NativeAbi} itself cannot reach it. Identity, not equality:
+     * the failure this guards against is someone re-introducing a private
+     * copy of the lookup, and a copy would compare equal while defeating the
+     * whole point of the de-duplication.</p>
+     */
+    @Test
+    void cLongShouldBeTheSharedNativeAbiLayout() {
+        assertThat(OggVorbisFileReader.C_LONG)
+                .as("the reader and every other binding must resolve C 'long' through "
+                        + "the one NativeAbi field, so they cannot drift apart")
+                .isSameAs(NativeAbi.C_LONG);
+    }
 
     @Test
     void shouldRejectNullPath() {

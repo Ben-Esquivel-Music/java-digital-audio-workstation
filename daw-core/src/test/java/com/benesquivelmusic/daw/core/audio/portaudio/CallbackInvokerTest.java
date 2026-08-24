@@ -5,8 +5,12 @@ import com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback;
 import org.junit.jupiter.api.Test;
 
 import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
+import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandle;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -245,9 +249,16 @@ class CallbackInvokerTest {
      * Long.MAX_VALUE that product overflows to a NEGATIVE byte count and
      * MemorySegment.reinterpret answers it with IllegalArgumentException —
      * back out of the upcall into C, the same unrecoverable failure the clamp
-     * exists to remove. The upcall descriptor declares JAVA_LONG for
-     * PortAudio's C `unsigned long`, a 32-bit type on Windows, so the high
-     * half of that register is not architecturally guaranteed to be zero.
+     * exists to remove.
+     *
+     * <p>The claim under test is an LP64 one, and it stays reachable there:
+     * on Linux and macOS PortAudio's C `unsigned long` really is 64 bits
+     * wide, so a host can hand the callback any long at all and the overflow
+     * guard is load-bearing. On an LLP64 host the same parameter is 32 bits
+     * and reaches {@code invoke} through {@code invokeNarrowLong}, so it
+     * cannot exceed 4294967295 there and the guard cannot fire — which is why
+     * this test drives {@code invoke} directly rather than pretending the
+     * value could arrive from a Windows driver.</p>
      */
     @Test
     void shouldSurviveAFrameCountWhoseByteSizeCannotBeRepresented() {
@@ -289,10 +300,11 @@ class CallbackInvokerTest {
     }
 
     /**
-     * The other unrepresentable claim: PortAudio's C {@code unsigned long}
-     * with its top bit set reads back in Java as a negative {@code long}. It
-     * is not a period we can act on, so it is read as zero frames — and, as
-     * with every other bad claim, it must not throw out of the upcall.
+     * The other unrepresentable claim: on an LP64 host, PortAudio's C
+     * {@code unsigned long} with its top bit set reads back in Java as a
+     * negative {@code long}. It is not a period we can act on, so it is read
+     * as zero frames — and, as with every other bad claim, it must not throw
+     * out of the upcall.
      */
     @Test
     void shouldTreatANegativeFrameCountAsZeroFrames() {
@@ -322,6 +334,175 @@ class CallbackInvokerTest {
             assertThat(invoker.clampedOversizedPeriods())
                     .as("zero frames is not an oversized period")
                     .isZero();
+        }
+    }
+
+    /**
+     * Story 316 re-review, the ABI half of the defect: the upcall descriptor
+     * must declare PortAudio's {@code unsigned long} as the platform's C
+     * {@code long}, not as a 64-bit {@code JAVA_LONG}.
+     *
+     * <p>Under LLP64 that C type is 32 bits. A descriptor that asks for 64
+     * makes the upcall read a full 64-bit argument slot where the host wrote
+     * only the lower 32 bits, and nothing in the ABI obliges the caller to
+     * have zeroed the rest — so {@code frameCount} can arrive carrying bits
+     * nobody supplied, and {@code invoke} multiplies it by the frame stride
+     * to size a {@code reinterpret}. That is how a declaration turns into a
+     * zero-fill past the driver's real buffer.</p>
+     *
+     * <p>Deliberately free of any {@code assumeTrue(os)}: it asserts that the
+     * descriptor matches whatever the LINKER on this host calls a C
+     * {@code long}, which is a true and non-vacuous statement on LP64 and
+     * LLP64 alike.</p>
+     */
+    @Test
+    void shouldDeclareTheCallbackWithThePlatformsCanonicalCLong() {
+        MemoryLayout canonicalCLong = Linker.nativeLinker().canonicalLayouts().get("long");
+        FunctionDescriptor descriptor = PortAudioBackend.callbackDescriptor();
+
+        assertThat(descriptor.argumentLayouts().get(2))
+                .as("frameCount is PortAudio's C `unsigned long` — 32 bits under LLP64, "
+                        + "so its width is the platform's and not a constant")
+                .isEqualTo(canonicalCLong);
+        assertThat(descriptor.argumentLayouts().get(4))
+                .as("PaStreamCallbackFlags is a typedef of the same C `unsigned long`")
+                .isEqualTo(canonicalCLong);
+    }
+
+    /**
+     * The other half, and the direct regression test for the finding: the
+     * descriptor and the Java method the linker binds must agree.
+     *
+     * <p>{@code Linker.upcallStub} rejects a handle whose type differs from
+     * the descriptor's, so a disagreement here is not a subtle miscount — it
+     * is a failure to open a stream at all, on one platform, discovered by
+     * whoever is running the DAW rather than by the build. Asserting the
+     * bound handle's type against {@code callbackDescriptor().toMethodType()}
+     * checks exactly that agreement, on whichever ABI the test happens to run
+     * on.</p>
+     */
+    @Test
+    void shouldBindTheCallbackEntryPointThatMatchesTheDescriptor() {
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> { });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, 2, 2, 64);
+
+        MethodHandle handle = PortAudioBackend.CallbackBridge.createHandle(invoker);
+
+        assertThat(handle.type())
+                .as("the upcall stub binds this handle against callbackDescriptor(); if "
+                        + "the two disagree about the width of C `long`, Linker.upcallStub "
+                        + "throws and no stream opens on this platform")
+                .isEqualTo(PortAudioBackend.callbackDescriptor().toMethodType());
+    }
+
+    /**
+     * The LLP64 entry point must ZERO-extend the host's unsigned frame count,
+     * not sign-extend it.
+     *
+     * <p>{@code 0xFFFFFFFF} is the discriminator. Read as unsigned it is
+     * 4294967295 — an absurdly oversized period, which the bridge clamps to
+     * the opened buffer size and counts. Read with a widening cast it is
+     * {@code -1}, which {@code Math.max(0L, frameCount)} turns into zero
+     * frames: a silent dropout, no clamp recorded, and nothing anywhere
+     * saying the driver misbehaved. So the assertions below distinguish the
+     * correct conversion from the plausible wrong one rather than merely
+     * observing that nothing threw.</p>
+     *
+     * <p>{@code output} is {@link MemorySegment#NULL} on purpose. With a real
+     * output segment the bridge would trust the host's claim and silence the
+     * frames past the ones it rendered — 4294967295 frames' worth of stride —
+     * and that write is precisely the memory corruption this whole change
+     * exists to prevent. A test must not perform it to prove it is possible.
+     * The input side is a real segment, so the de-interleave still runs
+     * against the clamped count.</p>
+     */
+    @Test
+    void narrowEntryPointShouldZeroExtendAnUnsignedFrameCount() {
+        int framesPerBuffer = 64;
+        int channels = 2;
+        RecordingCallback callback = new RecordingCallback(
+                (out, numFrames) -> fill(out, numFrames, RENDERED));
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, channels, channels, framesPerBuffer);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, framesPerBuffer, channels);
+
+            int result = invoker.invokeNarrowLong(input, MemorySegment.NULL, 0xFFFFFFFF,
+                    MemorySegment.NULL, 0, MemorySegment.NULL);
+
+            assertThat(result)
+                    .as("an absurd period must not throw out of the upcall")
+                    .isEqualTo(PortAudioBindings.PA_CONTINUE);
+            assertThat(callback.frameCounts)
+                    .as("0xFFFFFFFF is 4294967295 frames, clamped to the %d the planes "
+                            + "hold; sign extension would have made it -1, hence zero "
+                            + "frames, and this list would read [0]", framesPerBuffer)
+                    .containsExactly(framesPerBuffer);
+            assertThat(invoker.clampedOversizedPeriods())
+                    .as("the oversized period must be COUNTED; a sign-extended -1 is not "
+                            + "greater than framesPerBuffer, so it would leave this at 0 "
+                            + "and closeStream() would never report the misbehaving host")
+                    .isEqualTo(1L);
+        }
+    }
+
+    /**
+     * The narrow entry point is an ABI adapter and nothing else: for a period
+     * both signatures can express, it must produce byte-for-byte the same
+     * result as calling {@code invoke} directly.
+     *
+     * <p>Two invokers, two identically pre-filled host buffers, one shared
+     * input ramp, one call each. Anything that made {@code invokeNarrowLong} a
+     * second implementation — a differently ordered loop, a forgotten clamp, a
+     * missing silencing fill — separates the two buffers here.</p>
+     */
+    @Test
+    void narrowEntryPointShouldRenderIdenticallyToTheWideOne() {
+        int framesPerBuffer = 64;
+        int channels = 2;
+        RecordingCallback wideCallback = new RecordingCallback(
+                (out, numFrames) -> fill(out, numFrames, RENDERED));
+        RecordingCallback narrowCallback = new RecordingCallback(
+                (out, numFrames) -> fill(out, numFrames, RENDERED));
+        PortAudioBackend.CallbackInvoker wide = PortAudioBackend.CallbackInvoker
+                .forStream(wideCallback, channels, channels, framesPerBuffer);
+        PortAudioBackend.CallbackInvoker narrow = PortAudioBackend.CallbackInvoker
+                .forStream(narrowCallback, channels, channels, framesPerBuffer);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, framesPerBuffer, channels);
+            for (int frame = 0; frame < framesPerBuffer; frame++) {
+                for (int channel = 0; channel < channels; channel++) {
+                    input.setAtIndex(ValueLayout.JAVA_FLOAT,
+                            (long) frame * channels + channel, ramp(frame, channel));
+                }
+            }
+            MemorySegment wideOutput = allocateFrames(arena, framesPerBuffer, channels);
+            MemorySegment narrowOutput = allocateFrames(arena, framesPerBuffer, channels);
+            fillNative(wideOutput, framesPerBuffer, channels, STALE_MARKER);
+            fillNative(narrowOutput, framesPerBuffer, channels, STALE_MARKER);
+
+            int wideResult = wide.invoke(input, wideOutput, framesPerBuffer,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL);
+            int narrowResult = narrow.invokeNarrowLong(input, narrowOutput, framesPerBuffer,
+                    MemorySegment.NULL, 0, MemorySegment.NULL);
+
+            assertThat(narrowResult).isEqualTo(wideResult);
+            assertThat(readFrames(narrowOutput, 0, framesPerBuffer, channels))
+                    .as("the narrow entry point must be a pure ABI adapter — same frames "
+                            + "out, byte for byte, as the wide one")
+                    .containsExactly(readFrames(wideOutput, 0, framesPerBuffer, channels));
+            assertThat(narrowCallback.frameCounts)
+                    .as("and the same frame count handed to the Java callback")
+                    .isEqualTo(wideCallback.frameCounts);
+            assertThat(narrowCallback.capturedInput)
+                    .as("and the same de-interleaved input planes")
+                    .isDeepEqualTo(wideCallback.capturedInput);
+            assertThat(narrow.clampedOversizedPeriods())
+                    .as("and the same clamp accounting")
+                    .isEqualTo(wide.clampedOversizedPeriods());
         }
     }
 

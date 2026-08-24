@@ -1,9 +1,12 @@
 package com.benesquivelmusic.daw.core.audio.portaudio;
 
+import com.benesquivelmusic.daw.core.audio.NativeAbi;
 import com.benesquivelmusic.daw.sdk.audio.*;
 
 import java.lang.foreign.*;
+import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -436,25 +439,41 @@ public final class PortAudioBackend implements NativeAudioBackend {
         return AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN;
     }
 
+    /**
+     * Fills one {@code PaStreamParameters} struct for {@code Pa_OpenStream}.
+     *
+     * <p>The layout is {@link PortAudioBindings#PA_STREAM_PARAMETERS_LAYOUT}
+     * rather than one built here, so that the ABI decision — {@code
+     * sampleFormat} is a C {@code unsigned long}, four bytes wide under LLP64
+     * — is made once, next to the other PortAudio struct layouts, and can be
+     * asserted by a test.</p>
+     *
+     * <p>{@code sampleFormat} is consequently written through the accessor
+     * that MATCHES that layout's width. A {@link ValueLayout#JAVA_LONG}
+     * store into a four-byte member writes four bytes past it, and the only
+     * reasons that has never broken anything are that those four bytes are
+     * the padding in front of {@code suggestedLatency} and that
+     * {@link PortAudioBindings#PA_FLOAT32} fits in 32 bits. Both are facts
+     * about this struct and this constant, not about the store — so the
+     * store is made the right width instead.</p>
+     */
     private MemorySegment allocateStreamParameters(Arena arena, int deviceIndex, int channels) {
-        // PaStreamParameters struct: { int device, int channelCount, unsigned long sampleFormat,
-        //                              double suggestedLatency, void* hostApiSpecificStreamInfo }
-        MemoryLayout layout = MemoryLayout.structLayout(
-                ValueLayout.JAVA_INT.withName("device"),
-                ValueLayout.JAVA_INT.withName("channelCount"),
-                ValueLayout.JAVA_LONG.withName("sampleFormat"),
-                ValueLayout.JAVA_DOUBLE.withName("suggestedLatency"),
-                ValueLayout.ADDRESS.withName("hostApiSpecificStreamInfo")
-        );
+        MemoryLayout layout = PortAudioBindings.PA_STREAM_PARAMETERS_LAYOUT;
 
         MemorySegment params = arena.allocate(layout);
         params.set(ValueLayout.JAVA_INT,
                 layout.byteOffset(MemoryLayout.PathElement.groupElement("device")), deviceIndex);
         params.set(ValueLayout.JAVA_INT,
                 layout.byteOffset(MemoryLayout.PathElement.groupElement("channelCount")), channels);
-        params.set(ValueLayout.JAVA_LONG,
-                layout.byteOffset(MemoryLayout.PathElement.groupElement("sampleFormat")),
-                PortAudioBindings.PA_FLOAT32);
+        long sampleFormatOffset =
+                layout.byteOffset(MemoryLayout.PathElement.groupElement("sampleFormat"));
+        if (NativeAbi.C_LONG_IS_32_BIT) {
+            params.set(ValueLayout.JAVA_INT, sampleFormatOffset,
+                    (int) PortAudioBindings.PA_FLOAT32);
+        } else {
+            params.set(ValueLayout.JAVA_LONG, sampleFormatOffset,
+                    PortAudioBindings.PA_FLOAT32);
+        }
         params.set(ValueLayout.JAVA_DOUBLE,
                 layout.byteOffset(MemoryLayout.PathElement.groupElement("suggestedLatency")), 0.0);
         params.set(ValueLayout.ADDRESS,
@@ -463,18 +482,52 @@ public final class PortAudioBackend implements NativeAudioBackend {
         return params;
     }
 
+    /**
+     * The C signature of PortAudio's stream callback, as this backend
+     * declares it to the linker:
+     *
+     * <pre>{@code
+     * int callback(const void* input, void* output, unsigned long frameCount,
+     *              const PaStreamCallbackTimeInfo* timeInfo,
+     *              PaStreamCallbackFlags statusFlags, void* userData);
+     * }</pre>
+     *
+     * <p>{@code frameCount} and {@code statusFlags} — argument layouts 2 and
+     * 4, counting from zero — are {@link NativeAbi#C_LONG}, not
+     * {@link ValueLayout#JAVA_LONG}: {@code frameCount} is a C
+     * {@code unsigned long} and {@code PaStreamCallbackFlags} is a typedef of
+     * one, so both are 32 bits wide under LLP64. Declaring 64 bits there does
+     * not merely mis-name a type — it makes the upcall read a full 64-bit
+     * argument slot where the host wrote only the lower 32 bits, and nothing
+     * in the ABI obliges the caller to have zeroed the rest. The frame count
+     * that arrives can therefore carry bits no host supplied, and
+     * {@link CallbackInvoker#invoke} multiplies it by the frame stride to
+     * size a {@link MemorySegment#reinterpret(long)}: a fictitious size there
+     * is a zero-fill running past the driver's real buffer. The width has to
+     * be the platform's, not a convenient constant.</p>
+     */
+    private static final FunctionDescriptor CALLBACK_DESCRIPTOR = FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, NativeAbi.C_LONG,
+            ValueLayout.ADDRESS, NativeAbi.C_LONG, ValueLayout.ADDRESS
+    );
+
+    /**
+     * The upcall descriptor PortAudio's stream callback is bound with.
+     *
+     * <p>Package-private so a test can assert the ABI directly — descriptor
+     * against {@link Linker#canonicalLayouts()}, and descriptor against the
+     * Java method {@link CallbackBridge#createHandle(CallbackInvoker)} binds
+     * — without PortAudio being installed on the host.</p>
+     *
+     * @return the callback's {@link FunctionDescriptor}
+     */
+    static FunctionDescriptor callbackDescriptor() {
+        return CALLBACK_DESCRIPTOR;
+    }
+
     private MemorySegment createCallbackStub(Arena arena, AudioStreamCallback callback,
                                              int inputChannels, int outputChannels, int framesPerBuffer) {
-        // The PortAudio callback signature:
-        // int callback(const void* input, void* output, unsigned long frameCount,
-        //              const PaStreamCallbackTimeInfo* timeInfo,
-        //              PaStreamCallbackFlags statusFlags, void* userData)
-        FunctionDescriptor callbackDescriptor = FunctionDescriptor.of(
-                ValueLayout.JAVA_INT,
-                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
-                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS
-        );
-
         CallbackInvoker invoker = CallbackInvoker.forStream(
                 callback, inputChannels, outputChannels, framesPerBuffer);
         this.currentInvoker = invoker;
@@ -482,30 +535,48 @@ public final class PortAudioBackend implements NativeAudioBackend {
         // Create an upcall stub that bridges the C callback to the Java callback
         return Linker.nativeLinker().upcallStub(
                 CallbackBridge.createHandle(invoker),
-                callbackDescriptor,
+                CALLBACK_DESCRIPTOR,
                 arena
         );
     }
 
     /**
      * Bridge between PortAudio's C callback and the Java
-     * {@link AudioStreamCallback}. The static method is exposed as an
+     * {@link AudioStreamCallback}. The bound method is exposed as an
      * upcall stub via the FFM API.
      */
     static final class CallbackBridge {
 
         private CallbackBridge() {}
 
-        static java.lang.invoke.MethodHandle createHandle(CallbackInvoker invoker) {
+        /**
+         * Binds the {@link CallbackInvoker} entry point that MATCHES
+         * {@link #callbackDescriptor()}.
+         *
+         * <p>{@link Linker#upcallStub} rejects a handle whose type differs
+         * from the descriptor's, so the carrier used here is taken from
+         * {@link NativeAbi#C_LONG} itself rather than written out: the
+         * descriptor and this {@link MethodType} are then derived from one
+         * source and cannot drift apart. Under LP64 that carrier is
+         * {@code long} and the canonical {@link CallbackInvoker#invoke} is
+         * bound; under LLP64 it is {@code int} and the zero-extending
+         * {@link CallbackInvoker#invokeNarrowLong} is bound instead.</p>
+         *
+         * @param invoker the per-stream invoker to bind the upcall to
+         * @return the {@link MethodHandle} to hand {@link Linker#upcallStub}
+         */
+        static MethodHandle createHandle(CallbackInvoker invoker) {
+            Class<?> cLongCarrier = NativeAbi.C_LONG.carrier();
+            String entryPoint = NativeAbi.C_LONG_IS_32_BIT ? "invokeNarrowLong" : "invoke";
             try {
-                MethodHandles.Lookup lookup = java.lang.invoke.MethodHandles.lookup();
+                MethodHandles.Lookup lookup = MethodHandles.lookup();
                 return lookup.bind(
                         invoker,
-                        "invoke",
-                        java.lang.invoke.MethodType.methodType(
+                        entryPoint,
+                        MethodType.methodType(
                                 int.class,
-                                MemorySegment.class, MemorySegment.class, long.class,
-                                MemorySegment.class, long.class, MemorySegment.class)
+                                MemorySegment.class, MemorySegment.class, cLongCarrier,
+                                MemorySegment.class, cLongCarrier, MemorySegment.class)
                 );
             } catch (NoSuchMethodException | IllegalAccessException e) {
                 throw new AudioBackendException("Failed to create callback bridge", e);
@@ -543,10 +614,26 @@ public final class PortAudioBackend implements NativeAudioBackend {
      * remainder, and counts the event for
      * {@link PortAudioBackend#closeStream()} to report.</p>
      *
-     * <p>{@link #invoke} is deliberately NOT annotated
-     * {@code @RealTimeSafe}: it calls {@link MemorySegment#reinterpret(long)},
-     * which creates a segment object, so the annotation would be a promise
-     * this method does not keep.</p>
+     * <h2>Two entry points, one implementation</h2>
+     * <p>{@link #invoke} is the callback. It is the method the upcall stub
+     * binds on an LP64 host, where PortAudio's C {@code unsigned long} is 64
+     * bits wide and marshals to a Java {@code long}. On an LLP64 host that C
+     * type is 32 bits, so the stub binds {@link #invokeNarrowLong} instead,
+     * which zero-extends the two unsigned parameters and calls
+     * {@link #invoke}. Exactly one of the two is bound per stream — see
+     * {@link CallbackBridge#createHandle(CallbackInvoker)} — and the driver's
+     * real-time thread is the caller either way.</p>
+     *
+     * <p>Neither entry point is annotated {@code @RealTimeSafe}, and that is
+     * deliberate: {@link #invoke} calls
+     * {@link MemorySegment#reinterpret(long)}, which creates a segment
+     * object, so the annotation would be a promise these methods do not keep.
+     * The driver hands a different buffer pointer to every callback, so there
+     * is nothing to cache and the exemption is inherent rather than a to-do.
+     * {@code RealTimeSafeContractTest} lists both entry points regardless,
+     * with that exemption recorded against them, so they still get the
+     * STRUCTURAL sentinels — no inline publish, no atomic read-modify-write —
+     * which is the part of the contract they can and do keep.</p>
      */
     static final class CallbackInvoker {
 
@@ -616,24 +703,36 @@ public final class PortAudioBackend implements NativeAudioBackend {
         }
 
         /**
-         * Called from native code via the upcall stub, on PortAudio's
-         * real-time thread.
+         * The callback, on PortAudio's real-time thread: entered directly
+         * from the upcall stub on an LP64 host, and from
+         * {@link #invokeNarrowLong} on an LLP64 one.
          *
          * <p>See the class javadoc for why {@code frameCount} is clamped to
          * {@link #framesPerBuffer} instead of trusted.</p>
          *
          * <h2>Why the output size is computed the long way</h2>
-         * <p>{@code frameCount} is a raw {@code long}: the upcall descriptor
-         * declares {@link ValueLayout#JAVA_LONG} for PortAudio's C
-         * {@code unsigned long frameCount}, which is a 32-bit type on Windows,
-         * so the high half of that register is not architecturally guaranteed
-         * to be zero. Multiplying it by the frame stride to size the output
-         * segment can therefore overflow to a NEGATIVE byte count, and
-         * {@link MemorySegment#reinterpret(long)} answers a negative size with
-         * an {@link IllegalArgumentException} — thrown straight back out of
-         * this upcall into the driver, which is the exact failure class the
-         * clamp exists to remove. The product is guarded against overflow
-         * instead of being taken on trust.</p>
+         * <p>{@code frameCount} is exactly the {@code unsigned long} the host
+         * supplied, and nothing else. The upcall descriptor declares
+         * {@link NativeAbi#C_LONG} — the platform's canonical C {@code long}
+         * — for PortAudio's {@code unsigned long frameCount}, so on an LP64
+         * host all 64 bits of it are the host's, and on an LLP64 host, where
+         * that C type is 32 bits, the host's 32 bits reach this method
+         * zero-extended by {@link #invokeNarrowLong}. No half of an argument
+         * slot the host never wrote is read as data.</p>
+         *
+         * <p>That still leaves a claim this method cannot act on, because
+         * under LP64 {@code unsigned long} genuinely is 64 bits wide. A host
+         * value at or above {@code 2^63} arrives as a NEGATIVE Java
+         * {@code long} and is read as zero frames by {@code Math.max(0L,
+         * frameCount)}; a merely enormous one is positive, yet multiplying it
+         * by the frame stride to size the output segment still overflows to a
+         * NEGATIVE byte count, and {@link MemorySegment#reinterpret(long)}
+         * answers a negative size with an {@link IllegalArgumentException} —
+         * thrown straight back out of this upcall into the driver, which is
+         * the exact failure class the clamp exists to remove. The product is
+         * therefore guarded against overflow ({@code hostFrames <=
+         * Long.MAX_VALUE / perFrameBytes}) rather than taken on trust, and
+         * that guard stays load-bearing on every LP64 host.</p>
          *
          * <p>Everything else about the host's claim IS taken on trust, and
          * deliberately so. Zeroing the frames beyond the ones we rendered
@@ -700,6 +799,47 @@ public final class PortAudioBackend implements NativeAudioBackend {
             }
 
             return PortAudioBindings.PA_CONTINUE;
+        }
+
+        /**
+         * The same callback, for hosts whose C {@code long} is 32 bits wide.
+         *
+         * <p>This is the entry point the upcall stub binds on an LLP64
+         * platform — Windows — where PortAudio's {@code unsigned long
+         * frameCount} and its {@code PaStreamCallbackFlags} typedef are both
+         * 32-bit C types, so {@link NativeAbi#C_LONG} marshals them into Java
+         * {@code int} parameters. On an LP64 platform (Linux, macOS) this
+         * method is never bound and {@link #invoke} is entered directly; see
+         * {@link CallbackBridge#createHandle(CallbackInvoker)}.</p>
+         *
+         * <p>The parameters are {@code int} because that is what the ABI
+         * delivers, and they are widened with
+         * {@link Integer#toUnsignedLong(int)} rather than by a plain cast
+         * because the C types are UNSIGNED. A widening cast is sign
+         * extension: a host period of {@code 0xFFFFFFFF} would become
+         * {@code -1}, which {@code Math.max(0L, frameCount)} reads as zero
+         * frames — a silent dropout instead of the oversized period it
+         * actually is, and one the clamp counter would never report.
+         * {@code Integer.toUnsignedLong} reads it as {@code 4294967295}, so
+         * the value {@link #invoke} sees is the number the host wrote.</p>
+         *
+         * <p>It delegates rather than duplicating: this method is an ABI
+         * adapter and nothing else, so there is exactly one implementation of
+         * the callback to reason about, and the ABI it adapts is the only
+         * thing that can be wrong in it.</p>
+         *
+         * @param frameCount  the host's frame count, as an unsigned 32-bit
+         *                    value
+         * @param statusFlags PortAudio's {@code PaStreamCallbackFlags}, as an
+         *                    unsigned 32-bit value
+         * @return {@link PortAudioBindings#PA_CONTINUE}
+         */
+        @SuppressWarnings("unused") // invoked reflectively via MethodHandle
+        public int invokeNarrowLong(MemorySegment input, MemorySegment output, int frameCount,
+                                    MemorySegment timeInfo, int statusFlags,
+                                    MemorySegment userData) {
+            return invoke(input, output, Integer.toUnsignedLong(frameCount),
+                    timeInfo, Integer.toUnsignedLong(statusFlags), userData);
         }
 
         /**

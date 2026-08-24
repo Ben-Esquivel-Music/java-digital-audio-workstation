@@ -14,6 +14,7 @@ import java.lang.classfile.MethodModel;
 import java.lang.classfile.attribute.CodeAttribute;
 import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.MonitorInstruction;
+import java.lang.foreign.MemorySegment;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
@@ -43,11 +44,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *        {@code AudioEngine.processBlock}).</li>
  *   <li>EVERY production real-time callback bridge — every method a driver
  *       enters on ITS real-time thread, listed in
- *       {@link #RT_CALLBACK_BRIDGES} — carries {@code @RealTimeSafe} and,
- *       per the bytecode of the bridge method AND of every method it can
- *       reach inside the same class, neither publishes captured audio
- *       inline (the hand-off to non-RT code is a lock-free ring plus a
- *       drain thread) nor performs an atomic read-modify-write. The
+ *       {@link #RT_CALLBACK_BRIDGES} whether or not it is able to carry
+ *       {@code @RealTimeSafe} — neither publishes captured audio inline
+ *       (the hand-off to non-RT code is a lock-free ring plus a drain
+ *       thread) nor performs an atomic read-modify-write, per the bytecode
+ *       of the bridge method AND of every method it can reach inside the
+ *       same class. Each bridge additionally carries {@code @RealTimeSafe},
+ *       unless the list records a reason it cannot — the two PortAudio
+ *       upcall entry points allocate a
+ *       {@link java.lang.foreign.MemorySegment} by construction — in which
+ *       case the annotation must stay ABSENT, so an exemption that has
+ *       stopped being true fails rather than quietly persisting. The
  *       sentinels are parameterized over the bridges rather than pinned
  *       to the ASIO one, so a new RT callback path is covered by adding a
  *       single list entry.</li>
@@ -138,6 +145,54 @@ class RealTimeSafeContractTest {
     private static final String NATIVE_CALLBACK_BRIDGE_METHOD = "deviceCallback";
 
     /**
+     * Story 316 re-review — the class the PortAudio UPCALL STUB enters, which
+     * is not the same thing as {@link #NATIVE_CALLBACK_BRIDGE_CLASS}.
+     *
+     * <p>The driver's real-time thread crosses into Java here, in the FFM
+     * upcall; {@code CallbackBackendAdapter.deviceCallback} is what this
+     * class calls afterwards, and so covers only the work downstream of the
+     * de-interleave. Anything added to the de/interleaving loops or to the
+     * oversized-period accounting runs on the driver's thread and would have
+     * been invisible to a list that named the adapter alone.</p>
+     */
+    private static final String PORTAUDIO_UPCALL_CLASS =
+            "com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend$CallbackInvoker";
+
+    /**
+     * Story 316 re-review — the LP64 entry point on
+     * {@link #PORTAUDIO_UPCALL_CLASS}: the upcall stub binds this method
+     * where the platform's C {@code long} is 64 bits wide. Carries the same
+     * rename caveat as {@link #ASIO_BRIDGE_METHOD}, and the same non-empty
+     * scan guard catches it.
+     */
+    private static final String PORTAUDIO_UPCALL_METHOD = "invoke";
+
+    /**
+     * Story 316 re-review — the LLP64 entry point on
+     * {@link #PORTAUDIO_UPCALL_CLASS}: where the platform's C {@code long} is
+     * 32 bits wide the stub binds this method instead, which zero-extends the
+     * two unsigned parameters and delegates to
+     * {@link #PORTAUDIO_UPCALL_METHOD}.
+     *
+     * <p>Both are listed unconditionally. The sentinels below are STATIC
+     * bytecode analysis, not execution, so which one this host would bind is
+     * irrelevant: a Windows-only regression has to fail the Linux CI run, and
+     * that only happens if both entry points are scanned everywhere. Same
+     * rename caveat, same non-empty scan guard.</p>
+     */
+    private static final String PORTAUDIO_NARROW_UPCALL_METHOD = "invokeNarrowLong";
+
+    /**
+     * Story 316 re-review — why the two {@link #PORTAUDIO_UPCALL_CLASS} entry
+     * points are listed WITHOUT {@code @RealTimeSafe}.
+     */
+    private static final String PORTAUDIO_UPCALL_EXEMPTION =
+            "it calls MemorySegment.reinterpret(long), which creates a segment object; "
+                    + "PortAudio hands a different buffer pointer to every callback, so "
+                    + "there is nothing to cache and the annotation would be a promise "
+                    + "the method cannot keep";
+
+    /**
      * One production real-time callback bridge: the class and the exact
      * method signature a driver enters on ITS real-time thread.
      *
@@ -147,29 +202,91 @@ class RealTimeSafeContractTest {
      *                       {@code getDeclaredMethod} throws
      *                       {@link NoSuchMethodException} on a rename or a
      *                       signature change rather than passing vacuously
+     * @param realTimeSafeExemption {@code null} when the bridge must carry
+     *                       {@code @RealTimeSafe}; otherwise the documented
+     *                       reason it cannot. A bridge that cannot keep the
+     *                       annotation is still a method a driver enters on
+     *                       its real-time thread, so it still needs the
+     *                       STRUCTURAL sentinels — no inline publish, no
+     *                       atomic read-modify-write — and this component is
+     *                       what lets it be listed for those without turning
+     *                       the annotation check red
      */
     private record RtCallbackBridge(String className, String methodName,
-                                    List<Class<?>> parameterTypes) {
+                                    List<Class<?>> parameterTypes,
+                                    String realTimeSafeExemption) {
 
+        private RtCallbackBridge {
+            if (realTimeSafeExemption != null && realTimeSafeExemption.isBlank()) {
+                throw new IllegalArgumentException(
+                        "an exemption must state its reason: a blank one would leave a "
+                                + "bridge unannotated with nothing on record saying why");
+            }
+        }
+
+        /** A bridge that must carry {@code @RealTimeSafe}. */
+        static RtCallbackBridge annotated(String className, String methodName,
+                                          List<Class<?>> parameterTypes) {
+            return new RtCallbackBridge(className, methodName, parameterTypes, null);
+        }
+
+        /** A bridge that cannot carry {@code @RealTimeSafe}, and the reason. */
+        static RtCallbackBridge exempt(String className, String methodName,
+                                       List<Class<?>> parameterTypes, String reason) {
+            return new RtCallbackBridge(className, methodName, parameterTypes, reason);
+        }
+
+        /**
+         * Includes the parameter types, because two entries can now share a
+         * class and differ only in signature — and a dynamic test whose name
+         * does not distinguish them tells a maintainer nothing about which
+         * one failed.
+         */
         @Override
         public String toString() {
-            return className.substring(className.lastIndexOf('.') + 1) + "#" + methodName;
+            return className.substring(className.lastIndexOf('.') + 1) + "#" + methodName
+                    + parameterTypes.stream()
+                            .map(Class::getSimpleName)
+                            .collect(Collectors.joining(", ", "(", ")"));
         }
     }
 
     /**
      * EVERY production real-time callback bridge, scanned by the sentinels
-     * below. A maintainer who "simplified" a bridge's drain loop away and
-     * called {@code inputPublisher.offer(...)} inline would take a
+     * below: every method a driver enters on ITS real-time thread, whether or
+     * not that method is able to carry {@code @RealTimeSafe}.
+     *
+     * <p>A maintainer who "simplified" a bridge's drain loop away and called
+     * {@code inputPublisher.offer(...)} inline would take a
      * {@link java.util.concurrent.locks.ReentrantLock} on a real-time thread
      * with a completely green build — which is why the check is structural,
-     * per bridge, and why a new RT callback path belongs in this list.
+     * per bridge, and why a new RT callback path belongs in this list.</p>
+     *
+     * <p>Membership is decided by "does a driver's real-time thread enter
+     * this method", NOT by "is this method annotated". The two PortAudio
+     * upcall entry points allocate a {@link java.lang.foreign.MemorySegment}
+     * by construction and are exempt from the annotation, but they are the
+     * first Java frame on the driver's thread and are exactly where an inline
+     * publish or a CAS counter would do its damage — so they are listed, with
+     * the exemption recorded rather than the entry omitted.
+     * {@code CallbackBackendAdapter.deviceCallback} stays listed alongside
+     * them: it is the downstream work the upcall calls into, and it can and
+     * does keep the annotation.</p>
      */
     private static final List<RtCallbackBridge> RT_CALLBACK_BRIDGES = List.of(
-            new RtCallbackBridge(ASIO_BRIDGE_CLASS, ASIO_BRIDGE_METHOD,
+            RtCallbackBridge.annotated(ASIO_BRIDGE_CLASS, ASIO_BRIDGE_METHOD,
                     List.of(int.class, int.class)),
-            new RtCallbackBridge(NATIVE_CALLBACK_BRIDGE_CLASS, NATIVE_CALLBACK_BRIDGE_METHOD,
-                    List.of(float[][].class, float[][].class, int.class)));
+            RtCallbackBridge.annotated(NATIVE_CALLBACK_BRIDGE_CLASS,
+                    NATIVE_CALLBACK_BRIDGE_METHOD,
+                    List.of(float[][].class, float[][].class, int.class)),
+            RtCallbackBridge.exempt(PORTAUDIO_UPCALL_CLASS, PORTAUDIO_UPCALL_METHOD,
+                    List.of(MemorySegment.class, MemorySegment.class, long.class,
+                            MemorySegment.class, long.class, MemorySegment.class),
+                    PORTAUDIO_UPCALL_EXEMPTION),
+            RtCallbackBridge.exempt(PORTAUDIO_UPCALL_CLASS, PORTAUDIO_NARROW_UPCALL_METHOD,
+                    List.of(MemorySegment.class, MemorySegment.class, int.class,
+                            MemorySegment.class, int.class, MemorySegment.class),
+                    PORTAUDIO_UPCALL_EXEMPTION));
 
     // ------------------------------------------------------------------
     // Discovery
@@ -297,7 +414,8 @@ class RealTimeSafeContractTest {
 
     /**
      * Stories 311 / 316 — every production real-time callback bridge in
-     * {@link #RT_CALLBACK_BRIDGES} carries {@code @RealTimeSafe}.
+     * {@link #RT_CALLBACK_BRIDGES} carries {@code @RealTimeSafe}, unless it
+     * is listed with a recorded exemption, in which case it must NOT.
      *
      * <p>The generic bytecode / varargs / boxing sweeps below only look at
      * methods that already carry the annotation, so a bridge that lost it
@@ -307,6 +425,14 @@ class RealTimeSafeContractTest {
      * rather than passing vacuously — and reaches a {@code private}
      * callback (the {@code CallbackBackendAdapter} one) without
      * {@code setAccessible}: reading annotations needs no access.</p>
+     *
+     * <p>The exempt case is asserted in the OPPOSITE direction on purpose.
+     * An exemption list that only ever permits absence rots silently: the day
+     * someone makes an exempt bridge genuinely real-time safe and annotates
+     * it, the list would still say it cannot be, and the next reader would
+     * believe the list. Failing when the annotation APPEARS forces the entry
+     * to be revisited at exactly the moment it stops being true — this
+     * repo's conformance-sentinel convention, applied to an exemption.</p>
      */
     @TestFactory
     Stream<DynamicTest> everyRtCallbackBridgeMustBeRealTimeSafe() {
@@ -314,15 +440,31 @@ class RealTimeSafeContractTest {
                 .as("at least one production RT callback bridge must be listed")
                 .isNotEmpty();
         return RT_CALLBACK_BRIDGES.stream().map(bridge -> DynamicTest.dynamicTest(
-                bridge + " must be @RealTimeSafe",
+                bridge.realTimeSafeExemption() == null
+                        ? bridge + " must be @RealTimeSafe"
+                        : bridge + " must stay exempt from @RealTimeSafe",
                 () -> {
                     Class<?> bridgeClass = Class.forName(bridge.className());
                     Method callback = bridgeClass.getDeclaredMethod(
                             bridge.methodName(),
                             bridge.parameterTypes().toArray(new Class<?>[0]));
-                    assertThat(isRealTimeSafe(callback))
-                            .as("%s must be annotated @RealTimeSafe", bridge)
-                            .isTrue();
+                    if (bridge.realTimeSafeExemption() == null) {
+                        assertThat(isRealTimeSafe(callback))
+                                .as("%s must be annotated @RealTimeSafe", bridge)
+                                .isTrue();
+                    } else {
+                        assertThat(isRealTimeSafe(callback))
+                                .as("%s is listed in RT_CALLBACK_BRIDGES as EXEMPT from "
+                                        + "@RealTimeSafe because %s — and it now carries the "
+                                        + "annotation anyway. If the method really has been "
+                                        + "made real-time safe, drop its exemption from that "
+                                        + "list in the same change, so this sentinel starts "
+                                        + "REQUIRING the annotation instead of forbidding it. "
+                                        + "If it has not, remove the annotation: it is a "
+                                        + "promise the method does not keep.",
+                                        bridge, bridge.realTimeSafeExemption())
+                                .isFalse();
+                    }
                 }));
     }
 

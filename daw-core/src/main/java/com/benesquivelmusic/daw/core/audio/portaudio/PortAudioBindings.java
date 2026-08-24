@@ -1,7 +1,13 @@
 package com.benesquivelmusic.daw.core.audio.portaudio;
 
+import com.benesquivelmusic.daw.core.audio.NativeAbi;
+
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -78,6 +84,110 @@ public final class PortAudioBindings {
             ValueLayout.JAVA_DOUBLE.withName("outputLatency"),
             ValueLayout.JAVA_DOUBLE.withName("sampleRate")
     );
+
+    /**
+     * {@code PaStreamParameters} — the struct {@code Pa_OpenStream} takes once
+     * per direction.
+     *
+     * <pre>{@code
+     * typedef struct PaStreamParameters {
+     *     PaDeviceIndex   device;                     // int
+     *     int             channelCount;
+     *     PaSampleFormat  sampleFormat;               // unsigned long
+     *     PaTime          suggestedLatency;           // double
+     *     void           *hostApiSpecificStreamInfo;
+     * } PaStreamParameters;
+     * }</pre>
+     *
+     * <p>{@code sampleFormat} is a C {@code unsigned long}, so it is
+     * {@link NativeAbi#C_LONG} and not {@link ValueLayout#JAVA_LONG}. Under
+     * LLP64 that member is four bytes wide, and a {@code JAVA_LONG}
+     * declaration writes eight — spilling over the padding that follows it.
+     * Today that spill is harmless, and only by coincidence: the four bytes
+     * behind {@code sampleFormat} happen to be the padding that re-aligns
+     * {@code suggestedLatency}, so the following members keep their offsets,
+     * and {@link #PA_FLOAT32} fits in 32 bits, so the member's own value
+     * survives the little-endian store. Neither of those is a property of the
+     * declaration: reorder the struct, or name a format that does not fit,
+     * and the same declaration corrupts a live field. The width is stated
+     * correctly here so that nothing has to rely on the coincidence.</p>
+     *
+     * <p>FFM's {@link MemoryLayout#structLayout(MemoryLayout...)} inserts no
+     * padding of its own; it rejects a member that lands on an offset its own
+     * alignment forbids. The four bytes a C compiler adds after a 32-bit
+     * {@code sampleFormat} to re-align the {@code double} are therefore
+     * spelled out here, the same way {@link #PA_DEVICE_INFO_LAYOUT} spells out
+     * its own. The result is 32 bytes on BOTH data models, with
+     * {@code device} at 0, {@code channelCount} at 4, {@code sampleFormat} at
+     * 8, {@code suggestedLatency} at 16 and
+     * {@code hostApiSpecificStreamInfo} at 24 — one struct, described
+     * honestly twice rather than described once and hoped over.</p>
+     */
+    static final MemoryLayout PA_STREAM_PARAMETERS_LAYOUT = paStreamParametersLayout();
+
+    private static MemoryLayout paStreamParametersLayout() {
+        List<MemoryLayout> members = new ArrayList<>(6);
+        members.add(ValueLayout.JAVA_INT.withName("device"));
+        members.add(ValueLayout.JAVA_INT.withName("channelCount"));
+        members.add(NativeAbi.C_LONG.withName("sampleFormat"));
+        if (NativeAbi.C_LONG_IS_32_BIT) {
+            members.add(MemoryLayout.paddingLayout(Long.BYTES - Integer.BYTES));
+        }
+        members.add(ValueLayout.JAVA_DOUBLE.withName("suggestedLatency"));
+        members.add(ValueLayout.ADDRESS.withName("hostApiSpecificStreamInfo"));
+        return MemoryLayout.structLayout(members.toArray(new MemoryLayout[0]));
+    }
+
+    /**
+     * {@code Pa_OpenStream}'s C signature.
+     *
+     * <pre>{@code
+     * PaError Pa_OpenStream(PaStream** stream,
+     *                       const PaStreamParameters* inputParameters,
+     *                       const PaStreamParameters* outputParameters,
+     *                       double sampleRate,
+     *                       unsigned long framesPerBuffer,
+     *                       PaStreamFlags streamFlags,        // unsigned long
+     *                       PaStreamCallback* streamCallback,
+     *                       void* userData);
+     * }</pre>
+     *
+     * <p>{@code framesPerBuffer} and {@code streamFlags} are both C
+     * {@code unsigned long}, hence {@link NativeAbi#C_LONG} rather than
+     * {@link ValueLayout#JAVA_LONG}. Package-private, and separated from
+     * {@link #bindFunctions()}, so the ABI can be asserted on a host with no
+     * PortAudio installed: no CI workflow in this repository installs it, so
+     * a descriptor only reachable through a successful symbol lookup would be
+     * a descriptor nothing ever checks.</p>
+     */
+    static final FunctionDescriptor PA_OPEN_STREAM_DESCRIPTOR = FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+            ValueLayout.JAVA_DOUBLE, NativeAbi.C_LONG, NativeAbi.C_LONG,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS);
+
+    /**
+     * The single Java signature {@link #openStream} calls
+     * {@code Pa_OpenStream} through, on every platform.
+     *
+     * <p>{@link MethodHandle#invokeExact} matches the handle's type
+     * <em>exactly</em> — no widening, no narrowing, no boxing. On an LLP64
+     * host {@link #PA_OPEN_STREAM_DESCRIPTOR} marshals those two parameters as
+     * {@code int}, so the raw downcall handle's type ends
+     * {@code (..., int, int, ...)} and the {@code long} arguments
+     * {@link #openStream} passes would raise
+     * {@link java.lang.invoke.WrongMethodTypeException} instead of calling
+     * anything. Forking the public signature per platform was the alternative
+     * and it is the wrong one: callers are talking about frames and flags, not
+     * about the width of the host's C {@code long}. The handle is adapted to
+     * this fixed type by {@link #adaptOpenStreamHandle(MethodHandle)}
+     * instead.</p>
+     */
+    static final MethodType PA_OPEN_STREAM_JAVA_TYPE = MethodType.methodType(
+            int.class,
+            MemorySegment.class, MemorySegment.class, MemorySegment.class,
+            double.class, long.class, long.class,
+            MemorySegment.class, MemorySegment.class);
 
     private static final Linker LINKER = Linker.nativeLinker();
 
@@ -218,6 +328,14 @@ public final class PortAudioBindings {
     /**
      * Calls {@code Pa_OpenStream(...)}.
      *
+     * <p>{@code framesPerBuffer} and {@code streamFlags} are declared
+     * {@code long} here on every platform, even though the C parameters are
+     * {@code unsigned long} and therefore 32 bits wide under LLP64. The
+     * width difference is absorbed inside the bound handle — see
+     * {@link #PA_OPEN_STREAM_JAVA_TYPE} and
+     * {@link #adaptOpenStreamHandle(MethodHandle)} — so that callers never
+     * have to know which data model they are on.</p>
+     *
      * @param streamPtr            pointer to receive the stream handle
      * @param inputParameters      input stream parameters (or {@code MemorySegment.NULL})
      * @param outputParameters     output stream parameters (or {@code MemorySegment.NULL})
@@ -349,11 +467,8 @@ public final class PortAudioBindings {
                 FunctionDescriptor.of(ValueLayout.JAVA_INT));
         paGetDefaultOutputDevice = downcallHandle("Pa_GetDefaultOutputDevice",
                 FunctionDescriptor.of(ValueLayout.JAVA_INT));
-        paOpenStream = downcallHandle("Pa_OpenStream",
-                FunctionDescriptor.of(ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
-                        ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        paOpenStream = adaptOpenStreamHandle(
+                downcallHandle("Pa_OpenStream", PA_OPEN_STREAM_DESCRIPTOR));
         paStartStream = downcallHandle("Pa_StartStream",
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         paStopStream = downcallHandle("Pa_StopStream",
@@ -366,6 +481,33 @@ public final class PortAudioBindings {
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         paGetErrorText = downcallHandle("Pa_GetErrorText",
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+    }
+
+    /**
+     * Adapts a raw {@code Pa_OpenStream} downcall handle to the fixed
+     * {@link #PA_OPEN_STREAM_JAVA_TYPE}.
+     *
+     * <p>{@link MethodHandles#explicitCastArguments} and NOT
+     * {@link MethodHandle#asType}: {@code asType} performs only the
+     * conversions the language applies implicitly, and {@code long} to
+     * {@code int} is a narrowing primitive conversion, which it refuses with
+     * {@link java.lang.invoke.WrongMethodTypeException}. LLP64 needs precisely
+     * that narrowing — the C parameter genuinely is 32 bits wide there — and
+     * {@code explicitCastArguments} applies cast semantics, so it performs
+     * it. On LP64 the raw type already equals the target type and the
+     * adaptation is an identity no-op.</p>
+     *
+     * <p>Static, and taking the handle as a parameter rather than reading the
+     * field, so a test can adapt a stand-in built with
+     * {@link MethodHandles#empty(MethodType)} and prove the resulting call
+     * shape on a host where PortAudio is not installed.</p>
+     *
+     * @param raw the handle the linker produced for
+     *            {@link #PA_OPEN_STREAM_DESCRIPTOR}
+     * @return a handle of type {@link #PA_OPEN_STREAM_JAVA_TYPE}
+     */
+    static MethodHandle adaptOpenStreamHandle(MethodHandle raw) {
+        return MethodHandles.explicitCastArguments(raw, PA_OPEN_STREAM_JAVA_TYPE);
     }
 
     private MethodHandle downcallHandle(String name, FunctionDescriptor descriptor) {
