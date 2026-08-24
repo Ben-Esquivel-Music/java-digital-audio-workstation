@@ -55,6 +55,8 @@ final class SpyStreamingBackend implements AudioBackend {
     private volatile List<AudioDeviceInfo> devices = List.of();
     private final AtomicInteger closeCount = new AtomicInteger();
     private volatile Runnable controlPanelAction;
+    private final java.util.concurrent.atomic.AtomicReference<Runnable> nextCloseHook =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     /**
      * Wedges {@link #awaitSinkCapacity(long)} the way
@@ -236,6 +238,18 @@ final class SpyStreamingBackend implements AudioBackend {
         this.controlPanelAction = action;
     }
 
+    /**
+     * Arms a ONE-SHOT hook that runs at the top of the next {@link #close()}
+     * and is then forgotten, so a test can make exactly one close as slow as
+     * a real native teardown without also wedging the closes that shutdown
+     * issues afterwards (story 316 re-review, stall audit A1 follow-up).
+     *
+     * @param hook the action the next {@code close()} should run first
+     */
+    void armNextCloseHook(Runnable hook) {
+        this.nextCloseHook.set(hook);
+    }
+
     @Override
     public Optional<Runnable> openControlPanel() {
         return Optional.ofNullable(controlPanelAction);
@@ -248,6 +262,10 @@ final class SpyStreamingBackend implements AudioBackend {
 
     @Override
     public void close() {
+        Runnable hook = nextCloseHook.getAndSet(null);
+        if (hook != null) {
+            hook.run();
+        }
         lifecycleLog.add("close:" + name);
         closeCount.incrementAndGet();
         open = false;

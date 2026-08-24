@@ -48,7 +48,20 @@ import static org.assertj.core.api.Assertions.fail;
  * the old "close failed with the callback possibly still active → preserve
  * the claim" matrix rows no longer exist (there is no independent callback
  * whose liveness could be unknown). A refused backend close still yields
- * {@code RELEASE_PENDING} with the handle retained and retried.</p>
+ * {@code RELEASE_PENDING} with the handle retained and retried — on every
+ * engine path that closes the TRACKED stream handle, the provision swap
+ * included. That swap
+ * used to be the exception: it abandoned an unreleasable handle, which threw
+ * away the engine's only retry path and let the next open put a second
+ * backend on the same device. It now refuses the whole swap instead, keeps
+ * tracking the outgoing backend, and releases the RT-clock claim on that
+ * refusal path too — the claim is owed from the moment the pump's exit is
+ * CONFIRMED, not from the moment the handle is finally freed.</p>
+ *
+ * <p>A failed ladder HOP is not one of those paths, and must not be read as
+ * one: {@code closeFailedHop} closes a rung whose handle was never tracked,
+ * so a close that fails there is REPORTED rather than retained — the walk is
+ * abandoned instead, and the instance is the app layer's to close.</p>
  *
  * <h2>Determinism</h2>
  * <p>Tests that queue a seek behind the claim first stall the pump inside
@@ -469,42 +482,70 @@ class AudioEngineTransportClockOwnershipTest {
     }
 
     @Test
-    void swappingProvisionsWithARetainedHandleRetriesTheCloseOnTheOutgoingBackendThenAbandonsIt() {
+    void swappingProvisionsWithAnUnreleasableHandleIsRefusedAndKeepsTheRetryPath() {
         FaultySdkBackend outgoing = new FaultySdkBackend();
         outgoing.failClose = true;
         AudioEngine engine = new AudioEngine(FORMAT);
         engine.setStreamingProvision(provisionOf(outgoing));
+        StreamingProvision outgoingProvision = engine.getStreamingProvision();
         Transport transport = new Transport();
         engine.setGraph(transport, null, null);
         engine.startAudioOutput();
         engine.stopAudioOutput(); // pump stopped, handle retained
         engine.stop();            // setStreamingProvision requires a stopped engine
         FaultySdkBackend incoming = new FaultySdkBackend();
+        StreamingProvision incomingProvision = provisionOf(incoming);
 
-        assertThatCode(() -> engine.setStreamingProvision(provisionOf(incoming)))
-                .as("re-provisioning is best-effort about the old handle and must not throw")
-                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> engine.setStreamingProvision(incomingProvision))
+                .as("re-pointing the engine at another provision would DISCARD the only"
+                        + " path that could ever release this handle, and the next open"
+                        + " would then put a second backend on the same device")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("could not be released");
 
         assertThat(outgoing.closeAttempts)
                 .as("the close is retried on the backend that actually holds the handle")
                 .isEqualTo(2);
         assertThat(outgoing.delegate.isOpen())
-                .as("the close still failed: the old handle is abandoned, not leaked into the"
-                        + " new provision's bookkeeping")
+                .as("the close still failed, so the backend still owns the handle")
                 .isTrue();
+        assertThat(engine.getStreamingProvision())
+                .as("the swap is refused WHOLE — the engine still points at the outgoing"
+                        + " provision, so the outgoing backend stays reachable")
+                .isSameAs(outgoingProvision);
         assertThat(engine.isStreamOpen())
-                .as("nothing tracked any more — a retry on the new provision could never reach it")
+                .as("RELEASE_PENDING is not open: output is stopped and not resumable")
                 .isFalse();
         assertThat(engine.isStreamPaused()).isFalse();
-        assertThat(transport.isRealTimeClockActive()).isFalse();
+        assertThat(transport.isRealTimeClockActive())
+                .as("the pump's exit was CONFIRMED, so the claim is released on the"
+                        + " refusal path too — not stranded behind the throw")
+                .isFalse();
 
-        assertThatCode(engine::startAudioOutput)
-                .as("the new provision opens a fresh stream; no close retry is aimed at it")
-                .doesNotThrowAnyException();
-        assertThat(incoming.delegate.isOpen()).isTrue();
+        // The retry path the refusal preserved: the next open aims its close
+        // at the OUTGOING backend, not at the incoming provision's.
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("the open is refused while the retained handle is still held")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("could not be released");
         assertThat(outgoing.closeAttempts)
-                .as("no further close was aimed at the old backend")
-                .isEqualTo(2);
+                .as("that retry actually REACHED the outgoing backend")
+                .isEqualTo(3);
+        assertThat(incoming.openAttempts)
+                .as("no stream was opened beside the backend that still holds the device")
+                .isZero();
+
+        // Once the handle can be released, the same swap succeeds.
+        outgoing.failClose = false;
+        engine.setStreamingProvision(incomingProvision);
+        assertThat(engine.getStreamingProvision()).isSameAs(incomingProvision);
+        assertThat(outgoing.closeAttempts)
+                .as("the successful release is the fourth close aimed at the old backend")
+                .isEqualTo(4);
+        assertThat(outgoing.delegate.isOpen()).isFalse();
+
+        engine.startAudioOutput();
+        assertThat(incoming.delegate.isOpen()).isTrue();
         assertThat(engine.isStreamOpen()).isTrue();
         assertThat(transport.isRealTimeClockActive()).isTrue();
         engine.stopAudioOutput();

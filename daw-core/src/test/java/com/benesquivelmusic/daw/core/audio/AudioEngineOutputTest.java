@@ -973,10 +973,18 @@ class AudioEngineOutputTest {
     }
 
     @Test
-    void aFailedRungWhoseCloseAlsoFailsStillReportsTheOpenFailure() {
-        // The best-effort close must never MASK the hop failure: it travels
-        // as a suppressed exception, and the recorded cause — the one the
-        // BackendFallbackEvent carries — still describes the OPEN failure.
+    void aFailedRungWhoseCloseAlsoFailsAbandonsTheWalkAndCarriesTheOpenFailure() {
+        // `First` REACHED open(), so it may hold the device; its close then
+        // failed, so the engine could not bound that partial acquisition to
+        // the hop that made it. Opening `Second` beside it would put two
+        // backends on one device — the exact invariant the ladder exists to
+        // protect — so the walk is ABANDONED rather than continued.
+        //
+        // The surviving property from before this change: a close failure
+        // still never MASKS the open failure. It is no longer what
+        // propagates directly, but it is the CAUSE of what does, and the
+        // close failure is still suppressed on it, so both survive in the
+        // chain and the published cause still describes the OPEN failure.
         DefaultEventBus bus = new DefaultEventBus();
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
@@ -990,25 +998,240 @@ class AudioEngineOutputTest {
             engine.setStreamingProvision(provisionOf("First", first, second));
 
             assertThatThrownBy(engine::startAudioOutput)
-                    .as("the requested rung's OPEN failure is still the one that propagates")
+                    .as("the walk is abandoned, and the refusal says why")
                     .isInstanceOf(AudioBackendException.class)
-                    .hasMessage("open refused by First")
-                    .satisfies(failure -> assertThat(failure.getSuppressed())
-                            .as("the close failure travels alongside it, never in place of it")
-                            .extracting(Throwable::getMessage)
-                            .contains("close refused by First"));
+                    .hasMessageContaining("First")
+                    .hasMessageContaining("could not be released")
+                    .hasMessageContaining("two backends on one device")
+                    .satisfies(failure -> {
+                        assertThat(failure.getCause())
+                                .as("the requested rung's OPEN failure is the cause — never"
+                                        + " replaced by the close failure")
+                                .isInstanceOf(AudioBackendException.class)
+                                .hasMessage("open refused by First");
+                        assertThat(failure.getCause().getSuppressed())
+                                .as("the close failure still travels on that cause, never"
+                                        + " in place of it")
+                                .extracting(Throwable::getMessage)
+                                .contains("close refused by First");
+                    });
 
-            awaitCondition(() -> received.size() >= 2,
-                    "every failed hop publishes an event");
+            assertThat(second.openCount.get())
+                    .as("no fallback rung was opened beside the rung whose handle could"
+                            + " not be released")
+                    .isZero();
+            assertThat(engine.isStreamOpen()).isFalse();
+
+            awaitCondition(() -> received.size() >= 1,
+                    "the hop that failed is still published");
             assertThat(received)
-                    .extracting(BackendFallbackEvent::cause)
-                    .as("the published cause describes the open failure, not the close")
-                    .containsExactlyInAnyOrder(
-                            "open refused by First", "open refused by Second");
+                    .as("exactly the one hop the walk got through, naming the open failure"
+                            + " rather than the close")
+                    .singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.requestedBackend()).isEqualTo("First");
+                        assertThat(event.cause()).isEqualTo("open refused by First");
+                        assertThat(event.activeBackend())
+                                .as("nothing became active")
+                                .isEqualTo("none");
+                    });
         } finally {
             EventBusPublisher.setDefault(null);
             bus.close();
         }
+    }
+
+    @Test
+    void aRungRefusedBeforeOpenWhoseCloseAlsoFailsStillFallsThroughToTheNextRung() {
+        // The regression guard for the ASIO-symbols path. requireStreamingSupport
+        // throws BEFORE open() is ever called, so this rung holds no device and
+        // its close failure is spurious — the walk must fall through exactly as
+        // it does when that close succeeds. In production this is ASIO being
+        // refused because asioshim lacks the story-311 streaming symbols; that
+        // refusal has to reach PortAudio / Java Sound.
+        SynchronousTestBackend silent = new SynchronousTestBackend("Silent");
+        silent.streamingSupported = false;
+        silent.failOnClose = true;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        engine.setStreamingProvision(provisionOf("Silent", silent, second));
+
+        engine.startAudioOutput();
+
+        assertThat(silent.openCount.get())
+                .as("the guard refused the rung before it was ever opened, so it holds"
+                        + " no device however its close behaves")
+                .isZero();
+        assertThat(silent.closeCount.get())
+                .as("the close was still attempted, and still failed")
+                .isEqualTo(1);
+        assertThat(second.isOpen())
+                .as("a spurious close failure must not abandon the walk")
+                .isTrue();
+        assertThat(engine.openStreamBackendName()).contains("Second");
+    }
+
+    // ── Native control-panel sessions (story 316 re-review) ─────────────
+    //
+    // The controller already refuses to close the backend INSTANCES it owns
+    // while a driver's modal control panel is up, but that guard cannot see
+    // the ENGINE's own handle closes. With a stream open, Stop, shutdown or a
+    // concurrent endpoint reconfigure could therefore tear the backend down
+    // underneath a live native dialog. These pin the engine-side seam.
+
+    @Test
+    void aStopWhileTheControlPanelIsOpenRetainsTheHandleAndStillReportsQuiescence() {
+        engine.startAudioOutput();
+        engine.beginControlPanelSession(backend);
+
+        assertThat(engine.stopAudioOutput())
+                .as("the return value reports QUIESCENCE, and the pump really has joined;"
+                        + " reporting false would make shutdown and applyConfiguration"
+                        + " defer work that is perfectly safe")
+                .isTrue();
+
+        assertThat(backend.closeCount.get())
+                .as("the handle is deliberately retained — closing it would free the"
+                        + " native state the modal dialog is running on")
+                .isZero();
+        assertThat(backend.isOpen()).isTrue();
+        assertThat(engine.isStreamOpen())
+                .as("output is stopped and not resumable, whatever the backend still holds")
+                .isFalse();
+
+        engine.endControlPanelSession(backend);
+
+        assertThat(backend.closeCount.get())
+                .as("the deferral has an OWNER: ending the session drains the close it"
+                        + " deferred, rather than leaving it to the next start or stop")
+                .isEqualTo(1);
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    @Test
+    void anOpenIsRefusedWhileTheControlPanelStillHoldsTheRetainedHandle() {
+        engine.startAudioOutput();
+        engine.beginControlPanelSession(backend);
+        engine.stopAudioOutput();
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("opening now would put a second stream on the device the panel's"
+                        + " backend still holds")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("control panel");
+        assertThat(backend.openCount.get())
+                .as("no second open reached the device")
+                .isEqualTo(1);
+
+        engine.endControlPanelSession(backend);
+
+        engine.startAudioOutput();
+        assertThat(backend.openCount.get())
+                .as("once the drained close released the handle, a fresh open succeeds")
+                .isEqualTo(2);
+        assertThat(engine.isStreamOpen()).isTrue();
+    }
+
+    @Test
+    void aProvisionSwapIsRefusedWhileTheOutgoingBackendsControlPanelIsOpen() {
+        StreamingProvision outgoingProvision = engine.getStreamingProvision();
+        SynchronousTestBackend replacement = new SynchronousTestBackend("Replacement");
+        StreamingProvision incomingProvision = provisionOf("Replacement", replacement);
+        engine.startAudioOutput();
+        engine.beginControlPanelSession(backend);
+        engine.stop(); // setStreamingProvision refuses while the engine runs
+
+        assertThatThrownBy(() -> engine.setStreamingProvision(incomingProvision))
+                .as("re-pointing the engine away would discard the only path that could"
+                        + " release this handle once the dialog returns")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("control panel");
+
+        assertThat(backend.closeCount.get())
+                .as("nothing was closed under the modal dialog")
+                .isZero();
+        assertThat(engine.getStreamingProvision())
+                .as("the swap is refused WHOLE — the engine still points at the outgoing"
+                        + " provision, so the outgoing backend stays reachable")
+                .isSameAs(outgoingProvision);
+        assertThat(engine.isStreamOpen()).isFalse();
+
+        engine.endControlPanelSession(backend);
+
+        assertThat(backend.closeCount.get())
+                .as("the retained handle is released when the panel returns")
+                .isEqualTo(1);
+        engine.setStreamingProvision(incomingProvision);
+        assertThat(engine.getStreamingProvision()).isSameAs(incomingProvision);
+    }
+
+    @Test
+    void endingASessionForAnotherBackendLeavesTheRegistrationInPlace() {
+        SynchronousTestBackend other = new SynchronousTestBackend("Other");
+        engine.startAudioOutput();
+        engine.beginControlPanelSession(backend);
+
+        engine.endControlPanelSession(other);
+        engine.stopAudioOutput();
+
+        assertThat(backend.closeCount.get())
+                .as("the release compares by IDENTITY, so a late release for another"
+                        + " instance cannot clear this registration")
+                .isZero();
+
+        engine.endControlPanelSession(backend);
+        assertThat(backend.closeCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void endingASessionWithAnUnconfirmedPumpExitLeavesTheHandleRetained() {
+        // RELEASE_PENDING alone is NOT proof the pump exited: engine.stop()
+        // enters that state even when its own bounded join timed out. The
+        // drain must re-join rather than trust the state, or it would free
+        // native state a thread still inside sink/awaitSinkCapacity is using.
+        backend.blockAwait = true;
+        engine.startAudioOutput();
+        awaitCondition(() -> backend.blockedAwaitEntries.get() >= 1,
+                "the pump is wedged inside awaitSinkCapacity");
+        engine.beginControlPanelSession(backend);
+        engine.stop(); // RELEASE_PENDING, join UNCONFIRMED, pump reference kept
+
+        engine.endControlPanelSession(backend);
+
+        assertThat(backend.closeCount.get())
+                .as("the drain re-joins first and leaves the deferral in place rather"
+                        + " than closing under a possibly-live pump")
+                .isZero();
+
+        backend.blockAwait = false; // the wedge clears; the loop exits on its flag
+
+        assertThat(engine.stopAudioOutput())
+                .as("the next stop retries the join and completes the release")
+                .isTrue();
+        assertThat(backend.closeCount.get()).isEqualTo(1);
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    @Test
+    void aFailedHopWhoseCloseTheControlPanelBlocksAbandonsTheLadderWalk() {
+        SynchronousTestBackend first = new SynchronousTestBackend("First");
+        first.failOnOpen = true;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        engine.setStreamingProvision(provisionOf("First", first, second));
+        engine.beginControlPanelSession(first);
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("the hop's handle was not released, so the walk stops here")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("First")
+                .hasMessageContaining("could not be released");
+
+        assertThat(first.closeCount.get())
+                .as("the close is not even attempted while the panel is up")
+                .isZero();
+        assertThat(second.openCount.get())
+                .as("no fallback rung opened beside the rung the panel pins open")
+                .isZero();
+        engine.endControlPanelSession(first);
     }
 
     // ── Lifecycle serialization (story 316 re-review) ────────────────────

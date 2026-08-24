@@ -462,8 +462,8 @@ project-switch bug class becomes structurally impossible.
 | provisioned backend  | the backend queries, enumeration and configuration target: the open stream's backend while one is open, else the installed ladder's head rung; "none" when nothing is provisioned |
 | active backend       | the backend whose stream is OPEN — RUNNING or PAUSED, i.e. the one holding the device handle; "none" whenever no stream is open |
 | active device        | resolved device identity (stable id, not a bare index)         |
-| stream state         | `CLOSED` (no handle held) / `RUNNING` (open and started: the callback may render, RT clock claimed) / `PAUSED` (open but stopped — resumable, clock released) / `RELEASE_PENDING` (stopped, callback known inactive, but a failed close left the handle held: not open, not resumable, and it must be released before any new open). There is no FAILED state — a failed open walks the ladder and publishes fallback events, and the app-level `EngineState` (RUNNING / STOPPED / DEVICE_LOST / …) is a separate concept |
-| fallback event       | published at OPEN time, once per hop the open did not take — a gate-refused request, then every rung that failed before one opened. Substitution is always visible; there is no silent hop |
+| stream state         | `CLOSED` (no handle held) / `RUNNING` (open and started: the callback may render, RT clock claimed) / `PAUSED` (open but stopped — resumable, clock released) / `RELEASE_PENDING` (stopped, but the backend still holds the handle: not open, not resumable, and it must be released before any new open). THREE ways in, and the state alone does **not** prove the render pump has exited: a close that was attempted after a confirmed pump join and FAILED, or a pump start that failed and whose unwind's close failed too (no join there — the start is what failed); a close DEFERRED, not attempted, because that backend's native control panel is open; or a `stop()`, which quiesces, releases the clock and leaves the handle for a later release without attempting a close at all — including when its own bounded join timed out. Anything about to release the handle re-confirms quiescence itself. There is no FAILED state — a failed open walks the ladder and publishes fallback events, and the app-level `EngineState` (RUNNING / STOPPED / DEVICE_LOST / …) is a separate concept |
+| fallback event       | published at OPEN time, once per hop the open did not take — a gate-refused request, then every rung that failed before one opened. Substitution is always visible; there is no silent hop. A walk can end EARLY, and that is a stop rather than a silence: a rung whose `open()` was ATTEMPTED and whose handle could not then be released may still hold the device, so the ladder is ABANDONED rather than opened beside it — that hop and every earlier one are still published (active `"none"`), and no lower rung is walked, opened or published |
 
 *Provisioned* is a **routing target, not a prediction.** It is the backend a capability
 query, a device enumeration or a configuration write should address right now. It does
@@ -493,8 +493,10 @@ The rendering rule follows the question being asked:
   ever labelled active. Precisely: *active* is the backend of the **open** stream, where
   open means RUNNING **or PAUSED**. A paused stream renders no audio but still owns the
   device handle and still holds the driver, so naming its backend is the true answer —
-  "none" there would claim the device is free when it is not. A handle merely retained
-  after a failed close is *not* open and never names a backend. With no open stream it is
+  "none" there would claim the device is free when it is not. A merely RETAINED handle is
+  *not* open and never names a backend — however it came to be retained: a close that
+  failed, a close deferred because that backend's control panel is open, or a `stop()`
+  that attempted none. With no open stream it is
   "none" — a stopped transport is the normal case, so a surface showing it localizes the
   word rather than printing the contract literal, and must not present it as a missing
   device.
@@ -607,7 +609,9 @@ duality of §1.2 is retired.
                                                       v
                                          stream state: CLOSED / RUNNING / PAUSED / RELEASE_PENDING
                                          open = RUNNING or PAUSED — reported name = that stream's backend
-                                         RELEASE_PENDING = failed close still holding the handle; not open
+                                         RELEASE_PENDING = backend still holds the handle (close failed,
+                                           deferred for an open control panel, or never attempted by
+                                           stop()); not open, and not proof the pump has exited
 
 Design decisions and why:
 
@@ -628,7 +632,18 @@ Design decisions and why:
   both disappear; Play after Stop reopens the same device.
 - **The fallback ladder is explicit and loud.** ASIO open failure falls back to the
   next rung *and* publishes the fallback event (surfaced via Book 4's notification
-  injection). Silent substitution is the §1.2 disease.
+  injection). Silent substitution is the §1.2 disease. Falling back is not unconditional,
+  and where the ladder refuses to fall back it still does not substitute silently: a rung
+  whose `open()` was ATTEMPTED and whose handle could not then be released may still hold
+  the device, so the walk is ABANDONED rather than opening a fallback beside it — the
+  hops so far, that one included, are published naming `"none"` as active, and no lower
+  rung is walked, so nothing was substituted at all. A rung refused *before* `open()`
+  (an unavailable ASIO shim, a non-renderable negotiation) holds nothing, and still falls
+  through to the next rung. (A hop that fails with an `Error` also abandons the walk,
+  after ATTEMPTING to give its handle back — the attempt is skipped when that backend's
+  control panel is open, and can fail — and propagates without publishing. The log says
+  which of the two happened, because that is what tells a reader whether the device is
+  free; see §5.2.)
 - **Java Sound is corrected, not blessed.** It negotiates a format the line actually
   supports (float where available, else properly converted signed PCM), opens the
   selected mixer, and where device selection is genuinely unsupported says so. It
@@ -783,7 +798,7 @@ The tables a reviewer checks a PR against.
 | Rule | Contract |
 |------|----------|
 | Selection honoured | Every stream open resolves the configured backend + device id; Play-after-Stop reopens the same device |
-| Honest reporting | Reported active backend/device = the open stream's, and *only* that: with no stream open it is "none", never the provisioned or requested backend. Configuration and enumeration surfaces read the *provisioned* backend instead (§3.2). Every hop an open did not take publishes a fallback event naming the requested endpoint and what carried the stream ("none" when nothing did) — including a request the availability/streaming gate refused before it ever became a ladder rung. The one case with nothing to publish is an open with no failed hop at all: the requested rung opened and only the render-pump start then failed, a failure state story 317 owns |
+| Honest reporting | Reported active backend/device = the open stream's, and *only* that: with no stream open it is "none", never the provisioned or requested backend. Configuration and enumeration surfaces read the *provisioned* backend instead (§3.2). Every hop an open did not take publishes a fallback event naming the requested endpoint and what carried the stream ("none" when nothing did) — including a request the availability/streaming gate refused before it ever became a ladder rung. Three cases publish nothing about a hop. First, an open with no failed hop at all: the requested rung opened and only the render-pump start then failed, a failure state story 317 owns. Second, the rungs BELOW an abandoned walk — a rung that reached `open()` and could not give its handle back stops the ladder, so nothing below it is ever walked; its own hop and every earlier one are still published, naming `"none"` as active. Third, a hop that fails with an `Error` rather than an exception: the walk is abandoned and the `Error` propagates without publishing anything at all — an `OutOfMemoryError` is not a device refusal, and the ladder deliberately does not route around one. Its handle release is ATTEMPTED on the way out, not guaranteed: the attempt is skipped while that backend's control panel is open and may itself fail, and the engine logs which happened rather than asserting the device is free |
 | Java Sound formats | Only formats the line supports; float bits never written into an integer-encoded line |
 | Device indices | Stable ids resolved per enumeration snapshot; a stale index is a visible error, not an index‑0 open |
 | Unsupported selection | Stated ("device selection not supported on this backend"), never silently ignored |

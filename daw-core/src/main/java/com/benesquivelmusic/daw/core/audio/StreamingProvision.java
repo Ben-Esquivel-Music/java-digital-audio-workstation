@@ -24,6 +24,15 @@ import java.util.Objects;
  * &sect;2.4), and when every rung fails it rethrows the <em>first</em>
  * rung's exception.</p>
  *
+ * <p>The walk does not always REACH every rung. A rung that had already
+ * called {@code AudioBackend.open} and could not then give its handle back
+ * abandons the walk rather than opening a fallback rung beside a backend
+ * that may still hold the device — see {@code AudioEngine.openLadder}. The
+ * hops that did fail are still published, naming {@code "none"} active. A
+ * rung refused BEFORE {@code open} (an unavailable streaming path, an
+ * unrenderable negotiated format) holds no device and still falls through to
+ * the next rung.</p>
+ *
  * <p>{@link #requestedDevice()} carries exactly the same caveat as
  * {@link #requestedBackendName()}: it is the device the user's
  * configuration asked for, and it equals the first rung's device only when

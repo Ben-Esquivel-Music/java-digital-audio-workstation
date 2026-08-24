@@ -51,8 +51,18 @@ import static org.assertj.core.api.Assertions.fail;
  * only, so a rung that took a native handle and then threw an {@code Error}
  * kept holding the device. {@code closeFailedHop}'s inner catch was
  * {@code RuntimeException}-only too, so a {@code close()} that threw an
- * {@code Error} REPLACED the hop failure and aborted the walk before any
- * fallback rung was tried.</p>
+ * {@code Error} REPLACED the hop failure with a teardown failure.</p>
+ *
+ * <p>Widening that inner catch fixed the masking, and the masking only —
+ * which is the half these tests still assert. What it deliberately does NOT
+ * mean is that the walk continues: a rung that had already reached
+ * {@code open()} and could not then give its handle back may still hold the
+ * device, so {@code closeFailedHop} reports the non-release and
+ * {@code openLadder} ABANDONS the walk rather than open a fallback rung
+ * beside it. An unreleased handle is unreleased whatever the close threw, so
+ * the {@code Error} case and the {@code RuntimeException} case behave
+ * identically here. A rung refused BEFORE {@code open()} holds no device and
+ * still falls through.</p>
  *
  * <h2>Determinism</h2>
  * <p>No sleeps. Waits use one generous guard budget
@@ -298,7 +308,7 @@ class AudioEngineLockedOutwardCallTest {
     }
 
     @Test
-    void aCloseThatThrowsAnErrorNeitherMasksTheHopFailureNorAbortsTheWalk() {
+    void aCloseThatThrowsAnErrorDoesNotMaskTheHopFailureButStillAbandonsTheWalk() {
         StallableBackend failing = new StallableBackend("BadClose");
         failing.failOpen = true;
         failing.closeError = new AssertionError("close blew up too");
@@ -306,15 +316,31 @@ class AudioEngineLockedOutwardCallTest {
         AudioEngine engine = new AudioEngine(FORMAT);
         engine.setStreamingProvision(provisionOf(failing, fallback));
 
-        engine.startAudioOutput();
+        assertThatThrownBy(engine::startAudioOutput)
+                .as("the rung reached open() and its handle was NOT released, whatever the"
+                        + " close threw — a fallback rung opened beside it would be the"
+                        + " second backend on one device")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("BadClose")
+                .hasMessageContaining("could not be released")
+                .satisfies(refusal -> {
+                    assertThat(refusal.getCause())
+                            .as("the surviving half: a close-thrown Error must never"
+                                    + " REPLACE the hop failure")
+                            .isInstanceOf(AudioBackendException.class)
+                            .hasMessage("open refused by BadClose");
+                    assertThat(refusal.getCause().getSuppressed())
+                            .as("…it travels suppressed on that cause instead")
+                            .contains(failing.closeError);
+                });
 
         assertThat(failing.closeAttempts.get())
-                .as("the failed hop's handle is still given back")
+                .as("the release was still attempted on the failed hop")
                 .isEqualTo(1);
-        assertThat(engine.openStreamBackendName())
-                .as("a close-thrown Error must not replace the hop failure nor abort the"
-                        + " walk — the fallback rung still opens")
-                .contains("Fallback");
+        assertThat(fallback.openAttempts.get())
+                .as("the walk is abandoned rather than opening beside an unreleased handle")
+                .isZero();
+        assertThat(engine.isStreamOpen()).isFalse();
         engine.stopAudioOutput();
     }
 

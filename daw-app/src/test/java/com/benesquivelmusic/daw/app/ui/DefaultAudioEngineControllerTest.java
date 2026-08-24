@@ -1763,6 +1763,106 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
+    void theControllerMonitorIsNotHeldAcrossTheControlPanelDrain(
+            @TempDir Path projectRoot) throws Exception {
+        // Story 316 re-review, stall audit A1, THIRD half — the regression
+        // the sibling test above cannot see. Taking the panel action out of
+        // the monitor fixed the freeze while the dialog was up; publishing
+        // the registration to the engine then put an UNBOUNDED call back
+        // inside the monitor on the way out. AudioEngine
+        // .endControlPanelSession() does not merely clear a field: it drains
+        // the close its registration deferred — stopPump()'s bounded join
+        // and then close() on the retained handle, which that engine's own
+        // blocking budget prices as UNBOUNDED for PortAudio and in minutes
+        // for a slow ASIO driver. Called from a synchronized helper, that
+        // put every synchronized controller method behind a native teardown
+        // — the same freeze, moved from "while the user reads the dialog" to
+        // "while the driver tears the stream down", and just as visible on
+        // the FX thread, which reaches openControlPanel() from
+        // SettingsDialog.updateAudioUtilityDisabledState().
+        //
+        // runControlPanel() therefore makes the two engine calls as SIBLINGS
+        // of the two synchronized helpers rather than from inside them. The
+        // probe below is getProvisionedBackendName(): synchronized on the
+        // controller, and lock-free on the engine side (volatile reads
+        // only), so it can only block on the controller monitor.
+        //
+        // Every wait is bounded, so a regression FAILS on a timeout rather
+        // than hanging the suite.
+        CountDownLatch drainInsideClose = new CountDownLatch(1);
+        CountDownLatch releaseClose = new CountDownLatch(1);
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        spy.setControlPanelAction(() -> {
+            // Leaves the handle RELEASE_PENDING and tracked: the panel is
+            // registered, so the engine defers this close rather than
+            // freeing the native state the dialog is running on.
+            engine.stopAudioOutput();
+            // Armed HERE so it wedges exactly the drain that follows this
+            // action's return, and not the shutdown closes after it.
+            spy.armNextCloseHook(() -> {
+                drainInsideClose.countDown();
+                try {
+                    // Stands in for a driver whose teardown takes minutes.
+                    // The bound is a suite safety net; the finally below
+                    // always releases it first.
+                    releaseClose.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        });
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            engine.startAudioOutput();
+            assertThat(controller.getActiveBackendName())
+                    .as("precondition: a stream really is open, so the stop inside "
+                            + "the panel action leaves a handle for the drain to close")
+                    .isEqualTo("ASIO");
+
+            workers.execute(controller.openControlPanel().orElseThrow());
+            assertThat(drainInsideClose.await(5, TimeUnit.SECONDS))
+                    .as("precondition: the panel returned and the drain really is "
+                            + "inside the backend's close(), where it will stay until "
+                            + "this test releases it")
+                    .isTrue();
+
+            Callable<String> provisionedQuery = controller::getProvisionedBackendName;
+            assertThat(workers.submit(provisionedQuery).get(5, TimeUnit.SECONDS))
+                    .as("an ordinary synchronized controller query must not queue "
+                            + "behind the driver's native teardown either — the "
+                            + "monitor is for the registration's field store, never "
+                            + "for the engine call that drains the close")
+                    .isEqualTo("ASIO");
+
+            releaseClose.countDown();
+            workers.shutdown();
+            assertThat(workers.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+            // Before shutdown(), which closes the provision instances and
+            // would take the count to two.
+            assertThat(spy.closeCount())
+                    .as("and the drain this test wedged really did release the "
+                            + "handle — otherwise the probe above would pass just as "
+                            + "well on a controller that had skipped the drain "
+                            + "altogether")
+                    .isEqualTo(1);
+        } finally {
+            releaseClose.countDown();
+            workers.shutdownNow();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
     void aBackendIsNotClosedWhileItsDriverControlPanelIsOpen(@TempDir Path projectRoot) {
         // Story 316 re-review, stall audit A1, second half. Taking the modal
         // panel action out from under the controller monitor removed a real
@@ -1771,14 +1871,25 @@ class DefaultAudioEngineControllerTest {
         // the dialog is running on (an AsioBufferSwitchShim upcall arena, a
         // SourceDataLine, a Pa_ handle), so without a replacement the fix
         // would have traded a UI freeze for a native use-after-free. The
-        // narrow replacement is a registration every close path consults,
-        // mirroring the refusal closeProvisionBackendsOnceQuiesced() already
-        // makes for a render pump that will not confirm quiescence.
+        // replacement is a registration consulted by every close path that
+        // can run WHILE the dialog is up, mirroring the refusal
+        // closeProvisionBackendsOnceQuiesced() already makes for a render
+        // pump that will not confirm quiescence. (The engine's own drain is
+        // the one close that does NOT consult it, and cannot: it runs after
+        // the registration has been withdrawn, to perform the very close the
+        // registration deferred.)
+        //
+        // That registration has TWO halves, and this test pins the
+        // CONTROLLER one: closeProvisionBackends() skipping a backend
+        // INSTANCE this controller owns. The engine's own HANDLE closes are
+        // the other half — runControlPanel() publishes the same
+        // instance to AudioEngine.beginControlPanelSession() — and the two
+        // tests below pin that side, with a stream genuinely open.
         //
         // The close is issued FROM INSIDE the panel action deliberately: that
         // makes this test independent of which lock the panel holds, so it
-        // pins the close-skip guard alone. The sibling test above pins the
-        // monitor removal.
+        // pins the controller-side close-skip guard in isolation. The sibling
+        // test above pins the monitor removal.
         SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
         com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
                 new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
@@ -1813,6 +1924,151 @@ class DefaultAudioEngineControllerTest {
                     .isEqualTo(1);
         } finally {
             engine.stop();
+        }
+    }
+
+    @Test
+    void anEngineOwnedStopRetainsTheHandleWhileTheDriverControlPanelIsOpen(
+            @TempDir Path projectRoot) {
+        // Story 316 re-review, Copilot (High). Registering the panel with the
+        // CONTROLLER only protected closeProvisionBackends() — the close of
+        // the backend INSTANCES the controller owns. It said nothing about
+        // the engine's own HANDLE closes, so with a stream open a Stop, a
+        // shutdown or a concurrent endpoint reconfigure could still free the
+        // native state the modal driver dialog was running on: an
+        // AsioBufferSwitchShim upcall arena, a SourceDataLine, a Pa_ handle.
+        //
+        // The registration is now published to the engine as well
+        // (AudioEngine.beginControlPanelSession, called by runControlPanel as
+        // a SIBLING of the synchronized helper, with the monitor released —
+        // see theControllerMonitorIsNotHeldAcrossTheControlPanelDrain), and
+        // five of the engine's six AudioBackend.close() sites consult it; the
+        // sixth, its own drain, runs after the withdrawal. This test is
+        // the Stop half, with a stream GENUINELY OPEN on the spy — the state
+        // the controller-only guard never covered.
+        //
+        // As in the sibling test above, the stop is issued FROM INSIDE the
+        // panel action, so the test is independent of which lock the panel
+        // holds.
+        SpyStreamingBackend spy = new SpyStreamingBackend("ASIO");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> spy));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        AtomicBoolean stopReportedQuiescence = new AtomicBoolean();
+        AtomicInteger closesSeenWhileThePanelWasOpen = new AtomicInteger(-1);
+        AtomicBoolean streamReportedOpenWhileThePanelWasOpen = new AtomicBoolean(true);
+        spy.setControlPanelAction(() -> {
+            stopReportedQuiescence.set(engine.stopAudioOutput());
+            closesSeenWhileThePanelWasOpen.set(spy.closeCount());
+            streamReportedOpenWhileThePanelWasOpen.set(engine.isStreamOpen());
+        });
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            engine.startAudioOutput();
+            assertThat(controller.getActiveBackendName())
+                    .as("precondition: a stream really is open on the spy, so the "
+                            + "engine tracks a handle it would otherwise close")
+                    .isEqualTo("ASIO");
+
+            controller.openControlPanel().orElseThrow().run();
+
+            assertThat(stopReportedQuiescence)
+                    .as("the stop still reports QUIESCENCE: the render pump really "
+                            + "did join, so output is stopped — only the handle "
+                            + "close was deferred")
+                    .isTrue();
+            assertThat(closesSeenWhileThePanelWasOpen)
+                    .as("but the engine must NOT close the stream handle underneath "
+                            + "the modal dialog — that frees the very native state "
+                            + "the driver panel is running on")
+                    .hasValue(0);
+            assertThat(streamReportedOpenWhileThePanelWasOpen)
+                    .as("and the retained handle is not reported open: output is "
+                            + "stopped and not resumable, the handle is the engine's "
+                            + "own business")
+                    .isFalse();
+
+            assertThat(spy.closeCount())
+                    .as("when the panel returns, endControlPanelSession DRAINS the "
+                            + "close it deferred — without that drain the guard "
+                            + "would be a leak rather than a deferral")
+                    .isEqualTo(1);
+        } finally {
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void aProvisionSwapIsRefusedWhileTheOutgoingBackendsControlPanelIsOpen(
+            @TempDir Path projectRoot) {
+        // Story 316 re-review, Copilot (High), the reconfigure half. A swap
+        // installs first: applyConfiguration -> installProvision ->
+        // AudioEngine.setStreamingProvision, whose
+        // abandonStreamOnOutgoingBackend closes the tracked stream on a
+        // backend the incoming ladder no longer carries. That close ran
+        // AHEAD of closeProvisionBackends() and never consulted the
+        // controller's registration, so an endpoint change landing while the
+        // driver dialog was up tore the backend down underneath it.
+        //
+        // The engine now refuses the swap WHOLE instead, keeping the handle
+        // tracked so the release can be retried — and the release happens as
+        // soon as the panel returns.
+        SpyStreamingBackend outgoing = new SpyStreamingBackend("ASIO");
+        SpyStreamingBackend incoming = new SpyStreamingBackend("SpyOther");
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                        java.util.Map.of("ASIO", () -> outgoing, "SpyOther", () -> incoming));
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        AtomicReference<Throwable> swapOutcome = new AtomicReference<>();
+        AtomicInteger closesSeenWhileThePanelWasOpen = new AtomicInteger(-1);
+        outgoing.setControlPanelAction(() -> {
+            swapOutcome.set(catchThrowable(() -> controller.applyConfiguration(
+                    new AudioEngineController.Request(
+                            "SpyOther", "", "Dev C", SampleRate.HZ_48000, 64, 24, 1))));
+            closesSeenWhileThePanelWasOpen.set(outgoing.closeCount());
+        });
+        try {
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
+            engine.startAudioOutput();
+            StreamingProvision installed = engine.getStreamingProvision();
+            assertThat(controller.getActiveBackendName())
+                    .as("precondition: the stream is open on the backend whose panel "
+                            + "the swap would close")
+                    .isEqualTo("ASIO");
+
+            controller.openControlPanel().orElseThrow().run();
+
+            assertThat(swapOutcome.get())
+                    .as("a reconfigure to a different endpoint must be refused, not "
+                            + "granted by closing the outgoing handle under the dialog")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining("control panel");
+            assertThat(closesSeenWhileThePanelWasOpen)
+                    .as("and the outgoing backend really was left alone")
+                    .hasValue(0);
+            assertThat(engine.getStreamingProvision())
+                    .as("the swap is refused WHOLE: the engine still points at the "
+                            + "provision carrying the backend under the dialog, so "
+                            + "the retained handle keeps its retry path")
+                    .isSameAs(installed);
+
+            assertThat(outgoing.closeCount())
+                    .as("and the handle the refusal retained is released as soon as "
+                            + "the panel returns")
+                    .isEqualTo(1);
+        } finally {
+            engine.stop();
+            controller.shutdown();
         }
     }
 

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import javax.sound.sampled.Control;
 import javax.sound.sampled.Line;
 import javax.sound.sampled.LineListener;
+import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.TargetDataLine;
 import java.io.IOException;
@@ -389,6 +390,221 @@ class JavaxSoundBackendTest {
                 .hasMessageContaining("output line unavailable");
         assertThat(line.closeAttempts()).isEqualTo(3);
         assertThat(backend.isOpen()).isFalse();
+    }
+
+    /**
+     * Story 316 review (High): {@code open()}'s ROLLBACK owes the same
+     * retain-on-failure release {@link JavaxSoundBackend#close()} does.
+     *
+     * <p>The shape this replaced cleared the field and <em>then</em> made a
+     * best-effort close whose failure nobody saw. When that close also failed,
+     * the backend had permanently lost the only reference to a line the mixer
+     * still counts as taken: the engine's {@code closeFailedHop} retry had
+     * nothing left to retry, and it would open a fallback rung in parallel
+     * with the still-held device.</p>
+     */
+    @Test
+    void aFailedOutputRollbackRetainsTheLineAndCarriesTheReleaseFailureAlongside() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine line = StubLine.refusingCloses(1);
+        plantLine(backend, OUTPUT_LINE, line);
+        LineUnavailableException openFailure =
+                new LineUnavailableException("device refused the output line");
+
+        AudioBackendException thrown = backend.rollBackFailedOutputOpen(openFailure);
+
+        assertThat(thrown)
+                .as("the OPEN failure is the actionable one, so it stays the cause")
+                .hasMessageContaining("output line unavailable")
+                .cause()
+                .isSameAs(openFailure);
+        assertThat(thrown.getSuppressed())
+                .as("and the release failure rides alongside rather than being swallowed")
+                .containsExactly(line.closeFailure());
+        assertThat(line.closeAttempts())
+                .as("the rollback really did attempt the release")
+                .isEqualTo(1);
+        assertThat(retainedLine(backend, OUTPUT_LINE))
+                .as("the line it could not release is RETAINED, never dropped")
+                .isSameAs(line);
+        assertThat(backend.isOpen())
+                .as("retained is not open — RELEASE_PENDING: not open, not resumable,"
+                        + " not yet released")
+                .isFalse();
+    }
+
+    @Test
+    void aLineRetainedByAFailedOutputRollbackIsReleasedByTheNextClose() {
+        // Retention is only worth anything if the engine's retry can still
+        // REACH the handle: closeFailedHop calls backend.close() on exactly
+        // this rung after the open failed.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine line = StubLine.refusingCloses(1);
+        plantLine(backend, OUTPUT_LINE, line);
+
+        backend.rollBackFailedOutputOpen(new LineUnavailableException("no output line"));
+        assertThat(retainedLine(backend, OUTPUT_LINE)).isSameAs(line);
+
+        assertThatCode(backend::close)
+                .as("the retry succeeds, so this close reports the truth")
+                .doesNotThrowAnyException();
+        assertThat(line.closeAttempts())
+                .as("the retry REACHED the same line — not just cleared a flag")
+                .isEqualTo(2);
+        assertThat(retainedLine(backend, OUTPUT_LINE))
+                .as("only a close that returned normally drops the field")
+                .isNull();
+    }
+
+    @Test
+    void aLineRetainedByAFailedOutputRollbackRefusesTheNextOpenInsteadOfLeaking() {
+        // open() assigns this.outputLine unconditionally, so the other reader
+        // retention must reach is the guard at the top of open().
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine line = StubLine.refusingCloses(2); // the rollback, then the guard's retry
+        plantLine(backend, OUTPUT_LINE, line);
+        DeviceId device = DeviceId.defaultFor(JavaxSoundBackend.NAME);
+        AudioFormat absurd = new AudioFormat(48_000.0, 192, 16);
+
+        backend.rollBackFailedOutputOpen(new LineUnavailableException("no output line"));
+
+        assertThatThrownBy(() -> backend.open(device, absurd, 512))
+                .as("a line retained by a failed rollback refuses the open rather than"
+                        + " being overwritten by a fresh one and leaked")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("output line")
+                .hasMessageContaining("refusing to open over it");
+        assertThat(line.closeAttempts())
+                .as("the guard RETRIES the release before it refuses")
+                .isEqualTo(2);
+        assertThat(retainedLine(backend, OUTPUT_LINE)).isSameAs(line);
+        assertThat(backend.isOpen())
+                .as("the refusal lands before support.markOpen, so isOpen never lies")
+                .isFalse();
+
+        // The stub now releases. The open therefore reaches the real device and
+        // fails there instead — a DIFFERENT message, which is what proves the
+        // refusal was never permanent.
+        assertThatThrownBy(() -> backend.open(device, absurd, 512))
+                .as("once the retained line is gone the open proceeds to the device")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("output line unavailable");
+        assertThat(line.closeAttempts()).isEqualTo(3);
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    @Test
+    void anOutputRollbackThatReleasedTheLineDropsItAndReportsOnlyTheOpenFailure() {
+        // The happy-path rollback contract that must not regress: when the
+        // cleanup worked there is nothing held and nothing extra to report.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine line = StubLine.releasable();
+        plantLine(backend, OUTPUT_LINE, line);
+        LineUnavailableException openFailure =
+                new LineUnavailableException("device refused the output line");
+
+        AudioBackendException thrown = backend.rollBackFailedOutputOpen(openFailure);
+
+        assertThat(thrown).cause().isSameAs(openFailure);
+        assertThat(thrown.getSuppressed())
+                .as("nothing stayed held, so there is no second failure to carry")
+                .isEmpty();
+        assertThat(line.closeAttempts()).isEqualTo(1);
+        assertThat(retainedLine(backend, OUTPUT_LINE))
+                .as("a close that RETURNED drops its field")
+                .isNull();
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    /**
+     * The capture rollback gets the SAME retention and the OPPOSITE
+     * propagation.
+     *
+     * <p>An exception escaping this path would kill an open whose MANDATORY
+     * output line had already succeeded: the engine would read the whole rung
+     * as failed and open a second backend in parallel against that still-live
+     * output line, two streams on one device. So the release failure is logged
+     * and the line is kept — and it is the retention, not a throw, that lets a
+     * later {@code close()} confirm the release.</p>
+     */
+    @Test
+    void aFailedCaptureRollbackRetainsTheLineWithoutKillingThePlaybackOpen() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend); // the mandatory output line already succeeded
+        StubLine capture = StubLine.refusingCloses(1);
+        plantLine(backend, INPUT_LINE, capture);
+
+        assertThatCode(() -> backend.rollBackFailedCaptureOpen(
+                new LineUnavailableException("device refused the capture line")))
+                .as("capture is optional-degrade: the rollback must not fail the open")
+                .doesNotThrowAnyException();
+
+        assertThat(capture.stopAttempts())
+                .as("the release was really attempted — stop, then close")
+                .isEqualTo(1);
+        assertThat(capture.closeAttempts()).isEqualTo(1);
+        assertThat(retainedLine(backend, INPUT_LINE))
+                .as("the capture line it could not release is RETAINED")
+                .isSameAs(capture);
+        assertThat(backend.isOpen())
+                .as("playback continues without input — the open still stands")
+                .isTrue();
+
+        assertThatCode(backend::close)
+                .as("and a later close reaches that same handle and confirms the release")
+                .doesNotThrowAnyException();
+        assertThat(capture.closeAttempts())
+                .as("the retry REACHED the retained line")
+                .isEqualTo(2);
+        assertThat(retainedLine(backend, INPUT_LINE)).isNull();
+    }
+
+    @Test
+    void aCaptureRollbackThatReleasedTheLineDropsItAndLeavesPlaybackOpen() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine capture = StubLine.releasable();
+        plantLine(backend, INPUT_LINE, capture);
+
+        backend.rollBackFailedCaptureOpen(
+                new LineUnavailableException("device refused the capture line"));
+
+        assertThat(capture.closeAttempts()).isEqualTo(1);
+        assertThat(retainedLine(backend, INPUT_LINE))
+                .as("a close that RETURNED drops its field")
+                .isNull();
+        assertThat(backend.isOpen())
+                .as("the mandatory output line was never touched by the capture rollback")
+                .isTrue();
+
+        backend.close();
+    }
+
+    /**
+     * Marks the backend's stream OPEN the way {@code open()} does before it
+     * touches any line.
+     *
+     * <p>Without it, "the rollback left {@link JavaxSoundBackend#isOpen()}
+     * false" would pass vacuously on a backend that was never open, and the
+     * capture path's "playback continues" assertion could not be made at all.
+     * {@code AudioBackendSupport} is package-private and this test is patched
+     * into {@code daw.sdk}, so only the backend's own {@code support} field
+     * needs reflection to reach.</p>
+     */
+    private static void markStreamOpen(JavaxSoundBackend backend) {
+        try {
+            Field declared = JavaxSoundBackend.class.getDeclaredField("support");
+            declared.setAccessible(true);
+            AudioBackendSupport support = (AudioBackendSupport) declared.get(backend);
+            support.markOpen(new AudioFormat(48_000.0, 2, 16), 512);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("JavaxSoundBackend.support must exist — the"
+                    + " rollbacks clear the open flag through it", e);
+        }
     }
 
     /**

@@ -21,7 +21,14 @@ import java.util.function.BooleanSupplier;
  * it walks its explicit {@code StreamingProvision} ladder of
  * (backend,&nbsp;device) rungs — typically ending on
  * {@link JavaxSoundBackend} — and publishes a {@code BackendFallbackEvent}
- * for every failed hop (story 316).</p>
+ * for every failed hop (story 316). That walk does not always reach the last
+ * rung: a rung whose {@link #open(DeviceId, AudioFormat, int)} was attempted
+ * and whose handle could not then be released may still hold the device, so
+ * the engine ABANDONS the walk rather than open a fallback beside it. The hops
+ * up to and including that rung are still published (naming {@code "none"} as
+ * what carried the stream), and no LOWER rung is walked, opened or published.
+ * A rung refused BEFORE {@code open} holds nothing, so it falls through to the
+ * next rung and publishes exactly as described above.</p>
  *
  * <h2>Lifecycle</h2>
  * <ol>

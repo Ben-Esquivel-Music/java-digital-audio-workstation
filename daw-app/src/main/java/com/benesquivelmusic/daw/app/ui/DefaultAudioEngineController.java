@@ -254,13 +254,73 @@ final class DefaultAudioEngineController implements AudioEngineController {
      *       froze the entire UI until the user closed it.</li>
      * </ul>
      *
-     * <p>A {@link ReentrantLock} rather than a second monitor because the
-     * panel action runs on one of the settings dialog's virtual threads (JEP
-     * 444): blocking on a monitor pins the carrier thread, blocking on a
-     * {@code ReentrantLock} does not. There is no lock-order hazard with the
-     * controller monitor either &mdash; this lock is only ever acquired by a
-     * thread that holds no monitor, and no monitor-holding path waits for
-     * it.</p>
+     * <p>A {@link ReentrantLock} rather than a second monitor &mdash; and
+     * CARRIER PINNING is not the reason, though an earlier revision of this
+     * javadoc said it was. This reactor targets JDK&nbsp;26
+     * ({@code java.version} 26 in the root POM), and JEP&nbsp;491 removed
+     * monitor pinning in JDK&nbsp;24, so a virtual thread blocking on a
+     * monitor no longer pins its carrier. The reasons that survive are (a)
+     * this is a DIFFERENT lock from the controller monitor the FX thread
+     * contends for, which is the entire point of the split, and (b)
+     * try/finally makes the critical section's extent explicit at the one
+     * call site that takes it, so the lock order below can be read straight
+     * off {@link #runControlPanel(AudioBackend, Runnable)}.</p>
+     *
+     * <h2>Lock order</h2>
+     * <p>THREE locks are in play on the panel path since the engine gained
+     * its own half of the control-panel guard, and
+     * {@link #runControlPanel(AudioBackend, Runnable)} takes the other two
+     * as SIBLINGS under this one rather than nesting them:</p>
+     * <pre>
+     * controlPanelLock &rarr; controller monitor          (brief: one field store)
+     * controlPanelLock &rarr; AudioEngine.lifecycleLock   (possibly LONG)
+     * </pre>
+     * <p>{@link #registerOpenControlPanel(AudioBackend)} and
+     * {@link #releaseOpenControlPanel(AudioBackend)} are still
+     * {@code synchronized}, but they now do nothing beyond storing
+     * {@link #controlPanelBackend}; the engine calls
+     * {@link AudioEngine#beginControlPanelSession(AudioBackend)} /
+     * {@link AudioEngine#endControlPanelSession(AudioBackend)} are made by
+     * {@code runControlPanel} itself, with the monitor already released. The
+     * nesting [controller monitor &rarr; lifecycleLock] is GONE from this
+     * path, and its removal is the point rather than a tidy-up:
+     * {@code endControlPanelSession} does not merely clear a field, it
+     * DRAINS the close its registration deferred &mdash; the engine's
+     * bounded pump join followed by {@code close()} on the retained handle,
+     * a seam that engine's own blocking budget prices as UNBOUNDED for
+     * PortAudio and as minutes for a slow ASIO driver. Made from inside the
+     * monitor it would queue every {@code synchronized} method behind a
+     * native teardown, which is this same stall merely moved from "while the
+     * user reads the dialog" to "while the driver tears the stream down".
+     * The chain is acyclic because no thread ever walks any part of it
+     * backwards:</p>
+     * <ul>
+     *   <li>This lock is the OUTERMOST link. It is acquired only by
+     *       {@code runControlPanel}, from a thread that holds neither the
+     *       controller monitor nor the engine's lifecycle lock &mdash;
+     *       {@link #openControlPanel()} resolves the backend and its action
+     *       under the monitor and RETURNS, so the action runs with the
+     *       monitor released. Nothing that holds the monitor, and nothing
+     *       inside the engine, ever waits for this lock.</li>
+     *   <li>Both edges out of it end at a LEAF, so neither can close a
+     *       cycle: the monitor is held here only across a field store, and
+     *       the lifecycle lock is taken here with no other lock of ours
+     *       held. [controller monitor &rarr; lifecycleLock] still exists
+     *       ELSEWHERE &mdash; {@link #applyConfiguration(Request)},
+     *       {@link #installDefaultProvision()} and {@link #shutdown()} take
+     *       it on every engine lifecycle call they make &mdash; and this
+     *       path simply no longer contributes to it.</li>
+     *   <li>The reverse edges do not exist. The engine never calls the
+     *       application while holding {@code lifecycleLock} &mdash; its
+     *       stream-open listener, its fallback events and its RT-clock
+     *       releases are all deferred past the unlock through the engine's
+     *       {@code PendingAnnouncements} &mdash; so no thread ever holds the
+     *       lifecycle lock and then waits for this controller's monitor or
+     *       for this lock. Nor does anything holding the monitor wait for
+     *       this lock: the only acquisition is in {@code runControlPanel},
+     *       reached from the action {@link #openControlPanel()} handed back
+     *       after releasing the monitor.</li>
+     * </ul>
      */
     private final ReentrantLock controlPanelLock = new ReentrantLock();
 
@@ -268,46 +328,110 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * The backend instance whose native control panel is open right now, or
      * {@code null}. Guarded by this controller's monitor; read by
      * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)},
-     * which always runs under that monitor.
+     * which always runs under that monitor. The SAME instance is published to
+     * the engine as the other half of the guard, by
+     * {@link #runControlPanel(AudioBackend, Runnable)}, which establishes
+     * BOTH registrations before it runs the panel action and withdraws both
+     * after it returns. They are two separate stores rather than one atomic
+     * act, which is all either guard needs: they protect two INDEPENDENT
+     * operations (this controller's INSTANCE closes and the engine's HANDLE
+     * closes), and {@link #controlPanelLock} brackets the whole register →
+     * action → release sequence, so no second panel session can interleave
+     * with either store.
      *
      * <p>This is the ONE property the monitor-wrapped panel action genuinely
-     * provided and that had to survive its removal — stated here at the size
-     * it is actually delivered at, which is smaller than "no close may ever
-     * reach a backend whose dialog is up". The promise is scoped to
-     * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)},
-     * the controller's own best-effort close of the backend INSTANCES it
-     * owns: on a provision swap and on shutdown alike, an instance registered
-     * here is skipped, because that close frees exactly the native state the
-     * dialog is running on. Registration happens under the monitor, and every
-     * path that reaches that method enters through a {@code synchronized} one
-     * ({@link #applyConfiguration(Request)},
-     * {@link #installDefaultProvision()}, {@link #shutdown()}) and holds the
-     * monitor for its whole duration,
-     * so a close either observes the registration and skips the instance, or
-     * completes strictly before the panel begins. The latter is not a new
-     * exposure: the monitor-wrapped version also resolved its backend before
-     * waiting for the monitor, so it too could launch a panel on an instance
-     * a just-finished swap had closed.</p>
+     * provided and that had to survive its removal, and it now covers BOTH
+     * kinds of close that can reach a backend whose dialog is up:</p>
+     * <ul>
+     *   <li><strong>This controller's own INSTANCE closes.</strong>
+     *       {@link #closeProvisionBackends(StreamingProvision,
+     *       StreamingProvision)} — the best-effort close of the backend
+     *       instances this controller owns, on a provision swap and on
+     *       shutdown alike — skips an instance registered here, because that
+     *       close frees exactly the native state the dialog is running on.
+     *       Registration happens under the monitor, and every path that
+     *       reaches that method enters through a {@code synchronized} one
+     *       ({@link #applyConfiguration(Request)},
+     *       {@link #installDefaultProvision()}, {@link #shutdown()}) and
+     *       holds the monitor for its whole duration, so a close either
+     *       observes the registration and skips the instance, or completes
+     *       strictly before the panel begins.</li>
+     *   <li><strong>The ENGINE's own HANDLE closes.</strong> These run inside
+     *       {@link AudioEngine}, which is now told about the registration:
+     *       {@link #runControlPanel(AudioBackend, Runnable)} calls
+     *       {@link AudioEngine#beginControlPanelSession(AudioBackend)} ahead
+     *       of the panel action and
+     *       {@link AudioEngine#endControlPanelSession(AudioBackend)} in its
+     *       {@code finally}. That class calls {@code AudioBackend.close()}
+     *       from SIX places; FIVE of them consult the registration and
+     *       refuse or defer rather than free the handle:
+     *       {@link AudioEngine#stopAudioOutput()} retains the handle (and
+     *       still reports quiescence — the pump really did stop, only the
+     *       close was deferred),
+     *       {@link AudioEngine#setStreamingProvision(StreamingProvision)}
+     *       refuses the swap, the retained-handle release ahead of a fresh
+     *       open refuses the open, a failed pump start's unwind skips its
+     *       close, and a failed ladder hop's unwind reports the handle
+     *       unreleased — which abandons the walk rather than opening a
+     *       fallback rung beside a device that rung may still hold. The
+     *       SIXTH is the engine's own drain inside
+     *       {@code endControlPanelSession}, and it deliberately does NOT
+     *       consult the registration: it runs only after that same method
+     *       has cleared it, so a check there would already answer "no panel"
+     *       — dead code rather than a refusal.</li>
+     * </ul>
      *
-     * <p>What this field does NOT cover, deliberately, is the ENGINE's own
-     * handle closes: they run inside {@link AudioEngine}, which has never
-     * been told about this registration. Both reconfigure orders reach one.
-     * A swap calls
+     * <p>The first FOUR of those five refusals are delays rather than leaks:
+     * each leaves the engine tracking the handle in
+     * {@code RELEASE_PENDING}, and {@code endControlPanelSession} DRAINS
+     * exactly that — it retries the close as soon as the dialog returns. The
+     * fifth is different in kind. A
+     * failed ladder hop happens during an open, before any handle is tracked,
+     * so what it skips is that rung's own partial acquisition; the engine
+     * reports it unreleased (which is what stops the walk) and then has
+     * nothing left to retry. That instance is a provision backend this
+     * controller owns, so it is closed by
+     * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)}
+     * on the next swap or shutdown — once the dialog has returned and the
+     * registration above no longer skips it.</p>
+     *
+     * <p>So the promise is no longer scoped to a single method: for the
+     * dialog's lifetime, no close from either layer frees the native state it
+     * is running on. Both reconfigure orders are covered. A swap calls
      * {@link AudioEngine#setStreamingProvision(StreamingProvision)} FIRST
      * (see {@link #installProvision(StreamingProvision)}), and its
-     * {@code abandonStreamOnOutgoingBackend} closes the tracked stream on an
-     * outgoing backend the incoming ladder no longer carries — that path now
-     * THROWS instead of closing while the render pump cannot be confirmed
-     * gone, but it still closes once the pump IS gone. Shutdown calls
-     * {@link AudioEngine#stopAudioOutput()} first, which closes the tracked
-     * stream's backend itself before this guard is ever consulted. The
-     * exposure is reachable rather than theoretical, because
-     * {@link #openControlPanel()} resolves its instance from
-     * {@link AudioEngine#getBackend()}, which IS the tracked open backend
-     * whenever a stream is open. Closing it would take a panel-aware refusal
-     * inside the engine — an engine-side seam this controller does not have.
-     * It is written down here rather than papered over by the absolute this
-     * paragraph replaced.</p>
+     * {@code abandonStreamOnOutgoingBackend} now refuses the swap outright
+     * when the outgoing backend's panel is open, leaving the handle tracked
+     * instead of closing it; shutdown calls
+     * {@link AudioEngine#stopAudioOutput()} first, which retains the tracked
+     * stream's handle, and its {@code closeProvisionBackends} then skips the
+     * instance.</p>
+     *
+     * <p>ONE window remains, and it is a PRE-registration window: a close
+     * that lands strictly BEFORE this field is set still reaches a backend
+     * whose panel is about to open. {@link #openControlPanel()} resolves the
+     * instance from {@link AudioEngine#getBackend()} — which IS the tracked
+     * open backend whenever a stream is open — under the monitor and then
+     * RETURNS an action; {@link #runControlPanel(AudioBackend, Runnable)}
+     * registers that instance only when the action is actually invoked,
+     * which may be much later and on another thread. A swap or a shutdown
+     * that completes in between closes an instance the dialog is then opened
+     * on. That is not a new exposure — the monitor-wrapped version also
+     * resolved its backend before waiting for the monitor — and narrowing it
+     * would mean holding a lock across the launch, which is the UI freeze
+     * the {@link #controlPanelLock} split exists to prevent.</p>
+     *
+     * <p>What DID change is the window's tail. The two halves are now
+     * established by two separate acts — this field under the monitor, then
+     * the engine's under its lifecycle lock, and no lock a CLOSER takes
+     * spans both ({@link #controlPanelLock} does, but only the panel path
+     * ever acquires it) — so between them there is an interval in which THIS
+     * controller would already skip the instance while the ENGINE would
+     * still close the handle. It is narrow (a monitor enter/exit and one uncontended lock
+     * acquisition, no I/O) and it is not a new KIND of exposure: an
+     * engine-owned close never took this controller's monitor, so it could
+     * always land between the two stores. Both are written down rather than
+     * papered over.</p>
      */
     private AudioBackend controlPanelBackend;
 
@@ -1443,10 +1567,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * {@link AudioEngine#processBlock}, rendering through the
      * {@code RenderPipeline} that a {@code setFormat} is about to
      * invalidate. No engine-side guard covers a format-only reconfigure:
-     * {@code setStreamingProvision} refuses a SWAP,
-     * {@code requireQuiescedPump} refuses a REOPEN, and {@code setFormat}
-     * itself refuses only while {@link AudioEngine#isRunning()} — which the
-     * {@code stop()} here has just cleared.</p>
+     * {@code setStreamingProvision} refuses a SWAP (on an unconfirmed pump
+     * exit, on an open control panel on the outgoing backend, and on a failed
+     * close of the outgoing handle), {@code requireQuiescedPump} refuses a
+     * REOPEN, and {@code setFormat} itself refuses only while
+     * {@link AudioEngine#isRunning()} — which the {@code stop()} here has
+     * just cleared. A format-only change installs no provision and opens no
+     * stream, so it passes every one of those however wide those refusal sets
+     * grow: this predicate is still the only thing standing between it and a
+     * live pump.</p>
      *
      * <p>Bounded retry, then the verdict. The retry is nearly free and often
      * decisive: {@code stop()} re-joins a still-RUNNING stream's pump on its
@@ -1665,7 +1794,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * runs OUTSIDE it (story 316 re-review) &mdash; see
      * {@link #controlPanelLock} for why holding a monitor across a modal
      * native dialog froze the UI, and {@link #runControlPanel} for what
-     * still protects the backend instance while the dialog is up.</p>
+     * still protects the backend while the dialog is up: a registration this
+     * controller consults before closing an instance it owns, AND publishes
+     * to the engine, so an engine-owned close of that backend's stream handle
+     * is refused or deferred too.</p>
      */
     @Override
     public synchronized Optional<Runnable> openControlPanel() {
@@ -1679,44 +1811,126 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     /**
      * Runs a resolved control-panel action serialized against other panel
-     * launches and registered against concurrent backend closes, but NOT
-     * under this controller's monitor.
+     * launches and registered against concurrent backend closes, with this
+     * controller's monitor held across NEITHER the modal dialog NOR the
+     * engine calls that bracket it.
      *
-     * <p>Everything the monitor was needed for has already happened by the
-     * time this runs: {@link #openControlPanel()} resolved the backend
-     * instance and its action under the monitor, and both are captured. What
-     * remains is the modal, user-paced native call, which is exactly the part
-     * that must not hold a lock the FX thread takes.</p>
+     * <p>Everything the monitor was needed for at launch has already
+     * happened: {@link #openControlPanel()} resolved the backend instance
+     * and its action under the monitor, and both are captured. What remains
+     * is the modal, user-paced native call and the two registrations that
+     * bracket it — all three on one of the settings dialog's virtual
+     * threads, and none of the three may hold the controller MONITOR, which
+     * is what the FX thread contends for.</p>
      *
-     * @param panelBackend the instance whose panel is being opened; registered
-     *                     for the call's duration so a concurrent provision
-     *                     swap or shutdown will not close the INSTANCE
-     *                     underneath the dialog in
+     * <p>Both engine calls are made HERE, as siblings of the two
+     * {@code synchronized} helpers rather than from inside them, and that
+     * placement is the correction story 316's re-review is about.
+     * {@link AudioEngine#endControlPanelSession(AudioBackend)} does not just
+     * clear a field: it DRAINS the close its registration deferred, which is
+     * the engine's bounded pump join followed by {@code close()} on the
+     * retained handle — priced UNBOUNDED for PortAudio and in minutes for a
+     * slow ASIO driver by the engine's own blocking budget. Reached from
+     * inside the monitor it would re-create the exact stall this split
+     * removed, with {@code SettingsDialog.updateAudioUtilityDisabledState()}
+     * calling {@link #openControlPanel()} on the FX thread and queueing
+     * behind a native teardown. As siblings, the monitor is held only for
+     * the two field stores, and the resulting order is
+     * [{@link #controlPanelLock} &rarr; monitor] and
+     * [{@code controlPanelLock} &rarr; {@code lifecycleLock}], never
+     * [monitor &rarr; {@code lifecycleLock}]; see {@link #controlPanelLock}
+     * for why both are acyclic.</p>
+     *
+     * <p>The ORDER inside the {@code finally} is deliberate.
+     * {@code endControlPanelSession} runs BEFORE the controller-side clear,
+     * so {@link #controlPanelBackend} is still standing while the drain is
+     * inside {@code close()} — otherwise a concurrent
+     * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)}
+     * on another thread (nothing holds the monitor out here) could free that
+     * INSTANCE underneath a drain that is using it. The cover is exact in
+     * the case that matters, the retained handle belonging to
+     * {@code panelBackend} itself; when the engine's retained handle belongs
+     * to a DIFFERENT rung — possible while stopped, see that drain's own
+     * javadoc — this registration never covered that instance anyway, and
+     * the ordering costs nothing there.
+     * Both clears are nonetheless reached whatever that call does: it
+     * swallows {@link RuntimeException} itself and deliberately lets an
+     * {@link Error} propagate, so the nested {@code finally} is what keeps
+     * an {@code Error} from stranding this controller's half of the guard —
+     * which would make the instance permanently un-closeable — and from
+     * stranding the lock, which would wedge every later panel launch.</p>
+     *
+     * <p>The two registrations do not have to be established atomically.
+     * They guard two INDEPENDENT operations — this controller's INSTANCE
+     * closes and the engine's HANDLE closes — and both are standing before
+     * {@code action.run()} and withdrawn after it, which is all either guard
+     * needs; see {@link #controlPanelBackend} for the residual window
+     * between the two stores.</p>
+     *
+     * @param panelBackend the instance whose panel is being opened;
+     *                     registered for the call's duration with BOTH this
+     *                     controller and the engine, so neither a concurrent
+     *                     provision swap or shutdown closing the INSTANCE in
      *                     {@link #closeProvisionBackends(StreamingProvision,
-     *                     StreamingProvision)}. The engine's own handle
-     *                     closes are outside that guard — see
-     *                     {@link #controlPanelBackend}
+     *                     StreamingProvision)}, nor an engine-owned close of
+     *                     that backend's stream HANDLE, reaches it while the
+     *                     dialog is up — see {@link #controlPanelBackend}
      * @param action       the backend's own panel action
      */
     private void runControlPanel(AudioBackend panelBackend, Runnable action) {
         controlPanelLock.lock();
         try {
             registerOpenControlPanel(panelBackend);
+            audioEngine.beginControlPanelSession(panelBackend);
             action.run();
         } finally {
-            releaseOpenControlPanel(panelBackend);
-            controlPanelLock.unlock();
+            try {
+                audioEngine.endControlPanelSession(panelBackend);
+            } finally {
+                // A field store under the monitor, then the unlock: neither
+                // can throw, so nothing after an Error from the drain is
+                // stranded.
+                releaseOpenControlPanel(panelBackend);
+                controlPanelLock.unlock();
+            }
         }
     }
 
-    /** Publishes {@code panelBackend} as un-closeable, under the monitor. */
+    /**
+     * Publishes {@code panelBackend} as un-closeable to THIS controller,
+     * whose
+     * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)}
+     * owns the INSTANCE closes.
+     *
+     * <p>A field store under the monitor and nothing else: it cannot block,
+     * cannot throw, and can never be the reason another thread waits. The
+     * engine's half of the same registration —
+     * {@link AudioEngine#beginControlPanelSession(AudioBackend)}, which owns
+     * the stream HANDLE closes — is published by the caller,
+     * {@link #runControlPanel(AudioBackend, Runnable)}, immediately after
+     * this returns, and deliberately NOT from in here: keeping the monitor
+     * out of the engine calls is what stops the panel path from nesting
+     * [monitor &rarr; {@code lifecycleLock}], and the release side of that
+     * pair can block for a native teardown. See {@link #controlPanelLock}.</p>
+     */
     private synchronized void registerOpenControlPanel(AudioBackend panelBackend) {
         controlPanelBackend = panelBackend;
     }
 
     /**
-     * Withdraws the registration, under the monitor. Compares by identity so
-     * a late release can never clear a newer registration.
+     * Withdraws THIS controller's half of the registration, by identity so a
+     * late release can never clear a newer one.
+     *
+     * <p>The engine's half is withdrawn by
+     * {@link #runControlPanel(AudioBackend, Runnable)} just BEFORE this
+     * runs, and that order is load-bearing: withdrawing the engine's half is
+     * what DRAINS the close it deferred, and this field, still standing
+     * while that drain runs, is what keeps a concurrent
+     * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)}
+     * from freeing {@code panelBackend}'s INSTANCE underneath a drain that
+     * is inside {@code close()} on it. Like its register counterpart this is
+     * a field store under the monitor and nothing else, so it cannot throw
+     * and the caller's {@code finally} can rely on it completing.</p>
      */
     private synchronized void releaseOpenControlPanel(AudioBackend panelBackend) {
         if (controlPanelBackend == panelBackend) {
@@ -2097,9 +2311,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * previously the other way round).
      *
      * <p>{@link AudioEngine#setStreamingProvision(StreamingProvision)} is the
-     * only call that quiesces the render pump: it abandons a stream the
-     * engine still tracks on an outgoing backend the incoming ladder no
-     * longer carries, and that abandonment is what calls {@code stopPump()}.
+     * only call that quiesces the render pump: when the engine still tracks a
+     * stream on an outgoing backend the incoming ladder no longer carries, it
+     * joins that pump — {@code abandonStreamOnOutgoingBackend} calls
+     * {@code stopPump()} first of all — before it goes anywhere near the
+     * handle. What follows that join is no longer unconditionally an
+     * abandonment: the handle is given back only when it CAN be, and a close
+     * that fails, or one deferred because that backend's native control panel
+     * is open, REFUSES the swap instead (see below).
      * Closing the outgoing instances first therefore freed native state —
      * {@code AsioBackend}'s nulled {@code bufferSwitchShim}, a closed
      * {@code SourceDataLine}, a released {@code Pa_} handle — underneath a
@@ -2114,10 +2333,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * provision and must not be closed.</p>
      *
      * <p>That same ownership is why a REFUSED swap closes the INCOMING
-     * instances (story 316 review). {@code setStreamingProvision} now throws
-     * {@link com.benesquivelmusic.daw.sdk.audio.AudioBackendException} when
-     * the outgoing stream's pump cannot be confirmed quiesced, aborting the
-     * swap whole; by then {@code buildStreamingProvision} has already
+     * instances (story 316 review). {@code setStreamingProvision} throws
+     * {@link com.benesquivelmusic.daw.sdk.audio.AudioBackendException} on
+     * THREE counts — the outgoing stream's pump cannot be confirmed
+     * quiesced, the outgoing backend has its native control panel open, or
+     * the outgoing handle's close itself failed — and aborts the swap whole
+     * in each case; by then {@code buildStreamingProvision} has already
      * CONSTRUCTED the incoming backend instances, and an exception that
      * simply propagated left them neither installed nor closed — a leak of
      * exactly the native handles this ordering exists to protect (a
@@ -2167,11 +2388,19 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * added: it is sound only when EVERY path into it also enters through a
      * {@code synchronized} method of this controller. Being reached from
      * something that merely looks internal proves nothing, and no compiler
-     * check enforces it. The guard covers THIS
-     * close and no other: the engine closes the tracked stream's handle on
-     * its own, ahead of every call to this method, without consulting the
-     * registration — see {@link #controlPanelBackend}'s javadoc for the exact
-     * boundary.</p>
+     * check enforces it.</p>
+     *
+     * <p>The guard is no longer scoped to THIS close. The engine consults
+     * its own half of the same registration before five of the six handle
+     * closes it owns — every one that can run WHILE the dialog is up; the
+     * sixth is its own drain, which runs only after the registration has
+     * been withdrawn and must not consult it. So an
+     * {@link AudioEngine#stopAudioOutput()} or an
+     * {@link AudioEngine#setStreamingProvision(StreamingProvision)} that runs
+     * ahead of this method RETAINS the tracked stream's handle instead of
+     * freeing it under the dialog, and releases it once the panel returns —
+     * see {@link #controlPanelBackend}'s javadoc for the full boundary, and
+     * for the one window that is still open.</p>
      *
      * @param outgoing the provision being replaced, or {@code null}
      * @param incoming the provision taking its place, or {@code null} when
