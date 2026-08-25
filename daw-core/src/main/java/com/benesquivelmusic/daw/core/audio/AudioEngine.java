@@ -696,6 +696,12 @@ public final class AudioEngine {
      *             is not a snappy one.</li>
      *         <li>{@code CallbackBackendAdapter.close()} joins its
      *             {@code native-input-drain} thread — 2 s.</li>
+     *         <li>{@code JavaxSoundBackend.close()} — its bounded output
+     *             drain ({@code CLOSE_DRAIN_TIMEOUT_MILLIS}, 200 ms) and its
+     *             capture-thread join ({@code CAPTURE_EXIT_TIMEOUT_MILLIS},
+     *             2 s), each at most once per close of the Java Sound rung,
+     *             reached for example via {@link #stopAudioOutputLocked}'s
+     *             {@code backend.close()} under this lock.</li>
      *         <li>PortAudio — <strong>UNBOUNDED</strong>. There is no
      *             {@code AsioControlThread} equivalent for it:
      *             {@code CallbackBackendAdapter.open} calls

@@ -899,6 +899,83 @@ class CallbackBackendAdapterTest {
         assertThat(fake.closeStreamCount).isZero();
     }
 
+    /**
+     * Story 316 review: a delegate release failure must PROPAGATE. The
+     * engine's {@code closeFailedHop} treats a normal return from
+     * {@code close()} as "the handle came back" and walks the ladder to the
+     * next rung; swallowing the failure therefore opened a second backend on
+     * a device the delegate could still hold. The reachable shape is a
+     * failed {@code startStream} whose rollback {@code closeStream} also
+     * fails: {@code open} never became true, so the retained stream is
+     * reachable only through {@code delegate.close()}.
+     */
+    @Test
+    void aDelegateReleaseFailureAfterAFailedStartPropagatesInsteadOfBeingSwallowed() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        fake.failStartStream = true;
+        fake.refuseCloseStreams = 1;
+        fake.refuseCloses = 1;
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES))
+                .as("the start failure is the open failure")
+                .isSameAs(fake.startRefusal)
+                .satisfies(failure -> assertThat(failure.getSuppressed())
+                        .as("the rollback's closeStream failure rides along suppressed")
+                        .containsExactly(fake.closeStreamRefusal));
+        assertThat(adapter.isOpen()).isFalse();
+        assertThat(fake.streamOpen)
+                .as("the failed rollback left the delegate holding its stream")
+                .isTrue();
+
+        assertThatThrownBy(adapter::close)
+                .as("the delegate's release failure reaches the caller unchanged")
+                .isSameAs(fake.closeRefusal);
+        assertThat(fake.closeCount).isEqualTo(1);
+        assertThat(fake.closed).isFalse();
+
+        // Healed: refuseCloses is 0 now. The retry reaches the delegate
+        // because adapter.close() calls delegate.close() unconditionally;
+        // `initialized` (read only by ensureInitialized) plays no part in it.
+        assertThatCode(adapter::close)
+                .as("a later close() retries the delegate release")
+                .doesNotThrowAnyException();
+        assertThat(fake.closeCount).isEqualTo(2);
+        assertThat(fake.closed).isTrue();
+        assertThat(fake.closeStreamCount)
+                .as("the retry reached the stream the failed rollback left behind")
+                .isEqualTo(2);
+        assertThat(fake.streamOpen).isFalse();
+    }
+
+    /**
+     * The companion: with nothing refusing, a {@code close()} after a failed
+     * {@code startStream} returns normally and releases the delegate exactly
+     * once, so the propagation above is the failure path and not a tax on
+     * the healthy one.
+     */
+    @Test
+    void aHealthyCloseAfterAFailedOpenStillReleasesTheDelegate() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        fake.failStartStream = true;
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES))
+                .isSameAs(fake.startRefusal)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).isEmpty());
+        assertThat(fake.closeStreamCount)
+                .as("the rollback released the stream the start failure left open")
+                .isEqualTo(1);
+        assertThat(fake.streamOpen).isFalse();
+
+        assertThatCode(adapter::close).doesNotThrowAnyException();
+        assertThat(fake.closeCount).isEqualTo(1);
+        assertThat(fake.closed).isTrue();
+        assertThat(fake.closeStreamCount)
+                .as("nothing was left for the release to close")
+                .isEqualTo(1);
+    }
+
     // ── A refused open must leak nothing ─────────────────────────────────
 
     @Test
@@ -1037,8 +1114,21 @@ class CallbackBackendAdapterTest {
         int enumerationCount;
         int openStreamCount;
         int closeStreamCount;
+        int closeCount;
         boolean closed;
         volatile boolean refuseDuplexOpens;
+        /** Story 316 review: {@link #startStream()} throws {@link #startRefusal}. */
+        boolean failStartStream;
+        /** Story 316 review: the next N {@link #closeStream()} calls throw and keep the stream. */
+        int refuseCloseStreams;
+        /** Story 316 review: the next N {@link #close()} calls throw and release nothing. */
+        int refuseCloses;
+        final AudioBackendException startRefusal =
+                new AudioBackendException("Pa_StartStream refused by the driver");
+        final AudioBackendException closeStreamRefusal =
+                new AudioBackendException("Pa_CloseStream refused by the driver");
+        final AudioBackendException closeRefusal =
+                new AudioBackendException("delegate release refused by the driver");
         AudioStreamConfig lastConfig;
         AudioStreamCallback callback;
         private boolean streamOpen;
@@ -1091,7 +1181,10 @@ class CallbackBackendAdapterTest {
 
         @Override
         public void startStream() {
-            // no-op — the test drives the callback by hand
+            if (failStartStream) {
+                throw startRefusal;
+            }
+            // otherwise a no-op — the test drives the callback by hand
         }
 
         @Override
@@ -1102,6 +1195,13 @@ class CallbackBackendAdapterTest {
         @Override
         public void closeStream() {
             closeStreamCount++;
+            if (refuseCloseStreams > 0) {
+                // Like PortAudioBackend.closeStream on a Pa_CloseStream error:
+                // the throw precedes the handle being dropped, so the stream
+                // stays open for a retry.
+                refuseCloseStreams--;
+                throw closeStreamRefusal;
+            }
             streamOpen = false;
             callback = null;
         }
@@ -1128,6 +1228,17 @@ class CallbackBackendAdapterTest {
 
         @Override
         public void close() {
+            closeCount++;
+            if (refuseCloses > 0) {
+                refuseCloses--;
+                throw closeRefusal;
+            }
+            // Like PortAudioBackend.close: a stream still open is closed
+            // first, so a release retry reaches a stream a failed rollback
+            // left behind.
+            if (streamOpen) {
+                closeStream();
+            }
             closed = true;
         }
     }

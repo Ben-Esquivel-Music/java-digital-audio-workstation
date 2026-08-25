@@ -23,6 +23,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -49,6 +54,41 @@ class JavaxSoundBackendTest {
 
     /** Field holding the backend's playback line; planted by {@link #plantLine}. */
     private static final String OUTPUT_LINE = "outputLine";
+
+    /** Field holding the thread {@code startCapture} started; read by {@link #captureThread}. */
+    private static final String CAPTURE_THREAD = "captureThread";
+
+    /** The format {@link #markStreamOpen} opens with, for driving {@code startCapture}. */
+    private static final AudioFormat STREAM_FORMAT = new AudioFormat(48_000.0, 2, 16);
+
+    /** Frames per block for {@code startCapture}; matches {@link #markStreamOpen}. */
+    private static final int STREAM_FRAMES = 512;
+
+    /** Bound on every wait a capture test makes for something that should be prompt. */
+    private static final long WAIT_MILLIS = 5_000L;
+
+    /**
+     * How long {@link StubLine#delayingReadReturnBy(long)} keeps a released
+     * read parked before it returns: long enough that a {@code close()} which
+     * does not join the capture thread returns while the thread is still
+     * alive.
+     */
+    private static final long READ_RETURN_DELAY_MILLIS = 150L;
+
+    /**
+     * Upper bound asserted on a joining {@code close()}: well under
+     * {@link JavaxSoundBackend#CAPTURE_EXIT_TIMEOUT_MILLIS}, so a join placed
+     * ahead of the line's close — which would wait that whole bound on a
+     * read nothing has released — cannot pass.
+     */
+    private static final long CLOSE_ELAPSED_BOUND_MILLIS = 1_000L;
+
+    /**
+     * How long a subscriber is given to receive a block it must NOT receive.
+     * Long enough for {@code SubmissionPublisher}'s async delivery to land if
+     * it were going to.
+     */
+    private static final long GRACE_MILLIS = 200L;
 
     /** Internal name of the checked alternative on both recovery paths. */
     private static final String LINE_UNAVAILABLE =
@@ -741,6 +781,216 @@ class JavaxSoundBackendTest {
     }
 
     /**
+     * Story 316 review (High): interrupting the capture thread does not
+     * establish that it has EXITED. {@code TargetDataLine.read} is not
+     * interruptible; by the JDK contract it returns — possibly with one last
+     * partial block — once the line is stopped or closed under it.
+     * {@code close()} must therefore release the line and then confirm the
+     * thread has gone, rather than interrupt it and forget it.
+     *
+     * <p>The stub's read blocks until its {@code close()} runs (its
+     * {@code stop()} deliberately does not release it — see {@link StubLine})
+     * and then parks a further {@value #READ_RETURN_DELAY_MILLIS}&nbsp;ms
+     * before returning its partial block, so a {@code close()} that does not
+     * join the thread returns while the thread is still parked. What the
+     * assertions establish: the thread had exited and its field
+     * was cleared by the time {@code close()} returned, which a
+     * {@code close()} with no join cannot satisfy; the read was released by
+     * the line's one and only close; and {@code close()} took under
+     * {@value #CLOSE_ELAPSED_BOUND_MILLIS}&nbsp;ms, which a join placed
+     * ahead of the line's close — waiting the full
+     * {@link JavaxSoundBackend#CAPTURE_EXIT_TIMEOUT_MILLIS} on a read nothing
+     * has released — cannot satisfy.</p>
+     */
+    @Test
+    void aCloseJoinsTheCaptureThreadAfterItsLineIsReleased() throws InterruptedException {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine capture = StubLine.releasable().blockingReads()
+                .delayingReadReturnBy(READ_RETURN_DELAY_MILLIS);
+        plantLine(backend, INPUT_LINE, capture);
+        CollectingSubscriber subscriber = new CollectingSubscriber();
+        backend.inputBlocks().subscribe(subscriber);
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        assertThat(thread).as("startCapture records the thread it started").isNotNull();
+        assertThat(capture.awaitFirstRead(WAIT_MILLIS))
+                .as("the capture thread must be inside read() before close arrives")
+                .isTrue();
+
+        long closeStartedNanos = System.nanoTime();
+        backend.close();
+        long closeElapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStartedNanos);
+
+        assertThat(thread.isAlive())
+                .as("close() returned only after the capture thread had exited — the read"
+                        + " stays parked " + READ_RETURN_DELAY_MILLIS + " ms past the line's"
+                        + " close, so a close() that never joined would find it alive")
+                .isFalse();
+        assertThat(captureThread(backend))
+                .as("a joined thread is dropped from its field")
+                .isNull();
+        assertThat(closeElapsedMillis)
+                .as("close() joined the thread after releasing its line: a join ahead of"
+                        + " the close would have waited the full "
+                        + JavaxSoundBackend.CAPTURE_EXIT_TIMEOUT_MILLIS + " ms bound")
+                .isLessThan(CLOSE_ELAPSED_BOUND_MILLIS);
+        assertThat(capture.closeAttemptsWhenReadReturned())
+                .as("the read was released by the line's one and only close")
+                .isEqualTo(1);
+        assertThat(subscriber.awaitCompleted(WAIT_MILLIS))
+                .as("the stream's publisher was completed by close()")
+                .isTrue();
+        assertThat(subscriber.received())
+                .as("the partial block the closed line returned landed after"
+                        + " support.close(), so it was dropped, not published")
+                .isEmpty();
+    }
+
+    /**
+     * The isolation half of the same finding: a capture thread that OUTLIVES
+     * {@code close()} — the join timed out — must not be able to publish into
+     * the stream a later open installs.
+     *
+     * <p>{@code AudioBackendSupport.markOpen} replaces a closed publisher with
+     * a fresh instance and sets {@code open} true again. A thread that
+     * published into "whatever the current publisher is" would, on its late
+     * partial read, find the NEW publisher open and land stale samples in the
+     * new recording. The thread must instead pin the publisher of the stream
+     * it was started for, which {@code support.close()} completed, so its
+     * offer is dropped.</p>
+     *
+     * <p>The stub's read is held on a gate the test controls — its close does
+     * NOT release it — so the join provably times out (50&nbsp;ms budget, no
+     * throw), the backend is reopened, and only THEN is the old thread let
+     * out to publish.</p>
+     */
+    @Test
+    void aCaptureThreadThatOutlivesCloseCannotPublishIntoTheNextStream()
+            throws InterruptedException {
+        JavaxSoundBackend backend = new JavaxSoundBackend(50L);
+        markStreamOpen(backend);
+        StubLine capture = StubLine.releasable().blockingReads().holdingReadsPastClose();
+        plantLine(backend, INPUT_LINE, capture);
+        Flow.Publisher<AudioBlock> firstStream = backend.inputBlocks();
+        CollectingSubscriber first = new CollectingSubscriber();
+        firstStream.subscribe(first);
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread survivor = captureThread(backend);
+        assertThat(capture.awaitFirstRead(WAIT_MILLIS)).isTrue();
+
+        assertThatCode(backend::close)
+                .as("a timed-out join must not fail the close: the line IS released,"
+                        + " and the survivor holds no device")
+                .doesNotThrowAnyException();
+        assertThat(captureThread(backend))
+                .as("the field is cleared even though the thread is still running")
+                .isNull();
+        assertThat(survivor.isAlive())
+                .as("precondition: the thread really did outlive close()")
+                .isTrue();
+        assertThat(first.awaitCompleted(WAIT_MILLIS))
+                .as("the first stream's publisher was completed by close()")
+                .isTrue();
+
+        markStreamOpen(backend); // the reopen: a fresh stream on the same backend
+        Flow.Publisher<AudioBlock> secondStream = backend.inputBlocks();
+        assertThat(secondStream)
+                .as("markOpen installs a fresh publisher after close completed the old one")
+                .isNotSameAs(firstStream);
+        CollectingSubscriber second = new CollectingSubscriber();
+        secondStream.subscribe(second);
+
+        capture.releaseReads(); // the old thread's read now returns its partial block
+        survivor.join(WAIT_MILLIS);
+        assertThat(survivor.isAlive())
+                .as("the survivor exits once its late read has returned")
+                .isFalse();
+        assertThat(capture.readCalls())
+                .as("it read exactly once: the block it published is the late partial one")
+                .isEqualTo(1);
+        assertThat(second.awaitAnyBlock(GRACE_MILLIS))
+                .as("the stale block must never reach the NEW stream's subscriber")
+                .isFalse();
+        assertThat(second.received()).isEmpty();
+        assertThat(first.received())
+                .as("nor the old one — that publisher was already completed")
+                .isEmpty();
+
+        backend.close();
+    }
+
+    /**
+     * The retained-line exception to the join: when the capture line's
+     * {@code close()} THROWS, the thread may still be blocked in a read on a
+     * line that is still open — with this stub, whose {@code stop()} never
+     * releases the read, it is. Joining it there would wait the whole bound
+     * for a read that cannot return; dropping it would lose the only
+     * reference to a thread that must be joined once the line finally closes.
+     * So it stays in its field beside the retained line, and the retry that
+     * closes the line is the one that joins it.
+     */
+    @Test
+    void aRetainedCaptureLineKeepsItsThreadForTheRetry() throws InterruptedException {
+        JavaxSoundBackend backend = new JavaxSoundBackend(); // the 2 s production bound
+        markStreamOpen(backend);
+        StubLine capture = StubLine.refusingCloses(1).blockingReads();
+        plantLine(backend, INPUT_LINE, capture);
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        assertThat(capture.awaitFirstRead(WAIT_MILLIS)).isTrue();
+
+        long started = System.nanoTime();
+        assertThatThrownBy(backend::close)
+                .as("the refused close still propagates — RELEASE_PENDING")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("capture line");
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+        assertThat(elapsedMillis)
+                .as("no join was waited on a line that is still open: the close returned"
+                        + " well inside the 2 s bound a join on this stub's unreleased read"
+                        + " would have burned")
+                .isLessThan(1_000L);
+        assertThat(retainedLine(backend, INPUT_LINE)).isSameAs(capture);
+        assertThat(captureThread(backend))
+                .as("the thread stays referenced beside its retained line")
+                .isSameAs(thread);
+        assertThat(thread.isAlive())
+                .as("and it is still blocked in read() on that line")
+                .isTrue();
+
+        assertThatCode(backend::close)
+                .as("the retry closes the line, so this close reports the truth")
+                .doesNotThrowAnyException();
+
+        assertThat(capture.closeAttempts()).isEqualTo(2);
+        assertThat(retainedLine(backend, INPUT_LINE)).isNull();
+        assertThat(captureThread(backend))
+                .as("the retry that closed the line is the one that joined the thread")
+                .isNull();
+        assertThat(thread.isAlive()).isFalse();
+        assertThat(capture.closeAttemptsWhenReadReturned())
+                .as("the read came back on the SECOND close — the one that succeeded")
+                .isEqualTo(2);
+    }
+
+    /** Reads the backend's capture-thread field: null means nothing is (or is still) referenced. */
+    private static Thread captureThread(JavaxSoundBackend backend) {
+        try {
+            Field declared = JavaxSoundBackend.class.getDeclaredField(CAPTURE_THREAD);
+            declared.setAccessible(true);
+            return (Thread) declared.get(backend);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("JavaxSoundBackend." + CAPTURE_THREAD + " must exist —"
+                    + " the join has nothing to wait on without it", e);
+        }
+    }
+
+    /**
      * Marks the backend's stream OPEN the way {@code open()} does before it
      * touches any line.
      *
@@ -800,6 +1050,51 @@ class JavaxSoundBackendTest {
     }
 
     /**
+     * A {@link Flow.Subscriber} that requests everything and records what it
+     * was given, so a test can assert a block did — or, with a bounded grace
+     * wait, did NOT — arrive.
+     */
+    private static final class CollectingSubscriber implements Flow.Subscriber<AudioBlock> {
+
+        private final List<AudioBlock> received = new CopyOnWriteArrayList<>();
+        private final CountDownLatch anyBlock = new CountDownLatch(1);
+        private final CountDownLatch completed = new CountDownLatch(1);
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            subscription.request(Long.MAX_VALUE);
+        }
+
+        @Override
+        public void onNext(AudioBlock item) {
+            received.add(item);
+            anyBlock.countDown();
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            completed.countDown();
+        }
+
+        @Override
+        public void onComplete() {
+            completed.countDown();
+        }
+
+        List<AudioBlock> received() {
+            return received;
+        }
+
+        boolean awaitAnyBlock(long millis) throws InterruptedException {
+            return anyBlock.await(millis, TimeUnit.MILLISECONDS);
+        }
+
+        boolean awaitCompleted(long millis) throws InterruptedException {
+            return completed.await(millis, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
      * A line that can be told to refuse its {@link Line#close()}, its
      * {@link javax.sound.sampled.DataLine#stop()}, or the occupancy read the
      * bounded drain makes — and that counts what the backend actually did to
@@ -814,6 +1109,24 @@ class JavaxSoundBackendTest {
      * path has no business calling — {@link javax.sound.sampled.DataLine#drain()}
      * above all, the unbounded JDK call this backend must never make — throws
      * loudly.</p>
+     *
+     * <p>{@link #blockingReads()} switches {@code read} from that loud default
+     * to a model of the real {@link TargetDataLine#read}: it blocks, it is not
+     * interruptible (the interrupt status is preserved, not consumed), and it
+     * returns one last PARTIAL block — half the requested length, non-zero
+     * content — once the line's {@code close()} has RETURNED. The stub is
+     * deliberately STRICTER than the real line there: the JDK contract also
+     * releases a blocked read when the line is stopped, drained or flushed,
+     * but this stub's {@code stop()} never releases it, so it models the
+     * worst case in which only {@code close()} frees the thread. A refused
+     * close leaves it blocked, as it would a real line whose {@code stop()}
+     * had also failed to release the read.
+     * {@link #holdingReadsPastClose()} decouples the two so a test can keep the
+     * read blocked across a successful close and release it itself with
+     * {@link #releaseReads()}. {@link #delayingReadReturnBy(long)} keeps a
+     * released read parked for that many milliseconds more before it returns
+     * its partial block, so a caller that does not join the reading thread
+     * returns while the thread is still alive.</p>
      */
     private static final class StubLine implements SourceDataLine, TargetDataLine {
 
@@ -821,10 +1134,17 @@ class JavaxSoundBackendTest {
 
         private final IllegalStateException closeFailure =
                 new IllegalStateException("stub line refuses to close");
+        private final CountDownLatch readGate = new CountDownLatch(1);
+        private final CountDownLatch firstRead = new CountDownLatch(1);
+        private final AtomicInteger readCalls = new AtomicInteger();
         private int refusedCloses;
         private boolean failStop;
         private boolean failDrain;
-        private int closeAttempts;
+        private boolean blockingReads;
+        private boolean holdReadsPastClose;
+        private long readReturnDelayMillis;
+        private volatile int closeAttempts;
+        private volatile int closeAttemptsWhenReadReturned = -1;
         private int stopAttempts;
         private boolean closed;
 
@@ -848,6 +1168,46 @@ class JavaxSoundBackendTest {
             return this;
         }
 
+        /** Makes {@code read} block until a close RETURNS (or {@link #releaseReads()}). */
+        StubLine blockingReads() {
+            this.blockingReads = true;
+            return this;
+        }
+
+        /** A successful close no longer releases the read; only {@link #releaseReads()} does. */
+        StubLine holdingReadsPastClose() {
+            this.holdReadsPastClose = true;
+            return this;
+        }
+
+        /**
+         * Keeps a released read parked for {@code millis} more, AFTER its
+         * gate has opened, before it returns its partial block.
+         */
+        StubLine delayingReadReturnBy(long millis) {
+            this.readReturnDelayMillis = millis;
+            return this;
+        }
+
+        /** Lets a blocked read return its partial block. */
+        void releaseReads() {
+            readGate.countDown();
+        }
+
+        /** Waits for the capture thread to have ENTERED {@code read}. */
+        boolean awaitFirstRead(long millis) throws InterruptedException {
+            return firstRead.await(millis, TimeUnit.MILLISECONDS);
+        }
+
+        int readCalls() {
+            return readCalls.get();
+        }
+
+        /** {@link #closeAttempts()} as sampled when the read returned; {@code -1} if it never did. */
+        int closeAttemptsWhenReadReturned() {
+            return closeAttemptsWhenReadReturned;
+        }
+
         IllegalStateException closeFailure() {
             return closeFailure;
         }
@@ -868,6 +1228,72 @@ class JavaxSoundBackendTest {
                 throw closeFailure;
             }
             closed = true;
+            if (!holdReadsPastClose) {
+                readGate.countDown();
+            }
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) {
+            if (!blockingReads) {
+                throw unused();
+            }
+            readCalls.incrementAndGet();
+            firstRead.countDown();
+            awaitUninterruptibly(readGate);
+            closeAttemptsWhenReadReturned = closeAttempts;
+            sleepUninterruptibly(readReturnDelayMillis);
+            int partial = len / 2;
+            for (int i = 0; i < partial; i++) {
+                b[off + i] = (byte) (0x11 + (i & 0x0F)); // never zero
+            }
+            return partial;
+        }
+
+        /**
+         * Blocks like the real {@code TargetDataLine.read}: an interrupt does
+         * not make it return, and the interrupt status is left set for the
+         * caller's loop to see afterwards.
+         */
+        private static void awaitUninterruptibly(CountDownLatch gate) {
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    gate.await();
+                    break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        /**
+         * Parks for the full {@code millis} regardless of the thread's
+         * interrupt status — {@link Thread#sleep} throws at once when the
+         * status is set, which the backend's {@code close()} has done by the
+         * time a released read gets here — and leaves that status set for
+         * the caller's loop to see afterwards.
+         */
+        private static void sleepUninterruptibly(long millis) {
+            if (millis <= 0L) {
+                return;
+            }
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+            boolean interrupted = false;
+            long remaining;
+            while ((remaining = deadline - System.nanoTime()) > 0L) {
+                try {
+                    TimeUnit.NANOSECONDS.sleep(remaining);
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         @Override
@@ -901,7 +1327,6 @@ class JavaxSoundBackendTest {
         @Override public void open(javax.sound.sampled.AudioFormat f) { throw unused(); }
         @Override public void open(javax.sound.sampled.AudioFormat f, int size) { throw unused(); }
         @Override public int write(byte[] b, int off, int len) { throw unused(); }
-        @Override public int read(byte[] b, int off, int len) { throw unused(); }
         @Override public void drain() { throw unused(); }
         @Override public void flush() { throw unused(); }
         @Override public void start() { throw unused(); }

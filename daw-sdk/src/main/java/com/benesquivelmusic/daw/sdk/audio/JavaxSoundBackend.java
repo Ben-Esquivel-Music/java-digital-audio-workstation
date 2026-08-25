@@ -15,6 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -48,9 +49,40 @@ public final class JavaxSoundBackend implements AudioBackend {
     /** Poll interval of the bounded stop drain. */
     private static final long CLOSE_DRAIN_POLL_NANOS = 2_000_000L; // 2 ms
 
+    /**
+     * Hard bound, for every instance the public constructor creates, on how
+     * long {@link #releaseInputLine()} waits for the capture thread to exit
+     * once its line has been closed (story 316 review). Same bound daw-core's
+     * {@code CallbackBackendAdapter} puts on its drain thread at close. A
+     * thread that outlives it is logged and dropped, never waited on further:
+     * see {@link #joinCaptureThread()} for why that is safe. The
+     * package-private constructor lets a test substitute a shorter bound.
+     */
+    static final long CAPTURE_EXIT_TIMEOUT_MILLIS = 2_000L;
+
     private final AudioBackendSupport support = new AudioBackendSupport();
+
+    /**
+     * The bound {@link #joinCaptureThread()} actually waits under:
+     * {@link #CAPTURE_EXIT_TIMEOUT_MILLIS} unless the package-private
+     * constructor was given another.
+     */
+    private final long captureExitTimeoutMillis;
+
     private SourceDataLine outputLine;
     private TargetDataLine inputLine;
+
+    /**
+     * The thread started by {@link #startCapture(AudioFormat, int)} for the
+     * stream currently (or most recently) open. Set only there; cleared only
+     * by {@link #joinCaptureThread()}, which runs when the capture line has
+     * actually been closed — so while a capture line is RETAINED after a
+     * failed {@link Line#close()}, its thread stays referenced beside it: it
+     * may still be blocked reading that line (a {@link DataLine#stop()} that
+     * returned normally has already released the read, in which case it
+     * exits on its own), and either way the retry that finally closes the
+     * line is the one that joins it.
+     */
     private Thread captureThread;
 
     /**
@@ -74,6 +106,30 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     /** Creates a new Java Sound backend. */
     public JavaxSoundBackend() {
+        this(CAPTURE_EXIT_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * Creates a backend whose {@link #releaseInputLine()} waits at most
+     * {@code captureExitTimeoutMillis} for the capture thread to exit.
+     *
+     * <p>Package-private so {@code JavaxSoundBackendTest} can prove the
+     * timed-out branch of {@link #joinCaptureThread()} without holding a test
+     * for the production bound. Production goes through the public
+     * constructor and {@link #CAPTURE_EXIT_TIMEOUT_MILLIS}.</p>
+     *
+     * @param captureExitTimeoutMillis the join bound, in milliseconds; must be
+     *                                 positive — {@link Thread#join(long)}
+     *                                 treats {@code 0} as "wait forever", the
+     *                                 unbounded stall this bound exists to
+     *                                 rule out
+     */
+    JavaxSoundBackend(long captureExitTimeoutMillis) {
+        if (captureExitTimeoutMillis <= 0L) {
+            throw new IllegalArgumentException(
+                    "captureExitTimeoutMillis must be positive: " + captureExitTimeoutMillis);
+        }
+        this.captureExitTimeoutMillis = captureExitTimeoutMillis;
     }
 
     @Override
@@ -501,18 +557,54 @@ public final class JavaxSoundBackend implements AudioBackend {
         return refusal;
     }
 
-    private void startCapture(AudioFormat format, int bufferFrames) {
+    /**
+     * Starts the {@code javax-sound-capture} thread that reads
+     * {@code inputLine} and republishes its blocks on {@link #inputBlocks()}.
+     *
+     * <p>THE PUBLISHER-PINNING RULE (story 316 review): the thread publishes
+     * only into the publisher instance {@code support} hands out at the
+     * moment this method runs — pinned here as {@code stream}, before the
+     * thread starts, and passed to
+     * {@link AudioBackendSupport#publishInput(SubmissionPublisher, AudioBlock)}
+     * on every block — never into whatever the support's current publisher
+     * happens to be when a block arrives. {@link TargetDataLine#read} is not
+     * interruptible and can return one last partial block after
+     * {@link #close()} has closed the line under it. Without the pin, a
+     * close-then-open that raced ahead of that last read would let the old
+     * thread publish stale samples into the NEW stream's recording. With it,
+     * the old thread can only ever offer into the publisher
+     * {@code support.close()} already completed, which the support drops. The
+     * loop also stops on its own once that publisher is closed, so a survivor
+     * is bounded by its own stream even if the driver's read swallowed the
+     * interrupt. {@link #releaseInputLine()} additionally joins the thread
+     * once its line is closed; the pin is what makes a join that times out
+     * harmless.</p>
+     *
+     * <p>Package-private for the same testing reason as
+     * {@link #rollBackFailedOutputOpen(Exception)}: {@code AudioSystem} is a
+     * static JDK factory, so a line whose {@code read} blocks on a
+     * test-controlled gate can only be planted, and the thread that reads it
+     * can only be started from here.</p>
+     *
+     * @param format       the opened format, for decoding the line's PCM
+     * @param bufferFrames frames per block, sizing the read buffer
+     */
+    void startCapture(AudioFormat format, int bufferFrames) {
         final TargetDataLine line = this.inputLine;
         final int bytes = bufferFrames * format.bytesPerFrame();
+        // Pinned BEFORE the thread starts: this is the stream the thread was
+        // started for, and the only one it may ever publish into.
+        final SubmissionPublisher<AudioBlock> stream = support.currentInputPublisher();
         Thread t = new Thread(() -> {
             byte[] buf = new byte[bytes];
-            while (support.isOpen() && !Thread.currentThread().isInterrupted()) {
+            while (support.isOpen() && !stream.isClosed()
+                    && !Thread.currentThread().isInterrupted()) {
                 int read = line.read(buf, 0, buf.length);
                 if (read <= 0) {
                     break;
                 }
                 AudioBlock block = decodePcm16(buf, read, format);
-                support.publishInput(block);
+                support.publishInput(stream, block);
             }
         }, "javax-sound-capture");
         t.setDaemon(true);
@@ -652,6 +744,38 @@ public final class JavaxSoundBackend implements AudioBackend {
      * retained. That is precisely the {@code RELEASE_PENDING} shape: not open,
      * not resumable, not yet released.</p>
      *
+     * <p>The interrupt alone does not establish that the capture thread has
+     * EXITED (story 316 review): {@link TargetDataLine#read} is not
+     * interruptible, so the thread is typically still inside it here (or
+     * between reads, in which case it exits on its next loop test), and a
+     * blocked read returns — possibly with one last partial block — once the
+     * line is stopped or closed below: the JDK contract for {@code read} is
+     * that it "no longer blocks" once the line is "closed, stopped, drained,
+     * or flushed". Two things cover that. Every block the thread publishes
+     * goes into the publisher it pinned at start, which
+     * {@code support.close()} has just
+     * completed, so a straggler can never reach a stream a later
+     * {@link #open(DeviceId, AudioFormat, int)} installs — see
+     * {@link #startCapture(AudioFormat, int)}. And {@link #releaseInputLine()}
+     * JOINS the thread, under {@link #captureExitTimeoutMillis}
+     * ({@link #CAPTURE_EXIT_TIMEOUT_MILLIS} for every production instance), right
+     * after the capture line's {@link Line#close()} returns — the later of
+     * the two calls ({@link DataLine#stop()}, then {@code close()}) that
+     * release the blocked read, and the one whose success is required; a
+     * stop failure is only logged — and only then clears
+     * {@code captureThread}. When that close throws instead, the thread is
+     * NOT joined but stays referenced beside its retained line for the retry.
+     * Whether it is still blocked depends on the {@code stop()} issued ahead
+     * of the close: one that returned normally has already released the read
+     * and the thread exits on its own; one that failed leaves the read
+     * blocked on the still-open line, where a join would burn the whole bound
+     * for nothing.
+     * A join that times out is logged and the thread is dropped; it does not
+     * fail this close, because the device is already released and the pin
+     * makes the survivor harmless. Throwing would keep the ladder's mandatory
+     * final rung in {@code RELEASE_PENDING} over a thread that holds no
+     * device.</p>
+     *
      * @throws AudioBackendException if either line could not be closed — the
      *                               un-released line(s) are named, the first
      *                               failure is the cause, and a second is
@@ -662,8 +786,10 @@ public final class JavaxSoundBackend implements AudioBackend {
         support.close();
         Thread t = this.captureThread;
         if (t != null) {
+            // Stops the loop if read() returns normally; the field itself is
+            // cleared only by the join in releaseInputLine, once the line the
+            // thread is reading has really been closed.
             t.interrupt();
-            this.captureThread = null;
         }
         AudioBackendException failure = releaseLines("on close");
         if (failure != null) {
@@ -717,13 +843,31 @@ public final class JavaxSoundBackend implements AudioBackend {
     }
 
     /**
-     * Stops and closes the capture line, each in its own attempt.
+     * Stops and closes the capture line, each in its own attempt, then joins
+     * the thread that was reading it.
      *
      * <p>A {@link DataLine#stop()} that throws is logged and the close is
      * tried anyway — stop only pauses the transfer, {@code close} is what
      * hands the line back to the mixer, so treating a failed stop as a reason
      * to skip the close would leak the very handle this method exists to
      * release.</p>
+     *
+     * <p>The join comes AFTER a {@link Line#close()} that returned (story 316
+     * review). By the JDK's {@link TargetDataLine#read} contract the thread's
+     * non-interruptible read returns once the line is stopped or closed, and
+     * this method issues both, stop first; the join sits after the close
+     * because close is the later of the two and the one whose success is
+     * required — a stop failure is only logged. A join placed before either
+     * call would wait for a read that nothing has released. It is bounded by
+     * {@link #captureExitTimeoutMillis} and never throws — see
+     * {@link #joinCaptureThread()} for the timeout policy. When the close
+     * THROWS the thread is deliberately not joined and stays in
+     * {@code captureThread} beside the retained line, so the retry that
+     * finally closes the line is the one that joins it. Whether it is still
+     * blocked depends on the {@code stop()} issued first: one that returned
+     * normally has already released the read, and the thread exits on its
+     * own; one that failed leaves the read blocked on the still-open line,
+     * where a join would burn the whole bound for nothing.</p>
      *
      * @return the {@link Line#close()} failure, leaving {@code inputLine} set
      *         for a later retry, or {@code null} when the line was released
@@ -749,10 +893,69 @@ public final class JavaxSoundBackend implements AudioBackend {
         try {
             line.close();
         } catch (RuntimeException e) {
-            return e; // RETAINED in this.inputLine — a later close retries it
+            // RETAINED in this.inputLine — a later close retries it. The
+            // capture thread stays in its field too, for that retry to join:
+            // if the stop() above failed as well, its read is still blocked
+            // on this still-open line and a join would only burn the bound;
+            // if the stop() returned, the read is already released and the
+            // thread exits on its own.
+            return e;
         }
         this.inputLine = null;
+        joinCaptureThread();
         return null;
+    }
+
+    /**
+     * Waits — for at most {@link #captureExitTimeoutMillis} — for the capture
+     * thread to exit, then drops the reference whether or not it exited; the
+     * one early return that keeps it is the guard against being called from
+     * the capture thread itself, which nothing in production does.
+     *
+     * <p>Called only once the capture line's {@link Line#close()} has
+     * returned, after a {@link DataLine#stop()} was attempted ahead of it — a
+     * stop that returned, or the close that did, each release the thread's
+     * blocked read by the JDK's {@link TargetDataLine#read} contract — so
+     * this normally returns as soon as the thread
+     * has processed that last (possibly partial) block. The timeout is the
+     * hard bound the
+     * lifecycle thread needs against a driver whose read does not come back
+     * (story 316 review).</p>
+     *
+     * <p>A join that ends with the thread still alive — because it timed out
+     * or was interrupted — is logged at {@link Level#WARNING}; the field is
+     * cleared anyway, and this never throws.
+     * The device is already released (the close returned), and the survivor
+     * can only ever publish into the publisher it pinned at start — never
+     * into one a later {@link #open(DeviceId, AudioFormat, int)} installs,
+     * see {@link #startCapture(AudioFormat, int)}. Failing the close over it would
+     * hold the ladder's mandatory final rung in {@code RELEASE_PENDING} for a
+     * thread that holds no device. An interrupt is re-asserted for the caller
+     * and the wait stops there.</p>
+     */
+    private void joinCaptureThread() {
+        Thread t = this.captureThread;
+        if (t == null || t == Thread.currentThread()) {
+            return;
+        }
+        boolean interrupted = false;
+        try {
+            t.join(captureExitTimeoutMillis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            interrupted = true;
+        }
+        if (t.isAlive()) {
+            LOG.log(Level.WARNING,
+                    (interrupted
+                            ? "Java Sound capture thread was still running when the wait"
+                                    + " for it was interrupted"
+                            : "Java Sound capture thread did not exit within "
+                                    + captureExitTimeoutMillis + " ms")
+                            + "; its stale blocks are isolated from later streams by"
+                            + " the pinned publisher");
+        }
+        this.captureThread = null;
     }
 
     /**

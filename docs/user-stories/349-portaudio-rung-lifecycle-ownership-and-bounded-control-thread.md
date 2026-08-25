@@ -1,0 +1,53 @@
+---
+title: "PortAudio Rung Lifecycle Ownership and Bounded Control Thread"
+labels: ["bug", "audio-engine", "backend", "native", "ffm", "reliability"]
+---
+
+# PortAudio Rung Lifecycle Ownership and Bounded Control Thread
+
+## Motivation
+
+Story 316 put every streaming backend under one lifecycle contract — open, start, stop, close, and a `RELEASE_PENDING` state that refuses to open a second rung beside a handle that has not provably come back — and made the PortAudio rung load-bearing (it is the default head on Windows without ASIO, and the recording fallback for an input-less ASIO driver). That contract exposed, round after round of 316's review, that the PortAudio rung's own internals were never written to it: a `Pa_CloseStream` failure was logged and forgotten; the stream arena was confined to the opening thread while the close ran on whichever thread drove the transition; a failed `delegate.close()` was swallowed so the ladder walked on. Each of those has now been fixed pointwise inside story 316, but the class of defect is not closed, and the one hazard 316's review explicitly *accepted rather than fixed* is still open.
+
+`CallbackBackendAdapter`'s class javadoc documents that exposure: `Pa_OpenStream`, `Pa_StartStream`, `Pa_StopStream` and `Pa_CloseStream` are UNTIMED FFM downcalls issued on the calling thread, inside `AudioEngine`'s `lifecycleLock`, and the application's Play handler calls `AudioEngine.startAudioOutput()` from the JavaFX application thread. A device whose driver wedges in any of those calls stalls every lifecycle transition in the application — Play, Stop, the device-event reopen worker, shutdown — and freezes the UI with them. ASIO's equivalent hazard was closed in the same review by giving `AsioControlThread` a per-downcall budget; PortAudio has no such thread, and the javadoc explains why adding one "is not a wrapper — it is a subsystem": the same `PortAudioBackend` instance answers `Pa_Initialize`, device enumeration and the default-device queries from a background worker, and PortAudio's Windows host APIs initialize COM on the calling thread, so "which thread" is a correctness question for the whole backend.
+
+For a studio engineer on the primary platform this is the difference between "the interface hung, the app told me, I picked another device" and "the app froze and I lost the session." Story 316 made the ladder honest; this story makes its middle rung as robust as its top one.
+
+## Goals
+
+- **Own the PortAudio rung's lifecycle correctness going forward.** Any review finding, gap-audit item or bug inside `PortAudioBackend`, `PortAudioBindings` or `CallbackBackendAdapter` that concerns handle release, thread affinity, arena lifetime, retry after a failed native call, or the RT callback bridge is routed here — not re-opened against story 316. (Findings inside the Java Sound rung route to story 317; the DLL-name / loader gap is story 348.)
+- **Bound every PortAudio downcall that runs under the engine's lifecycle lock.** Introduce a `PortAudioControlThread` (modelled on `AsioControlThread`: single owner thread, per-call budget, phase CAS for withdrawal — never `cancel(false)` as proof the call did not run, quiescence gate so a bounded call is refused while an abandoned one is still executing) that owns `Pa_Initialize`, enumeration and default-device queries, `Pa_OpenStream`, `Pa_StartStream`, `Pa_StopStream`, `Pa_CloseStream` and `Pa_Terminate`. A call that outlives its budget produces the same honest outcome the ASIO rung already produces: the adapter reports the release as pending (`AudioBackend.isReleasePending()`), the engine enters `RELEASE_PENDING`, and the ladder abandons rather than opening another rung on the same device.
+- **Thread affinity becomes a design property, not an accident.** With one owner thread, COM initialization per calling thread and arena ownership are settled by construction; the shared stream arena from story 316's review stays (it is what lets a *retained* arena be retried from any thread), and the retry-on-early-return path is preserved.
+- **Enumeration must not wedge behind a stuck stream call.** The settings dialog and the first-run wizard run device enumeration on a background worker precisely so the UI does not block; the control thread must serve enumeration with its own budget and a bounded queue so a wedged open reports "busy" to the enumeration caller instead of stalling it.
+- **Honest failure text.** A budget-exhausted call names the call (`Pa_OpenStream`), the device, and the budget, and reaches the user through the existing notification path the controller already uses for a rejected request — the same shape `AsioControlThread` already models.
+
+## Goals — Tests
+
+This list is the binding acceptance criterion.
+
+- **Budget test**: a `PortAudioBindings` seam (an interface or a package-private factory — `PortAudioBindings` is `public final` with a library-loading constructor, which is why story 316's review could only pin its behaviour with bytecode sentinels and planted fields) whose `openStream` blocks past the budget makes `CallbackBackendAdapter.open` throw a budgeted `AudioBackendException` within the budget plus a small margin, on the caller's thread, with the control thread still holding the abandoned call.
+- **Refusal-while-abandoned test**: a bounded call issued while an abandoned one is executing is refused immediately (not queued behind it), mirroring `AsioControlThread`'s fail-fast gate; `isReleasePending()` answers `true` until the abandoned call returns.
+- **Release-pending test**: a `Pa_CloseStream` that outlives its budget leaves `isReleasePending()` true; the engine-level `closeFailedHop` therefore answers `false` and the ladder is abandoned (reuse `AudioEngine`'s existing tests for the deferred-release path — the ASIO rung already exercises it).
+- **Enumeration-under-wedge test**: with a stream call abandoned on the control thread, `listDevices()` returns (empty or cached, with a logged reason) within its own budget rather than blocking.
+- **Thread-affinity test**: `openStream` and `closeStream` requested from two different caller threads both execute on the control thread (assert the executing thread name), and the arena allocated by the first is closed by the second without retention.
+- **RT bridge untouched**: `RealTimeSafeContractTest`'s `RT_CALLBACK_BRIDGES` entries for `PortAudioBackend$CallbackInvoker#invoke` and `CallbackBackendAdapter#deviceCallback` still pass unchanged — the control thread is a lifecycle seam, not a callback seam.
+- **Lifecycle-lock budget sentinel**: `AudioEngineLifecycleLockContractTest`'s allow-list gains the control thread's bounded call as a permitted outward call, and `AudioEngine`'s lifecycle-lock javadoc "honest budget" enumeration is updated so the PortAudio row reads as bounded — the same enumeration story 316's review found silently stale twice.
+
+## Non-Goals
+
+- Story 348's DLL-name mismatch and `NativeLibraryLoader` adoption; this story assumes PortAudio loads.
+- Story 317's Java Sound rung (format negotiation, mixer selection, refusal to enter PLAYING/RECORDING on open failure).
+- The other long-lived `Arena.ofConfined()` fields in the tree (`NativeAudioBuffer`, `FluidSynthRenderer`, `ClapPluginHost`) — different libraries, different owners; an audit of which thread closes each is a separate cleanup and must not ride on this story.
+- Changing the RT callback bridge (`CallbackInvoker`, `deviceCallback`), the oversized-period clamp, or the C `long` ABI handling — all landed under story 316 and covered by its sentinels.
+- Bounding `Mixer.prepareForPlayback` / `MidiTrackRenderer.close()` under the lifecycle lock — documented as accepted in story 316's review; not PortAudio.
+
+## Technical Notes
+
+- Files: `daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBackend.java`, `PortAudioBindings.java`, `daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/CallbackBackendAdapter.java` (its class javadoc's "Open and close are UNBOUNDED" section is the design brief for this story and should be rewritten when the story lands), `daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/AsioControlThread.java` (the model — phase CAS, `isQuiesced()`, `awaitQuiescence(Duration)`, `callUnbounded` for the modal control panel; PortAudio has no modal panel, so the unbounded variant is not needed), `daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/AudioEngine.java` (`releaseDeferredBy`, the lifecycle-lock budget javadoc).
+- Reuse, do not fork: the deferred-release accounting (`AudioBackend.isReleasePending()`, `AudioEngine.releaseDeferredBy` consulted at all six `close()` sites) already exists from story 316's review and is what makes a timed-out `Pa_CloseStream` an honest `RELEASE_PENDING` rather than a leak.
+- The `dawg-native-libs` SKILL maps the FFM seams; note its rule that a binding should route through `NativeLibraryLoader` (story 348) — do the loader adoption first if both stories are in flight, so the control thread wraps the final binding shape once.
+- Cross-refs: **316** (the contract this rung must satisfy; its review rounds 5–12 are the pointwise history), **317** (the Java Sound rung's equivalent story), **348** (loading), **310/311** (`AsioDriverShim` / `AsioControlThread`, the model), **327** (device-loss detection inherits the honest budget-exhausted outcome), **338** (engine health surfaces the abandoned-call state).
+
+## Status
+
+- Open

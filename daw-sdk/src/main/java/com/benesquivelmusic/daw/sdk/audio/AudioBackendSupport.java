@@ -16,13 +16,15 @@ import java.util.function.BiPredicate;
  * {@code CoreAudioBackend}, {@code WasapiBackend}, {@code JackBackend}),
  * {@link JavaxSoundBackend}, and {@link MockAudioBackend} all delegate
  * their common state management here. Kept package-private because the
- * sealed {@link AudioBackend} hierarchy is the public surface.</p>
+ * {@link AudioBackend} interface is the public surface.</p>
  */
 final class AudioBackendSupport implements AutoCloseable {
 
     /**
-     * Drop handler shared by every {@link #publishInput(AudioBlock)} call.
-     * Hoisted into a constant so no lambda is allocated per published block
+     * Drop handler shared by every
+     * {@link #publishInput(SubmissionPublisher, AudioBlock)} call — and so by
+     * {@link #publishInput(AudioBlock)}, which delegates there. Hoisted into a
+     * constant so no lambda is allocated per published block
      * (story 311). Returning {@code false} tells
      * {@link SubmissionPublisher#offer(Object, java.util.function.BiPredicate)}
      * to drop the item rather than retry.
@@ -146,17 +148,97 @@ final class AudioBackendSupport implements AutoCloseable {
      * {@link #offerUnlessClosed(SubmissionPublisher, Object, BiPredicate)}
      * handles the documented close exception at the operation itself.</p>
      *
+     * <p>Publishes into whatever the CURRENT publisher is, read exactly once:
+     * {@link #markOpen} may replace it concurrently after a close-then-open
+     * cycle. That is the right target for a caller that its own stream's
+     * teardown stops and joins before this support's {@link #close()} runs.
+     * The ASIO drain thread is one: it is per-stream, not per-backend —
+     * {@code AsioBackend.open} constructs the {@code AsioBufferSwitchShim}
+     * whose constructor starts {@code asio-input-drain}, and
+     * {@code AsioBackend.close()} calls {@code bridge.close()}, whose
+     * {@code shutDown} unparks and joins that thread (bounded by
+     * {@code DRAIN_SHUTDOWN_TIMEOUT_MILLIS}), BEFORE it calls
+     * {@code support.close()}. The overload's other production caller,
+     * {@code MockAudioBackend.pumpInput}, needs no such guarantee: it
+     * publishes synchronously on its caller's thread, guarded by
+     * {@link #isOpen()}. A thread that may still be publishing after its
+     * stream's close has completed — {@link JavaxSoundBackend}'s capture
+     * thread, blocked in a non-interruptible read — must instead pin that
+     * stream's publisher and go through
+     * {@link #publishInput(SubmissionPublisher, AudioBlock)}; see there.</p>
+     *
      * @param block the captured block; must not be null
      */
     void publishInput(AudioBlock block) {
+        publishInput(publisher, block);
+    }
+
+    /**
+     * The CURRENT stream's input publisher, for a capture thread to pin
+     * before it starts and publish into through
+     * {@link #publishInput(SubmissionPublisher, AudioBlock)} for the rest of
+     * its life (story 316 review).
+     *
+     * <p>Meant to be read between {@link #markOpen} and the start of the
+     * thread that will publish for that stream. Read at any other time it may
+     * name a publisher {@link #close()} has already completed.</p>
+     *
+     * @return the publisher {@link #inputBlocks()} currently hands out
+     */
+    SubmissionPublisher<AudioBlock> currentInputPublisher() {
+        return publisher;
+    }
+
+    /**
+     * Publishes a captured input block into ONE specific stream's publisher,
+     * without ever blocking the caller (story 316 review).
+     *
+     * <p>This is the stream-isolation half of the capture-thread contract.
+     * {@link JavaxSoundBackend}'s capture thread sits in
+     * {@link javax.sound.sampled.TargetDataLine#read}, which is not
+     * interruptible and can return one last partial block once its line is
+     * closed under it. If that thread published into the swappable
+     * {@code publisher} field, a close-then-open that raced ahead of it would
+     * hand it the NEXT stream's publisher, and the stale block would land in
+     * the new recording. So the thread pins the instance
+     * {@link #currentInputPublisher()} returned when it started and publishes
+     * only into that.</p>
+     *
+     * <p>Why the pinned instance can never reach a later stream:
+     * {@link #close()} is {@code synchronized} and calls
+     * {@link SubmissionPublisher#close()} on the instance the field held; a
+     * closed {@code SubmissionPublisher} stays closed for good.
+     * {@link #markOpen} is {@code synchronized} on the same monitor and only
+     * ever installs a brand-new instance once it finds the field's instance
+     * closed. A thread still holding the OLD instance can therefore only ever
+     * offer into a publisher that is already closed, which the
+     * {@code stream.isClosed()} fast path drops and — should {@code close()}
+     * win between that check and the offer —
+     * {@link #offerUnlessClosed(SubmissionPublisher, Object, BiPredicate)}
+     * drops at the operation itself. Nothing in THIS class serializes that
+     * offer against {@link #markOpen} or {@link #close()}: the publish path
+     * never enters the support's monitor. This class puts no lock on it;
+     * {@link SubmissionPublisher#offer} takes its own internal lock and may
+     * dispatch to its executor, exactly as on the pre-existing
+     * single-argument path — which is why publishing
+     * already lives on a drain thread rather than in the real-time
+     * callback.</p>
+     *
+     * <p>Same drop-instead-of-block {@code offer} and the same open-flag guard
+     * as {@link #publishInput(AudioBlock)}, which delegates here with the
+     * current field.</p>
+     *
+     * @param stream the publisher of the stream the block belongs to; must
+     *               not be null
+     * @param block  the captured block; must not be null
+     */
+    void publishInput(SubmissionPublisher<AudioBlock> stream, AudioBlock block) {
+        Objects.requireNonNull(stream, "stream must not be null");
         Objects.requireNonNull(block, "block must not be null");
-        // Capture the swappable publisher reference exactly once: markOpen()
-        // may replace it concurrently after a close-then-open cycle.
-        SubmissionPublisher<AudioBlock> current = publisher;
-        if (!open || current.isClosed()) {
+        if (!open || stream.isClosed()) {
             return;
         }
-        offerUnlessClosed(current, block, DROP_INPUT_BLOCK);
+        offerUnlessClosed(stream, block, DROP_INPUT_BLOCK);
     }
 
     /**

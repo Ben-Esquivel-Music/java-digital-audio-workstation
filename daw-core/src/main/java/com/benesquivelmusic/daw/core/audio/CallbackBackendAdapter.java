@@ -130,12 +130,18 @@ import java.util.logging.Logger;
  * {@code Future.get()}. PortAudio has no such thread, and giving it one is
  * not a wrapper — it is a subsystem:</p>
  * <ol>
- *   <li>{@code PortAudioBackend.openStream} allocates the stream's
- *       {@link java.lang.foreign.Arena#ofConfined() confined} arena and
- *       {@code closeStream} closes it. A confined arena may only be closed by
- *       the thread that opened it, so moving the OPEN onto a control thread
- *       forces the close, and every other access to that arena, onto the same
- *       thread. The callback upcall stub lives in that arena too.</li>
+ *   <li>{@code PortAudioBackend.openStream} allocates the stream's arena —
+ *       the {@code PaStreamParameters} structs, the handle pointer and the
+ *       callback upcall stub live in it — and {@code closeStream} closes it.
+ *       That arena is {@link java.lang.foreign.Arena#ofShared() shared}
+ *       (story 316 review round): the lifecycle seam closes on whichever
+ *       thread drives the transition — the JavaFX thread on Play and Stop,
+ *       the {@code settings-audio-reconfigure} worker, the device-event
+ *       reopen worker, shutdown — so the confined arena it was before threw
+ *       {@code WrongThreadException} on every cross-thread close and leaked
+ *       the upcall stub. Thread affinity is therefore no longer an arena
+ *       constraint; the next two items are the remaining reasons a control
+ *       thread is a subsystem.</li>
  *   <li>The same {@code PortAudioBackend} instance answers
  *       {@code Pa_Initialize}, device enumeration and the default-device
  *       queries, which the application deliberately runs on a BACKGROUND
@@ -658,6 +664,37 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * refusal propagates with the stream still tracked as open, so a later
      * {@code close()} retry reaches the same handle — exactly what the
      * engine's {@code RELEASE_PENDING} retry needs.</p>
+     *
+     * <p>A delegate RELEASE failure propagates too (story 316 review). A
+     * later {@code close()} retries it because {@code delegate.close()} is
+     * called unconditionally — nothing in this method reads
+     * {@code initialized}. That flag is read only by
+     * {@code ensureInitialized()}, so its staying {@code true} after a failed
+     * release means just that a later {@link #open} or enumeration will not
+     * re-issue {@code delegate.initialize()}; on {@code PortAudioBackend} a
+     * repeat of that call re-issues no {@code Pa_Initialize} while the
+     * delegate still counts itself initialized, because {@code initialize()}
+     * is guarded by
+     * {@code initialized.compareAndSet(false, true)}. Swallowing the failure
+     * reported a release that never
+     * happened: the engine's {@code closeFailedHop} saw a normal return and
+     * walked the ladder to the next rung while the delegate could still hold
+     * its stream. That is reachable, not theoretical — when
+     * {@code startStream} fails inside {@link #open} and the rollback
+     * {@code closeStream} fails as well, {@code open} never became
+     * {@code true}, so the branch above never runs and the retained stream is
+     * reachable ONLY through {@code delegate.close()} here. The retry is
+     * meaningful because of how {@code PortAudioBackend.close()} is built: it
+     * calls {@code closeStream()} first, and {@code closeStream()} throws on a
+     * {@code Pa_CloseStream} error BEFORE it nulls {@code streamHandle}, so
+     * the next call re-issues {@code Pa_CloseStream} on the handle it still
+     * holds; {@code PortAudioBackend.close()} reaches its
+     * {@code bindings.terminate()} ({@code Pa_Terminate}) only after that
+     * {@code closeStream()} has returned normally. The input publisher is
+     * completed and replaced immediately before {@code delegate.close()}, so
+     * it is completed on every call that reaches the delegate release,
+     * including a retry; a {@code closeStream} refusal in the branch above
+     * exits before it.</p>
      */
     @Override
     public void close() {
@@ -677,11 +714,12 @@ public final class CallbackBackendAdapter implements AudioBackend {
             this.inputRing = null;
         }
         completeAndReplaceInputPublisher();
-        try {
-            delegate.close();
-        } catch (RuntimeException closeFailure) {
-            LOG.log(Level.WARNING, "Releasing " + name() + " failed", closeFailure);
-        }
+        // May throw (story 316 review). This call is unconditional, so a
+        // later close() reaches the delegate again whatever `initialized`
+        // holds; the flag staying true only spares ensureInitialized() a
+        // repeat delegate.initialize(). See the javadoc for why a normal
+        // return here must mean the delegate really let go.
+        delegate.close();
         initialized = false;
     }
 

@@ -132,7 +132,40 @@ public final class PortAudioBackend implements NativeAudioBackend {
             throw new IllegalStateException("A stream is already open; close it first");
         }
 
-        streamArena = Arena.ofConfined();
+        // Story 316 review — a previous close may have RETAINED its arena
+        // after a failed release (releaseStreamArena). Retry it here rather
+        // than overwrite the reference, which would leak that arena, and the
+        // upcall stub in it, for good.
+        releaseStreamArena();
+        if (streamArena != null) {
+            throw new IllegalStateException("The previous stream's arena is still retained"
+                    + " after a failed release; close it before opening another stream");
+        }
+
+        // Story 316 review — SHARED, not confined. The production close path
+        // (CallbackBackendAdapter.close -> closeStream) runs under the
+        // engine's lifecycle lock on whichever thread drives the transition:
+        // the JavaFX thread on Play and Stop, the settings-audio-reconfigure
+        // worker, the device-event reopen worker, shutdown. A confined arena
+        // may only be closed by the thread that created it, so every
+        // cross-thread close threw WrongThreadException — after streamHandle
+        // had already been nulled, so the retry returned early and the arena
+        // leaked permanently. A shared arena may be closed by any thread; its
+        // close() fails with IllegalStateException while another thread is
+        // accessing a segment in it (and when it is already closed, which is
+        // moot here: releaseStreamArena nulls the reference on success). The
+        // vendored lib/portaudio/include/portaudio.h does not state that the
+        // callback has finished executing by the time Pa_CloseStream returns;
+        // what it does say is that Pa_CloseStream "discards any pending
+        // buffers as if Pa_AbortStream() had been called", that
+        // Pa_AbortStream "Terminates audio processing immediately without
+        // waiting for pending buffers to complete", and that a stream
+        // "becomes inactive either as a result of a call to Pa_StopStream()
+        // or Pa_AbortStream() [...]" (the sentence goes on to cover a callback
+        // return other than paContinue). The real-time callback path never touches an
+        // arena-scoped segment anyway: CallbackInvoker.invoke reinterprets
+        // the raw buffer pointers PortAudio passes in.
+        streamArena = Arena.ofShared();
 
         try {
             // Allocate PaStreamParameters structs
@@ -166,8 +199,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
             currentConfig = config;
             currentCallback = callback;
         } catch (RuntimeException | Error e) {
-            streamArena.close();
-            streamArena = null;
+            releaseStreamArena();
             // The invoker was published by createCallbackStub before the open
             // failed; it belongs to a stream that never existed, so it must not
             // survive into the next open's clamp report.
@@ -197,6 +229,10 @@ public final class PortAudioBackend implements NativeAudioBackend {
     @Override
     public void closeStream() {
         if (streamHandle == null) {
+            // Story 316 review — the stream may already be gone while its
+            // arena is still RETAINED from a close whose arena release
+            // failed; this early return used to strand it for good.
+            releaseStreamArena();
             return;
         }
         stopStreamBeforeClose();
@@ -210,9 +246,31 @@ public final class PortAudioBackend implements NativeAudioBackend {
         reportClampedOversizedPeriods();
         currentConfig = null;
         currentCallback = null;
-        if (streamArena != null) {
-            streamArena.close();
+        releaseStreamArena();
+    }
+
+    /**
+     * Closes the stream arena when one is held (story 316 review).
+     *
+     * <p>On success the reference is dropped. On a {@link RuntimeException}
+     * the failure is logged and the reference is RETAINED, so the next
+     * attempt — {@link #closeStream()}, including its early return when no
+     * stream is open, or the next {@link #openStream} — retries the same
+     * arena instead of leaking the upcall stub that lives in it. The arena
+     * is {@link Arena#ofShared() shared}, so the closing thread is never the
+     * reason a close fails; see {@code openStream} for why.</p>
+     */
+    private void releaseStreamArena() {
+        Arena arena = streamArena;
+        if (arena == null) {
+            return;
+        }
+        try {
+            arena.close();
             streamArena = null;
+        } catch (RuntimeException closeFailure) {
+            LOG.log(Level.WARNING, "PortAudio stream arena could not be closed; it is retained"
+                    + " and the next close or open retries it", closeFailure);
         }
     }
 
