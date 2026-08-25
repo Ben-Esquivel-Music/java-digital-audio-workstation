@@ -288,7 +288,19 @@ public interface AudioEngineController {
      *
      * @param outputDeviceName preferred device name for the tone, or empty
      *                         for the JVM default mixer
-     * @throws RuntimeException if the tone cannot be played
+     * @throws IllegalArgumentException if a non-blank {@code outputDeviceName}
+     *                                  names no Java Sound mixer (story 316
+     *                                  review follow-up): the selection is
+     *                                  refused, synchronously, rather than
+     *                                  played on the JVM default. That
+     *                                  includes every selection made under a
+     *                                  backend other than Java Sound — an ASIO
+     *                                  driver name is never a Java Sound mixer
+     *                                  name. A line-open failure
+     *                                  ({@code LineUnavailableException} /
+     *                                  {@code IllegalArgumentException})
+     *                                  happens after this method has returned
+     *                                  and is logged, not thrown.
      */
     void playTestTone(String outputDeviceName);
 

@@ -29,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -52,13 +53,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  * handler resolves it (story 315 review retired
  * {@code MainController.playOrPauseCommand()}, which duplicated the decision) —
  * the literal FXML-loaded path remains a known coverage gap.</p>
+ *
+ * <p>Bus announcements are asserted only after {@link #awaitBusDrained()}: the
+ * bus delivers on its own worker thread, so without it both "exactly one" and
+ * "none" would be racing the drain (story 316 review build failure; see the
+ * helper).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class TransportCommandPathTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000, 2, 16, 256);
+    private static final long TIMEOUT_SECONDS = 5;
 
     private DefaultEventBus bus;
+
+    /** The marker {@link #awaitBusDrained()} is currently waiting on, if any. */
+    private final AtomicReference<DrainMarker> drainMarker = new AtomicReference<>();
+
+    private record DrainMarker(TransportEvent.Seeked event, CountDownLatch delivered) { }
 
     @BeforeEach
     void installBus() {
@@ -81,8 +93,7 @@ class TransportCommandPathTest {
         TransportController handler = newController(project);
 
         List<TransportEvent.Stopped> stopped = new CopyOnWriteArrayList<>();
-        try (EventBus.Subscription sub = bus.on(TransportEvent.Stopped.class,
-                DispatchMode.ON_CALLER_THREAD, stopped::add)) {
+        try (EventBus.Subscription sub = collectAnnouncements(TransportEvent.Stopped.class, stopped)) {
 
             // Play → Start (anchors at beat 20). The SAME command each time —
             // the production handler reads the authoritative state.
@@ -108,6 +119,7 @@ class TransportCommandPathTest {
             assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
             assertThat(transport.getPositionInBeats())
                     .as("Stop returns the playhead to the play-start anchor").isEqualTo(20.0);
+            awaitBusDrained();
             assertThat(stopped)
                     .as("exactly one Stopped is announced, carrying the pre-rewind position")
                     .hasSize(1);
@@ -118,6 +130,7 @@ class TransportCommandPathTest {
             dispatch(new StopTransportCommand(), handler);
             assertThat(transport.getPositionInBeats())
                     .as("double-stop rewinds to zero").isEqualTo(0.0);
+            awaitBusDrained();
             assertThat(stopped)
                     .as("the rewind gesture announces no second Stopped").hasSize(1);
         }
@@ -136,14 +149,14 @@ class TransportCommandPathTest {
         TransportController handler = newController(project);
 
         List<TransportEvent.Started> started = new CopyOnWriteArrayList<>();
-        try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
-                DispatchMode.ON_CALLER_THREAD, started::add)) {
+        try (EventBus.Subscription sub = collectAnnouncements(TransportEvent.Started.class, started)) {
 
             computeOnFx(() -> { handler.playWithPreRoll(); return null; });
 
             assertThat(transport.getState()).isEqualTo(TransportState.PLAYING);
             assertThat(transport.getPositionInBeats())
                     .as("2 bars of 4/4 pre-roll rewinds beat 20 to beat 12").isEqualTo(12.0);
+            awaitBusDrained();
             assertThat(started)
                     .as("starting with pre-roll announces Started like every other start path")
                     .hasSize(1);
@@ -187,14 +200,14 @@ class TransportCommandPathTest {
         TransportController handler = newController(project);
 
         List<TransportEvent.Started> started = new CopyOnWriteArrayList<>();
-        try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
-                DispatchMode.ON_CALLER_THREAD, started::add)) {
+        try (EventBus.Subscription sub = collectAnnouncements(TransportEvent.Started.class, started)) {
 
             dispatch(new ToggleRecordCommand(), handler);
 
             assertThat(transport.getState())
                     .as("a take that cannot capture never moves the transport")
                     .isEqualTo(TransportState.STOPPED);
+            awaitBusDrained();
             assertThat(started)
                     .as("and never announces Started — the bus must not carry a "
                             + "take that did not begin")
@@ -237,6 +250,66 @@ class TransportCommandPathTest {
         computeOnFx(() -> { command.execute(handler); return null; });
     }
 
+    /**
+     * ONE subscription per test, on the common super-type, that collects the
+     * announcements of {@code type} into {@code into} and recognises the
+     * {@link #awaitBusDrained()} marker by identity. Subscribing to the
+     * super-type is what puts the marker and the announcements under test on
+     * the SAME per-subscription FIFO &mdash; the ordering guarantee the helper
+     * relies on.
+     */
+    private <E extends TransportEvent> EventBus.Subscription collectAnnouncements(
+            Class<E> type, List<E> into) {
+        return bus.on(TransportEvent.class, DispatchMode.ON_CALLER_THREAD, event -> {
+            DrainMarker marker = drainMarker.get();
+            if (marker != null && event == marker.event()) {
+                marker.delivered().countDown();
+            } else if (type.isInstance(event)) {
+                into.add(type.cast(event));
+            }
+        });
+    }
+
+    /**
+     * Blocks until every event enqueued on this test's subscription before
+     * now has been delivered to its collector.
+     *
+     * <p>Why this exists &mdash; do not "simplify" it away.
+     * {@link DefaultEventBus#publish} only ENQUEUES onto each subscription's
+     * own bounded FIFO ({@code Sub.tryEnqueue}); a per-subscription serial
+     * worker drains it ({@code runLoop}), and
+     * {@link DispatchMode#ON_CALLER_THREAD} means "run the handler inline on
+     * that drain worker", not on the publishing thread. So the
+     * {@code Stopped} that {@code TransportController.stop()} publishes
+     * synchronously is NOT yet in the collecting list when the FX-thread
+     * dispatch returns. Under full-reactor load (the story 316 review build)
+     * the worker had not run and "exactly one Stopped" observed zero. The
+     * negative assertions were worse off: "no second Stopped" and "never
+     * announces Started" could only ever pass, because an event not yet
+     * delivered is indistinguishable from one never published.</p>
+     *
+     * <p>The fix is FIFO ordering on a single subscription. This publishes a
+     * marker {@link TransportEvent.Seeked} (nothing in production publishes
+     * {@code Seeked}, and the collector matches it by identity regardless) to
+     * the SAME bus and waits for it. One deque, drained in order by one
+     * worker, means the marker's delivery proves that everything enqueued on
+     * this subscription before it &mdash; including any Stopped/Started
+     * published inside the gesture under test &mdash; has already been
+     * delivered. Both the positive and the negative assertions become
+     * deterministic; no sleep, no polling. A fresh marker and latch per call,
+     * since the first test drains twice.</p>
+     */
+    private void awaitBusDrained() throws InterruptedException {
+        DrainMarker marker = new DrainMarker(
+                new TransportEvent.Seeked(0L, 0L, Instant.now()), new CountDownLatch(1));
+        drainMarker.set(marker);
+        bus.publish(marker.event());
+        assertThat(marker.delivered().await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .as("the bus delivered the drain marker, and with it everything "
+                        + "enqueued before it")
+                .isTrue();
+    }
+
     /** The status-bar label handed to the controller, for message assertions. */
     private Label statusBarLabel;
     /** The REC indicator handed to the controller, for recording-lifecycle assertions. */
@@ -273,7 +346,7 @@ class TransportCommandPathTest {
                 latch.countDown();
             }
         });
-        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
         switch (thrown.get()) {
             case null -> { }
             case RuntimeException re -> throw re;

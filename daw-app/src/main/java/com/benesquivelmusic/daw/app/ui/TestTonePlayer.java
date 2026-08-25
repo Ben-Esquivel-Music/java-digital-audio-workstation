@@ -47,12 +47,28 @@ final class TestTonePlayer {
     }
 
     /**
-     * Plays a test tone on a background thread. Returns immediately; the
-     * tone fades in and out to avoid clicks.
+     * Plays a test tone on a background thread. Returns as soon as the
+     * selection has resolved; the tone fades in and out to avoid clicks.
      *
-     * @param preferredOutputDeviceName the preferred {@code Mixer.Info#getName()}
-     *                                  value, or empty to use the JVM default
-     * @throws RuntimeException if no suitable output line can be opened
+     * <p>The selection is resolved HERE, on the caller's thread, before the
+     * write is handed to the executor. That ordering is load-bearing: it is
+     * what lets the stale-selection refusal below propagate to
+     * {@code SettingsDialog}, which runs {@code controller.playTestTone}
+     * inside a {@code catch (RuntimeException)} and shows the message. Opening
+     * the line happens on the executor; a {@link LineUnavailableException} or
+     * {@link IllegalArgumentException} there is logged at WARNING from that
+     * thread and is otherwise unobservable &mdash; it is thrown into the
+     * {@code Future} returned by {@code executor.submit}, which nothing
+     * reads.</p>
+     *
+     * @param preferredOutputDeviceName the persisted selection &mdash; a bare
+     *                                  {@code Mixer.Info#getName()} or its
+     *                                  host-API-qualified form &mdash; or empty
+     *                                  to use the JVM default
+     * @throws IllegalArgumentException synchronously, when the selection is
+     *                                  non-blank and names no Java Sound mixer
+     *                                  (story 316 review follow-up); the tone
+     *                                  is NOT played on the JVM default instead
      */
     void play(String preferredOutputDeviceName) {
         byte[] samples = generateSineBytes();
@@ -75,8 +91,12 @@ final class TestTonePlayer {
     }
 
     /**
-     * Resolves the persisted output-device selection to a Java Sound mixer, or
-     * {@code null} to let the JVM pick its default.
+     * Resolves the persisted output-device selection to a Java Sound mixer.
+     * The rule as it stands: blank or {@code null} means "JVM default" and
+     * yields {@code null}; a non-blank selection must name an enumerated mixer,
+     * and one that names none is REFUSED with an
+     * {@link IllegalArgumentException} rather than being played on the JVM
+     * default (story 316 review follow-up, last paragraph).
      *
      * <p>The comparison is
      * {@link AudioDeviceInfo#isSelectionFor(String, String)} rather than a
@@ -110,9 +130,34 @@ final class TestTonePlayer {
      * does hold one entry per host API and so must try the exact qualified
      * match first and refuse a bare name that hits more than one.</p>
      *
+     * <p>Refusing a non-blank selection that matches nothing is the story 316
+     * review follow-up. The qualified-name fix above closed one road to the
+     * JVM default; a STALE selection &mdash; a device unplugged since it was
+     * chosen, or a name persisted from another backend's enumeration that Java
+     * Sound never lists &mdash; walked the same road: this method returned
+     * {@code null} for it, and {@code null} is precisely what
+     * {@code writeToLine} reads as "use
+     * {@code AudioSystem.getSourceDataLine(format)}". The two meanings of
+     * {@code null} had to be split, and only blank may carry the "default"
+     * one. The refusal is thrown here rather than from {@code writeToLine}
+     * because {@link #play(String)} resolves on the caller's thread before it
+     * submits to the executor, and only a throw on that thread reaches the
+     * user; see {@code play}. The honest consequence: the refusal also fires
+     * for EVERY selection made under a backend other than Java Sound &mdash; an
+     * ASIO driver name ({@code "Focusrite USB ASIO"}, from {@code AsioBackend}'s
+     * enumeration) never coincides with a {@code Mixer.Info} name (on Windows
+     * those are DirectSound endpoint names), and PortAudio's MME entries are
+     * truncated to 31 characters &mdash; so with ASIO selected the test tone is
+     * refused with a notice saying so rather than played on the JVM default.
+     * That is the story 098 contract ("plays a short tone through the selected
+     * output") kept honestly, and it is why the message states the fact and
+     * offers no remedy: re-choosing the same driver reproduces the refusal.</p>
+     *
      * @param preferredName the persisted selection; blank or null means "JVM
      *                      default"
      * @return the matching mixer, or {@code null} for the JVM default
+     * @throws IllegalArgumentException if {@code preferredName} is non-blank
+     *                                  and names no enumerated mixer
      */
     private static Mixer.Info resolveMixerInfo(String preferredName) {
         return resolveMixerInfo(preferredName, AudioSystem.getMixerInfo());
@@ -133,7 +178,10 @@ final class TestTonePlayer {
      * @param preferredName the persisted selection; blank or null means "JVM
      *                      default"
      * @param mixers        the mixers to search
-     * @return the matching mixer, or {@code null} for the JVM default
+     * @return the matching mixer, or {@code null} for the JVM default (blank
+     *         or null selection only)
+     * @throws IllegalArgumentException if {@code preferredName} is non-blank
+     *                                  and names none of {@code mixers}
      */
     static Mixer.Info resolveMixerInfo(String preferredName, Mixer.Info[] mixers) {
         if (preferredName == null || preferredName.isBlank()) {
@@ -144,7 +192,11 @@ final class TestTonePlayer {
                 return info;
             }
         }
-        return null;
+        // IllegalArgumentException, not IllegalStateException: the fault is in
+        // the argument (a selection naming nothing Java Sound enumerates), not
+        // in this player's state.
+        throw new IllegalArgumentException("no Java Sound output is named \""
+                + preferredName + "\"; the test tone plays through Java Sound only");
     }
 
     private static void writeToLine(byte[] samples, AudioFormat format, Mixer.Info mixerInfo) {
