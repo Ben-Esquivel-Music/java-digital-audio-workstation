@@ -37,7 +37,12 @@ import static org.assertj.core.api.Assertions.fail;
  * driver never saw it" about exactly the wedge it was describing. A phase
  * handshake now decides that, and an operation abandoned mid-flight keeps the
  * thread un-quiesced so cleanup calls fail fast instead of queueing behind it
- * and each burning a full budget.</p>
+ * and each burning a full budget. The interrupt path skipped that handshake
+ * entirely until this round — an interrupted caller re-asserted its interrupt
+ * and threw with the operation still queued or running and nothing recorded —
+ * and {@link #anInterruptedBoundedCallerLeavesAnExecutingOperationCountedAsAbandoned()}
+ * and {@link #anInterruptedBoundedCallerWithdrawsAnOperationStillQueued()} pin
+ * that both ways of giving up settle identically.</p>
  *
  * <p>{@link #releaseTheControlThread()} releases whatever a test stalled and
  * waits for the thread, unconditionally and bounded, after EVERY test: the
@@ -355,8 +360,8 @@ class AsioControlThreadTest {
 
         assertThat(refused)
                 .isInstanceOf(AudioBackendException.class)
-                .hasMessageContaining("still executing a driver call that outlived its"
-                        + " budget")
+                .hasMessageContaining("still executing a driver call its caller stopped"
+                        + " waiting for")
                 .hasMessageContaining("may still hold the device");
         assertThat(elapsedMillis)
                 .as("a failed open issues roughly six teardown downcalls; letting each"
@@ -399,6 +404,198 @@ class AsioControlThreadTest {
                 .as("waiting cannot conjure a return from the driver; a budget that"
                         + " expires first must report failure rather than pretend")
                 .isFalse();
+    }
+
+    /**
+     * Story 316 review — an interrupted bounded caller settles the phase
+     * exactly as a timed-out one does: RUNNING becomes ABANDONED.
+     *
+     * <p>Until this round only the budget path ran the phase handshake. An
+     * interrupt made {@code call} re-assert the interrupt and throw with the
+     * operation still RUNNING and nothing counted, so
+     * {@link AsioControlThread#isQuiesced()} answered {@code true} about a
+     * downcall the host had walked away from — the answer {@code AsioBackend}
+     * reads as permission to load a second driver, or free the shim, over a
+     * live call. Interrupting the caller does nothing to the control thread,
+     * let alone to the driver it is inside, so the only honest outcome is the
+     * timed-out one: count it, refuse later bounded calls, and let the count
+     * come back down when the driver returns.</p>
+     *
+     * <p>The ordering is deterministic. {@code started.countDown()} runs inside
+     * {@code operation.run()}, i.e. after the task's {@code QUEUED -> RUNNING}
+     * compare-and-set, so the phase IS RUNNING when the interrupt lands; and
+     * {@code FutureTask.awaitDone} checks {@code Thread.interrupted()} at the
+     * top of its loop, so the caller throws {@link InterruptedException}
+     * whether the interrupt lands before or after it entered {@code get()}.
+     * The caller has already submitted by the time {@code started} trips, so
+     * the interrupt cannot land ahead of the submission either.</p>
+     */
+    @Test
+    void anInterruptedBoundedCallerLeavesAnExecutingOperationCountedAsAbandoned()
+            throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicBoolean interruptedOnReturn = new AtomicBoolean();
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        Thread caller = Thread.ofPlatform().daemon(true).name("interrupted-caller")
+                .start(() -> {
+                    // Blocks on the shared wedgeRelease so @AfterEach frees the
+                    // control thread even if an assertion below fails first.
+                    thrown.set(catchThrowable(() -> AsioControlThread.call(() -> {
+                        started.countDown();
+                        wedgeRelease.await();
+                        return 1;
+                    }, GENEROUS_BUDGET)));
+                    interruptedOnReturn.set(Thread.currentThread().isInterrupted());
+                });
+        try {
+            assertThat(started.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the operation must be EXECUTING before its caller is"
+                            + " interrupted, or this is the queued case")
+                    .isTrue();
+
+            caller.interrupt();
+            caller.join(GUARD_BUDGET_MILLIS);
+
+            assertThat(caller.isAlive())
+                    .as("the bounded wait is interruptible: the caller must have"
+                            + " returned, not waited out its budget")
+                    .isFalse();
+            assertThat(thrown.get())
+                    .as("the interrupt itself still propagates; callers act on"
+                            + " InterruptedException, not on a wrapped backend failure")
+                    .isInstanceOf(InterruptedException.class);
+            assertThat(interruptedOnReturn)
+                    .as("the interrupt is restored, not swallowed")
+                    .isTrue();
+            assertThat(AsioControlThread.isQuiesced())
+                    .as("the operation is provably still executing — it is parked on"
+                            + " wedgeRelease — and an interrupted caller can no more"
+                            + " leave a live downcall uncounted than a timed-out one can")
+                    .isFalse();
+
+            long startedAt = System.nanoTime();
+            Throwable refused = catchThrowable(
+                    () -> AsioControlThread.call(() -> 2, GENEROUS_BUDGET));
+            long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000L;
+
+            assertThat(refused)
+                    .as("a later bounded call must be refused on arrival, exactly as"
+                            + " after a budget expiry")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining("still executing a driver call");
+            assertThat(elapsedMillis)
+                    .as("refused, not queued behind the abandoned call to burn its own"
+                            + " budget")
+                    .isLessThan(GENEROUS_BUDGET.toMillis() / 4);
+        } finally {
+            wedgeRelease.countDown();
+            caller.join(GUARD_BUDGET_MILLIS);
+        }
+
+        assertThat(AsioControlThread.awaitQuiescence(
+                Duration.ofMillis(GUARD_BUDGET_MILLIS)))
+                .as("the count comes back down through the task's finally once the"
+                        + " driver returns; nothing has to be reset")
+                .isTrue();
+        assertThat(AsioControlThread.isQuiesced()).isTrue();
+    }
+
+    /**
+     * Story 316 review — an interrupted bounded caller withdraws an operation
+     * that has not started, exactly as a timed-out one does: QUEUED becomes
+     * WITHDRAWN and the operation never runs.
+     *
+     * <p>Pre-fix the interrupt path left the phase at QUEUED, so the operation
+     * ran later — on the driver — with nobody waiting for its result or its
+     * failure. The holder is the modal path on purpose, as in
+     * {@link #anOperationStillQueuedWhenItsBudgetExpiresNeverReachesTheDriver()}:
+     * it occupies the thread WITHOUT being abandoned, which is the only way
+     * the later bounded call queues instead of being refused.</p>
+     *
+     * <p>The interrupt is sent the moment the caller reports it is about to
+     * submit, to make the ordering as tight as possible — but every ordering
+     * yields the same result. The holder owns the control thread, so the
+     * operation cannot leave QUEUED until {@code wedgeRelease} is released,
+     * which happens only after the caller has been joined; and whether the
+     * interrupt lands before {@code submit}, between {@code submit} and
+     * {@code get}, or inside {@code get}, {@code FutureTask.awaitDone} sees
+     * the pending interrupt and throws {@link InterruptedException}, which is
+     * where the settlement runs.</p>
+     */
+    @Test
+    void anInterruptedBoundedCallerWithdrawsAnOperationStillQueued() throws Throwable {
+        AtomicBoolean reachedTheDriver = new AtomicBoolean();
+        CountDownLatch holderStarted = new CountDownLatch(1);
+        CountDownLatch holderReturned = new CountDownLatch(1);
+        CountDownLatch aboutToSubmit = new CountDownLatch(1);
+        AtomicBoolean interruptedOnReturn = new AtomicBoolean();
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        Thread holder = Thread.ofPlatform().daemon(true).name("queue-holder").start(() -> {
+            try {
+                AsioControlThread.callUnbounded(() -> {
+                    holderStarted.countDown();
+                    wedgeRelease.await();
+                    return 1;
+                });
+            } catch (Throwable failure) {
+                fail("the unbounded holder must not fail", failure);
+            } finally {
+                holderReturned.countDown();
+            }
+        });
+        // Started only once the holder owns the thread; joining a thread that
+        // was never started, in the finally, is a no-op.
+        Thread caller = Thread.ofPlatform().daemon(true).name("interrupted-queued-caller")
+                .unstarted(() -> {
+                    aboutToSubmit.countDown();
+                    thrown.set(catchThrowable(() -> AsioControlThread.call(() -> {
+                        reachedTheDriver.set(true);
+                        return 2;
+                    }, GENEROUS_BUDGET)));
+                    interruptedOnReturn.set(Thread.currentThread().isInterrupted());
+                });
+        try {
+            assertThat(holderStarted.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the holder must own the control thread before the queued call")
+                    .isTrue();
+
+            caller.start();
+            assertThat(aboutToSubmit.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the caller must be about to submit before it is interrupted")
+                    .isTrue();
+            caller.interrupt();
+            caller.join(GUARD_BUDGET_MILLIS);
+
+            assertThat(caller.isAlive())
+                    .as("the bounded wait is interruptible: the caller must have"
+                            + " returned, not waited out its budget behind the holder")
+                    .isFalse();
+            assertThat(thrown.get())
+                    .as("the interrupt itself still propagates")
+                    .isInstanceOf(InterruptedException.class);
+            assertThat(interruptedOnReturn)
+                    .as("the interrupt is restored, not swallowed")
+                    .isTrue();
+        } finally {
+            wedgeRelease.countDown();
+            assertThat(holderReturned.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the holder must have returned before the queue is drained")
+                    .isTrue();
+            holder.join(GUARD_BUDGET_MILLIS);
+            caller.join(GUARD_BUDGET_MILLIS);
+        }
+
+        // Drain the queue: if the interrupted caller had left its operation
+        // QUEUED rather than withdrawn it, this is when it would have run.
+        AsioControlThread.call(() -> 0, GENEROUS_BUDGET);
+        assertThat(reachedTheDriver)
+                .as("a withdrawn operation must never run — nobody is waiting for it,"
+                        + " and the budget path's \"never saw it\" message rests on this"
+                        + " same handshake")
+                .isFalse();
+        assertThat(AsioControlThread.isQuiesced())
+                .as("a withdrawn operation is never counted as abandoned")
+                .isTrue();
     }
 
     /**

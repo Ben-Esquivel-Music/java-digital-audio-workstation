@@ -331,8 +331,9 @@ public final class AsioBackend implements AudioBackend {
                         "another ASIO backend already owns the process-wide driver");
             }
             if (!AsioControlThread.isQuiesced()) {
-                // An earlier downcall outlived its caller's budget and is still
-                // inside the driver, so the device is provably not free.
+                // An earlier downcall its caller stopped waiting for (budget or
+                // interrupt) is still inside the driver, so the device is
+                // provably not free.
                 // Loading a driver over one that is still executing is how a
                 // wedged open becomes two hosts fighting over the same
                 // hardware. Refuse rather than wait: this thread holds
@@ -340,8 +341,9 @@ public final class AsioBackend implements AudioBackend {
                 // wait here would stall every transition behind both — which is
                 // the failure the bounded budget exists to prevent.
                 throw new AudioBackendException(
-                        "ASIO device is not free: an earlier ASIO call outlived its"
-                                + " budget and is still executing inside the driver."
+                        "ASIO device is not free: an earlier ASIO call its caller"
+                                + " stopped waiting for (budget expired or interrupted)"
+                                + " is still executing inside the driver."
                                 + " The driver has not released the device, so it"
                                 + " cannot be reconfigured yet.");
             }
@@ -745,8 +747,9 @@ public final class AsioBackend implements AudioBackend {
      *
      * <p><strong>Both of those windows stay OPEN when the control thread is not
      * quiesced.</strong> All three calls here are bounded, so while an earlier
-     * downcall that outlived its budget is still executing they are refused on
-     * arrival by {@link AsioControlThread#isQuiesced()} and never reach the
+     * downcall its caller stopped waiting for (by budget or by interrupt) is
+     * still executing they are refused on arrival by
+     * {@link AsioControlThread#isQuiesced()} and never reach the
      * driver at all — no buffer gate is closed and no callback pointer is
      * nulled. That state is also self-inflicted mid-teardown: a
      * {@code streaming.stop()} the control thread has already STARTED and that
@@ -754,7 +757,7 @@ public final class AsioBackend implements AudioBackend {
      * makes the {@code disposeBuffers()} and the uninstall behind it
      * refusable. Starting is the condition, not submission — a budget that
      * expires while the operation is still QUEUED withdraws it instead
-     * ({@code AsioControlThread.budgetExhausted} wins {@code QUEUED ->
+     * ({@code AsioControlThread.settleAbandonedWait} wins {@code QUEUED ->
      * WITHDRAWN} before the task's own {@code QUEUED -> RUNNING}), which never
      * touches {@code ABANDONED_IN_FLIGHT}, so {@link AsioControlThread#isQuiesced()}
      * stays true and the calls behind it are NOT refused. The
@@ -806,10 +809,10 @@ public final class AsioBackend implements AudioBackend {
         boolean stopAttempted = AsioControlThread.isQuiesced();
         boolean stopped = streaming.stop();
         // Re-sampled: a stop() the control thread had already STARTED and that
-        // then outlived its budget is abandoned in flight, so the dispose
-        // behind it is refused on arrival by the host rather than by the
-        // driver. (A budget that expires while the stop is still queued
-        // withdraws it instead and leaves the gate open.)
+        // then outlived its caller's wait (budget or interrupt) is abandoned in
+        // flight, so the dispose behind it is refused on arrival by the host
+        // rather than by the driver. (A budget that expires while the stop is
+        // still queued withdraws it instead and leaves the gate open.)
         boolean disposeAttempted = AsioControlThread.isQuiesced();
         boolean disposed = streaming.disposeBuffers();
         warnIfDriverRefusedTeardown(stopped, stopAttempted, disposed, disposeAttempted);
@@ -873,9 +876,10 @@ public final class AsioBackend implements AudioBackend {
      * {@link AsioStreamingShim#stop()} and
      * {@link AsioStreamingShim#disposeBuffers()} answer {@code false} both for a
      * driver that ran the call and refused it and for a call the HOST never
-     * submitted: while an earlier downcall that outlived its budget is still
-     * executing, {@link AsioControlThread} refuses every bounded operation on
-     * arrival (see {@link AsioControlThread#isQuiesced()}). Reporting the
+     * submitted: while an earlier downcall its caller stopped waiting for (by
+     * budget or by interrupt) is still executing, {@link AsioControlThread}
+     * refuses every bounded operation on arrival (see
+     * {@link AsioControlThread#isQuiesced()}). Reporting the
      * host's own gate as "the ASIO driver refused ASIOStop" would send a
      * maintainer after the wrong component and hide the one fact that matters —
      * that a named call is still wedged inside the driver — so the two get
@@ -890,7 +894,7 @@ public final class AsioBackend implements AudioBackend {
      * re-read inside {@code AsioControlThread.call(...)}, so the sample
      * predicts rather than decides; and even a call that IS submitted through
      * an open gate can exhaust its own budget while still queued, in which
-     * case {@code budgetExhausted} moves it {@code QUEUED -> WITHDRAWN} and
+     * case {@code settleAbandonedWait} moves it {@code QUEUED -> WITHDRAWN} and
      * the driver never sees it. That is reachable whenever the control thread
      * is busy with a call the host has NOT given up on — the unbounded modal
      * control panel being the obvious one — because such a call leaves
@@ -937,7 +941,8 @@ public final class AsioBackend implements AudioBackend {
             LOG.log(Level.WARNING,
                     "ASIO teardown NOT ATTEMPTED (" + neverSubmitted + ") for " + named
                             + ": the asio-control thread is still executing an earlier"
-                            + " ASIO call that outlived its budget, so the host refused"
+                            + " ASIO call its caller stopped waiting for (budget expired"
+                            + " or interrupted), so the host refused"
                             + " to submit these calls. This is the host's own fail-fast"
                             + " gate, NOT a driver refusal — the driver almost certainly"
                             + " never saw them. The driver's buffers stay created and it"
@@ -1494,7 +1499,8 @@ public final class AsioBackend implements AudioBackend {
             return;
         }
         LOG.log(Level.SEVERE,
-                "ASIO driver release DEFERRED: an ASIO call that outlived its budget is"
+                "ASIO driver release DEFERRED: an ASIO call its caller stopped waiting"
+                        + " for (budget expired or interrupted) is"
                         + " still executing, so ASIOExit would fail fast and"
                         + " AsioDriverShim.close() can only ever be attempted once. The"
                         + " close is queued until the driver returns (up to "

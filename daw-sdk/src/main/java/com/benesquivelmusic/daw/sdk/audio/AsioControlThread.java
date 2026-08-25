@@ -74,12 +74,13 @@ import java.util.concurrent.locks.LockSupport;
  * unavailable while its own modal panel owns it — and {@code controlPanelOpen}
  * exists so the failure says exactly that instead of blaming a wedge.</p>
  *
- * <h2>A timed-out call is not a finished call</h2>
- * <p>The budget stops the CALLER waiting; it cannot stop a downcall that is
- * already inside the driver, because interrupting a thread parked in
- * {@code ASIOInit} does nothing. An operation whose budget expires while it is
- * RUNNING is therefore tracked as <em>abandoned</em> until it finally returns,
- * and while one is outstanding every new BOUNDED
+ * <h2>A call its caller stopped waiting for is not a finished call</h2>
+ * <p>A budget — or an interrupt — stops the CALLER waiting; neither can stop
+ * a downcall that is already inside the driver, because interrupting a thread
+ * parked in {@code ASIOInit} does nothing. An operation that is RUNNING when
+ * its caller stops waiting, whether because the budget expired or because the
+ * caller was interrupted, is therefore tracked as <em>abandoned</em> until it
+ * finally returns, and while one is outstanding every new BOUNDED
  * {@link #call(Operation, Duration)} fails IMMEDIATELY instead of queueing
  * behind it.</p>
  *
@@ -95,8 +96,10 @@ import java.util.concurrent.locks.LockSupport;
  *
  * <p>Whether an operation was withdrawn is decided by a compare-and-set on
  * that operation's own {@code Phase}, never by {@code Future.cancel(false)};
- * {@code budgetExhausted} records why the latter cannot answer the
- * question.</p>
+ * {@code settleAbandonedWait} records why the latter cannot answer the
+ * question. It is also the ONE place both ways a bounded caller stops waiting
+ * — the budget expiring, the caller being interrupted — settle that phase, so
+ * the two cannot drift apart about whether the driver still has the call.</p>
  */
 final class AsioControlThread {
 
@@ -117,29 +120,61 @@ final class AsioControlThread {
      * Lifecycle of one submitted operation.
      *
      * <p>The transitions are a handshake exactly one side can win: the task
-     * moves {@code QUEUED -> RUNNING} as its first action, and a caller whose
-     * budget expired moves it {@code QUEUED -> WITHDRAWN} or
-     * {@code RUNNING -> ABANDONED}. Neither side has to guess what the other
-     * did, which is what makes "the driver never saw it" a fact rather than an
-     * inference from {@code Future.cancel(false)}.</p>
+     * moves {@code QUEUED -> RUNNING} as its first action, and a caller that
+     * stopped waiting (its budget expired or it was interrupted) moves it
+     * {@code QUEUED -> WITHDRAWN} or {@code RUNNING -> ABANDONED}. Neither
+     * side has to guess what the other did, which is what makes "the driver
+     * never saw it" a fact rather than an inference from
+     * {@code Future.cancel(false)}.</p>
      */
     private enum Phase {
         /** Submitted; the control thread has not picked it up yet. */
         QUEUED,
         /** The control thread is inside {@code operation.run()}. */
         RUNNING,
-        /** A caller's budget expired before it started; it never runs. */
+        /**
+         * A caller stopped waiting (its budget expired or it was interrupted)
+         * before it started; it never runs.
+         */
         WITHDRAWN,
-        /** A caller's budget expired while the driver call was executing. */
+        /**
+         * A caller stopped waiting (its budget expired or it was interrupted)
+         * while the driver call was executing.
+         */
         ABANDONED,
         /** The operation returned or threw; the driver is done with it. */
         FINISHED
     }
 
     /**
-     * How many operations a timed-out caller abandoned while they were
-     * executing and that have not returned yet. Non-zero means the driver is
-     * provably still inside a downcall nobody is waiting for any more — see
+     * How {@link #settleAbandonedWait(Future, AtomicReference)} left an
+     * operation whose caller stopped waiting for it — by budget or by
+     * interrupt. One outcome per side of the {@link Phase} handshake the
+     * caller can win, plus the photo finish where it wins neither.
+     */
+    private enum Settlement {
+        /**
+         * Won {@code QUEUED -> WITHDRAWN}; the future is cancelled and the
+         * driver never saw the operation.
+         */
+        WITHDRAWN,
+        /**
+         * Won {@code RUNNING -> ABANDONED}; counted in
+         * {@link #ABANDONED_IN_FLIGHT} until the driver returns.
+         */
+        ABANDONED,
+        /**
+         * Lost both compare-and-sets — a photo finish. The driver did see the
+         * operation, and it is done.
+         */
+        FINISHED
+    }
+
+    /**
+     * How many operations a caller that stopped waiting — its budget expired
+     * or it was interrupted — abandoned while they were executing and that
+     * have not returned yet. Non-zero means the driver is provably still
+     * inside a downcall nobody is waiting for any more — see
      * {@link #isQuiesced()}.
      */
     private static final AtomicInteger ABANDONED_IN_FLIGHT = new AtomicInteger();
@@ -180,8 +215,14 @@ final class AsioControlThread {
      * @param <T>       the operation's result type
      * @return the operation's result
      * @throws AudioBackendException if the budget elapsed first, or if an
-     *                               earlier operation that outlived its own
-     *                               budget is still executing in the driver
+     *                               earlier operation whose caller stopped
+     *                               waiting for it is still executing in the
+     *                               driver
+     * @throws InterruptedException  if the calling thread is interrupted while
+     *                               waiting. The operation's phase is settled
+     *                               exactly as on budget expiry, then the
+     *                               interrupt status is restored and the
+     *                               exception rethrown
      * @throws Throwable             whatever the operation itself threw
      */
     static <T> T call(Operation<T> operation) throws Throwable {
@@ -238,8 +279,9 @@ final class AsioControlThread {
      * {@code AsioControlThreadTest} exercise the timeout in milliseconds
      * instead of holding the build up for fifteen seconds.</p>
      *
-     * <p>A BOUNDED call is refused outright while an earlier operation that
-     * outlived its budget is still executing (see {@link #isQuiesced()}):
+     * <p>A BOUNDED call is refused outright while an earlier operation whose
+     * caller stopped waiting for it is still executing (see
+     * {@link #isQuiesced()}):
      * submitting it could only queue behind a call the host has already given
      * up on and burn its own full budget too. The unbounded path is exempt for
      * the same reason it is exempt from the budget — the modal panel is not a
@@ -257,6 +299,20 @@ final class AsioControlThread {
      * lives; the {@link ExecutionException} unwrap is shared by both so a
      * driver's own failure propagates identically either way.</p>
      *
+     * <p>Stopping the bounded wait — by budget or by interrupt — settles the
+     * operation's phase through the one shared
+     * {@link #settleAbandonedWait(Future, AtomicReference)}, so an interrupted
+     * caller can no more leave a live downcall uncounted than a timed-out one
+     * can. The story 316 review round that found this had the interrupt path
+     * skipping the handshake entirely: the caller re-asserted its interrupt
+     * and threw with the operation still QUEUED or RUNNING and nothing
+     * recorded, so {@link #isQuiesced()} answered {@code true} about a driver
+     * call the host had walked away from — the answer {@code AsioBackend}
+     * reads as permission to load a second driver or free the shim — and a
+     * queued operation ran later with nobody waiting for it. The
+     * {@link InterruptedException} itself still propagates, interrupt status
+     * restored; only the settlement is shared with the budget path.</p>
+     *
      * @param budget the wait budget, or {@code null} to wait indefinitely and
      *               uninterruptibly — reserved for
      *               {@link #callUnbounded(Operation)}
@@ -271,12 +327,13 @@ final class AsioControlThread {
         AtomicReference<Phase> phase = new AtomicReference<>(Phase.QUEUED);
         Future<T> pending = EXECUTOR.submit(() -> {
             if (!phase.compareAndSet(Phase.QUEUED, Phase.RUNNING)) {
-                // A caller whose budget expired won the handshake first and has
-                // already reported that the driver never saw this operation.
-                // Running it now would make that report a lie, so it is dropped
-                // instead. Nothing waits on this future — the caller is long
-                // gone — but the failure is wrapped like any other so the
-                // unwrap path stays honest.
+                // A caller that stopped waiting — its budget expired or it was
+                // interrupted — won the handshake first and walked away on the
+                // fact that the driver never saw this operation (the budget
+                // path says so in its message). Running it now would make that
+                // fact a lie, so it is dropped instead. Nothing waits on this
+                // future — the caller is long gone — but the failure is wrapped
+                // like any other so the unwrap path stays honest.
                 throw new OperationFailure(new AudioBackendException(
                         "ASIO driver operation was withdrawn before it started and"
                                 + " was never sent to the driver."));
@@ -299,10 +356,15 @@ final class AsioControlThread {
         try {
             return pending.get(budget.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
+            // Same handshake as the budget path, through the same method: an
+            // interrupted caller has stopped waiting exactly as a timed-out one
+            // has, and a live downcall must be counted before this caller is
+            // gone. The interrupt itself is restored and rethrown unchanged.
+            settleAbandonedWait(pending, phase);
             Thread.currentThread().interrupt();
             throw interrupted;
         } catch (TimeoutException timedOut) {
-            throw budgetExhausted(pending, phase, budget, timedOut);
+            throw budgetExhausted(settleAbandonedWait(pending, phase), budget, timedOut);
         } catch (ExecutionException execution) {
             throw unwrapOperationFailure(execution);
         }
@@ -373,8 +435,12 @@ final class AsioControlThread {
     }
 
     /**
-     * Builds the timeout failure and settles, provably, whether the driver ever
-     * saw the operation.
+     * Settles, provably, whether the driver ever saw an operation whose caller
+     * has stopped waiting for it. Both ways of stopping — the budget expiring
+     * and the caller being interrupted — come through here and nowhere else,
+     * so they cannot drift apart about what the driver still has: the two are
+     * allowed to differ about what the caller is then thrown, never about
+     * whether a live downcall is counted.
      *
      * <p>{@code Future.cancel(false)} cannot settle that.
      * {@link java.util.concurrent.FutureTask#run()} leaves the task in state
@@ -384,7 +450,7 @@ final class AsioControlThread {
      * {@code true} while the callable is executing. It marks the future
      * cancelled; it does not stop the running native call. Reading that
      * {@code true} as proof of withdrawal reported "the driver never saw it"
-     * in precisely the wedge case this message exists to describe.</p>
+     * in precisely the wedge case the timeout message exists to describe.</p>
      *
      * <p>The {@code Phase} handshake decides instead. {@code QUEUED ->
      * WITHDRAWN} can only succeed while the task has not yet run its own
@@ -395,30 +461,48 @@ final class AsioControlThread {
      * call and the host cannot take it back, so the operation is counted as
      * outstanding until it returns and later bounded calls fail fast rather
      * than queue behind it; see {@link #isQuiesced()}. Losing both
-     * compare-and-sets means the operation FINISHED as the budget expired — a
-     * photo finish, not a wedge — and the message says so instead of
-     * guessing.</p>
+     * compare-and-sets means the operation FINISHED as its caller stopped
+     * waiting — a photo finish, not a wedge — so nothing is counted, and the
+     * timeout message says so instead of guessing.</p>
+     *
+     * @return how the operation was left; {@link Settlement#ABANDONED} is the
+     *         only outcome that touches {@link #ABANDONED_IN_FLIGHT}, i.e. the
+     *         only one that can turn {@link #isQuiesced()} {@code false}
      */
-    private static AudioBackendException budgetExhausted(Future<?> pending,
-                                                        AtomicReference<Phase> phase,
-                                                        Duration budget,
-                                                        TimeoutException timedOut) {
-        String disposition;
+    private static Settlement settleAbandonedWait(Future<?> pending,
+                                                  AtomicReference<Phase> phase) {
         if (phase.compareAndSet(Phase.QUEUED, Phase.WITHDRAWN)) {
             pending.cancel(false);
-            disposition = "it was still queued and has been withdrawn, so the driver"
-                    + " never saw it";
-        } else if (abandonWhileRunning(phase)) {
+            return Settlement.WITHDRAWN;
+        }
+        if (abandonWhileRunning(phase)) {
             // Deliberately NOT cancelled: cancel(false) would answer true for a
             // callable that is inside the driver without stopping the native
             // call, and that misleading true is the defect this branch fixes.
-            disposition = "it is already executing inside the driver and may still"
+            return Settlement.ABANDONED;
+        }
+        return Settlement.FINISHED;
+    }
+
+    /**
+     * Builds the timeout failure. The disposition it reports is the
+     * {@link Settlement} the shared handshake already decided — this method
+     * only puts it into words — and the message names the modal control panel
+     * when that is what owns the thread, so the failure blames the right
+     * thing.
+     */
+    private static AudioBackendException budgetExhausted(Settlement settlement,
+                                                        Duration budget,
+                                                        TimeoutException timedOut) {
+        String disposition = switch (settlement) {
+            case WITHDRAWN -> "it was still queued and has been withdrawn, so the driver"
+                    + " never saw it";
+            case ABANDONED -> "it is already executing inside the driver and may still"
                     + " complete after this failure — the driver, not the host, is"
                     + " unresponsive. Bounded operations fail fast until it returns";
-        } else {
-            disposition = "it finished on the control thread just as the budget"
+            case FINISHED -> "it finished on the control thread just as the budget"
                     + " expired, so the driver did see it";
-        }
+        };
         String panel = controlPanelOpen
                 ? " The driver's modal control panel currently owns the asio-control"
                         + " thread, which is the expected cause: the driver is unavailable"
@@ -462,15 +546,15 @@ final class AsioControlThread {
     private static AudioBackendException driverStillExecuting() {
         return new AudioBackendException(
                 "ASIO operation refused: the asio-control thread is still executing a"
-                        + " driver call that outlived its budget. The driver, not the"
-                        + " host, is unresponsive, and it may still hold the device."
+                        + " driver call its caller stopped waiting for. The driver, not"
+                        + " the host, is unresponsive, and it may still hold the device."
                         + " Operations resume as soon as that call returns.");
     }
 
     /**
      * Whether the control thread is free of operations the host has given up
-     * on — i.e. whether no ASIO downcall that outlived its caller's budget is
-     * still executing inside the driver.
+     * on — i.e. whether no ASIO downcall whose caller stopped waiting for it,
+     * by budget or by interrupt, is still executing inside the driver.
      *
      * <p>{@code true} does not mean idle. A healthy call within its budget
      * leaves this {@code true}, and so does the modal control panel: a user

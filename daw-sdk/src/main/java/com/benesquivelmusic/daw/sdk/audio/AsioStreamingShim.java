@@ -399,7 +399,8 @@ class AsioStreamingShim implements AutoCloseable {
      *         already closed, so the call is not made at all — the same answer
      *         {@code invokeStatus} gives for a closed shim;
      *         {@link AsioControlThread} refuses it on arrival because an
-     *         earlier downcall outlived its budget and is still executing;
+     *         earlier downcall its caller stopped waiting for — by budget or
+     *         by interrupt — is still executing;
      *         this call's own budget expires, leaving it withdrawn before it
      *         ran or abandoned after it started; the calling thread is
      *         interrupted, which {@code AsioControlThread.call} re-interrupts

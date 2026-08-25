@@ -498,3 +498,4 @@ Operationalises [`INTERACTION_COMPLETENESS_DESIGN_BOOK.md`](../design/INTERACTIO
 | 224 | [Build and Bundle the asioshim.dll Native Library with the Distribution](224-build-and-bundle-asioshim-native-library.md) | 🟠 High | FFM |
 | 256 | [Build asioshim.dll in CI and Bundle it into the Windows Distribution](256-bundle-asioshim-dll-into-windows-distribution.md) | 🟠 High | FFM |
 | 348 | [PortAudio Never Loads on Windows: DLL Name Mismatch and NativeLibraryLoader Adoption](348-portaudio-dll-name-mismatch-and-loader-adoption.md) | 🟠 High | FFM |
+| 349 | [PortAudio Rung Lifecycle Ownership and Bounded Control Thread](349-portaudio-rung-lifecycle-ownership-and-bounded-control-thread.md) | 🟠 High | FFM |
