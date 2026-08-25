@@ -53,6 +53,25 @@ public final class JavaxSoundBackend implements AudioBackend {
     private TargetDataLine inputLine;
     private Thread captureThread;
 
+    /**
+     * Capture channels the currently open stream really has, or {@code 0} when
+     * this open produced none (story 316 review). Read through
+     * {@link #openedInputChannels()}.
+     *
+     * <p>Set only after the {@link TargetDataLine} both OPENED and STARTED and
+     * the capture thread was running &mdash; anything short of that publishes
+     * no block, and a count that outran the publisher would be the silent take
+     * this field exists to make visible. Cleared in
+     * {@link #releaseInputLine()}, which is the one place the capture line ever
+     * goes away: the {@link #close()} path, the capture rollback, and the
+     * retained-line guard at the top of {@code open} all reach it.</p>
+     *
+     * <p>Volatile because the engine reads it on its lifecycle thread
+     * immediately after {@code open} returns, while the capture thread this
+     * open started is already running.</p>
+     */
+    private volatile int openedInputChannels;
+
     /** Creates a new Java Sound backend. */
     public JavaxSoundBackend() {
     }
@@ -145,18 +164,59 @@ public final class JavaxSoundBackend implements AudioBackend {
     /**
      * {@inheritDoc}
      *
+     * <p>Equivalent to
+     * {@link #open(DeviceId, AudioFormat, int, CaptureRequirement)} with
+     * {@link CaptureRequirement#OPTIONAL} — the PLAYBACK contract, and the
+     * behaviour this backend has always had. That overload carries the whole
+     * body and the whole rationale; read it there.</p>
+     */
+    @Override
+    public void open(DeviceId device, AudioFormat format, int bufferFrames) {
+        open(device, format, bufferFrames, CaptureRequirement.OPTIONAL);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
      * <p>The OUTPUT line is mandatory: when it cannot be opened the open is
      * rolled back and an {@link AudioBackendException} propagates — the
      * engine's fallback ladder must see this rung <em>fail</em>, never
-     * "succeed" into a silent no-output stream (story 316, honest promises).
-     * The INPUT line remains optional-degrade: a capture line that cannot be
-     * opened only disables capture; playback proceeds.</p>
+     * "succeed" into a silent no-output stream (story 316, honest promises).</p>
+     *
+     * <p>The INPUT line is where {@code capture} decides the outcome, and the
+     * boundary is exact (story 316 review). A capture line that cannot be
+     * opened never kills a PLAYBACK open ({@link CaptureRequirement#OPTIONAL}):
+     * capture is simply disabled and playback proceeds, because a machine whose
+     * microphone is busy must still be able to hear the session. The same
+     * failure FAILS a {@link CaptureRequirement#REQUIRED} open, because a
+     * RECORDING open that degrades to output-only is a silent take: it returns
+     * successfully, the recording pipeline subscribes to
+     * {@link #inputBlocks()}, that publisher never emits, and the take is saved
+     * empty with nothing anywhere reporting a failure. The capture line's own
+     * failure becomes the cause, so the operator reads the real
+     * {@code LineUnavailableException} rather than a generic refusal.</p>
+     *
+     * <p>A REQUIRED refusal deliberately does NOT release the output line it
+     * had already opened. Rolling that line back here would duplicate — and
+     * race — the engine's own ladder walk, which closes a rung whose
+     * {@code open} threw and reads the verdict of that close before advancing;
+     * the SDK contract for {@code open} promises no rollback for exactly this
+     * reason. {@link #releaseLines(String)} already handles the state the
+     * refusal leaves behind (output line open, capture line already rolled
+     * back): it attempts BOTH directions unconditionally and a {@code null}
+     * field is a no-op, so the engine's {@code close()} — or the retained-line
+     * guard at the top of the next open — releases it. What the refusal DOES
+     * clear is the open FLAG, through {@code support.markClosed()} inside the
+     * rollback, so {@link #isOpen()} never latches {@code true} behind an
+     * escaped failure. That is the same "not open, not resumable, not yet
+     * released" shape {@link #rollBackFailedOutputOpen(Exception)} and
+     * {@link #close()} both document.</p>
      *
      * <p>BOTH rollbacks hand the partially opened line back through the SAME
      * retain-on-failure release the {@link #close()} path uses —
      * {@link #rollBackFailedOutputOpen(Exception)} calls
      * {@link #releaseOutputLine()} and
-     * {@link #rollBackFailedCaptureOpen(Exception)} calls
+     * {@link #rollBackFailedCaptureOpen(Exception, CaptureRequirement)} calls
      * {@link #releaseInputLine()} — so a line whose {@link Line#close()}
      * throws STAYS in its field rather than being cleared ahead of a
      * best-effort close nobody checks. Clearing first would drop the only
@@ -168,10 +228,14 @@ public final class JavaxSoundBackend implements AudioBackend {
      * the mandatory OUTPUT path it rides as a suppressed exception on the
      * thrown {@link AudioBackendException} — whose cause stays the OPEN
      * failure, the actionable one — and is logged at {@link Level#WARNING}.
-     * On the optional CAPTURE path it is logged and the open still SUCCEEDS:
+     * On the OPTIONAL capture path it is logged and the open still SUCCEEDS:
      * throwing there would kill an open whose mandatory output line had
      * already succeeded. Retention is what lets a later {@link #close()}
-     * confirm that capture line's release.</p>
+     * confirm that capture line's release. On the REQUIRED capture path the
+     * open is failing anyway, so the release failure rides along as a
+     * suppressed exception exactly as it does on the output path — and for the
+     * same reason: the OPEN failure is the actionable one and must stay the
+     * cause.</p>
      *
      * <p>Both lines are opened with two hardware blocks of buffer
      * ({@code bufferFrames * bytesPerFrame * 2}): {@link #awaitSinkCapacity}
@@ -193,16 +257,21 @@ public final class JavaxSoundBackend implements AudioBackend {
      *
      * @throws AudioBackendException if a line retained by a failed
      *                               {@link #close()} still cannot be released,
-     *                               or if the output line cannot be opened —
-     *                               in the latter case a release failure from
-     *                               the rollback itself rides along as a
+     *                               if the output line cannot be opened, or if
+     *                               {@code capture} is
+     *                               {@link CaptureRequirement#REQUIRED} and the
+     *                               capture line could not be opened — in each
+     *                               of the latter two cases a release failure
+     *                               from the rollback itself rides along as a
      *                               suppressed exception, and the line it
      *                               could not release is retained
      */
     @Override
-    public void open(DeviceId device, AudioFormat format, int bufferFrames) {
+    public void open(DeviceId device, AudioFormat format, int bufferFrames,
+                     CaptureRequirement capture) {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
+        Objects.requireNonNull(capture, "capture must not be null");
         AudioBackendException retained = releaseLines("refusing to open over it");
         if (retained != null) {
             throw retained;
@@ -246,8 +315,14 @@ public final class JavaxSoundBackend implements AudioBackend {
             this.inputLine.open(jFormat, lineBufferBytes);
             this.inputLine.start();
             startCapture(format, bufferFrames);
+            // Published only once the line is open, started AND the capture
+            // thread is feeding support.publishInput: openedInputChannels() is
+            // a promise about inputBlocks(), so it may never outrun the thing
+            // that does the publishing.
+            this.openedInputChannels = format.channels();
         } catch (LineUnavailableException | RuntimeException e) {
-            // Optional capture: input failure never kills playback — but the
+            // Optional capture: an input failure never kills a PLAYBACK open
+            // (see the REQUIRED case at the end of this comment) — but the
             // partially opened line must still be given back. Java Sound is
             // the ladder's MANDATORY FINAL RUNG (story 316 review): a line
             // leaked on every retry walks the mixer's finite line budget down
@@ -266,7 +341,18 @@ public final class JavaxSoundBackend implements AudioBackend {
             // IllegalArgumentException is a RuntimeException so it is covered
             // rather than listed (javac rejects multicatch alternatives
             // related by subclassing); Error still propagates untouched.
-            rollBackFailedCaptureOpen(e);
+            //
+            // ...unless this is a RECORDING open (story 316 review). Under
+            // CaptureRequirement.REQUIRED the degradation IS the failure: an
+            // open that returns here with no capture line leaves the recording
+            // pipeline subscribed to a publisher that never emits, and the take
+            // is saved silent. The rollback returns the exception to throw in
+            // that case and null in the OPTIONAL case, so the two contracts
+            // share one body and cannot drift apart.
+            AudioBackendException refusal = rollBackFailedCaptureOpen(e, capture);
+            if (refusal != null) {
+                throw refusal;
+            }
         }
     }
 
@@ -326,33 +412,74 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     /**
      * Rolls a failed CAPTURE-line open back, RETAINING a line it could not
-     * release — and deliberately does NOT throw.
+     * release, and REPORTS whether {@code capture} makes that failure fatal to
+     * the open (story 316 review).
      *
      * <p>Same retain-on-failure release as
      * {@link #rollBackFailedOutputOpen(Exception)}:
      * {@link #releaseInputLine()} stops the line, closes it regardless of how
      * the stop went, and leaves it in {@code inputLine} when the close throws,
      * so a later {@link #close()} reaches the same handle and can confirm the
-     * release.</p>
+     * release. That half is identical for both requirements, which is why they
+     * share this one body instead of two that could drift apart.</p>
      *
-     * <p>Only the REPORTING differs, because the direction does. Capture is
-     * optional-degrade: an exception escaping here would kill an open whose
-     * MANDATORY output line had ALREADY succeeded, and the engine — reading
-     * the whole rung as failed — would open a second backend in parallel
-     * against that still-live output line, two streams on one device. So both
-     * facts are logged, each as its own {@link Level#WARNING}: the open
-     * failure that disabled capture, then, separately, the release failure
-     * that left a handle held.</p>
+     * <p>Only the VERDICT differs. Under {@link CaptureRequirement#OPTIONAL}
+     * this returns {@code null} and the open stands, because capture is
+     * optional-degrade for playback: an exception escaping here would kill an
+     * open whose MANDATORY output line had ALREADY succeeded, and the engine —
+     * reading the whole rung as failed — would open a second backend in
+     * parallel against that still-live output line, two streams on one device.
+     * Both facts are logged, each as its own {@link Level#WARNING}: the open
+     * failure that disabled capture, then, separately, the release failure that
+     * left a handle held.</p>
+     *
+     * <p>Under {@link CaptureRequirement#REQUIRED} it returns the exception the
+     * caller must throw. {@code openFailure} — the capture line's own
+     * {@link javax.sound.sampled.LineUnavailableException}, or whatever runtime
+     * failure the capture setup raised — becomes its CAUSE, so the operator
+     * reads the real reason the device refused rather than a generic refusal.
+     * A release failure from the rollback rides along as a suppressed exception
+     * and is still logged, exactly as on the output path: the OPEN failure is
+     * the actionable one and must stay the cause.</p>
+     *
+     * <p>{@code support.markClosed()} runs on the REQUIRED path only, and only
+     * on the FLAG. The output line is left open on purpose — see
+     * {@link #open(DeviceId, AudioFormat, int, CaptureRequirement)} for why the
+     * engine's ladder walk, not this method, is what releases it — but
+     * {@link #isOpen()} must not latch {@code true} behind a failure that
+     * escapes, or the next attempt on this rung would die on
+     * {@code markOpen}'s "already has an open stream" instead of on the real
+     * device problem. On the OPTIONAL path the flag is deliberately left ALONE:
+     * that open is still standing.</p>
      *
      * <p>Package-private for the same testing reason as
      * {@link #rollBackFailedOutputOpen(Exception)}.</p>
      *
      * @param openFailure why the capture line could not be opened
+     * @param capture     the requirement the open was made under; must not be
+     *                    null
+     * @return {@code null} when the open may stand
+     *         ({@link CaptureRequirement#OPTIONAL}); otherwise the
+     *         {@link AudioBackendException} the caller must throw
      */
-    void rollBackFailedCaptureOpen(Exception openFailure) {
+    AudioBackendException rollBackFailedCaptureOpen(Exception openFailure,
+                                                    CaptureRequirement capture) {
+        Objects.requireNonNull(capture, "capture must not be null");
+        boolean required = capture == CaptureRequirement.REQUIRED;
         LOG.log(Level.WARNING,
-                "Java Sound capture line unavailable; playback continues without input",
+                required
+                        ? "Java Sound capture line unavailable and this open REQUIRES"
+                                + " capture; failing the open rather than recording a"
+                                + " silent take"
+                        : "Java Sound capture line unavailable; playback continues"
+                                + " without input",
                 openFailure);
+        if (required) {
+            // The flag only — the output line stays open for the caller's
+            // close() to release. A refused open must never leave isOpen()
+            // reporting true.
+            support.markClosed();
+        }
         RuntimeException releaseFailure = releaseInputLine();
         if (releaseFailure != null) {
             LOG.log(Level.WARNING,
@@ -361,6 +488,17 @@ public final class JavaxSoundBackend implements AudioBackend {
                             + " close() retries the release",
                     releaseFailure);
         }
+        if (!required) {
+            return null;
+        }
+        AudioBackendException refusal = new AudioBackendException(
+                "Java Sound capture line unavailable, and this open requires capture: "
+                        + openFailure.getMessage(),
+                openFailure);
+        if (releaseFailure != null) {
+            refusal.addSuppressed(releaseFailure);
+        }
+        return refusal;
     }
 
     private void startCapture(AudioFormat format, int bufferFrames) {
@@ -396,6 +534,23 @@ public final class JavaxSoundBackend implements AudioBackend {
     @Override
     public Flow.Publisher<AudioBlock> inputBlocks() {
         return support.inputBlocks();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The opened format's channel count once the {@link TargetDataLine} has
+     * been opened, started, and handed to the {@code javax-sound-capture}
+     * thread that feeds {@link #inputBlocks()} — the line is opened with that
+     * same {@code javax.sound.sampled.AudioFormat}, so the count the mixer gave
+     * is the count this backend asked for or the open would have thrown.
+     * {@code 0} on every other path: no stream open, a capture line the mixer
+     * refused (the optional-degrade case that leaves playback running), or a
+     * stream whose lines have since been released.</p>
+     */
+    @Override
+    public int openedInputChannels() {
+        return openedInputChannels;
     }
 
     @Override
@@ -575,6 +730,12 @@ public final class JavaxSoundBackend implements AudioBackend {
      *         (or there was none)
      */
     private RuntimeException releaseInputLine() {
+        // Cleared FIRST, and unconditionally: this is the one place the capture
+        // line ever goes away, so clearing here covers close(), the capture
+        // rollback and the retained-line guard at the top of open() in a single
+        // statement. A count that outlived its line would be the silent take
+        // openedInputChannels() exists to make visible (story 316 review).
+        this.openedInputChannels = 0;
         TargetDataLine line = this.inputLine;
         if (line == null) {
             return null;

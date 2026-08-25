@@ -548,6 +548,18 @@ class AudioEngineLockedOutwardCallTest {
             return delegate.isOpen();
         }
 
+        /**
+         * Story 316 review: capture truth comes from the delegate, which is
+         * a full-duplex headless stand-in. Without this override the
+         * interface default ({@code 0}) would make every record-path test
+         * here fail the engine's REQUIRED-open verification, which is not
+         * what any of them is about.
+         */
+        @Override
+        public int openedInputChannels() {
+            return delegate.openedInputChannels();
+        }
+
         @Override
         public void close() {
             closeAttempts.incrementAndGet();

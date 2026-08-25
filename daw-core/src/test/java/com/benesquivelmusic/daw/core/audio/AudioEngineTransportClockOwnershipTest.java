@@ -118,13 +118,41 @@ class AudioEngineTransportClockOwnershipTest {
     }
 
     @Test
-    void startingInputOutputWithNoProvisionLeavesTheTransportsClockUnclaimed() {
+    void startingInputOutputWithNoProvisionThrowsAndLeavesTheTransportsClockUnclaimed() {
+        // Story 316 review: the record path used to return normally here, so
+        // this test only had to prove the claim was never taken. It now
+        // THROWS — with no provision the engine has no capture device at all
+        // — and the claim must still be untaken AFTER that throw. The
+        // ordering matters: a refusal that had already claimed the clock
+        // would leave the transport driven by a stream that does not exist,
+        // and every later seek queued behind an owner that never advances.
         AudioEngine engine = new AudioEngine(FORMAT);
         Transport transport = new Transport();
         engine.setGraph(transport, null, null);
 
-        engine.startAudioInputOutput();
+        assertThatThrownBy(engine::startAudioInputOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no audio backend is configured");
 
+        assertThat(transport.isRealTimeClockActive())
+                .as("the refused record open must not leave the RT clock claimed")
+                .isFalse();
+    }
+
+    @Test
+    void startingOutputWithNoProvisionStillSucceedsWithTheClockUnclaimed() {
+        // The DISCRIMINATING sibling of the test above (story 316 review):
+        // refusing a capture-less RECORD open must not have made PLAYBACK
+        // stricter. Playback without hardware output is legitimate, so this
+        // returns normally, and the claim is untaken for the original reason
+        // — no stream drives the transport.
+        AudioEngine engine = new AudioEngine(FORMAT);
+        Transport transport = new Transport();
+        engine.setGraph(transport, null, null);
+
+        engine.startAudioOutput();
+
+        assertThat(engine.isStreamOpen()).isFalse();
         assertThat(transport.isRealTimeClockActive()).isFalse();
     }
 
@@ -1062,6 +1090,18 @@ class AudioEngineTransportClockOwnershipTest {
         @Override
         public boolean isOpen() {
             return delegate.isOpen();
+        }
+
+        /**
+         * Story 316 review: capture truth comes from the delegate, which is
+         * a full-duplex headless stand-in. Without this override the
+         * interface default ({@code 0}) would make every record-path test
+         * here fail the engine's REQUIRED-open verification, which is not
+         * what any of them is about.
+         */
+        @Override
+        public int openedInputChannels() {
+            return delegate.openedInputChannels();
         }
 
         @Override

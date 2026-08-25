@@ -168,6 +168,24 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     private final AudioBlockRing outputRing;
     private final Thread drainThread;
 
+    /**
+     * How many input channels the driver actually handed usable buffers for
+     * (story 316 review) — counted once, from the descriptors
+     * {@code ASIOCreateBuffers} really produced, rather than from the count the
+     * host asked for.
+     *
+     * <p>A channel counts only when {@link #bindDriverBuffers} bound a
+     * converter to it, which is precisely the condition
+     * {@link #copyInputChannel} uses to decide between decoding the driver's
+     * buffer and writing silence. Anything else — a channel outside the opened
+     * format, a descriptor whose {@code buffers[0]}/{@code buffers[1]} came
+     * back {@link MemorySegment#NULL}, an address the FFM boundary refused to
+     * reinterpret — captures silence, and counting it would be exactly the
+     * false promise {@link AsioBackend#openedInputChannels()} exists to
+     * prevent.</p>
+     */
+    private final int boundInputChannels;
+
     private final Arena arena;
     private final MemorySegment upcallStub;
 
@@ -256,6 +274,7 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         // upcall arena nor the drain thread, and AsioBackend#open's
         // catch (RuntimeException | Error) rolls back with bridge == null.
         bindDriverBuffers(bufferInfos);
+        this.boundInputChannels = countBoundChannels(inputTypes);
 
         int samplesPerBlock = channels * bufferFrames;
         this.inputScratch = new float[samplesPerBlock];
@@ -341,6 +360,27 @@ final class AsioBufferSwitchShim implements AutoCloseable {
             }
         }
         rejectUnsupportedSampleTypes(unsupported.toString());
+    }
+
+    /**
+     * Counts the channels {@link #bindDriverBuffers} bound a converter to.
+     *
+     * <p>A {@code null} entry is a channel the driver exposed no usable buffer
+     * for; {@link #copyInputChannel} writes silence for it and
+     * {@link #copyOutputChannel} skips it entirely, so it is not a channel by
+     * any measure the engine cares about.</p>
+     *
+     * @param types the per-channel converter table; must not be null
+     * @return how many entries are non-null
+     */
+    private static int countBoundChannels(AsioSampleType[] types) {
+        int bound = 0;
+        for (AsioSampleType type : types) {
+            if (type != null) {
+                bound++;
+            }
+        }
+        return bound;
     }
 
     /**
@@ -669,6 +709,24 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      */
     long renderedBlocksConsumed() {
         return renderedBlocksConsumed;
+    }
+
+    /**
+     * How many input channels this bridge will really publish audio for
+     * (story 316 review) — the honest answer behind
+     * {@link AsioBackend#openedInputChannels()}.
+     *
+     * <p>Zero once {@link #stopStreaming()} has quiesced the bridge, because a
+     * quiesced bridge publishes nothing whatever its buffers say: that is the
+     * state a {@code kAsioResetRequest} teardown leaves behind, and the
+     * story-218 contract is that the consumer must {@code close()} and reopen.
+     * Reporting the old count there would promise capture from a bridge that
+     * has stopped reading the driver's buffers.</p>
+     *
+     * @return bound input channels while streaming, {@code 0} once quiesced
+     */
+    int boundInputChannels() {
+        return streaming ? boundInputChannels : 0;
     }
 
     /**

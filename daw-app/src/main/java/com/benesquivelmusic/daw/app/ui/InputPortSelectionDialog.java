@@ -19,9 +19,10 @@ import java.util.ResourceBundle;
  * configuring an audio track.
  *
  * <p>Lists all available audio input devices obtained from the audio
- * backend, showing device name, host API, channel count, sample rate,
- * and input latency. The user selects a device and confirms with OK,
- * or cancels to abort.</p>
+ * backend, showing the host-API-qualified device name
+ * ({@link AudioDeviceInfo#qualifiedName()}, story 316 review), channel count,
+ * sample rate, and input latency. The user selects a device and confirms with
+ * OK, or cancels to abort.</p>
  */
 @com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
         "migrate to DawgDialog — story 276 follow-up")
@@ -163,6 +164,31 @@ public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
 
     /**
      * Custom list cell that displays audio device details.
+     *
+     * <p>The identity column is {@link AudioDeviceInfo#qualifiedName()} (story
+     * 316 review), which folds the former separate {@code name — hostApi} pair
+     * into the one canonical selection label every other surface in the review
+     * now uses. Two effects, both small and both real:</p>
+     * <ul>
+     *   <li>A device with no host API renders as its bare name instead of
+     *       {@code "Some Mic — null"}. {@code hostApi} is not validated
+     *       non-null by the {@link AudioDeviceInfo} record, and the old
+     *       {@code %s} formatted a null straight into the row;
+     *       {@code qualifiedName()} collapses null-or-blank to the bare
+     *       name.</li>
+     *   <li>The label a user reads here is character-for-character the label
+     *       the Audio Settings device menus offer for the same endpoint, so
+     *       the two surfaces cannot describe one device two ways.</li>
+     * </ul>
+     *
+     * <p>Note what this is NOT fixing, because the surrounding review finding
+     * is phrased for surfaces that persist a name: these rows were already
+     * distinguishable when two endpoints share a name, since the host API had
+     * its own column. And this dialog persists {@code device.index()} through
+     * {@code Track.setInputDeviceIndex}, never a name, so no selection here can
+     * be silently substituted for another endpoint. The change is display-only
+     * on purpose; the selection and persistence behaviour belongs to stories
+     * 092 / 215 / 326 (see {@code TrackStripController}).</p>
      */
     private static final class AudioDeviceCell extends ListCell<AudioDeviceInfo> {
         @Override
@@ -172,9 +198,8 @@ public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
                 setText(null);
                 setGraphic(null);
             } else {
-                String text = String.format(Locale.ROOT, "%s — %s | %s | %s | %s",
-                        device.name(),
-                        device.hostApi(),
+                String text = String.format(Locale.ROOT, "%s | %s | %s | %s",
+                        device.qualifiedName(),
                         channelSummary(device),
                         sampleRateSummary(device),
                         inputLatencySummary(device));

@@ -44,6 +44,73 @@ class PortAudioBindingsTest {
     }
 
     /**
+     * Story 316 review — every member offset of {@code PaHostApiInfo}, against
+     * the vendored {@code lib/portaudio/include/portaudio.h}.
+     *
+     * <p>Asserted member by member rather than by {@code byteSize()} alone
+     * because a struct can be the right total size and still be read wrong:
+     * {@code getHostApiName} dereferences the {@code name} member as a
+     * POINTER, so an offset that is off by four reads half a pointer and half
+     * of {@code type}, then hands the result to {@code reinterpret} — a silent
+     * native-memory misread, which is exactly why the neighbouring layouts
+     * spell their padding out instead of trusting
+     * {@link MemoryLayout#structLayout(MemoryLayout...)} to insert it.</p>
+     *
+     * <p>Pure Java: it reads a constant and touches no native memory, so it
+     * says the same thing on every host, installed PortAudio or not — which
+     * matters because no CI workflow in this repository installs one.</p>
+     */
+    @Test
+    void shouldDefineHostApiInfoLayoutMemberByMember() {
+        MemoryLayout layout = PortAudioBindings.PA_HOST_API_INFO_LAYOUT;
+        assertThat(layout).isNotNull();
+        assertThat(offsetOf(layout, "structVersion")).as("structVersion").isZero();
+        assertThat(offsetOf(layout, "type"))
+                .as("PaHostApiTypeId is a plain C enum, passed as int")
+                .isEqualTo(4L);
+        assertThat(offsetOf(layout, "name"))
+                .as("two ints precede the const char*, so on a 64-bit data model it "
+                        + "lands on 8 with no padding before it")
+                .isEqualTo(8L);
+        assertThat(offsetOf(layout, "deviceCount")).as("deviceCount").isEqualTo(16L);
+        assertThat(offsetOf(layout, "defaultInputDevice"))
+                .as("PaDeviceIndex is a typedef of int")
+                .isEqualTo(20L);
+        assertThat(offsetOf(layout, "defaultOutputDevice"))
+                .as("PaDeviceIndex is a typedef of int")
+                .isEqualTo(24L);
+        assertThat(layout.byteSize())
+                .as("three trailing ints end the struct on 28, and a C compiler rounds it "
+                        + "up to a multiple of the pointer alignment — four explicit bytes "
+                        + "of padding, because structLayout adds none of its own")
+                .isEqualTo(32L);
+    }
+
+    /**
+     * {@code Pa_GetHostApiInfo} is the one symbol bound tolerantly, so
+     * {@code getHostApiName} must answer without throwing whether or not the
+     * loaded library exports it — and whether or not a library was loaded at
+     * all.
+     *
+     * <p>Whether the library is present is a property of the host, not of this
+     * code, so a test that demanded either answer would be a test that fails
+     * somewhere. What IS asserted is the contract every caller depends on — a
+     * name or {@code null}, never an exception — for a host API index that no
+     * PortAudio build will describe, which is the degraded path on a host that
+     * HAS the library as much as on one that does not.</p>
+     */
+    @Test
+    void hostApiNameShouldDegradeToNullRatherThanThrowOnAnyHost() {
+        PortAudioBindings bindings = new PortAudioBindings();
+
+        assertThat(bindings.getHostApiName(Integer.MAX_VALUE))
+                .as("Pa_GetHostApiInfo answers NULL for an out-of-range index, and an "
+                        + "unbound symbol degrades to the same NULL, so both paths land "
+                        + "on null rather than on an exception")
+                .isNull();
+    }
+
+    /**
      * Story 316 re-review — {@code PaStreamParameters} must describe the same
      * struct on both data models.
      *

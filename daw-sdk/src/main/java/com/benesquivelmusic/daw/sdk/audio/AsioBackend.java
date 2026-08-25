@@ -507,6 +507,17 @@ public final class AsioBackend implements AudioBackend {
      * is the common case this method was written to support in the first
      * place. Refusing it would break the very devices the clamp exists for.</p>
      *
+     * <p><strong>Do not "fix" that asymmetry</strong> (story 316 review). The
+     * RECORDING path's zero-input refusal is real, but it lives at the CALLER:
+     * the engine opens with {@link CaptureRequirement#REQUIRED}, reads
+     * {@link #openedInputChannels()} afterwards, and turns a zero into an
+     * ordinary failed ladder hop. Adding a guard here instead would refuse a
+     * playback-only interface for every open, recording or not — which is the
+     * regression the paragraph above exists to prevent — and it would refuse it
+     * on the wrong evidence anyway: {@code ASIOGetChannels} reports what the
+     * driver HAS, while {@link #openedInputChannels()} reports what
+     * {@code ASIOCreateBuffers} actually handed back.</p>
+     *
      * <p>When no count is available — no capability shim, or
      * {@code ASIOGetChannels} failed — the request keeps the previous
      * behaviour, and the zero-output guard cannot fire: {@code outputs} is
@@ -1227,6 +1238,45 @@ public final class AsioBackend implements AudioBackend {
         // field concurrently with this query (house rule).
         AsioBufferSwitchShim bridge = bufferSwitchShim;
         return bridge == null ? 0L : bridge.renderedBlocksConsumed();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The number of input channels {@code ASIOCreateBuffers} really handed
+     * back — <em>not</em> the number
+     * {@link #negotiateChannelCounts(int, String)} asked for. The two differ
+     * whenever a driver accepts the call but exposes no usable buffer for a
+     * channel, and it is the buffers, not the request, that decide whether
+     * {@link #inputBlocks()} carries audio or silence: the bridge binds a
+     * converter only to a channel with both halves mapped, and a channel
+     * without one is memset to zero on every callback. Counting the request
+     * would promise capture that the very next {@code bufferSwitch} would
+     * contradict.</p>
+     *
+     * <p>{@code 0} when the backend is closed, when the native streaming shim
+     * was unavailable so no bridge was ever installed (every non-Windows host,
+     * and every Windows build made without the Steinberg SDK — those opens
+     * stream no audio at all), and once a {@code kAsioResetRequest} teardown
+     * has quiesced the bridge. Nothing resets it explicitly on close: the count
+     * lives on the bridge, and {@link #close()} and
+     * {@link #rollbackOpen(AsioDriverShim, AsioStreamingShim,
+     * AsioBufferSwitchShim, AsioFormatChangeShim, boolean)} both null
+     * {@code bufferSwitchShim}, which is the same single place every other
+     * stream-scoped fact here is dropped.</p>
+     *
+     * <p>This is what the engine verifies after a
+     * {@link CaptureRequirement#REQUIRED} open, and it is where the recording
+     * path's zero-input refusal comes from — deliberately here rather than as a
+     * guard inside {@link #negotiateChannelCounts(int, String)}, which must
+     * keep opening playback-only interfaces. See that method for why.</p>
+     */
+    @Override
+    public int openedInputChannels() {
+        // Read the swappable reference exactly once, for the same reason as
+        // renderedBlocksConsumedByDriver above (house rule).
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        return bridge == null ? 0 : bridge.boundInputChannels();
     }
 
     @Override

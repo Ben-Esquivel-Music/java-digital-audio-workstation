@@ -353,9 +353,16 @@ final class TrackStripController {
                         // itself is owned by stories 092 (per-track audio I/O
                         // routing) and 215 (driver-reported channel names).
                         track.setInputDeviceIndex(device.index());
-                        ioLabel.setTooltip(new Tooltip("Input: " + device.name()));
+                        // qualifiedName(), not name() (story 316 review): the
+                        // row the user just picked is labelled with the
+                        // host-API-qualified name, so echoing the bare one
+                        // here would name a DIFFERENT string than the thing
+                        // they clicked whenever two endpoints share a name —
+                        // and those are precisely the cases where "which one
+                        // did I choose?" is the question the echo answers.
+                        ioLabel.setTooltip(new Tooltip("Input: " + device.qualifiedName()));
                         statusBarLabel.setText("Input changed: " + track.getName()
-                                + " ← " + device.name());
+                                + " ← " + device.qualifiedName());
                         statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
                         markDirty.run();
                     });

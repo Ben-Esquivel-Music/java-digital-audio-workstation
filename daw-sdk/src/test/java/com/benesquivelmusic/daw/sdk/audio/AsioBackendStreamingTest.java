@@ -732,6 +732,84 @@ class AsioBackendStreamingTest {
     }
 
     // ------------------------------------------------------------------
+    // openedInputChannels() (story 316 review)
+    // ------------------------------------------------------------------
+
+    @Test
+    void openedInputChannelsIsZeroWhileClosed() {
+        assertThat(backend.openedInputChannels()).isZero();
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        backend.close();
+
+        assertThat(backend.openedInputChannels())
+                .as("no bridge after close: the query must answer 0, not throw")
+                .isZero();
+    }
+
+    @Test
+    void openedInputChannelsIsZeroWhenOpenedWithoutAStreamingShim() {
+        // The story-310 path: the backend opens, publishes device events, and
+        // streams nothing at all. Claiming capture channels there would be the
+        // silent take the REQUIRED contract exists to refuse.
+        streamingAvailable = false;
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.activeBufferSwitchShim()).isNull();
+        assertThat(backend.openedInputChannels()).isZero();
+    }
+
+    @Test
+    void openedInputChannelsCountsTheChannelsTheDriverBoundBuffersFor() {
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.openedInputChannels())
+                .as("both input descriptors came back with usable buffers")
+                .isEqualTo(2);
+    }
+
+    @Test
+    void openedInputChannelsIgnoresInputDescriptorsWithNoUsableBuffer() {
+        // The distinction the REQUIRED contract turns on: ASIOCreateBuffers was
+        // asked for two inputs and ACCEPTED, but the driver handed back a null
+        // buffer pair for one of them. The bridge memsets that channel to zero
+        // on every callback, so counting the REQUEST would promise capture the
+        // very next bufferSwitch contradicts.
+        bufferInfos = List.of(
+                new AsioStreamingShim.BufferInfo(0, true, FLOAT32_LSB,
+                        inputBuffers[0][0].address(), inputBuffers[1][0].address()),
+                new AsioStreamingShim.BufferInfo(1, true, FLOAT32_LSB, 0L, 0L),
+                new AsioStreamingShim.BufferInfo(0, false, FLOAT32_LSB,
+                        outputBuffers[0][0].address(), outputBuffers[1][0].address()),
+                new AsioStreamingShim.BufferInfo(1, false, FLOAT32_LSB,
+                        outputBuffers[0][1].address(), outputBuffers[1][1].address()));
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.openedInputChannels())
+                .as("only the channel the driver really bound counts")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void openedInputChannelsIsZeroOnceADriverResetHasQuiescedTheBridge() {
+        // A kAsioResetRequest teardown stops the bridge but deliberately leaves
+        // the backend OPEN (story 218): the consumer must close() and reopen.
+        // A quiesced bridge reads no driver buffer, so it captures nothing.
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        assertThat(backend.openedInputChannels()).isEqualTo(2);
+
+        backend.stopStreamingForDriverReset();
+
+        assertThat(backend.isOpen())
+                .as("the story-218 contract: the reset does not close the backend")
+                .isTrue();
+        assertThat(backend.openedInputChannels())
+                .as("but it must not keep promising capture from a stopped bridge")
+                .isZero();
+    }
+
+    // ------------------------------------------------------------------
     // Driver reset (stories 218 x 311)
     // ------------------------------------------------------------------
 

@@ -140,6 +140,28 @@ public final class MockAudioBackend implements AudioBackend {
         return support.inputBlocks();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The opened format's channel count while a stream is open, {@code 0}
+     * otherwise (story 316 review). This mock is a backend that really DOES
+     * capture — {@link #pumpInput(int)} publishes on
+     * {@link #inputBlocks()} with exactly that channel count — so it owes an
+     * honest override rather than the interface's fail-closed default. Left at
+     * the default it would report no capture channels and be refused by every
+     * {@link CaptureRequirement#REQUIRED} open, which is precisely the
+     * recording path integration tests use it to exercise.</p>
+     *
+     * <p>The count is the OPENED format's, not the seeded PCM buffer's: an
+     * exhausted or empty {@code inputPcm} still publishes blocks, zero-padded,
+     * which is deliberate determinism rather than a missing capture stream.</p>
+     */
+    @Override
+    public int openedInputChannels() {
+        AudioFormat format = support.format();
+        return support.isOpen() && format != null ? format.channels() : 0;
+    }
+
     @Override
     public void sink(AudioBlock block) {
         support.validateOutgoing(block);

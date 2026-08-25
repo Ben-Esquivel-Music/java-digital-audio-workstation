@@ -2246,23 +2246,80 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * rung built here. The requested backend's input-device name belongs to
      * THAT backend's namespace, and this method only ever appends a
      * PortAudio rung when PortAudio is NOT the requested backend — so the
-     * name it would have carried is always foreign (an ASIO device name is
-     * generally absent from PortAudio's own enumeration). That is why the
-     * parameter was removed outright rather than left unused: no caller has
-     * one to pass.</p>
+     * name it would have carried is always foreign, and BOTH ways it can
+     * land are wrong for an emergency rung. It may MISS PortAudio's own
+     * enumeration entirely. It may also HIT, which is not the remote case it
+     * sounds like on Windows: {@link PortAudioBackend}'s class javadoc lists
+     * ASIO among the host APIs it reaches there, {@code PortAudioBindings}'
+     * host-API lookup reads {@code "ASIO"} back as a driver-supplied label,
+     * and {@code AsioBackend.listDevices()} stamps every driver it
+     * enumerates with that same {@code "ASIO"} host API — so the two
+     * backends can produce the IDENTICAL
+     * {@link AudioDeviceInfo#qualifiedName()} for one driver, and a hit
+     * would pair a SPECIFIC foreign input device with the DEFAULT output
+     * this rung opens ({@link DeviceId#defaultFor(String)}), which is not a
+     * pairing the user chose either. That is why the parameter was removed
+     * outright rather than left unused: no caller has one to pass.</p>
      *
-     * <p>The mismatch was not cosmetic.
+     * <p>The mismatch was not cosmetic, and the SILENT TAKE it once produced
+     * is why the blank name was chosen.
      * {@code CallbackBackendAdapter.resolveInputDevice} matches the
-     * configured name against the adapted backend's OWN device snapshot and
-     * answers a miss by logging a warning and returning {@code null} — which
-     * DISABLES CAPTURE for the stream while the rung still opens perfectly
-     * well for playback. A session that fell back from ASIO to PortAudio
-     * therefore recorded a SILENT TAKE, and it bit hardest through
+     * configured name against the adapted backend's OWN device snapshot, and
+     * a miss used to mean exactly one thing: a logged warning, a
+     * {@code null} input device, and a stream that still opened perfectly
+     * well for PLAYBACK with capture silently disabled. A session that fell
+     * back from ASIO to PortAudio therefore recorded a silent take, and it
+     * bit hardest through
      * {@link #rejectedProvision(String, Request, String)}, where this
-     * PortAudio rung is the ladder HEAD: the backend the user actually hears
-     * and records through. A blank name takes {@code resolveInputDevice}'s
+     * PortAudio rung is appended to an EMPTY ladder and is therefore the
+     * ladder HEAD: the backend the user actually hears and records
+     * through.</p>
+     *
+     * <p>What a miss MEANS is now conditional on the caller's
+     * {@link com.benesquivelmusic.daw.sdk.audio.CaptureRequirement}, and the
+     * silent take above is history rather than the current failure mode on
+     * the record path (story 316 review):</p>
+     * <ul>
+     *   <li>PLAYBACK — {@link AudioEngine#startAudioOutput()} asks for
+     *       {@link com.benesquivelmusic.daw.sdk.audio.CaptureRequirement#OPTIONAL}
+     *       — is unchanged: a foreign input name still resolves to a miss
+     *       that warns and DISABLES CAPTURE for that stream while the rung
+     *       opens perfectly well for playback. That is correct — playback
+     *       must not die of an input problem — and it is still a stream that
+     *       could never record.</li>
+     *   <li>RECORDING — {@link AudioEngine#startAudioInputOutput()} asks for
+     *       {@link com.benesquivelmusic.daw.sdk.audio.CaptureRequirement#REQUIRED}
+     *       — turns that same miss into a REFUSAL: the adapter throws
+     *       instead of returning {@code null}, and the engine additionally
+     *       refuses any rung whose
+     *       {@link AudioBackend#openedInputChannels()} is zero after a
+     *       REQUIRED open. A capture-less rung can no longer succeed into a
+     *       stream the recording pipeline cannot tell from a duplex
+     *       one.</li>
+     * </ul>
+     *
+     * <p>A refusal here does not fail the recording by itself — it is an
+     * ORDINARY failed ladder hop. The throw happens inside the adapter's
+     * {@code open()} before the delegate stream is opened, so its
+     * {@code close()} skips the stream teardown it gates on its own
+     * {@code open} flag, still releases the initialized delegate, and
+     * reports no deferred release; the engine reads that as a clean
+     * handle-back and its ladder walk advances to the NEXT rung — the Java
+     * Sound rung this same method appends immediately below, unless Java
+     * Sound is itself the requested backend and was therefore skipped.
+     * Recording fails outright only when EVERY rung fails, and it then fails
+     * LOUDLY — the ladder rethrows its first hop's failure, which for a
+     * refusal like this one is the adapter's own
+     * {@code AudioBackendException} naming the unresolvable input device —
+     * rather than by handing back a stream that can never record.</p>
+     *
+     * <p>The blank name is what gives this rung a real chance to BE that
+     * next successful hop: it takes {@code resolveInputDevice}'s
      * {@code inputDeviceName.isBlank()} branch, which resolves PortAudio's
-     * own default input device instead.</p>
+     * own default input device — the only input selection that belongs to
+     * this rung. (A host with no default input device at all still refuses
+     * the rung under {@code REQUIRED}, which is the honest answer: there is
+     * nothing to record from.)</p>
      *
      * <p>{@link #buildDefaultProvision(String, String)} is the deliberate
      * counter-example: there PortAudio IS the provisioned head for a request
@@ -2271,9 +2328,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     private void appendFallbackRungs(List<BackendStreamRung> ladder, String requestedName) {
         if (!"PortAudio".equals(requestedName)) {
-            // Blank on purpose (story 316 review) — see the javadoc above: a
-            // foreign backend's input-device name silently disables capture
-            // on this rung, turning a fallback into a silent recording take.
+            // Blank on purpose (story 316 review) — see the javadoc above.
+            // A foreign backend's input-device name is resolved against
+            // PortAudio's OWN snapshot: a miss disables capture on this rung
+            // under OPTIONAL (playback), and REFUSES the rung under REQUIRED
+            // (recording), costing the ladder the hop. Blank resolves this
+            // backend's own default input, the only one that belongs here.
             AudioBackend portAudio = tryCreatePortAudioAdapter("");
             if (portAudio != null) {
                 ladder.add(new BackendStreamRung(

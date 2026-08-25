@@ -433,6 +433,152 @@ class AudioEngineOutputTest {
         }
     }
 
+    // ── Record requires CAPTURE, playback does not (story 316 review) ────
+
+    /**
+     * The silent take, closed. A rung can OPEN successfully and still have no
+     * capture — {@code JavaxSoundBackend} swallowing a refused capture line,
+     * {@code CallbackBackendAdapter} retrying a refused duplex open
+     * output-only — and the record path used to walk the playback ladder and
+     * accept exactly that. It now verifies
+     * {@link AudioBackend#openedInputChannels()} after each open and treats a
+     * zero as an ordinary failed hop, which is why the ladder can route
+     * around it: an ASIO head exposing no inputs lets PortAudio take the
+     * recording.
+     */
+    @Test
+    void recordSkipsARungThatOpensWithoutCaptureAndTheNextRungWins() {
+        SynchronousTestBackend playbackOnly = new SynchronousTestBackend("PlaybackOnly");
+        playbackOnly.capturesInput = false;
+        SynchronousTestBackend duplex = new SynchronousTestBackend("Duplex");
+        engine.setStreamingProvision(provisionOf("PlaybackOnly", playbackOnly, duplex));
+
+        engine.startAudioInputOutput();
+
+        assertThat(playbackOnly.openCount.get())
+                .as("the capture-less rung is only refusable AFTER its open returns")
+                .isEqualTo(1);
+        assertThat(playbackOnly.closeCount.get())
+                .as("its handle is given back before the walk advances — the device"
+                        + " must not stay held by a stream nobody wants")
+                .isEqualTo(1);
+        assertThat(playbackOnly.isOpen()).isFalse();
+        assertThat(duplex.isOpen())
+                .as("the walk fell through to a rung that really can capture")
+                .isTrue();
+        assertThat(engine.openStreamBackendName()).contains("Duplex");
+        assertThat(duplex.openedInputChannels()).isGreaterThan(0);
+    }
+
+    @Test
+    void recordFailsAndLeavesNoStreamOpenWhenEveryRungOpensWithoutCapture() {
+        SynchronousTestBackend first = new SynchronousTestBackend("First");
+        first.capturesInput = false;
+        SynchronousTestBackend second = new SynchronousTestBackend("Second");
+        second.capturesInput = false;
+        engine.setStreamingProvision(provisionOf("First", first, second));
+
+        assertThatThrownBy(engine::startAudioInputOutput)
+                .as("the requested backend's refusal is the actionable one")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no capture channels");
+
+        assertThat(first.closeCount.get()).isEqualTo(1);
+        assertThat(second.closeCount.get()).isEqualTo(1);
+        assertThat(first.isOpen()).isFalse();
+        assertThat(second.isOpen()).isFalse();
+        assertThat(engine.isStreamOpen())
+                .as("a failed record open leaves nothing open on any rung")
+                .isFalse();
+    }
+
+    /**
+     * The DISCRIMINATING test. Without it the capture requirement could have
+     * been applied to BOTH entry points and every suite above would still be
+     * green, because none of them asserts that a playback-only device still
+     * plays. A speakers-only interface, or an ASIO4ALL with only outputs
+     * enabled, must open for playback — that is the whole point of
+     * {@code CaptureRequirement.OPTIONAL}.
+     */
+    @Test
+    void playbackStillOpensTheVerySameCaptureLessProvisionRecordRefuses() {
+        SynchronousTestBackend playbackOnly = new SynchronousTestBackend("PlaybackOnly");
+        playbackOnly.capturesInput = false;
+        engine.setStreamingProvision(provisionOf("PlaybackOnly", playbackOnly));
+
+        assertThatThrownBy(engine::startAudioInputOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no capture channels");
+        assertThat(engine.isStreamOpen()).isFalse();
+
+        engine.startAudioOutput();
+
+        assertThat(engine.isStreamOpen())
+                .as("the playback contract is untouched: no capture is still a"
+                        + " legitimate open")
+                .isTrue();
+        assertThat(engine.openStreamBackendName()).contains("PlaybackOnly");
+        assertThat(playbackOnly.isOpen()).isTrue();
+    }
+
+    /**
+     * The refusal must reach the outside world as an ordinary fallback, not
+     * as a silent skip: {@code requested != active} is a published fact
+     * whatever refused the rung.
+     */
+    @Test
+    void aCaptureLessRungPublishesABackendFallbackEventNamingTheWinner() {
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+            SynchronousTestBackend playbackOnly =
+                    new SynchronousTestBackend("PlaybackOnly");
+            playbackOnly.capturesInput = false;
+            SynchronousTestBackend duplex = new SynchronousTestBackend("Duplex");
+            engine.setStreamingProvision(
+                    provisionOf("PlaybackOnly", playbackOnly, duplex));
+
+            engine.startAudioInputOutput();
+
+            awaitCondition(() -> received.size() >= 1,
+                    "the capture refusal is published like any other failed hop");
+            assertThat(received).hasSize(1);
+            assertThat(received.get(0).requestedBackend()).isEqualTo("PlaybackOnly");
+            assertThat(received.get(0).activeBackend()).isEqualTo("Duplex");
+            assertThat(received.get(0).cause()).contains("no capture channels");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    /**
+     * A capture-less rung is refused AFTER its {@code open}, so
+     * {@code openAttempted} is already true and the walk obeys the same
+     * unreleasable-handle rule as any other post-open hop failure: it
+     * ABANDONS rather than opening a fallback beside a backend that may still
+     * hold the device.
+     */
+    @Test
+    void aCaptureLessRungWhoseCloseFailsAbandonsTheWalkInsteadOfOpeningTheNextRung() {
+        SynchronousTestBackend playbackOnly = new SynchronousTestBackend("PlaybackOnly");
+        playbackOnly.capturesInput = false;
+        playbackOnly.failOnClose = true;
+        SynchronousTestBackend duplex = new SynchronousTestBackend("Duplex");
+        engine.setStreamingProvision(provisionOf("PlaybackOnly", playbackOnly, duplex));
+
+        assertThatThrownBy(engine::startAudioInputOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("could not be released");
+
+        assertThat(duplex.openCount.get())
+                .as("no fallback rung is opened beside a backend that may still hold"
+                        + " the device")
+                .isZero();
+        assertThat(engine.isStreamOpen()).isFalse();
+    }
+
     // ── The stream-open seam names the WINNER (story 316 review) ─────────
 
     @Test
@@ -1786,6 +1932,20 @@ class AudioEngineOutputTest {
         volatile boolean blockAwait;
         /** Story 316 review: what the engine-side streaming guard sees. */
         volatile boolean streamingSupported = true;
+        /**
+         * Story 316 review: whether the stream this fake opens has CAPTURE.
+         *
+         * <p>Default {@code true}, which is the realistic configuration for
+         * a full-duplex interface and the one the record-path tests need:
+         * {@link AudioBackend#openedInputChannels()} then answers with the
+         * opened format's channel count, so the engine's post-open
+         * verification sees a live capture stream. Clearing it models a
+         * PLAYBACK-ONLY head — a speakers-only interface, an ASIO driver
+         * exposing no inputs, or an adapter whose duplex open degraded — and
+         * is what makes "a REQUIRED open refuses this rung and walks on"
+         * assertable.</p>
+         */
+        volatile boolean capturesInput = true;
         final AtomicInteger blockedAwaitEntries = new AtomicInteger();
         volatile Integer negotiateToBitDepth;
         /** Story 316 review: a negotiation the engine must refuse (channels). */
@@ -1915,6 +2075,19 @@ class AudioEngineOutputTest {
         @Override
         public boolean isOpen() {
             return open;
+        }
+
+        /**
+         * Story 316 review: the capture channels the OPEN stream really has.
+         * A duplex fake ({@link #capturesInput}, the default) answers with
+         * the opened format's channel count; a playback-only one answers
+         * {@code 0}, which is what the engine's REQUIRED-open verification
+         * turns into a failed ladder hop.
+         */
+        @Override
+        public int openedInputChannels() {
+            com.benesquivelmusic.daw.sdk.audio.AudioFormat opened = lastOpenFormat;
+            return open && capturesInput && opened != null ? opened.channels() : 0;
         }
 
         @Override

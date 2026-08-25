@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback;
 import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
+import com.benesquivelmusic.daw.sdk.audio.CaptureRequirement;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.LatencyInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
@@ -29,10 +30,16 @@ import static org.assertj.core.api.Assertions.fail;
 /**
  * Contract of {@link CallbackBackendAdapter} (story 316): a legacy
  * {@link NativeAudioBackend} adapted behind the SDK {@code AudioBackend}
- * interface — name-based device resolution against a fresh enumeration
- * snapshot (real driver defaults, never index&nbsp;0), a lock-free output
- * ring from {@code sink} to the device callback, and capture published off
- * the RT thread by the {@code native-input-drain} thread.
+ * interface — host-API-qualified device resolution against a fresh
+ * enumeration snapshot (real driver defaults, never index&nbsp;0), a
+ * lock-free output ring from {@code sink} to the device callback, and
+ * capture published off the RT thread by the {@code native-input-drain}
+ * thread.
+ *
+ * <p>Two sections were added by the story-316 review: an ambiguous bare
+ * device name is REFUSED rather than resolved to the first match, and a
+ * {@link CaptureRequirement#REQUIRED} open refuses every degradation that
+ * would leave the stream unable to record.</p>
  */
 class CallbackBackendAdapterTest {
 
@@ -44,7 +51,19 @@ class CallbackBackendAdapterTest {
     private static final long GUARD_BUDGET_MILLIS = 5_000L;
 
     private static AudioDeviceInfo device(int index, String name, int in, int out) {
-        return new AudioDeviceInfo(index, name, "Fake", in, out, 48_000.0,
+        return device(index, name, "Fake", in, out);
+    }
+
+    /**
+     * Story 316 review: the same helper with an explicit HOST API, so a
+     * snapshot can carry two devices that share a bare {@link
+     * AudioDeviceInfo#name()} and differ only in
+     * {@link AudioDeviceInfo#qualifiedName()} — the Windows norm, and the
+     * shape the resolver has to discriminate.
+     */
+    private static AudioDeviceInfo device(int index, String name, String hostApi,
+                                          int in, int out) {
+        return new AudioDeviceInfo(index, name, hostApi, in, out, 48_000.0,
                 List.of(SampleRate.HZ_48000), 0.0, 0.0);
     }
 
@@ -207,6 +226,284 @@ class CallbackBackendAdapterTest {
         assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES))
                 .isInstanceOf(IllegalStateException.class);
         adapter.close();
+    }
+
+    // ── Host-API-qualified identity (story 316 review) ───────────────────
+
+    /**
+     * PortAudio enumerates the same physical endpoint once per host API, so a
+     * bare display name is not an identity. The old resolver's
+     * {@code name().equals(...)} loop returned the FIRST match, which meant
+     * the user picked one row from the Audio Settings menu and the engine
+     * opened another — a different index, a different latency, silently.
+     */
+    @Test
+    void anAmbiguousBareOutputNameIsRefusedInsteadOfOpeningTheFirstMatch() {
+        FakeNativeBackend fake = new FakeNativeBackend(collidingSpeakers());
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThatThrownBy(() ->
+                adapter.open(new DeviceId("Fake", "Speakers"), FORMAT, FRAMES))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("AMBIGUOUS")
+                .hasMessageContaining("Speakers [MME]")
+                .hasMessageContaining("Speakers [WASAPI]")
+                .hasMessageContaining("Audio Settings");
+
+        assertThat(fake.openStreamCount)
+                .as("no endpoint is opened on an identity that names two of them")
+                .isZero();
+        assertThat(adapter.isOpen()).isFalse();
+    }
+
+    /**
+     * The other half, and the one that actually proves the reviewer's
+     * endpoint-substitution bug is fixed: each qualified label must resolve
+     * to ITS OWN index, not merely "not throw". Under the old resolver both
+     * of these would have failed to match at all (the bare name never equals
+     * the qualified one); under a naive
+     * {@link AudioDeviceInfo#isSelectionFor(String, String)}-based pass they
+     * would BOTH have resolved to the first entry, which is the bug wearing a
+     * different hat.
+     */
+    @Test
+    void eachHostApiQualifiedNameResolvesToItsOwnDeviceIndex() {
+        FakeNativeBackend fake = new FakeNativeBackend(collidingSpeakers());
+        CallbackBackendAdapter mme = new CallbackBackendAdapter(fake);
+        mme.open(new DeviceId("Fake", "Speakers [MME]"), FORMAT, FRAMES);
+        assertThat(fake.lastConfig.outputDeviceIndex())
+                .as("the MME row, not whichever entry happened to come first")
+                .isEqualTo(3);
+        mme.close();
+
+        FakeNativeBackend other = new FakeNativeBackend(collidingSpeakers());
+        CallbackBackendAdapter wasapi = new CallbackBackendAdapter(other);
+        wasapi.open(new DeviceId("Fake", "Speakers [WASAPI]"), FORMAT, FRAMES);
+        assertThat(other.lastConfig.outputDeviceIndex())
+                .as("the WASAPI row — the two qualified labels must not collapse")
+                .isEqualTo(9);
+        wasapi.close();
+    }
+
+    @Test
+    void anAmbiguousBareInputNameDisablesCaptureButStillOpensPlayback() {
+        FakeNativeBackend fake = new FakeNativeBackend(collidingMics());
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic");
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThat(adapter.isOpen())
+                .as("input must never kill playback under the OPTIONAL contract")
+                .isTrue();
+        assertThat(fake.lastConfig.inputDeviceIndex()).isEqualTo(-1);
+        assertThat(fake.lastConfig.inputChannels()).isZero();
+        assertThat(adapter.openedInputChannels())
+                .as("and the adapter says so, so the engine cannot mistake it for capture")
+                .isZero();
+        adapter.close();
+    }
+
+    @Test
+    void anAmbiguousBareInputNameFailsTheOpenWhenCaptureIsRequired() {
+        FakeNativeBackend fake = new FakeNativeBackend(collidingMics());
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic");
+
+        assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT,
+                FRAMES, CaptureRequirement.REQUIRED))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("AMBIGUOUS")
+                .hasMessageContaining("Mic [MME]")
+                .hasMessageContaining("Mic [WASAPI]");
+
+        assertThat(fake.openStreamCount)
+                .as("a recording open resolves its input device BEFORE taking a stream")
+                .isZero();
+        assertThat(adapter.isOpen()).isFalse();
+    }
+
+    @Test
+    void aQualifiedInputNameResolvesToItsOwnDeviceIndex() {
+        FakeNativeBackend fake = new FakeNativeBackend(collidingMics());
+        CallbackBackendAdapter adapter =
+                new CallbackBackendAdapter(fake, "Mic [WASAPI]");
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES,
+                CaptureRequirement.REQUIRED);
+
+        assertThat(fake.lastConfig.inputDeviceIndex())
+                .as("the WASAPI mic, not the MME one that enumerates first")
+                .isEqualTo(9);
+        assertThat(adapter.openedInputChannels()).isEqualTo(2);
+        adapter.close();
+    }
+
+    /**
+     * A bare name that is a PREFIX of another device's name must not
+     * cross-resolve, in either form. The snapshot deliberately lists the
+     * LONGER name first, so a {@code startsWith}-shaped resolver would take
+     * it and this test would catch that rather than passing by accident.
+     */
+    @Test
+    void aDeviceNameThatIsAPrefixOfAnotherDoesNotCrossResolve() {
+        List<AudioDeviceInfo> devices = List.of(
+                device(3, "Speakers Pro", "Fake", 0, 2),
+                device(5, "Mic In", "Fake", 2, 0),
+                device(7, "Speakers", "Fake", 0, 2));
+
+        FakeNativeBackend bare = new FakeNativeBackend(devices);
+        CallbackBackendAdapter bareAdapter = new CallbackBackendAdapter(bare);
+        bareAdapter.open(new DeviceId("Fake", "Speakers"), FORMAT, FRAMES);
+        assertThat(bare.lastConfig.outputDeviceIndex())
+                .as("'Speakers' is not 'Speakers Pro', however the snapshot is ordered")
+                .isEqualTo(7);
+        bareAdapter.close();
+
+        FakeNativeBackend qualified = new FakeNativeBackend(devices);
+        CallbackBackendAdapter qualifiedAdapter = new CallbackBackendAdapter(qualified);
+        qualifiedAdapter.open(new DeviceId("Fake", "Speakers [Fake]"), FORMAT, FRAMES);
+        assertThat(qualified.lastConfig.outputDeviceIndex())
+                .as("and the qualified form must not prefix-match 'Speakers Pro [Fake]'")
+                .isEqualTo(7);
+        qualifiedAdapter.close();
+    }
+
+    // ── The capture requirement (story 316 review) ───────────────────────
+
+    @Test
+    void aRefusedDuplexOpenIsNotRetriedOutputOnlyWhenCaptureIsRequired() {
+        // The output-only retry exists so an input problem never kills
+        // PLAYBACK. On a recording open there is no playback to protect:
+        // degrading would grab the device output-only, return successfully,
+        // and hand the recording pipeline a stream whose inputBlocks() can
+        // never emit — the silent take.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        fake.refuseDuplexOpens = true;
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT,
+                FRAMES, CaptureRequirement.REQUIRED))
+                .as("the DRIVER's own refusal propagates — it is the actionable one")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("duplex open refused by the driver");
+
+        assertThat(fake.openStreamCount)
+                .as("exactly one attempt: the output-only retry must not happen")
+                .isEqualTo(1);
+        assertThat(adapter.isOpen()).isFalse();
+        assertThat(adapter.openedInputChannels()).isZero();
+    }
+
+    @Test
+    void aMissingInputDeviceNameFailsTheOpenWhenCaptureIsRequired() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Gone Mic");
+
+        assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT,
+                FRAMES, CaptureRequirement.REQUIRED))
+                .as("a record open whose configured input device is gone is a FAILURE,"
+                        + " not a degradation")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("Gone Mic")
+                .hasMessageContaining("not found")
+                .hasMessageContaining("requires capture");
+
+        assertThat(fake.openStreamCount).isZero();
+        assertThat(adapter.isOpen()).isFalse();
+    }
+
+    @Test
+    void noDefaultInputDeviceFailsARequiredOpenAndOnlyWarnsAnOptionalOne() {
+        // A blank input selection means "the backend's default input device".
+        // When there ISN'T one, the old code silently returned null and the
+        // open carried on output-only — the same silent take by another
+        // route. Both devices here are output-only, so the fake's default
+        // INPUT query answers with something that cannot capture.
+        List<AudioDeviceInfo> outputsOnly = List.of(
+                device(3, "Main Out", "Fake", 0, 2),
+                device(4, "Other Out", "Fake", 0, 2));
+
+        FakeNativeBackend optional = new FakeNativeBackend(outputsOnly);
+        CallbackBackendAdapter playback = new CallbackBackendAdapter(optional);
+        playback.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        assertThat(playback.isOpen())
+                .as("a playback-only interface must still play")
+                .isTrue();
+        assertThat(playback.openedInputChannels()).isZero();
+        playback.close();
+
+        FakeNativeBackend required = new FakeNativeBackend(outputsOnly);
+        CallbackBackendAdapter record = new CallbackBackendAdapter(required);
+        assertThatThrownBy(() -> record.open(DeviceId.defaultFor("Fake"), FORMAT,
+                FRAMES, CaptureRequirement.REQUIRED))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("No default input device");
+        assertThat(required.openStreamCount).isZero();
+    }
+
+    @Test
+    void openedInputChannelsReportsTheStreamTheAdapterActuallyHas() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        assertThat(adapter.openedInputChannels())
+                .as("no stream open")
+                .isZero();
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        assertThat(adapter.openedInputChannels())
+                .as("the duplex stream really has the default input device's channels")
+                .isEqualTo(2);
+
+        adapter.close();
+        assertThat(adapter.openedInputChannels())
+                .as("a closed stream captures nothing")
+                .isZero();
+    }
+
+    @Test
+    void anOutputOnlyDegradationReportsZeroOpenedInputChannels() {
+        // The engine's post-open verification is only as good as this
+        // answer: the OPTIONAL retry tore the input side down, so claiming
+        // two channels here would be a promise inputBlocks() cannot keep.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        fake.refuseDuplexOpens = true;
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+
+        assertThat(adapter.isOpen()).isTrue();
+        assertThat(adapter.openedInputChannels())
+                .as("the stream that actually opened is output-only, and says so")
+                .isZero();
+        adapter.close();
+    }
+
+    @Test
+    void theThreeArgumentOpenKeepsThePlaybackContract() {
+        // One open body, two entry points: the legacy three-argument open
+        // must delegate with OPTIONAL, so every degradation above still
+        // degrades rather than throwing.
+        FakeNativeBackend fake = new FakeNativeBackend();
+        fake.refuseDuplexOpens = true;
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Gone Mic");
+
+        assertThatCode(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES))
+                .as("a missing input device AND a refused duplex still open playback")
+                .doesNotThrowAnyException();
+
+        assertThat(adapter.isOpen()).isTrue();
+        adapter.close();
+    }
+
+    @Test
+    void openRejectsANullCaptureRequirement() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThatThrownBy(() ->
+                adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("capture");
+        assertThat(adapter.isOpen()).isFalse();
     }
 
     // ── Output flow: sink → ring → device callback, in order ─────────────
@@ -688,6 +985,27 @@ class CallbackBackendAdapterTest {
     }
 
     // ── Support ──────────────────────────────────────────────────────────
+
+    /**
+     * The Windows norm (story 316 review): ONE pair of speakers enumerated
+     * twice, once per host API, with different indices — plus an input device
+     * at position 1 so {@link FakeNativeBackend#getDefaultInputDevice()}
+     * answers with something that can actually capture.
+     */
+    private static List<AudioDeviceInfo> collidingSpeakers() {
+        return List.of(
+                device(3, "Speakers", "MME", 0, 2),
+                device(5, "Line In", "MME", 2, 0),
+                device(9, "Speakers", "WASAPI", 0, 2));
+    }
+
+    /** The same collision on the CAPTURE side. */
+    private static List<AudioDeviceInfo> collidingMics() {
+        return List.of(
+                device(3, "Main Out", "MME", 0, 2),
+                device(5, "Mic", "MME", 2, 0),
+                device(9, "Mic", "WASAPI", 2, 0));
+    }
 
     private static AudioBlock constantBlock(float value) {
         float[] samples = new float[2 * FRAMES];

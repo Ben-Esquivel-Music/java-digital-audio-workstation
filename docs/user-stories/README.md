@@ -495,3 +495,6 @@ Operationalises [`INTERACTION_COMPLETENESS_DESIGN_BOOK.md`](../design/INTERACTIO
 | 117 | [OGG Vorbis Import via FFM](117-ogg-vorbis-import-via-ffm.md) | 🟡 Medium | FFM |
 | 118 | [Bundle libogg/libvorbis with Distribution](118-bundle-libogg-libvorbis-with-distribution.md) | 🟡 Medium | FFM |
 | 119 | [Remove Vendored RoomAcousticPP Source](119-remove-vendored-roomacousticpp-source.md) | 🟡 Medium | FFM |
+| 224 | [Build and Bundle the asioshim.dll Native Library with the Distribution](224-build-and-bundle-asioshim-native-library.md) | 🟠 High | FFM |
+| 256 | [Build asioshim.dll in CI and Bundle it into the Windows Distribution](256-bundle-asioshim-dll-into-windows-distribution.md) | 🟠 High | FFM |
+| 348 | [PortAudio Never Loads on Windows: DLL Name Mismatch and NativeLibraryLoader Adoption](348-portaudio-dll-name-mismatch-and-loader-adoption.md) | 🟠 High | FFM |

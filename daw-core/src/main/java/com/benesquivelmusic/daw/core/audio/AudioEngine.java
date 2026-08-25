@@ -945,7 +945,7 @@ public final class AudioEngine {
     /**
      * The {@link #start()} transition, under {@link #lifecycleLock}. Called
      * directly — never through the public wrapper — by
-     * {@link #startAudioOutputLocked(PendingAnnouncements)} and
+     * {@link #startAudioOutputLocked(PendingAnnouncements, CaptureRequirement)} and
      * {@link #resumeAudioOutputLocked()}, which already hold the lock.
      */
     private boolean startLocked() {
@@ -1751,7 +1751,14 @@ public final class AudioEngine {
      * <p>Per rung, the engine calls
      * {@link AudioBackend#negotiateFormat(com.benesquivelmusic.daw.sdk.audio.AudioFormat)}
      * and passes the negotiated format to
-     * {@link AudioBackend#open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)}.
+     * {@link AudioBackend#open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int, CaptureRequirement)}
+     * under {@link CaptureRequirement#OPTIONAL} (story 316 review): a
+     * playback open that produces no capture at all is a SUCCESS, which is
+     * the historical contract and the right one — a playback-only interface
+     * has no inputs to offer and must still open. Only
+     * {@link #startAudioInputOutput()} asks for
+     * {@link CaptureRequirement#REQUIRED}, so nothing on this path changed
+     * when that requirement was introduced.
      * Only the BIT DEPTH may be renegotiated: a rung that returns a different
      * sample rate or channel count is treated as a failed hop (story 316
      * review — see {@link #requireRenderableNegotiation}), because the engine
@@ -1764,16 +1771,16 @@ public final class AudioEngine {
      *
      * <p>The walk does not always reach the last rung. A rung that reached
      * {@link AudioBackend#open(DeviceId,
-     * com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)} and could not
-     * then give its handle back ABANDONS the walk (see {@link #openLadder}):
-     * it may still hold the device, and a fallback rung opened beside it
-     * would be the second backend on one device this ladder exists to
-     * prevent. Its hops are still published, naming {@code "none"} active,
-     * and the failure that propagates is a new {@link AudioBackendException}
-     * carrying the hop failure as its cause. A rung refused BEFORE
-     * {@code open} — the ASIO rung on a host whose {@code asioshim} lacks the
-     * story-311 streaming symbols, say — holds no device and still falls
-     * through to the next rung.</p>
+     * com.benesquivelmusic.daw.sdk.audio.AudioFormat, int, CaptureRequirement)}
+     * and could not then give its handle back ABANDONS the walk (see
+     * {@link #openLadder}): it may still hold the device, and a fallback
+     * rung opened beside it would be the second backend on one device
+     * this ladder exists to prevent. Its hops are still published, naming
+     * {@code "none"} active, and the failure that propagates is a new
+     * {@link AudioBackendException} carrying the hop failure as its cause.
+     * A rung refused BEFORE {@code open} — the ASIO rung on a host whose
+     * {@code asioshim} lacks the story-311 streaming symbols, say — holds
+     * no device and still falls through to the next rung.</p>
      *
      * <p>Ordering of the open (story 316 review): the ladder walk opens the
      * winning rung's handle, {@link #startOpenedStream} then starts the
@@ -1796,7 +1803,12 @@ public final class AudioEngine {
      * <p>If no provision is installed, the engine is started without
      * hardware output: nothing drives the transport's clock, its RT-clock
      * claim is never taken and seeks apply inline. Honest playing states for
-     * that case are story 317.</p>
+     * that case are story 317. That tolerance is the
+     * {@link CaptureRequirement#OPTIONAL} contract and it does NOT
+     * generalise (story 316 review): {@link #startAudioInputOutput()} throws
+     * in the same situation, because an engine with no provision has no
+     * capture device at all and a record that returns normally there is the
+     * silent take.</p>
      *
      * <p>The whole transition runs under {@link #lifecycleLock} (story 316
      * re-review), so two callers — a Play from the FX thread and a reopen
@@ -1827,7 +1839,7 @@ public final class AudioEngine {
         PendingAnnouncements announcements = new PendingAnnouncements();
         lifecycleLock.lock();
         try {
-            startAudioOutputLocked(announcements);
+            startAudioOutputLocked(announcements, CaptureRequirement.OPTIONAL);
         } finally {
             lifecycleLock.unlock();
             // Outside the lock, on EVERY path — a failed open owes its
@@ -1849,10 +1861,34 @@ public final class AudioEngine {
      * published them, and delivered by {@link #startAudioOutput()} once the
      * lock is released — see {@link PendingAnnouncements}.</p>
      *
+     * <p>The ONE seam both entry points share (story 316 review):
+     * {@link #startAudioOutput()} asks for
+     * {@link CaptureRequirement#OPTIONAL} and
+     * {@link #startAudioInputOutputLocked(PendingAnnouncements)} asks for
+     * {@link CaptureRequirement#REQUIRED}. Everything below behaves
+     * identically except in the two places where "this open produced no
+     * capture at all" is reachable — the no-provision early return here, and
+     * each rung's post-{@code open} verification inside
+     * {@link #openLadder(StreamingProvision, PendingAnnouncements,
+     * CaptureRequirement)} — and in both of them {@code REQUIRED} fails
+     * instead of succeeding into a stream that could never record. The two
+     * shortcuts above them — the {@link StreamState#RUNNING} early return and
+     * the {@link StreamState#PAUSED} resume — open nothing, so there is
+     * nothing for them to verify; they are unreachable under
+     * {@code REQUIRED} anyway, because
+     * {@link #startAudioInputOutputLocked(PendingAnnouncements)} closes the
+     * previous stream first and refuses to continue unless the state really
+     * became {@link StreamState#CLOSED}.</p>
+     *
      * @param announcements collects the facts this open owes the outside
      *                      world; delivered by the caller after the unlock
+     * @param capture       whether an open with no capture is a success
+     *                      ({@link CaptureRequirement#OPTIONAL}, playback) or
+     *                      a failure ({@link CaptureRequirement#REQUIRED},
+     *                      recording)
      */
-    private void startAudioOutputLocked(PendingAnnouncements announcements) {
+    private void startAudioOutputLocked(PendingAnnouncements announcements,
+                                        CaptureRequirement capture) {
         StreamState state = this.streamState;
         if (state == StreamState.RUNNING) {
             return; // already running
@@ -1875,11 +1911,25 @@ public final class AudioEngine {
 
         StreamingProvision provision = this.streamingProvision;
         if (provision == null) {
+            // No provision is a ZERO-CAPTURE success, and that is exactly the
+            // shape of the silent take (story 316 review). For playback it is
+            // a legitimate configuration — the engine runs, the transport is
+            // driven by nothing, and honest playing states for that case are
+            // story 317 — so OPTIONAL keeps logging and returning. For
+            // recording there is no capture device at ALL, so returning
+            // normally would hand the record path a running engine with a
+            // publisher that can never emit a block.
+            if (capture == CaptureRequirement.REQUIRED) {
+                throw new AudioBackendException(
+                        "Cannot open a recording stream: no audio backend is configured,"
+                                + " so the engine has no capture device at all. Select an"
+                                + " audio device in Audio Settings before recording");
+            }
             LOG.info("No audio backend configured; playback without hardware output");
             return;
         }
 
-        OpenedRung opened = openLadder(provision, announcements);
+        OpenedRung opened = openLadder(provision, announcements, capture);
         this.openBackend = opened.rung().backend();
         this.openDevice = opened.rung().device();
         this.openSdkFormat = opened.negotiatedFormat();
@@ -2175,7 +2225,8 @@ public final class AudioEngine {
      * then this walk's own, in chronological order).
      *
      * <p>The causes ride along instead of being published inside
-     * {@link #openLadder(StreamingProvision)} (story 316 review): a
+     * {@link #openLadder(StreamingProvision, PendingAnnouncements,
+     * CaptureRequirement)} (story 316 review): a
      * {@link BackendFallbackEvent} names its active backend, and the rung
      * that opened is not the active stream until
      * {@link #startOpenedStream(AudioBackend,
@@ -2296,6 +2347,21 @@ public final class AudioEngine {
      *       Sound.</li>
      * </ul>
      *
+     * <p>A rung whose {@code open} SUCCEEDS is still refused when the caller
+     * asked for {@link CaptureRequirement#REQUIRED} and the stream it opened
+     * has no capture channels (story 316 review). That check —
+     * {@link #requireCaptureOpened(BackendStreamRung, CaptureRequirement)} —
+     * is the ONLY guard that runs after {@code open} rather than before it,
+     * because the count is not knowable until the driver has answered, and it
+     * is deliberately inside the per-rung {@code try} so a capture-less rung
+     * is an ORDINARY failed hop: its handle is given back, a
+     * {@link BackendFallbackEvent} carries the reason, and the walk falls
+     * through to the next rung. An ASIO head that exposes no inputs should
+     * let PortAudio take the recording. Being after {@code open} also means
+     * {@code openAttempted} is already {@code true}, so a capture-less rung
+     * whose CLOSE fails abandons the walk under the same rule as any other
+     * hop that reached {@code open} — it may still hold the device.</p>
+     *
      * @param provision     the ladder to walk
      * @param announcements collects the failed hops' events when every rung
      *                      failed, and when a {@link RuntimeException} hop's
@@ -2303,6 +2369,14 @@ public final class AudioEngine {
      *                      {@link Error} hop abandons the walk WITHOUT
      *                      collecting any; delivered by the caller after the
      *                      unlock
+     * @param capture       passed to every rung's
+     *                      {@link AudioBackend#open(DeviceId,
+     *                      com.benesquivelmusic.daw.sdk.audio.AudioFormat,
+     *                      int, CaptureRequirement)} as a directive, AND
+     *                      verified afterwards against
+     *                      {@link AudioBackend#openedInputChannels()} —
+     *                      the directive's default body ignores it, so the
+     *                      verification is what makes the guarantee hold
      * @return the rung that opened, with its negotiated format and the causes
      *         of every hop that failed before it
      * @throws AudioBackendException a NEW exception, caused by the hop
@@ -2311,6 +2385,9 @@ public final class AudioEngine {
      *                          — the walk is ABANDONED rather than continued
      *                          onto a fallback rung
      * @throws RuntimeException the FIRST rung's failure when every rung failed
+     *                          — which, under
+     *                          {@link CaptureRequirement#REQUIRED}, includes
+     *                          every rung that opened without capture
      * @throws Error            a hop's own {@code Error}, after that rung's
      *                          handle has been given back OR the attempt to
      *                          give it back has been reported as failed —
@@ -2325,7 +2402,8 @@ public final class AudioEngine {
      *                          rather than act on; see the catch
      */
     private OpenedRung openLadder(StreamingProvision provision,
-                                  PendingAnnouncements announcements) {
+                                  PendingAnnouncements announcements,
+                                  CaptureRequirement capture) {
         com.benesquivelmusic.daw.sdk.audio.AudioFormat requested =
                 new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
                         format.sampleRate(), format.channels(), format.bitDepth());
@@ -2346,7 +2424,14 @@ public final class AudioEngine {
                         rung.backend().negotiateFormat(requested);
                 requireRenderableNegotiation(rung, requested, negotiated);
                 openAttempted = true;
-                rung.backend().open(rung.device(), negotiated, format.bufferSize());
+                rung.backend().open(rung.device(), negotiated, format.bufferSize(), capture);
+                // AFTER the open, inside the same try: the only guard that
+                // cannot run earlier, because the capture channel count is
+                // not knowable until the driver has answered (story 316
+                // review). A refusal here is an ordinary failed hop — the
+                // handle goes back through closeFailedHop and the walk
+                // continues onto a rung that may have inputs.
+                requireCaptureOpened(rung, capture);
                 return new OpenedRung(rung, negotiated, failedHopCauses);
             } catch (RuntimeException hopFailure) {
                 // FIRST, before any bookkeeping: give the rung's handle back
@@ -2565,7 +2650,8 @@ public final class AudioEngine {
      * so the engine, which is the authority that opens streams, asks it
      * here rather than trusting the app layer's gate to have asked first.
      *
-     * <p>Called inside {@link #openLadder(StreamingProvision)}'s per-rung
+     * <p>Called inside {@link #openLadder(StreamingProvision,
+     * PendingAnnouncements, CaptureRequirement)}'s per-rung
      * {@code try} BEFORE negotiation, so the refusal costs the rung nothing
      * and fails like any refused open: the ladder falls through and the hop
      * publishes a {@link BackendFallbackEvent} carrying this message.</p>
@@ -2594,7 +2680,8 @@ public final class AudioEngine {
      * Bit depth is safe because it is the backend's own encoding concern:
      * the pump always hands over normalized floats.
      *
-     * <p>Called inside {@link #openLadder(StreamingProvision)}'s per-rung
+     * <p>Called inside {@link #openLadder(StreamingProvision,
+     * PendingAnnouncements, CaptureRequirement)}'s per-rung
      * {@code try} on purpose, so a violating rung fails like any refused
      * open: the ladder falls through to the next rung and the hop publishes a
      * {@link BackendFallbackEvent} carrying this message as its cause, which
@@ -2622,6 +2709,91 @@ public final class AudioEngine {
                         + " cannot render: requested " + requested + " but negotiated "
                         + negotiated + " — " + differed
                         + "; only the bit depth may be renegotiated today");
+    }
+
+    /**
+     * Refuses a rung whose {@code open} SUCCEEDED but produced no capture
+     * channels, when the caller asked for {@link CaptureRequirement#REQUIRED}
+     * (story 316 review). The third engine-side per-rung guard, and the one
+     * that closes the silent take.
+     *
+     * <h2>Why it runs AFTER open, not before</h2>
+     * <p>Its two siblings —
+     * {@link #requireStreamingSupport(BackendStreamRung)} and
+     * {@link #requireRenderableNegotiation} — can answer from what the
+     * backend already knows, so they run ahead of {@code open()} and cost the
+     * rung nothing. This one cannot: the number of capture channels a stream
+     * really opened with is not knowable until the driver has answered.
+     * {@link AudioDeviceInfo#maxInputChannels()} is an ENUMERATION capability
+     * (and may legitimately be {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN},
+     * "offered, but not knowable until the driver is loaded"), and the
+     * requested channel count is a wish; only
+     * {@link AudioBackend#openedInputChannels()} is the outcome. So the rung
+     * is opened, asked, and — when the answer is zero — closed again. Paying
+     * for one open-and-close on a capture-less head is the price of never
+     * shipping a silent take.</p>
+     *
+     * <h2>Why the ENGINE checks rather than the backend</h2>
+     * <p>{@link CaptureRequirement} is a DIRECTIVE, and
+     * {@link AudioBackend#open(DeviceId,
+     * com.benesquivelmusic.daw.sdk.audio.AudioFormat, int, CaptureRequirement)}
+     * ships a {@code default} body that ignores it entirely and delegates to
+     * the three-argument {@code open}. A backend that never overrides it
+     * therefore honours nothing, and the interface is deliberately unsealed,
+     * so out-of-tree backends exist that this tree has never seen. A REQUIRED
+     * open returning normally proves nothing on its own; the engine is the
+     * authority that actually opens streams, so the engine verifies the
+     * outcome. Backends that CAN detect the degradation still override the
+     * directive, because failing early attaches the precise native cause and
+     * never grabs the device output-only just to have it rejected a moment
+     * later — but that is an optimisation on top of this check, never a
+     * substitute for it.</p>
+     *
+     * <h2>Why a throw, and what the throw buys</h2>
+     * <p>Called inside {@link #openLadder(StreamingProvision,
+     * PendingAnnouncements, CaptureRequirement)}'s per-rung {@code try},
+     * immediately after {@code open} returns, so the existing machinery does
+     * the rest for free:
+     * {@link #closeFailedHop(BackendStreamRung, Throwable)} gives the rung's
+     * handle back before the walk advances, so the device is released rather
+     * than held by a stream nobody wants; {@code openAttempted} is already
+     * {@code true} at this point, so a rung whose CLOSE then fails abandons
+     * the walk instead of opening a fallback beside a backend that may still
+     * hold the device; and otherwise the walk simply falls through to the
+     * next rung. That fall-through is the desired behaviour, not a
+     * consolation: an ASIO head whose driver exposes no inputs should let
+     * PortAudio take the recording, and the refusal is published as an
+     * ordinary {@link BackendFallbackEvent} carrying this message.</p>
+     *
+     * <p>Under {@link CaptureRequirement#OPTIONAL} this is a no-op, which is
+     * what keeps the playback contract byte-for-byte unchanged: a
+     * playback-only interface, or an ASIO4ALL with only speakers enabled,
+     * must still open.</p>
+     *
+     * @param rung    the rung whose {@code open} has just returned
+     * @param capture what the caller asked for; {@link
+     *                CaptureRequirement#OPTIONAL} makes this a no-op
+     * @throws AudioBackendException if {@code capture} is
+     *                               {@link CaptureRequirement#REQUIRED} and
+     *                               the backend reports no capture channels
+     *                               on the stream it just opened
+     */
+    private static void requireCaptureOpened(BackendStreamRung rung,
+                                             CaptureRequirement capture) {
+        if (capture != CaptureRequirement.REQUIRED) {
+            return;
+        }
+        int openedInputChannels = rung.backend().openedInputChannels();
+        if (openedInputChannels > 0) {
+            return;
+        }
+        throw new AudioBackendException(
+                "Backend " + rung.backend().name() + " opened device '"
+                        + rung.device().name() + "' with no capture channels ("
+                        + openedInputChannels + "), so this stream could never record."
+                        + " A recording open must not degrade to output-only — that is"
+                        + " what produces a silent take — so the rung is refused and its"
+                        + " handle given back");
     }
 
     /**
@@ -3087,7 +3259,7 @@ public final class AudioEngine {
 
     /**
      * Starts audio I/O for recording. Story 316 — the SDK
-     * {@link AudioBackend#open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int)}
+     * {@link AudioBackend#open(DeviceId, com.benesquivelmusic.daw.sdk.audio.AudioFormat, int, CaptureRequirement)}
      * seam is inherently duplex (backends open capture when the provisioned
      * device has it, publishing blocks on
      * {@link AudioBackend#inputBlocks()}), so this runs the same ladder,
@@ -3106,10 +3278,47 @@ public final class AudioEngine {
      * open that the production backends reject (the pre-316
      * {@code startAudioInputOutput(int)} contract).</p>
      *
-     * @throws AudioBackendException if every ladder rung failed to open, or a
-     *                               rung that had reached {@code open} could
+     * <h2>"Never silently proceed with zero input channels" is now
+     * ENFORCED (story 316 review)</h2>
+     * <p>That sentence used to describe an INTENTION. The close-and-reopen
+     * above is only the first half of it: it guarantees the record path
+     * walks a fresh ladder rather than inheriting a stream that predates the
+     * input device, and then the walk was the ordinary PLAYBACK walk, whose
+     * whole contract is that capture degrades quietly. Three degradations
+     * rode straight through it and each one produced an output-only stream
+     * the caller could not tell from a duplex one — {@code JavaxSoundBackend}
+     * swallowing a refused capture line, {@code CallbackBackendAdapter}
+     * resolving no input device or retrying a refused duplex open
+     * output-only. The recording pipeline then subscribed to
+     * {@link AudioBackend#inputBlocks()}, no block ever arrived, and the take
+     * was SILENT with nothing in the log.</p>
+     *
+     * <p>So this entry point now walks the ladder under
+     * {@link CaptureRequirement#REQUIRED} while {@link #startAudioOutput()}
+     * keeps {@link CaptureRequirement#OPTIONAL}, and the engine VERIFIES the
+     * outcome rather than trusting the directive: after each rung's
+     * {@code open} returns, {@link #requireCaptureOpened(BackendStreamRung,
+     * CaptureRequirement)} reads {@link AudioBackend#openedInputChannels()}
+     * and turns a zero into an ordinary failed hop. A rung with no capture is
+     * therefore CLOSED and skipped, not opened — an ASIO head whose driver
+     * exposes no inputs lets PortAudio take the recording — and only when
+     * every rung fails that way does the open fail. Playback is untouched:
+     * the same capture-less provision still opens through
+     * {@link #startAudioOutput()}.</p>
+     *
+     * @throws AudioBackendException if every ladder rung failed to open —
+     *                               INCLUDING a rung refused because its open
+     *                               produced no capture channels, which is
+     *                               where a recording open on hardware with
+     *                               no usable input now lands — or a rung
+     *                               that had reached {@code open} could
      *                               not give its handle back and the walk was
-     *                               abandoned, or the previous stream could
+     *                               abandoned, or NO STREAMING PROVISION is
+     *                               configured at all (the engine then has no
+     *                               capture device whatsoever, which
+     *                               {@link #startAudioOutput()} is allowed to
+     *                               treat as silent playback and record is
+     *                               not), or the previous stream could
      *                               not be closed first, or a previously
      *                               retained stream handle still cannot be
      *                               released — including because that
@@ -3139,6 +3348,17 @@ public final class AudioEngine {
      * no other caller can slip an open in between the close and the reopen
      * and take the very device the record path is about to ask for.
      *
+     * <p>The reopen asks for {@link CaptureRequirement#REQUIRED} (story 316
+     * review). That is the ONLY difference from
+     * {@link #startAudioOutput()}'s call into the same method, and it is what
+     * makes the close above worth doing: closing a capture-less stream just
+     * to reopen one under the playback contract would have reopened another
+     * capture-less stream. The close-first step also means the shared method
+     * is always entered from {@link StreamState#CLOSED} on this path — a
+     * non-CLOSED state throws just above — so a REQUIRED walk can never take
+     * the RUNNING early return or the PAUSED resume shortcut, neither of
+     * which opens anything to verify.</p>
+     *
      * @param announcements collects the reopen's outward-facing facts;
      *                      delivered by the caller after the unlock
      */
@@ -3152,7 +3372,7 @@ public final class AudioEngine {
                                 + " released");
             }
         }
-        startAudioOutputLocked(announcements);
+        startAudioOutputLocked(announcements, CaptureRequirement.REQUIRED);
     }
 
     /**

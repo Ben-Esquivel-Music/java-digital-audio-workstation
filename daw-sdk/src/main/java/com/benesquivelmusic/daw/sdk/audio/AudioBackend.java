@@ -185,6 +185,109 @@ public interface AudioBackend extends AutoCloseable {
     void open(DeviceId device, AudioFormat format, int bufferFrames);
 
     /**
+     * Opens a stream and tells the backend whether an output-only degradation
+     * is acceptable (story 316 review).
+     *
+     * <p>Identical to {@link #open(DeviceId, AudioFormat, int)} in every other
+     * respect &mdash; same states, same exceptions, same
+     * &quot;open twice without a close throws&quot; rule. The only addition is
+     * the {@link CaptureRequirement} directive, which exists because the
+     * RECORDING entry point used to walk the ordinary PLAYBACK ladder and
+     * inherit its capture-degrades-silently contract, producing a stream that
+     * could never record and reported no failure at all. See
+     * {@link CaptureRequirement} for the full story.</p>
+     *
+     * <p><strong>The default body IGNORES the directive.</strong> It delegates
+     * straight to {@link #open(DeviceId, AudioFormat, int)}, which is a
+     * <em>no-op honouring</em> of {@link CaptureRequirement#REQUIRED}: an
+     * inheriting backend that degrades to output-only still returns
+     * successfully from this call. That is deliberately safe, and it is safe
+     * for exactly ONE reason &mdash; the caller does not trust it. The engine
+     * verifies the OUTCOME through {@link #openedInputChannels()} after a
+     * successful {@code REQUIRED} open and turns a zero into an ordinary failed
+     * ladder hop, so the invariant holds whether or not any backend implements
+     * this method. Nothing else may be inferred from a normal return.</p>
+     *
+     * <p>Backends that can DETECT an imminent capture degradation override this
+     * anyway, because failing early is strictly better than being rejected
+     * after the fact: {@link JavaxSoundBackend} rethrows the capture line's own
+     * {@code LineUnavailableException} as the cause instead of swallowing it,
+     * and {@code daw-core}'s {@code CallbackBackendAdapter} refuses to retry a
+     * refused duplex stream output-only (that one lands with daw-core's half of
+     * the same review). Both then report the PRECISE native cause, and neither
+     * grabs the device output-only just to have the open rejected and closed
+     * again a moment later.</p>
+     *
+     * @param device       target device id; {@link DeviceId#isDefault() default}
+     *                     asks the backend to pick its own default device
+     * @param format       desired PCM format
+     * @param bufferFrames desired buffer size in sample frames (must be positive)
+     * @param capture      whether capture may degrade silently
+     *                     ({@link CaptureRequirement#OPTIONAL}, the playback
+     *                     contract) or must be produced
+     *                     ({@link CaptureRequirement#REQUIRED}, the recording
+     *                     contract); must not be null
+     * @throws AudioBackendException     if the native driver refuses the
+     *                                   requested configuration, or if
+     *                                   {@code capture} is
+     *                                   {@link CaptureRequirement#REQUIRED} and
+     *                                   this backend can determine that no
+     *                                   capture stream is possible
+     * @throws IllegalStateException     if a stream is already open on this backend
+     * @throws IllegalArgumentException  if {@code bufferFrames <= 0}
+     * @throws NullPointerException      if {@code capture} is null
+     */
+    default void open(DeviceId device, AudioFormat format, int bufferFrames,
+                      CaptureRequirement capture) {
+        Objects.requireNonNull(capture, "capture must not be null");
+        open(device, format, bufferFrames);
+    }
+
+    /**
+     * How many capture channels the CURRENTLY OPEN stream actually opened with
+     * (story 316 review) &mdash; the verifiable half of the
+     * {@link CaptureRequirement} contract.
+     *
+     * <p>{@code 0} has two meanings and both are the same fact from the
+     * caller's point of view: no stream is open, or the open produced no
+     * capture at all. A positive answer is a PROMISE about
+     * {@link #inputBlocks()}: a backend reporting {@code n > 0} is undertaking
+     * that its input publisher will emit blocks carrying those channels while
+     * the stream is open. The two must never disagree &mdash; a backend whose
+     * publisher is silent by construction must answer {@code 0} however many
+     * channels its driver nominally activated.</p>
+     *
+     * <p>This is what the engine reads after a successful
+     * {@link CaptureRequirement#REQUIRED} open, and a {@code 0} there turns the
+     * rung into an ordinary failed ladder hop. It is therefore the enforcement
+     * point, not {@link #open(DeviceId, AudioFormat, int, CaptureRequirement)}:
+     * that method's default body honours nothing, so a REQUIRED open returning
+     * normally proves nothing on its own.</p>
+     *
+     * <p><strong>The default FAILS CLOSED, and that is the whole point.</strong>
+     * A backend that has not overridden this method cannot substantiate a
+     * capture stream, and the house rule is that a self-announcing refusal
+     * beats a silent no-op. A wrong {@code 0} produces a visible &quot;this
+     * backend reports no capture channels&quot; refusal on the record path,
+     * which a maintainer can read and fix in one override; a wrong non-zero
+     * default would produce a SILENT TAKE, which is the exact bug this seam
+     * exists to close. The asymmetry is not close.</p>
+     *
+     * <p>{@link WasapiBackend}, {@link JackBackend} and {@link CoreAudioBackend}
+     * are CORRECT at the default rather than merely un-migrated: their native
+     * wiring is unimplemented, none of them ever publishes an input block, and
+     * their {@link #supportsStreaming()} already answers {@code false} for the
+     * same reason. When their capture paths land, each owes an override.</p>
+     *
+     * @return the number of capture channels the open stream really has;
+     *         {@code 0} when the open produced no capture, and {@code 0} when
+     *         no stream is open. Never negative.
+     */
+    default int openedInputChannels() {
+        return 0;
+    }
+
+    /**
      * Returns a {@link Flow.Publisher} that emits one {@link AudioBlock} per
      * hardware callback while the stream is open. The publisher completes
      * when {@link #close()} is called. Returns an empty publisher (completes

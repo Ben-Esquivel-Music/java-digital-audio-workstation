@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
@@ -149,25 +150,48 @@ class AudioEngineTest {
     }
 
     @Test
-    void shouldStartAudioInputOutputWithoutBackend() {
+    void shouldRefuseStartAudioInputOutputWithoutBackend() {
+        // Story 316 review: this used to assert the engine merely started.
+        // With no provision there is no capture device AT ALL, so a record
+        // that returned normally handed the recording pipeline a publisher
+        // that could never emit a block — the silent take. Playback keeps
+        // the old tolerance (see the sibling test below); record does not.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
-        // With no provision, startAudioInputOutput should still start the engine
-        engine.startAudioInputOutput();
-
-        assertThat(engine.isRunning()).isTrue();
+        assertThatThrownBy(engine::startAudioInputOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no audio backend is configured");
     }
 
     @Test
-    void shouldStartAudioInputOutputAfterOutputIsOpen() {
+    void shouldStartAudioOutputWithoutBackendEvenThoughInputOutputIsRefused() {
+        // The DISCRIMINATING half: refusing a capture-less record open must
+        // not have made playback stricter. Playback without hardware output
+        // is a legitimate configuration (honest playing states are story
+        // 317), so startAudioOutput still logs and returns.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
-        // Start output-only first (no provision, so just starts engine)
+        engine.startAudioOutput();
+
+        assertThat(engine.isRunning()).isTrue();
+        assertThat(engine.isStreamOpen()).isFalse();
+    }
+
+    @Test
+    void shouldRefuseStartAudioInputOutputAfterOutputStartedWithoutBackend() {
+        // Story 316 review: previously "starting input/output should not
+        // error" after an output start. The output start is still fine — it
+        // opened no stream, because there is no provision — but the record
+        // that follows now fails for the same reason as above, and the
+        // engine stays RUNNING rather than being torn down by the refusal.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+
         engine.startAudioOutput();
         assertThat(engine.isRunning()).isTrue();
 
-        // Starting input/output should not error
-        engine.startAudioInputOutput();
+        assertThatThrownBy(engine::startAudioInputOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no audio backend is configured");
         assertThat(engine.isRunning()).isTrue();
     }
 

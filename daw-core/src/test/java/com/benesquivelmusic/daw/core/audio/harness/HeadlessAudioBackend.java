@@ -126,6 +126,29 @@ public final class HeadlessAudioBackend implements AudioBackend {
         return open;
     }
 
+    /**
+     * The capture channels the open stream has (story 316 review): the
+     * opened format's channel count while a stream is open, {@code 0}
+     * otherwise.
+     *
+     * <p>{@link HeadlessAudioBackend} is a FULL-DUPLEX stand-in —
+     * {@link #HEADLESS_DEVICE} offers two input channels and
+     * {@link #publishInput(AudioBlock)} really does emit blocks on
+     * {@link #inputBlocks()} — so answering with a positive count is the
+     * honest answer, not a convenience. The interface's {@code 0} default
+     * would say "this backend can never capture", which would be false here
+     * and would make every record-path test fail the engine's REQUIRED-open
+     * verification for a reason that has nothing to do with what it is
+     * testing.</p>
+     *
+     * @return the opened format's channel count while open, else {@code 0}
+     */
+    @Override
+    public int openedInputChannels() {
+        AudioFormat opened = this.openedFormat;
+        return open && opened != null ? opened.channels() : 0;
+    }
+
     @Override
     public void close() {
         if (!open) {

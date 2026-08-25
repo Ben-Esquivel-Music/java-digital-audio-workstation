@@ -9,6 +9,8 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -100,8 +102,12 @@ class PortAudioBackendTest {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment info = paDeviceInfo(arena, "Garbage Interface", -999, 2);
 
-            AudioDeviceInfo parsed = PortAudioBackend.parseDeviceInfo(7, info);
+            AudioDeviceInfo parsed =
+                    PortAudioBackend.parseDeviceInfo(7, info, hostApi -> "Windows WASAPI");
 
+            assertThat(parsed.hostApi())
+                    .as("and the driver's own host API name is what labels it")
+                    .isEqualTo("Windows WASAPI");
             assertThat(parsed.name())
                     .as("the device is still enumerated, under its own name")
                     .isEqualTo("Garbage Interface");
@@ -129,12 +135,110 @@ class PortAudioBackendTest {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment info = paDeviceInfo(arena, "Speakers", 0, 2);
 
-            AudioDeviceInfo parsed = PortAudioBackend.parseDeviceInfo(1, info);
+            AudioDeviceInfo parsed =
+                    PortAudioBackend.parseDeviceInfo(1, info, hostApi -> "MME");
 
             assertThat(parsed.maxInputChannels()).isZero();
             assertThat(parsed.hasKnownInputChannelCount()).isTrue();
             assertThat(parsed.supportsInput()).isFalse();
             assertThat(parsed.maxOutputChannels()).isEqualTo(2);
+            assertThat(parsed.hostApi()).isEqualTo("MME");
+        }
+    }
+
+    // ── Host API naming (story 316 review) ────────────────────────────────
+
+    /**
+     * The point of the whole slice: a device is labelled with the host API's
+     * REAL name, and the index the resolver is asked about is the one the
+     * struct reports.
+     *
+     * <p>Without this, the only thing a {@code PaDeviceInfo} says about its
+     * host API is an index, so the disambiguating label read
+     * {@code "[PortAudio Host API 2]"} — which tells a user choosing between
+     * four enumerations of one endpoint nothing at all.</p>
+     */
+    @Test
+    void theHostApiIndexInTheStructIsWhatGetsResolvedAndTheResolvedNameIsWhatLabelsTheDevice() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment info = paDeviceInfo(arena, "Speakers (Realtek)", 13, 0, 2);
+            List<Integer> asked = new ArrayList<>();
+
+            AudioDeviceInfo parsed = PortAudioBackend.parseDeviceInfo(4, info, hostApiIndex -> {
+                asked.add(hostApiIndex);
+                return "Windows WASAPI";
+            });
+
+            assertThat(asked)
+                    .as("the resolver is asked about the struct's own hostApi member, not "
+                            + "about the device index")
+                    .containsExactly(13);
+            assertThat(parsed.hostApi()).isEqualTo("Windows WASAPI");
+        }
+    }
+
+    /**
+     * A PortAudio build that does not export {@code Pa_GetHostApiInfo} behaves
+     * EXACTLY as it did before this slice.
+     *
+     * <p>That is what makes binding the symbol optionally an acceptable trade:
+     * the fallback is not a degraded mode, it is the previous behaviour
+     * verbatim.</p>
+     */
+    @Test
+    void aResolverThatCannotNameTheHostApiFallsBackToTheIndexLiteral() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment info = paDeviceInfo(arena, "Speakers (Realtek)", 2, 0, 2);
+
+            AudioDeviceInfo parsed =
+                    PortAudioBackend.parseDeviceInfo(4, info, hostApiIndex -> null);
+
+            assertThat(parsed.hostApi()).isEqualTo("PortAudio Host API 2");
+        }
+    }
+
+    /**
+     * Blank is treated as absent, not as a name.
+     *
+     * <p>A blank host API would make {@link AudioDeviceInfo#qualifiedName()}
+     * answer {@code "Speakers (Realtek) []"} — a disambiguator that
+     * disambiguates nothing, and one that would still be matched by
+     * {@code isSelectionFor}'s bracket test, so the ambiguity would survive
+     * looking resolved.</p>
+     */
+    @Test
+    void aResolverThatAnswersBlankAlsoFallsBackToTheIndexLiteral() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment info = paDeviceInfo(arena, "Speakers (Realtek)", 2, 0, 2);
+
+            AudioDeviceInfo parsed =
+                    PortAudioBackend.parseDeviceInfo(4, info, hostApiIndex -> "   ");
+
+            assertThat(parsed.hostApi()).isEqualTo("PortAudio Host API 2");
+        }
+    }
+
+    /**
+     * The end-to-end link between this parse and the two ambiguity findings:
+     * the qualified label the settings layer persists, and that
+     * {@code CallbackBackendAdapter} resolves back to a device index, is the
+     * one built from the driver's real host API name.
+     */
+    @Test
+    void theQualifiedLabelTheSettingsAndResolverLayersSeeCarriesTheRealHostApiName() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment info = paDeviceInfo(arena, "Speakers (Realtek)", 13, 0, 2);
+
+            AudioDeviceInfo parsed =
+                    PortAudioBackend.parseDeviceInfo(4, info, hostApiIndex -> "Windows WASAPI");
+
+            assertThat(parsed.qualifiedName())
+                    .as("this is the string a user picks between when one endpoint "
+                            + "enumerates under MME, DirectSound, WASAPI and WDM-KS")
+                    .isEqualTo("Speakers (Realtek) [Windows WASAPI]");
+            assertThat(AudioDeviceInfo.isSelectionFor(parsed.qualifiedName(), parsed.name()))
+                    .as("and it still resolves back to the device it names")
+                    .isTrue();
         }
     }
 
@@ -145,6 +249,15 @@ class PortAudioBackendTest {
      */
     private static MemorySegment paDeviceInfo(
             Arena arena, String name, int maxInputChannels, int maxOutputChannels) {
+        return paDeviceInfo(arena, name, 0, maxInputChannels, maxOutputChannels);
+    }
+
+    /**
+     * As above, naming the host API index the struct reports — the member
+     * {@code parseDeviceInfo} hands to its host-API name resolver.
+     */
+    private static MemorySegment paDeviceInfo(Arena arena, String name, int hostApiIndex,
+                                              int maxInputChannels, int maxOutputChannels) {
         MemoryLayout layout = PortAudioBindings.PA_DEVICE_INFO_LAYOUT;
         MemorySegment info = arena.allocate(layout);
         // A generously sized, fully in-bounds name buffer: parseDeviceInfo
@@ -153,7 +266,7 @@ class PortAudioBackendTest {
         MemorySegment nameBuffer = arena.allocate(256);
         nameBuffer.setString(0, name);
         info.set(ValueLayout.ADDRESS, offsetOf(layout, "name"), nameBuffer);
-        info.set(ValueLayout.JAVA_INT, offsetOf(layout, "hostApi"), 0);
+        info.set(ValueLayout.JAVA_INT, offsetOf(layout, "hostApi"), hostApiIndex);
         info.set(ValueLayout.JAVA_INT, offsetOf(layout, "maxInputChannels"), maxInputChannels);
         info.set(ValueLayout.JAVA_INT, offsetOf(layout, "maxOutputChannels"), maxOutputChannels);
         info.set(ValueLayout.JAVA_DOUBLE, offsetOf(layout, "defaultLowInputLatency"), 0.005);

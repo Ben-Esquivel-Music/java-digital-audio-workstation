@@ -538,10 +538,11 @@ class JavaxSoundBackendTest {
         StubLine capture = StubLine.refusingCloses(1);
         plantLine(backend, INPUT_LINE, capture);
 
-        assertThatCode(() -> backend.rollBackFailedCaptureOpen(
-                new LineUnavailableException("device refused the capture line")))
-                .as("capture is optional-degrade: the rollback must not fail the open")
-                .doesNotThrowAnyException();
+        assertThat(backend.rollBackFailedCaptureOpen(
+                new LineUnavailableException("device refused the capture line"),
+                CaptureRequirement.OPTIONAL))
+                .as("capture is optional-degrade for playback: no refusal to throw")
+                .isNull();
 
         assertThat(capture.stopAttempts())
                 .as("the release was really attempted — stop, then close")
@@ -571,7 +572,8 @@ class JavaxSoundBackendTest {
         plantLine(backend, INPUT_LINE, capture);
 
         backend.rollBackFailedCaptureOpen(
-                new LineUnavailableException("device refused the capture line"));
+                new LineUnavailableException("device refused the capture line"),
+                CaptureRequirement.OPTIONAL);
 
         assertThat(capture.closeAttempts()).isEqualTo(1);
         assertThat(retainedLine(backend, INPUT_LINE))
@@ -580,6 +582,160 @@ class JavaxSoundBackendTest {
         assertThat(backend.isOpen())
                 .as("the mandatory output line was never touched by the capture rollback")
                 .isTrue();
+
+        backend.close();
+    }
+
+    /**
+     * The RECORDING boundary (story 316 review): the SAME capture failure that
+     * an {@link CaptureRequirement#OPTIONAL} open shrugs off must FAIL a
+     * {@link CaptureRequirement#REQUIRED} one, carrying the line's own failure
+     * as the cause.
+     *
+     * <p>Driven through the package-private rollback rather than through
+     * {@link JavaxSoundBackend#open}, because provoking it through {@code open}
+     * would need a host whose OUTPUT line opens and whose CAPTURE line does
+     * not — a hardware precondition neither the developer's Windows machine
+     * nor the {@code ubuntu-latest} runner can be asked for. The rollback IS
+     * the branch under test: {@code open}'s capture catch does nothing but hand
+     * it the failure and throw whatever it returns.</p>
+     */
+    @Test
+    void aRequiredCaptureOpenRethrowsInsteadOfDegradingToOutputOnly() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend); // the mandatory output line already succeeded
+        StubLine capture = StubLine.releasable();
+        plantLine(backend, INPUT_LINE, capture);
+        LineUnavailableException refused =
+                new LineUnavailableException("device refused the capture line");
+
+        AudioBackendException failure =
+                backend.rollBackFailedCaptureOpen(refused, CaptureRequirement.REQUIRED);
+
+        assertThat(failure)
+                .as("a recording open that degraded to output-only is a silent take")
+                .isNotNull()
+                .hasCauseReference(refused);
+        assertThat(failure.getMessage())
+                .as("the message names the requirement, not just the line")
+                .contains("requires capture");
+        assertThat(capture.closeAttempts())
+                .as("the partially opened capture line was still given back")
+                .isEqualTo(1);
+        assertThat(retainedLine(backend, INPUT_LINE))
+                .as("a close that RETURNED drops its field")
+                .isNull();
+        assertThat(backend.isOpen())
+                .as("the open FLAG is cleared so the rung stays reopenable — the"
+                        + " output LINE is deliberately left for the caller's close()")
+                .isFalse();
+        assertThat(backend.openedInputChannels())
+                .as("and the count never survives the line it describes")
+                .isZero();
+    }
+
+    /**
+     * The other half of the same boundary: capture failure still never kills a
+     * PLAYBACK open. Distinct from
+     * {@link #aFailedCaptureRollbackRetainsTheLineWithoutKillingThePlaybackOpen()},
+     * which pins the RETENTION behaviour of a line that refuses to close; this
+     * one pins that the OPTIONAL verdict itself is unchanged now that the same
+     * body serves both requirements.
+     */
+    @Test
+    void anOptionalCaptureOpenStillDegradesSilentlyAndLeavesPlaybackRunning() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine capture = StubLine.releasable();
+        plantLine(backend, INPUT_LINE, capture);
+
+        AudioBackendException failure = backend.rollBackFailedCaptureOpen(
+                new LineUnavailableException("device refused the capture line"),
+                CaptureRequirement.OPTIONAL);
+
+        assertThat(failure)
+                .as("playback must survive a capture line the mixer refused")
+                .isNull();
+        assertThat(backend.isOpen())
+                .as("the open still stands — the mandatory output line succeeded")
+                .isTrue();
+        assertThat(backend.openedInputChannels())
+                .as("but it honestly reports that this stream captures nothing")
+                .isZero();
+
+        backend.close();
+    }
+
+    @Test
+    void aRollbackWhoseReleaseFailedCarriesItAlongsideTheRequiredRefusal() {
+        // Same reporting rule as the mandatory output path: the OPEN failure is
+        // the actionable one and stays the cause; the release failure rides as
+        // a suppressed exception rather than replacing it.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StubLine capture = StubLine.refusingCloses(1);
+        plantLine(backend, INPUT_LINE, capture);
+        LineUnavailableException refused =
+                new LineUnavailableException("device refused the capture line");
+
+        AudioBackendException failure =
+                backend.rollBackFailedCaptureOpen(refused, CaptureRequirement.REQUIRED);
+
+        assertThat(failure).isNotNull().hasCauseReference(refused);
+        assertThat(failure.getSuppressed())
+                .as("the release failure is carried, never swallowed and never"
+                        + " promoted over the open failure")
+                .hasSize(1);
+        assertThat(retainedLine(backend, INPUT_LINE))
+                .as("the line it could not release is RETAINED for a later close")
+                .isSameAs(capture);
+
+        assertThatCode(backend::close)
+                .as("close() reaches that same handle; this stub refuses only its"
+                        + " FIRST close, so the retry confirms the release")
+                .doesNotThrowAnyException();
+        assertThat(capture.closeAttempts())
+                .as("the retry REACHED the retained line")
+                .isEqualTo(2);
+        assertThat(retainedLine(backend, INPUT_LINE)).isNull();
+    }
+
+    @Test
+    void aRefusedOutputLineReportsNoCaptureChannelsUnderEitherRequirement() {
+        // The one full-open assertion that is host-independent: 192 interleaved
+        // channels is refused by every mixer, so the rung fails before either
+        // line exists and openedInputChannels() must not invent one.
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        AudioFormat absurd = new AudioFormat(48_000.0, 192, 16);
+        DeviceId device = DeviceId.defaultFor(JavaxSoundBackend.NAME);
+
+        assertThatThrownBy(() ->
+                backend.open(device, absurd, 512, CaptureRequirement.REQUIRED))
+                .isInstanceOf(AudioBackendException.class);
+        assertThat(backend.openedInputChannels()).isZero();
+
+        assertThatThrownBy(() ->
+                backend.open(device, absurd, 512, CaptureRequirement.OPTIONAL))
+                .isInstanceOf(AudioBackendException.class);
+        assertThat(backend.openedInputChannels()).isZero();
+        assertThat(backend.isOpen()).isFalse();
+
+        backend.close();
+    }
+
+    @Test
+    void aNullCaptureRequirementIsRejectedBeforeAnyLineIsTouched() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+
+        assertThatThrownBy(() -> backend.open(
+                DeviceId.defaultFor(JavaxSoundBackend.NAME),
+                new AudioFormat(48_000.0, 2, 16), 512, null))
+                .as("the requirement is checked before any line is touched")
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("capture");
+        assertThat(backend.isOpen())
+                .as("a rejected argument must not leave the rung marked open")
+                .isFalse();
 
         backend.close();
     }

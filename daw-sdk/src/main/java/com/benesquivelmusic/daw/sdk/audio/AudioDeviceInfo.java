@@ -171,4 +171,84 @@ public record AudioDeviceInfo(
                 ? Math.min(requestedChannels, maxOutputChannels)
                 : requestedChannels;
     }
+
+    /**
+     * This device's collision-proof SELECTION LABEL: the bare {@link #name()}
+     * when {@link #hostApi()} is null or blank, and
+     * <code>name() + " [" + hostApi() + "]"</code> otherwise (story 316
+     * review).
+     *
+     * <p>A bare display name is not a stable identity. PortAudio enumerates the
+     * SAME physical endpoint once per host API, which on Windows is the norm
+     * rather than the exception &mdash; one interface appears as
+     * {@code "Speakers"} under MME, DirectSound, WASAPI and WDM-KS, four
+     * entries with four different indices, four different latencies and four
+     * different channel counts. A resolver matching on {@code name()} alone
+     * takes the FIRST match, so the user picks one endpoint from the menu and
+     * the engine silently opens another.</p>
+     *
+     * <p><strong>The format is a stable contract, not a presentation
+     * choice.</strong> Two other layers are wired to this exact shape in the
+     * same review: the Audio Settings device menus offer this string as the
+     * value they PERSIST, and the backend device resolvers compare an already
+     * persisted selection against it. Changing the separator, the spacing or
+     * the brackets silently un-resolves every setting a user has ever saved,
+     * so it may only change together with a migration.</p>
+     *
+     * <p>Consumers must never take it back APART. It is compared whole, and the
+     * one question anybody legitimately asks of it &mdash; "does this persisted
+     * label name that bare device?" &mdash; has exactly one answer, in
+     * {@link #isSelectionFor(String, String)}. Parsing on {@code " ["} would be
+     * wrong the moment a vendor ships a device whose own name contains a
+     * bracket.</p>
+     *
+     * @return the label that disambiguates this device from a same-named device
+     *         under another host API; never null, and never blank when
+     *         {@link #name()} is not blank
+     */
+    public String qualifiedName() {
+        return hostApi == null || hostApi.isBlank()
+                ? name
+                : name + " [" + hostApi + "]";
+    }
+
+    /**
+     * The single definition of "this persisted selection names that device"
+     * (story 316 review).
+     *
+     * <p>{@code selection} is whatever the user's settings hold: either a bare
+     * device name saved before {@link #qualifiedName()} existed, or a
+     * host-API-qualified label saved after it. Both must resolve, so the test
+     * is deliberately the pair
+     * {@code selection.equals(bare) || (selection.startsWith(bare + " [")
+     * && selection.endsWith("]"))} and nothing else &mdash; no parsing, no
+     * splitting, no normalization.</p>
+     *
+     * <p>The bracket prefix is what stops a PREFIX collision from matching:
+     * a selection of {@code "Speakers"} must not resolve to a device named
+     * {@code "Speakers Pro"}, and a bare {@code startsWith} would have let it.
+     * That is the same class of silent mis-resolution
+     * {@link #qualifiedName()} exists to prevent, so both halves live in one
+     * method rather than being re-derived at each call site.</p>
+     *
+     * <p>The callers that rely on it, wired in the same review: the settings
+     * layer, which decides whether a persisted device selection still matches
+     * an enumerated device, and {@code daw-core}'s backend device resolvers,
+     * which turn a persisted selection into a device index before opening a
+     * stream.</p>
+     *
+     * @param selection      the persisted selection to test; may be null
+     * @param bareDeviceName the enumerated device's bare {@link #name()}; may
+     *                       be null
+     * @return {@code true} when {@code selection} names that device, either
+     *         bare or host-API-qualified; {@code false} when either argument is
+     *         null
+     */
+    public static boolean isSelectionFor(String selection, String bareDeviceName) {
+        if (selection == null || bareDeviceName == null) {
+            return false;
+        }
+        return selection.equals(bareDeviceName)
+                || (selection.startsWith(bareDeviceName + " [") && selection.endsWith("]"));
+    }
 }

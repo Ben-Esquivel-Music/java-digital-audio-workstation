@@ -9,8 +9,10 @@ import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
@@ -18,6 +20,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.logging.Logger;
 
 /**
@@ -186,6 +189,79 @@ public final class DeviceEnumerationTask implements AutoCloseable {
         }
     }
 
+    /**
+     * Builds the immutable menus, qualifying a device label with its host API
+     * ONLY when that bare name actually collides in that direction (story 316
+     * review).
+     *
+     * <p><strong>The defect.</strong> This method used to build each menu with
+     * {@code if (supports… && !menu.contains(device.name())) menu.add(device.name())}.
+     * PortAudio enumerates the same physical endpoint once per host API, which
+     * on Windows is the norm: one interface appears as {@code "Speakers"} under
+     * MME, DirectSound, WASAPI and WDM-KS, four entries with four different
+     * indices, latencies and channel counts. The {@code contains} guard
+     * COLLAPSED those four into one menu entry, so the user could not see &mdash;
+     * let alone pick &mdash; the other three, and the bare name they then
+     * persisted was the ambiguous string the backend afterwards had to resolve.</p>
+     *
+     * <p><strong>Why collision-only, rather than always qualifying.</strong> The
+     * label this method emits is not decoration: it is the value the Settings
+     * dialog PERSISTS for {@code audio.inputDevice} / {@code audio.outputDevice}
+     * and hands to {@code AudioEngineController} for every open, capability
+     * query and test tone. Two facts make unconditional qualification the wrong
+     * trade:</p>
+     * <ul>
+     *   <li>A bare name is what every setting already on disk holds &mdash; this
+     *       method is the only producer of those options, for both the Settings
+     *       dialog and the first-run wizard &mdash; and
+     *       {@code CallbackBackendAdapter}
+     *       still resolves it: its matcher tries an exact
+     *       {@link AudioDeviceInfo#qualifiedName()} match first and falls back
+     *       to a bare {@link AudioDeviceInfo#name()} match, which resolves
+     *       exactly as it always did whenever it hits a single device.</li>
+     *   <li>Qualification only discriminates where the host API differs. Both
+     *       non-PortAudio backends stamp one CONSTANT host API on every device
+     *       they enumerate &mdash; {@code AsioBackend} reports {@code "ASIO"}
+     *       for each driver, {@code JavaxSoundBackend} reports
+     *       {@code "Java Sound"} for each mixer &mdash; because neither
+     *       enumerates an endpoint once per API the way PortAudio does. Suffixing
+     *       those unconditionally would rewrite every stored value and lengthen
+     *       every menu entry while distinguishing nothing.</li>
+     * </ul>
+     *
+     * <p><strong>The honest consequence.</strong> A stored bare name that was
+     * unambiguous when it was saved can later collide, because a newly plugged
+     * device enumerates under the same name on another host API. The menu then
+     * offers only qualified labels for it, the stored bare value is no longer
+     * among the options, and
+     * {@code SettingRow.replaceChoiceOptions(options, "")} &mdash; the
+     * two-argument overload {@code SettingsDialog.applyDeviceEnumerationResult}
+     * calls for both device rows &mdash; replaces it with the {@code ""}
+     * default. That reset is REPORTED, not silent:
+     * {@code applyDeviceEnumerationResult} captures each row's previous value
+     * and passes it to {@code logCapabilityFallback}, which on any change logs
+     * a warning and raises {@code shell.showOperationNotice(…)}. And it is the
+     * correct outcome rather than a regression, because the same collision
+     * makes {@code CallbackBackendAdapter} refuse that bare selection outright
+     * &mdash; falling back to the default beats silently opening whichever
+     * endpoint happened to enumerate first.</p>
+     *
+     * <p><strong>No migration is written for stored values, deliberately.</strong>
+     * There is nothing for one to do. While a name is unambiguous the menu
+     * still offers the bare form, so a stored bare value is still present and
+     * nothing resets; once it IS ambiguous the stored value is genuinely
+     * unresolvable and no rewrite could pick a host API on the user's behalf
+     * without making exactly the silent-substitution guess this whole change
+     * exists to stop.</p>
+     *
+     * <p>The two directions are counted independently. A device that collides
+     * as an input but is unique as an output is qualified only in the input
+     * menu; qualifying it in both would churn a stored output name that was
+     * never ambiguous. The duplicate guard survives qualification, because two
+     * devices can share a name AND a host API (two identical interfaces on one
+     * driver) &mdash; nothing in an enumeration can tell those apart, so they
+     * collapse to one entry here and the backend refuses the selection.</p>
+     */
     private static Result toResult(List<String> backends,
                                    List<AudioDeviceInfo> devices,
                                    BufferSizeRange reportedRange,
@@ -197,12 +273,16 @@ public final class DeviceEnumerationTask implements AutoCloseable {
         // Empty string is the persisted canonical value for automatic/default.
         inputs.add("");
         outputs.add("");
+        Map<String, Integer> inputNameCounts =
+                countBareNames(devices, AudioDeviceInfo::supportsInput);
+        Map<String, Integer> outputNameCounts =
+                countBareNames(devices, AudioDeviceInfo::supportsOutput);
         for (AudioDeviceInfo device : devices) {
-            if (device.supportsInput() && !inputs.contains(device.name())) {
-                inputs.add(device.name());
+            if (device.supportsInput()) {
+                addDeviceChoice(inputs, device, inputNameCounts);
             }
-            if (device.supportsOutput() && !outputs.contains(device.name())) {
-                outputs.add(device.name());
+            if (device.supportsOutput()) {
+                addDeviceChoice(outputs, device, outputNameCounts);
             }
         }
         BufferSizeRange range = reportedRange == null
@@ -224,6 +304,53 @@ public final class DeviceEnumerationTask implements AutoCloseable {
                 rates, supportedRateValues, range.expandedSizes(),
                 reportedClockSources == null ? List.of() : reportedClockSources,
                 preferredRate, range.preferred());
+    }
+
+    /**
+     * Counts how many devices supporting {@code direction} share each bare
+     * {@link AudioDeviceInfo#name()} &mdash; the first of the two passes
+     * {@link #toResult} describes. Counted per direction because a name can
+     * collide as an input while staying unique as an output.
+     *
+     * @param devices   the enumeration snapshot
+     * @param direction {@link AudioDeviceInfo#supportsInput()} or
+     *                  {@link AudioDeviceInfo#supportsOutput()}
+     * @return bare name to the number of devices answering to it in that
+     *         direction
+     */
+    private static Map<String, Integer> countBareNames(
+            List<AudioDeviceInfo> devices, Predicate<AudioDeviceInfo> direction) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (AudioDeviceInfo device : devices) {
+            if (direction.test(device)) {
+                counts.merge(device.name(), 1, Integer::sum);
+            }
+        }
+        return counts;
+    }
+
+    /**
+     * Appends one device to a menu in enumeration order, host-API-qualified
+     * only when its bare name collides in that direction.
+     *
+     * <p>The duplicate guard is applied AFTER qualification, so it now only
+     * suppresses entries that are still identical once the host API is
+     * attached &mdash; devices that no enumeration can distinguish.</p>
+     *
+     * @param menu           the menu being built, mutated in place
+     * @param device         the device to offer
+     * @param bareNameCounts the per-direction counts from
+     *                       {@link #countBareNames(List, Predicate)}
+     */
+    private static void addDeviceChoice(List<String> menu,
+                                        AudioDeviceInfo device,
+                                        Map<String, Integer> bareNameCounts) {
+        String label = bareNameCounts.getOrDefault(device.name(), 0) > 1
+                ? device.qualifiedName()
+                : device.name();
+        if (!menu.contains(label)) {
+            menu.add(label);
+        }
     }
 
     private static double preferredSampleRate(Set<Integer> supportedRates) {

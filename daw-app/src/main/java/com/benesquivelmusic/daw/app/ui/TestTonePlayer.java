@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.DataLine;
@@ -72,12 +74,73 @@ final class TestTonePlayer {
         }
     }
 
+    /**
+     * Resolves the persisted output-device selection to a Java Sound mixer, or
+     * {@code null} to let the JVM pick its default.
+     *
+     * <p>The comparison is
+     * {@link AudioDeviceInfo#isSelectionFor(String, String)} rather than a
+     * plain {@code equals} (story 316 review). {@code preferredName} is the
+     * value of the {@code audio.outputDevice} setting, which
+     * {@code SettingsDialog.playTestTone()} reads straight out of the row and
+     * hands down here; and {@code DeviceEnumerationTask} now offers &mdash; and
+     * therefore persists &mdash; the host-API-qualified
+     * {@link AudioDeviceInfo#qualifiedName()} form,
+     * {@code "Speakers [Windows WASAPI]"}, for any device name that collides
+     * across host APIs. Against {@code Mixer.Info#getName()}, which is always
+     * the BARE name, {@code equals} silently failed on exactly those
+     * selections, this method returned {@code null}, and {@code writeToLine}
+     * fell through to {@code AudioSystem.getSourceDataLine(format)} &mdash; so
+     * the tone the user pressed to verify one endpoint played out of a
+     * different one. A test tone that lies about which device it used is worse
+     * than no test tone.</p>
+     *
+     * <p>{@code isSelectionFor} is the single definition of "this persisted
+     * selection names that device" and accepts both the bare and the qualified
+     * form, so pre-existing settings keep resolving unchanged. Accepting a
+     * qualified selection against a bare mixer name is right here even though
+     * the qualification was minted from another backend's enumeration: Java
+     * Sound stamps one constant host API ({@code JavaxSoundBackend.NAME}) on
+     * everything it enumerates and lists each mixer once, so a suffix can
+     * never be the thing that picks between two Java Sound mixers. Where two
+     * mixers genuinely share a bare name, this returns the first &mdash; but
+     * nothing in {@code Mixer.Info} distinguishes them, so there is no better
+     * answer to give. That is the opposite trade from
+     * {@code CallbackBackendAdapter}, which searches a snapshot that really
+     * does hold one entry per host API and so must try the exact qualified
+     * match first and refuse a bare name that hits more than one.</p>
+     *
+     * @param preferredName the persisted selection; blank or null means "JVM
+     *                      default"
+     * @return the matching mixer, or {@code null} for the JVM default
+     */
     private static Mixer.Info resolveMixerInfo(String preferredName) {
+        return resolveMixerInfo(preferredName, AudioSystem.getMixerInfo());
+    }
+
+    /**
+     * The matching rule of {@link #resolveMixerInfo(String)} over an explicit
+     * mixer list &mdash; the test seam (story 316 review).
+     *
+     * <p>The list is a parameter rather than being read from
+     * {@link AudioSystem} inside, so the rule can be pinned without audio
+     * hardware. It has to be: the resolution this method owns is
+     * bare-vs-qualified string matching, and a test that could only run where
+     * {@code AudioSystem.getMixerInfo()} returns something would be skipped on
+     * the CI host (ubuntu-latest, no sound card) &mdash; i.e. skipped exactly
+     * where regressions get caught.</p>
+     *
+     * @param preferredName the persisted selection; blank or null means "JVM
+     *                      default"
+     * @param mixers        the mixers to search
+     * @return the matching mixer, or {@code null} for the JVM default
+     */
+    static Mixer.Info resolveMixerInfo(String preferredName, Mixer.Info[] mixers) {
         if (preferredName == null || preferredName.isBlank()) {
             return null;
         }
-        for (Mixer.Info info : AudioSystem.getMixerInfo()) {
-            if (preferredName.equals(info.getName())) {
+        for (Mixer.Info info : mixers) {
+            if (AudioDeviceInfo.isSelectionFor(preferredName, info.getName())) {
                 return info;
             }
         }

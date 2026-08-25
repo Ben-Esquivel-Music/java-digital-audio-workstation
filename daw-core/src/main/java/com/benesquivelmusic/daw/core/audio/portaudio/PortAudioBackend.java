@@ -9,9 +9,12 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -86,11 +89,12 @@ public final class PortAudioBackend implements NativeAudioBackend {
         int deviceCount = bindings.getDeviceCount();
         PortAudioException.checkError(deviceCount, "Pa_GetDeviceCount");
 
+        IntFunction<String> hostApiNames = memoisedHostApiNameResolver();
         ArrayList<AudioDeviceInfo> devices = new ArrayList<AudioDeviceInfo>(deviceCount);
         for (int i = 0; i < deviceCount; i++) {
             MemorySegment infoPtr = bindings.getDeviceInfo(i);
             if (!infoPtr.equals(MemorySegment.NULL)) {
-                devices.add(parseDeviceInfo(i, infoPtr));
+                devices.add(parseDeviceInfo(i, infoPtr, hostApiNames));
             }
         }
 
@@ -339,18 +343,78 @@ public final class PortAudioBackend implements NativeAudioBackend {
     }
 
     /**
+     * A host-API-index-to-name resolver good for exactly one enumeration pass
+     * (story 316 review).
+     *
+     * <p>Memoised because a host API is shared: a Windows box enumerates the
+     * same handful of host APIs across dozens of endpoints, and every
+     * unmemoised call is a native downcall plus a bounded string decode to
+     * re-learn {@code "Windows WASAPI"}.</p>
+     *
+     * <p>Deliberately a LOCAL cache handed to one pass rather than a field.
+     * {@code Pa_GetHostApiInfo}'s contract is that a host API index is only
+     * meaningful between {@code Pa_Initialize} and {@code Pa_Terminate}, and
+     * this backend really does cycle: {@link #close()} calls
+     * {@code Pa_Terminate} and has to null {@link #cachedDevices} out for
+     * precisely that reason. A field here would be a second thing that must be
+     * remembered on every future teardown path, and forgetting it would label
+     * a device with a name from the previous cycle's indexing. A cache that
+     * cannot outlive the loop it serves cannot go stale.</p>
+     *
+     * <p>{@code containsKey} rather than {@code computeIfAbsent} because a
+     * {@code null} answer &mdash; the symbol is unbound, or the index is one
+     * this library will not describe &mdash; is a result worth remembering,
+     * and {@code computeIfAbsent} stores no mapping for {@code null} and so
+     * would re-ask on every device.</p>
+     *
+     * @return a resolver that calls {@code Pa_GetHostApiInfo} at most once per
+     *         distinct host API index
+     */
+    private IntFunction<String> memoisedHostApiNameResolver() {
+        Map<Integer, String> cache = new HashMap<>();
+        return hostApiIndex -> {
+            if (cache.containsKey(hostApiIndex)) {
+                return cache.get(hostApiIndex);
+            }
+            String name = bindings.getHostApiName(hostApiIndex);
+            cache.put(hostApiIndex, name);
+            return name;
+        };
+    }
+
+    /**
      * Parses one native {@code PaDeviceInfo} struct into an
      * {@link AudioDeviceInfo}.
      *
      * <p>Package-private and static (story 316 re-review) so the
      * native-boundary normalisation it performs can be exercised against a
-     * hand-built struct without a PortAudio installation on the host.</p>
+     * hand-built struct without a PortAudio installation on the host. The
+     * host-API name arrives as a resolver parameter rather than being read off
+     * {@code bindings} for the same reason: it keeps this method static, and
+     * it lets a test state exactly what the driver would have answered.</p>
      *
-     * @param index   the PortAudio device index this struct describes
-     * @param infoPtr pointer to the {@code PaDeviceInfo} struct
+     * <p>The resolved name is used when it is non-null and non-blank;
+     * otherwise the label falls back to the literal
+     * {@code "PortAudio Host API " + hostApiIndex} this method used to emit
+     * unconditionally, so a PortAudio build that does not export
+     * {@code Pa_GetHostApiInfo} produces exactly what it produced before
+     * (story 316 review). Blank counts as absent because a blank host API
+     * would make {@code AudioDeviceInfo.qualifiedName()} answer
+     * {@code "Speakers []"} &mdash; a disambiguator that disambiguates
+     * nothing.</p>
+     *
+     * @param index                the PortAudio device index this struct
+     *                             describes
+     * @param infoPtr              pointer to the {@code PaDeviceInfo} struct
+     * @param hostApiNameResolver  resolves the struct's {@code hostApi} index
+     *                             to the driver's own name for that host API,
+     *                             e.g. {@code "Windows WASAPI"}; must not be
+     *                             null, but may ANSWER null
      * @return the parsed device descriptor
      */
-    static AudioDeviceInfo parseDeviceInfo(int index, MemorySegment infoPtr) {
+    static AudioDeviceInfo parseDeviceInfo(int index, MemorySegment infoPtr,
+                                           IntFunction<String> hostApiNameResolver) {
+        Objects.requireNonNull(hostApiNameResolver, "hostApiNameResolver must not be null");
         MemorySegment info = infoPtr.reinterpret(
                 PortAudioBindings.PA_DEVICE_INFO_LAYOUT.byteSize());
 
@@ -380,10 +444,15 @@ public final class PortAudioBackend implements NativeAudioBackend {
                 PortAudioBindings.PA_DEVICE_INFO_LAYOUT.byteOffset(
                         MemoryLayout.PathElement.groupElement("defaultSampleRate")));
 
+        String resolvedHostApiName = hostApiNameResolver.apply(hostApiIndex);
+        String hostApi = resolvedHostApiName == null || resolvedHostApiName.isBlank()
+                ? "PortAudio Host API " + hostApiIndex
+                : resolvedHostApiName;
+
         return new AudioDeviceInfo(
                 index,
                 name,
-                "PortAudio Host API " + hostApiIndex,
+                hostApi,
                 sanitizeChannelCount(maxInputChannels, "maxInputChannels", name),
                 sanitizeChannelCount(maxOutputChannels, "maxOutputChannels", name),
                 defaultSampleRate,

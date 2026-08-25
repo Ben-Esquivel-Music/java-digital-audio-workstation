@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.vm.command.StopTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TogglePlayPauseCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -9,6 +10,8 @@ import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -150,6 +153,82 @@ class TransportCommandPathTest {
         }
     }
 
+    @Test
+    void aFailedCaptureOpenAbortsTheWholeTakeInsteadOfClaimingToRecord() throws Exception {
+        // Story 316 review, the app half of the High finding. onRecord() used
+        // to call RecordingPipeline.start() FIRST — which installs the engine
+        // recording callback, starts the engine and moves the transport to
+        // RECORDING — and only then open the capture device, inside a catch
+        // that logged, toasted and FELL THROUGH. After a device failure the
+        // transport therefore read RECORDING, Started went on the bus, the
+        // status bar read "Recording — N tracks armed — auto-save active" and
+        // the REC indicator was lit, while nothing whatsoever could be
+        // captured.
+        //
+        // The engine here has no streaming provision, which is one of the
+        // cases the same review made startAudioInputOutput() throw on: it
+        // walks the ladder with CaptureRequirement.REQUIRED rather than
+        // treating "no capture device at all" as a silent success the way the
+        // playback open legitimately may.
+        //
+        // A MIDI track is armed alongside the audio one on purpose: the abort
+        // is deliberately WHOLE. Continuing with the MIDI half would hand back
+        // a take silently missing the audio tracks the user armed, which is
+        // the same dishonesty in a form that is harder to notice.
+        DawProject project = new DawProject("record-abort", FORMAT);
+        Transport transport = project.getTransport();
+        transport.setPositionInBeats(5.0);
+        Track armedAudio = new Track("Gtr", TrackType.AUDIO);
+        armedAudio.setArmed(true);
+        project.addTrack(armedAudio);
+        Track armedMidi = new Track("Keys", TrackType.MIDI);
+        armedMidi.setArmed(true);
+        project.addTrack(armedMidi);
+        TransportController handler = newController(project);
+
+        List<TransportEvent.Started> started = new CopyOnWriteArrayList<>();
+        try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
+                DispatchMode.ON_CALLER_THREAD, started::add)) {
+
+            dispatch(new ToggleRecordCommand(), handler);
+
+            assertThat(transport.getState())
+                    .as("a take that cannot capture never moves the transport")
+                    .isEqualTo(TransportState.STOPPED);
+            assertThat(started)
+                    .as("and never announces Started — the bus must not carry a "
+                            + "take that did not begin")
+                    .isEmpty();
+            // RecordingPipeline.start() is the only thing that sets active =
+            // true, and it flags every armed track as recording on its way
+            // through; an unflagged track is therefore proof the pipeline was
+            // not started and is not left active for stop() to finalize.
+            assertThat(armedAudio.isRecording())
+                    .as("no pipeline was started, so nothing is left active")
+                    .isFalse();
+            assertThat(armedMidi.isRecording())
+                    .as("the MIDI half of the take is abandoned with the audio half")
+                    .isFalse();
+            assertThat(recIndicator.isVisible())
+                    .as("the REC indicator is not lit over a take that never started")
+                    .isFalse();
+            assertThat(statusBarLabel.getText())
+                    .as("the user is told the take was ABORTED, and why — not that "
+                            + "recording started")
+                    .contains("aborted")
+                    .doesNotContain("Recording — ")
+                    .contains("no audio backend is configured");
+        }
+
+        // The pipeline reference was cleared too, not merely never started: a
+        // Stop now takes the double-stop rewind gesture, which stop() gates on
+        // isRecordingInFlight() being false.
+        dispatch(new StopTransportCommand(), handler);
+        assertThat(transport.getPositionInBeats())
+                .as("nothing is in flight, so Stop is the plain rewind gesture")
+                .isEqualTo(0.0);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /** Mirrors {@code MainController.dispatchTransportCommand} on the FX thread. */
@@ -158,17 +237,26 @@ class TransportCommandPathTest {
         computeOnFx(() -> { command.execute(handler); return null; });
     }
 
+    /** The status-bar label handed to the controller, for message assertions. */
+    private Label statusBarLabel;
+    /** The REC indicator handed to the controller, for recording-lifecycle assertions. */
+    private Label recIndicator;
+
     private TransportController newController(DawProject project) throws Exception {
-        return computeOnFx(() -> new TransportController(
-                project, new AudioEngine(project.getFormat()), new UndoManager(),
-                new NotificationBar(), new Label(), new Label(), new Label(),
-                new Button(), new Button(),
-                () -> false,
-                () -> GridResolution.QUARTER,
-                () -> CountInMode.OFF,
-                track -> { },
-                () -> true,
-                () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN));
+        return computeOnFx(() -> {
+            statusBarLabel = new Label();
+            recIndicator = new Label();
+            return new TransportController(
+                    project, new AudioEngine(project.getFormat()), new UndoManager(),
+                    new NotificationBar(), new Label(), statusBarLabel, recIndicator,
+                    new Button(), new Button(),
+                    () -> false,
+                    () -> GridResolution.QUARTER,
+                    () -> CountInMode.OFF,
+                    track -> { },
+                    () -> true,
+                    () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN);
+        });
     }
 
     /** Runs {@code work} on the FX thread with capture-and-rethrow of assertion errors. */

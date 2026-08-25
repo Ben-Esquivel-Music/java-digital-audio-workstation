@@ -182,6 +182,101 @@ class DeviceEnumerationOffFxThreadTest {
     }
 
     @Test
+    void aCollidingNameIsQualifiedPerEndpointAndOnlyInTheDirectionWhereItCollides()
+            throws Exception {
+        // Story 316 review — the two Medium settings findings in one shape.
+        // The menus used to be built with
+        //   if (supportsX() && !menu.contains(device.name())) menu.add(device.name())
+        // and PortAudio enumerates one Windows endpoint once per host API, so
+        // that contains-guard COLLAPSED every host-API duplicate into a single
+        // entry: the user could not see — let alone pick — the WASAPI
+        // "Line In" once the MME one had taken the slot, and the bare name
+        // they then persisted was the ambiguous string CallbackBackendAdapter
+        // afterwards had to refuse.
+        //
+        // "Line In" is the discriminating case, and the reason the counts are
+        // per direction: it is TWO devices as an input and ONE as an output
+        // (the WASAPI entry offers no output channels), so it must be
+        // qualified in the input menu and stay BARE in the output menu. A fix
+        // that counted bare names across the whole snapshot would qualify both
+        // and reset an output selection that was never ambiguous.
+        FixedDeviceController controller = new FixedDeviceController(List.of(
+                device(0, "Line In", "MME", 2, 2),
+                device(1, "Line In", "Windows WASAPI", 2, 0),
+                device(2, "Speakers", "MME", 0, 2),
+                device(3, "Speakers", "Windows WASAPI", 0, 2),
+                device(4, "USB Mic", "Windows WASAPI", 2, 0)));
+
+        DeviceEnumerationTask.Result result = enumerateWith(controller);
+
+        assertThat(result.inputDeviceNames())
+                .as("both colliding input endpoints are offered, each under the "
+                        + "host-API-qualified label the backend can resolve exactly; "
+                        + "the unique name stays bare so its stored value survives")
+                .containsExactly("", "Line In [MME]", "Line In [Windows WASAPI]", "USB Mic");
+        assertThat(result.outputDeviceNames())
+                .as("'Line In' is unique as an OUTPUT, so it is not qualified there — "
+                        + "the collision is a per-direction fact")
+                .containsExactly("", "Line In", "Speakers [MME]", "Speakers [Windows WASAPI]");
+    }
+
+    @Test
+    void twoDevicesSharingBothANameAndAHostApiStillCollapseToOneEntry() throws Exception {
+        // Story 316 review — the duplicate guard has to survive qualification.
+        // Qualifying these two yields the SAME label, because nothing in an
+        // enumeration distinguishes two identical interfaces on one driver.
+        // Offering it twice would give the user two rows that mean one
+        // unresolvable thing; CallbackBackendAdapter refuses that selection
+        // whichever row they click.
+        FixedDeviceController controller = new FixedDeviceController(List.of(
+                device(0, "Duplicate", "ASIO", 2, 2),
+                device(1, "Duplicate", "ASIO", 2, 2)));
+
+        DeviceEnumerationTask.Result result = enumerateWith(controller);
+
+        assertThat(result.inputDeviceNames()).containsExactly("", "Duplicate [ASIO]");
+        assertThat(result.outputDeviceNames()).containsExactly("", "Duplicate [ASIO]");
+    }
+
+    @Test
+    void aBackendWhoseNamesDoNotCollideOffersThemAllBare() throws Exception {
+        // The negative control for the two tests above, and the whole reason
+        // qualification is collision-gated: AsioBackend stamps "ASIO" on every
+        // driver and JavaxSoundBackend stamps "Java Sound" on every mixer, so
+        // a suffix there distinguishes nothing. Qualifying unconditionally
+        // would rewrite every device setting already on disk to buy nothing.
+        FixedDeviceController controller = new FixedDeviceController(List.of(
+                device(0, "Driver A", "ASIO", 2, 2),
+                device(1, "Driver B", "ASIO", 2, 2)));
+
+        DeviceEnumerationTask.Result result = enumerateWith(controller);
+
+        assertThat(result.inputDeviceNames()).containsExactly("", "Driver A", "Driver B");
+        assertThat(result.outputDeviceNames()).containsExactly("", "Driver A", "Driver B");
+    }
+
+    /** Runs one enumeration to completion on the calling thread's dispatcher. */
+    private static DeviceEnumerationTask.Result enumerateWith(FixedDeviceController controller)
+            throws InterruptedException {
+        AtomicReference<DeviceEnumerationTask.Result> result = new AtomicReference<>();
+        CountDownLatch succeeded = new CountDownLatch(1);
+        try (DeviceEnumerationTask task = new DeviceEnumerationTask(controller,
+                enumerated -> { result.set(enumerated); succeeded.countDown(); },
+                _ -> { }, failure -> { throw new AssertionError(failure); },
+                Runnable::run)) {
+            task.start(FixedDeviceController.BACKEND);
+            assertThat(succeeded.await(10, TimeUnit.SECONDS)).isTrue();
+        }
+        return result.get();
+    }
+
+    private static AudioDeviceInfo device(int index, String name, String hostApi,
+                                          int maxIn, int maxOut) {
+        return new AudioDeviceInfo(index, name, hostApi, maxIn, maxOut, 48_000,
+                List.of(SampleRate.fromHz(48_000)), 0, 0);
+    }
+
+    @Test
     void aWedgedEnumerationIsAbandonedAtTheBudgetAndItsLateCallbacksAreDropped()
             throws Exception {
         // Story 316 re-review, stall audit A2. cancelAndAwait() used to do a
@@ -349,6 +444,46 @@ class DeviceEnumerationOffFxThreadTest {
 
         @Override public List<AudioDeviceInfo> listDevices(String backendName) {
             return enumerated;
+        }
+
+        @Override
+        public BufferSizeRange bufferSizeRange(String backendName, String outputDeviceName) {
+            return BufferSizeRange.singleton(256);
+        }
+
+        @Override
+        public Set<Integer> supportedSampleRates(String backendName, String outputDeviceName) {
+            return Set.of(48_000);
+        }
+
+        @Override public double getCpuLoadPercent() { return 0; }
+        @Override public void applyConfiguration(Request request) { }
+        @Override public void playTestTone(String outputDeviceName) { }
+    }
+
+    /**
+     * A controller that answers one fixed enumeration snapshot, so a test can
+     * state the exact device list whose menu labels it is asserting (story 316
+     * review).
+     */
+    private static final class FixedDeviceController implements AudioEngineController {
+        static final String BACKEND = "PortAudio";
+
+        private final List<AudioDeviceInfo> devices;
+
+        private FixedDeviceController(List<AudioDeviceInfo> devices) {
+            this.devices = devices;
+        }
+
+        @Override public String getActiveBackendName() { return BACKEND; }
+
+        @Override
+        public List<String> getAvailableBackendNames() { return List.of(BACKEND); }
+
+        @Override public List<AudioDeviceInfo> listDevices() { return devices; }
+
+        @Override public List<AudioDeviceInfo> listDevices(String backendName) {
+            return devices;
         }
 
         @Override
