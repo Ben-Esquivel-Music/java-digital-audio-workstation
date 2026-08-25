@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -303,9 +304,11 @@ class AsioBackendDriverLifecycleTest {
      * over a device this driver may still hold — the exact
      * two-backends-on-one-device outcome the walk is supposed to refuse.</p>
      *
-     * <p>The condition must also be transient: a caller that abandoned a device
-     * on account of it may retry, so the count has to clear itself once the
-     * queued close has actually run.</p>
+     * <p>The condition must also clear on COMPLETION: a caller that abandoned
+     * a device on account of it may retry, so the count has to clear itself
+     * once the queued close has actually run — and only then, never merely
+     * because time passed (see the expired-wait and cannot-be-re-queued tests
+     * below).</p>
      */
     @Test
     void aDeferredDriverReleaseIsReportedUntilTheQueuedCloseHasRun() throws Exception {
@@ -321,17 +324,7 @@ class AsioBackendDriverLifecycleTest {
 
         abandonARunningControlThreadOperation();
 
-        // The deferral logs at SEVERE by design; muting the backend's logger
-        // for the one call that provokes it keeps an EXPECTED diagnostic from
-        // reading as a build failure in the console.
-        Logger backendLog = Logger.getLogger(AsioBackend.class.getName());
-        boolean useParentHandlers = backendLog.getUseParentHandlers();
-        backendLog.setUseParentHandlers(false);
-        try {
-            backend.close();
-        } finally {
-            backendLog.setUseParentHandlers(useParentHandlers);
-        }
+        withBackendSevereLogsMuted(backend::close);
 
         assertThat(backend.isReleasePending())
                 .as("close() returned normally, but the driver was NOT given back —"
@@ -356,10 +349,181 @@ class AsioBackendDriverLifecycleTest {
                 .as("the deferred task is what finally issues ASIOExit")
                 .isEqualTo(1);
         assertThat(backend.isReleasePending())
-                .as("the condition is transient and self-clearing, so a caller that"
-                        + " gave up on this device may retry it rather than treat it as"
-                        + " lost for the life of the process")
+                .as("the condition clears once the queued close has actually run,"
+                        + " so a caller that gave up on this device may retry it"
+                        + " rather than treat it as lost for the life of the process")
                 .isFalse();
+    }
+
+    /**
+     * Story 316 review — a deferred release whose wait for the driver expires
+     * stays PENDING: the budget bounds one wait, not the release.
+     *
+     * <p>The deferred task used to close the shim once its budget expired and
+     * then hand the count back in its {@code finally}, so
+     * {@link AsioBackend#isReleasePending()} cleared while the driver was still
+     * inside the abandoned call — and the engine could retry the device, or
+     * walk on to PortAudio, beside a driver that still held or was still
+     * acquiring it. The close itself unloaded nothing either: every downcall
+     * fails fast until the control thread quiesces. An expired wait now
+     * re-queues itself with the count untouched and the shim unclosed, and only
+     * a wait that saw the driver return issues {@code ASIOExit}.</p>
+     */
+    @Test
+    void aDriverReleaseWhoseBudgetExpiresStaysPendingUntilTheDriverReturns() throws Exception {
+        StubDriverShim shim = StubDriverShim.available();
+        AsioBackend.setDriverShimFactory(() -> shim);
+        QueuedReleaseExecutor deferredReleases = new QueuedReleaseExecutor();
+        AsioBackend backend = new AsioBackend(deferredReleases, Duration.ofMillis(50));
+        backend.open(DRIVER_A, AudioFormat.CD_QUALITY, 128);
+        abandonARunningControlThreadOperation();
+        withBackendSevereLogsMuted(backend::close);
+
+        // The wedge is still held, so the 50 ms wait expires with the driver
+        // still inside the abandoned call.
+        withBackendSevereLogsMuted(deferredReleases::runQueued);
+
+        assertThat(backend.isReleasePending())
+                .as("a release the driver has not let the host reach stays pending —"
+                        + " clearing it here is what let the engine open another host"
+                        + " over a device this driver may still hold")
+                .isTrue();
+        assertThat(shim.closeCalls.get())
+                .as("the shim's single close attempt is not spent on downcalls that"
+                        + " fail fast")
+                .isZero();
+        assertThat(deferredReleases.pending())
+                .as("the wait re-queued itself rather than giving up")
+                .isEqualTo(1);
+
+        wedgeRelease.countDown();
+        assertThat(AsioControlThread.awaitQuiescence(
+                Duration.ofMillis(GUARD_BUDGET_MILLIS)))
+                .isTrue();
+        deferredReleases.runQueued();
+
+        assertThat(shim.closeCalls.get())
+                .as("the driver returning is what lets the queued release issue ASIOExit")
+                .isEqualTo(1);
+        assertThat(backend.isReleasePending())
+                .as("and only then does the release stop being owed")
+                .isFalse();
+    }
+
+    /**
+     * Story 316 review — a wait the executor refuses to take back leaves the
+     * release pending for the life of the backend rather than clearing it.
+     *
+     * <p>Closing the shim at that point would spend
+     * {@code AsioDriverShim.close()}'s single, latching attempt on downcalls
+     * that fail fast, and the count is the only thing keeping a second host
+     * off the device — so neither the close nor the decrement happens.</p>
+     */
+    @Test
+    void aDriverReleaseThatCannotBeReQueuedStaysPendingForTheLifeOfTheBackend()
+            throws Exception {
+        StubDriverShim shim = StubDriverShim.available();
+        AsioBackend.setDriverShimFactory(() -> shim);
+        QueuedReleaseExecutor deferredReleases = QueuedReleaseExecutor.rejectingAfter(1);
+        AsioBackend backend = new AsioBackend(deferredReleases, Duration.ofMillis(50));
+        backend.open(DRIVER_A, AudioFormat.CD_QUALITY, 128);
+        abandonARunningControlThreadOperation();
+        withBackendSevereLogsMuted(backend::close);
+        assertThat(deferredReleases.pending())
+                .as("the first submission is the one the executor accepts")
+                .isEqualTo(1);
+
+        withBackendSevereLogsMuted(deferredReleases::runQueued);
+
+        assertThat(backend.isReleasePending())
+                .as("the release is still owed: nothing has reached the driver")
+                .isTrue();
+        assertThat(shim.closeCalls.get()).isZero();
+        assertThat(deferredReleases.pending())
+                .as("the re-queue was rejected, so nothing is left to run")
+                .isZero();
+
+        wedgeRelease.countDown();
+        assertThat(AsioControlThread.awaitQuiescence(
+                Duration.ofMillis(GUARD_BUDGET_MILLIS)))
+                .isTrue();
+        deferredReleases.runQueued();
+
+        assertThat(backend.isReleasePending())
+                .as("with no wait left to run, nothing can ever clear it — and nothing"
+                        + " should, because the shim was never closed")
+                .isTrue();
+        assertThat(shim.closeCalls.get()).isZero();
+    }
+
+    /**
+     * Story 316 review — a release the executor rejects OUTRIGHT stays pending
+     * too. It used to close the shim inline and hand the count straight back,
+     * which is the same defect through a different door: the close cannot
+     * reach the driver while the control thread is non-quiescent, yet the
+     * count cleared.
+     */
+    @Test
+    void aDriverReleaseTheExecutorRejectsOutrightStaysPendingRatherThanClosingInline()
+            throws Exception {
+        StubDriverShim shim = StubDriverShim.available();
+        AsioBackend.setDriverShimFactory(() -> shim);
+        QueuedReleaseExecutor deferredReleases = QueuedReleaseExecutor.rejectingAfter(0);
+        AsioBackend backend = new AsioBackend(deferredReleases);
+        backend.open(DRIVER_A, AudioFormat.CD_QUALITY, 128);
+        abandonARunningControlThreadOperation();
+
+        withBackendSevereLogsMuted(backend::close);
+
+        assertThat(backend.isReleasePending())
+                .as("a rejected submission is not a release")
+                .isTrue();
+        assertThat(shim.closeCalls.get())
+                .as("no inline close: it could not reach the driver, and it would spend"
+                        + " the shim's only attempt")
+                .isZero();
+        assertThat(deferredReleases.pending()).isZero();
+    }
+
+    /**
+     * Story 316 review — an interrupted teardown thread does not re-queue its
+     * wait. {@code AsioControlThread.awaitQuiescence} returns {@code false} at
+     * once on an interrupted thread for as long as the driver is still inside
+     * the abandoned call (it still answers {@code true} once the control
+     * thread has quiesced), so a re-queue would spin; the release stays
+     * pending instead — shim unclosed, count untouched — for the life of the
+     * backend, and the interrupt status is left for the thread's owner.
+     */
+    @Test
+    void aDriverReleaseInterruptedWhileWaitingStaysPendingWithoutReQueueing()
+            throws Exception {
+        StubDriverShim shim = StubDriverShim.available();
+        AsioBackend.setDriverShimFactory(() -> shim);
+        QueuedReleaseExecutor deferredReleases = new QueuedReleaseExecutor();
+        AsioBackend backend = new AsioBackend(
+                deferredReleases, Duration.ofMillis(GUARD_BUDGET_MILLIS));
+        backend.open(DRIVER_A, AudioFormat.CD_QUALITY, 128);
+        abandonARunningControlThreadOperation();
+        withBackendSevereLogsMuted(backend::close);
+
+        boolean interruptLeftSet;
+        Thread.currentThread().interrupt();
+        try {
+            withBackendSevereLogsMuted(deferredReleases::runQueued);
+        } finally {
+            interruptLeftSet = Thread.interrupted();
+        }
+
+        assertThat(interruptLeftSet)
+                .as("the wait ends on the interrupt and leaves its status set")
+                .isTrue();
+        assertThat(backend.isReleasePending())
+                .as("the release is still owed: nothing has reached the driver")
+                .isTrue();
+        assertThat(shim.closeCalls.get()).isZero();
+        assertThat(deferredReleases.pending())
+                .as("re-queueing on an interrupted thread would spin, so it does not")
+                .isZero();
     }
 
     /**
@@ -419,18 +583,57 @@ class AsioBackendDriverLifecycleTest {
     }
 
     /**
+     * Runs {@code action} with the backend's logger detached from its parent
+     * handlers. A deferral, an expired wait and a rejected (re-)queue all log
+     * at SEVERE by design; muting the logger for the one call that provokes
+     * each keeps an EXPECTED diagnostic from reading as a build failure in the
+     * console.
+     */
+    private static void withBackendSevereLogsMuted(Runnable action) {
+        Logger backendLog = Logger.getLogger(AsioBackend.class.getName());
+        boolean useParentHandlers = backendLog.getUseParentHandlers();
+        backendLog.setUseParentHandlers(false);
+        try {
+            action.run();
+        } finally {
+            backendLog.setUseParentHandlers(useParentHandlers);
+        }
+    }
+
+    /**
      * Stand-in for the shared {@code asio-reset-teardown} executor that runs a
      * queued release only when the test says so. Deferral is otherwise
      * unobservable: the production executor would race the assertions, and a
      * test that waited for it could not distinguish "reported pending" from
-     * "already finished".
+     * "already finished". {@link #rejectingAfter(int)} models the executor
+     * having shut down partway through: every submission past the limit is
+     * refused with {@link RejectedExecutionException}.
      */
     private static final class QueuedReleaseExecutor implements Executor {
 
         private final List<Runnable> queued = new ArrayList<>();
+        private final int acceptLimit;
+        private int accepted;
+
+        QueuedReleaseExecutor() {
+            this(Integer.MAX_VALUE);
+        }
+
+        private QueuedReleaseExecutor(int acceptLimit) {
+            this.acceptLimit = acceptLimit;
+        }
+
+        static QueuedReleaseExecutor rejectingAfter(int acceptedSubmissions) {
+            return new QueuedReleaseExecutor(acceptedSubmissions);
+        }
 
         @Override
         public void execute(Runnable command) {
+            if (accepted >= acceptLimit) {
+                throw new RejectedExecutionException(
+                        "shut down after " + acceptLimit + " submission(s)");
+            }
+            accepted++;
             queued.add(command);
         }
 

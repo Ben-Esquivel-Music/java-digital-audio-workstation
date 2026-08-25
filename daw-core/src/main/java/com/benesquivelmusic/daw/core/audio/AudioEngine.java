@@ -1645,13 +1645,18 @@ public final class AudioEngine {
      * backend that has just failed a teardown to introspect its own state
      * buys nothing.</p>
      *
-     * <p>The condition is TRANSIENT and self-clearing — the backend answers
-     * {@code false} again once the deferred release completes — which is what
-     * makes every caller's response a RETRY rather than a permanent refusal.
-     * Wherever the engine is holding a TRACKED handle the retry is its own:
-     * the handle stays in {@link StreamState#RELEASE_PENDING}, and the next
-     * start, the next stop or a control-panel drain closes it again and finds
-     * it released. {@link #closeFailedHop(BackendStreamRung, Throwable)} is
+     * <p>The condition is self-clearing by COMPLETION, not by time — the
+     * backend answers {@code false} again once the deferred release actually
+     * completes, which is what makes every caller's response a RETRY rather
+     * than a permanent refusal; until then it answers {@code true}, and
+     * {@code AsioBackend} keeps it {@code true} for as long as its driver has
+     * not returned — for the life of the backend once its wait can no longer
+     * be re-queued, in which case the retry never succeeds and the handle
+     * stays RETAINED. Wherever the engine is holding a TRACKED handle the
+     * retry is its own: the handle stays in {@link StreamState#RELEASE_PENDING},
+     * and the next start, the next stop or a control-panel drain closes it
+     * again and finds it released — or still retained, and stays put.
+     * {@link #closeFailedHop(BackendStreamRung, Throwable)} is
      * the one caller for which that is NOT the shape — a failed hop happens
      * mid-open, before {@code openBackend} is assigned, so the engine tracks
      * nothing and there is no {@code RELEASE_PENDING} to drain; the retry

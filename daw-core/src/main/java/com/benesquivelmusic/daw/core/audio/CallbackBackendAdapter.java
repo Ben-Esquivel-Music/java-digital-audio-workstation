@@ -895,15 +895,21 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * </ol>
      *
      * <p>Deliberately NOT
-     * {@link AudioDeviceInfo#isSelectionFor(String, String)} in the first
-     * pass, and this is not a simplification anyone should make later: that
-     * predicate answers "does this selection name that BARE device", so it
-     * accepts {@code "Speakers [WASAPI]"} for the MME {@code "Speakers"} row
-     * too. Using it here would collapse both passes into one and re-introduce
-     * exactly the first-match-wins substitution this method exists to
-     * prevent. It belongs to the settings layer, which asks the opposite
-     * question — "is this persisted selection still about this device?" —
-     * where accepting either form is right.</p>
+     * {@link AudioDeviceInfo#isSelectionFor(String, String, String)}, and
+     * this is not a simplification anyone should make later: that predicate
+     * answers, for ONE row, "does this selection equal the bare name or the
+     * name qualified under this row's host API", so a bare selection is true
+     * for every same-named row and a qualified one is true for every row
+     * enumerated under that name AND that host API — normally one, but two
+     * identical interfaces under one host API answer alike. It has no way to
+     * say that a qualified hit OUTRANKS a bare hit, and that priority is the
+     * point of the two passes: a single pass over {@code isSelectionFor}
+     * would put {@code "Speakers [WASAPI]"} and a bare {@code "Speakers"} on
+     * the same footing, and whichever policy then broke the tie would either
+     * refuse a perfectly specific qualified selection or re-introduce the
+     * first-match-wins substitution this method exists to prevent. The
+     * predicate belongs to {@code TestTonePlayer}, which searches a list that
+     * carries one constant host API and needs only the per-row answer.</p>
      *
      * @param snapshot           the enumeration snapshot to search
      * @param selection          the persisted selection, bare or qualified

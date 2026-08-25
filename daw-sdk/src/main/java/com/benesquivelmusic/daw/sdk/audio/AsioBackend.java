@@ -101,14 +101,18 @@ public final class AsioBackend implements AudioBackend {
                     .unstarted(task));
 
     /**
-     * How long the deferred driver-shim release waits for the control thread to
-     * return from a call the host abandoned. It runs on the
-     * {@code asio-reset-teardown} executor rather than on a lifecycle thread,
-     * so it can afford to wait far longer than any
+     * How long each wait the deferred driver-shim release makes for the
+     * control thread to return from a call the host abandoned lasts before it
+     * re-queues itself (or, on an interrupted thread or a rejected re-queue,
+     * leaves the release pending for good)
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}). It
+     * runs on the {@code asio-reset-teardown} executor rather than on a
+     * lifecycle thread, so it can afford to be far longer than any
      * {@link AsioControlThread#DEFAULT_BUDGET}-sized figure: nothing queues
-     * behind it except the next teardown, and giving up early on a driver that
-     * would have let go leaks {@code ASIOExit} and the shim's FFM arena for the
-     * life of the process.
+     * behind it except the next teardown, which the re-queue lets through
+     * between waits. Expiry is not a give-up — the shim stays unclosed and the
+     * release stays pending — so the figure only sets how often the wait
+     * yields the executor and repeats its {@link Level#SEVERE} diagnostic.
      */
     private static final Duration DRIVER_RELEASE_BUDGET = Duration.ofMinutes(2);
 
@@ -124,12 +128,24 @@ public final class AsioBackend implements AudioBackend {
 
     private final Executor resetTeardownExecutor;
 
+    /** Per-wait bound for a deferred driver release; see {@link #DRIVER_RELEASE_BUDGET}. */
+    private final Duration driverReleaseBudget;
+
     /**
      * How many driver-shim releases {@link #releaseDriverShim(AsioDriverShim)}
-     * has DEFERRED and that have not run yet. It is what
-     * {@link #isReleasePending()} answers from, and therefore the only way a
-     * caller learns that a {@link #close()} which returned normally did not
-     * actually hand the device back (story 316 re-review).
+     * has DEFERRED and that have not yet issued their
+     * {@code AsioDriverShim.close()}. It is what {@link #isReleasePending()}
+     * answers from, and therefore the only way a caller learns that a
+     * {@link #close()} which returned normally did not actually hand the
+     * device back (story 316 re-review).
+     *
+     * <p>Decremented only after the close has been issued following a wait
+     * that saw the driver return
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}). A wait
+     * that expired, was interrupted or could not be (re-)queued leaves it
+     * untouched, so a release the driver has not let the host reach stays
+     * counted — for the life of the backend if nothing can ever run it
+     * (story 316 review).</p>
      *
      * <p>A count rather than a flag because a backend can owe more than one
      * release: {@code open()} releases the candidate shim on every early exit,
@@ -169,8 +185,21 @@ public final class AsioBackend implements AudioBackend {
 
     /** Test seam for controlling when an asynchronous reset teardown runs. */
     AsioBackend(Executor resetTeardownExecutor) {
+        this(resetTeardownExecutor, DRIVER_RELEASE_BUDGET);
+    }
+
+    /**
+     * Test seam that also sets how long each wait a deferred driver release
+     * makes for the control thread lasts before it re-queues itself (or, on
+     * an interrupted thread or a rejected re-queue, leaves the release
+     * pending for good)
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}).
+     */
+    AsioBackend(Executor resetTeardownExecutor, Duration driverReleaseBudget) {
         this.resetTeardownExecutor = Objects.requireNonNull(
                 resetTeardownExecutor, "resetTeardownExecutor");
+        this.driverReleaseBudget = Objects.requireNonNull(
+                driverReleaseBudget, "driverReleaseBudget");
     }
 
     @Override
@@ -248,6 +277,45 @@ public final class AsioBackend implements AudioBackend {
      * directions without claiming a count; the real counts are read from the
      * driver in {@link #open(DeviceId, AudioFormat, int)}, which clamps the
      * requested channel set against them.</p>
+     *
+     * <p>Device identity (story 316 review). Each entry's {@code index} is
+     * its position in this one enumeration snapshot and nothing more:
+     * {@link #open(DeviceId, AudioFormat, int)} takes a {@link DeviceId},
+     * not an index, and nothing in this class reads
+     * {@link AudioDeviceInfo#index()}. What a selection persists and what
+     * {@code open} resolves is the driver NAME. {@code resolveDriverName}
+     * returns {@link DeviceId#name()} for a named device, or the first name
+     * of a FRESH {@code listDrivers()} for the default, and
+     * {@code AsioDriverShim#loadDriver(String)} hands that name to
+     * {@code asioshim_loadDriver}, which walks the SDK host glue's driver
+     * list at that moment ({@code count()} / {@code nameAt()}), compares
+     * each installed name with {@code strcmp}, and loads the FIRST index
+     * whose name matches. A name that no longer enumerates matches nothing,
+     * the load reports failure, and {@code open} throws an
+     * {@link AudioBackendException} naming the driver &mdash; never a
+     * substitute device. Two enumerated entries that share a name are the
+     * one case this model does not distinguish: this method lists both,
+     * both persist the same name, and {@code asioshim_loadDriver} resolves
+     * both to the first-enumerated driver. Nothing in this repository
+     * establishes that installed ASIO driver names are unique, so that
+     * limitation is stated rather than refuted; the CLSID below is the
+     * discriminator such a case would need, and using it requires the shim
+     * export it does not have. That is the identity model the design book's
+     * &sect;3.2 asks for: a stable id resolved against the current snapshot
+     * at every open, with a bare index meaningful only inside one
+     * snapshot.</p>
+     *
+     * <p>The {@code clsid} that {@code AsioDriverShim.DriverDescriptor}
+     * also carries is not that id. The shim exports no entry point that
+     * loads by CLSID &mdash; it only formats the CLSID into the rows
+     * {@code asioshim_listDrivers} returns &mdash; so a persisted CLSID
+     * could not be resolved back to a driver without a new shim export,
+     * and storing it would change what the persisted device selection
+     * ({@code audio.outputDevice}) holds. It is decoded by
+     * {@code AsioDriverShim.decodeDrivers} and read by no production code
+     * in this module today: carried for diagnostics and future use, and
+     * deliberately not written into the {@link AudioDeviceInfo} built
+     * here.</p>
      */
     @Override
     public List<AudioDeviceInfo> listDevices() {
@@ -1469,10 +1537,11 @@ public final class AsioBackend implements AudioBackend {
      * spend the single chance to run {@code ASIOExit} on a call that cannot
      * reach the driver, and leak both the driver and the arena for the life of
      * the process. The close is therefore handed to the shared
-     * {@code asio-reset-teardown} executor, which waits for quiescence FIRST
-     * and takes {@link #DRIVER_LIFECYCLE_LOCK} only afterwards — never the
-     * other way round, or the wait would hold the very lock it exists to keep
-     * free.</p>
+     * {@code asio-reset-teardown} executor
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}), which
+     * waits for quiescence FIRST and takes {@link #DRIVER_LIFECYCLE_LOCK} only
+     * afterwards — never the other way round, or the wait would hold the very
+     * lock it exists to keep free.</p>
      *
      * <p>Deferring is not free, and the {@link Level#SEVERE} log says so: until
      * the driver returns it may still hold — or take — the device. Two things
@@ -1488,10 +1557,14 @@ public final class AsioBackend implements AudioBackend {
      * believe. It used to be silent, and the ladder opened PortAudio or Java
      * Sound over a device this driver might still be acquiring.</p>
      *
-     * <p>The deferral is owned rather than fire-and-forget. A shut-down
-     * executor rejects the task, and the close then happens inline — a close
-     * that cannot reach the driver is still better than a shim nobody ever
-     * closes.</p>
+     * <p>The count clears only when the driver has actually been given back
+     * (story 316 review). A wait that expires re-queues itself; a wait that
+     * cannot be re-queued, and a first submission the executor rejects
+     * outright, leave the release pending for the life of the backend with the
+     * shim unclosed — see {@link #queueDeferredDriverRelease(AsioDriverShim)}.
+     * Closing the shim inline at any of those points would be the same defect
+     * as clearing the count: the close cannot reach the driver, and the count
+     * is what keeps a second host off the device.</p>
      */
     private void releaseDriverShim(AsioDriverShim shim) {
         if (AsioControlThread.isQuiesced()) {
@@ -1503,11 +1576,15 @@ public final class AsioBackend implements AudioBackend {
                         + " for (budget expired or interrupted) is"
                         + " still executing, so ASIOExit would fail fast and"
                         + " AsioDriverShim.close() can only ever be attempted once. The"
-                        + " close is queued until the driver returns (up to "
-                        + DRIVER_RELEASE_BUDGET.toSeconds() + " s). Until then the driver"
-                        + " may still hold — or take — the device even though the"
-                        + " fallback ladder has moved on to another host, so the backend"
-                        + " that replaces this one may find the device unavailable.");
+                        + " close is queued until the driver returns: the wait re-queues"
+                        + " itself every " + driverReleaseBudget.toSeconds() + " s for as"
+                        + " long as the driver has not returned, the teardown executor"
+                        + " keeps accepting it and its thread is not interrupted, and the"
+                        + " release stays pending"
+                        + " (isReleasePending) throughout — for the life of this backend"
+                        + " if the wait can no longer be re-queued — which is what keeps"
+                        + " the engine from opening another host over the device. Until"
+                        + " the driver returns it may still hold — or take — the device.");
         // Counted BEFORE the task is published, never after. This mirrors
         // AsioControlThread.abandonWhileRunning, which takes its count before
         // it publishes the RUNNING -> ABANDONED transition, and for the same
@@ -1518,45 +1595,92 @@ public final class AsioBackend implements AudioBackend {
         // this backend, which is the one direction in which being wrong opens
         // a second host over a device this driver has not let go of.
         deferredDriverReleases.incrementAndGet();
+        queueDeferredDriverRelease(shim);
+    }
+
+    /**
+     * Hands {@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)} to
+     * the teardown executor — the first submission and every re-queue alike.
+     *
+     * <p>A rejection (the executor is shut down) leaves the release PENDING
+     * for the life of this backend: the count is not decremented and the shim
+     * is not closed. Closing it here would spend
+     * {@link AsioDriverShim#close()}'s single, latching attempt on downcalls
+     * that fail fast while the control thread is still inside the abandoned
+     * call, and the count is the only thing keeping a second host off the
+     * device. A release nobody can ever run is logged at {@link Level#SEVERE}
+     * and reported as pending, which is the truth of it (story 316 review —
+     * it used to close inline and hand the count back).</p>
+     */
+    private void queueDeferredDriverRelease(AsioDriverShim shim) {
         try {
-            resetTeardownExecutor.execute(() -> {
-                try {
-                    if (!AsioControlThread.awaitQuiescence(DRIVER_RELEASE_BUDGET)) {
-                        LOG.log(Level.SEVERE,
-                                "ASIO driver did not return from its abandoned call within "
-                                        + DRIVER_RELEASE_BUDGET.toSeconds() + " s. Closing the"
-                                        + " driver shim anyway: its downcalls will fail fast,"
-                                        + " so ASIOExit and the shim's arena are leaked for"
-                                        + " the life of the process and the device may stay"
-                                        + " held by the driver.");
-                    }
-                    synchronized (DRIVER_LIFECYCLE_LOCK) {
-                        shim.close();
-                    }
-                } finally {
-                    // In a finally, and strictly after the close: the query
-                    // must keep answering "pending" for as long as this
-                    // backend really owes the release, however the task ends.
-                    deferredDriverReleases.decrementAndGet();
-                }
-            });
+            resetTeardownExecutor.execute(() -> awaitQuiescenceThenReleaseDriverShim(shim));
         } catch (RejectedExecutionException rejected) {
             LOG.log(Level.SEVERE,
-                    "ASIO deferred driver release was rejected (the teardown executor is"
-                            + " shut down); closing the driver shim inline instead. Its"
-                            + " downcalls fail fast while the driver is still executing,"
-                            + " so ASIOExit may not reach the driver.", rejected);
+                    "ASIO deferred driver release could not be queued (the teardown"
+                            + " executor is shut down). The driver shim is NOT closed —"
+                            + " its downcalls fail fast while the driver is still"
+                            + " executing, and AsioDriverShim.close() can only be"
+                            + " attempted once — and the release stays pending for the"
+                            + " life of this backend: isReleasePending() keeps answering"
+                            + " true, which is what keeps the engine from opening another"
+                            + " host over the device.",
+                    rejected);
+        }
+    }
+
+    /**
+     * The deferred release itself, run on the teardown executor.
+     *
+     * <p>Issues {@code AsioDriverShim.close()} under
+     * {@link #DRIVER_LIFECYCLE_LOCK} — and decrements
+     * {@link #deferredDriverReleases}, in a {@code finally} — only after
+     * {@link AsioControlThread#awaitQuiescence(Duration)} has seen the driver
+     * return. A wait that expires with the driver still inside the abandoned
+     * call closes nothing and decrements nothing: it logs at
+     * {@link Level#SEVERE} and re-queues itself. Re-queueing rather than
+     * looping inline keeps the single-thread executor free for
+     * {@link #stopStreamingForDriverReset()} teardowns between waits.</p>
+     *
+     * <p>On an interrupted thread {@code awaitQuiescence} returns
+     * {@code false} at once for as long as the driver is still inside the
+     * abandoned call (it still answers {@code true} once the control thread
+     * has quiesced), so re-queueing would spin; the release is then left
+     * pending for the life of the backend instead, exactly as a re-queue the
+     * executor rejects is.</p>
+     */
+    private void awaitQuiescenceThenReleaseDriverShim(AsioDriverShim shim) {
+        if (AsioControlThread.awaitQuiescence(driverReleaseBudget)) {
             try {
-                // Nothing was ever deferred, so the provisional count is handed
-                // straight back. The close happens INLINE — before the caller's
-                // own close()/open() returns — so isReleasePending() is already
-                // false by the time anyone is entitled to read it, which is
-                // exactly right: this backend owes nothing afterwards.
-                shim.close();
+                synchronized (DRIVER_LIFECYCLE_LOCK) {
+                    shim.close();
+                }
             } finally {
+                // In a finally, and strictly after the close: the query must
+                // keep answering "pending" for as long as this backend really
+                // owes the release, however the close ends.
                 deferredDriverReleases.decrementAndGet();
             }
+            return;
         }
+        if (Thread.currentThread().isInterrupted()) {
+            LOG.log(Level.SEVERE,
+                    "ASIO deferred driver release interrupted while waiting for the"
+                            + " driver to return from its abandoned call. The driver shim"
+                            + " is NOT closed and the release stays pending for the life"
+                            + " of this backend, which is what keeps the engine from"
+                            + " opening another host over the device.");
+            return;
+        }
+        LOG.log(Level.SEVERE,
+                "ASIO driver did not return from its abandoned call within "
+                        + driverReleaseBudget.toSeconds() + " s. The driver shim is NOT"
+                        + " closed — its downcalls would fail fast and spend the single"
+                        + " ASIOExit attempt — and the release stays pending, so"
+                        + " isReleasePending() keeps answering true and the engine does"
+                        + " not open another host over the device. The wait is being"
+                        + " re-queued.");
+        queueDeferredDriverRelease(shim);
     }
 
     /**
@@ -1582,13 +1706,20 @@ public final class AsioBackend implements AudioBackend {
      * distinguishable — the handle is RETAINED, and the walk must stop rather
      * than open beside it.</p>
      *
-     * <p>Self-clearing, as the contract requires: the deferred task decrements
-     * the count in a {@code finally} after {@code AsioDriverShim.close()}, so
-     * once the driver returns and the queued {@code ASIOExit} has run this
-     * answers {@code false} and the device may be attempted again. A read of a
-     * plain {@link AtomicInteger} — no lock, no downcall, no arena — so it is
-     * safe on the lifecycle path that asks it immediately after
-     * {@code close()}.</p>
+     * <p>It clears only once the driver has been given back: the deferred task
+     * decrements the count in a {@code finally} after
+     * {@code AsioDriverShim.close()}, and issues that close only after a wait
+     * that saw the control thread quiesce. A wait that expires re-queues
+     * itself with the count untouched, so this keeps answering {@code true}
+     * for as long as the driver has not returned; a wait that cannot be
+     * re-queued — the teardown executor shut down, or its thread interrupted
+     * — leaves it {@code true} for the life of the backend, with the shim
+     * deliberately unclosed (story 316 review). It is self-clearing in the
+     * sense the contract requires, then: once the queued {@code ASIOExit} has
+     * run this answers {@code false} and the device may be attempted again —
+     * but only then, never merely because time passed. A read of a plain
+     * {@link AtomicInteger} — no lock, no downcall, no arena — so it is safe
+     * on the lifecycle path that asks it immediately after {@code close()}.</p>
      */
     @Override
     public boolean isReleasePending() {

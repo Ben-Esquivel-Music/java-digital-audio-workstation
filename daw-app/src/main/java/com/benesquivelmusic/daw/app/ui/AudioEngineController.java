@@ -289,10 +289,12 @@ public interface AudioEngineController {
      * @param outputDeviceName preferred device name for the tone, or empty
      *                         for the JVM default mixer
      * @throws IllegalArgumentException if a non-blank {@code outputDeviceName}
-     *                                  names no Java Sound mixer (story 316
-     *                                  review follow-up): the selection is
-     *                                  refused, synchronously, rather than
-     *                                  played on the JVM default. That
+     *                                  names no Java Sound mixer, or names more
+     *                                  than one (story 316 review follow-up):
+     *                                  the selection is refused, synchronously,
+     *                                  rather than played on the JVM default or
+     *                                  on the first of several same-named
+     *                                  mixers. That
      *                                  includes every selection made under a
      *                                  backend other than Java Sound — an ASIO
      *                                  driver name is never a Java Sound mixer

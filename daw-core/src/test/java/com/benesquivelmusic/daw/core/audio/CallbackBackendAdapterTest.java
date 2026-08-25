@@ -261,10 +261,11 @@ class CallbackBackendAdapterTest {
      * endpoint-substitution bug is fixed: each qualified label must resolve
      * to ITS OWN index, not merely "not throw". Under the old resolver both
      * of these would have failed to match at all (the bare name never equals
-     * the qualified one); under a naive
-     * {@link AudioDeviceInfo#isSelectionFor(String, String)}-based pass they
-     * would BOTH have resolved to the first entry, which is the bug wearing a
-     * different hat.
+     * the qualified one); under a single unprioritised pass that accepted a
+     * bare hit and a qualified hit alike — the shape {@code isSelectionFor}
+     * had while it read any bracketed suffix as a match for the bare name —
+     * they would BOTH have resolved to the first entry, which is the bug
+     * wearing a different hat.
      */
     @Test
     void eachHostApiQualifiedNameResolvesToItsOwnDeviceIndex() {

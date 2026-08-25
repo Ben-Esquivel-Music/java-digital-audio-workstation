@@ -387,11 +387,12 @@ class PortAudioBackendTest {
     /**
      * Blank is treated as absent, not as a name.
      *
-     * <p>A blank host API would make {@link AudioDeviceInfo#qualifiedName()}
-     * answer {@code "Speakers (Realtek) []"} — a disambiguator that
-     * disambiguates nothing, and one that would still be matched by
-     * {@code isSelectionFor}'s bracket test, so the ambiguity would survive
-     * looking resolved.</p>
+     * <p>{@link AudioDeviceInfo#qualifiedName()} treats a blank host API as
+     * absent and answers the bare {@code "Speakers (Realtek)"} — a label that
+     * disambiguates nothing, so an endpoint that collides across host APIs
+     * would be offered, persisted and looked up under its bare name and the
+     * collision would survive to resolve time. The index literal is at least
+     * a distinct label for the row.</p>
      */
     @Test
     void aResolverThatAnswersBlankAlsoFallsBackToTheIndexLiteral() {
@@ -423,7 +424,8 @@ class PortAudioBackendTest {
                     .as("this is the string a user picks between when one endpoint "
                             + "enumerates under MME, DirectSound, WASAPI and WDM-KS")
                     .isEqualTo("Speakers (Realtek) [Windows WASAPI]");
-            assertThat(AudioDeviceInfo.isSelectionFor(parsed.qualifiedName(), parsed.name()))
+            assertThat(AudioDeviceInfo.isSelectionFor(
+                    parsed.qualifiedName(), parsed.name(), parsed.hostApi()))
                     .as("and it still resolves back to the device it names")
                     .isTrue();
         }

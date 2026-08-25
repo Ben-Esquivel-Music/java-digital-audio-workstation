@@ -195,60 +195,89 @@ public record AudioDeviceInfo(
      * the brackets silently un-resolves every setting a user has ever saved,
      * so it may only change together with a migration.</p>
      *
-     * <p>Consumers must never take it back APART. It is compared whole, and the
-     * one question anybody legitimately asks of it &mdash; "does this persisted
-     * label name that bare device?" &mdash; has exactly one answer, in
-     * {@link #isSelectionFor(String, String)}. Parsing on {@code " ["} would be
-     * wrong the moment a vendor ships a device whose own name contains a
-     * bracket.</p>
+     * <p>Consumers must never take it back APART. It is compared whole, and
+     * both places that ask "does this persisted label name that device?"
+     * &mdash; {@link #isSelectionFor(String, String, String)} for the
+     * single-host-API Java Sound list, and {@code CallbackBackendAdapter}'s
+     * two exact passes over {@link #qualifiedName()} and {@link #name()}
+     * &mdash; rebuild the label from the device's own name and host API and
+     * compare the whole string. Parsing on {@code " ["} would be wrong the
+     * moment a vendor ships a device whose own name contains a bracket.</p>
      *
      * @return the label that disambiguates this device from a same-named device
      *         under another host API; never null, and never blank when
      *         {@link #name()} is not blank
      */
     public String qualifiedName() {
+        return qualifiedName(name, hostApi);
+    }
+
+    /**
+     * The ONE formatting rule behind {@link #qualifiedName()} and
+     * {@link #isSelectionFor(String, String, String)}: {@code name} when
+     * {@code hostApi} is null or blank, and
+     * <code>name + " [" + hostApi + "]"</code> otherwise. Both callers go
+     * through here so the label a device offers and the label a selection is
+     * compared against cannot drift apart.
+     */
+    private static String qualifiedName(String name, String hostApi) {
         return hostApi == null || hostApi.isBlank()
                 ? name
                 : name + " [" + hostApi + "]";
     }
 
     /**
-     * The single definition of "this persisted selection names that device"
-     * (story 316 review).
+     * Answers whether a persisted selection names the device enumerated as
+     * {@code bareDeviceName} under {@code hostApi} (story 316 review).
      *
      * <p>{@code selection} is whatever the user's settings hold: either a bare
      * device name saved before {@link #qualifiedName()} existed, or a
      * host-API-qualified label saved after it. Both must resolve, so the test
-     * is deliberately the pair
-     * {@code selection.equals(bare) || (selection.startsWith(bare + " [")
-     * && selection.endsWith("]"))} and nothing else &mdash; no parsing, no
-     * splitting, no normalization.</p>
+     * is exact equality against the bare name OR exact equality against that
+     * name qualified under {@code hostApi} &mdash; the same formatting rule
+     * {@link #qualifiedName()} uses &mdash; and nothing else: no bracket
+     * parsing, no prefix or suffix test, no normalization. A selection of
+     * {@code "Speakers"} therefore cannot resolve to a device named
+     * {@code "Speakers Pro"}, the same class of silent mis-resolution
+     * {@link #qualifiedName()} exists to prevent.</p>
      *
-     * <p>The bracket prefix is what stops a PREFIX collision from matching:
-     * a selection of {@code "Speakers"} must not resolve to a device named
-     * {@code "Speakers Pro"}, and a bare {@code startsWith} would have let it.
-     * That is the same class of silent mis-resolution
-     * {@link #qualifiedName()} exists to prevent, so both halves live in one
-     * method rather than being re-derived at each call site.</p>
+     * <p>A label qualified under ANOTHER host API is not a selection for this
+     * device: {@code "Speakers [USB]"} against a bare {@code "Speakers"}
+     * enumerated under {@code "MME"} is {@code false}. The predicate this
+     * replaced accepted any bracketed suffix for the bare name, so a caller
+     * holding several same-named rows resolved that selection to whichever row
+     * came first &mdash; the Copilot finding on this class. The suffix names the
+     * host API the selection was made under, and only the device enumerated
+     * under that host API may answer to it. With a null or blank
+     * {@code hostApi} the device has no qualified form, so only the bare
+     * selection matches.</p>
      *
-     * <p>The callers that rely on it, wired in the same review: the settings
-     * layer, which decides whether a persisted device selection still matches
-     * an enumerated device, and {@code daw-core}'s backend device resolvers,
-     * which turn a persisted selection into a device index before opening a
-     * stream.</p>
+     * <p>The one production caller is {@code TestTonePlayer} in
+     * {@code daw-app}: {@code javax.sound.sampled.Mixer.Info} carries no host
+     * API of its own, so it passes {@code JavaxSoundBackend.NAME}, the constant
+     * {@code JavaxSoundBackend} stamps on every mixer it enumerates.
+     * {@code daw-core}'s {@code CallbackBackendAdapter} does NOT use it: its
+     * resolver runs two prioritised passes &mdash; an exact qualified hit
+     * outranks a bare hit, and more than one hit within a pass is refused
+     * &mdash; and a single boolean over one row cannot express that
+     * priority.</p>
      *
      * @param selection      the persisted selection to test; may be null
      * @param bareDeviceName the enumerated device's bare {@link #name()}; may
      *                       be null
-     * @return {@code true} when {@code selection} names that device, either
-     *         bare or host-API-qualified; {@code false} when either argument is
-     *         null
+     * @param hostApi        the host API the device was enumerated under, as
+     *                       {@link #hostApi()} reports it; null or blank means
+     *                       the device has no qualified form
+     * @return {@code true} when {@code selection} equals
+     *         {@code bareDeviceName} or equals that name qualified under
+     *         {@code hostApi}; {@code false} when {@code selection} or
+     *         {@code bareDeviceName} is null
      */
-    public static boolean isSelectionFor(String selection, String bareDeviceName) {
+    public static boolean isSelectionFor(String selection, String bareDeviceName, String hostApi) {
         if (selection == null || bareDeviceName == null) {
             return false;
         }
         return selection.equals(bareDeviceName)
-                || (selection.startsWith(bareDeviceName + " [") && selection.endsWith("]"));
+                || selection.equals(qualifiedName(bareDeviceName, hostApi));
     }
 }

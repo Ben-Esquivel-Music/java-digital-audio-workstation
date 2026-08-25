@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -9,6 +10,8 @@ import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.Mixer;
 import javax.sound.sampled.SourceDataLine;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -66,9 +69,11 @@ final class TestTonePlayer {
      *                                  host-API-qualified form &mdash; or empty
      *                                  to use the JVM default
      * @throws IllegalArgumentException synchronously, when the selection is
-     *                                  non-blank and names no Java Sound mixer
-     *                                  (story 316 review follow-up); the tone
-     *                                  is NOT played on the JVM default instead
+     *                                  non-blank and names no Java Sound mixer,
+     *                                  or names more than one (story 316 review
+     *                                  follow-up); the tone is NOT played on
+     *                                  the JVM default, nor on the first of
+     *                                  several same-named mixers
      */
     void play(String preferredOutputDeviceName) {
         byte[] samples = generateSineBytes();
@@ -93,42 +98,47 @@ final class TestTonePlayer {
     /**
      * Resolves the persisted output-device selection to a Java Sound mixer.
      * The rule as it stands: blank or {@code null} means "JVM default" and
-     * yields {@code null}; a non-blank selection must name an enumerated mixer,
-     * and one that names none is REFUSED with an
-     * {@link IllegalArgumentException} rather than being played on the JVM
-     * default (story 316 review follow-up, last paragraph).
+     * yields {@code null}; a non-blank selection must name exactly one
+     * enumerated mixer; one that names none, or more than one, is REFUSED with
+     * an {@link IllegalArgumentException} rather than being played on the JVM
+     * default or on the first hit (story 316 review follow-up, last
+     * paragraph).
      *
      * <p>The comparison is
-     * {@link AudioDeviceInfo#isSelectionFor(String, String)} rather than a
-     * plain {@code equals} (story 316 review). {@code preferredName} is the
-     * value of the {@code audio.outputDevice} setting, which
+     * {@link AudioDeviceInfo#isSelectionFor(String, String, String)} with
+     * {@link JavaxSoundBackend#NAME} as the host API, rather than a plain
+     * {@code equals} (story 316 review). {@code preferredName} is the value of
+     * the {@code audio.outputDevice} setting, which
      * {@code SettingsDialog.playTestTone()} reads straight out of the row and
-     * hands down here; and {@code DeviceEnumerationTask} now offers &mdash; and
+     * hands down here; and {@code DeviceEnumerationTask} offers &mdash; and
      * therefore persists &mdash; the host-API-qualified
-     * {@link AudioDeviceInfo#qualifiedName()} form,
-     * {@code "Speakers [Windows WASAPI]"}, for any device name that collides
-     * across host APIs. Against {@code Mixer.Info#getName()}, which is always
-     * the BARE name, {@code equals} silently failed on exactly those
+     * {@link AudioDeviceInfo#qualifiedName()} form for any device name that
+     * collides within a direction. Against {@code Mixer.Info#getName()}, which
+     * is always the BARE name, {@code equals} silently failed on exactly those
      * selections, this method returned {@code null}, and {@code writeToLine}
      * fell through to {@code AudioSystem.getSourceDataLine(format)} &mdash; so
      * the tone the user pressed to verify one endpoint played out of a
      * different one. A test tone that lies about which device it used is worse
      * than no test tone.</p>
      *
-     * <p>{@code isSelectionFor} is the single definition of "this persisted
-     * selection names that device" and accepts both the bare and the qualified
-     * form, so pre-existing settings keep resolving unchanged. Accepting a
-     * qualified selection against a bare mixer name is right here even though
-     * the qualification was minted from another backend's enumeration: Java
-     * Sound stamps one constant host API ({@code JavaxSoundBackend.NAME}) on
-     * everything it enumerates and lists each mixer once, so a suffix can
-     * never be the thing that picks between two Java Sound mixers. Where two
-     * mixers genuinely share a bare name, this returns the first &mdash; but
-     * nothing in {@code Mixer.Info} distinguishes them, so there is no better
-     * answer to give. That is the opposite trade from
-     * {@code CallbackBackendAdapter}, which searches a snapshot that really
-     * does hold one entry per host API and so must try the exact qualified
-     * match first and refuse a bare name that hits more than one.</p>
+     * <p>Two forms resolve: the bare mixer name, and the
+     * {@code "X [Java Sound]"} form {@code DeviceEnumerationTask} mints when
+     * two Java Sound mixers collide on a bare name &mdash;
+     * {@code JavaxSoundBackend} stamps {@link JavaxSoundBackend#NAME} as the
+     * host API on every mixer it lists, so that is the only qualification a
+     * Java Sound selection can carry. A label qualified under any OTHER host
+     * API ({@code "Speakers [Windows WASAPI]"}) is refused exactly like an
+     * ASIO driver name: the suffix names the host API the selection was made
+     * under, and Java Sound cannot honour it. The predicate this replaced
+     * accepted any bracketed suffix for the bare name and so aliased that
+     * label onto whichever {@code "Speakers"} mixer came first &mdash; the
+     * Copilot finding on this class. Where two mixers genuinely share the
+     * selected name, the selection is now REFUSED as ambiguous rather than
+     * played on the first: nothing in {@code Mixer.Info} distinguishes them,
+     * and a tone that may play on an endpoint the user did not choose is worse
+     * than no tone. That is the same discipline as
+     * {@code CallbackBackendAdapter}, which refuses a bare name that hits more
+     * than one entry of its snapshot.</p>
      *
      * <p>Refusing a non-blank selection that matches nothing is the story 316
      * review follow-up. The qualified-name fix above closed one road to the
@@ -157,7 +167,8 @@ final class TestTonePlayer {
      *                      default"
      * @return the matching mixer, or {@code null} for the JVM default
      * @throws IllegalArgumentException if {@code preferredName} is non-blank
-     *                                  and names no enumerated mixer
+     *                                  and names no enumerated mixer, or names
+     *                                  more than one
      */
     private static Mixer.Info resolveMixerInfo(String preferredName) {
         return resolveMixerInfo(preferredName, AudioSystem.getMixerInfo());
@@ -181,22 +192,33 @@ final class TestTonePlayer {
      * @return the matching mixer, or {@code null} for the JVM default (blank
      *         or null selection only)
      * @throws IllegalArgumentException if {@code preferredName} is non-blank
-     *                                  and names none of {@code mixers}
+     *                                  and names none of {@code mixers}, or
+     *                                  names more than one of them
      */
     static Mixer.Info resolveMixerInfo(String preferredName, Mixer.Info[] mixers) {
         if (preferredName == null || preferredName.isBlank()) {
             return null;
         }
+        List<Mixer.Info> matches = new ArrayList<>(1);
         for (Mixer.Info info : mixers) {
-            if (AudioDeviceInfo.isSelectionFor(preferredName, info.getName())) {
-                return info;
+            if (AudioDeviceInfo.isSelectionFor(preferredName, info.getName(), JavaxSoundBackend.NAME)) {
+                matches.add(info);
             }
         }
+        if (matches.size() == 1) {
+            return matches.getFirst();
+        }
         // IllegalArgumentException, not IllegalStateException: the fault is in
-        // the argument (a selection naming nothing Java Sound enumerates), not
-        // in this player's state.
-        throw new IllegalArgumentException("no Java Sound output is named \""
-                + preferredName + "\"; the test tone plays through Java Sound only");
+        // the argument (a selection naming nothing Java Sound enumerates, or
+        // more than one thing), not in this player's state.
+        if (matches.isEmpty()) {
+            throw new IllegalArgumentException("no Java Sound output is named \""
+                    + preferredName + "\"; the test tone plays through Java Sound only");
+        }
+        throw new IllegalArgumentException("Java Sound output \"" + preferredName
+                + "\" is ambiguous: " + matches.size() + " mixers answer to that name."
+                + " Playing the first of them could use an endpoint you did not choose,"
+                + " so the test tone is refused");
     }
 
     private static void writeToLine(byte[] samples, AudioFormat format, Mixer.Info mixerInfo) {

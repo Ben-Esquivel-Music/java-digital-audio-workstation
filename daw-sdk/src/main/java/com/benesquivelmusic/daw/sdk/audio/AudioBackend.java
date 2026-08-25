@@ -911,10 +911,13 @@ public interface AudioBackend extends AutoCloseable {
      *       handle as RETAINED: the same disposition it already gives a
      *       {@code close()} that THREW, which is the only other way a backend
      *       can report "you do not have this device back".</li>
-     *   <li>It is transient and SELF-CLEARING. It answers {@code false} again
-     *       once the deferred release completes, so a caller that abandoned a
-     *       device on account of it may retry rather than treat the device as
-     *       lost for the life of the process.</li>
+     *   <li>It is SELF-CLEARING, but by completion and never by time. It
+     *       answers {@code false} again once the deferred release actually
+     *       completes, so a caller that abandoned a device on account of it
+     *       may retry rather than treat the device as lost for the life of
+     *       the process; until then it keeps answering {@code true} — for the
+     *       life of the backend when the release can no longer be run at all
+     *       ({@link AsioBackend}: a wait it could not re-queue).</li>
      *   <li>Cheap and non-blocking, unlike {@link #isAvailable()} and
      *       {@link #supportsStreaming()} — it reads host-side state and never
      *       probes native resources. That is deliberate: the intended callers
