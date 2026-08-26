@@ -2,12 +2,17 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
+import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import javafx.application.Platform;
 import javafx.scene.control.Button;
@@ -15,6 +20,7 @@ import javafx.scene.control.Label;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,10 +71,28 @@ class TransportControllerTest {
     private Label statusBarLabel;
 
     private TransportController newController(DawProject project) throws Exception {
+        return newController(project, null);
+    }
+
+    /**
+     * Builds the controller over an engine that can actually open a stream
+     * (story 316 review). {@code streamingBackend} becomes the engine's whole
+     * fallback ladder; passing {@code null} leaves the engine with no
+     * streaming provision at all, which is what every test that never records
+     * wants.
+     */
+    private TransportController newController(DawProject project,
+                                              AudioBackend streamingBackend) throws Exception {
         AtomicReference<TransportController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             AudioEngine engine = new AudioEngine(project.getFormat());
+            if (streamingBackend != null) {
+                engine.setStreamingProvision(new StreamingProvision(
+                        streamingBackend.name(),
+                        List.of(new BackendStreamRung(streamingBackend,
+                                DeviceId.defaultFor(streamingBackend.name())))));
+            }
             UndoManager undo = new UndoManager();
             NotificationBar nb = new NotificationBar();
             Label statusLabel = new Label();
@@ -467,6 +491,15 @@ class TransportControllerTest {
         // rather than taking the double-stop rewind and leaking the recording
         // sessions, the temp files, the per-track recording flags and the lit
         // REC indicator forever.
+        //
+        // Story 316 review — the engine now needs a REAL capture-capable
+        // provision to reach that state at all. onRecord() opens the device
+        // BEFORE starting the pipeline and aborts the whole take when the open
+        // fails, so on the bare provision-less engine the other tests use no
+        // pipeline is created and there is nothing for Stop to finalize (that
+        // abort is pinned in TransportCommandPathTest). MockAudioBackend
+        // overrides openedInputChannels() honestly, so it survives the
+        // CaptureRequirement.REQUIRED walk.
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
         Transport transport = project.getTransport();
@@ -475,7 +508,7 @@ class TransportControllerTest {
         project.addTrack(armed);
         transport.setPositionInBeats(5.0);
 
-        TransportController controller = newController(project);
+        TransportController controller = newController(project, new MockAudioBackend());
         runHandler(controller::toggleRecord);   // pipeline active; transport RECORDING
         assertThat(armed.isRecording())
                 .as("the pipeline armed the track").isTrue();

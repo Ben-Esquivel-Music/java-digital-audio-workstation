@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.sdk.event;
 
+import com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.time.Instant;
@@ -36,6 +37,7 @@ import java.time.Instant;
  *         case AutomationEvent a-> handleAutomation(a);
  *         case PluginEvent p    -> handlePlugin(p);
  *         case XrunEvent x      -> handleXrun(x);
+ *         case BackendFallbackEvent b -> handleFallback(b);
  *     }
  * }
  * }</pre>
@@ -71,6 +73,7 @@ import java.time.Instant;
  * @see AutomationEvent
  * @see PluginEvent
  * @see com.benesquivelmusic.daw.sdk.audio.XrunEvent
+ * @see com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent
  */
 public sealed interface DawEvent extends BusEvent
         permits TransportEvent,
@@ -80,7 +83,8 @@ public sealed interface DawEvent extends BusEvent
                 ProjectEvent,
                 AutomationEvent,
                 PluginEvent,
-                XrunEvent {
+                XrunEvent,
+                BackendFallbackEvent {
 
     /**
      * Returns the wall-clock instant at which this event was produced.

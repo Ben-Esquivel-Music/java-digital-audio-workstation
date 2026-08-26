@@ -17,8 +17,8 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
-import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
@@ -327,21 +327,42 @@ final class TrackStripController {
             ioLabel.setOnMouseClicked(event -> {
                 if (event.getClickCount() == 2) {
                     List<AudioDeviceInfo> devices = List.of();
-                    audioEngine.ensureBackendInitialized();
-                    NativeAudioBackend backend = audioEngine.getAudioBackend();
+                    // Story 316: enumerate via the engine's one SDK backend
+                    // seam (the open stream's backend, else the provision's
+                    // requested rung).
+                    AudioBackend backend = audioEngine.getBackend();
                     if (backend != null) {
                         try {
-                            devices = backend.getAvailableDevices();
+                            devices = backend.listDevices();
                         } catch (Exception e) {
                             LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
                         }
                     }
                     InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, track.getInputDeviceIndex());
                     dialog.showAndWait().ifPresent(device -> {
+                        // Persisted per-track user intent (ProjectSerializer /
+                        // ProjectDeserializer) that is currently INERT on the
+                        // capture path: story 316 routes recording through the
+                        // engine's provisioned device — TransportController
+                        // calls startAudioInputOutput() with no index — so this
+                        // index has no reader today. Its consumer is story 326
+                        // "Multi-Channel Input Capture Routing", whose union
+                        // open must honour every armed track's input-device
+                        // choice; deleting or disabling this writer would
+                        // destroy the state 326 needs. The selection SURFACE
+                        // itself is owned by stories 092 (per-track audio I/O
+                        // routing) and 215 (driver-reported channel names).
                         track.setInputDeviceIndex(device.index());
-                        ioLabel.setTooltip(new Tooltip("Input: " + device.name()));
+                        // qualifiedName(), not name() (story 316 review): the
+                        // row the user just picked is labelled with the
+                        // host-API-qualified name, so echoing the bare one
+                        // here would name a DIFFERENT string than the thing
+                        // they clicked whenever two endpoints share a name —
+                        // and those are precisely the cases where "which one
+                        // did I choose?" is the question the echo answers.
+                        ioLabel.setTooltip(new Tooltip("Input: " + device.qualifiedName()));
                         statusBarLabel.setText("Input changed: " + track.getName()
-                                + " ← " + device.name());
+                                + " ← " + device.qualifiedName());
                         statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
                         markDirty.run();
                     });

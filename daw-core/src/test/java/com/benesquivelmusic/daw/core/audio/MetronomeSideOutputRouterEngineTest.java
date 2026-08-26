@@ -165,23 +165,32 @@ class MetronomeSideOutputRouterEngineTest {
         float[][] allOutput;
 
         Fixture() {
-            backend.open(DeviceId.defaultFor("Mock"),
-                    new com.benesquivelmusic.daw.sdk.audio.AudioFormat(SAMPLE_RATE, 2, 16),
-                    BUFFER_FRAMES);
             transport.setTempo(120.0);
             transport.setTimeSignature(4, 4);
             transport.setPositionInBeats(0.0);
-            transport.play();
             engine.setGraph(transport, new Mixer(), List.of());
-            engine.setBackend(backend);
             engine.setMetronome(metronome);
             engine.setMetronomeSideOutputRouter(router);
             engine.setCueBusManager(cueBusManager);
-            engine.start();
+            // Story 316: processBlock routes writeToChannel to the OPEN
+            // stream's backend, so open the mock through the production
+            // provision seam. Then pause: the engine-owned render pump stops
+            // (the backend stays open and published) so this test's direct
+            // processBlock drive stays deterministic. The transport starts
+            // playing only after the pause, so no pump-rendered block ever
+            // advances it or schedules a click.
+            engine.setStreamingProvision(new StreamingProvision(
+                    MockAudioBackend.NAME,
+                    List.of(new BackendStreamRung(
+                            backend, DeviceId.defaultFor(MockAudioBackend.NAME)))));
+            engine.startAudioOutput();
+            engine.pauseAudioOutput();
+            transport.play();
         }
 
         @Override
         public void close() {
+            engine.stopAudioOutput();
             engine.stop();
         }
 

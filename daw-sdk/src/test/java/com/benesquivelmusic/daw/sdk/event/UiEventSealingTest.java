@@ -65,8 +65,9 @@ class UiEventSealingTest {
 
     @Test
     void dawEventPermitsClauseIsUnchangedByThisStory() {
-        // The eight engine-domain families and nothing else — story 292 must NOT
-        // add SelectionChanged/UndoStateChanged here.
+        // The engine-domain families and nothing else — story 292 must NOT
+        // add SelectionChanged/UndoStateChanged here. (BackendFallbackEvent
+        // is an engine-domain fact added by story 316, not a UI event.)
         List<String> permitted = Arrays.stream(DawEvent.class.getPermittedSubclasses())
                 .map(Class::getSimpleName)
                 .toList();
@@ -78,7 +79,8 @@ class UiEventSealingTest {
                 "ProjectEvent",
                 "AutomationEvent",
                 "PluginEvent",
-                "XrunEvent");
+                "XrunEvent",
+                "BackendFallbackEvent");
         assertThat(permitted).doesNotContain("UiEvent", "SelectionChanged", "UndoStateChanged");
     }
 

@@ -575,21 +575,41 @@ final class TransportController implements TransportIntentHandler {
                     armedAudioTracks, countIn, InputMonitoringMode.OFF, null);
             recordingPipeline.setReportedLatency(reportedLatency.get());
             recordingPipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());
-            recordingPipeline.start();
 
-            // Open audio input stream with the first armed audio track's input device
+            // Open audio I/O through the engine's provisioned device (story
+            // 316): the settings-configured device identity is honoured on
+            // every open — a per-track input device index no longer reaches
+            // the open path. Per-track input CHANNEL routing stays on
+            // Track.getInputRouting(); multi-device capture is story 326.
+            //
+            // The open runs BEFORE RecordingPipeline.start() (story 316
+            // review). Story 316 made startAudioInputOutput() genuinely
+            // ENFORCE capture — it walks the ladder with
+            // CaptureRequirement.REQUIRED, refuses any rung that opens with
+            // zero input channels, and throws when every rung fails or no
+            // streaming provision is configured at all — so the throw below
+            // is now the honest "nothing can be captured" signal it never
+            // used to be, and starting the pipeline first meant acting on it
+            // too late to matter.
+            //
+            // Reordering costs nothing recordable. RecordingPipeline.start()
+            // is what installs the engine's recording callback
+            // (audioEngine.setRecordingCallback), starts the engine and calls
+            // transport.record(), and it computes the take's anchor
+            // (recordingStartBeat — from the punch region when one is
+            // enabled, otherwise the transport's position) inside itself. The
+            // take therefore begins wherever the PIPELINE starts and the
+            // anchor is read at that same moment, so opening first cannot
+            // desynchronize the two. Blocks the device delivers between the
+            // open and the pipeline start reach a recording callback that is
+            // still null: they were never part of any take.
             try {
-                int inputDevice = armedAudioTracks.stream()
-                        .mapToInt(Track::getInputDeviceIndex)
-                        .filter(idx -> idx >= 0)
-                        .findFirst()
-                        .orElse(0);
-                audioEngine.startAudioInputOutput(inputDevice);
+                audioEngine.startAudioInputOutput();
             } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Failed to start audio input for recording", e);
-                notificationBar.show(NotificationLevel.ERROR,
-                        "Audio device error: " + e.getMessage());
+                abortRecordingTake(outputDir, e);
+                return;
             }
+            recordingPipeline.start();
         }
 
         // Start MIDI recording for armed MIDI tracks
@@ -625,6 +645,94 @@ final class TransportController implements TransportIntentHandler {
                         + (trackCount > 1 ? "s" : "") + " armed");
         recIndicator.setVisible(true);
         recIndicator.setManaged(true);
+    }
+
+    /**
+     * Abandons a record gesture whose capture device could not be opened
+     * (story 316 review), leaving nothing behind and telling the user the take
+     * did not start.
+     *
+     * <p><strong>The WHOLE take is abandoned, armed MIDI tracks included.</strong>
+     * That is deliberate, not collateral damage. Silently continuing with the
+     * MIDI half would hand back a take that is missing exactly the audio tracks
+     * the user armed &mdash; the same dishonesty this review finding is about,
+     * only harder to notice, because a partially-populated take looks like a
+     * successful one until the audio lanes turn out to be empty. Aborting whole
+     * keeps one rule the user can hold: either the take they armed started, or
+     * no take started and they were told why.</p>
+     *
+     * <p>{@link #stop()} is deliberately NOT called here. Nothing started, so
+     * there is nothing to finalize, and on the ordinary Record-from-stopped
+     * gesture {@link #isRecordingInFlight()} is now false over a transport that
+     * is still STOPPED &mdash; which is exactly the double-stop rewind
+     * gesture's precondition. {@code stop()} would therefore yank the playhead
+     * back to zero (honouring {@code Transport.isReturnToStartOnStop()}, which
+     * defaults to true) and overwrite this message with "Returned to start".
+     * It would not, for the record, announce a spurious
+     * {@link TransportEvent.Stopped} &mdash; that publish is gated on the
+     * transport having been rolling on entry &mdash; so the rewind, not a
+     * phantom announce, is the reason to stay away from it.</p>
+     *
+     * <p>The REC indicator is cleared rather than merely left alone. It is lit
+     * only by the tail of {@link #onRecord()} and cleared by {@link #stop()} /
+     * {@link #finishPostRoll()}, so in the pipeline-active-over-STOPPED-transport
+     * state {@link #stop()} documents it can still be burning when the user
+     * presses Record again; leaving it lit over a take that never started is
+     * the same lie in miniature. {@link #updateStatus()} then re-reads the
+     * authoritative {@link Transport#getState()}, which this path has not
+     * touched &mdash; on the audio-armed branch the only thing that moves the
+     * transport is {@code RecordingPipeline.start()}, and it never ran &mdash;
+     * so the status label and the Play enablement report whatever the
+     * transport actually is.</p>
+     *
+     * @param outputDirectory the temp directory {@link #onRecord()} had just
+     *                        created for this take's segments; still empty,
+     *                        because the pipeline that would have populated it
+     *                        never started
+     * @param failure         the open failure, whose message names the actual
+     *                        cause (story 316 makes it specific: every ladder
+     *                        rung refused for want of capture channels, an
+     *                        ambiguous device selection, or no backend
+     *                        configured at all)
+     */
+    private void abortRecordingTake(Path outputDirectory, RuntimeException failure) {
+        LOG.log(Level.WARNING,
+                "Recording aborted — the capture device could not be opened", failure);
+        recordingPipeline = null;
+        deleteEmptyTakeDirectory(outputDirectory);
+
+        String reason = failure.getMessage() == null || failure.getMessage().isBlank()
+                ? failure.getClass().getSimpleName()
+                : failure.getMessage();
+        String message = "Recording aborted — no take was started: " + reason;
+        statusBarLabel.setText(message);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+        notificationBar.show(NotificationLevel.ERROR, message);
+        recIndicator.setVisible(false);
+        recIndicator.setManaged(false);
+        updateStatus();
+    }
+
+    /**
+     * Best-effort removal of the take directory created for a record gesture
+     * that then aborted (story 316 review). It is still empty: nothing has
+     * been written beneath it, because {@code RecordingPipeline.start()} is
+     * what resolves the per-track paths under it and it never ran. A plain
+     * delete therefore suffices and no recursive walk is warranted.
+     *
+     * <p>A failure here is logged at FINE and swallowed on purpose: an
+     * undeleted empty temp directory is housekeeping, and escalating it would
+     * replace the device message the user actually needs with a filesystem
+     * complaint about a directory they never asked for.</p>
+     */
+    private static void deleteEmptyTakeDirectory(Path outputDirectory) {
+        try {
+            Files.deleteIfExists(outputDirectory);
+        } catch (IOException | RuntimeException e) {
+            LOG.log(Level.FINE,
+                    () -> "Could not delete the empty recording directory "
+                            + outputDirectory + ": " + e);
+        }
     }
 
     @Override

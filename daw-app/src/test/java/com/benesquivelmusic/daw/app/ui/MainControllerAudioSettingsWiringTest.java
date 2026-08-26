@@ -43,6 +43,30 @@ class MainControllerAudioSettingsWiringTest {
     }
 
     @Test
+    void blankPersistedBackendKeepsTheProvisionedBackendNotTheHonestActiveOne()
+            throws Exception {
+        // Story 316 review: at startup nothing is streaming, so the honest
+        // getActiveBackendName() answers BACKEND_NONE. A blank persisted
+        // backend means "keep what is provisioned", which must therefore
+        // resolve through getProvisionedBackendName() — otherwise startup
+        // would apply a "None" backend and wipe the provisioned ladder.
+        SettingsModel model = Story307TestSupport.model("startupBlankBackend");
+        model.setAudioBackend("");
+        Story307TestSupport.StubController controller =
+                new Story307TestSupport.StubController();
+        controller.activeBackend = AudioEngineController.BACKEND_NONE;
+        controller.provisionedBackend = "ASIO";
+
+        Thread worker = MainController.applyStartupAudioSettings(model, controller);
+
+        assertThat(controller.configurationApplied.await(5, TimeUnit.SECONDS)).isTrue();
+        worker.join(TimeUnit.SECONDS.toMillis(5));
+        assertThat(controller.lastRequest.get().backendName())
+                .as("a blank persisted backend resolves to the PROVISIONED backend")
+                .isEqualTo("ASIO");
+    }
+
+    @Test
     void settingsDialogUsesTheModelObservedByLiveRuntimeConsumers() throws Exception {
         SettingsModel shared = Story307TestSupport.model("sharedMainSettingsModel");
         MainController mainController = new MainController();

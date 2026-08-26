@@ -90,6 +90,7 @@ public final class LegacyListenerAdapter implements Flow.Subscriber<DawEvent> {
             case AutomationEvent ignored -> { /* no legacy mapping */ }
             case PluginEvent ignored     -> { /* no legacy mapping */ }
             case com.benesquivelmusic.daw.sdk.audio.XrunEvent ignored -> { /* no legacy mapping */ }
+            case com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent ignored -> { /* no legacy mapping */ }
         }
     }
 

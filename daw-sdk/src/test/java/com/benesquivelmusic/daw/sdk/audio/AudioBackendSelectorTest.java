@@ -45,38 +45,6 @@ class AudioBackendSelectorTest {
     }
 
     @Test
-    void openWithFallbackFallsBackWhenPreferredBackendIsUnavailable() {
-        // Remap "Java Sound" to a MockAudioBackend so this test stays headless
-        // and does not try to talk to a real audio device on CI.
-        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
-        factories.put("ASIO", AsioBackend::new); // unavailable on Linux CI
-        factories.put("Java Sound", MockAudioBackend::new);
-
-        AudioBackendSelector selector = new AudioBackendSelector(factories);
-        AudioBackend opened = selector.openWithFallback(
-                "ASIO", DeviceId.defaultFor("ASIO"), AudioFormat.CD_QUALITY, 128);
-
-        assertInstanceOf(MockAudioBackend.class, opened);
-        assertTrue(opened.isOpen());
-        opened.close();
-    }
-
-    @Test
-    void openWithFallbackUsesPreferredWhenAvailable() {
-        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
-        factories.put("Mock", MockAudioBackend::new);
-        factories.put("Java Sound", MockAudioBackend::new);
-
-        AudioBackendSelector selector = new AudioBackendSelector(factories);
-        AudioBackend opened = selector.openWithFallback(
-                "Mock", DeviceId.defaultFor("Mock"), AudioFormat.CD_QUALITY, 128);
-
-        assertEquals("Mock", opened.name());
-        assertTrue(opened.isOpen());
-        opened.close();
-    }
-
-    @Test
     void selectByNameReturnsMatchingSdkBackendInstance() {
         AudioBackendSelector selector = new AudioBackendSelector();
         // Mock is always registered and always available; using it keeps
@@ -93,6 +61,64 @@ class AudioBackendSelectorTest {
         assertEquals(null, selector.selectByName("NotARealBackend"));
         assertEquals(null, selector.selectByName(""));
         assertEquals(null, selector.selectByName(null));
+    }
+
+    @Test
+    void availableBackendsExcludesAvailableButNonStreamingBackends() {
+        // Story 316: an available backend whose streaming path is not
+        // implemented must not be offered — it would open a silent stream.
+        List<String> order = new AudioBackendSelector().preferenceOrderForCurrentOs();
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        for (String name : order) {
+            factories.put(name, () -> new AvailableNonStreamingBackend(name));
+        }
+        // The Java Sound rung streams (Mock stands in: supportsStreaming true).
+        factories.put("Java Sound", MockAudioBackend::new);
+
+        AudioBackendSelector selector = new AudioBackendSelector(factories);
+        assertEquals(List.of("Java Sound"), selector.availableBackends());
+        assertEquals(List.of("Java Sound"), selector.availableBackendNames());
+        assertEquals("Java Sound", selector.defaultBackendName());
+    }
+
+    @Test
+    void defaultBackendNameReturnsTheFirstStreamingRung() {
+        List<String> order = new AudioBackendSelector().preferenceOrderForCurrentOs();
+        String head = order.get(0);
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        factories.put(head, MockAudioBackend::new); // available AND streaming
+        factories.put("Java Sound", MockAudioBackend::new);
+
+        AudioBackendSelector selector = new AudioBackendSelector(factories);
+        assertEquals(head, selector.defaultBackendName());
+        assertTrue(selector.availableBackends().contains(head),
+                selector.availableBackends().toString());
+    }
+
+    /**
+     * Available-but-non-streaming {@link AudioBackend} test double. Being a
+     * class outside the historical permitted set, it is also compile-level
+     * proof that story 316 unsealed the interface. It deliberately does NOT
+     * override {@code supportsStreaming()}, so it exercises the inherited
+     * {@code false} default the selector's streaming gate keys on.
+     */
+    private static final class AvailableNonStreamingBackend implements AudioBackend {
+        private final String name;
+
+        private AvailableNonStreamingBackend(String name) {
+            this.name = name;
+        }
+
+        @Override public String name() { return name; }
+        @Override public boolean isAvailable() { return true; }
+        @Override public List<AudioDeviceInfo> listDevices() { return List.of(); }
+        @Override public void open(DeviceId device, AudioFormat format, int bufferFrames) { }
+        @Override public java.util.concurrent.Flow.Publisher<AudioBlock> inputBlocks() {
+            return subscriber -> { };
+        }
+        @Override public void sink(AudioBlock block) { }
+        @Override public boolean isOpen() { return false; }
+        @Override public void close() { }
     }
 
     @Test

@@ -7,13 +7,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
- * Selects the right {@link AudioBackend} for the current host, with
- * automatic fallback to {@link JavaxSoundBackend} when the preferred
- * backend cannot open a stream.
+ * Selects the right {@link AudioBackend} for the current host. Open-time
+ * fallback is not this class's job: the engine walks its explicit
+ * {@code StreamingProvision} ladder (story 316), publishing a
+ * {@code BackendFallbackEvent} per failed hop.
  *
  * <p>This is the backend-wiring counterpart to the UI selection story (098):
  * the Audio Settings dialog asks {@link AudioEngineController} for the list
@@ -30,8 +29,6 @@ import java.util.logging.Logger;
  * </ul>
  */
 public final class AudioBackendSelector {
-
-    private static final Logger LOGGER = Logger.getLogger(AudioBackendSelector.class.getName());
 
     /** Names of every backend the selector can produce. */
     public static final List<String> ALL_BACKEND_NAMES = List.of(
@@ -112,10 +109,36 @@ public final class AudioBackendSelector {
 
     /**
      * Returns the names of every backend whose native library / driver is
-     * available on this host, in OS-default priority order.
+     * available on this host <em>and</em> which reports it can actually
+     * stream on this host ({@link AudioBackend#supportsStreaming()}), in
+     * OS-default priority order.
      *
-     * @return list of available backend names (never empty — Java Sound is
-     *         always present)
+     * <p>The streaming gate (story 316) exists so the application never
+     * opens a stream that would be silent while looking healthy. It drops
+     * two different kinds of backend:</p>
+     * <ul>
+     *   <li>Backends whose {@code sink(...)} discards <em>by
+     *       construction</em> — WASAPI, CoreAudio and JACK today. They
+     *       return to this list as their streaming stories land.</li>
+     *   <li>Backends whose streaming path is a <em>per-host</em> fact
+     *       (story 316 review). {@code AsioBackend.supportsStreaming()} is a
+     *       live probe of the native {@code asioshim}'s story-311 streaming
+     *       symbols, so a Windows host whose shim is PRESENT — its
+     *       enumeration and lifecycle symbols resolve, so
+     *       {@code isAvailable()} passes — but was built without those
+     *       streaming entrypoints, or predates them, drops ASIO here. A
+     *       host with no {@code asioshim} at all never reaches this half of
+     *       the gate: {@code isAvailable()} already answers {@code false}
+     *       and the availability test below short-circuits, so a missing
+     *       shim is an AVAILABILITY drop and only a stale one is a
+     *       streaming-gate drop.</li>
+     * </ul>
+     *
+     * <p>The gate is therefore a query about THIS host at THIS moment, not
+     * a static capability table; it is re-probed on every call.</p>
+     *
+     * @return list of available, streamable backend names (never empty —
+     *         Java Sound is always present)
      */
     public List<String> availableBackends() {
         List<String> available = new ArrayList<>();
@@ -125,7 +148,7 @@ public final class AudioBackendSelector {
                 continue;
             }
             try (AudioBackend probe = factory.get()) {
-                if (probe.isAvailable()) {
+                if (probe.isAvailable() && probe.supportsStreaming()) {
                     available.add(name);
                 }
             }
@@ -138,7 +161,16 @@ public final class AudioBackendSelector {
     }
 
     /**
-     * Returns the OS-default preferred backend name for this host.
+     * Returns the OS-default preferred backend name for this host — the
+     * first entry of the OS preference order that is both available and
+     * streamable ({@link AudioBackend#supportsStreaming()}, story 316), so
+     * the default is never a backend that would open a silent stream.
+     *
+     * <p>Same host-specific gate as {@link #availableBackends()}: on
+     * Windows the ASIO head is skipped when the native {@code asioshim} is
+     * missing or lacks the story-311 streaming symbols (story 316 review),
+     * and the preference order falls through to the next streamable entry —
+     * ultimately Java Sound, which is always present.</p>
      *
      * @return preferred backend name
      */
@@ -147,7 +179,7 @@ public final class AudioBackendSelector {
             Supplier<AudioBackend> factory = factories.get(candidate);
             if (factory == null) continue;
             try (AudioBackend probe = factory.get()) {
-                if (probe.isAvailable()) {
+                if (probe.isAvailable() && probe.supportsStreaming()) {
                     return candidate;
                 }
             }
@@ -178,68 +210,5 @@ public final class AudioBackendSelector {
             return List.of(JackBackend.NAME, JavaxSoundBackend.NAME);
         }
         return List.of(JavaxSoundBackend.NAME);
-    }
-
-    /**
-     * Opens {@code preferredName}'s backend with the given stream parameters.
-     * If the preferred backend is unavailable, or if
-     * {@link AudioBackend#open(DeviceId, AudioFormat, int)} throws, the
-     * failure is logged and the method falls back to
-     * {@link JavaxSoundBackend}.
-     *
-     * <p>Returns the opened backend; the caller owns its lifecycle and must
-     * call {@link AudioBackend#close()} when done.</p>
-     *
-     * @param preferredName backend the user asked for
-     * @param device         target device id
-     * @param format         desired format
-     * @param bufferFrames   desired buffer size in frames
-     * @return a successfully-opened backend (never null)
-     */
-    public AudioBackend openWithFallback(
-            String preferredName, DeviceId device, AudioFormat format, int bufferFrames) {
-        Objects.requireNonNull(preferredName, "preferredName must not be null");
-        Supplier<AudioBackend> factory = factories.get(preferredName);
-        if (factory != null) {
-            AudioBackend backend = factory.get();
-            if (backend.isAvailable()) {
-                try {
-                    backend.open(device, format, bufferFrames);
-                    return backend;
-                } catch (RuntimeException openFailure) {
-                    LOGGER.log(Level.WARNING,
-                            openFailure,
-                            () -> "Backend " + preferredName
-                                    + " failed to open — falling back to "
-                                    + JavaxSoundBackend.NAME);
-                    safeClose(backend);
-                }
-            } else {
-                LOGGER.log(Level.INFO,
-                        () -> "Backend " + preferredName
-                                + " not available — falling back to " + JavaxSoundBackend.NAME);
-                safeClose(backend);
-            }
-        }
-        AudioBackend fallback = factories
-                .getOrDefault(JavaxSoundBackend.NAME, JavaxSoundBackend::new)
-                .get();
-        fallback.open(fallbackDevice(device), format, bufferFrames);
-        return fallback;
-    }
-
-    private static DeviceId fallbackDevice(DeviceId original) {
-        if (original == null || original.isDefault()) {
-            return DeviceId.defaultFor(JavaxSoundBackend.NAME);
-        }
-        return new DeviceId(JavaxSoundBackend.NAME, original.name());
-    }
-
-    private static void safeClose(AudioBackend backend) {
-        try {
-            backend.close();
-        } catch (RuntimeException ignored) {
-            // swallow — best-effort cleanup
-        }
     }
 }

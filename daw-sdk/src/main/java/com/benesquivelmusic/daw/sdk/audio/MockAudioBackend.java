@@ -82,6 +82,23 @@ public final class MockAudioBackend implements AudioBackend {
     }
 
     /**
+     * {@inheritDoc}
+     *
+     * <p>Always {@code true}: the mock "streams" deterministically —
+     * {@link #sink(AudioBlock)} captures into an assertable buffer and
+     * {@link #pumpInput(int)} replays seeded PCM through
+     * {@link #inputBlocks()} — so tests that stand it in for a streaming
+     * backend pass the story-316 {@code supportsStreaming} gate.
+     * {@link #awaitSinkCapacity(long)} deliberately keeps the inherited
+     * full-timeout park: wall-clock pacing keeps pump-driven tests from
+     * spinning the render loop flat out and exhausting memory.</p>
+     */
+    @Override
+    public boolean supportsStreaming() {
+        return true;
+    }
+
+    /**
      * Configures the availability flag returned by {@link #isAvailable()}.
      * Defaults to {@code true}; set to {@code false} to simulate a backend
      * whose native library / driver is absent — useful for testing the
@@ -121,6 +138,28 @@ public final class MockAudioBackend implements AudioBackend {
     @Override
     public Flow.Publisher<AudioBlock> inputBlocks() {
         return support.inputBlocks();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The opened format's channel count while a stream is open, {@code 0}
+     * otherwise (story 316 review). This mock is a backend that really DOES
+     * capture — {@link #pumpInput(int)} publishes on
+     * {@link #inputBlocks()} with exactly that channel count — so it owes an
+     * honest override rather than the interface's fail-closed default. Left at
+     * the default it would report no capture channels and be refused by every
+     * {@link CaptureRequirement#REQUIRED} open, which is precisely the
+     * recording path integration tests use it to exercise.</p>
+     *
+     * <p>The count is the OPENED format's, not the seeded PCM buffer's: an
+     * exhausted or empty {@code inputPcm} still publishes blocks, zero-padded,
+     * which is deliberate determinism rather than a missing capture stream.</p>
+     */
+    @Override
+    public int openedInputChannels() {
+        AudioFormat format = support.format();
+        return support.isOpen() && format != null ? format.channels() : 0;
     }
 
     @Override

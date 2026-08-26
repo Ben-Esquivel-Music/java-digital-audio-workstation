@@ -1,7 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
-import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 
 import java.util.List;
 import java.util.logging.Level;
@@ -11,9 +11,11 @@ import java.util.logging.Logger;
  * Manages audio device enumeration and provides a centralized interface for
  * querying available input and output hardware devices.
  *
- * <p>Wraps the {@link NativeAudioBackend} device enumeration, handling
- * initialization and error recovery so that callers need not manage backend
- * lifecycle directly.</p>
+ * <p>Enumerates through the engine's honest backend answer
+ * ({@link AudioEngine#getBackend()} — the open stream's backend when a
+ * stream is open, else the provisioned ladder head; story 316), handling
+ * error recovery so that callers need not manage backend lifecycle
+ * directly.</p>
  */
 public final class AudioDeviceManager {
 
@@ -32,13 +34,12 @@ public final class AudioDeviceManager {
      * @return the list of available audio devices
      */
     public List<AudioDeviceInfo> getAvailableDevices() {
-        audioEngine.ensureBackendInitialized();
-        NativeAudioBackend backend = audioEngine.getAudioBackend();
+        AudioBackend backend = audioEngine.getBackend();
         if (backend == null) {
             return List.of();
         }
         try {
-            return backend.getAvailableDevices();
+            return backend.listDevices();
         } catch (Exception e) {
             LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
             return List.of();

@@ -371,10 +371,15 @@ Rationale: two clocks always diverge (§1.3); a projection cannot.
 
 ### 2.4 The selected backend is the streaming backend
 
-The backend the user selects is the backend that opens the stream, on the selected
-device, at the configured buffer size — on **every** open, not only on reconfigure.
-Reported state equals the open stream; a fallback is a visible event, not a silent
-substitution. Rationale: the primary platform is Windows + ASIO + a multi-channel USB
+The backend the user selects is the backend the engine opens the stream on, on the
+selected device, at the configured buffer size — on **every** open, not only on
+reconfigure. Two things can put a different backend on the stream, and §3.2 governs both:
+the availability/streaming gate refuses the selection before a ladder is built, so the
+ladder starts on a fallback head; or the selected rung fails to open and a lower rung
+carries the stream. Neither is silent — each publishes a fallback event naming the
+requested endpoint. What holds without exception is the reporting: whatever actually
+opened is what is reported, and when nothing is open the answer is "none" — never a
+cosmetic label. Rationale: the primary platform is Windows + ASIO + a multi-channel USB
 interface; silently streaming elsewhere at unknown latency is not a professional tool.
 
 ### 2.5 One tap, many consumers
@@ -451,17 +456,61 @@ project-switch bug class becomes structurally impossible.
 
 ### 3.2 Backend truth
 
-| Fact               | Meaning                                                        |
-|--------------------|----------------------------------------------------------------|
-| requested backend  | what the user selected (settings)                              |
-| active backend     | what the open stream actually runs on                          |
-| active device      | resolved device identity (stable id, not a bare index)         |
-| stream state       | CLOSED / OPEN / RUNNING / FAILED(cause)                        |
-| fallback event     | requested ≠ active — always a published, visible event         |
+| Fact                 | Meaning                                                        |
+|----------------------|----------------------------------------------------------------|
+| requested backend    | what the user selected (settings)                              |
+| provisioned backend  | the backend queries, enumeration and configuration target: the open stream's backend while one is open, else the installed ladder's head rung; "none" when nothing is provisioned |
+| active backend       | the backend whose stream is OPEN — RUNNING or PAUSED, i.e. the one holding the device handle; "none" whenever no stream is open |
+| active device        | resolved device identity (stable id, not a bare index)         |
+| stream state         | `CLOSED` (no handle held) / `RUNNING` (open and started: the callback may render, RT clock claimed) / `PAUSED` (open but stopped — resumable, clock released) / `RELEASE_PENDING` (stopped, but the backend still holds the handle: not open, not resumable, and it must be released before any new open). Several ways in, and the state alone does **not** prove the render pump has exited: a close that was attempted after a confirmed pump join and FAILED, or a pump start that failed and whose unwind's close failed too (no join there — the start is what failed); a close DEFERRED, not attempted, because that backend's native control panel is open; a close that was attempted, RETURNED normally, and that the backend then reported as a deferred release (`AudioBackend.isReleasePending()` — the ASIO driver-shim teardown queued behind an abandoned downcall); or a `stop()`, which quiesces, releases the clock and leaves the handle for a later release without attempting a close at all — including when its own bounded join timed out. Anything about to release the handle re-confirms quiescence itself. There is no FAILED state — a failed open walks the ladder and publishes fallback events, and the app-level `EngineState` (RUNNING / STOPPED / DEVICE_LOST / …) is a separate concept |
+| fallback event       | published at OPEN time, once per hop the open did not take — a gate-refused request, then every rung that failed before one opened. Substitution is always visible; there is no silent hop. A walk can end EARLY, and that is a stop rather than a silence: a rung whose `open()` was ATTEMPTED and whose handle could not then be released may still hold the device, so the ladder is ABANDONED rather than opened beside it — that hop and every earlier one are still published (active `"none"`), and no lower rung is walked, opened or published |
 
-The UI renders *active*, never *requested*. Device identity is resolved from the stable
-device id at every open; a bare index is acceptable only inside a single enumeration
-snapshot (indices shift when hardware changes — the reconnect bug class).
+*Provisioned* is a **routing target, not a prediction.** It is the backend a capability
+query, a device enumeration or a configuration write should address right now. It does
+**not** name the rung a future open will win on: every open re-walks the ladder from rung
+0, and nothing rewrites the provision to whichever rung succeeded. So after a head-rung
+failure that a lower rung recovered, *provisioned* reads as the OPEN backend while that
+stream lasts, then reverts to the ladder's head once it closes — and the next open tries
+the head again.
+
+*Requested* and *provisioned* differ whenever the availability/streaming gate refuses the
+user's choice: the ladder then starts on a fallback head. The request is not lost when
+that happens — it is durable configuration. It is persisted in the settings model, is the
+`audio.backend` choice row in both the Settings dialog and the first-run wizard, and is
+read back and **preferred over** *provisioned* on the next startup, so a backend that was
+unavailable once is retried rather than quietly replaced forever. What the fallback events
+add is the record of the substitution, not custody of the request.
+
+*Provisioned* and *active* differ in exactly one situation: no stream is OPEN while
+something is provisioned — *active* reads "none", *provisioned* names the ladder's head.
+That is the ordinary stopped transport, not an error. While a stream is open the two name
+the same backend, PAUSED included (a paused stream is open, see below), and with nothing
+provisioned both read "none".
+
+The rendering rule follows the question being asked:
+
+- **"Which backend holds the device right now?"** renders *active*, and nothing else is
+  ever labelled active. Precisely: *active* is the backend of the **open** stream, where
+  open means RUNNING **or PAUSED**. A paused stream renders no audio but still owns the
+  device handle and still holds the driver, so naming its backend is the true answer —
+  "none" there would claim the device is free when it is not. A merely RETAINED handle is
+  *not* open and never names a backend — however it came to be retained: a close that
+  failed, a close deferred because that backend's control panel is open, a close the
+  BACKEND returned from with its own release still deferred, or a `stop()`
+  that attempted none. With no open stream it is
+  "none" — a stopped transport is the normal case, so a surface showing it localizes the
+  word rather than printing the contract literal, and must not present it as a missing
+  device.
+- **"What will be queried or configured next?"** renders/queries *provisioned*: device
+  enumeration, startup configuration and the Settings dialog's live-endpoint resolution all
+  read it, because they must work while the transport is stopped and *active* is "none".
+- ***Requested* is never rendered as either.** It is durable configuration — persisted,
+  editable in the `audio.backend` row, re-applied at startup — and it is also the name
+  stamped into every fallback event, so requested ≠ what happened stays visible.
+
+Device identity is resolved from the stable device id at every open; a bare index is
+acceptable only inside a single enumeration snapshot (indices shift when hardware changes
+— the reconnect bug class).
 
 ### 3.3 The tap-point taxonomy
 
@@ -559,27 +608,56 @@ duality of §1.2 is retired.
                                                             PCM_FLOAT negotiated, else float→int PCM conversion
                                                       │
                                                       v
-                                         stream state: OPEN/RUNNING/FAILED — reported name = the stream that is open
+                                         stream state: CLOSED / RUNNING / PAUSED / RELEASE_PENDING
+                                         open = RUNNING or PAUSED — reported name = that stream's backend
+                                         RELEASE_PENDING = backend still holds the handle (close failed,
+                                           deferred for an open control panel, returned with the
+                                           BACKEND's own release still deferred, or never attempted by
+                                           stop()); not open, and not proof the pump has exited
 
 Design decisions and why:
 
 - **Consolidate onto the SDK interface rather than teaching the legacy slot about
-  ASIO.** The SDK backend already carries the finished 310–312 stack, device events,
-  and `writeToChannel`; the legacy backends are adapted behind it (or retired), so the
-  engine has one open/start/stop seam and the reported name cannot lie by construction.
+  ASIO.** The SDK backend already carries the finished 310–312 stack and device events,
+  and it declares the `writeToChannel` seam; the legacy backends are adapted behind it
+  (or retired), so the engine has one open/start/stop seam and the reported name cannot
+  lie by construction. The seam is only a seam today — no production backend routes
+  `writeToChannel` to hardware. `AudioBackend`'s `default` validates its arguments (a
+  negative channel index or a null buffer throws `IllegalArgumentException`) and then
+  drops the samples; `AsioBackend` and `JavaxSoundBackend` inherit that drop, while the
+  adapted PortAudio backend (`CallbackBackendAdapter`) overrides it to make the same
+  drop a counted fact rather than an invisible one. Only the test `MockAudioBackend`
+  overrides it to do anything real with the samples — see the cue/side-output bullet
+  below.
 - **Device selection is honoured on every open** because the engine holds the resolved
   device identity (§3.2) — the index‑0 default and the cold-start-vs-reconfigure split
   both disappear; Play after Stop reopens the same device.
 - **The fallback ladder is explicit and loud.** ASIO open failure falls back to the
   next rung *and* publishes the fallback event (surfaced via Book 4's notification
-  injection). Silent substitution is the §1.2 disease.
+  injection). Silent substitution is the §1.2 disease. Falling back is not unconditional,
+  and where the ladder refuses to fall back it still does not substitute silently: a rung
+  whose `open()` was ATTEMPTED and whose handle could not then be released may still hold
+  the device, so the walk is ABANDONED rather than opening a fallback beside it — the
+  hops so far, that one included, are published naming `"none"` as active, and no lower
+  rung is walked, so nothing was substituted at all. A rung refused *before* `open()`
+  (an unavailable ASIO shim, a non-renderable negotiation) holds nothing, and still falls
+  through to the next rung. (A hop that fails with an `Error` also abandons the walk,
+  after ATTEMPTING to give its handle back — the attempt is skipped when that backend's
+  control panel is open, can fail, and can return with the backend reporting its own
+  release still deferred — and propagates without publishing. The log says which of those
+  happened, because that is what tells a reader whether the device is
+  free; see §5.2.)
 - **Java Sound is corrected, not blessed.** It negotiates a format the line actually
   supports (float where available, else properly converted signed PCM), opens the
   selected mixer, and where device selection is genuinely unsupported says so. It
   remains the last rung, not the default experience.
 - **Cue/side-output click routing becomes real** once the streaming backend implements
   `writeToChannel` on an open stream — unblocking the existing click-track side-output
-  and headphone-cue stories (136, 135) whose UI already ships.
+  and headphone-cue stories (136, 135) whose UI already ships. No production backend
+  implements it today; Stage 3 makes the call target the OPEN stream and turns the
+  dropped writes into a counted fact (`CallbackBackendAdapter.droppedChannelWrites()`)
+  instead of an invisible inherited no-op. Turning those counts into audio stays owned
+  by stories 136 and 135.
 
 ### 4.3 The metering tap bus
 
@@ -723,7 +801,7 @@ The tables a reviewer checks a PR against.
 | Rule | Contract |
 |------|----------|
 | Selection honoured | Every stream open resolves the configured backend + device id; Play-after-Stop reopens the same device |
-| Honest reporting | Reported active backend/device = the open stream's; requested ≠ active ⇒ published fallback event |
+| Honest reporting | Reported active backend/device = the open stream's, and *only* that: with no stream open it is "none", never the provisioned or requested backend. Configuration and enumeration surfaces read the *provisioned* backend instead (§3.2). Every hop an open did not take publishes a fallback event naming the requested endpoint and what carried the stream ("none" when nothing did) — including a request the availability/streaming gate refused before it ever became a ladder rung. Three cases publish nothing about a hop. First, an open with no failed hop at all: the requested rung opened and only the render-pump start then failed, a failure state story 317 owns. Second, the rungs BELOW an abandoned walk — a rung that reached `open()` and could not give its handle back stops the ladder, so nothing below it is ever walked; its own hop and every earlier one are still published, naming `"none"` as active. Third, a hop that fails with an `Error` rather than an exception: the walk is abandoned and the `Error` propagates without publishing anything at all — an `OutOfMemoryError` is not a device refusal, and the ladder deliberately does not route around one. Its handle release is ATTEMPTED on the way out, not guaranteed: the attempt is skipped while that backend's control panel is open, may itself fail, and may return with the backend reporting its own release still deferred, and the engine logs which happened rather than asserting the device is free |
 | Java Sound formats | Only formats the line supports; float bits never written into an integer-encoded line |
 | Device indices | Stable ids resolved per enumeration snapshot; a stale index is a visible error, not an index‑0 open |
 | Unsupported selection | Stated ("device selection not supported on this backend"), never silently ignored |
@@ -822,8 +900,9 @@ FxDispatcher key so independent facts never coalesce into each other.
 
 - **Analysis overload**: the analysis thread sheds by dropping ring blocks (counters
   feed Book 4's engine-health surfaces); it never back-pressures the RT thread.
-- **No backend / stream FAILED**: transports refuse transitions (§2.8); meters and
-  analyzers show honest idle; the status surface says why (Book 4's stories 336/338).
+- **No backend / a stream that could not be opened**: transports refuse
+  transitions (§2.8); meters and analyzers show honest idle; the status surface
+  says why (Book 4's stories 336/338).
 - **Reduce Motion**: meters and analyzers are *data*, not decoration — they keep
   updating on data arrival; decorative motion around them is Book 5's story 347.
 

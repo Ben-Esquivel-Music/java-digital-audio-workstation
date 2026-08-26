@@ -36,9 +36,12 @@ import java.util.concurrent.locks.LockSupport;
  * and interleaved scratch arrays, and both {@link AudioBlockRing}s — is
  * allocated in the constructor, on the calling (control) thread. The callback
  * body therefore performs only {@code MemorySegment} bulk copies,
- * {@code float[]} writes and {@link java.util.concurrent.atomic.AtomicLong}
- * {@code lazySet} release stores: no allocation, no lock, no blocking call, no
- * logging.</p>
+ * {@code float[]} writes, {@link java.util.concurrent.atomic.AtomicLong}
+ * {@code lazySet} release stores, and one increment of the {@code volatile
+ * long} {@code renderedBlocksConsumed} counter — a plain load-add-store by
+ * its single writer (the driver thread is the only mutator), so it is
+ * wait-free and allocates nothing even though the store is volatile. No
+ * allocation, no lock, no blocking call, no logging.</p>
  *
  * <h2>Off-thread input marshalling</h2>
  * <p>{@code SubmissionPublisher.offer(...)} acquires a
@@ -111,7 +114,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     /** Backstop park interval for the drain thread when the ring runs dry. */
     private static final long DRAIN_PARK_NANOS = 20_000_000L; // 20 ms
 
-    /** How long {@link #close()} waits for the drain thread to finish. */
+    /**
+     * How long {@link #close()} and {@link #closeRetainingUpcallStub()} wait
+     * for the drain thread to finish.
+     */
     private static final long DRAIN_SHUTDOWN_TIMEOUT_MILLIS = 2_000L;
 
     /** ASIO's double-buffer index is always 0 or 1. */
@@ -162,12 +168,67 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     private final AudioBlockRing outputRing;
     private final Thread drainThread;
 
+    /**
+     * How many input channels the driver actually handed usable buffers for
+     * (story 316 review) — counted once, from the descriptors
+     * {@code ASIOCreateBuffers} really produced, rather than from the count the
+     * host asked for.
+     *
+     * <p>A channel counts only when {@link #bindDriverBuffers} bound a
+     * converter to it, which is precisely the condition
+     * {@link #copyInputChannel} uses to decide between decoding the driver's
+     * buffer and writing silence. Anything else — a channel outside the opened
+     * format, a descriptor whose {@code buffers[0]}/{@code buffers[1]} came
+     * back {@link MemorySegment#NULL}, an address the FFM boundary refused to
+     * reinterpret — captures silence, and counting it would be exactly the
+     * false promise {@link AsioBackend#openedInputChannels()} exists to
+     * prevent.</p>
+     */
+    private final int boundInputChannels;
+
     private final Arena arena;
     private final MemorySegment upcallStub;
 
     private volatile boolean streaming = true;
     private volatile boolean draining = true;
     private volatile boolean closed;
+
+    /**
+     * Rendered blocks the driver callback actually consumed (story 316
+     * review): incremented by {@link #bufferSwitch(int, int)} exactly when
+     * {@code outputRing.drainLatestInto} handed it an engine-rendered block,
+     * never on the silence path. It is the observable proof that the output
+     * bridge is alive — that audio written through {@link #write(AudioBlock)}
+     * reached the driver's buffers — as opposed to the transport merely
+     * advancing while the callback starved.
+     *
+     * <p>A plain {@code volatile long} with {@code ++} is real-time safe
+     * here because the driver's callback thread is the <em>only</em>
+     * writer. The increment compiles to a volatile load, an add and a
+     * volatile store — no CAS retry loop, so it is wait-free with a bounded
+     * instruction count; no lock, so it cannot block on a control thread;
+     * and no object is created, so it cannot trigger an allocation or a GC
+     * pause on the RT thread. The non-atomicity of the read-modify-write
+     * costs nothing with one writer (no update can be lost), and the
+     * volatile store still publishes each new value to the control / test
+     * threads that read it — which is exactly why an {@code AtomicLong} or
+     * {@code LongAdder} would buy nothing and a {@code LongAdder} would
+     * additionally allocate cells.</p>
+     *
+     * <p>{@code RealTimeSafeContractTest} enforces only part of that.
+     * Its bytecode sentinels scan {@link #bufferSwitch(int, int)}, and
+     * every method it reaches inside this class, for <em>inline
+     * publication</em> — invocations of {@code SubmissionPublisher},
+     * {@code publishInput}, {@code submit} or {@code offer} — and for
+     * <em>atomic read-modify-writes</em>, which is what would fail if this
+     * counter were turned back into an {@code AtomicLong}; its other goals
+     * check for {@code synchronized}, varargs and boxed types on
+     * {@code @RealTimeSafe} methods. A counter that allocated or took a
+     * lock through some other API would still pass all of them, so the
+     * remainder of the field's RT-safety is a design property maintained
+     * here, not one the sentinels enforce.</p>
+     */
+    private volatile long renderedBlocksConsumed;
 
     /**
      * Pre-allocates every buffer, view and staging array the callback needs,
@@ -213,6 +274,7 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         // upcall arena nor the drain thread, and AsioBackend#open's
         // catch (RuntimeException | Error) rolls back with bridge == null.
         bindDriverBuffers(bufferInfos);
+        this.boundInputChannels = countBoundChannels(inputTypes);
 
         int samplesPerBlock = channels * bufferFrames;
         this.inputScratch = new float[samplesPerBlock];
@@ -298,6 +360,27 @@ final class AsioBufferSwitchShim implements AutoCloseable {
             }
         }
         rejectUnsupportedSampleTypes(unsupported.toString());
+    }
+
+    /**
+     * Counts the channels {@link #bindDriverBuffers} bound a converter to.
+     *
+     * <p>A {@code null} entry is a channel the driver exposed no usable buffer
+     * for; {@link #copyInputChannel} writes silence for it and
+     * {@link #copyOutputChannel} skips it entirely, so it is not a channel by
+     * any measure the engine cares about.</p>
+     *
+     * @param types the per-channel converter table; must not be null
+     * @return how many entries are non-null
+     */
+    private static int countBoundChannels(AsioSampleType[] types) {
+        int bound = 0;
+        for (AsioSampleType type : types) {
+            if (type != null) {
+                bound++;
+            }
+        }
+        return bound;
     }
 
     /**
@@ -411,7 +494,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         inputRing.write(incoming, incoming.length);
         LockSupport.unpark(drainThread);
 
-        if (!outputRing.drainLatestInto(outputScratch)) {
+        if (outputRing.drainLatestInto(outputScratch)) {
+            // Single-writer counter; the driver thread is the only mutator.
+            renderedBlocksConsumed++;
+        } else {
             // Nothing rendered yet this cycle — emit silence rather than
             // repeating the previous block.
             Arrays.fill(outputScratch, 0f);
@@ -546,7 +632,8 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * Idempotent.
      *
      * <p>The drain thread keeps running so already-captured blocks still reach
-     * subscribers; it is stopped by {@link #close()}.</p>
+     * subscribers; it is stopped by {@link #close()} or by
+     * {@link #closeRetainingUpcallStub()}, whichever ends the bridge.</p>
      */
     void stopStreaming() {
         streaming = false;
@@ -576,6 +663,73 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     }
 
     /**
+     * Returns {@code true} when the {@code sink(...)} &rarr; callback output
+     * ring holds no block the driver has still to consume.
+     *
+     * <p>Emptiness rather than spare capacity is the question, because
+     * {@link #bufferSwitch(int, int)} consumes the ring through
+     * {@link AudioBlockRing#drainLatestInto(float[])}, which takes the
+     * <em>whole</em> queue and plays only its newest block. A free slot
+     * therefore does not mean the driver wants another block: a single
+     * callback empties all {@value #OUTPUT_RING_SLOTS} slots at once, so a
+     * spare-capacity gate would release the render pump four times per
+     * callback — advancing playback and the transport at roughly four times
+     * device time while three of every four rendered blocks were discarded
+     * unheard. Only an <em>empty</em> ring proves that a {@code bufferSwitch}
+     * actually consumed the block {@link #write(AudioBlock)} last queued.</p>
+     *
+     * <p>The device-clock pacing seam (story 316): {@link
+     * AsioBackend#awaitSinkCapacity(long)} polls this from the engine's
+     * render pump — a non-real-time thread — between blocks, so the pump
+     * produces at exactly the rate {@link #bufferSwitch(int, int)} consumes.
+     * Purely a read of the ring's occupancy counters; it adds no work to the
+     * real-time {@code bufferSwitch} / {@code write} paths.</p>
+     *
+     * <p>Two consequences are worth naming. In steady state at most one
+     * rendered block is ever in flight, so {@code drainLatestInto}'s discard
+     * stops being the norm and becomes the overload valve it was meant to be:
+     * it bites only when the pump ran ahead of a late callback. And the
+     * pacing is still bounded from the other side — {@code awaitSinkCapacity}
+     * parks for at most one block period whether or not this ever answers
+     * {@code true}, which is what keeps the transport advancing at wall-clock
+     * rate when no callback arrives at all.</p>
+     */
+    boolean outputRingDrained() {
+        return outputRing.isEmpty();
+    }
+
+    /**
+     * Returns how many engine-rendered blocks {@link #bufferSwitch(int, int)}
+     * has drained into the driver's output buffers (story 316 review). Zero
+     * until the first callback finds a {@link #write(AudioBlock)}-ed block
+     * waiting; callbacks that emitted silence do not count. Surfaced through
+     * {@link AsioBackend#renderedBlocksConsumedByDriver()} for the Windows
+     * streaming proof in daw-core. A volatile read; adds nothing to the
+     * real-time path.
+     */
+    long renderedBlocksConsumed() {
+        return renderedBlocksConsumed;
+    }
+
+    /**
+     * How many input channels this bridge will really publish audio for
+     * (story 316 review) — the honest answer behind
+     * {@link AsioBackend#openedInputChannels()}.
+     *
+     * <p>Zero once {@link #stopStreaming()} has quiesced the bridge, because a
+     * quiesced bridge publishes nothing whatever its buffers say: that is the
+     * state a {@code kAsioResetRequest} teardown leaves behind, and the
+     * story-218 contract is that the consumer must {@code close()} and reopen.
+     * Reporting the old count there would promise capture from a bridge that
+     * has stopped reading the driver's buffers.</p>
+     *
+     * @return bound input channels while streaming, {@code 0} once quiesced
+     */
+    int boundInputChannels() {
+        return streaming ? boundInputChannels : 0;
+    }
+
+    /**
      * Test seam: the {@code asio-input-drain} daemon thread that marshals
      * captured blocks off the driver's real-time thread. Never null.
      */
@@ -585,12 +739,69 @@ final class AsioBufferSwitchShim implements AutoCloseable {
 
     /**
      * Quiesces the bridge, stops the {@code asio-input-drain} thread and frees
-     * the upcall stub's arena. The caller must have uninstalled the callback
-     * first, or a late driver callback would jump into released memory.
-     * Idempotent.
+     * the upcall stub's arena. The caller must have CONFIRMED the uninstall
+     * first — {@link AsioStreamingShim#uninstallBufferSwitchCallback()}
+     * answering {@code true} — or a late driver callback would jump into
+     * released memory; a teardown that could not confirm it must end the bridge
+     * with {@link #closeRetainingUpcallStub()} instead. Idempotent.
      */
     @Override
     public void close() {
+        shutDown(true);
+    }
+
+    /**
+     * Ends the bridge exactly as {@link #close()} does — {@code closed} and
+     * {@code streaming} latched, the {@code asio-input-drain} thread stopped
+     * and joined after its final flush — but deliberately LEAKS the upcall
+     * stub's arena for the life of the process. Idempotent, and mutually
+     * exclusive with {@link #close()}: whichever runs first decides the
+     * arena's fate.
+     *
+     * <p>This is the only safe ending for a teardown whose uninstall could not
+     * be CONFIRMED, which {@code AsioBackend.tearDownStreaming(...)} reports by
+     * returning what
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} answered. A
+     * {@code false} there means the call was not made at all, was refused on
+     * arrival because an earlier downcall its caller stopped waiting for — by
+     * budget or by interrupt — was still executing (so
+     * {@link AsioControlThread#isQuiesced()} was false and every bounded
+     * operation is rejected), did not complete within its own budget, was
+     * interrupted, or failed at the FFM boundary. That method enumerates all
+     * five; out here they cannot be told apart, and the vendor driver is a
+     * party to none of them — it is never invoked by the uninstall (story 316
+     * review, round 4). What they share is the only thing this method needs:
+     * the shim's registered buffer-switch callback may still be this stub's
+     * address, so the driver's next {@code bufferSwitch} — which enters the
+     * shim's own trampoline and reads that pointer — may still reach it.
+     * {@link #stopStreaming()} makes such a callback harmless, but only while
+     * the stub is still mapped: freeing the arena unmaps it, and the next
+     * callback jumps into released memory — a JVM crash whose native stack
+     * names neither this class nor the driver.</p>
+     *
+     * <p>The leak is one upcall stub and its arena, bounded and static for the
+     * life of the process, which is the same trade
+     * {@code AsioBackend.tearDownStreaming(...)} already documents when it
+     * calls the uninstall "the actual protection": a leaked stub costs memory,
+     * a freed-but-installed stub costs the process.</p>
+     */
+    void closeRetainingUpcallStub() {
+        shutDown(false);
+    }
+
+    /**
+     * Shared body of {@link #close()} and {@link #closeRetainingUpcallStub()}.
+     * Everything but the arena is identical, so one implementation keeps the
+     * two endings from drifting apart, and latching {@code closed} first is
+     * what makes both idempotent and mutually exclusive.
+     *
+     * @param releaseUpcallArena whether the upcall stub's arena may be freed;
+     *                           {@code false} when the shim's registered
+     *                           buffer-switch callback may still be the stub's
+     *                           address, so a driver callback could still
+     *                           reach it through the shim's trampoline
+     */
+    private void shutDown(boolean releaseUpcallArena) {
         if (closed) {
             return;
         }
@@ -602,6 +813,9 @@ final class AsioBufferSwitchShim implements AutoCloseable {
             drainThread.join(DRAIN_SHUTDOWN_TIMEOUT_MILLIS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+        }
+        if (!releaseUpcallArena) {
+            return;
         }
         try {
             arena.close();

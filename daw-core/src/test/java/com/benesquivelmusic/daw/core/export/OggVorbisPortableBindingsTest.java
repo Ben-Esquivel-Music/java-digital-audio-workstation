@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.export;
 
+import com.benesquivelmusic.daw.core.audio.NativeAbi;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.foreign.ValueLayout;
@@ -22,6 +24,26 @@ class OggVorbisPortableBindingsTest {
         long size = OggVorbisExporter.C_LONG.byteSize();
         // C 'long' is either 4 bytes (Windows LLP64) or 8 bytes (Linux/macOS LP64)
         assertThat(size).isIn(4L, 8L);
+    }
+
+    /**
+     * Story 316 re-review — the exporter no longer performs its own
+     * {@code Linker.canonicalLayouts()} lookup; it forwards to
+     * {@link NativeAbi}, which owns that fact for every FFM binding here.
+     *
+     * <p>Asserted from inside the exporter's own package because
+     * {@code C_LONG} is package-private, so the {@code core.audio} test that
+     * covers {@link NativeAbi} itself cannot reach it. Identity, not equality:
+     * the failure this guards against is someone re-introducing a private
+     * copy of the lookup, and a copy would compare equal while defeating the
+     * whole point of the de-duplication.</p>
+     */
+    @Test
+    void cLongShouldBeTheSharedNativeAbiLayout() {
+        assertThat(OggVorbisExporter.C_LONG)
+                .as("the exporter and every other binding must resolve C 'long' through "
+                        + "the one NativeAbi field, so they cannot drift apart")
+                .isSameAs(NativeAbi.C_LONG);
     }
 
     @Test

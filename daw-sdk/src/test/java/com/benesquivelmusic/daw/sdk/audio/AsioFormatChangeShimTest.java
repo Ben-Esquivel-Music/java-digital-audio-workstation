@@ -51,6 +51,136 @@ class AsioFormatChangeShimTest {
     }
 
     /**
+     * Story 316 review (round 16) — the confirmed-uninstall/retain protocol.
+     * When no install downcall was ever handed to the control thread —
+     * the availability-keyed case on hosts without {@code asioshim} —
+     * nothing was ever registered, so {@code close()} may take the full
+     * release: the stub's arena is freed.
+     */
+    @Test
+    void closeReleasesArenaWhenInstallWasNeverStarted() {
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE);
+        assumeTrue(!shim.installDowncallStarted(),
+                "asioshim resolved and the install downcall started — the"
+                        + " never-started ending does not exist on this host;"
+                        + " closeReleasesArenaAfterConfirmedUninstall covers it");
+        shim.close();
+        assertThat(shim.closeEnding())
+                .isEqualTo(AsioFormatChangeShim.CloseEnding.RELEASED);
+        assertThat(shim.upcallArenaAlive())
+                .as("no install was ever started, so the full release is safe"
+                        + " and the arena must really be freed")
+                .isFalse();
+    }
+
+    /**
+     * The positive half of the protocol, availability-keyed on real
+     * registration (never on OS): when the install really ran, {@code close()}
+     * must CONFIRM the uninstall downcall and only then free the arena.
+     */
+    @Test
+    void closeReleasesArenaAfterConfirmedUninstall() {
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE);
+        assumeTrue(shim.isRegistered(),
+                "asioshim not registered on this host — the confirmed ending"
+                        + " needs a real install to uninstall");
+        shim.close();
+        assertThat(shim.closeEnding())
+                .isEqualTo(AsioFormatChangeShim.CloseEnding.RELEASED);
+        assertThat(shim.upcallArenaAlive()).isFalse();
+    }
+
+    /**
+     * Story 316 review (round 16) — an uninstall that cannot be CONFIRMED
+     * must RETAIN the stub's arena: the shim's registered message-callback
+     * pointer may still be the stub's address, and a concurrent driver
+     * reset entering {@code asioshim_messageTrampoline} would jump into
+     * released memory if the arena were freed. The two seams make the doubt
+     * deterministic on every host — with the real library present the
+     * forced-unconfirmed close deliberately leaks one stub, which is the
+     * protocol's documented trade (a leaked stub costs memory, a
+     * freed-but-installed stub costs the process).
+     */
+    @Test
+    void closeRetainsArenaWhenUninstallCannotBeConfirmed() {
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE);
+        shim.markInstallDowncallStartedForTest();
+        shim.forceUnconfirmedUninstallForTest();
+        shim.close();
+        assertThat(shim.closeEnding())
+                .isEqualTo(AsioFormatChangeShim.CloseEnding.RETAINED);
+        assertThat(shim.upcallArenaAlive())
+                .as("an unconfirmed uninstall must leave the stub mapped")
+                .isTrue();
+    }
+
+    /**
+     * The closed latch gates the upcall's ENTRY — the seam the native stub
+     * calls — so a late driver callback that still reaches a retained stub
+     * answers {@code ASE_NotPresent} (0) and dispatches nothing.
+     * {@code dispatch()} itself stays ungated, which is what keeps every
+     * other test in this class driving it directly.
+     */
+    @Test
+    void closedLatchMakesPostCloseUpcallEntryReturnNotPresent() {
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE);
+        assertThat(shim.asioMessageUpcall(
+                AsioFormatChangeShim.kAsioSupportsTimeInfo, 0,
+                MemorySegment.NULL, MemorySegment.NULL))
+                .as("before close the entry must dispatch (ASE_OK)")
+                .isEqualTo(1);
+        shim.close();
+        assertThat(shim.asioMessageUpcall(
+                AsioFormatChangeShim.kAsioSupportsTimeInfo, 0,
+                MemorySegment.NULL, MemorySegment.NULL))
+                .as("after close the entry must answer ASE_NotPresent without"
+                        + " dispatching")
+                .isEqualTo(0);
+    }
+
+    /**
+     * The endings are mutually exclusive and latched by the FIRST close:
+     * a second close on a retained shim must neither flip the ending nor
+     * free the arena, and a second close on a released shim must stay
+     * released.
+     */
+    @Test
+    void closeStaysIdempotentAndEndingsAreMutuallyExclusive() {
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+
+        AsioFormatChangeShim retained = new AsioFormatChangeShim(backend, support, DEVICE);
+        retained.markInstallDowncallStartedForTest();
+        retained.forceUnconfirmedUninstallForTest();
+        retained.close();
+        assertThat(retained.closeEnding())
+                .isEqualTo(AsioFormatChangeShim.CloseEnding.RETAINED);
+        retained.close();
+        assertThat(retained.closeEnding())
+                .as("a second close must not flip a RETAINED ending")
+                .isEqualTo(AsioFormatChangeShim.CloseEnding.RETAINED);
+        assertThat(retained.upcallArenaAlive())
+                .as("a second close must not free a retained arena")
+                .isTrue();
+
+        AsioFormatChangeShim released = new AsioFormatChangeShim(backend, support, DEVICE);
+        released.close();
+        AsioFormatChangeShim.CloseEnding first = released.closeEnding();
+        released.close();
+        assertThat(released.closeEnding())
+                .as("a second close must not change the first ending")
+                .isEqualTo(first);
+    }
+
+    /**
      * Story 224 — positive-case registration test. When the bundled
      * {@code asioshim.dll} is present on the FFM library path, the
      * shim must successfully install its upcall callback. This test
@@ -58,9 +188,12 @@ class AsioFormatChangeShimTest {
      * {@code daw-sdk} executes in the Maven reactor before
      * {@code daw-core}'s {@code generate-resources} phase, which is
      * where the CMake native build produces the DLL. The hard-failure
-     * env-gated assertions live in {@code NativeLibraryDetectorTest}
-     * inside {@code daw-core} (which runs after the native build and
-     * has {@code -Djava.library.path=${native.libs.dir}} set).
+     * {@code DAW_REQUIRE_ASIOSHIM} assertions live in the three
+     * {@code daw-core} suites that run after that native build with
+     * {@code -Djava.library.path=${native.libs.dir}} set:
+     * {@code NativeLibraryDetectorTest}, {@code AsioStreamingIntegrationTest}
+     * (story 311) and {@code AsioEngineStreamingIntegrationTest}
+     * (story 316).
      */
     @Test
     @EnabledOnOs(OS.WINDOWS)
@@ -425,7 +558,10 @@ class AsioFormatChangeShimTest {
             return true;
         }
         @Override boolean installBufferSwitchCallback(MemorySegment stub) { return true; }
-        @Override void uninstallBufferSwitchCallback() { }
+        // true: this stub never installed anything, so no driver can be
+        // holding an upcall stub's address and the caller's full release of
+        // the bridge's arena is safe.
+        @Override boolean uninstallBufferSwitchCallback() { return true; }
         @Override public void close() {
             // Release the real superclass's Arena.ofShared().
             super.close();

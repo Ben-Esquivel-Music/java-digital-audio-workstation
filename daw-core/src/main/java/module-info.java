@@ -63,7 +63,6 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.analysis;
     exports com.benesquivelmusic.daw.core.audio;
     exports com.benesquivelmusic.daw.core.audio.cache;
-    exports com.benesquivelmusic.daw.core.audio.javasound;
     exports com.benesquivelmusic.daw.core.audio.performance;
     exports com.benesquivelmusic.daw.core.audio.portaudio;
     exports com.benesquivelmusic.daw.core.concurrent;

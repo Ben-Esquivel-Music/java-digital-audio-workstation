@@ -106,9 +106,20 @@ final class Story307TestSupport {
     }
 
     static final class StubController implements AudioEngineController {
+
+        /**
+         * One {@code setSampleRate(backend, outputDevice, rate)} invocation.
+         * Story 316 re-review: the CAPABILITY call's endpoint pair is a fact
+         * tests have to be able to assert on independently of the reconfigure
+         * Request's, because the two now come from different endpoints and
+         * only one of them may follow the provisioned backend.
+         */
+        record SampleRateCall(String backendName, String outputDeviceName, double rate) {}
+
         final AtomicInteger configurationCount = new AtomicInteger();
         final AtomicReference<Request> lastRequest = new AtomicReference<>();
         final CopyOnWriteArrayList<Request> requests = new CopyOnWriteArrayList<>();
+        final CopyOnWriteArrayList<SampleRateCall> sampleRateCalls = new CopyOnWriteArrayList<>();
         final AtomicReference<Thread> applyThread = new AtomicReference<>();
         final AtomicReference<MixPrecision> lastMixPrecision = new AtomicReference<>();
         final AtomicReference<QualityTier> lastSrcQuality = new AtomicReference<>();
@@ -158,10 +169,23 @@ final class Story307TestSupport {
         volatile RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
         volatile boolean rejectSampleRate;
         volatile String activeBackend = "Java Sound";
+        /**
+         * Story 316 review: the backend the next open will try, when a test
+         * needs it to differ from {@link #activeBackend} (a stopped transport
+         * reports {@code BACKEND_NONE} as active yet still has a provision).
+         * {@code null} keeps the interface default, i.e. provisioned == active.
+         */
+        volatile String provisionedBackend;
 
         @Override
         public String getActiveBackendName() {
             return activeBackend;
+        }
+
+        @Override
+        public String getProvisionedBackendName() {
+            String provisioned = provisionedBackend;
+            return provisioned != null ? provisioned : activeBackend;
         }
 
         @Override
@@ -330,6 +354,7 @@ final class Story307TestSupport {
         public void setSampleRate(String backendName, String outputDeviceName, double rate) {
             enterNativeOperation();
             try {
+                sampleRateCalls.add(new SampleRateCall(backendName, outputDeviceName, rate));
                 sampleRateAttempted.countDown();
                 sampleRateEntered.countDown();
                 if (blockSampleRate) {

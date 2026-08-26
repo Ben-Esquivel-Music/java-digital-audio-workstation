@@ -44,7 +44,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * {@code requireOrAssumeAsioshim()} pattern copied from
  * {@code NativeLibraryDetectorTest} (hard failure when
  * {@code DAW_REQUIRE_ASIOSHIM=1}, a clean skip otherwise), then a skip when
- * no ASIO driver is installed on the machine.</p>
+ * no ASIO driver is installed on the machine. A driver that REJECTS the
+ * open is a skip on optional local runs only: under
+ * {@code DAW_REQUIRE_ASIOSHIM=1} it is a hard failure (story 316 review —
+ * on the required lane a regression that stops the path from opening must
+ * not leave CI green with no streaming proof).</p>
  */
 @EnabledOnOs(OS.WINDOWS)
 class AsioStreamingIntegrationTest {
@@ -92,10 +96,11 @@ class AsioStreamingIntegrationTest {
             backend.open(device, FORMAT, bufferFrames);
         } catch (AudioBackendException rejected) {
             // An exotic driver may reject the portable default size outright.
-            // Skipping keeps the lane honest instead of failing on hardware
-            // the story does not control.
-            assumeTrue(false, "ASIO driver rejected the requested buffer size: "
-                    + rejected.getMessage());
+            // On an optional local run, skipping keeps the lane honest
+            // instead of failing on hardware the story does not control. On
+            // the required lane the open MUST succeed, so the rejection is
+            // rethrown instead.
+            skipUnlessAsioshimRequired(rejected);
             return;
         }
 
@@ -118,6 +123,24 @@ class AsioStreamingIntegrationTest {
         assertThatCode(backend::close)
                 .as("a second close() must be a safe no-op")
                 .doesNotThrowAnyException();
+    }
+
+    /**
+     * Story 316 review — an open the real driver rejected is a clean skip
+     * on an optional local run (hardware the story does not control), but
+     * under {@code DAW_REQUIRE_ASIOSHIM=1} it is rethrown as a hard failure:
+     * converting every open failure into a skip would let a regression that
+     * prevents the path from opening leave the required lane green with no
+     * streaming proof. Copied verbatim into
+     * {@link AsioEngineStreamingIntegrationTest} so both suites gate
+     * identically.
+     */
+    private static void skipUnlessAsioshimRequired(AudioBackendException rejected) {
+        if ("1".equals(System.getenv("DAW_REQUIRE_ASIOSHIM"))) {
+            throw rejected;
+        }
+        assumeTrue(false, "ASIO driver rejected the requested buffer size: "
+                + rejected.getMessage());
     }
 
     /**

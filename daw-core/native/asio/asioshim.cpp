@@ -202,15 +202,24 @@ namespace {
     std::atomic<bool> g_buffersCreated{false};
     std::atomic<bool> g_outputReadySupported{false};
     // Number of driver callbacks currently executing inside
-    // shimBufferSwitchBody. Teardown drains this to zero so it can be sure
-    // no callback is still writing into the driver's buffers or calling the
-    // JVM upcall stub the Java side is about to free.
+    // shimBufferSwitchBody. The buffer teardown steps (stopStreamingLocked,
+    // disposeBuffersLocked, uninstallAsioBufferSwitchCallback) drain this to
+    // zero so they can be sure no callback is still writing into the
+    // driver's buffers or calling the JVM upcall stub the Java side is about
+    // to free. Its meaning is exactly "no bufferSwitch is inside the
+    // driver's buffers" — the asioMessage path keeps its own counter
+    // (g_messageCallbacksInFlight, declared next to g_asioMessageCallback
+    // below), because folding message callbacks into this one would give the
+    // buffer teardown drains spurious bounded waits and blur that meaning.
     std::atomic<int> g_callbacksInFlight{0};
     bool g_started = false;
 
-    // RAII counter for shimBufferSwitchBody: increments on construction and
-    // decrements on *every* exit path, including an early return. Lock-free
-    // and allocation-free, so it is safe on the driver's real-time thread.
+    // RAII counter for the driver-invoked callback bodies —
+    // shimBufferSwitchBody over g_callbacksInFlight,
+    // asioshim_messageTrampoline over g_messageCallbacksInFlight —
+    // increments on construction and decrements on *every* exit path,
+    // including an early return. Lock-free and allocation-free, so it is
+    // safe on the driver's real-time thread.
     class CallbackInFlightGuard final {
     public:
         // seq_cst on the way in: it has to participate in the total order
@@ -218,46 +227,58 @@ namespace {
         // the way out — the decrement happens after everything the body
         // touched, and a draining thread only ever needs to not see it too
         // early.
-        CallbackInFlightGuard() {
-            g_callbacksInFlight.fetch_add(1, std::memory_order_seq_cst);
+        explicit CallbackInFlightGuard(std::atomic<int>& counter)
+                : counter_(counter) {
+            counter_.fetch_add(1, std::memory_order_seq_cst);
         }
 
         ~CallbackInFlightGuard() {
-            g_callbacksInFlight.fetch_sub(1, std::memory_order_release);
+            counter_.fetch_sub(1, std::memory_order_release);
         }
 
         CallbackInFlightGuard(const CallbackInFlightGuard&) = delete;
         CallbackInFlightGuard& operator=(const CallbackInFlightGuard&) = delete;
+
+    private:
+        std::atomic<int>& counter_;
     };
 
-    // Waits until no driver callback is inside shimBufferSwitchBody.
+    // Waits until no driver callback counted in `counter` is inside the
+    // body that counter guards — shimBufferSwitchBody for
+    // g_callbacksInFlight, asioshim_messageTrampoline for
+    // g_messageCallbacksInFlight.
     //
-    // This is the barrier the "buffers created" flag alone cannot provide:
-    // the flag is read once at callback entry, so flipping it does nothing
-    // for a callback that is already past the check.
+    // This is the barrier the state gates alone cannot provide: each gate
+    // is read once at callback entry, so flipping it does nothing for a
+    // callback that is already past the check.
     //
-    // Six operations are sequentially consistent so that they share one
-    // total order: the counter increment, the g_buffersCreated load and the
-    // g_bufferSwitchCallback load in the callback; the g_buffersCreated
-    // store in clearBufferStateLocked(); the g_bufferSwitchCallback store in
-    // uninstallAsioBufferSwitchCallback(); and the counter load below. The
-    // consequence is that a callback which still observes the pre-teardown
-    // value of either gate must appear before the corresponding store in
-    // that total order, hence its increment does too, hence this counter
-    // load sees it. A release store followed by an acquire load would leave
-    // the classic store-buffer hole — StoreLoad is the one reordering
-    // acquire/release do not forbid.
+    // For each counter the participating operations are sequentially
+    // consistent so that they share one total order: the counter increment
+    // and the gate load(s) in the callback; the gate store(s) in the
+    // teardown; and the counter load below. On the bufferSwitch path the
+    // gates are g_buffersCreated (stored in clearBufferStateLocked()) and
+    // g_bufferSwitchCallback (stored in
+    // uninstallAsioBufferSwitchCallback()); on the asioMessage path the one
+    // gate is g_asioMessageCallback (stored in
+    // uninstallAsioMessageCallback()). The consequence is the same either
+    // way: a callback which still observes the pre-teardown value of a gate
+    // must appear before the corresponding store in that total order, hence
+    // its increment does too, hence this counter load sees it. A release
+    // store followed by an acquire load would leave the classic
+    // store-buffer hole — StoreLoad is the one reordering acquire/release
+    // do not forbid.
     //
-    // Safe to call while holding g_driverMutex: the callback path never
-    // takes that mutex (see the story-311 real-time banner), so a draining
-    // control thread can never be waiting on a callback parked behind it.
-    // Bounded by DRAIN_TIMEOUT_MS against a monotonic clock, so the loop
-    // always terminates.
-    void drainInFlightCallbacks() {
+    // Safe to call while holding g_driverMutex: the callback paths never
+    // take that mutex (see the story-311 real-time banner), so a draining
+    // control thread can never be waiting on a callback parked behind it —
+    // and uninstallAsioMessageCallback takes no mutex at all, exactly like
+    // the trampoline it drains. Bounded by DRAIN_TIMEOUT_MS against a
+    // monotonic clock, so the loop always terminates.
+    void drainInFlightCallbacks(std::atomic<int>& counter) {
         std::chrono::steady_clock::time_point deadline =
                 std::chrono::steady_clock::now()
                         + std::chrono::milliseconds(DRAIN_TIMEOUT_MS);
-        while (g_callbacksInFlight.load(std::memory_order_seq_cst) != 0) {
+        while (counter.load(std::memory_order_seq_cst) != 0) {
             if (std::chrono::steady_clock::now() >= deadline) {
                 return;
             }
@@ -292,7 +313,7 @@ namespace {
         // time ASIOStop returns. Drain anyway: the story-311 driver-reset
         // path tears down from a different thread while the driver is still
         // running, so a callback really can be mid-body here.
-        drainInFlightCallbacks();
+        drainInFlightCallbacks(g_callbacksInFlight);
         return err == ASE_OK;
     }
 
@@ -307,7 +328,7 @@ namespace {
         }
         // No callback may still be inside the body when the driver frees
         // the very buffers that body writes into.
-        drainInFlightCallbacks();
+        drainInFlightCallbacks(g_callbacksInFlight);
         ASIOError err = ASIODisposeBuffers();
         return stopped && err == ASE_OK;
     }
@@ -776,6 +797,15 @@ ASIOSHIM_EXPORT int asioshim_getChannelInfo(int channelIndex, int isInput,
 
 namespace {
     std::atomic<asio_message_fn> g_asioMessageCallback{nullptr};
+    // Number of driver callbacks currently executing inside
+    // asioshim_messageTrampoline. Deliberately separate from
+    // g_callbacksInFlight: that counter means "no bufferSwitch is inside
+    // the driver's buffers" and is drained by the buffer teardown steps
+    // under g_driverMutex — folding message callbacks into it would add
+    // spurious bounded waits there. This counter is drained only by
+    // uninstallAsioMessageCallback, so the Java side can free the
+    // asioMessage upcall stub's arena once that downcall has returned.
+    std::atomic<int> g_messageCallbacksInFlight{0};
 }
 
 ASIOSHIM_EXPORT void installAsioMessageCallback(void* callback) {
@@ -783,8 +813,24 @@ ASIOSHIM_EXPORT void installAsioMessageCallback(void* callback) {
                                 std::memory_order_release);
 }
 
+// Nulling the pointer only stops message callbacks that have not read it
+// yet, so wait for the ones that already have — the exact mirror of
+// uninstallAsioBufferSwitchCallback. The Java side
+// (AsioFormatChangeShim.close) frees the upcall stub's arena only when this
+// downcall returned normally; a callback still inside
+// asioshim_messageTrampoline — a concurrent driver reset, say — would
+// otherwise jump into released stub memory.
+//
+// The store is seq_cst so that it joins the total order described on
+// drainInFlightCallbacks() together with the trampoline's seq_cst counter
+// increment and matching seq_cst load of the same pointer: a callback that
+// still observes the old, non-null pointer is therefore guaranteed to be
+// visible in the counter this drain reads. No mutex is taken, mirroring the
+// buffer-switch uninstall: the trampoline takes none either, so the drain
+// already covers everything there is to serialize against.
 ASIOSHIM_EXPORT void uninstallAsioMessageCallback() {
-    g_asioMessageCallback.store(nullptr, std::memory_order_release);
+    g_asioMessageCallback.store(nullptr, std::memory_order_seq_cst);
+    drainInFlightCallbacks(g_messageCallbacksInFlight);
 }
 
 // This IS the ASIOCallbacks::asioMessage slot, not a wrapper around it:
@@ -792,10 +838,19 @@ ASIOSHIM_EXPORT void uninstallAsioMessageCallback() {
 // (see `g_callbacks.asioMessage = asioshim_messageTrampoline;` below) and
 // the vendor driver calls it directly, on its own thread. It loads the
 // callback installed by the JVM and forwards selector / value / message /
-// opt verbatim. Like the bufferSwitch trampoline it takes no lock.
+// opt verbatim. Like the bufferSwitch trampoline it takes no lock; its only
+// synchronisation is the in-flight guard plus the seq_cst pointer load —
+// count in first, then read the pointer, so that
+// uninstallAsioMessageCallback's drain provably sees every callback that
+// observed the pre-uninstall pointer (see drainInFlightCallbacks()).
 ASIOSHIM_EXPORT long asioshim_messageTrampoline(
         long selector, long value, void* message, double* opt) {
-    asio_message_fn cb = g_asioMessageCallback.load(std::memory_order_acquire);
+    CallbackInFlightGuard inFlight{g_messageCallbacksInFlight};
+    // seq_cst, not merely acquire: this load has to join the total order
+    // described on drainInFlightCallbacks() so that a callback which still
+    // sees the pre-uninstall pointer is guaranteed to be counted.
+    asio_message_fn cb =
+            g_asioMessageCallback.load(std::memory_order_seq_cst);
     if (cb == nullptr) {
         return 0;
     }
@@ -864,7 +919,7 @@ namespace {
         // drainInFlightCallbacks() conclude that a zero counter means no
         // callback is inside this body. The guard decrements on every exit
         // path, including the two early returns below.
-        CallbackInFlightGuard inFlight;
+        CallbackInFlightGuard inFlight{g_callbacksInFlight};
         if (!g_buffersCreated.load(std::memory_order_seq_cst)) {
             return;
         }
@@ -1181,7 +1236,7 @@ ASIOSHIM_EXPORT void installAsioBufferSwitchCallback(void* callback) {
 // in the counter this drain reads.
 ASIOSHIM_EXPORT void uninstallAsioBufferSwitchCallback() {
     g_bufferSwitchCallback.store(nullptr, std::memory_order_seq_cst);
-    drainInFlightCallbacks();
+    drainInFlightCallbacks(g_callbacksInFlight);
 }
 
 // The ASIOCallbacks::bufferSwitch slot itself (the ASIO 1.0 entry point),

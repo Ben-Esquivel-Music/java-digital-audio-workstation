@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
+import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -11,7 +12,10 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -29,10 +33,16 @@ import java.util.logging.Logger;
  * and {@link AudioBackendSelector} will fall back to
  * {@link JavaxSoundBackend}.</p>
  *
- * <p>The SDK itself only declares the public surface defined by
- * {@link AudioBackend}; wiring the ASIO buffer-switch callback into
- * {@link #inputBlocks()} / {@link #sink(AudioBlock)} lives in the
- * implementation layer that ships the native shim.</p>
+ * <p>Since story 311 the buffer-switch bridge lives here in the SDK:
+ * {@link #open(DeviceId, AudioFormat, int)} installs an
+ * {@code AsioBufferSwitchShim} that pumps the driver's callback into
+ * {@link #inputBlocks()} and {@link #sink(AudioBlock)}, so this class —
+ * not some downstream layer — is what really moves audio. The bridge
+ * needs the native shim's story-311 streaming symbols; when they are
+ * absent {@code open()} degrades to the story-310 lifecycle-only path,
+ * whose {@code sink} discards. {@link #supportsStreaming()} probes for
+ * exactly those symbols so a caller can refuse such a host before
+ * opening a stream that would be silent by construction (story 316).</p>
  */
 public final class AsioBackend implements AudioBackend {
 
@@ -90,6 +100,22 @@ public final class AsioBackend implements AudioBackend {
                     .daemon(true)
                     .unstarted(task));
 
+    /**
+     * How long each wait the deferred driver-shim release makes for the
+     * control thread to return from a call the host abandoned lasts before it
+     * re-queues itself (or, on an interrupted thread or a rejected re-queue,
+     * leaves the release pending for good)
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}). It
+     * runs on the {@code asio-reset-teardown} executor rather than on a
+     * lifecycle thread, so it can afford to be far longer than any
+     * {@link AsioControlThread#DEFAULT_BUDGET}-sized figure: nothing queues
+     * behind it except the next teardown, which the re-queue lets through
+     * between waits. Expiry is not a give-up — the shim stays unclosed and the
+     * release stays pending — so the figure only sets how often the wait
+     * yields the executor and repeats its {@link Level#SEVERE} diagnostic.
+     */
+    private static final Duration DRIVER_RELEASE_BUDGET = Duration.ofMinutes(2);
+
     /** Backend instance that currently owns the single process-wide driver. */
     private static AsioBackend activeBackend;
 
@@ -101,6 +127,34 @@ public final class AsioBackend implements AudioBackend {
     private static final AtomicBoolean FALLBACK_LOGGED = new AtomicBoolean(false);
 
     private final Executor resetTeardownExecutor;
+
+    /** Per-wait bound for a deferred driver release; see {@link #DRIVER_RELEASE_BUDGET}. */
+    private final Duration driverReleaseBudget;
+
+    /**
+     * How many driver-shim releases {@link #releaseDriverShim(AsioDriverShim)}
+     * has DEFERRED and that have not yet issued their
+     * {@code AsioDriverShim.close()}. It is what {@link #isReleasePending()}
+     * answers from, and therefore the only way a caller learns that a
+     * {@link #close()} which returned normally did not actually hand the
+     * device back (story 316 re-review).
+     *
+     * <p>Decremented only after the close has been issued following a wait
+     * that saw the driver return
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}). A wait
+     * that expired, was interrupted or could not be (re-)queued leaves it
+     * untouched, so a release the driver has not let the host reach stays
+     * counted — for the life of the backend if nothing can ever run it
+     * (story 316 review).</p>
+     *
+     * <p>A count rather than a flag because a backend can owe more than one
+     * release: {@code open()} releases the candidate shim on every early exit,
+     * and a later {@code close()} releases the shim it did adopt. Both may
+     * defer, and a flag cleared by the first task to finish would report a
+     * released device while the second was still queued.</p>
+     */
+    private final AtomicInteger deferredDriverReleases = new AtomicInteger();
+
     private final AudioBackendSupport support = new AudioBackendSupport();
     private volatile AsioFormatChangeShim formatChangeShim;
     private volatile AsioDriverShim driverShim;
@@ -131,8 +185,21 @@ public final class AsioBackend implements AudioBackend {
 
     /** Test seam for controlling when an asynchronous reset teardown runs. */
     AsioBackend(Executor resetTeardownExecutor) {
+        this(resetTeardownExecutor, DRIVER_RELEASE_BUDGET);
+    }
+
+    /**
+     * Test seam that also sets how long each wait a deferred driver release
+     * makes for the control thread lasts before it re-queues itself (or, on
+     * an interrupted thread or a rejected re-queue, leaves the release
+     * pending for good)
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}).
+     */
+    AsioBackend(Executor resetTeardownExecutor, Duration driverReleaseBudget) {
         this.resetTeardownExecutor = Objects.requireNonNull(
                 resetTeardownExecutor, "resetTeardownExecutor");
+        this.driverReleaseBudget = Objects.requireNonNull(
+                driverReleaseBudget, "driverReleaseBudget");
     }
 
     @Override
@@ -149,6 +216,107 @@ public final class AsioBackend implements AudioBackend {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>{@code true} only when the native {@code asioshim} exports every
+     * story-311 streaming symbol — the same
+     * {@link AsioStreamingShim#isStreamingAvailable()} probe
+     * {@link #open(DeviceId, AudioFormat, int)} runs before it installs the
+     * buffer-switch bridge (story 316 review).</p>
+     *
+     * <p>{@link #isAvailable()} only proves the enumeration and lifecycle
+     * symbols resolve. A Windows host whose shim predates story 311 — or was
+     * built without its streaming entrypoints — passes that probe, yet
+     * {@code open()} then degrades to the story-310 no-streaming path:
+     * the backend opens, {@link #sink(AudioBlock)} discards every block and
+     * the stream is silent while looking healthy. That is exactly the false
+     * success the selector's streaming gate exists to prevent, so this flag
+     * must answer from the streaming shim rather than from
+     * {@code isAvailable()}. It keeps such an ASIO out of
+     * {@link AudioBackendSelector#availableBackends()} and out of the app
+     * layer's provision ladder; {@code open()}'s own degrade path is
+     * unchanged and remains the backstop for a caller that bypasses the
+     * gate.</p>
+     *
+     * <p>The probe shim is opened and closed per call so no FFM arena
+     * leaks; any failure to construct it counts as "not streamable",
+     * mirroring {@link #isAvailable()}.</p>
+     */
+    @Override
+    public boolean supportsStreaming() {
+        try (AsioStreamingShim shim = streamingShimFactory.get()) {
+            return streamingShimUsable(shim);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One entry per installed x64 ASIO driver, straight from the registry
+     * enumeration — no driver is loaded to produce this list.</p>
+     *
+     * <p>Each entry is therefore
+     * {@linkplain AudioDeviceInfo#unprobed(int, String, String) unprobed}:
+     * its channel counts are {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN}
+     * rather than a number (story 316 review). {@code ASIOGetChannels} only
+     * answers after {@code loadDriver} + {@code ASIOInit}, and loading every
+     * installed driver to fill a settings menu is not acceptable: an ASIO
+     * driver may take exclusive control of its hardware and may open a modal
+     * control panel. So the count is genuinely unknown here, and inventing
+     * a plausible one (2) would be a lie.</p>
+     *
+     * <p>Reporting {@code 0} — the previous behaviour — was equally wrong in
+     * the other direction: {@code 0} means "this direction is not offered",
+     * so {@link AudioDeviceInfo#supportsOutput()} answered {@code false} for
+     * every ASIO driver and the Settings device menus filtered them all out.
+     * The user could not select or persist a specific driver, which is the
+     * whole point of enumerating them. The unknown sentinel offers both
+     * directions without claiming a count; the real counts are read from the
+     * driver in {@link #open(DeviceId, AudioFormat, int)}, which clamps the
+     * requested channel set against them.</p>
+     *
+     * <p>Device identity (story 316 review). Each entry's {@code index} is
+     * its position in this one enumeration snapshot and nothing more:
+     * {@link #open(DeviceId, AudioFormat, int)} takes a {@link DeviceId},
+     * not an index, and nothing in this class reads
+     * {@link AudioDeviceInfo#index()}. What a selection persists and what
+     * {@code open} resolves is the driver NAME. {@code resolveDriverName}
+     * returns {@link DeviceId#name()} for a named device, or the first name
+     * of a FRESH {@code listDrivers()} for the default, and
+     * {@code AsioDriverShim#loadDriver(String)} hands that name to
+     * {@code asioshim_loadDriver}, which walks the SDK host glue's driver
+     * list at that moment ({@code count()} / {@code nameAt()}), compares
+     * each installed name with {@code strcmp}, and loads the FIRST index
+     * whose name matches. A name that no longer enumerates matches nothing,
+     * the load reports failure, and {@code open} throws an
+     * {@link AudioBackendException} naming the driver &mdash; never a
+     * substitute device. Two enumerated entries that share a name are the
+     * one case this model does not distinguish: this method lists both,
+     * both persist the same name, and {@code asioshim_loadDriver} resolves
+     * both to the first-enumerated driver. Nothing in this repository
+     * establishes that installed ASIO driver names are unique, so that
+     * limitation is stated rather than refuted; the CLSID below is the
+     * discriminator such a case would need, and using it requires the shim
+     * export it does not have. That is the identity model the design book's
+     * &sect;3.2 asks for: a stable id resolved against the current snapshot
+     * at every open, with a bare index meaningful only inside one
+     * snapshot.</p>
+     *
+     * <p>The {@code clsid} that {@code AsioDriverShim.DriverDescriptor}
+     * also carries is not that id. The shim exports no entry point that
+     * loads by CLSID &mdash; it only formats the CLSID into the rows
+     * {@code asioshim_listDrivers} returns &mdash; so a persisted CLSID
+     * could not be resolved back to a driver without a new shim export,
+     * and storing it would change what the persisted device selection
+     * ({@code audio.outputDevice}) holds. It is decoded by
+     * {@code AsioDriverShim.decodeDrivers} and read by no production code
+     * in this module today: carried for diagnostics and future use, and
+     * deliberately not written into the {@link AudioDeviceInfo} built
+     * here.</p>
+     */
     @Override
     public List<AudioDeviceInfo> listDevices() {
         try (AsioDriverShim shim = driverShimFactory.get()) {
@@ -159,9 +327,7 @@ public final class AsioBackend implements AudioBackend {
             List<AudioDeviceInfo> devices = new java.util.ArrayList<>(drivers.size());
             for (int index = 0; index < drivers.size(); index++) {
                 AsioDriverShim.DriverDescriptor driver = drivers.get(index);
-                devices.add(new AudioDeviceInfo(
-                        index, driver.name(), NAME,
-                        0, 0, 0.0, List.of(), 0.0, 0.0));
+                devices.add(AudioDeviceInfo.unprobed(index, driver.name(), NAME));
             }
             return List.copyOf(devices);
         } catch (RuntimeException ignored) {
@@ -199,6 +365,22 @@ public final class AsioBackend implements AudioBackend {
      * Windows build made without the Steinberg SDK — steps 4 and 6 are
      * skipped and the method behaves exactly as it did in story 310: the
      * backend opens, publishes device events, and simply streams no audio.</p>
+     *
+     * <p><strong>A FAILED open does not always mean the device is free</strong>
+     * (story 316 re-review). Once a candidate driver shim exists, every exit
+     * below — each early one, and the {@code rollbackOpen(...)} behind the
+     * main {@code try} — hands that shim to
+     * {@link #releaseDriverShim(AsioDriverShim)}, which DEFERS the
+     * close while the control thread is still executing a call the host
+     * abandoned. (The entry gates that refuse ahead of the shim never take
+     * one, so they have nothing to release.) The load-timeout path is the material one: a {@code loadDriver}
+     * whose budget expired answers {@code false} while keeping its ownership
+     * claim, so the {@link AudioBackendException} thrown here can be raised by a
+     * backend that may still be acquiring the device. That is now REPORTED
+     * rather than silent — {@link #isReleasePending()} answers {@code true}
+     * until the queued {@code ASIOExit} runs — and a caller walking a fallback
+     * ladder must read such a hop as a rung whose handle is RETAINED, not as an
+     * ordinary refusal it may open past.</p>
      */
     @Override
     public void open(DeviceId device, AudioFormat format, int bufferFrames) {
@@ -216,22 +398,51 @@ public final class AsioBackend implements AudioBackend {
                 throw new IllegalStateException(
                         "another ASIO backend already owns the process-wide driver");
             }
+            if (!AsioControlThread.isQuiesced()) {
+                // An earlier downcall its caller stopped waiting for (budget or
+                // interrupt) is still inside the driver, so the device is
+                // provably not free.
+                // Loading a driver over one that is still executing is how a
+                // wedged open becomes two hosts fighting over the same
+                // hardware. Refuse rather than wait: this thread holds
+                // DRIVER_LIFECYCLE_LOCK and the engine's lifecycle lock, and a
+                // wait here would stall every transition behind both — which is
+                // the failure the bounded budget exists to prevent.
+                throw new AudioBackendException(
+                        "ASIO device is not free: an earlier ASIO call its caller"
+                                + " stopped waiting for (budget expired or interrupted)"
+                                + " is still executing inside the driver."
+                                + " The driver has not released the device, so it"
+                                + " cannot be reconfigured yet.");
+            }
             driverResetRequested = false;
 
+            // Every early exit below releases the candidate through
+            // releaseDriverShim rather than closing it inline: the entry gate
+            // above proves the control thread was quiesced on ARRIVAL, not that
+            // it still is. resolveDriverName and loadDriver are themselves
+            // bounded downcalls, so either can leave a call abandoned inside the
+            // driver — and an inline close would then spend the shim's single
+            // close on downcalls that fail fast, latching it shut with ASIOExit
+            // un-issued. The loadDriver path is the material one: a load that
+            // times out has NOT proved the driver failed to initialize, and the
+            // shim now keeps its ownership claim precisely so the deferred
+            // release can still issue ASIOExit (see
+            // AsioDriverShim#loadDriver(String)).
             AsioDriverShim candidate = driverShimFactory.get();
             if (!candidate.isLifecycleAvailable()) {
-                candidate.close();
+                releaseDriverShim(candidate);
                 throw unavailableException();
             }
             String driverName;
             try {
                 driverName = resolveDriverName(candidate, device);
             } catch (RuntimeException | Error failure) {
-                candidate.close();
+                releaseDriverShim(candidate);
                 throw failure;
             }
             if (!candidate.loadDriver(driverName)) {
-                candidate.close();
+                releaseDriverShim(candidate);
                 throw new AudioBackendException(
                         "Could not load and initialize ASIO driver: " + driverName);
             }
@@ -336,27 +547,86 @@ public final class AsioBackend implements AudioBackend {
      * to succeed. Asymmetric input / output counts are the norm on
      * multi-channel USB interfaces, this project's primary target, so each
      * direction is clamped against the driver's reported count. Channels the
-     * driver does not have simply get no buffer;
-     * {@link AsioBufferSwitchShim} captures silence for them and leaves their
-     * (non-existent) output buffers alone.</p>
+     * driver does not have simply get no buffer — for a PARTIAL shortfall,
+     * that is: a driver with fewer outputs than the format asks for still
+     * carries audio on the outputs it does have, and
+     * {@link AsioBufferSwitchShim} captures silence for absent inputs and
+     * leaves their (non-existent) output buffers alone.</p>
+     *
+     * <p><strong>A TOTAL absence of outputs is a failure, not a clamp</strong>
+     * (story 316 re-review). {@code open()} is a PLAYBACK open — the engine's
+     * only caller sinks rendered blocks through it — so a driver reporting no
+     * output channels at all (a capture-only interface, or ASIO4ALL with only
+     * inputs enabled) must not be negotiated down to zero outputs and opened
+     * anyway. It would succeed all the way through: {@code ASIOCreateBuffers}
+     * accepts the inputs alone, {@code getBufferInfos()} is non-empty, the
+     * bridge consumes rendered blocks and advances
+     * {@link #renderedBlocksConsumedByDriver()} while every output buffer is
+     * {@link java.lang.foreign.MemorySegment#NULL} — a stream that is silent by
+     * construction, reporting progress, and passing the Windows integration
+     * proof. So this rung FAILS instead, exactly as
+     * {@link JavaxSoundBackend#open(DeviceId, AudioFormat, int)} fails when its
+     * mandatory output line cannot be opened: the engine's fallback ladder must
+     * see this rung fail, never "succeed" into a silent no-output stream
+     * (story 316, honest promises).</p>
+     *
+     * <p>There is deliberately NO symmetric guard on zero inputs. Capture is
+     * optional-degrade on this backend and on
+     * {@link JavaxSoundBackend} alike — an input line that cannot be opened
+     * only disables capture, playback proceeds — and a playback-only interface
+     * is the common case this method was written to support in the first
+     * place. Refusing it would break the very devices the clamp exists for.</p>
+     *
+     * <p><strong>Do not "fix" that asymmetry</strong> (story 316 review). The
+     * RECORDING path's zero-input refusal is real, but it lives at the CALLER:
+     * the engine opens with {@link CaptureRequirement#REQUIRED}, reads
+     * {@link #openedInputChannels()} afterwards, and turns a zero into an
+     * ordinary failed ladder hop. Adding a guard here instead would refuse a
+     * playback-only interface for every open, recording or not — which is the
+     * regression the paragraph above exists to prevent — and it would refuse it
+     * on the wrong evidence anyway: {@code ASIOGetChannels} reports what the
+     * driver HAS, while {@link #openedInputChannels()} reports what
+     * {@code ASIOCreateBuffers} actually handed back.</p>
      *
      * <p>When no count is available — no capability shim, or
      * {@code ASIOGetChannels} failed — the request keeps the previous
-     * behaviour.</p>
+     * behaviour, and the zero-output guard cannot fire: {@code outputs} is
+     * still {@code formatChannels}. Non-Windows hosts and shim-less Windows
+     * builds are therefore untouched by it.</p>
      *
      * @return {@code {inputs, outputs}}
-     * @throws AudioBackendException when the combined request exceeds the
-     *                               native shim's {@code MAX_STREAM_CHANNELS}
-     *                               cap, rather than letting
-     *                               {@code ASIOCreateBuffers} fail opaquely
+     * @throws AudioBackendException when the driver reports no output channels
+     *                               at all, so this playback open would
+     *                               otherwise succeed into a stream nobody can
+     *                               hear; or when the combined request exceeds
+     *                               the native shim's
+     *                               {@code MAX_STREAM_CHANNELS} cap, rather
+     *                               than letting {@code ASIOCreateBuffers} fail
+     *                               opaquely
      */
     private static int[] negotiateChannelCounts(int formatChannels, String driverName) {
         int inputs = formatChannels;
         int outputs = formatChannels;
         Optional<int[]> reported = driverChannelCounts();
         if (reported.isPresent()) {
-            inputs = Math.clamp(reported.get()[0], 0, formatChannels);
-            outputs = Math.clamp(reported.get()[1], 0, formatChannels);
+            int reportedInputs = reported.get()[0];
+            int reportedOutputs = reported.get()[1];
+            inputs = Math.clamp(reportedInputs, 0, formatChannels);
+            outputs = Math.clamp(reportedOutputs, 0, formatChannels);
+            if (outputs == 0 && formatChannels > 0) {
+                // Only the DRIVER's own reported count can clamp the request
+                // away like this; a request of zero channels never reaches
+                // here with formatChannels > 0.
+                throw new AudioBackendException(
+                        "ASIO driver reports no output channels: " + reportedInputs
+                                + " input(s) / " + reportedOutputs + " output(s) clamps"
+                                + " this " + formatChannels + "-channel playback request"
+                                + " to 0 output(s). This rung is FAILING so the engine's"
+                                + " fallback ladder can fall through to another backend,"
+                                + " rather than succeeding into a silent no-output stream"
+                                + " that would report progress nobody can hear: "
+                                + driverName);
+            }
         }
         if (inputs + outputs > AsioStreamingShim.MAX_STREAM_CHANNELS) {
             throw new AudioBackendException(
@@ -390,11 +660,23 @@ public final class AsioBackend implements AudioBackend {
      */
     private static AsioStreamingShim acquireStreamingShim() {
         AsioStreamingShim candidate = streamingShimFactory.get();
-        if (candidate.isStreamingAvailable()) {
+        if (streamingShimUsable(candidate)) {
             return candidate;
         }
         candidate.close();
         return null;
+    }
+
+    /**
+     * The single definition of "this streaming shim can drive the story-311
+     * buffer-switch path" (story 316 review). Both the pre-open probe in
+     * {@link #supportsStreaming()} and the real acquisition in
+     * {@link #acquireStreamingShim()} answer from here, so the selector can
+     * never offer an ASIO that {@code open()} would then degrade to the
+     * story-310 silent path.
+     */
+    private static boolean streamingShimUsable(AsioStreamingShim shim) {
+        return shim.isStreamingAvailable();
     }
 
     /** The opened format's channel set: {@code {0, 1, …, channels - 1}}. */
@@ -437,9 +719,28 @@ public final class AsioBackend implements AudioBackend {
      * The teardown order matches {@link #close()}: stop and dispose the
      * driver's buffers, uninstall the upcall, and only then free the stub's
      * arena — a late callback must never jump into released memory. The
-     * {@code asioMessage} shim is closed too, so a failed open never leaves a
-     * registered upcall behind (it is now installed before
-     * {@code ASIOCreateBuffers}).
+     * {@code asioMessage} shim is closed too (it is now installed before
+     * {@code ASIOCreateBuffers}); {@link AsioFormatChangeShim#close()}
+     * applies the same confirmed-uninstall/retain protocol internally, so a
+     * failed open uninstalls that upcall when it can CONFIRM the uninstall
+     * and otherwise retains the stub's arena rather than freeing memory a
+     * driver reset may still reach. The driver shim itself is handed to
+     * {@link #releaseDriverShim(AsioDriverShim)}, which may defer its close for
+     * the reason documented there; every Java-side field is cleared here
+     * regardless, so a failed open never leaves a half-live backend behind.
+     * Clearing the fields is not the same as giving the DEVICE back, though: a
+     * deferred release leaves this backend reporting {@link #isReleasePending()}
+     * {@code true} after the rollback, and the caller must read the failed open
+     * as a rung whose handle is RETAINED rather than as an ordinary refusal
+     * (story 316 re-review).
+     *
+     * <p>When the uninstall could not be CONFIRMED — the call could not be
+     * made, was refused on arrival, did not complete within its budget, was
+     * interrupted, or failed at the FFM boundary; see
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} for the full
+     * list, and note that the driver is not involved in any of them — the
+     * stub's arena is retained rather than freed, exactly as in
+     * {@link #close()}. See {@link #tearDownStreaming(AsioStreamingShim)}.</p>
      */
     private void rollbackOpen(AsioDriverShim candidate, AsioStreamingShim streaming,
                               AsioBufferSwitchShim bridge, AsioFormatChangeShim callback,
@@ -450,11 +751,19 @@ public final class AsioBackend implements AudioBackend {
         if (bridge != null) {
             bridge.stopStreaming();
         }
+        // No streaming shim means no upcall was ever installed, so nothing can
+        // be holding the stub's address and the full release is safe.
+        boolean upcallUninstalled = true;
         if (streaming != null) {
-            tearDownStreaming(streaming);
+            upcallUninstalled = tearDownStreaming(streaming);
         }
         if (bridge != null) {
-            bridge.close();
+            if (upcallUninstalled) {
+                bridge.close();
+            } else {
+                logRetainedUpcallStub();
+                bridge.closeRetainingUpcallStub();
+            }
         }
         if (streaming != null) {
             streaming.close();
@@ -466,13 +775,14 @@ public final class AsioBackend implements AudioBackend {
             support.markClosed();
         }
         activeDriverName = null;
-        candidate.close();
+        releaseDriverShim(candidate);
     }
 
     /**
      * Runs the driver-side half of the story-311 teardown — {@code ASIOStop},
      * {@code ASIODisposeBuffers}, then uninstalling the buffer-switch upcall —
-     * and reports a driver that refused either of the first two.
+     * logs a driver that refused either of the first two, and reports whether
+     * the upcall was provably uninstalled.
      *
      * <p>The native shim propagates the driver's own status rather than always
      * answering "OK": {@code asioshim_stop} and {@code asioshim_disposeBuffers}
@@ -483,9 +793,10 @@ public final class AsioBackend implements AudioBackend {
      * logged at {@link Level#WARNING} naming the refused call and the driver.</p>
      *
      * <p><strong>Why the teardown then continues instead of bailing out.</strong>
-     * The caller frees the upcall stub's arena immediately after this returns, so
-     * the question a refusal raises is whether a still-running driver can reach
-     * that stub. It cannot, because the native shim closes both windows:</p>
+     * The caller frees the upcall stub's arena immediately after this returns
+     * {@code true}, so the question a refusal raises is whether a still-running
+     * driver can reach that stub. It cannot, because the native shim closes
+     * both windows:</p>
      * <ul>
      *   <li>{@code asioshim_disposeBuffers} publishes "no buffers created"
      *       before it re-enters the SDK and then waits on a bounded in-flight
@@ -504,41 +815,254 @@ public final class AsioBackend implements AudioBackend {
      * the process, and leave the driver streaming into buffers nobody disposes.
      * The native {@code asioshim_unloadDriver} repeats this same teardown before
      * {@code ASIOExit}, which is the last chance to quiesce such a driver.</p>
+     *
+     * <p><strong>Both of those windows stay OPEN when the control thread is not
+     * quiesced.</strong> All three calls here are bounded, so while an earlier
+     * downcall its caller stopped waiting for (by budget or by interrupt) is
+     * still executing they are refused on arrival by
+     * {@link AsioControlThread#isQuiesced()} and never reach the
+     * driver at all — no buffer gate is closed and no callback pointer is
+     * nulled. That state is also self-inflicted mid-teardown: a
+     * {@code streaming.stop()} the control thread has already STARTED and that
+     * then outlives its budget is abandoned in flight, which is precisely what
+     * makes the {@code disposeBuffers()} and the uninstall behind it
+     * refusable. Starting is the condition, not submission — a budget that
+     * expires while the operation is still QUEUED withdraws it instead
+     * ({@code AsioControlThread.settleAbandonedWait} wins {@code QUEUED ->
+     * WITHDRAWN} before the task's own {@code QUEUED -> RUNNING}), which never
+     * touches {@code ABANDONED_IN_FLIGHT}, so {@link AsioControlThread#isQuiesced()}
+     * stays true and the calls behind it are NOT refused. The
+     * warnings below say "not attempted" rather than blaming the driver for
+     * that, and the driver shim's own release is deferred by
+     * {@link #releaseDriverShim(AsioDriverShim)} so that
+     * {@code asioshim_unloadDriver}'s backstop teardown still runs once the
+     * driver returns.</p>
+     *
+     * <p><strong>The fate of the upcall stub is decided by the uninstall's own
+     * outcome, never by a quiescence sample.</strong>
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} answers
+     * {@code true} only when the shim's registered buffer-switch callback is
+     * provably no longer the stub's address, and that answer is what this
+     * method returns. No sample can stand in for it: taken before the call it
+     * cannot see the call be skipped, refused, time out, be interrupted or
+     * fail at the FFM boundary, and taken after it reads {@code true} again
+     * the moment an abandoned call returns — reporting a clean teardown for an
+     * uninstall that never ran, and freeing an arena the shim's callback
+     * pointer still holds. {@link #close()} and
+     * {@code rollbackOpen(...)} therefore end the bridge with
+     * {@link AsioBufferSwitchShim#closeRetainingUpcallStub()} whenever this
+     * answers {@code false}, leaking one stub for the life of the process: the
+     * driver may still fire {@code bufferSwitch} into the shim's trampoline,
+     * which forwards through that pointer, and releasing its arena would
+     * turn the next callback into a jump into released memory — a crash, not a
+     * leak. It is the same trade this method already makes by continuing past a
+     * refused {@code ASIOStop} instead of skipping "the actual protection".</p>
+     *
+     * <p>The two {@link AsioControlThread#isQuiesced()} samples below are
+     * DIAGNOSTIC ONLY, and they PREDICT rather than decide: the gate is
+     * re-read inside {@code AsioControlThread.call(...)}, which is what
+     * actually refuses a bounded operation. They exist so that a refused
+     * {@code ASIOStop} or {@code ASIODisposeBuffers} can be attributed to the
+     * host's own fail-fast gate rather than to the driver, and each is taken
+     * immediately before the call it describes because the preceding call can
+     * change the answer. A benign race remains between each sample and its
+     * submission — {@code AsioControlThread.call(...)} itself is the only
+     * authority on what became of a call — but nothing load-bearing rests on
+     * them: the one decision that can crash the process reads the uninstall's
+     * return value instead.</p>
+     *
+     * @return whether the uninstall provably completed, so the caller may free
+     *         the upcall stub's arena. {@code false} means the shim's
+     *         registered buffer-switch callback may still be the stub's
+     *         address and the caller must retain it.
      */
-    private void tearDownStreaming(AsioStreamingShim streaming) {
+    private boolean tearDownStreaming(AsioStreamingShim streaming) {
+        boolean stopAttempted = AsioControlThread.isQuiesced();
         boolean stopped = streaming.stop();
+        // Re-sampled: a stop() the control thread had already STARTED and that
+        // then outlived its caller's wait (budget or interrupt) is abandoned in
+        // flight, so the dispose behind it is refused on arrival by the host
+        // rather than by the driver. (A budget that expires while the stop is
+        // still queued withdraws it instead and leaves the gate open.)
+        boolean disposeAttempted = AsioControlThread.isQuiesced();
         boolean disposed = streaming.disposeBuffers();
-        warnIfDriverRefusedTeardown(stopped, disposed);
-        streaming.uninstallBufferSwitchCallback();
+        warnIfDriverRefusedTeardown(stopped, stopAttempted, disposed, disposeAttempted);
+        // The uninstall's OWN outcome, not a sample: it is what tells the
+        // caller whether freeing the upcall stub's arena is a release or a
+        // crash.
+        return streaming.uninstallBufferSwitchCallback();
     }
 
     /**
-     * Logs a driver that refused {@code ASIOStop} and/or
-     * {@code ASIODisposeBuffers}. Shared by {@link #close()} /
-     * {@code rollbackOpen(...)} — via {@link #tearDownStreaming} — and by the
-     * asynchronous {@link #stopStreamingForDriverReset()} teardown, which runs
-     * the same two calls and would otherwise discard the same information.
+     * Records the one case in which the buffer-switch upcall stub is
+     * deliberately leaked: {@link #tearDownStreaming(AsioStreamingShim)} could
+     * not CONFIRM the uninstall, so the shim's registered buffer-switch
+     * callback may still be the stub's address.
+     * {@link Level#SEVERE} because the alternative
+     * the process just avoided is a crash, and because the leak is permanent —
+     * nothing later in this process can reclaim that arena.
+     *
+     * <p>The message describes the SHAPE of the failure rather than picking
+     * one cause, because {@link AsioStreamingShim#uninstallBufferSwitchCallback()}
+     * cannot distinguish its five and a maintainer reading this line must not
+     * be sent after the wrong one. It must also not name the driver: the
+     * native {@code uninstallAsioBufferSwitchCallback} nulls a pointer and
+     * drains in-flight callbacks without entering the ASIO SDK at all, so the
+     * driver has no way to refuse the uninstall or to throw out of it (story
+     * 316 review, round 4 — this line previously said it did).</p>
      */
-    private void warnIfDriverRefusedTeardown(boolean stopped, boolean disposed) {
+    private void logRetainedUpcallStub() {
+        String driver = activeDriverName;
+        String named = driver == null ? "<no driver loaded>" : driver;
+        LOG.log(Level.SEVERE,
+                "ASIO upcall stub RETAINED (deliberately leaked) for " + named
+                        + ": uninstalling the buffer-switch callback could not be"
+                        + " CONFIRMED — the call could not be made, was refused on"
+                        + " arrival while an earlier ASIO call executed past its"
+                        + " budget, did not complete within its own budget, was"
+                        + " interrupted, or failed at the FFM boundary. The driver is"
+                        + " NOT involved either way: the uninstall nulls a callback"
+                        + " pointer and drains in-flight callbacks without entering"
+                        + " the ASIO SDK. What is unknown is whether that pointer is"
+                        + " still the stub's address, so a bufferSwitch may still"
+                        + " reach it through the shim's trampoline."
+                        + " Freeing its arena now would turn the next"
+                        + " bufferSwitch into a jump into released memory, so the stub"
+                        + " and its arena are leaked for the life of the process"
+                        + " instead. The bridge is quiesced and its asio-input-drain"
+                        + " thread is stopped by this same teardown, so no audio"
+                        + " crosses it in either direction.");
+    }
+
+    /**
+     * Logs a teardown that did not fully succeed, splitting the calls the HOST
+     * most likely never submitted from the calls that most likely reached the
+     * DRIVER and were refused. Shared by
+     * {@link #close()} / {@code rollbackOpen(...)} — via
+     * {@link #tearDownStreaming} — and by the asynchronous
+     * {@link #stopStreamingForDriverReset()} teardown, which runs the same two
+     * calls and would otherwise discard the same information.
+     *
+     * <p>The two {@code Attempted} flags are what keep the attribution honest.
+     * {@link AsioStreamingShim#stop()} and
+     * {@link AsioStreamingShim#disposeBuffers()} answer {@code false} both for a
+     * driver that ran the call and refused it and for a call the HOST never
+     * submitted: while an earlier downcall its caller stopped waiting for (by
+     * budget or by interrupt) is still executing, {@link AsioControlThread}
+     * refuses every bounded operation on arrival (see
+     * {@link AsioControlThread#isQuiesced()}). Reporting the
+     * host's own gate as "the ASIO driver refused ASIOStop" would send a
+     * maintainer after the wrong component and hide the one fact that matters —
+     * that a named call is still wedged inside the driver — so the two get
+     * different messages.</p>
+     *
+     * <p><strong>Both attributions are best guesses, not proofs</strong>
+     * (story 316 review, round 4 — this javadoc previously claimed the
+     * driver-refused wording was "reserved for a call that provably reached
+     * the driver", which the gate cannot establish). Each flag records only
+     * that {@link AsioControlThread#isQuiesced()} was true immediately before
+     * the call, i.e. that the host believed it could submit. The gate is
+     * re-read inside {@code AsioControlThread.call(...)}, so the sample
+     * predicts rather than decides; and even a call that IS submitted through
+     * an open gate can exhaust its own budget while still queued, in which
+     * case {@code settleAbandonedWait} moves it {@code QUEUED -> WITHDRAWN} and
+     * the driver never sees it. That is reachable whenever the control thread
+     * is busy with a call the host has NOT given up on — the unbounded modal
+     * control panel being the obvious one — because such a call leaves
+     * {@code isQuiesced()} true. The driver-refused message therefore carries
+     * its own hedge.</p>
+     *
+     * <p>Each flag is sampled immediately before the call it describes rather
+     * than once for the pair, because a {@code stop()} the control thread has
+     * already STARTED and that then outlives its budget is abandoned in
+     * flight: the {@code disposeBuffers()} behind it is then refused on
+     * arrival by the host, and one earlier sample would blame the driver for
+     * that refusal. (Starting is the condition:
+     * {@code abandonWhileRunning} only counts an operation abandoned on a
+     * winning {@code RUNNING -> ABANDONED} compare-and-set, so a budget that
+     * expires while the call is still queued withdraws it and leaves the gate
+     * open.) For the same reason this emits up to TWO warnings — one naming
+     * the calls the host most likely never submitted, one naming the calls
+     * that most likely reached the driver and were refused — so a mixed
+     * teardown reports both instead of picking one. Nothing that can crash the
+     * process depends on either: the fate of the upcall stub is decided by the
+     * uninstall's own return value, see
+     * {@link #tearDownStreaming(AsioStreamingShim)}.</p>
+     *
+     * @param stopped          whether {@code ASIOStop} reported success
+     * @param stopAttempted    whether the host's fail-fast gate
+     *                         ({@link AsioControlThread#isQuiesced()}) was open
+     *                         immediately before {@code ASIOStop} — i.e.
+     *                         whether the host believed it could submit that
+     *                         call, not whether the driver received it
+     * @param disposed         whether {@code ASIODisposeBuffers} reported success
+     * @param disposeAttempted the same reading taken immediately before
+     *                         {@code ASIODisposeBuffers}
+     */
+    private void warnIfDriverRefusedTeardown(boolean stopped, boolean stopAttempted,
+                                             boolean disposed, boolean disposeAttempted) {
         if (stopped && disposed) {
             return;
         }
-        String refused;
-        if (!stopped && !disposed) {
-            refused = "ASIOStop and ASIODisposeBuffers";
-        } else if (!stopped) {
-            refused = "ASIOStop";
-        } else {
-            refused = "ASIODisposeBuffers";
-        }
         String driver = activeDriverName;
-        LOG.log(Level.WARNING,
-                "ASIO driver refused " + refused + " during teardown: "
-                        + (driver == null ? "<no driver loaded>" : driver)
-                        + ". The driver may still be firing bufferSwitch. The "
-                        + "teardown continues: the native shim closes its buffer "
-                        + "gate and waits on a bounded in-flight callback barrier "
-                        + "before anything a callback touches is released.");
+        String named = driver == null ? "<no driver loaded>" : driver;
+        String neverSubmitted = nameCalls(!stopped && !stopAttempted,
+                !disposed && !disposeAttempted);
+        if (!neverSubmitted.isEmpty()) {
+            LOG.log(Level.WARNING,
+                    "ASIO teardown NOT ATTEMPTED (" + neverSubmitted + ") for " + named
+                            + ": the asio-control thread is still executing an earlier"
+                            + " ASIO call its caller stopped waiting for (budget expired"
+                            + " or interrupted), so the host refused"
+                            + " to submit these calls. This is the host's own fail-fast"
+                            + " gate, NOT a driver refusal — the driver almost certainly"
+                            + " never saw them. The driver's buffers stay created and it"
+                            + " may still be firing bufferSwitch until that earlier call"
+                            + " returns. Attribution caveat: the gate is sampled just"
+                            + " before each call, so an earlier call that returned in"
+                            + " between could have let one through after all.");
+        }
+        String refusedByDriver = nameCalls(!stopped && stopAttempted,
+                !disposed && disposeAttempted);
+        if (!refusedByDriver.isEmpty()) {
+            LOG.log(Level.WARNING,
+                    "ASIO driver refused " + refusedByDriver + " during teardown: " + named
+                            + ". The driver may still be firing bufferSwitch. The "
+                            + "teardown continues: the native shim closes its buffer "
+                            + "gate and waits on a bounded in-flight callback barrier "
+                            + "before anything a callback touches is released. "
+                            + "Attribution caveat: this is inferred from the host's "
+                            + "fail-fast gate being OPEN just before the call, which "
+                            + "means the host believed it could submit — not that the "
+                            + "driver received it. A call that queued behind a healthy "
+                            + "long-running downcall (the driver's modal control panel, "
+                            + "typically) and then exhausted its own budget is withdrawn "
+                            + "unseen and reported here too.");
+        }
+    }
+
+    /**
+     * Names the selected subset of the teardown's two calls exactly as the
+     * single pre-split message worded them, so a maintainer's existing log
+     * grep keeps matching. The empty string means "neither", which is how
+     * {@link #warnIfDriverRefusedTeardown(boolean, boolean, boolean, boolean)}
+     * decides that one of its two attributions has nothing to report.
+     *
+     * @param stop    include {@code ASIOStop}
+     * @param dispose include {@code ASIODisposeBuffers}
+     * @return the joined call names, or the empty string when neither is selected
+     */
+    private static String nameCalls(boolean stop, boolean dispose) {
+        if (stop && dispose) {
+            return "ASIOStop and ASIODisposeBuffers";
+        }
+        if (stop) {
+            return "ASIOStop";
+        }
+        if (dispose) {
+            return "ASIODisposeBuffers";
+        }
+        return "";
     }
 
     private static String resolveDriverName(AsioDriverShim shim, DeviceId device) {
@@ -705,6 +1229,132 @@ public final class AsioBackend implements AudioBackend {
         bridge.write(block);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>ASIO's real backpressure signal (story 316): polls the buffer-switch
+     * bridge's output-ring occupancy in {@code timeoutNanos / 8} park slices,
+     * returning as soon as the driver's own {@code bufferSwitch} has
+     * <em>consumed</em> the previously written {@link #sink(AudioBlock)}
+     * block — that is, as soon as the ring is empty, not as soon as it merely
+     * has a free slot. The distinction is the point: the callback drains the
+     * whole queue and plays only its newest block, so spare capacity is not a
+     * request for more audio, and gating on it would let the pump render (and
+     * the transport advance) several blocks per callback with all but one of
+     * them discarded unheard. This is how the render pump ends up paced by the
+     * device clock: the ring only empties at the rate the hardware calls back.
+     * The poll loop itself is the shared
+     * {@link AudioBackend#pollForSinkCapacity(long, java.util.function.BooleanSupplier)}
+     * helper, so this backend and {@code daw-core}'s callback-backend adapter
+     * cannot drift apart (story 316 review) — the LOOP, that is. Their
+     * PREDICATES differ deliberately and must not be reconciled: this one
+     * passes {@code outputRingDrained()} because its consumer swallows the
+     * whole queue, while {@code CallbackBackendAdapter.awaitSinkCapacity}
+     * passes {@code InterleavedBlockRing::hasSpace} because ITS consumer,
+     * {@code InterleavedBlockRing.readInto}, is strict FIFO — one slot per
+     * callback, oldest first, never skipping — so a free slot there really
+     * does mean the device took a block and discarded nothing.</p>
+     *
+     * <p>Implemented entirely on the calling (non-real-time) side — a
+     * read-only poll of the ring's occupancy counters. It adds no work to the
+     * sentinel-tested real-time {@code bufferSwitch} / {@code write} paths.
+     * When no stream is open (or the native streaming shim is absent) there
+     * is no ring to poll, so this falls back to the default full-timeout
+     * park, which degrades gracefully to wall-clock pacing.</p>
+     */
+    @Override
+    public void awaitSinkCapacity(long timeoutNanos) {
+        // Capture the swappable reference exactly once: close() may null the
+        // field concurrently with a pump-thread wait (house rule).
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        if (bridge == null) {
+            LockSupport.parkNanos(timeoutNanos);
+            return;
+        }
+        AudioBackend.pollForSinkCapacity(timeoutNanos, bridge::outputRingDrained);
+    }
+
+    /**
+     * Diagnostic / observability query (story 316 review): how many
+     * engine-rendered blocks the driver's real {@code bufferSwitch} callback
+     * has actually drained into its output buffers since the stream opened.
+     *
+     * <p>Transport advancing, or {@link #sink(AudioBlock)} accepting blocks,
+     * proves only that the engine's render pump ran — the pump advances the
+     * transport before it sinks, and its capacity wait times out after one
+     * block period whether or not a device callback ever arrives. This count
+     * is the signal that distinguishes "audio reached the hardware" from
+     * "the output bridge is dead": it moves only when
+     * {@link AsioBufferSwitchShim#bufferSwitch(int, int)} consumed a rendered
+     * block rather than emitting silence. It is deliberately <em>not</em>
+     * part of the {@link AudioBackend} contract.</p>
+     *
+     * <p>What exercises it, honestly (story 316 review): today, only
+     * STUBBED tests — {@code AsioBackendStreamingTest} pins the closed /
+     * no-bridge / live-bridge answers and {@code AsioBufferSwitchShimTest}
+     * pins the counter's own advance-and-hold behaviour, both driving a fake
+     * shim with no driver anywhere. daw-core's engine-level Windows proof,
+     * {@code AsioEngineStreamingIntegrationTest}, asserts this count
+     * strictly increases, but it runs in no environment this project
+     * currently has: it is gated on Windows, then on {@code asioshim.dll}
+     * being on the FFM library path, then on an ASIO driver actually being
+     * installed — and the hosted {@code windows-latest} lane in
+     * {@code .github/workflows/windows-asioshim.yml} has no driver, so it
+     * stops at that assumption. Real proof needs a Windows host with BOTH
+     * an ASIO driver and the shim: a developer machine with an interface,
+     * or a self-hosted runner with one. Treat green CI as evidence about the
+     * counter's plumbing, never as evidence that audio reached hardware.</p>
+     *
+     * @return rendered blocks consumed by the driver callback, or {@code 0}
+     *         when the backend is closed or the native streaming shim was
+     *         unavailable (no bridge installed)
+     */
+    public long renderedBlocksConsumedByDriver() {
+        // Read the swappable reference exactly once: close() may null the
+        // field concurrently with this query (house rule).
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        return bridge == null ? 0L : bridge.renderedBlocksConsumed();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The number of input channels {@code ASIOCreateBuffers} really handed
+     * back — <em>not</em> the number
+     * {@link #negotiateChannelCounts(int, String)} asked for. The two differ
+     * whenever a driver accepts the call but exposes no usable buffer for a
+     * channel, and it is the buffers, not the request, that decide whether
+     * {@link #inputBlocks()} carries audio or silence: the bridge binds a
+     * converter only to a channel with both halves mapped, and a channel
+     * without one is memset to zero on every callback. Counting the request
+     * would promise capture that the very next {@code bufferSwitch} would
+     * contradict.</p>
+     *
+     * <p>{@code 0} when the backend is closed, when the native streaming shim
+     * was unavailable so no bridge was ever installed (every non-Windows host,
+     * and every Windows build made without the Steinberg SDK — those opens
+     * stream no audio at all), and once a {@code kAsioResetRequest} teardown
+     * has quiesced the bridge. Nothing resets it explicitly on close: the count
+     * lives on the bridge, and {@link #close()} and
+     * {@link #rollbackOpen(AsioDriverShim, AsioStreamingShim,
+     * AsioBufferSwitchShim, AsioFormatChangeShim, boolean)} both null
+     * {@code bufferSwitchShim}, which is the same single place every other
+     * stream-scoped fact here is dropped.</p>
+     *
+     * <p>This is what the engine verifies after a
+     * {@link CaptureRequirement#REQUIRED} open, and it is where the recording
+     * path's zero-input refusal comes from — deliberately here rather than as a
+     * guard inside {@link #negotiateChannelCounts(int, String)}, which must
+     * keep opening playback-only interfaces. See that method for why.</p>
+     */
+    @Override
+    public int openedInputChannels() {
+        // Read the swappable reference exactly once, for the same reason as
+        // renderedBlocksConsumedByDriver above (house rule).
+        AsioBufferSwitchShim bridge = bufferSwitchShim;
+        return bridge == null ? 0 : bridge.boundInputChannels();
+    }
+
     @Override
     public boolean isOpen() {
         return support.isOpen();
@@ -797,8 +1447,14 @@ public final class AsioBackend implements AudioBackend {
     /**
      * Tears the stream down in the order story 311 mandates:
      * {@code ASIOStop} &rarr; {@code ASIODisposeBuffers} &rarr; uninstall the
-     * buffer-switch upcall &rarr; free the upcall arena &rarr; the existing
-     * story-310 {@code asioMessage} uninstall and {@code ASIOExit}.
+     * buffer-switch upcall &rarr; free the upcall arena &rarr; the
+     * {@code asioMessage} teardown and {@code ASIOExit}. The
+     * {@code asioMessage} half is not an unconditional uninstall-then-free:
+     * {@link AsioFormatChangeShim#close()} applies the same
+     * confirmed-uninstall/retain protocol internally, freeing its stub's
+     * arena only when its uninstall downcall was CONFIRMED (or no install
+     * was ever started) and retaining it for the life of the process
+     * otherwise.
      *
      * <p>Freeing the upcall arena strictly after the uninstall is the load-
      * bearing part: a callback that arrives between the two would otherwise
@@ -806,10 +1462,32 @@ public final class AsioBackend implements AudioBackend {
      * and joins the {@code asio-input-drain} thread, so no captured block is
      * published after this method returns. Idempotent.</p>
      *
+     * <p>The concluding {@code ASIOExit} goes through
+     * {@link #releaseDriverShim(AsioDriverShim)}, which defers it while the
+     * control thread is still executing a call the host abandoned: the shim can
+     * only ever be closed once, and closing it then would spend that one chance
+     * on downcalls that cannot reach the driver. A close that deferred still
+     * returns NORMALLY — there is nothing here to fail — so it reports the
+     * deferral through {@link #isReleasePending()} instead, and a caller on a
+     * lifecycle path must read that before treating the device as given back
+     * (story 316 re-review).</p>
+     *
      * <p>A driver that refuses {@code ASIOStop} or {@code ASIODisposeBuffers} is
      * logged and the teardown carries on; see
      * {@link #tearDownStreaming(AsioStreamingShim)} for why continuing is the
      * safe response and aborting is not.</p>
+     *
+     * <p>A teardown that could not CONFIRM the uninstall — the call could not
+     * be made, was refused on arrival while an earlier call executed past its
+     * budget, did not complete within its own budget, was interrupted, or
+     * failed at the FFM boundary; the driver is a party to none of these, see
+     * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} — ends the
+     * bridge with
+     * {@link AsioBufferSwitchShim#closeRetainingUpcallStub()} instead. The
+     * shim's registered buffer-switch callback may still be the stub's
+     * address, so freeing its arena would be a
+     * crash rather than a leak; the stub is retained for the life of the
+     * process and the choice is logged at {@link Level#SEVERE}.</p>
      */
     @Override
     public void close() {
@@ -821,11 +1499,19 @@ public final class AsioBackend implements AudioBackend {
             if (bridge != null) {
                 bridge.stopStreaming();
             }
+            // No streaming shim means no upcall was ever installed, so nothing
+            // can be holding the stub's address and the full release is safe.
+            boolean upcallUninstalled = true;
             if (streaming != null) {
-                tearDownStreaming(streaming);
+                upcallUninstalled = tearDownStreaming(streaming);
             }
             if (bridge != null) {
-                bridge.close();
+                if (upcallUninstalled) {
+                    bridge.close();
+                } else {
+                    logRetainedUpcallStub();
+                    bridge.closeRetainingUpcallStub();
+                }
             }
             if (streaming != null) {
                 streaming.close();
@@ -839,13 +1525,214 @@ public final class AsioBackend implements AudioBackend {
             driverShim = null;
             activeDriverName = null;
             if (lifecycle != null) {
-                lifecycle.close();
+                releaseDriverShim(lifecycle);
             }
             if (activeBackend == this) {
                 activeBackend = null;
             }
             support.close();
         }
+    }
+
+    /**
+     * Releases the driver shim — {@code ASIOExit} plus its FFM arena — but only
+     * once the control thread is provably not inside a call the host abandoned.
+     *
+     * <p>{@link AsioDriverShim#close()} latches itself closed and its
+     * {@code unloadDriver()} clears the ownership flag on the first attempt, so
+     * a close whose downcalls all failed can never be retried. While an
+     * abandoned call is executing every bounded downcall DOES fail immediately
+     * (see {@link AsioControlThread#isQuiesced()}), so closing inline would
+     * spend the single chance to run {@code ASIOExit} on a call that cannot
+     * reach the driver, and leak both the driver and the arena for the life of
+     * the process. The close is therefore handed to the shared
+     * {@code asio-reset-teardown} executor
+     * ({@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)}), which
+     * waits for quiescence FIRST and takes {@link #DRIVER_LIFECYCLE_LOCK} only
+     * afterwards — never the other way round, or the wait would hold the very
+     * lock it exists to keep free.</p>
+     *
+     * <p>Deferring is not free, and the {@link Level#SEVERE} log says so: until
+     * the driver returns it may still hold — or take — the device. Two things
+     * keep that from becoming two hosts on one device. The process-wide
+     * invariant survives because {@code AsioDriverShim.loadDriver} refuses
+     * while another wrapper still owns the driver: a re-open attempted in that
+     * window fails cleanly instead of loading a second driver over the first.
+     * And the fallback ladder no longer walks past this backend either
+     * (story 316 re-review): the deferral is COUNTED and reported through
+     * {@link #isReleasePending()}, so a caller that reads it sees the same
+     * "handle RETAINED" disposition it would get from a {@code close()} that
+     * threw, instead of an ordinary successful close it is entitled to
+     * believe. It used to be silent, and the ladder opened PortAudio or Java
+     * Sound over a device this driver might still be acquiring.</p>
+     *
+     * <p>The count clears only when the driver has actually been given back
+     * (story 316 review). A wait that expires re-queues itself; a wait that
+     * cannot be re-queued, and a first submission the executor rejects
+     * outright, leave the release pending for the life of the backend with the
+     * shim unclosed — see {@link #queueDeferredDriverRelease(AsioDriverShim)}.
+     * Closing the shim inline at any of those points would be the same defect
+     * as clearing the count: the close cannot reach the driver, and the count
+     * is what keeps a second host off the device.</p>
+     */
+    private void releaseDriverShim(AsioDriverShim shim) {
+        if (AsioControlThread.isQuiesced()) {
+            shim.close();
+            return;
+        }
+        LOG.log(Level.SEVERE,
+                "ASIO driver release DEFERRED: an ASIO call its caller stopped waiting"
+                        + " for (budget expired or interrupted) is"
+                        + " still executing, so ASIOExit would fail fast and"
+                        + " AsioDriverShim.close() can only ever be attempted once. The"
+                        + " close is queued until the driver returns: the wait re-queues"
+                        + " itself every " + driverReleaseBudget.toSeconds() + " s for as"
+                        + " long as the driver has not returned, the teardown executor"
+                        + " keeps accepting it and its thread is not interrupted, and the"
+                        + " release stays pending"
+                        + " (isReleasePending) throughout — for the life of this backend"
+                        + " if the wait can no longer be re-queued — which is what keeps"
+                        + " the engine from opening another host over the device. Until"
+                        + " the driver returns it may still hold — or take — the device.");
+        // Counted BEFORE the task is published, never after. This mirrors
+        // AsioControlThread.abandonWhileRunning, which takes its count before
+        // it publishes the RUNNING -> ABANDONED transition, and for the same
+        // reason: incrementing afterwards would leave a window in which the
+        // hazard is already live — the release is owed, the device may still
+        // be held — while isReleasePending() answers "clear". A caller that
+        // sampled the query in that window would walk its fallback ladder past
+        // this backend, which is the one direction in which being wrong opens
+        // a second host over a device this driver has not let go of.
+        deferredDriverReleases.incrementAndGet();
+        queueDeferredDriverRelease(shim);
+    }
+
+    /**
+     * Hands {@link #awaitQuiescenceThenReleaseDriverShim(AsioDriverShim)} to
+     * the teardown executor — the first submission and every re-queue alike.
+     *
+     * <p>A rejection (the executor is shut down) leaves the release PENDING
+     * for the life of this backend: the count is not decremented and the shim
+     * is not closed. Closing it here would spend
+     * {@link AsioDriverShim#close()}'s single, latching attempt on downcalls
+     * that fail fast while the control thread is still inside the abandoned
+     * call, and the count is the only thing keeping a second host off the
+     * device. A release nobody can ever run is logged at {@link Level#SEVERE}
+     * and reported as pending, which is the truth of it (story 316 review —
+     * it used to close inline and hand the count back).</p>
+     */
+    private void queueDeferredDriverRelease(AsioDriverShim shim) {
+        try {
+            resetTeardownExecutor.execute(() -> awaitQuiescenceThenReleaseDriverShim(shim));
+        } catch (RejectedExecutionException rejected) {
+            LOG.log(Level.SEVERE,
+                    "ASIO deferred driver release could not be queued (the teardown"
+                            + " executor is shut down). The driver shim is NOT closed —"
+                            + " its downcalls fail fast while the driver is still"
+                            + " executing, and AsioDriverShim.close() can only be"
+                            + " attempted once — and the release stays pending for the"
+                            + " life of this backend: isReleasePending() keeps answering"
+                            + " true, which is what keeps the engine from opening another"
+                            + " host over the device.",
+                    rejected);
+        }
+    }
+
+    /**
+     * The deferred release itself, run on the teardown executor.
+     *
+     * <p>Issues {@code AsioDriverShim.close()} under
+     * {@link #DRIVER_LIFECYCLE_LOCK} — and decrements
+     * {@link #deferredDriverReleases}, in a {@code finally} — only after
+     * {@link AsioControlThread#awaitQuiescence(Duration)} has seen the driver
+     * return. A wait that expires with the driver still inside the abandoned
+     * call closes nothing and decrements nothing: it logs at
+     * {@link Level#SEVERE} and re-queues itself. Re-queueing rather than
+     * looping inline keeps the single-thread executor free for
+     * {@link #stopStreamingForDriverReset()} teardowns between waits.</p>
+     *
+     * <p>On an interrupted thread {@code awaitQuiescence} returns
+     * {@code false} at once for as long as the driver is still inside the
+     * abandoned call (it still answers {@code true} once the control thread
+     * has quiesced), so re-queueing would spin; the release is then left
+     * pending for the life of the backend instead, exactly as a re-queue the
+     * executor rejects is.</p>
+     */
+    private void awaitQuiescenceThenReleaseDriverShim(AsioDriverShim shim) {
+        if (AsioControlThread.awaitQuiescence(driverReleaseBudget)) {
+            try {
+                synchronized (DRIVER_LIFECYCLE_LOCK) {
+                    shim.close();
+                }
+            } finally {
+                // In a finally, and strictly after the close: the query must
+                // keep answering "pending" for as long as this backend really
+                // owes the release, however the close ends.
+                deferredDriverReleases.decrementAndGet();
+            }
+            return;
+        }
+        if (Thread.currentThread().isInterrupted()) {
+            LOG.log(Level.SEVERE,
+                    "ASIO deferred driver release interrupted while waiting for the"
+                            + " driver to return from its abandoned call. The driver shim"
+                            + " is NOT closed and the release stays pending for the life"
+                            + " of this backend, which is what keeps the engine from"
+                            + " opening another host over the device.");
+            return;
+        }
+        LOG.log(Level.SEVERE,
+                "ASIO driver did not return from its abandoned call within "
+                        + driverReleaseBudget.toSeconds() + " s. The driver shim is NOT"
+                        + " closed — its downcalls would fail fast and spend the single"
+                        + " ASIOExit attempt — and the release stays pending, so"
+                        + " isReleasePending() keeps answering true and the engine does"
+                        + " not open another host over the device. The wait is being"
+                        + " re-queued.");
+        queueDeferredDriverRelease(shim);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>{@code true} while {@link #releaseDriverShim(AsioDriverShim)} has
+     * queued an {@code ASIOExit} it could not issue yet — i.e. while this
+     * backend's {@link #close()} has returned without the driver having been
+     * given back (story 316 re-review).</p>
+     *
+     * <p>The motivating case is a {@code loadDriver} whose bounded budget
+     * expired. {@link AsioDriverShim#loadDriver(String)} then answers
+     * {@code false} while deliberately KEEPING its ownership claim, because a
+     * timeout is not proof the driver failed to initialize — it is most likely
+     * a driver still powering up an interface, which may yet hand this process
+     * an initialized driver. {@link #open(DeviceId, AudioFormat, int)} releases
+     * that candidate — which DEFERS — and throws an ordinary
+     * {@link AudioBackendException}. A caller walking a fallback ladder used to
+     * have no way to tell that hop from any other failed one: this backend's
+     * {@code close()} is then a no-op (no shim was ever adopted) so it
+     * succeeds, and the next rung opens PortAudio or Java Sound over a device
+     * the ASIO driver may still be acquiring. This query is what makes the two
+     * distinguishable — the handle is RETAINED, and the walk must stop rather
+     * than open beside it.</p>
+     *
+     * <p>It clears only once the driver has been given back: the deferred task
+     * decrements the count in a {@code finally} after
+     * {@code AsioDriverShim.close()}, and issues that close only after a wait
+     * that saw the control thread quiesce. A wait that expires re-queues
+     * itself with the count untouched, so this keeps answering {@code true}
+     * for as long as the driver has not returned; a wait that cannot be
+     * re-queued — the teardown executor shut down, or its thread interrupted
+     * — leaves it {@code true} for the life of the backend, with the shim
+     * deliberately unclosed (story 316 review). It is self-clearing in the
+     * sense the contract requires, then: once the queued {@code ASIOExit} has
+     * run this answers {@code false} and the device may be attempted again —
+     * but only then, never merely because time passed. A read of a plain
+     * {@link AtomicInteger} — no lock, no downcall, no arena — so it is safe
+     * on the lifecycle path that asks it immediately after {@code close()}.</p>
+     */
+    @Override
+    public boolean isReleasePending() {
+        return deferredDriverReleases.get() > 0;
     }
 
     /**
@@ -908,9 +1795,21 @@ public final class AsioBackend implements AudioBackend {
                 if (streamingShim != streaming) {
                     return;
                 }
+                // Sampled immediately before each downcall for the same reason
+                // as in tearDownStreaming: a refusal by the host must not be
+                // logged as one by the driver, and a stop() the control thread
+                // has already STARTED and that then outlives its budget is
+                // abandoned in flight — which is what makes the dispose behind
+                // it refused on arrival rather than by the driver. The sample
+                // only PREDICTS: AsioControlThread.call re-reads the gate
+                // itself, and that read is what actually refuses a bounded
+                // operation. Diagnostic only; nothing here frees anything.
+                boolean stopAttempted = AsioControlThread.isQuiesced();
                 boolean stopped = streaming.stop();
+                boolean disposeAttempted = AsioControlThread.isQuiesced();
                 boolean disposed = streaming.disposeBuffers();
-                warnIfDriverRefusedTeardown(stopped, disposed);
+                warnIfDriverRefusedTeardown(
+                        stopped, stopAttempted, disposed, disposeAttempted);
             }
         });
     }

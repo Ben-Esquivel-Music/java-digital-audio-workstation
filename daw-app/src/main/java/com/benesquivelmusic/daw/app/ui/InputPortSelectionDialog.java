@@ -9,22 +9,34 @@ import javafx.scene.control.*;
 import javafx.scene.layout.VBox;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.MissingResourceException;
 import java.util.Optional;
+import java.util.ResourceBundle;
 
 /**
  * Modal dialog for selecting an audio input port when creating or
  * configuring an audio track.
  *
  * <p>Lists all available audio input devices obtained from the audio
- * backend, showing device name, host API, channel count, sample rate,
- * and input latency. The user selects a device and confirms with OK,
- * or cancels to abort.</p>
+ * backend, showing the host-API-qualified device name
+ * ({@link AudioDeviceInfo#qualifiedName()}, story 316 review), channel count,
+ * sample rate, and input latency. The user selects a device and confirms with
+ * OK, or cancels to abort.</p>
  */
 @com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
         "migrate to DawgDialog — story 276 follow-up")
 public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
 
     private static final double HEADER_ICON_SIZE = 24;
+
+    /**
+     * Resource bundle for localized strings (Skill §14) — {@link Locale#ROOT}
+     * to match the codebase-wide convention (see {@code SettingsDialog},
+     * {@code BrowserPanel}, {@code DawgDialog}).
+     */
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 
     private final ListView<AudioDeviceInfo> deviceListView;
 
@@ -87,7 +99,96 @@ public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
     }
 
     /**
+     * The channel-count fragment of a device row. A device whose count is
+     * {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN} — an enumerated ASIO
+     * driver the host has not loaded — says so, rather than rendering the
+     * sentinel as the nonsense "-1 ch" (story 316 review).
+     *
+     * @param device the device being rendered
+     * @return the text to show in the channel column
+     */
+    static String channelSummary(AudioDeviceInfo device) {
+        return device.hasKnownInputChannelCount()
+                ? device.maxInputChannels() + " ch"
+                : "channel count unknown until opened";
+    }
+
+    /**
+     * The sample-rate fragment of a device row (story 316 re-review).
+     *
+     * <p>{@link AudioDeviceInfo#unprobed(int, String, String)} reports
+     * {@code 0.0} here because the record has no unknown sentinel for a
+     * sample rate, and the row used to print that straight through as
+     * "0 Hz" — a fabricated capability for a driver nobody has loaded. A
+     * rate that is not positive is not a rate, so it renders as
+     * {@link #unknownValue()} instead of a number.</p>
+     *
+     * @param device the device being rendered
+     * @return the text to show in the sample-rate column
+     */
+    static String sampleRateSummary(AudioDeviceInfo device) {
+        double hz = device.defaultSampleRate();
+        return hz > 0 ? String.format(Locale.ROOT, "%.0f Hz", hz) : unknownValue();
+    }
+
+    /**
+     * The input-latency fragment of a device row (story 316 re-review) —
+     * same rule as {@link #sampleRateSummary(AudioDeviceInfo)}: an unprobed
+     * driver reports {@code 0.0} ms, and "0.0 ms" is a claim no audio
+     * interface can honour.
+     *
+     * @param device the device being rendered
+     * @return the text to show in the latency column
+     */
+    static String inputLatencySummary(AudioDeviceInfo device) {
+        double ms = device.defaultLowInputLatencyMs();
+        return ms > 0 ? String.format(Locale.ROOT, "%.1f ms", ms) : unknownValue();
+    }
+
+    /**
+     * How this codebase renders a value it does not have: the em dash behind
+     * {@code audio.utility.unavailable}, which the Settings audio utility
+     * panel already shows for an unavailable backend or latency. Reused
+     * rather than forked into a second token so the two surfaces cannot
+     * drift apart.
+     *
+     * @return the shared "no value" token
+     */
+    static String unknownValue() {
+        try {
+            return MESSAGES.getString("audio.utility.unavailable");
+        } catch (MissingResourceException e) {
+            return "audio.utility.unavailable";
+        }
+    }
+
+    /**
      * Custom list cell that displays audio device details.
+     *
+     * <p>The identity column is {@link AudioDeviceInfo#qualifiedName()} (story
+     * 316 review), which folds the former separate {@code name — hostApi} pair
+     * into the one canonical selection label every other surface in the review
+     * now uses. Two effects, both small and both real:</p>
+     * <ul>
+     *   <li>A device with no host API renders as its bare name instead of
+     *       {@code "Some Mic — null"}. {@code hostApi} is not validated
+     *       non-null by the {@link AudioDeviceInfo} record, and the old
+     *       {@code %s} formatted a null straight into the row;
+     *       {@code qualifiedName()} collapses null-or-blank to the bare
+     *       name.</li>
+     *   <li>The label a user reads here is character-for-character the label
+     *       the Audio Settings device menus offer for the same endpoint, so
+     *       the two surfaces cannot describe one device two ways.</li>
+     * </ul>
+     *
+     * <p>Note what this is NOT fixing, because the surrounding review finding
+     * is phrased for surfaces that persist a name: these rows were already
+     * distinguishable when two endpoints share a name, since the host API had
+     * its own column. And this dialog persists {@code device.index()} through
+     * {@code Track.setInputDeviceIndex}, never a name, so no selection here can
+     * be silently substituted for another endpoint. The change is display-only
+     * on purpose; the selection and persistence behaviour belongs to stories
+     * 092 / 215 / 326 (see {@code TrackStripController}).</p>
      */
     private static final class AudioDeviceCell extends ListCell<AudioDeviceInfo> {
         @Override
@@ -97,12 +198,11 @@ public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
                 setText(null);
                 setGraphic(null);
             } else {
-                String text = String.format("%s — %s | %d ch | %.0f Hz | %.1f ms",
-                        device.name(),
-                        device.hostApi(),
-                        device.maxInputChannels(),
-                        device.defaultSampleRate(),
-                        device.defaultLowInputLatencyMs());
+                String text = String.format(Locale.ROOT, "%s | %s | %s | %s",
+                        device.qualifiedName(),
+                        channelSummary(device),
+                        sampleRateSummary(device),
+                        inputLatencySummary(device));
                 setText(text);
                 setGraphic(IconNode.of(DawIcon.MICROPHONE, 14));
             }

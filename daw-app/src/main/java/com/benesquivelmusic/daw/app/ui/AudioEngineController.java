@@ -28,7 +28,25 @@ import java.util.concurrent.Flow;
  */
 public interface AudioEngineController {
 
-    /** Constant backend name used when no native backend is available. */
+    /**
+     * Constant backend name meaning "no backend answers this question".
+     *
+     * <p>{@link #getActiveBackendName()} returns it whenever no STREAM is
+     * open (story 316 review) — which includes the ordinary stopped
+     * transport, with a perfectly available backend provisioned and ready
+     * for the next Play. It is therefore NOT an error value and not a claim
+     * that the host has no usable backend; ask
+     * {@link #getProvisionedBackendName()} for the backend that queries and
+     * configuration should target. That query in turn answers
+     * {@code BACKEND_NONE} only when nothing is provisioned at all, and
+     * {@link #applyConfiguration(Request)} accepts it as a request meaning
+     * "no explicit backend — use the default ladder".</p>
+     *
+     * <p>It is a CONTRACT value, not display text: a surface that shows it
+     * to the user localizes it first (the Settings dialog's "Active
+     * backend" readout maps it to {@code audio.utility.activeBackend.none}).
+     * </p>
+     */
     String BACKEND_NONE = "None";
 
     /**
@@ -97,19 +115,90 @@ public interface AudioEngineController {
         }
     }
 
-    /** Returns the name of the currently active backend, or {@link #BACKEND_NONE}. */
+    /**
+     * Returns the name of the backend whose stream is OPEN, or
+     * {@link #BACKEND_NONE} when no stream is open.
+     *
+     * <p>"Active" is the design book's word for the backend of the open
+     * stream (AUDIO_ENGINE_WIRING_DESIGN_BOOK §3.2 "Backend truth", §5.2
+     * "Reported active backend/device = the open stream's"). OPEN means
+     * RUNNING <em>or PAUSED</em>: a paused stream renders nothing, yet it
+     * still owns the device handle and still holds the driver, so naming
+     * its backend is the true answer — {@code BACKEND_NONE} there would
+     * claim the device is free while it is not. A handle merely RETAINED
+     * after a failed close is not open and is never named.</p>
+     *
+     * <p>This query therefore never names a backend that holds no device —
+     * not the installed provision's head rung after Stop, and not a backend
+     * whose open failed. Use it for DISPLAYING which backend owns the
+     * device; for "which backend should be queried or configured" see
+     * {@link #getProvisionedBackendName()} (story 316 review).</p>
+     */
     String getActiveBackendName();
 
     /**
+     * Returns the name of the backend that queries, enumeration and
+     * configuration should target: the open stream's backend when one is
+     * open, otherwise the installed provision ladder's first rung,
+     * otherwise {@link #BACKEND_NONE}.
+     *
+     * <p>This is the configured / effective backend, distinct from
+     * {@link #getActiveBackendName()} (story 316 review): startup
+     * configuration, device enumeration and live-endpoint resolution need
+     * a backend to query or configure even while the transport is stopped,
+     * and the honest active query answers {@code BACKEND_NONE} then. Never
+     * use this for displaying what is active — a provisioned backend may
+     * not be streaming, and its head rung may differ from the user's
+     * request when that request failed the availability/streaming gate.</p>
+     *
+     * <p>It is a routing target, NOT a prediction of the next open's
+     * winner. Every open re-walks the ladder from rung 0 and nothing
+     * rewrites the provision to whichever rung succeeded, so after a
+     * head-rung failure that a lower rung recovered this reads as the OPEN
+     * backend for as long as that stream lasts, then reverts to the
+     * ladder's head — which the next open will try first all over again.</p>
+     *
+     * <p>The default delegates to {@link #getActiveBackendName()} so
+     * implementations for which the two coincide (test doubles, stubs with
+     * a single fixed backend) need not override it.</p>
+     */
+    default String getProvisionedBackendName() {
+        return getActiveBackendName();
+    }
+
+    /**
      * Returns the list of backend names the user can switch between.
-     * A backend appears only if its native library / runtime is usable on
-     * this system.
+     * A backend appears only if BOTH gates pass: its native library /
+     * runtime is usable on this system, and it can actually stream on this
+     * build.
+     *
+     * <p>The second gate is story 316's: a backend that is available but
+     * whose {@code sink()} would discard every block is deliberately absent,
+     * because offering it would let the user select a stream that is silent
+     * by construction. Today that hides WASAPI, CoreAudio and JACK
+     * everywhere (their streaming path is not implemented yet), and hides
+     * ASIO on a host whose native {@code asioshim} is PRESENT — so ASIO
+     * reports itself available there — but was built without the story-311
+     * streaming symbols, or predates them. A host with no {@code asioshim}
+     * at all fails the FIRST gate instead: availability needs the shim's
+     * enumeration and lifecycle symbols, so a missing shim is an
+     * availability drop and only a stale one is a streaming-gate drop
+     * (story 316 review).</p>
      */
     List<String> getAvailableBackendNames();
 
     /**
-     * Returns all audio devices reported by the currently active backend.
-     * Returns an empty list when no backend is active.
+     * Returns all audio devices reported by the PROVISIONED backend — the
+     * one {@link #getProvisionedBackendName()} names: the open stream's
+     * backend while a stream is open, otherwise the installed ladder's head
+     * rung. That head is a routing target, not a prediction of which rung
+     * the next open will win on — every open re-walks the ladder from rung
+     * 0. Story 316 review: it is deliberately not the ACTIVE
+     * backend, because the Settings dialog must be able to enumerate
+     * devices while the transport is stopped, when
+     * {@link #getActiveBackendName()} honestly answers
+     * {@link #BACKEND_NONE}. Returns an empty list when nothing is
+     * provisioned or the backend fails to enumerate.
      */
     List<AudioDeviceInfo> listDevices();
 
@@ -199,15 +288,38 @@ public interface AudioEngineController {
      *
      * @param outputDeviceName preferred device name for the tone, or empty
      *                         for the JVM default mixer
-     * @throws RuntimeException if the tone cannot be played
+     * @throws IllegalArgumentException if a non-blank {@code outputDeviceName}
+     *                                  names no Java Sound mixer, or names more
+     *                                  than one (story 316 review follow-up):
+     *                                  the selection is refused, synchronously,
+     *                                  rather than played on the JVM default or
+     *                                  on the first of several same-named
+     *                                  mixers. That
+     *                                  includes every selection made under a
+     *                                  backend other than Java Sound — an ASIO
+     *                                  driver name is never a Java Sound mixer
+     *                                  name. A line-open failure
+     *                                  ({@code LineUnavailableException} /
+     *                                  {@code IllegalArgumentException})
+     *                                  happens after this method has returned
+     *                                  and is logged, not thrown.
      */
     void playTestTone(String outputDeviceName);
 
     /**
-     * Returns an action that launches the active backend's native
-     * driver control panel, or {@link Optional#empty()} when the
-     * active backend has no native panel (for example {@code JACK} or
-     * the test {@code Mock} backend).
+     * Returns an action that launches the PROVISIONED backend's native
+     * driver control panel, or {@link Optional#empty()} when that
+     * backend has no native panel (for example {@code JACK} or the test
+     * {@code Mock} backend).
+     *
+     * <p>Provisioned, not active (story 316 review): the implementation
+     * resolves the engine's reporting backend — the open stream's while
+     * one is open, otherwise the installed ladder's head rung — exactly
+     * as {@link #getProvisionedBackendName()} does. Driver settings are
+     * what a user reaches for while the transport is STOPPED, which is
+     * precisely when {@link #getActiveBackendName()} answers
+     * {@link #BACKEND_NONE}; sourcing the panel from the active fact
+     * would make the action disappear after every Stop.</p>
      *
      * <p>Audio surfaces use this to enable or disable an
      * "Open Driver Control Panel" action. The returned runnable
@@ -251,7 +363,7 @@ public interface AudioEngineController {
     }
 
     /**
-     * Returns the buffer-size range the active backend allows for the
+     * Returns the buffer-size range the NAMED backend allows for the
      * named output device. The Audio Settings dialog (story 098 +
      * story 213) uses this to populate the buffer-size dropdown with
      * driver-allowed values only.
@@ -271,7 +383,7 @@ public interface AudioEngineController {
     }
 
     /**
-     * Returns the set of sample rates (in Hz) the active backend's
+     * Returns the set of sample rates (in Hz) the NAMED backend's
      * named output device can operate at. The Audio Settings dialog
      * uses this to grey out unsupported rates in the canonical menu
      * and to fall back to the device's preferred rate when a
@@ -375,8 +487,13 @@ public interface AudioEngineController {
     /**
      * Returns the per-device calibration override (in sample frames)
      * the user accepted via {@code LatencyCalibrationDialog} for the
-     * currently opened device, or {@link Optional#empty()} when no
-     * override is active for that device. The
+     * currently WATCHED device — the endpoint last passed to
+     * {@link #bindBackendDeviceEvents(AudioBackend, DeviceId)}, which need
+     * not have an open stream — or {@link Optional#empty()} when no
+     * override is set for that endpoint. Calibration is performed with the
+     * transport stopped, so keying it on an open stream would make every
+     * override taken from a stopped transport unreadable (story 316
+     * review). The
      * {@code IoLatencyDetailsPopup} uses this to choose between the
      * <em>"reported by driver"</em> and <em>"calibrated by user"</em>
      * source-label badges.
@@ -392,11 +509,16 @@ public interface AudioEngineController {
 
     /**
      * Sets (or clears) the per-device calibration override for the
-     * currently opened device. Pass {@link Optional#empty()} to clear
+     * currently WATCHED device. Pass {@link Optional#empty()} to clear
      * the override and return to the driver-reported value.
      *
-     * <p>The override is keyed by the active {@link DeviceId} so it
-     * does not bleed across devices within the same session.
+     * <p>The override is keyed by the watched {@link DeviceId} — the
+     * endpoint last bound through
+     * {@link #bindBackendDeviceEvents(AudioBackend, DeviceId)}, open stream
+     * or not — so it does not bleed across devices within the same session.
+     * Deliberately not the open stream's device (story 316 review): this is
+     * called from the calibration dialog with the transport STOPPED, when
+     * no stream is open at all.
      * Implementations store the value in memory; the
      * {@code MainController} persists it to
      * {@code AudioSettingsStore.latencyOverrideFramesByDeviceKey}
@@ -416,7 +538,7 @@ public interface AudioEngineController {
     }
 
     /**
-     * Returns the hardware clock sources the active backend's named
+     * Returns the hardware clock sources the NAMED backend's
      * output device exposes. The Audio Settings dialog renders this as
      * a combo box; an empty list disables the combo and tooltips it
      * "this backend does not expose clock-source selection".
@@ -435,7 +557,7 @@ public interface AudioEngineController {
     }
 
     /**
-     * Asks the active backend to lock the named output device to the
+     * Asks the NAMED backend to lock the named output device to the
      * clock source whose id is {@code sourceId}. The dialog calls this
      * when the user picks a new entry in the Clock Source combo. After
      * a successful selection the dialog re-queries
@@ -456,7 +578,7 @@ public interface AudioEngineController {
     }
 
     /**
-     * Asks the active backend to switch the named output device to the
+     * Asks the NAMED backend to switch the named output device to the
      * given sample rate. The Audio Settings dialog calls this when the
      * user picks a new entry in the Sample Rate combo, *before*
      * persisting the value to the {@link SettingsModel}, so that a
@@ -483,11 +605,19 @@ public interface AudioEngineController {
     /**
      * Returns a {@link Flow.Publisher} that emits a
      * {@link com.benesquivelmusic.daw.sdk.audio.ClockLockEvent} every
-     * time the active backend reports a change in external-clock lock
-     * state. The transport-bar clock-status indicator subscribes to
-     * this so it can flash red on lock failure; the engine
-     * additionally pauses recording (not playback) on a lock-loss
-     * event.
+     * time a driver reports a change in external-clock lock state. The
+     * transport-bar clock-status indicator subscribes to this so it can
+     * flash red on lock failure; the engine additionally pauses
+     * recording (not playback) on a lock-loss event.
+     *
+     * <p>Story 316 review — deliberately not called "the ACTIVE backend's"
+     * events: this seam names no backend and takes no backend name, and no
+     * production implementation overrides it, so the publisher every caller
+     * gets today is the never-emitting default below. Only a driver that
+     * holds the device can report clock lock, so an implementation that
+     * forwards real events must forward those of the backend carrying the
+     * OPEN stream ({@link AudioBackend#clockLockEvents()}, the active fact
+     * of book &sect;3.2) and re-bind that subscription on every open.</p>
      *
      * <p>The default implementation returns an empty publisher that
      * never emits, which is safe for test doubles.</p>
@@ -509,24 +639,36 @@ public interface AudioEngineController {
      * to {@code DeviceArrived}, {@code DeviceRemoved}, and
      * {@code DeviceFormatChanged}.
      *
-     * <p>On {@code DeviceRemoved} for the active device, the controller
-     * transitions to {@link EngineState#DEVICE_LOST}, halts the render
-     * thread, persists the in-flight recording take to
-     * {@code .daw/incomplete-takes/}, and notifies the user. On a
-     * matching {@code DeviceArrived}, the stream is reopened with the
-     * previously configured format and the engine returns to
-     * {@link EngineState#STOPPED}.</p>
+     * <p>Binding is a WATCH, not a claim that {@code watchedDevice} is
+     * ACTIVE (story 316 review). Callers bind it BEFORE any stream exists —
+     * {@link #applyConfiguration(Request)} binds the provisioned first rung
+     * while the engine is stopped — so that the configured endpoint's
+     * hot-plug is noticed at all; an implementation must therefore treat
+     * "is a stream open" as a separate fact and not infer it from having
+     * been bound.</p>
+     *
+     * <p>On {@code DeviceRemoved} for the watched device <em>while a stream
+     * is open on it</em>, the controller transitions to
+     * {@link EngineState#DEVICE_LOST}, halts the render thread, persists the
+     * in-flight recording take to {@code .daw/incomplete-takes/}, and
+     * notifies the user. A removal with no stream open is a routine unplug
+     * of an idle endpoint and changes no state. On a matching
+     * {@code DeviceArrived} after {@code DEVICE_LOST}, the stream is
+     * reopened with the previously configured format and the engine returns
+     * to {@link EngineState#STOPPED} — which is why the subscription and the
+     * watched identity deliberately survive the close that
+     * {@code DEVICE_LOST} performs.</p>
      *
      * <p>The default implementation is a no-op which is safe for test
      * stubs.</p>
      *
      * @param backend       the backend whose hot-plug events to consume;
      *                      must not be null
-     * @param activeDevice  the currently opened device (the one whose
-     *                      removal should trigger {@code DEVICE_LOST});
-     *                      must not be null
+     * @param watchedDevice the endpoint whose hot-plug events are matched —
+     *                      the provisioned rung while stopped, the open
+     *                      stream's device once one is open; must not be null
      */
-    default void bindBackendDeviceEvents(AudioBackend backend, DeviceId activeDevice) {
+    default void bindBackendDeviceEvents(AudioBackend backend, DeviceId watchedDevice) {
         // no-op for test stubs
     }
 

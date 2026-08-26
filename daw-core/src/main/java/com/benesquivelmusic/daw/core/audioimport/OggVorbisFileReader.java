@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audioimport;
 
+import com.benesquivelmusic.daw.core.audio.NativeAbi;
 import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
 
 import java.io.IOException;
@@ -33,22 +34,10 @@ import java.util.Objects;
 public final class OggVorbisFileReader {
 
     // Platform-aware C ABI type for 'long' — 8 bytes on Linux/macOS x86_64,
-    // 4 bytes on Windows x86_64 (LLP64 model).
-    static final ValueLayout C_LONG = resolveCLongLayout();
-
-    private static ValueLayout resolveCLongLayout() {
-        MemoryLayout longLayout = Linker.nativeLinker().canonicalLayouts().get("long");
-        if (longLayout == null) {
-            throw new UnsupportedOperationException(
-                    "Native C ABI layout for 'long' is not available from the platform linker");
-        }
-        if (!(longLayout instanceof ValueLayout valueLayout)) {
-            throw new UnsupportedOperationException(
-                    "Native C ABI layout for 'long' is not a ValueLayout: "
-                            + longLayout.getClass().getName());
-        }
-        return valueLayout;
-    }
+    // 4 bytes on Windows x86_64 (LLP64 model). Resolved by NativeAbi, which
+    // owns the linker lookup for the whole codebase (story 316 re-review), so
+    // this reader and the exporter cannot end up disagreeing about it.
+    static final ValueLayout C_LONG = NativeAbi.C_LONG;
 
     // vorbis_info field offsets — we only need 'channels' (int at offset 4)
     // and 'rate' (C long at offset 8) from the struct returned by ov_info.

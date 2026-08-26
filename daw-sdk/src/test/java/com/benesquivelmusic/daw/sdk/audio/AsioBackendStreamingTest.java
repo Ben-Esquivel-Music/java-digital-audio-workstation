@@ -10,10 +10,13 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -66,6 +69,19 @@ class AsioBackendStreamingTest {
     private boolean startSucceeds = true;
     private boolean stopSucceeds = true;
     private boolean disposeSucceeds = true;
+    /**
+     * Whether {@code uninstallBufferSwitchCallback} reports that the shim's
+     * registered buffer-switch callback is provably no longer the upcall
+     * stub's address. {@code false} stands in for every way that call can fail
+     * to be confirmed — the shim already closed so the call is not made,
+     * refused on arrival by {@code AsioControlThread}'s fail-fast gate,
+     * withdrawn or abandoned when its own budget expired, interrupted, or
+     * failed at the FFM boundary — because the backend's decision about the
+     * upcall stub cannot tell them apart and must not try. None of them
+     * involve the vendor driver: the native uninstall nulls a pointer and
+     * drains in-flight callbacks without entering the ASIO SDK.
+     */
+    private boolean uninstallSucceeds = true;
     private boolean resetFromInsideCreateBuffers;
 
     // Capture of AsioBackend's own logger, for the teardown-refusal warnings.
@@ -176,6 +192,87 @@ class AsioBackendStreamingTest {
         assertWarningLogged("refused ASIOStop during teardown", "Driver A");
     }
 
+    /**
+     * Story 316 review (round 3): the one decision in this teardown that can
+     * crash the process reads the UNINSTALL'S OWN outcome, not a quiescence
+     * sample taken around it.
+     *
+     * <p>The defect this pins: {@code tearDownStreaming} used to return a
+     * {@code AsioControlThread.isQuiesced()} sample taken before the downcalls.
+     * A {@code stop()} the control thread has already STARTED and that then
+     * outlives its budget is abandoned in flight, which makes the
+     * {@code disposeBuffers()} and the uninstall behind it refused on
+     * arrival — yet the pre-sample still said {@code true}, so {@code close()}
+     * freed the upcall stub's arena while the shim's registered buffer-switch
+     * callback was still the stub's address. The next {@code bufferSwitch},
+     * arriving at the shim's trampoline and forwarding through that pointer,
+     * would then jump into released memory. Re-sampling AFTER the uninstall is
+     * no fix either: the abandoned call returns and the sample flips back to
+     * {@code true}.</p>
+     *
+     * <p>The stub this test leaves mapped is never reclaimed. That permanent,
+     * bounded leak <em>is</em> the behaviour under test — it is exactly the
+     * trade {@code AsioBufferSwitchShim.closeRetainingUpcallStub()} documents:
+     * a leaked stub costs memory, a freed-but-installed stub costs the
+     * process.</p>
+     */
+    @Test
+    void anUnconfirmedUninstallRetainsTheUpcallStubsArena() {
+        uninstallSucceeds = false;
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        MemorySegment stub = backend.activeBufferSwitchShim().upcallStub();
+        assertThat(stub.equals(MemorySegment.NULL))
+                .as("a NULL stub would make the scope assertions meaningless")
+                .isFalse();
+        assertThat(stub.scope().isAlive()).isTrue();
+        calls.clear();
+
+        backend.close();
+
+        assertThat(stub.scope().isAlive())
+                .as("the shim's registered buffer-switch callback may still be "
+                        + "this address, so the arena must NOT be freed — leaking "
+                        + "it beats crashing on the next bufferSwitch")
+                .isTrue();
+        assertThat(calls)
+                .as("the rest of the teardown still runs to completion")
+                .containsExactly(
+                        "stop", "disposeBuffers", "uninstallBufferSwitchCallback",
+                        "close", "unload");
+        assertThat(logRecords)
+                .as("the deliberate leak is loud: SEVERE, because nothing later "
+                        + "in this process can reclaim that arena")
+                .anySatisfy(record -> {
+                    assertThat(record.getLevel()).isEqualTo(Level.SEVERE);
+                    assertThat(record.getMessage())
+                            .contains("ASIO upcall stub RETAINED", "Driver A");
+                });
+    }
+
+    /**
+     * The mirror of {@link #anUnconfirmedUninstallRetainsTheUpcallStubsArena()}
+     * on the same observable: a CONFIRMED uninstall means no callback can reach
+     * the stub any more, so the arena is freed rather than leaked. Without this
+     * pair, a {@code tearDownStreaming} that simply always retained would pass
+     * the retention test while leaking a stub on every close.
+     */
+    @Test
+    void aConfirmedUninstallFreesTheUpcallStubsArena() {
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        MemorySegment stub = backend.activeBufferSwitchShim().upcallStub();
+        assertThat(stub.equals(MemorySegment.NULL))
+                .as("a NULL stub would make the scope assertions meaningless")
+                .isFalse();
+        assertThat(stub.scope().isAlive()).isTrue();
+
+        backend.close();
+
+        assertThat(stub.scope().isAlive())
+                .as("uninstallBufferSwitchCallback answered true: the shim's "
+                        + "registered callback is provably no longer this address")
+                .isFalse();
+    }
+
     @Test
     void closeIsIdempotent() {
         backend.open(DRIVER_A, FORMAT, FRAMES);
@@ -258,15 +355,44 @@ class AsioBackendStreamingTest {
                 .contains("createBuffers:in=[]:out=[0, 1]:frames=128");
     }
 
+    /**
+     * Story 316 re-review — a capture-only driver FAILS this rung instead of
+     * opening a stream nobody can hear.
+     *
+     * <p>This test used to assert the opposite: that the backend opened with
+     * {@code out=[]} and {@link AsioBackend#isOpen()} true. Everything
+     * downstream then succeeds — {@code ASIOCreateBuffers} accepts the inputs
+     * alone, {@code getBufferInfos()} is non-empty, and the bridge advances
+     * {@code renderedBlocksConsumedByDriver()} while every output buffer is
+     * {@code MemorySegment.NULL} — so the failure is invisible to the engine
+     * and to the Windows integration proof alike. {@code open()} is a PLAYBACK
+     * open; the ladder must see this rung fail and fall through, exactly as it
+     * does when {@code JavaxSoundBackend}'s mandatory output line cannot be
+     * opened.</p>
+     */
     @Test
-    void aCaptureOnlyDriverIsAskedForNoOutputChannels() {
+    void aCaptureOnlyDriverFailsTheRungInsteadOfOpeningASilentStream() {
         AsioBackend.setCapabilityShimFactory(
                 () -> StubCapabilityShim.withChannels(8, 0));
 
-        backend.open(DRIVER_A, FORMAT, FRAMES);
-
-        assertThat(backend.isOpen()).isTrue();
-        assertThat(calls).contains("createBuffers:in=[0, 1]:out=[]:frames=128");
+        assertThatThrownBy(() -> backend.open(DRIVER_A, FORMAT, FRAMES))
+                .as("a playback open negotiated down to zero outputs must fail the"
+                        + " rung, naming the driver and the counts that did it")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no output channels")
+                .hasMessageContaining("8 input(s) / 0 output(s)")
+                .hasMessageContaining("Driver A");
+        assertThat(backend.isOpen())
+                .as("a rung that failed must not be left open")
+                .isFalse();
+        assertThat(driver.unloaded)
+                .as("the driver acquired by this rung is given back before the ladder"
+                        + " walks on")
+                .isTrue();
+        assertThat(calls)
+                .as("the refusal must happen before ASIOCreateBuffers, not after a"
+                        + " half-created buffer set")
+                .noneMatch(call -> call.startsWith("createBuffers"));
     }
 
     @Test
@@ -277,6 +403,33 @@ class AsioBackendStreamingTest {
         backend.open(DRIVER_A, FORMAT, FRAMES);
 
         assertThat(calls).contains("createBuffers:in=[0]:out=[0]:frames=128");
+        assertThat(backend.isOpen())
+                .as("a PARTIAL output shortfall is still a clamp, not a failure"
+                        + " (story 316 re-review): a driver with fewer outputs than the"
+                        + " format asks for carries audio on the outputs it does have,"
+                        + " and only a TOTAL absence of outputs fails the rung")
+                .isTrue();
+    }
+
+    /**
+     * Story 316 re-review — the zero-output guard reads the DRIVER's reported
+     * count, so a host that reports none is untouched by it.
+     *
+     * <p>{@code driverChannelCounts()} answers empty on every non-Windows host,
+     * on a Windows build without the Steinberg SDK, and whenever
+     * {@code ASIOGetChannels} itself fails. {@code outputs} then stays at the
+     * requested channel count and the guard cannot fire — a regression that
+     * keyed the guard off the clamped value alone would refuse every one of
+     * those hosts.</p>
+     */
+    @Test
+    void aDriverThatReportsNoChannelCountsOpensTheFullRequestedSet() {
+        AsioBackend.setCapabilityShimFactory(StubCapabilityShim::withNothingReported);
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.isOpen()).isTrue();
+        assertThat(calls).contains("createBuffers:in=[0, 1]:out=[0, 1]:frames=128");
     }
 
     @Test
@@ -330,7 +483,10 @@ class AsioBackendStreamingTest {
                 "stop", "disposeBuffers", "uninstallBufferSwitchCallback",
                 "close", "unload");
         assertThat(backend.activeFormatChangeShim())
-                .as("a failed open must not leave the asioMessage upcall registered")
+                .as("a failed open must clear the backend's asioMessage shim"
+                        + " reference (the native registration itself is gone only"
+                        + " when the uninstall was CONFIRMED; an unconfirmed"
+                        + " uninstall retains the stub's arena — see rollbackOpen)")
                 .isNull();
     }
 
@@ -456,6 +612,204 @@ class AsioBackendStreamingTest {
                 .isInstanceOf(AudioBackendException.class)
                 .hasMessageContaining("rejected block size 64")
                 .hasMessageContaining("128 frames per buffer");
+    }
+
+    // ------------------------------------------------------------------
+    // supportsStreaming() — the selector's streaming gate (story 316 review)
+    // ------------------------------------------------------------------
+
+    /**
+     * The reviewer's scenario: the enumeration / lifecycle symbols resolve
+     * ({@code isAvailable()} is true) but the shim lacks the story-311
+     * streaming symbols. {@code open()} would degrade to the silent story-310
+     * path, so the flag must say "no" and keep ASIO out of the offered list.
+     */
+    @Test
+    void supportsStreamingIsFalseWhenTheStreamingShimIsUnusable() {
+        streamingAvailable = false;
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(backend.supportsStreaming()).isFalse();
+    }
+
+    @Test
+    void supportsStreamingIsTrueWhenTheStreamingShimExportsEveryStreamingSymbol() {
+        assertThat(backend.supportsStreaming()).isTrue();
+    }
+
+    @Test
+    void supportsStreamingClosesItsProbeShimSoNoArenaLeaks() {
+        backend.supportsStreaming();
+        assertThat(calls)
+                .as("the usable probe shim must be released after the query")
+                .containsExactly("close");
+
+        calls.clear();
+        streamingAvailable = false;
+        backend.supportsStreaming();
+        assertThat(calls)
+                .as("the unusable probe shim must be released after the query")
+                .containsExactly("close");
+    }
+
+    @Test
+    void supportsStreamingIsFalseWhenTheStreamingShimFactoryThrows() {
+        AsioBackend.setStreamingShimFactory(() -> {
+            throw new UnsupportedOperationException("no native access");
+        });
+
+        assertThat(backend.supportsStreaming()).isFalse();
+    }
+
+    /**
+     * End-to-end through the real selector: with the lifecycle probe passing
+     * and the streaming probe failing, ASIO must drop out of
+     * {@link AudioBackendSelector#availableBackends()} and never become the
+     * default; with both passing it is offered. The real backend is keyed on
+     * the head of THIS host's preference order rather than on a hard-coded
+     * {@link AsioBackend#NAME}, because the selector only probes names its OS
+     * preference walk visits: the head is ASIO on Windows and the platform's
+     * own first rung on the Linux / macOS CI runners, so the same assertions
+     * describe the streaming gate wherever the suite runs.
+     */
+    @Test
+    void selectorDropsAsioFromTheOfferedListWhenTheStreamingShimIsUnusable() {
+        String head = new AudioBackendSelector().preferenceOrderForCurrentOs().get(0);
+        assumeFalse(JavaxSoundBackend.NAME.equals(head),
+                "this host's preference order has no non-Java-Sound rung for ASIO to stand in for");
+
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        factories.put(head, AsioBackend::new);
+        factories.put(JavaxSoundBackend.NAME, JavaxSoundBackend::new);
+        AudioBackendSelector selector = new AudioBackendSelector(factories);
+
+        assertThat(selector.availableBackends()).contains(head);
+
+        streamingAvailable = false;
+
+        assertThat(selector.availableBackends())
+                .as("an ASIO whose open() would be silent must not be offered")
+                .doesNotContain(head)
+                .contains(JavaxSoundBackend.NAME);
+        assertThat(selector.defaultBackendName()).isNotEqualTo(head);
+    }
+
+    // ------------------------------------------------------------------
+    // renderedBlocksConsumedByDriver() (story 316 review)
+    // ------------------------------------------------------------------
+
+    @Test
+    void renderedBlocksConsumedByDriverIsZeroWhileClosed() {
+        assertThat(backend.renderedBlocksConsumedByDriver()).isZero();
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        backend.close();
+
+        assertThat(backend.renderedBlocksConsumedByDriver())
+                .as("no bridge after close: the query must answer 0, not throw")
+                .isZero();
+    }
+
+    @Test
+    void renderedBlocksConsumedByDriverIsZeroWhenOpenedWithoutAStreamingShim() {
+        streamingAvailable = false;
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.activeBufferSwitchShim()).isNull();
+        assertThat(backend.renderedBlocksConsumedByDriver()).isZero();
+    }
+
+    @Test
+    void renderedBlocksConsumedByDriverReportsTheActiveBridgesCount() {
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        assertThat(backend.renderedBlocksConsumedByDriver()).isZero();
+
+        backend.activeBufferSwitchShim().bufferSwitch(0, 1);
+        assertThat(backend.renderedBlocksConsumedByDriver())
+                .as("a callback that found nothing rendered emitted silence")
+                .isZero();
+
+        backend.sink(AudioBlock.silence(48_000.0, 2, FRAMES));
+        backend.activeBufferSwitchShim().bufferSwitch(1, 1);
+        assertThat(backend.renderedBlocksConsumedByDriver()).isEqualTo(1L);
+    }
+
+    // ------------------------------------------------------------------
+    // openedInputChannels() (story 316 review)
+    // ------------------------------------------------------------------
+
+    @Test
+    void openedInputChannelsIsZeroWhileClosed() {
+        assertThat(backend.openedInputChannels()).isZero();
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        backend.close();
+
+        assertThat(backend.openedInputChannels())
+                .as("no bridge after close: the query must answer 0, not throw")
+                .isZero();
+    }
+
+    @Test
+    void openedInputChannelsIsZeroWhenOpenedWithoutAStreamingShim() {
+        // The story-310 path: the backend opens, publishes device events, and
+        // streams nothing at all. Claiming capture channels there would be the
+        // silent take the REQUIRED contract exists to refuse.
+        streamingAvailable = false;
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.activeBufferSwitchShim()).isNull();
+        assertThat(backend.openedInputChannels()).isZero();
+    }
+
+    @Test
+    void openedInputChannelsCountsTheChannelsTheDriverBoundBuffersFor() {
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.openedInputChannels())
+                .as("both input descriptors came back with usable buffers")
+                .isEqualTo(2);
+    }
+
+    @Test
+    void openedInputChannelsIgnoresInputDescriptorsWithNoUsableBuffer() {
+        // The distinction the REQUIRED contract turns on: ASIOCreateBuffers was
+        // asked for two inputs and ACCEPTED, but the driver handed back a null
+        // buffer pair for one of them. The bridge memsets that channel to zero
+        // on every callback, so counting the REQUEST would promise capture the
+        // very next bufferSwitch contradicts.
+        bufferInfos = List.of(
+                new AsioStreamingShim.BufferInfo(0, true, FLOAT32_LSB,
+                        inputBuffers[0][0].address(), inputBuffers[1][0].address()),
+                new AsioStreamingShim.BufferInfo(1, true, FLOAT32_LSB, 0L, 0L),
+                new AsioStreamingShim.BufferInfo(0, false, FLOAT32_LSB,
+                        outputBuffers[0][0].address(), outputBuffers[1][0].address()),
+                new AsioStreamingShim.BufferInfo(1, false, FLOAT32_LSB,
+                        outputBuffers[0][1].address(), outputBuffers[1][1].address()));
+
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+
+        assertThat(backend.openedInputChannels())
+                .as("only the channel the driver really bound counts")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void openedInputChannelsIsZeroOnceADriverResetHasQuiescedTheBridge() {
+        // A kAsioResetRequest teardown stops the bridge but deliberately leaves
+        // the backend OPEN (story 218): the consumer must close() and reopen.
+        // A quiesced bridge reads no driver buffer, so it captures nothing.
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        assertThat(backend.openedInputChannels()).isEqualTo(2);
+
+        backend.stopStreamingForDriverReset();
+
+        assertThat(backend.isOpen())
+                .as("the story-218 contract: the reset does not close the backend")
+                .isTrue();
+        assertThat(backend.openedInputChannels())
+                .as("but it must not keep promising capture from a stopped bridge")
+                .isZero();
     }
 
     // ------------------------------------------------------------------
@@ -851,8 +1205,9 @@ class AsioBackendStreamingTest {
         }
 
         @Override
-        void uninstallBufferSwitchCallback() {
+        boolean uninstallBufferSwitchCallback() {
             calls.add("uninstallBufferSwitchCallback");
+            return uninstallSucceeds;
         }
 
         @Override
@@ -931,6 +1286,14 @@ class AsioBackendStreamingTest {
         static StubCapabilityShim withChannels(int inputs, int outputs) {
             return new StubCapabilityShim(Optional.empty(),
                     Optional.of(new int[] {inputs, outputs}));
+        }
+
+        /**
+         * Available, but with nothing to report — what every non-Windows host
+         * and every {@code ASIOGetChannels} failure looks like to the backend.
+         */
+        static StubCapabilityShim withNothingReported() {
+            return new StubCapabilityShim(Optional.empty(), Optional.empty());
         }
 
         @Override

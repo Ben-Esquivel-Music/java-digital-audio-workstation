@@ -2,14 +2,16 @@ package com.benesquivelmusic.daw.core.audio.harness;
 
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.EngineBinder;
+import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback;
-import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
-import com.benesquivelmusic.daw.sdk.audio.BufferSize;
-import com.benesquivelmusic.daw.sdk.audio.SampleRate;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.Random;
 
@@ -34,9 +36,18 @@ import java.util.Random;
  *   <li>A fixed random seed (default {@value #DEFAULT_SEED}) is exposed via
  *       {@link #getRandom()} for tests that need pseudo-random input signals
  *       or parameter jitter.</li>
- *   <li>All processing happens synchronously on the calling thread — no
- *       wall-clock jitter from scheduling affects the rendered audio.</li>
+ *   <li>All processing happens synchronously on the calling thread — the
+ *       harness drives {@code engine.processBlock} directly (the
+ *       {@code EngineBinderPlaybackTest} precedent), so no render-pump
+ *       thread or scheduling jitter can affect the rendered audio. This is
+ *       what keeps golden-file comparisons byte-exact after the story-316
+ *       streaming consolidation.</li>
  * </ul>
+ *
+ * <p>A {@link HeadlessAudioBackend} is installed as the engine's streaming
+ * provision so engine code that consults {@code getBackend()} sees a real
+ * (headless) backend — but the harness never opens a stream on it; the
+ * drive is synchronous by design.</p>
  *
  * <h2>Timeouts</h2>
  * <p>{@link #renderRange(long, long)} enforces a wall-clock budget
@@ -64,6 +75,21 @@ public final class HeadlessAudioHarness implements AutoCloseable {
     private long seed = DEFAULT_SEED;
     private Random random = new Random(seed);
 
+    // Captured output: one float[channels][frames] snapshot per rendered
+    // block, plus the frame count within the current renderRange call (fed
+    // to the input generator for phase tracking; reset per render so
+    // repeated renders of the same range are byte-identical).
+    private final List<float[][]> capturedBlocks = new ArrayList<>();
+    private int capturedFrames;
+
+    // Optional input generator invoked before each block to fill the input
+    // buffer (e.g., a sine generator for self-tests).
+    private InputGenerator inputGenerator = (in, numFrames, framesRendered) -> {
+        for (float[] channel : in) {
+            Arrays.fill(channel, 0, numFrames, 0f);
+        }
+    };
+
     /**
      * Creates a harness using the given audio format.
      *
@@ -72,7 +98,10 @@ public final class HeadlessAudioHarness implements AutoCloseable {
     public HeadlessAudioHarness(AudioFormat format) {
         this.format = Objects.requireNonNull(format, "format");
         this.engine = new AudioEngine(format);
-        this.engine.setAudioBackend(backend);
+        this.engine.setStreamingProvision(new StreamingProvision(
+                HeadlessAudioBackend.NAME,
+                List.of(new BackendStreamRung(
+                        backend, DeviceId.defaultFor(HeadlessAudioBackend.NAME)))));
         this.binder = new EngineBinder(engine);
     }
 
@@ -148,8 +177,8 @@ public final class HeadlessAudioHarness implements AutoCloseable {
      * @param generator the generator (must not be {@code null})
      * @return this harness
      */
-    public HeadlessAudioHarness setInputGenerator(HeadlessAudioBackend.InputGenerator generator) {
-        backend.setInputGenerator(generator);
+    public HeadlessAudioHarness setInputGenerator(InputGenerator generator) {
+        this.inputGenerator = Objects.requireNonNull(generator, "generator");
         return this;
     }
 
@@ -159,8 +188,9 @@ public final class HeadlessAudioHarness implements AutoCloseable {
      * Renders the frames in the half-open range {@code [startFrame, endFrame)}
      * and returns them as a {@code double[channels][frames]} buffer.
      *
-     * <p>The harness drives the audio engine synchronously and captures
-     * every output block. If the session exposes a {@link com.benesquivelmusic.daw.core.transport.Transport},
+     * <p>The harness drives {@code engine.processBlock} synchronously,
+     * block by block, and captures every output block. If the session
+     * exposes a {@link com.benesquivelmusic.daw.core.transport.Transport},
      * it is repositioned to {@code startFrame} before rendering begins.</p>
      *
      * @param startFrame the first frame to render (inclusive, {@code >= 0})
@@ -179,8 +209,10 @@ public final class HeadlessAudioHarness implements AutoCloseable {
             throw new IllegalArgumentException("Range too large: " + frameCount);
         }
 
-        ensureStarted();
-        backend.clearCapturedOutput();
+        engine.start();
+        capturedBlocks.clear();
+        capturedFrames = 0;
+        int framesThisRender = 0;
 
         // Re-position the transport if a project is loaded. Our transport
         // works in beats; translate frames → beats using the initial tempo.
@@ -195,14 +227,35 @@ public final class HeadlessAudioHarness implements AutoCloseable {
         long start = System.nanoTime();
         long budgetNanos = computeBudgetNanos(frameCount);
 
-        // Drive the backend block-by-block so we can check the wall-clock
-        // budget between blocks instead of only at the very end.
+        int channels = format.channels();
         int blockSize = format.bufferSize();
+        float[][] input = new float[channels][blockSize];
+        float[][] output = new float[channels][blockSize];
+
         int remaining = (int) frameCount;
         while (remaining > 0) {
             int thisBlock = Math.min(blockSize, remaining);
-            backend.drive(thisBlock);
+
+            for (int ch = 0; ch < channels; ch++) {
+                Arrays.fill(output[ch], 0, thisBlock, 0f);
+            }
+            // Pass the frame offset within this render so input generators
+            // can produce phase-continuous signals block over block.
+            inputGenerator.generate(input, thisBlock, capturedFrames);
+
+            engine.processBlock(input, output, thisBlock);
+
+            // Snapshot the rendered block so the next iteration does not
+            // overwrite captured data.
+            float[][] snapshot = new float[channels][thisBlock];
+            for (int ch = 0; ch < channels; ch++) {
+                System.arraycopy(output[ch], 0, snapshot[ch], 0, thisBlock);
+            }
+            capturedBlocks.add(snapshot);
+
             remaining -= thisBlock;
+            capturedFrames += thisBlock;
+            framesThisRender += thisBlock;
 
             long elapsed = System.nanoTime() - start;
             if (budgetNanos > 0 && elapsed > budgetNanos) {
@@ -216,7 +269,26 @@ public final class HeadlessAudioHarness implements AutoCloseable {
             project.getTransport().pause();
         }
 
-        return backend.getCapturedOutput();
+        return concatenateCaptured(framesThisRender);
+    }
+
+    private double[][] concatenateCaptured(int totalFrames) {
+        if (capturedBlocks.isEmpty()) {
+            return new double[0][0];
+        }
+        int channels = capturedBlocks.get(0).length;
+        double[][] out = new double[channels][totalFrames];
+        int offset = 0;
+        for (float[][] block : capturedBlocks) {
+            int n = block[0].length;
+            for (int ch = 0; ch < channels; ch++) {
+                for (int i = 0; i < n; i++) {
+                    out[ch][offset + i] = block[ch][i];
+                }
+            }
+            offset += n;
+        }
+        return out;
     }
 
     private long computeBudgetNanos(long frameCount) {
@@ -233,31 +305,6 @@ public final class HeadlessAudioHarness implements AutoCloseable {
         // Always allow at least the hard cap — renderers that are faster
         // than real time should never fail because sessionNanos < wall time.
         return Math.max(sessionNanos, hardCapNanos);
-    }
-
-    private void ensureStarted() {
-        if (!engine.isRunning()) {
-            AudioStreamConfig cfg = new AudioStreamConfig(
-                    0,
-                    0,
-                    format.channels(),
-                    format.channels(),
-                    sampleRateFromHz((int) Math.round(format.sampleRate())),
-                    BufferSize.fromFrames(format.bufferSize())
-            );
-            engine.start();
-            backend.initialize();
-            backend.openStream(cfg, (AudioStreamCallback) engine::processBlock);
-            backend.startStream();
-        }
-    }
-
-    private static SampleRate sampleRateFromHz(int hz) {
-        try {
-            return SampleRate.fromHz(hz);
-        } catch (IllegalArgumentException ex) {
-            return SampleRate.HZ_44100;
-        }
     }
 
     // ── Golden-file comparison ───────────────────────────────────────────────
@@ -337,5 +384,24 @@ public final class HeadlessAudioHarness implements AutoCloseable {
         public HeadlessTimeoutException(String message) {
             super(message);
         }
+    }
+
+    /**
+     * Generates input samples for the next block. Used by the harness to
+     * feed deterministic test signals (sine waves, noise, silence) into the
+     * engine.
+     */
+    @FunctionalInterface
+    public interface InputGenerator {
+        /**
+         * Fills {@code inputBuffer[channel][0..numFrames-1]} with samples for
+         * the next block.
+         *
+         * @param inputBuffer    the buffer to fill
+         * @param numFrames      the number of frames to produce in this block
+         * @param framesRendered the total number of frames already rendered
+         *                       prior to this block (for phase/time tracking)
+         */
+        void generate(float[][] inputBuffer, int numFrames, int framesRendered);
     }
 }

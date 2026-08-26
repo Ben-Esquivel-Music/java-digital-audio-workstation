@@ -207,6 +207,11 @@ typedef long (*asio_message_fn)(long selector, long value,
                                 void* message, double* opt);
 
 ASIOSHIM_API void installAsioMessageCallback(void* callback);
+
+// Clears the installed upcall and then waits (bounded) for any asioMessage
+// callback already inside `asioshim_messageTrampoline` to return — the
+// mirror of `uninstallAsioBufferSwitchCallback` below — so the caller can
+// safely free the upcall stub's arena as soon as this returns normally.
 ASIOSHIM_API void uninstallAsioMessageCallback(void);
 
 // This function *is* Steinberg's `ASIOCallbacks::asioMessage` slot, not a

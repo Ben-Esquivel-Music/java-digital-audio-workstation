@@ -344,7 +344,8 @@ public final class SettingsModel {
 
     /**
      * Returns the preferred audio backend name, or an empty string to let
-     * {@code AudioBackendFactory} pick the best available one.
+     * the engine's default streaming provision (story 316: PortAudio if
+     * available, else Java Sound) pick the best available one.
      */
     public String getAudioBackend() {
         return audioBackend;

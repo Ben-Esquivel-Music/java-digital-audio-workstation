@@ -1,22 +1,34 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Flow;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 
 /**
- * Sealed abstraction over the five professional audio I/O backends the DAW
- * targets, plus a deterministic mock for offline tests.
+ * Abstraction over the professional audio I/O backends the DAW targets,
+ * plus a deterministic mock for offline tests.
  *
  * <p>An {@code AudioBackend} is a thin, uniform surface over very different
  * native drivers — ASIO on Windows, CoreAudio on macOS, WASAPI on Windows,
  * JACK on Linux, and the cross-platform {@code javax.sound.sampled} fallback.
  * The application layer (see {@code AudioEngineController}) chooses a
  * backend based on the current OS and the user's saved selection
- * (see {@link AudioSettingsStore}), and transparently falls back to
- * {@link JavaxSoundBackend} when the preferred backend cannot open a stream
- * on this machine (see {@link AudioBackendSelector}).</p>
+ * (see {@link AudioSettingsStore}). Open-time fallback lives in the engine:
+ * it walks its explicit {@code StreamingProvision} ladder of
+ * (backend,&nbsp;device) rungs — typically ending on
+ * {@link JavaxSoundBackend} — and publishes a {@code BackendFallbackEvent}
+ * for every failed hop (story 316). That walk does not always reach the last
+ * rung: a rung whose {@link #open(DeviceId, AudioFormat, int)} was attempted
+ * and whose handle could not then be released may still hold the device, so
+ * the engine ABANDONS the walk rather than open a fallback beside it. The hops
+ * up to and including that rung are still published (naming {@code "none"} as
+ * what carried the stream), and no LOWER rung is walked, opened or published.
+ * A rung refused BEFORE {@code open} holds nothing, so it falls through to the
+ * next rung and publishes exactly as described above.</p>
  *
  * <h2>Lifecycle</h2>
  * <ol>
@@ -37,7 +49,7 @@ import java.util.concurrent.Flow;
  * must not block. {@link #sink(AudioBlock)} may be called from any thread;
  * implementations serialize internally.</p>
  *
- * <h2>Permitted implementations</h2>
+ * <h2>Known implementations</h2>
  * <ul>
  *   <li>{@link JavaxSoundBackend} — always available; built on
  *       {@code javax.sound.sampled}.</li>
@@ -52,16 +64,15 @@ import java.util.concurrent.Flow;
  *       audio card.</li>
  * </ul>
  *
+ * <p>The interface is deliberately <em>not</em> sealed: {@code daw-core}
+ * contributes additional callback-driven adapters (for example the PortAudio
+ * adapter that wraps the legacy native backend behind this interface —
+ * story 316), and JPMS sealing would forbid cross-module implementors.</p>
+ *
  * @see AudioBackendSelector
  * @see AudioSettingsStore
  */
-public sealed interface AudioBackend extends AutoCloseable
-        permits JavaxSoundBackend,
-                AsioBackend,
-                CoreAudioBackend,
-                WasapiBackend,
-                JackBackend,
-                MockAudioBackend {
+public interface AudioBackend extends AutoCloseable {
 
     /**
      * Returns the human-readable name of the backend, used as the
@@ -73,13 +84,48 @@ public sealed interface AudioBackend extends AutoCloseable
 
     /**
      * Returns {@code true} if the backend's native library / driver is usable
-     * on this host. Cheap and side-effect-free: callers rely on this when
-     * building the list shown in the Audio Settings dialog (story 098).
+     * on this host. Callers rely on this when building the list shown in the
+     * Audio Settings dialog (story 098).
+     *
+     * <p>Leaves no lasting state behind — it never opens a stream and never
+     * changes what a later {@link #open(DeviceId, AudioFormat, int)} will do
+     * — but it is not guaranteed cheap, and carries exactly the same caveat
+     * as {@link #supportsStreaming()}: an implementation may answer by
+     * probing native resources on THIS host, on every call.
+     * {@link AsioBackend#isAvailable()} opens an FFM arena and a
+     * {@code SymbolLookup} over {@code asioshim} and closes them again. Call
+     * it from enumeration / provisioning paths only, never from a render
+     * callback or any other hot path.</p>
      *
      * @return true when {@link #open(DeviceId, AudioFormat, int)} has a
      *         realistic chance of succeeding
      */
     boolean isAvailable();
+
+    /**
+     * Whether this backend can actually move audio through
+     * {@link #sink(AudioBlock)} / {@link #inputBlocks()} on this build.
+     * Backends whose streaming path is not yet implemented (WASAPI,
+     * CoreAudio, JACK today) return {@code false} so the application never
+     * offers or opens a stream that would be silent by construction
+     * (book §2.2, honest promises). {@link AudioBackendSelector} filters
+     * its offered/default backends on this flag (story 316).
+     *
+     * <p>Not necessarily a per-build constant, and not guaranteed cheap:
+     * an implementation may answer by probing native resources on THIS
+     * host, on every call — {@link AsioBackend} opens an FFM arena and a
+     * {@code SymbolLookup} over {@code asioshim} and closes them again.
+     * Call it from enumeration / provisioning paths only, never from a
+     * render callback or any other hot path.</p>
+     *
+     * @return {@code true} when {@link #sink(AudioBlock)} really reaches an
+     *         output device (or a deterministic capture buffer, for the
+     *         mock) after a successful {@link #open(DeviceId, AudioFormat,
+     *         int)}; {@code false} when sink discards by construction
+     */
+    default boolean supportsStreaming() {
+        return false;
+    }
 
     /**
      * Enumerates every device the backend exposes on this host. Returns an
@@ -88,6 +134,37 @@ public sealed interface AudioBackend extends AutoCloseable
      * @return an unmodifiable list of devices
      */
     List<AudioDeviceInfo> listDevices();
+
+    /**
+     * Returns the format this backend will actually open for the requested
+     * format. The engine calls this before {@link #open(DeviceId,
+     * AudioFormat, int)} and passes the negotiated format to {@code open},
+     * so a backend with a narrower native capability (for example
+     * {@link JavaxSoundBackend}, whose output path only encodes 16-bit PCM)
+     * can substitute a format it can honestly deliver instead of throwing on
+     * every sink. The default implementation returns the request unchanged.
+     *
+     * <p><b>Only the BIT DEPTH may be adjusted today (story 316 review).</b>
+     * The engine renders every block through one pipeline shaped by its own
+     * session format, so a backend that returns a different sample rate or
+     * channel count is treated as a FAILED ladder hop: the engine refuses
+     * that rung, publishes a {@link BackendFallbackEvent} naming the
+     * mismatch, and falls through to the next rung. It is not silently
+     * honoured, because it cannot be — a wider channel count would make
+     * every {@link #sink(AudioBlock)} reject the block, and a different rate
+     * would merely relabel un-resampled audio. Bit depth is safe because it
+     * is the backend's own encoding concern: the engine always hands over
+     * normalized floats. Full per-device renegotiation — with resampling and
+     * re-planing — is story 317.</p>
+     *
+     * @param requested the format the engine wants to open; must not be null
+     * @return the format the backend will actually open — either
+     *         {@code requested} itself or a variant differing only in bit
+     *         depth; never null
+     */
+    default AudioFormat negotiateFormat(AudioFormat requested) {
+        return requested;
+    }
 
     /**
      * Opens a stream on the given device with the given format and
@@ -108,6 +185,109 @@ public sealed interface AudioBackend extends AutoCloseable
     void open(DeviceId device, AudioFormat format, int bufferFrames);
 
     /**
+     * Opens a stream and tells the backend whether an output-only degradation
+     * is acceptable (story 316 review).
+     *
+     * <p>Identical to {@link #open(DeviceId, AudioFormat, int)} in every other
+     * respect &mdash; same states, same exceptions, same
+     * &quot;open twice without a close throws&quot; rule. The only addition is
+     * the {@link CaptureRequirement} directive, which exists because the
+     * RECORDING entry point used to walk the ordinary PLAYBACK ladder and
+     * inherit its capture-degrades-silently contract, producing a stream that
+     * could never record and reported no failure at all. See
+     * {@link CaptureRequirement} for the full story.</p>
+     *
+     * <p><strong>The default body IGNORES the directive.</strong> It delegates
+     * straight to {@link #open(DeviceId, AudioFormat, int)}, which is a
+     * <em>no-op honouring</em> of {@link CaptureRequirement#REQUIRED}: an
+     * inheriting backend that degrades to output-only still returns
+     * successfully from this call. That is deliberately safe, and it is safe
+     * for exactly ONE reason &mdash; the caller does not trust it. The engine
+     * verifies the OUTCOME through {@link #openedInputChannels()} after a
+     * successful {@code REQUIRED} open and turns a zero into an ordinary failed
+     * ladder hop, so the invariant holds whether or not any backend implements
+     * this method. Nothing else may be inferred from a normal return.</p>
+     *
+     * <p>Backends that can DETECT an imminent capture degradation override this
+     * anyway, because failing early is strictly better than being rejected
+     * after the fact: {@link JavaxSoundBackend} rethrows the capture line's own
+     * {@code LineUnavailableException} as the cause instead of swallowing it,
+     * and {@code daw-core}'s {@code CallbackBackendAdapter} refuses to retry a
+     * refused duplex stream output-only (that one lands with daw-core's half of
+     * the same review). Both then report the PRECISE native cause, and neither
+     * grabs the device output-only just to have the open rejected and closed
+     * again a moment later.</p>
+     *
+     * @param device       target device id; {@link DeviceId#isDefault() default}
+     *                     asks the backend to pick its own default device
+     * @param format       desired PCM format
+     * @param bufferFrames desired buffer size in sample frames (must be positive)
+     * @param capture      whether capture may degrade silently
+     *                     ({@link CaptureRequirement#OPTIONAL}, the playback
+     *                     contract) or must be produced
+     *                     ({@link CaptureRequirement#REQUIRED}, the recording
+     *                     contract); must not be null
+     * @throws AudioBackendException     if the native driver refuses the
+     *                                   requested configuration, or if
+     *                                   {@code capture} is
+     *                                   {@link CaptureRequirement#REQUIRED} and
+     *                                   this backend can determine that no
+     *                                   capture stream is possible
+     * @throws IllegalStateException     if a stream is already open on this backend
+     * @throws IllegalArgumentException  if {@code bufferFrames <= 0}
+     * @throws NullPointerException      if {@code capture} is null
+     */
+    default void open(DeviceId device, AudioFormat format, int bufferFrames,
+                      CaptureRequirement capture) {
+        Objects.requireNonNull(capture, "capture must not be null");
+        open(device, format, bufferFrames);
+    }
+
+    /**
+     * How many capture channels the CURRENTLY OPEN stream actually opened with
+     * (story 316 review) &mdash; the verifiable half of the
+     * {@link CaptureRequirement} contract.
+     *
+     * <p>{@code 0} has two meanings and both are the same fact from the
+     * caller's point of view: no stream is open, or the open produced no
+     * capture at all. A positive answer is a PROMISE about
+     * {@link #inputBlocks()}: a backend reporting {@code n > 0} is undertaking
+     * that its input publisher will emit blocks carrying those channels while
+     * the stream is open. The two must never disagree &mdash; a backend whose
+     * publisher is silent by construction must answer {@code 0} however many
+     * channels its driver nominally activated.</p>
+     *
+     * <p>This is what the engine reads after a successful
+     * {@link CaptureRequirement#REQUIRED} open, and a {@code 0} there turns the
+     * rung into an ordinary failed ladder hop. It is therefore the enforcement
+     * point, not {@link #open(DeviceId, AudioFormat, int, CaptureRequirement)}:
+     * that method's default body honours nothing, so a REQUIRED open returning
+     * normally proves nothing on its own.</p>
+     *
+     * <p><strong>The default FAILS CLOSED, and that is the whole point.</strong>
+     * A backend that has not overridden this method cannot substantiate a
+     * capture stream, and the house rule is that a self-announcing refusal
+     * beats a silent no-op. A wrong {@code 0} produces a visible &quot;this
+     * backend reports no capture channels&quot; refusal on the record path,
+     * which a maintainer can read and fix in one override; a wrong non-zero
+     * default would produce a SILENT TAKE, which is the exact bug this seam
+     * exists to close. The asymmetry is not close.</p>
+     *
+     * <p>{@link WasapiBackend}, {@link JackBackend} and {@link CoreAudioBackend}
+     * are CORRECT at the default rather than merely un-migrated: their native
+     * wiring is unimplemented, none of them ever publishes an input block, and
+     * their {@link #supportsStreaming()} already answers {@code false} for the
+     * same reason. When their capture paths land, each owes an override.</p>
+     *
+     * @return the number of capture channels the open stream really has;
+     *         {@code 0} when the open produced no capture, and {@code 0} when
+     *         no stream is open. Never negative.
+     */
+    default int openedInputChannels() {
+        return 0;
+    }
+
+    /**
      * Returns a {@link Flow.Publisher} that emits one {@link AudioBlock} per
      * hardware callback while the stream is open. The publisher completes
      * when {@link #close()} is called. Returns an empty publisher (completes
@@ -123,11 +303,92 @@ public sealed interface AudioBackend extends AutoCloseable
      * channel count must match the channel count passed to
      * {@link #open(DeviceId, AudioFormat, int)}.
      *
+     * <p>Implementations must consume (copy or encode) the block
+     * <em>synchronously</em>, before returning: callers may reuse the block
+     * instance and its backing sample array across calls, which is what lets
+     * the engine's render pump run allocation-free (story 316).</p>
+     *
+     * <p>{@code sink} may block the calling thread briefly for device pacing
+     * — {@link JavaxSoundBackend} blocks on the line's internal buffer, for
+     * example. Callers must therefore never invoke it from a real-time
+     * thread; the render pump thread is the intended caller.</p>
+     *
      * @param block the audio to play; must not be null
      * @throws IllegalArgumentException if {@code block} is incompatible with
      *                                  the opened format
      */
     void sink(AudioBlock block);
+
+    /**
+     * Blocks the calling (non-real-time) thread until the device can accept
+     * another {@link #sink(AudioBlock)} block, the timeout elapses, or the
+     * stream closes. The engine's render pump calls this between blocks so
+     * production is paced by the <em>device clock</em> rather than the host
+     * clock (story 316): render, sink, then wait here for the device to make
+     * room before rendering the next block.
+     *
+     * <p>The default implementation parks the calling thread for the full
+     * timeout, which yields wall-clock pacing — the correct behaviour for
+     * backends whose {@code sink} never blocks and exposes no occupancy
+     * signal. Backends with a real backpressure signal override this to
+     * return as soon as capacity exists ({@link AsioBackend} polls its
+     * output-ring occupancy), and backends whose {@code sink} already blocks
+     * for pacing override it as a no-op ({@link JavaxSoundBackend}).</p>
+     *
+     * <p>Must never be called from a real-time thread, and implementations
+     * must return within roughly {@code timeoutNanos} even when no capacity
+     * ever appears (a closed or stalled stream must not hang the pump). A
+     * non-positive timeout returns immediately.</p>
+     *
+     * @param timeoutNanos maximum time to wait, in nanoseconds — typically
+     *                     one block period
+     */
+    default void awaitSinkCapacity(long timeoutNanos) {
+        LockSupport.parkNanos(timeoutNanos);
+    }
+
+    /**
+     * The shared ring-occupancy pacing loop that sits behind every
+     * ring-backed {@link #awaitSinkCapacity(long)} override (story 316
+     * review): polls {@code hasCapacity} in {@code timeoutNanos / 8} park
+     * slices and returns as soon as it reports capacity — i.e. as soon as
+     * the device's own callback has consumed a block. That is what turns the
+     * render pump's production rate into the <em>device</em> clock rather
+     * than the host clock.
+     *
+     * <p>{@link AsioBackend} (its buffer-switch bridge's output ring) and
+     * {@code daw-core}'s callback-backend adapter (its pump&nbsp;&rarr;
+     * callback output ring) had verbatim copies of this loop; it lives here
+     * so the two cannot drift apart.</p>
+     *
+     * <p>Honours both hard clauses of {@link #awaitSinkCapacity(long)}: a
+     * non-positive {@code timeoutNanos} returns immediately, and the wait is
+     * bounded by {@code timeoutNanos} whether or not capacity ever appears,
+     * so a closed or stalled stream can never hang the pump.</p>
+     *
+     * <p>Must never be called from a real-time thread — it parks the calling
+     * thread. The render pump thread is the intended caller.</p>
+     *
+     * @param timeoutNanos maximum time to wait, in nanoseconds — typically
+     *                     one block period; non-positive returns immediately
+     * @param hasCapacity  read-only occupancy probe answering "can the sink
+     *                     accept another block?"; must not be null
+     */
+    static void pollForSinkCapacity(long timeoutNanos, BooleanSupplier hasCapacity) {
+        Objects.requireNonNull(hasCapacity, "hasCapacity must not be null");
+        if (timeoutNanos <= 0L) {
+            return; // the awaitSinkCapacity contract: non-positive returns at once
+        }
+        long deadline = System.nanoTime() + timeoutNanos;
+        long slice = Math.max(1L, timeoutNanos / 8);
+        while (!hasCapacity.getAsBoolean()) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0L) {
+                return; // bounded by the total timeout, capacity or not
+            }
+            LockSupport.parkNanos(Math.min(slice, remaining));
+        }
+    }
 
     /**
      * Writes a mono buffer directly to a single physical output channel,
@@ -626,7 +887,77 @@ public sealed interface AudioBackend extends AutoCloseable
     }
 
     /**
+     * The backend's own answer to "did my {@link #close()} actually give the
+     * device back?" (story 316 re-review).
+     *
+     * <p>{@code close()} returning normally is not, on its own, proof of a
+     * release. A backend may hold native state it cannot free at the moment it
+     * is asked to — {@link AsioBackend} defers its {@code ASIOExit} while the
+     * {@code asio-control} thread is still executing a call the host abandoned,
+     * because that shim can only ever be closed ONCE and closing it then would
+     * spend that single chance on downcalls that fail fast. The deferral is
+     * correct; being SILENT about it was not, because the caller then reads an
+     * ordinary successful close and moves on.</p>
+     *
+     * <p><strong>The contract, point by point.</strong></p>
+     * <ul>
+     *   <li>Meaningful only AFTER {@link #close()} has returned normally, or
+     *       after an {@link #open(DeviceId, AudioFormat, int)} that failed and
+     *       rolled itself back. At any other moment it answers about nothing in
+     *       particular.</li>
+     *   <li>{@code true} means the backend returned from {@code close()}
+     *       WITHOUT having released native state that may still hold — or may
+     *       still be about to take — the device. The caller must treat the
+     *       handle as RETAINED: the same disposition it already gives a
+     *       {@code close()} that THREW, which is the only other way a backend
+     *       can report "you do not have this device back".</li>
+     *   <li>It is SELF-CLEARING, but by completion and never by time. It
+     *       answers {@code false} again once the deferred release actually
+     *       completes, so a caller that abandoned a device on account of it
+     *       may retry rather than treat the device as lost for the life of
+     *       the process; until then it keeps answering {@code true} — for the
+     *       life of the backend when the release can no longer be run at all
+     *       ({@link AsioBackend}: a wait it could not re-queue).</li>
+     *   <li>Cheap and non-blocking, unlike {@link #isAvailable()} and
+     *       {@link #supportsStreaming()} — it reads host-side state and never
+     *       probes native resources. That is deliberate: the intended callers
+     *       ask it on a lifecycle path immediately after {@code close()}, often
+     *       under a lifecycle lock, where a probing query would be a stall.</li>
+     * </ul>
+     *
+     * <p>The default is {@code false} because a backend that releases
+     * SYNCHRONOUSLY inside {@code close()} has nothing outstanding by the time
+     * {@code close()} returns, and inheriting the default is the correct
+     * answer rather than a missing override:
+     * {@link CoreAudioBackend}, {@link JackBackend}, {@link WasapiBackend},
+     * {@link MockAudioBackend} and {@code daw-core}'s
+     * {@code CallbackBackendAdapter} all release inline.
+     * {@link JavaxSoundBackend} needs no override for a different reason worth
+     * spelling out: its {@code close()} THROWS when a line could not be
+     * released and RETAINS the handle, and callers already read a close that
+     * threw as a non-release — so the fact is reported through the exception
+     * instead of through this flag, and the two never disagree.</p>
+     *
+     * <p>This is the SDK half of the contract: it gives a backend a way to
+     * SAY that its close deferred. Acting on it — refusing to walk a fallback
+     * ladder past a rung that still may hold the device — belongs to the
+     * engine in {@code daw-core}.</p>
+     *
+     * @return {@code true} when a release this backend owes has not completed
+     *         yet, so the device must be treated as still held; {@code false}
+     *         when nothing is outstanding
+     */
+    default boolean isReleasePending() {
+        return false;
+    }
+
+    /**
      * Closes any open stream and releases native resources. Idempotent.
+     *
+     * <p>Returning normally does not always mean the device was given back:
+     * a backend that had to DEFER part of its release says so through
+     * {@link #isReleasePending()}, which callers on a lifecycle path should
+     * consult before treating the handle as gone.</p>
      */
     @Override
     void close();

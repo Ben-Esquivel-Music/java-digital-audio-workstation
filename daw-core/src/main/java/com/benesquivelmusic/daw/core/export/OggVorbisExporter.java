@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.export;
 
+import com.benesquivelmusic.daw.core.audio.NativeAbi;
 import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
@@ -37,23 +38,11 @@ import java.util.Objects;
 public final class OggVorbisExporter {
 
     // Platform-aware C ABI type for 'long' — 8 bytes on Linux/macOS x86_64,
-    // 4 bytes on Windows x86_64 (LLP64 model). Obtained from the native
-    // linker's canonical layout map (JEP 454).
-    static final ValueLayout C_LONG = resolveCLongLayout();
-
-    private static ValueLayout resolveCLongLayout() {
-        MemoryLayout longLayout = Linker.nativeLinker().canonicalLayouts().get("long");
-        if (longLayout == null) {
-            throw new UnsupportedOperationException(
-                    "Native C ABI layout for 'long' is not available from the platform linker");
-        }
-        if (!(longLayout instanceof ValueLayout valueLayout)) {
-            throw new UnsupportedOperationException(
-                    "Native C ABI layout for 'long' is not a ValueLayout: "
-                            + longLayout.getClass().getName());
-        }
-        return valueLayout;
-    }
+    // 4 bytes on Windows x86_64 (LLP64 model). The linker lookup itself lives
+    // in NativeAbi (story 316 re-review): it is one fact about the running
+    // platform, and a per-class copy of it is a copy that can drift from the
+    // other bindings' copy with nothing in the build able to say so.
+    static final ValueLayout C_LONG = NativeAbi.C_LONG;
 
     // Struct sizes computed from C struct declarations in ogg/ogg.h and
     // vorbis/codec.h using platform-correct C ABI types (C_INT, C_LONG,

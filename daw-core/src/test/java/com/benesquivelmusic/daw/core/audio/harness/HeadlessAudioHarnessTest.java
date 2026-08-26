@@ -23,7 +23,7 @@ class HeadlessAudioHarnessTest {
     private static final AudioFormat FORMAT = new AudioFormat(44_100.0, 1, 16, 128);
 
     /** Deterministic 440 Hz sine generator (mathematical reference). */
-    private static HeadlessAudioBackend.InputGenerator sineGenerator(double freqHz, double sampleRate) {
+    private static HeadlessAudioHarness.InputGenerator sineGenerator(double freqHz, double sampleRate) {
         return (input, numFrames, framesRendered) -> {
             for (int ch = 0; ch < input.length; ch++) {
                 for (int i = 0; i < numFrames; i++) {
