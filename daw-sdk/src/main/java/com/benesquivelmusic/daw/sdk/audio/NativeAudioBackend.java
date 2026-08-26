@@ -111,8 +111,9 @@ public interface NativeAudioBackend extends AutoCloseable {
     /**
      * Returns whether this backend is available on the current platform.
      *
-     * <p>For native backends, this checks whether the required native library
-     * can be loaded. For Java Sound, this always returns {@code true}.</p>
+     * <p>Implementations perform their live platform-specific capability
+     * probe, including any required native library and usable device or
+     * stream endpoint.</p>
      *
      * @return true if the backend can be used
      */

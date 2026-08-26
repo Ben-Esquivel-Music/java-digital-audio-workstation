@@ -548,8 +548,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
     public synchronized List<String> getAvailableBackendNames() {
         // Union of the adapted legacy PortAudio backend (story 316: it now
         // streams behind the SDK interface via CallbackBackendAdapter), the
-        // selector's available-and-streamable SDK names, and the Java Sound
-        // floor. The selector's supportsStreaming() gate keeps backends
+        // selector's available-and-streamable SDK names. The selector's
+        // availability/supportsStreaming() gates keep backends
         // whose streaming path is not available in this build — sink()
         // discards (WASAPI / CoreAudio / JACK today), or an ASIO whose
         // native streaming shim is missing or incomplete (story 316 review)
@@ -574,7 +574,6 @@ final class DefaultAudioEngineController implements AudioEngineController {
             LOG.log(Level.FINE, "PortAudio unavailable", e);
         }
         names.addAll(backendSelector.availableBackendNames());
-        names.add("Java Sound");
         return List.copyOf(names);
     }
 

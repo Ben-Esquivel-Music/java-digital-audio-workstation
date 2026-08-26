@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
+import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -11,18 +13,24 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,35 +77,62 @@ class TransportControllerTest {
     private Label recIndicator;
     /** The status-bar label handed to the controller, for "UI tail untouched" assertions. */
     private Label statusBarLabel;
+    /** Engine handed to the latest controller, for honest stream-state assertions and cleanup. */
+    private AudioEngine audioEngine;
+    /** Actionable notification surface handed to the latest controller. */
+    private NotificationBar notificationBar;
+    /** Counts invocations of the injected Open Audio Settings route. */
+    private AtomicInteger audioSettingsOpens;
+
+    @AfterEach
+    void closeEngine() {
+        if (audioEngine != null) {
+            audioEngine.stopAudioOutput();
+            audioEngine.stop();
+        }
+    }
 
     private TransportController newController(DawProject project) throws Exception {
-        return newController(project, null);
+        return newController(project, new MockAudioBackend());
     }
 
     /**
      * Builds the controller over an engine that can actually open a stream
      * (story 316 review). {@code streamingBackend} becomes the engine's whole
      * fallback ladder; passing {@code null} leaves the engine with no
-     * streaming provision at all, which is what every test that never records
-     * wants.
+     * streaming provision so refusal behavior can be tested explicitly.
      */
     private TransportController newController(DawProject project,
                                               AudioBackend streamingBackend) throws Exception {
+        StreamingProvision provision = streamingBackend == null
+                ? null
+                : new StreamingProvision(
+                        streamingBackend.name(),
+                        List.of(new BackendStreamRung(streamingBackend,
+                                DeviceId.defaultFor(streamingBackend.name()))));
+        return newControllerWithProvision(project, provision);
+    }
+
+    private TransportController newControllerWithProvision(
+            DawProject project, StreamingProvision provision) throws Exception {
         AtomicReference<TransportController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             AudioEngine engine = new AudioEngine(project.getFormat());
-            if (streamingBackend != null) {
-                engine.setStreamingProvision(new StreamingProvision(
-                        streamingBackend.name(),
-                        List.of(new BackendStreamRung(streamingBackend,
-                                DeviceId.defaultFor(streamingBackend.name())))));
+            audioEngine = engine;
+            if (provision != null) {
+                engine.setStreamingProvision(provision);
             }
             UndoManager undo = new UndoManager();
             NotificationBar nb = new NotificationBar();
+            nb.setAnimated(false);
+            notificationBar = nb;
+            audioSettingsOpens = new AtomicInteger();
             Label statusLabel = new Label();
             statusBarLabel = new Label();
             recIndicator = new Label();
+            recIndicator.setVisible(false);
+            recIndicator.setManaged(false);
             playButton = new Button();
             Button record = new Button();
             // Story 293 — the Host is retired; pass direct functional deps.
@@ -112,11 +147,73 @@ class TransportControllerTest {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN));
+                    () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
+                    audioSettingsOpens::incrementAndGet,
+                    null));
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
         return ref.get();
+    }
+
+    /** Streaming backend whose selected endpoint always refuses to open. */
+    private static final class FailingAudioBackend implements AudioBackend {
+        private final String name;
+        private final String failureMessage;
+
+        private FailingAudioBackend() {
+            this("Broken Backend", "device is disconnected");
+        }
+
+        private FailingAudioBackend(String name, String failureMessage) {
+            this.name = name;
+            this.failureMessage = failureMessage;
+        }
+
+        @Override public String name() { return name; }
+        @Override public boolean isAvailable() { return true; }
+        @Override public boolean supportsStreaming() { return true; }
+        @Override public List<AudioDeviceInfo> listDevices() { return List.of(); }
+        @Override
+        public void open(DeviceId device,
+                         com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                         int bufferFrames) {
+            throw new AudioBackendException(failureMessage);
+        }
+        @Override public Flow.Publisher<AudioBlock> inputBlocks() { return _ -> { }; }
+        @Override public void sink(AudioBlock block) { }
+        @Override public boolean isOpen() { return false; }
+        @Override public void close() { }
+    }
+
+    /** Opens normally once, then refuses the subscription used by a resume. */
+    private static final class ResumeFailingAudioBackend implements AudioBackend {
+        private final MockAudioBackend delegate = new MockAudioBackend();
+        private final AtomicInteger subscriptions = new AtomicInteger();
+
+        @Override public String name() { return "Fallback Backend"; }
+        @Override public boolean isAvailable() { return true; }
+        @Override public boolean supportsStreaming() { return true; }
+        @Override public List<AudioDeviceInfo> listDevices() { return List.of(); }
+        @Override
+        public void open(DeviceId device,
+                         com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                         int bufferFrames) {
+            delegate.open(device, format, bufferFrames);
+        }
+        @Override
+        public Flow.Publisher<AudioBlock> inputBlocks() {
+            return subscriber -> {
+                if (subscriptions.incrementAndGet() > 1) {
+                    throw new AudioBackendException("fallback callback refused to resume");
+                }
+                delegate.inputBlocks().subscribe(subscriber);
+            };
+        }
+        @Override public void sink(AudioBlock block) { delegate.sink(block); }
+        @Override public int openedInputChannels() { return delegate.openedInputChannels(); }
+        @Override public boolean isOpen() { return delegate.isOpen(); }
+        @Override public void close() { delegate.close(); }
     }
 
     @Test
@@ -300,6 +397,133 @@ class TransportControllerTest {
 
         assertThat(transport.getState()).isEqualTo(
                 com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+    }
+
+    @Test
+    void failedPlayOpenStaysStoppedAndOffersAudioSettings() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        TransportController controller = newController(project, new FailingAudioBackend());
+
+        runHandler(controller::start);
+
+        assertThat(transport.getState())
+                .as("a refused stream cannot authorize PLAYING")
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(transport.isRealTimeClockActive())
+                .as("no callback/ticker owns time after refusal").isFalse();
+        assertThat(audioEngine.isStreamOpen()).isFalse();
+        assertThat(audioEngine.isRunning())
+                .as("an engine started solely for the failed open is rolled back")
+                .isFalse();
+        assertThat(statusBarLabel.getText()).doesNotContain("Playing");
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage())
+                .contains("Broken Backend", "<default>", "device is disconnected");
+        assertThat(notificationBar.getPill().getActionButton().getText())
+                .isEqualTo("Open Audio Settings");
+
+        runHandler(() -> notificationBar.getPill().getActionButton().fire());
+        assertThat(audioSettingsOpens).hasValue(1);
+    }
+
+    @Test
+    void failedPausedFallbackResumeNamesTheOpenEndpointAndAnnouncesNoStart() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        var requestedBackend = new FailingAudioBackend(
+                "Requested Backend", "requested device is disconnected");
+        var fallbackBackend = new ResumeFailingAudioBackend();
+        DeviceId requestedDevice = new DeviceId("Requested Backend", "Requested Device");
+        DeviceId fallbackDevice = new DeviceId("Fallback Backend", "Fallback Device");
+        StreamingProvision provision = new StreamingProvision(
+                "Requested Backend",
+                requestedDevice,
+                List.of(
+                        new BackendStreamRung(requestedBackend, requestedDevice),
+                        new BackendStreamRung(fallbackBackend, fallbackDevice)));
+        TransportController controller = newControllerWithProvision(project, provision);
+
+        runHandler(controller::start);
+        assertThat(audioEngine.openStreamBackendName()).contains("Fallback Backend");
+        assertThat(audioEngine.openStreamDevice()).contains(fallbackDevice);
+        runHandler(controller::pause);
+        assertThat(transport.getState())
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
+        assertThat(audioEngine.isStreamPaused()).isTrue();
+
+        var previousBus = EventBusPublisher.getDefault();
+        var eventBus = new DefaultEventBus();
+        try {
+            EventBusPublisher.setDefault(eventBus);
+            runHandler(controller::start);
+
+            assertThat(transport.getState())
+                    .as("a refused resume publishes no Started transition")
+                    .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
+            assertThat(eventBus.metrics().publishedByType())
+                    .doesNotContainKey("TransportEvent.Started");
+            assertThat(audioEngine.isStreamOpen()).isTrue();
+            assertThat(audioEngine.isStreamPaused()).isTrue();
+            assertThat(transport.isRealTimeClockActive()).isFalse();
+            assertThat(statusBarLabel.getText()).doesNotContain("Playing");
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(notificationBar.getMessage())
+                    .contains("Fallback Backend", "Fallback Device", "could not resume",
+                            "fallback callback refused to resume")
+                    .doesNotContain("Requested Backend", "Requested Device");
+        } finally {
+            EventBusPublisher.setDefault(previousBus);
+            eventBus.close();
+        }
+    }
+
+    @Test
+    void failedPreRollOpenDoesNotRewindOrPlay() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setPositionInBeats(24.0);
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+        TransportController controller = newController(project, new FailingAudioBackend());
+
+        runHandler(controller::playWithPreRoll);
+
+        assertThat(transport.getState())
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(transport.getPositionInBeats()).isEqualTo(24.0);
+        assertThat(transport.isInPreRoll()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getPill().getActionButton().getText())
+                .isEqualTo("Open Audio Settings");
+    }
+
+    @Test
+    void failedMidiOnlyRecordOpenStartsNothingAndStaysStopped() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Track midiTrack = new Track("Armed MIDI", TrackType.MIDI);
+        midiTrack.setArmed(true);
+        project.addTrack(midiTrack);
+        TransportController controller = newController(project, new FailingAudioBackend());
+
+        runHandler(controller::toggleRecord);
+
+        assertThat(project.getTransport().getState())
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(project.getTransport().isRealTimeClockActive()).isFalse();
+        assertThat(midiTrack.isRecording())
+                .as("the output opens before any MidiRecorder or track flag")
+                .isFalse();
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(statusBarLabel.getText()).doesNotContain("Recording");
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage())
+                .contains("refused for recording", "Broken Backend", "<default>");
+        assertThat(notificationBar.getPill().getActionButton().getText())
+                .isEqualTo("Open Audio Settings");
     }
 
     @Test

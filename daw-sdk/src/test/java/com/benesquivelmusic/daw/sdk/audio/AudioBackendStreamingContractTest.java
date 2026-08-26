@@ -183,16 +183,27 @@ class AudioBackendStreamingContractTest {
     }
 
     @Test
-    void javaxSoundNegotiateFormatClampsBitDepthTo16PreservingRateAndChannels() {
+    void javaxSoundNegotiateFormatPreservesEverySupportedSignedPcmWidth() {
         JavaxSoundBackend backend = new JavaxSoundBackend();
 
         AudioFormat negotiated = backend.negotiateFormat(new AudioFormat(96_000.0, 4, 24));
         assertEquals(96_000.0, negotiated.sampleRate());
         assertEquals(4, negotiated.channels());
-        assertEquals(16, negotiated.bitDepth());
+        assertEquals(24, negotiated.bitDepth());
 
         AudioFormat negotiated32 = backend.negotiateFormat(new AudioFormat(48_000.0, 2, 32));
-        assertEquals(new AudioFormat(48_000.0, 2, 16), negotiated32);
+        assertEquals(new AudioFormat(48_000.0, 2, 32), negotiated32);
+
+        assertEquals(new AudioFormat(48_000.0, 2, 8),
+                backend.negotiateFormat(new AudioFormat(48_000.0, 2, 8)));
+    }
+
+    @Test
+    void javaxSoundNegotiateFormatFallsBackForNonByteAlignedDepth() {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+
+        assertEquals(new AudioFormat(48_000.0, 2, 16),
+                backend.negotiateFormat(new AudioFormat(48_000.0, 2, 20)));
     }
 
     @Test

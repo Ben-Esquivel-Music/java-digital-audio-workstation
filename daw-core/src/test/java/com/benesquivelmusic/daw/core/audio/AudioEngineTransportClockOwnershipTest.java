@@ -30,15 +30,14 @@ import static org.assertj.core.api.Assertions.fail;
  * claim and the pump start, is about to be) calling
  * {@link AudioEngine#processBlock(float[][], float[][], int)}.
  *
- * <p>The regression this pins down: {@link AudioEngine#startAudioOutput()}
- * returns early with "No audio backend configured; playback without hardware
- * output", while the UI calls {@code transport.play()} regardless. The
- * transport was then {@code PLAYING} with nothing driving
+ * <p>The regression this pins down was a normally-returning output start with
+ * no backend, after which the UI called {@code transport.play()} regardless.
+ * The transport was then {@code PLAYING} with nothing driving
  * {@link Transport#advancePosition(double)}, so every seek was queued behind a
  * drain that never came — the playhead and the time display froze on every
- * ruler click and skip, and the next stop discarded the queue. Making the
- * {@code PLAYING} state itself honest is story 317; owning the <em>clock</em>
- * is this story's §6.1 concern.</p>
+ * ruler click and skip, and the next stop discarded the queue. Story 317 now
+ * refuses that transition; these tests keep pinning the lower-level clock
+ * ownership and refusal postconditions.</p>
  *
  * <h2>What changed with story 316 (deliberate)</h2>
  * <p>The render drive is now the engine's own pump, not a backend callback,
@@ -86,15 +85,20 @@ class AudioEngineTransportClockOwnershipTest {
     // ── No provision: nothing drives the transport ───────────────────────
 
     @Test
-    void startingOutputWithNoProvisionLeavesTheTransportsClockUnclaimed() {
+    void startingOutputWithNoProvisionRefusesAndLeavesTheClockUnclaimed() {
         AudioEngine engine = new AudioEngine(FORMAT);
         Transport transport = new Transport();
         engine.setGraph(transport, null, null);
 
-        engine.startAudioOutput();
+        assertThatThrownBy(engine::startAudioOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no audio backend is configured");
 
         assertThat(engine.isStreamOpen())
                 .as("no provision was installed, so no stream opened")
+                .isFalse();
+        assertThat(engine.isRunning())
+                .as("the refusal happens before this call starts the engine")
                 .isFalse();
         assertThat(transport.isRealTimeClockActive())
                 .as("nothing calls advancePosition, so the transport must not defer seeks")
@@ -102,12 +106,9 @@ class AudioEngineTransportClockOwnershipTest {
     }
 
     @Test
-    void seeksApplyImmediatelyWhenPlaybackStartedWithoutAStream() {
-        AudioEngine engine = new AudioEngine(FORMAT);
+    void seeksApplyImmediatelyInAnExplicitlyUnclaimedTransportState() {
         Transport transport = new Transport();
-        engine.setGraph(transport, null, null);
-        engine.startAudioOutput();
-        transport.play(); // exactly what TransportController.start() does
+        transport.play(); // lower-level safety for externally-authored state
 
         List<ChangeKind> fired = new ArrayList<>();
         transport.addChangeListener(fired::add);
@@ -140,20 +141,19 @@ class AudioEngineTransportClockOwnershipTest {
     }
 
     @Test
-    void startingOutputWithNoProvisionStillSucceedsWithTheClockUnclaimed() {
-        // The DISCRIMINATING sibling of the test above (story 316 review):
-        // refusing a capture-less RECORD open must not have made PLAYBACK
-        // stricter. Playback without hardware output is legitimate, so this
-        // returns normally, and the claim is untaken for the original reason
-        // — no stream drives the transport.
+    void refusedOutputPreservesAnEngineAlreadyRunningForAnotherReason() {
         AudioEngine engine = new AudioEngine(FORMAT);
         Transport transport = new Transport();
         engine.setGraph(transport, null, null);
+        engine.start();
 
-        engine.startAudioOutput();
+        assertThatThrownBy(engine::startAudioOutput)
+                .isInstanceOf(AudioBackendException.class);
 
+        assertThat(engine.isRunning()).isTrue();
         assertThat(engine.isStreamOpen()).isFalse();
         assertThat(transport.isRealTimeClockActive()).isFalse();
+        engine.stop();
     }
 
     // ── A real stream: the claim follows the stream lifecycle ────────────

@@ -137,8 +137,8 @@ public final class AudioBackendSelector {
      * <p>The gate is therefore a query about THIS host at THIS moment, not
      * a static capability table; it is re-probed on every call.</p>
      *
-     * @return list of available, streamable backend names (never empty —
-     *         Java Sound is always present)
+     * @return list of available, streamable backend names; empty when no
+     *         registered backend can currently provide output
      */
     public List<String> availableBackends() {
         List<String> available = new ArrayList<>();
@@ -153,26 +153,27 @@ public final class AudioBackendSelector {
                 }
             }
         }
-        if (!available.contains(JavaxSoundBackend.NAME)
-                && factories.containsKey(JavaxSoundBackend.NAME)) {
-            available.add(JavaxSoundBackend.NAME);
-        }
         return List.copyOf(available);
     }
 
     /**
-     * Returns the OS-default preferred backend name for this host — the
+     * Returns the OS-default preferred backend candidate for this host. The
      * first entry of the OS preference order that is both available and
-     * streamable ({@link AudioBackend#supportsStreaming()}, story 316), so
-     * the default is never a backend that would open a silent stream.
+     * streamable ({@link AudioBackend#supportsStreaming()}, story 316) wins.
      *
      * <p>Same host-specific gate as {@link #availableBackends()}: on
      * Windows the ASIO head is skipped when the native {@code asioshim} is
      * missing or lacks the story-311 streaming symbols (story 316 review),
-     * and the preference order falls through to the next streamable entry —
-     * ultimately Java Sound, which is always present.</p>
+     * and the preference order falls through to the next streamable entry.
+     * If every probe fails, this method deliberately still returns Java
+     * Sound as the stable, non-null final-rung candidate expected by saved
+     * settings and startup provisioning. That candidate is not thereby
+     * described as available: it is omitted from {@link #availableBackends()},
+     * and a later open must fail visibly when it cannot obtain an output
+     * line.</p>
      *
-     * @return preferred backend name
+     * @return preferred available backend name, or the Java Sound final-rung
+     *         candidate when no backend currently probes available
      */
     public String defaultBackendName() {
         for (String candidate : preferenceOrderForCurrentOs()) {

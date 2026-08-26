@@ -5,10 +5,13 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
+import com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
@@ -22,7 +25,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -33,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,10 +59,24 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
-    void shouldIncludeJavaSoundInAvailableBackends() {
+    void shouldExcludeUnavailableJavaSoundFromAvailableBackends(@TempDir Path projectRoot) {
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        factories.put(JavaxSoundBackend.NAME, () -> {
+            SpyStreamingBackend backend = new SpyStreamingBackend(JavaxSoundBackend.NAME);
+            backend.setAvailable(false);
+            return backend;
+        });
+        AudioBackendSelector selector = new AudioBackendSelector(factories);
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
-        assertThat(controller.getAvailableBackendNames()).contains("Java Sound");
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            assertThat(controller.getAvailableBackendNames())
+                    .doesNotContain(JavaxSoundBackend.NAME);
+        } finally {
+            controller.shutdown();
+        }
     }
 
     @Test
@@ -1063,8 +1083,9 @@ class DefaultAudioEngineControllerTest {
         // Story 316 review (F8): the provision keeps the USER'S request —
         // the engine stamps it into every BackendFallbackEvent — while the
         // notification and the PROVISIONED backend name the ladder's ACTUAL
-        // head (PortAudio when available, else Java Sound). The ACTIVE
-        // backend is the open stream's, and nothing is streaming here.
+        // head (PortAudio when available, otherwise the stable Java Sound
+        // final-rung candidate). The ACTIVE backend is the open stream's,
+        // and nothing is streaming here.
         assertThat(provision.requestedBackendName()).isEqualTo("WASAPI (Exclusive)");
         String headRung = provision.firstRung().backend().name();
         assertThat(headRung).isIn("PortAudio", "Java Sound");
@@ -2775,21 +2796,22 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
-    void getAvailableBackendNamesIncludesSdkSelectorBackends() {
+    void getAvailableBackendNamesIncludesAvailableSdkSelectorBackends(@TempDir Path projectRoot) {
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        factories.put(JavaxSoundBackend.NAME,
+                () -> new SpyStreamingBackend(JavaxSoundBackend.NAME));
+        AudioBackendSelector selector = new AudioBackendSelector(factories);
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
-        List<String> names = controller.getAvailableBackendNames();
-        // Java Sound is always present (the ladder's unconditional floor).
-        // The full set is the union with whatever the selector reports
-        // available on this host: on Linux that's at least JACK,
-        // on Windows ASIO/WASAPI, on macOS CoreAudio. The exact extra
-        // entry depends on the OS, but the union must always be a
-        // superset of the selector's available list.
-        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
-                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector();
-        assertThat(names)
-                .contains("Java Sound")
-                .containsAll(selector.availableBackendNames());
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+        try {
+            assertThat(controller.getAvailableBackendNames())
+                    .containsAll(selector.availableBackendNames())
+                    .contains(JavaxSoundBackend.NAME);
+        } finally {
+            controller.shutdown();
+        }
     }
 
     @Test

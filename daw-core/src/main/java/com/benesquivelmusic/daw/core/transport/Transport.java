@@ -257,14 +257,12 @@ public final class Transport {
      * 315 review; Audio Engine Wiring Design Book §6.1 thread ownership).
      *
      * <p>This is the seek queue's arming condition. The transport state alone
-     * is <em>not</em> a truthful proxy for "something is advancing me":
-     * {@code AudioEngine.startAudioOutput()} returns early when no backend is
-     * configured ("playback without hardware output"), yet the UI still calls
-     * {@link #play()} — the transport is {@link TransportState#PLAYING} with
-     * nobody rendering. Deferring seeks in that state queues them behind a
-     * drain that never comes, freezing the playhead and the time display.
-     * Default {@code false}: an unclaimed transport applies every seek
-     * inline.</p>
+     * is <em>not</em> a truthful proxy for "something is advancing me": state
+     * can be authored by tests, import/recovery code, or a lifecycle operation
+     * in flight. The production Play path now refuses to enter PLAYING unless
+     * the audio callback is running (story 317), while this independent claim
+     * remains the lower-level safety rule. Default {@code false}: an unclaimed
+     * transport applies every seek inline.</p>
      */
     private volatile boolean realTimeClockActive = false;
 

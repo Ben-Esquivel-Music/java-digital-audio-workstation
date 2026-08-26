@@ -1,15 +1,12 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
-import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.AudioFormat.Encoding;
 import javax.sound.sampled.DataLine;
 import javax.sound.sampled.Line;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.Mixer;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.TargetDataLine;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.ShortBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -24,7 +21,7 @@ import java.util.logging.Logger;
  * Cross-platform {@link AudioBackend} built on the JDK's
  * {@code javax.sound.sampled} API.
  *
- * <p>Always available. Latency is higher than a native driver
+ * <p>Latency is higher than a native driver
  * (typically 30–50&nbsp;ms on Windows) which is why this backend is the
  * final rung of the engine's {@code StreamingProvision} fallback ladder,
  * walked when {@link AsioBackend}, {@link CoreAudioBackend},
@@ -62,6 +59,9 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     private final AudioBackendSupport support = new AudioBackendSupport();
 
+    /** Static Java Sound factories, injectable for deterministic contract tests. */
+    private final JavaSoundAccess javaSound;
+
     /**
      * The bound {@link #joinCaptureThread()} actually waits under:
      * {@link #CAPTURE_EXIT_TIMEOUT_MILLIS} unless the package-private
@@ -71,6 +71,10 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     private SourceDataLine outputLine;
     private TargetDataLine inputLine;
+
+    /** Actual line formats, pinned only after the corresponding line opens. */
+    private javax.sound.sampled.AudioFormat outputLineFormat;
+    private javax.sound.sampled.AudioFormat inputLineFormat;
 
     /**
      * The thread started by {@link #startCapture(AudioFormat, int)} for the
@@ -106,7 +110,7 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     /** Creates a new Java Sound backend. */
     public JavaxSoundBackend() {
-        this(CAPTURE_EXIT_TIMEOUT_MILLIS);
+        this(JavaSoundAccess.SYSTEM, CAPTURE_EXIT_TIMEOUT_MILLIS);
     }
 
     /**
@@ -125,6 +129,17 @@ public final class JavaxSoundBackend implements AudioBackend {
      *                                 rule out
      */
     JavaxSoundBackend(long captureExitTimeoutMillis) {
+        this(JavaSoundAccess.SYSTEM, captureExitTimeoutMillis);
+    }
+
+    /** Package-private Java Sound seam for headless format/device tests. */
+    JavaxSoundBackend(JavaSoundAccess javaSound) {
+        this(javaSound, CAPTURE_EXIT_TIMEOUT_MILLIS);
+    }
+
+    /** Package-private full test constructor. */
+    JavaxSoundBackend(JavaSoundAccess javaSound, long captureExitTimeoutMillis) {
+        this.javaSound = Objects.requireNonNull(javaSound, "javaSound must not be null");
         if (captureExitTimeoutMillis <= 0L) {
             throw new IllegalArgumentException(
                     "captureExitTimeoutMillis must be positive: " + captureExitTimeoutMillis);
@@ -139,16 +154,81 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     @Override
     public boolean isAvailable() {
-        return true;
+        try {
+            Mixer.Info[] mixerInfos = javaSound.mixerInfos();
+            if (mixerInfos.length == 0) {
+                try {
+                    return canObtainSourceLine(null) == AvailabilityProbe.AVAILABLE;
+                } catch (RuntimeException unavailable) {
+                    LOG.log(Level.FINE,
+                            "Java Sound default-mixer availability probe failed", unavailable);
+                    return false;
+                }
+            }
+            for (Mixer.Info mixerInfo : mixerInfos) {
+                try {
+                    AvailabilityProbe result = canObtainSourceLine(mixerInfo);
+                    if (result == AvailabilityProbe.AVAILABLE) {
+                        return true;
+                    }
+                    if (result == AvailabilityProbe.UNRELEASED) {
+                        return false;
+                    }
+                } catch (RuntimeException unavailable) {
+                    LOG.log(Level.FINE,
+                            () -> "Java Sound availability probe failed for mixer '"
+                                    + mixerInfo.getName() + "': " + unavailable);
+                }
+            }
+        } catch (RuntimeException unavailable) {
+            LOG.log(Level.FINE, "Java Sound availability probe failed", unavailable);
+        }
+        return false;
+    }
+
+    private AvailabilityProbe canObtainSourceLine(Mixer.Info mixerInfo) {
+        for (javax.sound.sampled.AudioFormat format : probeFormats(mixerInfo)) {
+            SourceDataLine probe = null;
+            try {
+                if (!javaSound.supportsSourceLine(mixerInfo, format)) {
+                    continue;
+                }
+                probe = javaSound.sourceLine(mixerInfo, format);
+            } catch (LineUnavailableException | RuntimeException unavailable) {
+                // This advertised format cannot presently yield a line.
+            }
+            if (probe == null) {
+                continue;
+            }
+            try {
+                probe.close();
+                return AvailabilityProbe.AVAILABLE;
+            } catch (RuntimeException closeFailure) {
+                LOG.log(Level.FINE,
+                        "Java Sound availability probe line could not be closed",
+                        closeFailure);
+                // A handle whose release cannot be confirmed is not an
+                // available rung: reporting true would invite open() to put a
+                // second line beside a provider that may still count this one.
+                return AvailabilityProbe.UNRELEASED;
+            }
+        }
+        return AvailabilityProbe.UNAVAILABLE;
+    }
+
+    private enum AvailabilityProbe {
+        AVAILABLE,
+        UNAVAILABLE,
+        UNRELEASED
     }
 
     /**
      * {@inheritDoc}
      *
-     * <p>Always {@code true}: {@link #sink(AudioBlock)} writes to a real
+     * <p>{@code true} because {@link #sink(AudioBlock)} writes to a real
      * {@link SourceDataLine} and {@link #inputBlocks()} republishes captured
-     * audio from a {@link TargetDataLine}. Java Sound is the always-available
-     * final rung of the story-316 fallback ladder.</p>
+     * audio from a {@link TargetDataLine}. Availability itself is reported
+     * separately by {@link #isAvailable()} and is never assumed.</p>
      */
     @Override
     public boolean supportsStreaming() {
@@ -158,18 +238,20 @@ public final class JavaxSoundBackend implements AudioBackend {
     /**
      * {@inheritDoc}
      *
-     * <p>Clamps the bit depth to 16 while preserving the requested sample
-     * rate and channel count, because this backend's output path
-     * ({@link #encodePcm16}) only encodes 16-bit little-endian PCM. Without
-     * this negotiation a 24-bit engine format would open a 24-bit line and
-     * then throw on every {@link #sink(AudioBlock)} — the Java Sound rung
-     * must actually produce sound (story 316; story 317 owns the fuller
-     * line-format negotiation).</p>
+     * <p>Preserves byte-aligned 8/16/24/32-bit requests because the signed
+     * converter handles every one of those widths; unusual non-byte-aligned
+     * requests fall back to 16 bit. The selected mixer's concrete encoding is
+     * negotiated independently at open time:
+     * 32-bit {@link Encoding#PCM_FLOAT} first, then a signed-PCM format whose
+     * exact sample width and byte order {@link #encode(AudioBlock,
+     * javax.sound.sampled.AudioFormat)} honours. The SDK bus itself remains
+     * normalized float32, so the SDK bit depth never causes float bits to be
+     * written into an integer line.</p>
      */
     @Override
     public AudioFormat negotiateFormat(AudioFormat requested) {
         Objects.requireNonNull(requested, "requested must not be null");
-        if (requested.bitDepth() == 16) {
+        if (isIntegerWidth(requested.bitDepth())) {
             return requested;
         }
         return new AudioFormat(requested.sampleRate(), requested.channels(), 16);
@@ -178,19 +260,18 @@ public final class JavaxSoundBackend implements AudioBackend {
     @Override
     public List<AudioDeviceInfo> listDevices() {
         List<AudioDeviceInfo> devices = new ArrayList<>();
-        Mixer.Info[] infos = AudioSystem.getMixerInfo();
+        Mixer.Info[] infos = javaSound.mixerInfos();
         for (int i = 0; i < infos.length; i++) {
-            Mixer mixer = AudioSystem.getMixer(infos[i]);
             int maxIn = 0;
             int maxOut = 0;
-            for (Line.Info li : mixer.getTargetLineInfo()) {
+            for (Line.Info li : javaSound.targetLineInfo(infos[i])) {
                 if (li instanceof DataLine.Info dli) {
-                    maxIn = Math.max(maxIn, maxChannels(dli));
+                    maxIn = mergeChannelCount(maxIn, maxChannels(dli));
                 }
             }
-            for (Line.Info li : mixer.getSourceLineInfo()) {
+            for (Line.Info li : javaSound.sourceLineInfo(infos[i])) {
                 if (li instanceof DataLine.Info dli) {
-                    maxOut = Math.max(maxOut, maxChannels(dli));
+                    maxOut = mergeChannelCount(maxOut, maxChannels(dli));
                 }
             }
             devices.add(new AudioDeviceInfo(
@@ -208,13 +289,124 @@ public final class JavaxSoundBackend implements AudioBackend {
     }
 
     private static int maxChannels(DataLine.Info info) {
-        int max = 0;
-        for (javax.sound.sampled.AudioFormat f : info.getFormats()) {
-            if (f.getChannels() > max) {
-                max = f.getChannels();
+        var formats = info.getFormats();
+        if (formats.length == 0) {
+            return AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN;
+        }
+        int max = AudioDeviceInfo.CHANNEL_COUNT_UNKNOWN;
+        for (javax.sound.sampled.AudioFormat format : formats) {
+            if (format.getChannels() == javax.sound.sampled.AudioSystem.NOT_SPECIFIED) {
+                continue;
+            }
+            if (format.getChannels() > max) {
+                max = format.getChannels();
             }
         }
-        return Math.max(max, 2);
+        return max;
+    }
+
+    /** Keeps a known positive count over unknown, and unknown over no line. */
+    private static int mergeChannelCount(int current, int candidate) {
+        if (candidate > 0) {
+            return current > 0 ? Math.max(current, candidate) : candidate;
+        }
+        return current == 0 ? candidate : current;
+    }
+
+    /** Formats advertised by one mixer plus conservative standard probes. */
+    private List<javax.sound.sampled.AudioFormat> probeFormats(Mixer.Info mixerInfo) {
+        List<javax.sound.sampled.AudioFormat> formats = new ArrayList<>();
+        for (Line.Info lineInfo : javaSound.sourceLineInfo(mixerInfo)) {
+            if (lineInfo instanceof DataLine.Info dataLineInfo) {
+                for (javax.sound.sampled.AudioFormat format : dataLineInfo.getFormats()) {
+                    if (isSupportedPcmFormat(format)) {
+                        formats.add(format);
+                    }
+                }
+            }
+        }
+        formats.addAll(candidateFormats(new AudioFormat(48_000.0, 2, 16)));
+        formats.addAll(candidateFormats(AudioFormat.CD_QUALITY));
+        return formats;
+    }
+
+    /**
+     * Candidate order is deliberate: the engine bus is float32, so a float
+     * line is bit-exact and avoids quantisation. Signed PCM is the universal
+     * fallback, tried at the requested width and then at 16 bit. Each width is
+     * tried little-endian first (the primary Windows host) and big-endian
+     * second so the encoder is always pinned to the exact selected layout.
+     */
+    private static List<javax.sound.sampled.AudioFormat> candidateFormats(AudioFormat format) {
+        List<javax.sound.sampled.AudioFormat> candidates = new ArrayList<>(6);
+        addCandidate(candidates, pcmFormat(
+                Encoding.PCM_FLOAT, format, Float.SIZE, false));
+        addCandidate(candidates, pcmFormat(
+                Encoding.PCM_FLOAT, format, Float.SIZE, true));
+        if (isIntegerWidth(format.bitDepth())) {
+            addCandidate(candidates, pcmFormat(
+                    Encoding.PCM_SIGNED, format, format.bitDepth(), false));
+            addCandidate(candidates, pcmFormat(
+                    Encoding.PCM_SIGNED, format, format.bitDepth(), true));
+        }
+        addCandidate(candidates, pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, false));
+        addCandidate(candidates, pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, true));
+        return List.copyOf(candidates);
+    }
+
+    private static void addCandidate(
+            List<javax.sound.sampled.AudioFormat> candidates,
+            javax.sound.sampled.AudioFormat candidate) {
+        boolean duplicate = candidates.stream().anyMatch(existing -> sameFormat(existing, candidate));
+        if (!duplicate) {
+            candidates.add(candidate);
+        }
+    }
+
+    private static javax.sound.sampled.AudioFormat pcmFormat(
+            Encoding encoding, AudioFormat format, int bits, boolean bigEndian) {
+        int bytesPerSample = bits / Byte.SIZE;
+        return new javax.sound.sampled.AudioFormat(
+                encoding,
+                (float) format.sampleRate(),
+                bits,
+                format.channels(),
+                format.channels() * bytesPerSample,
+                (float) format.sampleRate(),
+                bigEndian);
+    }
+
+    private static boolean sameFormat(
+            javax.sound.sampled.AudioFormat left,
+            javax.sound.sampled.AudioFormat right) {
+        return left.getEncoding().equals(right.getEncoding())
+                && Float.compare(left.getSampleRate(), right.getSampleRate()) == 0
+                && left.getSampleSizeInBits() == right.getSampleSizeInBits()
+                && left.getChannels() == right.getChannels()
+                && left.getFrameSize() == right.getFrameSize()
+                && left.isBigEndian() == right.isBigEndian();
+    }
+
+    private static boolean isIntegerWidth(int bits) {
+        return bits >= Byte.SIZE && bits <= Integer.SIZE && bits % Byte.SIZE == 0;
+    }
+
+    private static boolean isSupportedPcmFormat(javax.sound.sampled.AudioFormat format) {
+        if (format == null
+                || format.getChannels() <= 0
+                || !(format.getSampleRate() > 0.0f)) {
+            return false;
+        }
+        int bits = format.getSampleSizeInBits();
+        boolean supportedEncoding = Encoding.PCM_FLOAT.equals(format.getEncoding())
+                ? bits == Float.SIZE
+                : Encoding.PCM_SIGNED.equals(format.getEncoding())
+                        && isIntegerWidth(bits);
+        if (!supportedEncoding) {
+            return false;
+        }
+        int packedFrameSize = format.getChannels() * (bits / Byte.SIZE);
+        return format.getFrameSize() == packedFrameSize;
     }
 
     /**
@@ -333,20 +525,22 @@ public final class JavaxSoundBackend implements AudioBackend {
             throw retained;
         }
         support.markOpen(format, bufferFrames);
-        javax.sound.sampled.AudioFormat jFormat = new javax.sound.sampled.AudioFormat(
-                (float) format.sampleRate(),
-                format.bitDepth(),
-                format.channels(),
-                true,
-                false);
-        // Double-buffer slack (see the method javadoc): line.write blocking
-        // is this backend's pacing, so the line buffer is the only underrun
-        // headroom — match the retired daw-core backend's 2x sizing.
-        int lineBufferBytes = bufferFrames * format.bytesPerFrame() * 2;
+        Mixer.Info mixerInfo;
         try {
-            this.outputLine = AudioSystem.getSourceDataLine(jFormat);
-            this.outputLine.open(jFormat, lineBufferBytes);
+            mixerInfo = resolveMixerInfo(device);
+            javax.sound.sampled.AudioFormat requestedOutput = selectOutputFormat(
+                    mixerInfo, format);
+            this.outputLine = javaSound.sourceLine(mixerInfo, requestedOutput);
+            // Double-buffer slack (see the method javadoc): line.write
+            // blocking is this backend's pacing, so its own buffer is the
+            // underrun headroom. Size from the selected concrete Java Sound
+            // frame, never the SDK bit depth: PCM_FLOAT and signed PCM differ.
+            int outputBufferBytes = Math.multiplyExact(
+                    Math.multiplyExact(bufferFrames, requestedOutput.getFrameSize()), 2);
+            this.outputLine.open(requestedOutput, outputBufferBytes);
             this.outputLine.start();
+            this.outputLineFormat = requireActualFormat(
+                    this.outputLine.getFormat(), requestedOutput, "output");
         } catch (LineUnavailableException | RuntimeException e) {
             // Mandatory output line failed: roll the open back — through the
             // same retain-on-failure release close() uses, see
@@ -367,9 +561,15 @@ public final class JavaxSoundBackend implements AudioBackend {
             throw rollBackFailedOutputOpen(e);
         }
         try {
-            this.inputLine = AudioSystem.getTargetDataLine(jFormat);
-            this.inputLine.open(jFormat, lineBufferBytes);
+            javax.sound.sampled.AudioFormat requestedInput = selectInputFormat(
+                    mixerInfo, format);
+            this.inputLine = javaSound.targetLine(mixerInfo, requestedInput);
+            int inputBufferBytes = Math.multiplyExact(
+                    Math.multiplyExact(bufferFrames, requestedInput.getFrameSize()), 2);
+            this.inputLine.open(requestedInput, inputBufferBytes);
             this.inputLine.start();
+            this.inputLineFormat = requireActualFormat(
+                    this.inputLine.getFormat(), requestedInput, "capture");
             startCapture(format, bufferFrames);
             // Published only once the line is open, started AND the capture
             // thread is feeding support.publishInput: openedInputChannels() is
@@ -412,6 +612,107 @@ public final class JavaxSoundBackend implements AudioBackend {
         }
     }
 
+    private Mixer.Info resolveMixerInfo(DeviceId device) {
+        if (!NAME.equals(device.backend())) {
+            throw new IllegalArgumentException(
+                    "device selection not supported on this backend: " + NAME
+                            + " cannot open a device owned by '" + device.backend() + "'");
+        }
+        if (device.isDefault()) {
+            return null;
+        }
+        if (!javaSound.supportsDeviceSelection()) {
+            throw new UnsupportedOperationException(
+                    "device selection not supported on this backend: " + NAME);
+        }
+
+        Mixer.Info[] mixers = javaSound.mixerInfos();
+        List<Mixer.Info> qualifiedMatches = new ArrayList<>(1);
+        for (Mixer.Info mixer : mixers) {
+            String qualified = mixer.getName() + " [" + NAME + "]";
+            if (device.name().equals(qualified)) {
+                qualifiedMatches.add(mixer);
+            }
+        }
+        Mixer.Info qualified = requireUniqueMixer(device.name(), qualifiedMatches);
+        if (qualified != null) {
+            return qualified;
+        }
+
+        List<Mixer.Info> bareMatches = new ArrayList<>(1);
+        for (Mixer.Info mixer : mixers) {
+            if (device.name().equals(mixer.getName())) {
+                bareMatches.add(mixer);
+            }
+        }
+        Mixer.Info bare = requireUniqueMixer(device.name(), bareMatches);
+        if (bare != null) {
+            return bare;
+        }
+        throw new IllegalArgumentException(
+                "Java Sound device '" + device.name() + "' is not available;"
+                        + " reconnect it or choose another device in Audio Settings");
+    }
+
+    /** Returns null only when this pass had no match. */
+    private static Mixer.Info requireUniqueMixer(
+            String selection, List<Mixer.Info> matches) {
+        if (matches.size() == 1) {
+            return matches.getFirst();
+        }
+        if (matches.size() > 1) {
+            throw new IllegalArgumentException(
+                    "Java Sound device '" + selection + "' is ambiguous: "
+                            + matches.size() + " mixers answer to that name;"
+                            + " refusing to open an endpoint the user may not have chosen");
+        }
+        return null;
+    }
+
+    private javax.sound.sampled.AudioFormat selectOutputFormat(
+            Mixer.Info mixerInfo, AudioFormat format) {
+        for (javax.sound.sampled.AudioFormat candidate : candidateFormats(format)) {
+            if (javaSound.supportsSourceLine(mixerInfo, candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalArgumentException(
+                "selected mixer supports neither PCM_FLOAT nor signed PCM at "
+                        + format.sampleRate() + " Hz / " + format.channels() + " channels");
+    }
+
+    private javax.sound.sampled.AudioFormat selectInputFormat(
+            Mixer.Info mixerInfo, AudioFormat format) {
+        for (javax.sound.sampled.AudioFormat candidate : candidateFormats(format)) {
+            if (javaSound.supportsTargetLine(mixerInfo, candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalArgumentException(
+                "selected mixer exposes no PCM_FLOAT or signed-PCM capture line at "
+                        + format.sampleRate() + " Hz / " + format.channels() + " channels");
+    }
+
+    private static javax.sound.sampled.AudioFormat requireActualFormat(
+            javax.sound.sampled.AudioFormat actual,
+            javax.sound.sampled.AudioFormat requested,
+            String direction) {
+        try {
+            requirePackedFormat(actual, requested.getChannels(), direction);
+        } catch (IllegalArgumentException unsupported) {
+            throw new IllegalStateException(
+                    "Java Sound " + direction + " line opened an unsupported actual format: "
+                            + actual + " (requested " + requested + ")", unsupported);
+        }
+        if (Float.compare(actual.getSampleRate(), requested.getSampleRate()) != 0) {
+            throw new IllegalStateException(
+                    "Java Sound " + direction + " line changed the sample rate to "
+                            + actual.getSampleRate() + " Hz (requested "
+                            + requested.getSampleRate() + " Hz)");
+        }
+        return actual;
+    }
+
     /**
      * Rolls a failed OUTPUT-line open back, RETAINING a line it could not
      * release, and builds the failure {@link #open(DeviceId, AudioFormat, int)}
@@ -439,10 +740,9 @@ public final class JavaxSoundBackend implements AudioBackend {
      * attached as a suppressed exception AND logged, never swallowed.</p>
      *
      * <p>Package-private so {@code JavaxSoundBackendTest} can drive this
-     * rollback with a planted line. {@code AudioSystem} is a static JDK
-     * factory and this backend takes no injectable mixer, so a line whose
-     * {@code close()} refuses cannot be reached through a real
-     * {@link #open(DeviceId, AudioFormat, int)}.</p>
+     * rollback directly with a planted line, independently of device and
+     * format negotiation through the injectable {@link JavaSoundAccess}
+     * boundary.</p>
      *
      * @param openFailure why the output line could not be opened; becomes the
      *                    returned exception's cause
@@ -581,17 +881,19 @@ public final class JavaxSoundBackend implements AudioBackend {
      * harmless.</p>
      *
      * <p>Package-private for the same testing reason as
-     * {@link #rollBackFailedOutputOpen(Exception)}: {@code AudioSystem} is a
-     * static JDK factory, so a line whose {@code read} blocks on a
-     * test-controlled gate can only be planted, and the thread that reads it
-     * can only be started from here.</p>
+     * {@link #rollBackFailedOutputOpen(Exception)}: a planted line can hold a
+     * {@code read} on a test-controlled gate while this method starts exactly
+     * the capture-thread state under test.</p>
      *
      * @param format       the opened format, for decoding the line's PCM
      * @param bufferFrames frames per block, sizing the read buffer
      */
     void startCapture(AudioFormat format, int bufferFrames) {
         final TargetDataLine line = this.inputLine;
-        final int bytes = bufferFrames * format.bytesPerFrame();
+        final javax.sound.sampled.AudioFormat lineFormat = this.inputLineFormat != null
+                ? this.inputLineFormat
+                : pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, false);
+        final int bytes = Math.multiplyExact(bufferFrames, lineFormat.getFrameSize());
         // Pinned BEFORE the thread starts: this is the stream the thread was
         // started for, and the only one it may ever publish into.
         final SubmissionPublisher<AudioBlock> stream = support.currentInputPublisher();
@@ -603,7 +905,7 @@ public final class JavaxSoundBackend implements AudioBackend {
                 if (read <= 0) {
                     break;
                 }
-                AudioBlock block = decodePcm16(buf, read, format);
+                AudioBlock block = decode(buf, read, format, lineFormat);
                 support.publishInput(stream, block);
             }
         }, "javax-sound-capture");
@@ -613,14 +915,60 @@ public final class JavaxSoundBackend implements AudioBackend {
     }
 
     static AudioBlock decodePcm16(byte[] pcm, int bytes, AudioFormat format) {
-        ShortBuffer sb = ByteBuffer.wrap(pcm, 0, bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
-        int shorts = sb.remaining();
-        float[] samples = new float[shorts];
-        for (int i = 0; i < shorts; i++) {
-            samples[i] = sb.get(i) / 32768.0f;
+        return decode(pcm, bytes, format,
+                pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, false));
+    }
+
+    static AudioBlock decode(
+            byte[] pcm,
+            int bytes,
+            AudioFormat format,
+            javax.sound.sampled.AudioFormat lineFormat) {
+        Objects.requireNonNull(pcm, "pcm must not be null");
+        Objects.requireNonNull(format, "format must not be null");
+        requirePackedFormat(lineFormat, format.channels(), "capture");
+        if (bytes < 0 || bytes > pcm.length) {
+            throw new IllegalArgumentException(
+                    "bytes must be between 0 and the PCM array length: " + bytes);
         }
-        int frames = shorts / format.channels();
+
+        int frameSize = lineFormat.getFrameSize();
+        int frames = bytes / frameSize;
+        int sampleBytes = lineFormat.getSampleSizeInBits() / Byte.SIZE;
+        int samplesPerBlock = Math.multiplyExact(frames, format.channels());
+        float[] samples = new float[samplesPerBlock];
+        boolean bigEndian = lineFormat.isBigEndian();
+        boolean floatingPoint = Encoding.PCM_FLOAT.equals(lineFormat.getEncoding());
+        int bits = lineFormat.getSampleSizeInBits();
+        double signedScale = 1L << (bits - 1);
+
+        for (int sample = 0; sample < samplesPerBlock; sample++) {
+            int offset = sample * sampleBytes;
+            long raw = readUnsigned(pcm, offset, sampleBytes, bigEndian);
+            if (floatingPoint) {
+                samples[sample] = Float.intBitsToFloat((int) raw);
+                continue;
+            }
+            long signBit = 1L << (bits - 1);
+            long signed = (raw & signBit) == 0L ? raw : raw - (1L << bits);
+            samples[sample] = (float) (signed / signedScale);
+        }
         return new AudioBlock(format.sampleRate(), format.channels(), frames, samples);
+    }
+
+    private static long readUnsigned(
+            byte[] source, int offset, int sampleBytes, boolean bigEndian) {
+        long value = 0L;
+        if (bigEndian) {
+            for (int byteIndex = 0; byteIndex < sampleBytes; byteIndex++) {
+                value = (value << Byte.SIZE) | Byte.toUnsignedLong(source[offset + byteIndex]);
+            }
+        } else {
+            for (int byteIndex = sampleBytes - 1; byteIndex >= 0; byteIndex--) {
+                value = (value << Byte.SIZE) | Byte.toUnsignedLong(source[offset + byteIndex]);
+            }
+        }
+        return value;
     }
 
     @Override
@@ -652,11 +1000,11 @@ public final class JavaxSoundBackend implements AudioBackend {
         if (!support.isOpen() || line == null) {
             return;
         }
-        AudioFormat fmt = support.format();
-        if (fmt == null) {
+        javax.sound.sampled.AudioFormat lineFormat = this.outputLineFormat;
+        if (lineFormat == null) {
             return;
         }
-        byte[] pcm = encodePcm16(block, fmt.bitDepth());
+        byte[] pcm = encode(block, lineFormat);
         line.write(pcm, 0, pcm.length);
     }
 
@@ -676,20 +1024,73 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     static byte[] encodePcm16(AudioBlock block, int bitDepth) {
         if (bitDepth != 16) {
-            // Down-convert to 16-bit LE for simplicity; the SDK allows any bit
-            // depth but javax.sound.sampled output is configured for 16-bit here.
-            // Higher bit depths are the domain of native backends.
             throw new IllegalArgumentException(
                     "JavaxSoundBackend only supports 16-bit output, got " + bitDepth);
         }
-        float[] s = block.samples();
-        byte[] out = new byte[s.length * 2];
-        for (int i = 0; i < s.length; i++) {
-            int v = Math.round(Math.max(-1.0f, Math.min(1.0f, s[i])) * 32767.0f);
-            out[2 * i]     = (byte) (v & 0xFF);
-            out[2 * i + 1] = (byte) ((v >> 8) & 0xFF);
+        AudioFormat sdkFormat = new AudioFormat(
+                block.sampleRate(), block.channels(), Short.SIZE);
+        return encode(block,
+                pcmFormat(Encoding.PCM_SIGNED, sdkFormat, Short.SIZE, false));
+    }
+
+    static byte[] encode(
+            AudioBlock block, javax.sound.sampled.AudioFormat lineFormat) {
+        Objects.requireNonNull(block, "block must not be null");
+        requirePackedFormat(lineFormat, block.channels(), "output");
+        int sampleBytes = lineFormat.getSampleSizeInBits() / Byte.SIZE;
+        float[] samples = block.samples();
+        byte[] output = new byte[Math.multiplyExact(samples.length, sampleBytes)];
+        boolean bigEndian = lineFormat.isBigEndian();
+
+        if (Encoding.PCM_FLOAT.equals(lineFormat.getEncoding())) {
+            for (int sample = 0; sample < samples.length; sample++) {
+                writeRaw(output, sample * sampleBytes, sampleBytes, bigEndian,
+                        Integer.toUnsignedLong(Float.floatToRawIntBits(samples[sample])));
+            }
+            return output;
         }
-        return out;
+
+        int bits = lineFormat.getSampleSizeInBits();
+        long peak = (1L << (bits - 1)) - 1L;
+        for (int sample = 0; sample < samples.length; sample++) {
+            float clamped = Math.clamp(samples[sample], -1.0f, 1.0f);
+            long quantized = Math.clamp(Math.round(clamped * (double) peak), -peak, peak);
+            writeRaw(output, sample * sampleBytes, sampleBytes, bigEndian, quantized);
+        }
+        return output;
+    }
+
+    private static void writeRaw(
+            byte[] destination,
+            int offset,
+            int sampleBytes,
+            boolean bigEndian,
+            long value) {
+        for (int byteIndex = 0; byteIndex < sampleBytes; byteIndex++) {
+            int destinationIndex = bigEndian
+                    ? offset + sampleBytes - 1 - byteIndex
+                    : offset + byteIndex;
+            destination[destinationIndex] = (byte) (value >>> (byteIndex * Byte.SIZE));
+        }
+    }
+
+    private static void requirePackedFormat(
+            javax.sound.sampled.AudioFormat lineFormat,
+            int expectedChannels,
+            String direction) {
+        Objects.requireNonNull(lineFormat, "lineFormat must not be null");
+        if (!isSupportedPcmFormat(lineFormat)
+                || lineFormat.getChannels() != expectedChannels) {
+            throw new IllegalArgumentException(
+                    "unsupported Java Sound " + direction + " format: " + lineFormat);
+        }
+        int sampleBytes = lineFormat.getSampleSizeInBits() / Byte.SIZE;
+        int packedFrameSize = Math.multiplyExact(expectedChannels, sampleBytes);
+        if (lineFormat.getFrameSize() != packedFrameSize) {
+            throw new IllegalArgumentException(
+                    "Java Sound " + direction + " format uses padded frames: "
+                            + lineFormat.getFrameSize() + " bytes, expected " + packedFrameSize);
+        }
     }
 
     @Override
@@ -902,6 +1303,7 @@ public final class JavaxSoundBackend implements AudioBackend {
             return e;
         }
         this.inputLine = null;
+        this.inputLineFormat = null;
         joinCaptureThread();
         return null;
     }
@@ -994,6 +1396,7 @@ public final class JavaxSoundBackend implements AudioBackend {
             return e; // RETAINED in this.outputLine — a later close retries it
         }
         this.outputLine = null;
+        this.outputLineFormat = null;
         return null;
     }
 

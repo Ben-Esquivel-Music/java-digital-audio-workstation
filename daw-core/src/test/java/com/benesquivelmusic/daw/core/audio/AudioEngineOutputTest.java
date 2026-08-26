@@ -182,17 +182,17 @@ class AudioEngineOutputTest {
     }
 
     @Test
-    void startWithNoProvisionShouldStartEngineOnly() {
+    void startWithNoProvisionShouldRefuseBeforeStartingEngine() {
         AudioEngine engineNoBackend = new AudioEngine(FORMAT);
-        try {
-            engineNoBackend.startAudioOutput();
 
-            assertThat(engineNoBackend.isRunning()).isTrue();
-            assertThat(engineNoBackend.isStreamOpen()).isFalse();
-            assertThat(engineNoBackend.openStreamBackendName()).isEmpty();
-        } finally {
-            engineNoBackend.stop();
-        }
+        assertThatThrownBy(engineNoBackend::startAudioOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no audio backend is configured");
+        assertThat(engineNoBackend.isRunning())
+                .as("a refused Play must not allocate/start an engine with no callback")
+                .isFalse();
+        assertThat(engineNoBackend.isStreamOpen()).isFalse();
+        assertThat(engineNoBackend.openStreamBackendName()).isEmpty();
     }
 
     @Test
@@ -267,6 +267,9 @@ class AudioEngineOutputTest {
                 .as("the ladder still walked every rung")
                 .isEqualTo(1);
         assertThat(engine.isStreamOpen()).isFalse();
+        assertThat(engine.isRunning())
+                .as("an all-rungs failure rolls back the engine start it triggered")
+                .isFalse();
     }
 
     @Test
@@ -646,7 +649,8 @@ class AudioEngineOutputTest {
         // format while the backend opened the NEGOTIATED one, so a rung that
         // widens the channel count would make every sink reject the block.
         // Falling through the ladder — visibly, via the hop's event — is the
-        // honest outcome; adapting the render shape is story 317.
+        // honest outcome. Story 317 broadens backend encoding negotiation;
+        // adapting the engine's render shape remains unsupported.
         DefaultEventBus bus = new DefaultEventBus();
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
