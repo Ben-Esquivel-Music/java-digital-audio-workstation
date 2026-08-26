@@ -13,13 +13,18 @@ import javax.sound.sampled.TargetDataLine;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.classfile.Attributes;
+import java.lang.classfile.CodeElement;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
+import java.lang.classfile.Instruction;
 import java.lang.classfile.MethodModel;
+import java.lang.classfile.Opcode;
 import java.lang.classfile.attribute.CodeAttribute;
 import java.lang.classfile.constantpool.ClassEntry;
 import java.lang.classfile.instruction.ExceptionCatch;
+import java.lang.classfile.instruction.FieldInstruction;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -197,6 +202,114 @@ class JavaxSoundBackendTest {
     }
 
     @Test
+    void closeThenReopenPublishesADistinctLineAndEncodingGeneration() {
+        Mixer.Info studio = new TestMixerInfo("Reopening Interface");
+        javax.sound.sampled.AudioFormat advertisedFloat = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT, 32, 2, false);
+        javax.sound.sampled.AudioFormat firstActualSigned = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {studio}, advertisedFloat, null);
+        access.actualOutputFormat = firstActualSigned;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+        AudioBlock block = new AudioBlock(48_000.0, 2, 1, new float[] {1.0f, -1.0f});
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, studio.getName()),
+                STREAM_FORMAT, 1);
+        Object firstGeneration = fieldValue(backend, "outputGeneration");
+        MemoryLine firstLine = access.lastSourceLine;
+        backend.sink(block);
+        backend.close();
+
+        assertThat(firstLine.writtenBytes()).containsExactly(
+                java.util.HexFormat.of().parseHex("ff7f0180"));
+        assertThat(fieldValue(backend, "outputGeneration"))
+                .as("close unpublishes the old generation before release")
+                .isNull();
+
+        access.actualOutputFormat = advertisedFloat;
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, studio.getName()),
+                STREAM_FORMAT, 1);
+        Object secondGeneration = fieldValue(backend, "outputGeneration");
+        MemoryLine secondLine = access.lastSourceLine;
+        backend.sink(block);
+
+        assertThat(secondGeneration).isNotNull().isNotSameAs(firstGeneration);
+        assertThat(secondLine).isNotSameAs(firstLine);
+        assertThat(secondLine.writtenBytes())
+                .containsExactly(rawFloatBytes(block.samples(), false));
+
+        backend.close();
+    }
+
+    /**
+     * A close/reopen can replace every lifecycle field between any two plain
+     * reads in {@code sink}. The concurrency contract is therefore structural:
+     * one acquire-read of one volatile immutable carrier, followed only by
+     * reads from that carrier, with no lifecycle monitor around the blocking
+     * line write.
+     */
+    @Test
+    void sinkUsesOneVolatileGenerationSnapshotWithoutALifecycleLock() throws IOException {
+        Field generation;
+        try {
+            generation = JavaxSoundBackend.class.getDeclaredField("outputGeneration");
+        } catch (NoSuchFieldException e) {
+            throw new AssertionError("sink needs one output-generation carrier", e);
+        }
+        assertThat(Modifier.isVolatile(generation.getModifiers())).isTrue();
+        assertThat(generation.getType().isRecord()).isTrue();
+        try {
+            assertThat(Modifier.isSynchronized(JavaxSoundBackend.class
+                    .getDeclaredMethod("sink", AudioBlock.class)
+                    .getModifiers())).isFalse();
+        } catch (NoSuchMethodException e) {
+            throw new AssertionError("AudioBackend.sink must remain implemented", e);
+        }
+
+        byte[] bytes = readClassBytes(JavaxSoundBackend.class);
+        assertThat(bytes).as("the JavaxSoundBackend class file must be readable").isNotNull();
+        ClassModel model = ClassFile.of().parse(bytes);
+        String backendOwner = JavaxSoundBackend.class.getName().replace('.', '/');
+        List<String> backendFieldReads = new ArrayList<>();
+        List<Opcode> monitorOperations = new ArrayList<>();
+        int scannedSinkMethods = 0;
+        for (MethodModel method : model.methods()) {
+            if (!method.methodName().stringValue().equals("sink")) {
+                continue;
+            }
+            CodeAttribute code = method.findAttribute(Attributes.code())
+                    .map(CodeAttribute.class::cast)
+                    .orElse(null);
+            if (code == null) {
+                continue;
+            }
+            scannedSinkMethods++;
+            for (CodeElement element : code) {
+                if (element instanceof FieldInstruction field
+                        && field.opcode() == Opcode.GETFIELD
+                        && field.owner().asInternalName().equals(backendOwner)) {
+                    backendFieldReads.add(field.name().stringValue());
+                }
+                if (element instanceof Instruction instruction
+                        && (instruction.opcode() == Opcode.MONITORENTER
+                        || instruction.opcode() == Opcode.MONITOREXIT)) {
+                    monitorOperations.add(instruction.opcode());
+                }
+            }
+        }
+
+        assertThat(scannedSinkMethods).isEqualTo(1);
+        assertThat(backendFieldReads)
+                .as("sink must acquire exactly one coherent generation, never separate"
+                        + " lifecycle line/format/support fields")
+                .containsExactly("outputGeneration");
+        assertThat(monitorOperations)
+                .as("the blocking SourceDataLine.write path must not hold a monitor")
+                .isEmpty();
+    }
+
+    @Test
     void signedCodecCoversEveryNegotiableWidthAndByteOrder() {
         AudioBlock block = new AudioBlock(48_000.0, 1, 4,
                 new float[] {1.1f, -1.1f, Float.NaN, 0.5f});
@@ -292,7 +405,7 @@ class JavaxSoundBackendTest {
     }
 
     @Test
-    void availabilitySkipsBrokenMixerAndClosesSuccessfulProbeLine() {
+    void availabilitySkipsBrokenMixerWithoutClosingTheSuccessfulUnopenedProbe() {
         Mixer.Info broken = new TestMixerInfo("Broken Mixer");
         Mixer.Info healthy = new TestMixerInfo("Healthy Mixer");
         TestJavaSoundAccess access = new TestJavaSoundAccess(
@@ -304,59 +417,86 @@ class JavaxSoundBackendTest {
         assertThat(backend.isAvailable()).isTrue();
         assertThat(access.selectedSourceMixer.get()).isSameAs(healthy);
         assertThat(access.lastSourceLine.closeCalls())
-                .as("an availability probe never leaves even an unopened line handle behind")
-                .isEqualTo(1);
+                .as("Mixer.getLine returns an unopened object; only open reserves resources")
+                .isZero();
     }
 
     @Test
-    void availabilityRetainsAnUnreleasedProbeUntilACloseRetrySucceeds() {
-        Mixer.Info refusing = new TestMixerInfo("Refusing Probe Mixer");
-        Mixer.Info healthy = new TestMixerInfo("Healthy Mixer");
+    void availabilityNeverOwnsOrClosesItsUnopenedProbeObject() {
+        Mixer.Info refusingClose = new TestMixerInfo("Unopened Probe Mixer");
         TestJavaSoundAccess access = new TestJavaSoundAccess(
-                new Mixer.Info[] {refusing, healthy}, javaFormat(
-                        javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT, 32, 2, false), null);
+                new Mixer.Info[] {refusingClose}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT,
+                        32, 2, false), null);
         access.failSourceLineClose = true;
         JavaxSoundBackend backend = new JavaxSoundBackend(access);
 
-        assertThat(backend.isAvailable()).isFalse();
-        assertThat(access.sourceLineAcquisitions.get())
-                .as("no later mixer is probed beside an unreleased line handle")
-                .isEqualTo(1);
-        assertThat(access.selectedSourceMixer.get()).isSameAs(refusing);
-        assertThat(access.lastSourceLine.closeCalls()).isEqualTo(1);
-
-        assertThat(backend.isAvailable()).isFalse();
-        assertThat(access.sourceLineAcquisitions.get())
-                .as("a retry closes the retained handle before it obtains anything else")
-                .isEqualTo(1);
-        assertThat(access.lastSourceLine.closeCalls()).isEqualTo(2);
-        assertThat(retainedLine(backend, "availabilityProbeLine"))
-                .isSameAs(access.lastSourceLine);
-
-        assertThatThrownBy(() -> backend.open(
-                DeviceId.defaultFor(backend.name()), STREAM_FORMAT, STREAM_FRAMES))
-                .isInstanceOf(AudioBackendException.class)
-                .hasMessageContaining("availability probe line");
-        assertThat(access.sourceLineAcquisitions.get())
-                .as("open retries the retained probe before acquiring a stream line")
-                .isEqualTo(1);
-
-        assertThatThrownBy(backend::close)
-                .isInstanceOf(AudioBackendException.class)
-                .hasMessageContaining("availability probe line");
-        assertThat(access.sourceLineAcquisitions.get()).isEqualTo(1);
-
-        MemoryLine retainedProbe = access.lastSourceLine;
-        retainedProbe.allowClose();
-        access.failSourceLineClose = false;
+        assertThat(backend.isAvailable()).isTrue();
+        MemoryLine firstProbe = access.lastSourceLine;
         assertThatCode(backend::close).doesNotThrowAnyException();
-        assertThat(retainedProbe.closeCalls()).isEqualTo(5);
-        assertThat(retainedLine(backend, "availabilityProbeLine")).isNull();
+        assertThat(firstProbe.isOpen()).isFalse();
+        assertThat(firstProbe.closeCalls()).isZero();
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(access.sourceLineAcquisitions.get()).isEqualTo(2);
+        assertThat(access.sourceLines)
+                .allSatisfy(line -> {
+                    assertThat(line.isOpen()).isFalse();
+                    assertThat(line.closeCalls()).isZero();
+                });
+    }
+
+    @Test
+    void selectorRefreshAndDefaultQueriesIgnoreUnopenedProbeCloseFailures() {
+        Mixer.Info mixer = new TestMixerInfo("Temporary Selector Probe");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {mixer}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                        16, 2, false), null);
+        access.failSourceLineClose = true;
+        AtomicInteger temporaryBackends = new AtomicInteger();
+        AudioBackendSelector selector = new AudioBackendSelector(Map.of(
+                JavaxSoundBackend.NAME,
+                () -> {
+                    temporaryBackends.incrementAndGet();
+                    return new JavaxSoundBackend(access);
+                }));
+
+        assertThat(selector.availableBackends()).containsExactly(JavaxSoundBackend.NAME);
+        assertThat(selector.defaultBackendName()).isEqualTo(JavaxSoundBackend.NAME);
+        assertThat(selector.availableBackendNames()).containsExactly(JavaxSoundBackend.NAME);
+
+        assertThat(temporaryBackends.get()).isEqualTo(3);
+        assertThat(access.sourceLineAcquisitions.get()).isEqualTo(3);
+        assertThat(access.sourceLines)
+                .as("temporary selector backends must not create retained close ownership")
+                .allSatisfy(line -> {
+                    assertThat(line.isOpen()).isFalse();
+                    assertThat(line.closeCalls()).isZero();
+                });
+    }
+
+    @Test
+    void availabilityOfAnOpenStreamDoesNotAcquireASecondLineOrPoisonClose() {
+        Mixer.Info oneLineMixer = new TestMixerInfo("One-Line Mixer");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {oneLineMixer}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                        16, 2, false), null);
+        access.failSourceLineCloseAfterFirst = true;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, oneLineMixer.getName()),
+                STREAM_FORMAT, STREAM_FRAMES);
+        MemoryLine streamLine = access.lastSourceLine;
 
         assertThat(backend.isAvailable()).isTrue();
         assertThat(access.sourceLineAcquisitions.get())
-                .as("a new probe is permitted only after release was confirmed")
-                .isEqualTo(2);
+                .as("the already-open validated line is the availability proof")
+                .isEqualTo(1);
+        assertThatCode(backend::close).doesNotThrowAnyException();
+        assertThat(streamLine.closeCalls()).isEqualTo(1);
+        assertThat(access.sourceLines).containsExactly(streamLine);
     }
 
     @Test
@@ -436,9 +576,8 @@ class JavaxSoundBackendTest {
         assertThat(access.selectedSourceFormat.get()).isSameAs(advertised);
         assertThat(access.sourceLineAcquisitions.get()).isEqualTo(1);
         assertThat(access.lastSourceLine.closeCalls())
-                .as("an unusable generic probe is still released")
-                .isEqualTo(1);
-        assertThat(retainedLine(backend, "availabilityProbeLine")).isNull();
+                .as("even an unusable probe is unopened and owns no device resource")
+                .isZero();
     }
 
     @Test
@@ -1402,13 +1541,18 @@ class JavaxSoundBackendTest {
 
     /** Reads back a line field: non-null means the backend still holds it. */
     private static Object retainedLine(JavaxSoundBackend backend, String field) {
+        return fieldValue(backend, field);
+    }
+
+    /** Reads a private backend field for a same-module lifecycle invariant. */
+    private static Object fieldValue(JavaxSoundBackend backend, String field) {
         try {
             Field declared = JavaxSoundBackend.class.getDeclaredField(field);
             declared.setAccessible(true);
             return declared.get(backend);
         } catch (ReflectiveOperationException e) {
-            throw new AssertionError("JavaxSoundBackend." + field + " must exist —"
-                    + " retention has nowhere to keep a line without it", e);
+            throw new AssertionError("JavaxSoundBackend." + field
+                    + " must exist for this lifecycle invariant", e);
         }
     }
 
@@ -1463,8 +1607,10 @@ class JavaxSoundBackendTest {
         private final AtomicReference<javax.sound.sampled.AudioFormat> selectedSourceFormat =
                 new AtomicReference<>();
         private final AtomicInteger sourceLineAcquisitions = new AtomicInteger();
+        private final List<MemoryLine> sourceLines = new ArrayList<>();
         private boolean deviceSelectionSupported = true;
         private boolean failSourceLineClose;
+        private boolean failSourceLineCloseAfterFirst;
         private boolean requireAdvertisedSourceProbe;
         private javax.sound.sampled.AudioFormat actualOutputFormat;
         private javax.sound.sampled.AudioFormat actualInputFormat;
@@ -1524,8 +1670,11 @@ class JavaxSoundBackendTest {
                 Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format) {
             selectedSourceMixer.set(mixerInfo);
             selectedSourceFormat.set(format);
-            sourceLineAcquisitions.incrementAndGet();
-            lastSourceLine = new MemoryLine(actualOutputFormat, failSourceLineClose);
+            int acquisition = sourceLineAcquisitions.incrementAndGet();
+            boolean failClose = failSourceLineClose
+                    || (failSourceLineCloseAfterFirst && acquisition > 1);
+            lastSourceLine = new MemoryLine(actualOutputFormat, failClose);
+            sourceLines.add(lastSourceLine);
             return lastSourceLine;
         }
 
@@ -1584,7 +1733,7 @@ class JavaxSoundBackendTest {
         private boolean open;
         private boolean running;
 
-        private boolean failClose;
+        private final boolean failClose;
 
         MemoryLine(javax.sound.sampled.AudioFormat actualFormat, boolean failClose) {
             this.actualFormat = actualFormat;
@@ -1605,10 +1754,6 @@ class JavaxSoundBackendTest {
 
         int closeCalls() {
             return closeCalls;
-        }
-
-        void allowClose() {
-            failClose = false;
         }
 
         @Override
@@ -1659,7 +1804,7 @@ class JavaxSoundBackendTest {
         public void close() {
             closeCalls++;
             if (failClose) {
-                throw new IllegalStateException("test line refuses probe close");
+                throw new IllegalStateException("test line refuses to close");
             }
             open = false;
             running = false;

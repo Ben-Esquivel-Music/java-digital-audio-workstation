@@ -86,6 +86,11 @@ interface JavaSoundAccess {
 
     boolean supportsTargetLine(Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format);
 
+    /**
+     * Obtains an unopened playback line. Java Sound reserves device resources
+     * when {@link Line#open()} succeeds, not when a mixer returns this object;
+     * consequently a query that never opens the line does not own a close.
+     */
     SourceDataLine sourceLine(Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format)
             throws LineUnavailableException;
 

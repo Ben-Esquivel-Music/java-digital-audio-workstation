@@ -69,26 +69,38 @@ public final class JavaxSoundBackend implements AudioBackend {
      */
     private final long captureExitTimeoutMillis;
 
+    /**
+     * Output line owned by the lifecycle path. A failed close leaves this
+     * reference in place so a later close can retry the same handle.
+     */
     private SourceDataLine outputLine;
     private TargetDataLine inputLine;
 
     /**
-     * An unopened line obtained solely by {@link #isAvailable()} whose
-     * {@link Line#close()} did not return normally.
-     *
-     * <p>This is deliberately separate from {@link #outputLine}: an
-     * availability check may run while a real stream is open, and must never
-     * disturb that stream. The probe stays reachable until a later
-     * availability check, {@link #open(DeviceId, AudioFormat, int)}, or
-     * {@link #close()} confirms its release. Lifecycle entry points are
-     * synchronized so no concurrent probe/open can acquire a second line
-     * while this reference is retained.</p>
+     * One safely published, generation-coherent playback snapshot for the
+     * render-pump sink path. A sink reads this volatile field exactly once, so
+     * it can never combine one stream's line with another stream's actual
+     * format across a concurrent close/reopen. It is cleared before teardown;
+     * {@link #outputLine} separately retains lifecycle ownership if close
+     * fails.
      */
-    private SourceDataLine availabilityProbeLine;
+    private volatile OutputGeneration outputGeneration;
 
-    /** Actual line formats, pinned only after the corresponding line opens. */
-    private javax.sound.sampled.AudioFormat outputLineFormat;
+    /** Actual capture format, pinned only after the line opens. */
     private javax.sound.sampled.AudioFormat inputLineFormat;
+
+    /** Immutable playback state published once an output line is fully ready. */
+    private record OutputGeneration(
+            SourceDataLine line,
+            javax.sound.sampled.AudioFormat actualFormat,
+            AudioFormat busFormat) {
+
+        private OutputGeneration {
+            Objects.requireNonNull(line, "line must not be null");
+            Objects.requireNonNull(actualFormat, "actualFormat must not be null");
+            Objects.requireNonNull(busFormat, "busFormat must not be null");
+        }
+    }
 
     /**
      * The thread started by {@link #startCapture(AudioFormat, int)} for the
@@ -168,18 +180,31 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     @Override
     public synchronized boolean isAvailable() {
-        RuntimeException retainedProbeFailure = releaseAvailabilityProbeLine();
-        if (retainedProbeFailure != null) {
-            LOG.log(Level.FINE,
-                    "Java Sound availability probe still cannot be released",
-                    retainedProbeFailure);
-            return false;
+        // A stream line already owned by this backend is the strongest
+        // possible availability proof. In particular, do not ask a mixer
+        // with a one-line limit for a second SourceDataLine while the first is
+        // actively streaming. A retained/partially-opened line has no
+        // published generation and blocks a fresh probe until close retries
+        // its release.
+        if (this.outputLine != null) {
+            OutputGeneration current = this.outputGeneration;
+            if (current == null) {
+                return false;
+            }
+            try {
+                return current.line().isOpen();
+            } catch (RuntimeException invalidLine) {
+                LOG.log(Level.FINE,
+                        "Java Sound open output line could not report its state",
+                        invalidLine);
+                return false;
+            }
         }
         try {
             Mixer.Info[] mixerInfos = javaSound.mixerInfos();
             if (mixerInfos.length == 0) {
                 try {
-                    return canObtainSourceLine(null) == AvailabilityProbe.AVAILABLE;
+                    return canObtainSourceLine(null);
                 } catch (RuntimeException unavailable) {
                     LOG.log(Level.FINE,
                             "Java Sound default-mixer availability probe failed", unavailable);
@@ -188,12 +213,8 @@ public final class JavaxSoundBackend implements AudioBackend {
             }
             for (Mixer.Info mixerInfo : mixerInfos) {
                 try {
-                    AvailabilityProbe result = canObtainSourceLine(mixerInfo);
-                    if (result == AvailabilityProbe.AVAILABLE) {
+                    if (canObtainSourceLine(mixerInfo)) {
                         return true;
-                    }
-                    if (result == AvailabilityProbe.UNRELEASED) {
-                        return false;
                     }
                 } catch (RuntimeException unavailable) {
                     LOG.log(Level.FINE,
@@ -207,7 +228,7 @@ public final class JavaxSoundBackend implements AudioBackend {
         return false;
     }
 
-    private AvailabilityProbe canObtainSourceLine(Mixer.Info mixerInfo) {
+    private boolean canObtainSourceLine(Mixer.Info mixerInfo) {
         for (javax.sound.sampled.AudioFormat format : probeFormats(mixerInfo)) {
             SourceDataLine probe = null;
             try {
@@ -234,29 +255,17 @@ public final class JavaxSoundBackend implements AudioBackend {
                         "Java Sound availability probe exposed no usable default format",
                         invalidDefault);
             }
-            try {
-                probe.close();
-                if (codecSupported) {
-                    return AvailabilityProbe.AVAILABLE;
-                }
-            } catch (RuntimeException closeFailure) {
-                this.availabilityProbeLine = probe;
-                LOG.log(Level.FINE,
-                        "Java Sound availability probe line could not be closed",
-                        closeFailure);
-                // A handle whose release cannot be confirmed is not an
-                // available rung: reporting true would invite open() to put a
-                // second line beside a provider that may still count this one.
-                return AvailabilityProbe.UNRELEASED;
+            if (codecSupported) {
+                return true;
             }
+            // Mixer.getLine returns an unopened line. Java Sound reserves
+            // system resources only when Line.open() succeeds, so this query
+            // neither owns nor closes the discarded probe object. Treating a
+            // provider-specific close failure on an unopened object as device
+            // ownership created an unrecoverable retained handle whenever a
+            // selector used a temporary backend instance.
         }
-        return AvailabilityProbe.UNAVAILABLE;
-    }
-
-    private enum AvailabilityProbe {
-        AVAILABLE,
-        UNAVAILABLE,
-        UNRELEASED
+        return false;
     }
 
     /**
@@ -636,10 +645,11 @@ public final class JavaxSoundBackend implements AudioBackend {
      * field is a no-op, so the engine's {@code close()} — or the retained-line
      * guard at the top of the next open — releases it. What the refusal DOES
      * clear is the open FLAG, through {@code support.markClosed()} inside the
-     * rollback, so {@link #isOpen()} never latches {@code true} behind an
-     * escaped failure. That is the same "not open, not resumable, not yet
-     * released" shape {@link #rollBackFailedOutputOpen(Exception)} and
-     * {@link #close()} both document.</p>
+     * rollback, and the output generation is never published, so neither
+     * {@link #isOpen()} nor {@link #sink(AudioBlock)} treats the refused open
+     * as live. That is the same "not open, not resumable, not yet released"
+     * shape {@link #rollBackFailedOutputOpen(Exception)} and {@link #close()}
+     * both document.</p>
      *
      * <p>BOTH rollbacks hand the partially opened line back through the SAME
      * retain-on-failure release the {@link #close()} path uses —
@@ -707,6 +717,7 @@ public final class JavaxSoundBackend implements AudioBackend {
         }
         support.markOpen(format, bufferFrames);
         Mixer.Info mixerInfo;
+        OutputGeneration openedOutput;
         try {
             mixerInfo = resolveMixerInfo(device);
             javax.sound.sampled.AudioFormat requestedOutput = selectOutputFormat(
@@ -720,8 +731,14 @@ public final class JavaxSoundBackend implements AudioBackend {
                     Math.multiplyExact(bufferFrames, requestedOutput.getFrameSize()), 2);
             this.outputLine.open(requestedOutput, outputBufferBytes);
             this.outputLine.start();
-            this.outputLineFormat = requireActualFormat(
+            javax.sound.sampled.AudioFormat actualOutput = requireActualFormat(
                     this.outputLine.getFormat(), requestedOutput, "output");
+            // Build the line and its actual encoding into one immutable
+            // generation, but publish it only after the whole open succeeds
+            // below. REQUIRED capture can still refuse this open, so
+            // publishing here would let a concurrent sink write a stream whose
+            // open ultimately throws.
+            openedOutput = new OutputGeneration(this.outputLine, actualOutput, format);
         } catch (LineUnavailableException | RuntimeException e) {
             // Mandatory output line failed: roll the open back — through the
             // same retain-on-failure release close() uses, see
@@ -791,6 +808,10 @@ public final class JavaxSoundBackend implements AudioBackend {
                 throw refusal;
             }
         }
+        // The complete stream is now accepted: capture either started or
+        // degraded under OPTIONAL. This release-write safely publishes every
+        // final field in the immutable generation to the lock-free sink path.
+        this.outputGeneration = openedOutput;
     }
 
     private Mixer.Info resolveMixerInfo(DeviceId device) {
@@ -979,8 +1000,9 @@ public final class JavaxSoundBackend implements AudioBackend {
      * and is still logged, exactly as on the output path: the OPEN failure is
      * the actionable one and must stay the cause.</p>
      *
-     * <p>{@code support.markClosed()} runs on the REQUIRED path only, and only
-     * on the FLAG. The output line is left open on purpose — see
+     * <p>{@code support.markClosed()} runs on the REQUIRED path only, and the
+     * local output generation is never published. The lifecycle-owned output
+     * line is left open on purpose — see
      * {@link #open(DeviceId, AudioFormat, int, CaptureRequirement)} for why the
      * engine's ladder walk, not this method, is what releases it — but
      * {@link #isOpen()} must not latch {@code true} behind a failure that
@@ -1012,9 +1034,11 @@ public final class JavaxSoundBackend implements AudioBackend {
                                 + " without input",
                 openFailure);
         if (required) {
-            // The flag only — the output line stays open for the caller's
-            // close() to release. A refused open must never leave isOpen()
-            // reporting true.
+            // The lifecycle-owned output line stays open for the caller's
+            // close() to release, but it is no longer a writable stream
+            // generation. A refused open must never leave isOpen() reporting
+            // true or let sink() continue writing to that refused stream.
+            this.outputGeneration = null;
             support.markClosed();
         }
         RuntimeException releaseFailure = releaseInputLine();
@@ -1176,17 +1200,28 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     @Override
     public void sink(AudioBlock block) {
-        support.validateOutgoing(block);
-        SourceDataLine line = this.outputLine;
-        if (!support.isOpen() || line == null) {
+        Objects.requireNonNull(block, "block must not be null");
+        // One acquire-read pins both the line and its actual format to the
+        // same open generation. Its SDK bus format supplies validation too,
+        // so no separate support-state read can come from another generation.
+        // Never re-read lifecycle fields around the blocking write: a
+        // lifecycle transition can publish another generation between those
+        // reads, and a torn old-line/new-format pair can put raw float bytes
+        // into an integer device line. The engine separately quiesces its
+        // render pump before release; this carrier guarantees coherence, not
+        // a lifetime lease over a concurrently closing line.
+        OutputGeneration current = this.outputGeneration;
+        if (current == null) {
             return;
         }
-        javax.sound.sampled.AudioFormat lineFormat = this.outputLineFormat;
-        if (lineFormat == null) {
-            return;
+        if (block.channels() != current.busFormat().channels()) {
+            throw new IllegalArgumentException(
+                    "block channels (" + block.channels()
+                            + ") does not match opened channels ("
+                            + current.busFormat().channels() + ")");
         }
-        byte[] pcm = encode(block, lineFormat);
-        line.write(pcm, 0, pcm.length);
+        byte[] pcm = encode(block, current.actualFormat());
+        current.line().write(pcm, 0, pcm.length);
     }
 
     /**
@@ -1321,10 +1356,12 @@ public final class JavaxSoundBackend implements AudioBackend {
      * The two directions are released independently too — a capture line that
      * cannot be closed must not strand the output line.</p>
      *
-     * <p>{@code support.close()} and the capture-thread interrupt run first on
-     * every path, so {@link #isOpen()} is {@code false} even while a handle is
-     * retained. That is precisely the {@code RELEASE_PENDING} shape: not open,
-     * not resumable, not yet released.</p>
+     * <p>The output-generation unpublish, {@code support.close()}, and the
+     * capture-thread interrupt run before line release on every path, so
+     * {@link #isOpen()} is {@code false} and {@link #sink(AudioBlock)} has no
+     * published target even while a lifecycle handle is retained. That is
+     * precisely the {@code RELEASE_PENDING} shape: not open, not resumable,
+     * not yet released.</p>
      *
      * <p>The interrupt alone does not establish that the capture thread has
      * EXITED (story 316 review): {@link TargetDataLine#read} is not
@@ -1358,14 +1395,19 @@ public final class JavaxSoundBackend implements AudioBackend {
      * final rung in {@code RELEASE_PENDING} over a thread that holds no
      * device.</p>
      *
-     * @throws AudioBackendException if any retained availability, capture, or
-     *                               output line could not be closed — the
+     * @throws AudioBackendException if any retained capture or output line
+     *                               could not be closed — the
      *                               un-released line(s) are named, the first
      *                               failure is the cause, and later failures
      *                               are attached as suppressed exceptions
      */
     @Override
     public synchronized void close() {
+        // Unpublish before any teardown so later sinks immediately drop
+        // without ever taking this monitor. The engine quiesces its render
+        // pump before close; this is publication control, not an in-flight
+        // write lease.
+        this.outputGeneration = null;
         support.close();
         Thread t = this.captureThread;
         if (t != null) {
@@ -1381,15 +1423,15 @@ public final class JavaxSoundBackend implements AudioBackend {
     }
 
     /**
-     * Attempts to release the retained availability probe plus BOTH stream
-     * directions and reports whether the device is still held.
+     * Attempts to release BOTH stream directions and reports whether the
+     * device is still held.
      *
-     * <p>All three attempts always run: one handle's failure must never strand
+     * <p>Both attempts always run: one handle's failure must never strand
      * another. A line that closed is dropped from its field; a line whose
      * {@link Line#close()} threw stays there, so the next attempt — the next
-     * {@link #close()}, availability check, or the guard in
+     * {@link #close()} or the guard in
      * {@link #open(DeviceId, AudioFormat, int)} — reaches the same handle
-     * instead of leaking it. Doing nothing when all three fields are already
+     * instead of leaking it. Doing nothing when both fields are already
      * null is what keeps {@link #close()} idempotent on a never-opened or
      * already-closed backend.</p>
      *
@@ -1402,16 +1444,13 @@ public final class JavaxSoundBackend implements AudioBackend {
      *         one as a suppressed exception
      */
     private AudioBackendException releaseLines(String phase) {
-        RuntimeException availabilityProbeFailure = releaseAvailabilityProbeLine();
         RuntimeException inputFailure = releaseInputLine();
         RuntimeException outputFailure = releaseOutputLine();
-        if (availabilityProbeFailure == null && inputFailure == null && outputFailure == null) {
+        if (inputFailure == null && outputFailure == null) {
             return null;
         }
-        List<String> heldLines = new ArrayList<>(3);
-        List<RuntimeException> failures = new ArrayList<>(3);
-        addReleaseFailure(heldLines, failures,
-                "availability probe line", availabilityProbeFailure);
+        List<String> heldLines = new ArrayList<>(2);
+        List<RuntimeException> failures = new ArrayList<>(2);
         addReleaseFailure(heldLines, failures, "capture line", inputFailure);
         addReleaseFailure(heldLines, failures, "output line", outputFailure);
         RuntimeException first = failures.getFirst();
@@ -1445,21 +1484,6 @@ public final class JavaxSoundBackend implements AudioBackend {
             default -> String.join(", ", heldLines.subList(0, heldLines.size() - 1))
                     + " and " + heldLines.getLast();
         };
-    }
-
-    /** Retries an availability probe close and clears it only on confirmation. */
-    private RuntimeException releaseAvailabilityProbeLine() {
-        SourceDataLine probe = this.availabilityProbeLine;
-        if (probe == null) {
-            return null;
-        }
-        try {
-            probe.close();
-        } catch (RuntimeException closeFailure) {
-            return closeFailure;
-        }
-        this.availabilityProbeLine = null;
-        return null;
     }
 
     /**
@@ -1593,6 +1617,10 @@ public final class JavaxSoundBackend implements AudioBackend {
      *         (or there was none)
      */
     private RuntimeException releaseOutputLine() {
+        // This volatile write is the sink-path teardown. Lifecycle ownership
+        // remains in outputLine until close() actually returns, so a failed
+        // release is still retained and honestly reported.
+        this.outputGeneration = null;
         SourceDataLine line = this.outputLine;
         if (line == null) {
             return null;
@@ -1615,7 +1643,6 @@ public final class JavaxSoundBackend implements AudioBackend {
             return e; // RETAINED in this.outputLine — a later close retries it
         }
         this.outputLine = null;
-        this.outputLineFormat = null;
         return null;
     }
 
