@@ -27,6 +27,7 @@ import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
@@ -986,6 +987,275 @@ class AudioEngineOutputTest {
     }
 
     @Test
+    void aReusedExceptionGetsOnlyTheCurrentInvocationAttribution() {
+        AudioBackendException reused = new AudioBackendException("reused backend failure");
+        backend.pumpStartFailure = reused;
+
+        assertThat(catchThrowable(engine::startAudioOutput)).isSameAs(reused);
+
+        var replacement = new SynchronousTestBackend("Replacement");
+        replacement.openFailure = reused;
+        engine.setStreamingProvision(provisionOf("Replacement", replacement));
+        Throwable laterOpenFailure = catchThrowable(engine::startAudioOutput);
+
+        assertThat(laterOpenFailure).isSameAs(reused);
+        assertThat(engine.takeFailedStreamStart(laterOpenFailure))
+                .as("the later occurrence carries its own provision, never the stale winner")
+                .contains(new StreamStartFailure(
+                        new StreamStartEndpoint(
+                                "Replacement", DeviceId.defaultFor("Replacement")),
+                        StreamStartFailure.Operation.START));
+    }
+
+    @Test
+    void reprovisionAfterFailureCannotRewriteTheInvocationBoundRequestedEndpoint()
+            throws Exception {
+        var original = new SynchronousTestBackend("Original Requested");
+        var originalFailure = new AudioBackendException("original open refused");
+        original.openFailure = originalFailure;
+        engine.setStreamingProvision(provisionOf("Original Requested", original));
+
+        var replacement = new SynchronousTestBackend("Replacement");
+        StreamingProvision replacementProvision = provisionOf("Replacement", replacement);
+        CountDownLatch insideOriginalOpen = new CountDownLatch(1);
+        CountDownLatch reprovisionStarted = new CountDownLatch(1);
+        CountDownLatch reprovisionCompleted = new CountDownLatch(1);
+        AtomicReference<Throwable> threadFailure = new AtomicReference<>();
+        original.openBarrier = () -> {
+            insideOriginalOpen.countDown();
+            try {
+                assertThat(reprovisionStarted.await(
+                        GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                        .as("the replacement caller reached the locked reprovision")
+                        .isTrue();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted inside the original open", interrupted);
+            }
+        };
+        Thread reprovisioner = daemon("failure-attribution-reprovision", () -> {
+            try {
+                assertThat(insideOriginalOpen.await(
+                        GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(
+                        "interrupted awaiting the original open", interrupted);
+            }
+            reprovisionStarted.countDown();
+            engine.setStreamingProvision(replacementProvision);
+            reprovisionCompleted.countDown();
+        }, threadFailure);
+        reprovisioner.start();
+
+        Throwable propagated = catchThrowable(engine::startAudioOutput);
+
+        assertThat(propagated).isSameAs(originalFailure);
+        assertThat(reprovisionCompleted.await(
+                GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("reprovision completed before failure attribution was consumed")
+                .isTrue();
+        joinOrFail(reprovisioner);
+        assertThat(threadFailure.get()).isNull();
+        assertThat(engine.getStreamingProvision()).isSameAs(replacementProvision);
+        assertThat(engine.takeFailedStreamStart(propagated))
+                .contains(new StreamStartFailure(
+                        new StreamStartEndpoint("Original Requested",
+                                DeviceId.defaultFor("Original Requested")),
+                        StreamStartFailure.Operation.START));
+    }
+
+    @Test
+    void concurrentCallersCannotOverwriteEachOthersPumpFailureContext() throws Exception {
+        AudioBackendException firstFailure =
+                new AudioBackendException("first caller pump failure");
+        AudioBackendException secondFailure =
+                new AudioBackendException("second caller pump failure");
+        CountDownLatch firstCallFailed = new CountDownLatch(1);
+        CountDownLatch inspectFirstContext = new CountDownLatch(1);
+        AtomicReference<StreamStartFailure> firstAttribution = new AtomicReference<>();
+        AtomicReference<Throwable> threadFailure = new AtomicReference<>();
+        backend.pumpStartFailure = firstFailure;
+
+        Thread firstCaller = daemon("first-failed-stream-caller", () -> {
+            Throwable propagated = catchThrowable(engine::startAudioOutput);
+            assertThat(propagated).isSameAs(firstFailure);
+            firstCallFailed.countDown();
+            try {
+                assertThat(inspectFirstContext.await(
+                        GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                        .as("the second caller completed before the first consumed context")
+                        .isTrue();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(
+                        "interrupted while awaiting the second caller", interrupted);
+            }
+            firstAttribution.set(engine.takeFailedStreamStart(propagated).orElse(null));
+        }, threadFailure);
+        firstCaller.start();
+        assertThat(firstCallFailed.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("the first caller retained its unconsumed failure context")
+                .isTrue();
+
+        backend.pumpStartFailure = secondFailure;
+        Throwable secondPropagated = catchThrowable(engine::startAudioOutput);
+        assertThat(secondPropagated).isSameAs(secondFailure);
+        assertThat(engine.takeFailedStreamStart(secondPropagated))
+                .contains(new StreamStartFailure(
+                        new StreamStartEndpoint("Stub", DeviceId.defaultFor("Stub")),
+                        StreamStartFailure.Operation.START));
+
+        inspectFirstContext.countDown();
+        joinOrFail(firstCaller);
+
+        assertThat(threadFailure.get()).isNull();
+        assertThat(firstAttribution.get())
+                .as("the second caller did not replace the first caller's context")
+                .isEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("Stub", DeviceId.defaultFor("Stub")),
+                        StreamStartFailure.Operation.START));
+    }
+
+    @Test
+    void announcementReentrantStartPreservesTheOuterPumpFailureEndpoint() {
+        var transport = new com.benesquivelmusic.daw.core.transport.Transport();
+        engine.setGraph(transport, null, null);
+
+        var first = new SynchronousTestBackend("First");
+        first.failOnOpen = true;
+        var failedWinner = new SynchronousTestBackend("Failed Winner");
+        var outerFailure = new AudioBackendException(
+                "pump start refused by Failed Winner");
+        failedWinner.pumpStartFailure = outerFailure;
+        failedWinner.pumpStartBarrier = () -> transport.setPositionInBeats(24.0);
+        engine.setStreamingProvision(provisionOf("First", first, failedWinner));
+
+        var reentrantWinner = new SynchronousTestBackend("Reentrant Winner");
+        var observerThread = new AtomicReference<Thread>();
+        var reentrantFailure = new AtomicReference<Throwable>();
+        var observerCalls = new AtomicInteger();
+        Thread lifecycleCaller = Thread.currentThread();
+        transport.play();
+        transport.addChangeListener(kind -> {
+            if (kind != com.benesquivelmusic.daw.core.transport.Transport.ChangeKind.POSITION
+                    || !observerCalls.compareAndSet(0, 1)) {
+                return;
+            }
+            observerThread.set(Thread.currentThread());
+            try {
+                engine.setStreamingProvision(
+                        provisionOf("Reentrant Winner", reentrantWinner));
+                engine.startAudioOutput();
+            } catch (Throwable failure) {
+                reentrantFailure.set(failure);
+            }
+        });
+
+        Throwable propagated = catchThrowable(engine::startAudioOutput);
+
+        assertThat(propagated).isSameAs(outerFailure);
+        assertThat(observerCalls)
+                .as("the failed start's post-unlock clock release delivered its announcement")
+                .hasValue(1);
+        assertThat(observerThread.get())
+                .as("the regression exercises same-thread announcement reentrancy")
+                .isSameAs(lifecycleCaller);
+        assertThat(reentrantFailure.get()).isNull();
+        assertThat(engine.openStreamBackendName()).contains("Reentrant Winner");
+        assertThat(engine.takeFailedStreamStart(propagated))
+                .as("the nested start cannot clear the still-active outer invocation frame")
+                .contains(new StreamStartFailure(
+                        new StreamStartEndpoint(
+                                "Failed Winner", DeviceId.defaultFor("Failed Winner")),
+                        StreamStartFailure.Operation.START));
+    }
+
+    @Test
+    void failedResumeIsBoundToTheActualPausedEndpointAndResumeOperation() {
+        engine.startAudioOutput();
+        engine.pauseAudioOutput();
+        var resumeFailure = new AudioBackendException("resume callback refused");
+        backend.pumpStartFailure = resumeFailure;
+
+        Throwable propagated = catchThrowable(engine::startAudioOutput);
+
+        assertThat(propagated).isSameAs(resumeFailure);
+        assertThat(engine.isStreamPaused()).isTrue();
+        assertThat(engine.takeFailedStreamStart(propagated))
+                .contains(new StreamStartFailure(
+                        new StreamStartEndpoint("Stub", DeviceId.defaultFor("Stub")),
+                        StreamStartFailure.Operation.RESUME));
+    }
+
+    @Test
+    void lifecycleReplacementBetweenPausedSnapshotAndStartBindsTheNewFreshAttempt()
+            throws Exception {
+        engine.startAudioOutput();
+        engine.pauseAudioOutput();
+        engine.stop(); // keeps A paused/open while allowing a provision replacement
+        StreamStartEndpoint stalePausedEndpoint = new StreamStartEndpoint(
+                "Stub", DeviceId.defaultFor("Stub"));
+
+        var replacement = new SynchronousTestBackend("Replacement");
+        var replacementFailure = new AudioBackendException("replacement open refused");
+        replacement.openFailure = replacementFailure;
+        DeviceId replacementDevice = new DeviceId("Replacement", "Replacement Device");
+        StreamingProvision replacementProvision = new StreamingProvision(
+                "Replacement", replacementDevice,
+                List.of(new BackendStreamRung(replacement, replacementDevice)));
+
+        CountDownLatch replacementInsidePausedClose = new CountDownLatch(1);
+        CountDownLatch allowPausedClose = new CountDownLatch(1);
+        CountDownLatch startCallEntered = new CountDownLatch(1);
+        AtomicReference<Throwable> propagated = new AtomicReference<>();
+        AtomicReference<StreamStartFailure> attribution = new AtomicReference<>();
+        AtomicReference<Throwable> threadFailure = new AtomicReference<>();
+        backend.closeBarrier = () -> {
+            replacementInsidePausedClose.countDown();
+            try {
+                assertThat(allowPausedClose.await(
+                        GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                        .as("the start caller reached the replacement's locked close gate")
+                        .isTrue();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted inside paused close", interrupted);
+            }
+        };
+        Thread replacer = daemon("paused-endpoint-replacer",
+                () -> engine.setStreamingProvision(replacementProvision), threadFailure);
+        replacer.start();
+        assertThat(replacementInsidePausedClose.await(
+                GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("replacement holds lifecycleLock while closing paused A")
+                .isTrue();
+
+        Thread starter = daemon("post-replacement-stream-starter", () -> {
+            startCallEntered.countDown();
+            Throwable failure = catchThrowable(engine::startAudioOutput);
+            propagated.set(failure);
+            attribution.set(engine.takeFailedStreamStart(failure).orElse(null));
+        }, threadFailure);
+        starter.start();
+        assertThat(startCallEntered.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("start invocation is waiting behind the replacement transition")
+                .isTrue();
+        allowPausedClose.countDown();
+
+        joinOrFail(replacer);
+        joinOrFail(starter);
+        assertThat(threadFailure.get()).isNull();
+        assertThat(propagated.get()).isSameAs(replacementFailure);
+        assertThat(attribution.get())
+                .isEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("Replacement", replacementDevice),
+                        StreamStartFailure.Operation.START))
+                .isNotEqualTo(new StreamStartFailure(
+                        stalePausedEndpoint, StreamStartFailure.Operation.RESUME));
+    }
+
+    @Test
     void aPumpStartFailureNeverPublishesAnEventNamingTheUnstartedRungAsActive() {
         // Story 316 review: the fallback events used to go out the moment
         // the rung's open() returned — BEFORE startOpenedStream() put a pump
@@ -1000,13 +1270,24 @@ class AudioEngineOutputTest {
             SynchronousTestBackend first = new SynchronousTestBackend("First");
             first.failOnOpen = true;
             SynchronousTestBackend second = new SynchronousTestBackend("Second");
-            second.failOnPumpStart = true;
+            AudioBackendException pumpStartFailure =
+                    new AudioBackendException("pump start refused by Second");
+            second.pumpStartFailure = pumpStartFailure;
             engine.setStreamingProvision(provisionOf("First", first, second));
 
-            assertThatThrownBy(engine::startAudioOutput)
+            Throwable propagated = catchThrowable(engine::startAudioOutput);
+            assertThat(propagated)
                     .as("the pump-start failure still propagates unchanged")
-                    .isInstanceOf(AudioBackendException.class)
-                    .hasMessage("pump start refused by Second");
+                    .isSameAs(pumpStartFailure);
+            assertThat(engine.takeFailedStreamStart(propagated))
+                    .as("failure context keeps the attempted winner after open state clears")
+                    .contains(new StreamStartFailure(
+                            new StreamStartEndpoint(
+                                    "Second", DeviceId.defaultFor("Second")),
+                            StreamStartFailure.Operation.START));
+            assertThat(engine.takeFailedStreamStart(propagated))
+                    .as("endpoint context is one-shot and cannot be reused by a stale failure")
+                    .isEmpty();
 
             assertThat(second.closeCount.get())
                     .as("the rung whose pump never started gave its handle back")
@@ -1902,6 +2183,8 @@ class AudioEngineOutputTest {
         volatile Runnable openBarrier;
         /** The same one-shot gate inside {@code inputBlocks()} — a pump start. */
         volatile Runnable pumpStartBarrier;
+        /** The same one-shot gate inside {@code close()} — a lifecycle release. */
+        volatile Runnable closeBarrier;
         final AtomicInteger openCount = new AtomicInteger();
         final AtomicInteger closeCount = new AtomicInteger();
         final AtomicInteger pumpStarts = new AtomicInteger();
@@ -1909,7 +2192,9 @@ class AudioEngineOutputTest {
         final AtomicInteger lastSunkChannels = new AtomicInteger();
         final AtomicInteger lastSunkFrames = new AtomicInteger();
         volatile boolean failOnOpen;
+        volatile RuntimeException openFailure;
         volatile boolean failOnPumpStart;
+        volatile RuntimeException pumpStartFailure;
         volatile boolean failOnClose;
         /**
          * Story 316 re-review: {@code close()} returns NORMALLY but the
@@ -2026,6 +2311,10 @@ class AudioEngineOutputTest {
             Runnable gate = openBarrier;
             openBarrier = null;
             crossOnce(gate);
+            RuntimeException configuredFailure = openFailure;
+            if (configuredFailure != null) {
+                throw configuredFailure;
+            }
             if (failOnOpen) {
                 throw new AudioBackendException("open refused by " + name);
             }
@@ -2045,6 +2334,10 @@ class AudioEngineOutputTest {
             Runnable gate = pumpStartBarrier;
             pumpStartBarrier = null;
             crossOnce(gate);
+            RuntimeException configuredFailure = pumpStartFailure;
+            if (configuredFailure != null) {
+                throw configuredFailure;
+            }
             if (failOnPumpStart) {
                 throw new AudioBackendException("pump start refused by " + name);
             }
@@ -2117,6 +2410,9 @@ class AudioEngineOutputTest {
         public void close() {
             record("close");
             closeCount.incrementAndGet();
+            Runnable gate = closeBarrier;
+            closeBarrier = null;
+            crossOnce(gate);
             if (failOnClose) {
                 throw new AudioBackendException("close refused by " + name);
             }

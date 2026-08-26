@@ -72,6 +72,20 @@ public final class JavaxSoundBackend implements AudioBackend {
     private SourceDataLine outputLine;
     private TargetDataLine inputLine;
 
+    /**
+     * An unopened line obtained solely by {@link #isAvailable()} whose
+     * {@link Line#close()} did not return normally.
+     *
+     * <p>This is deliberately separate from {@link #outputLine}: an
+     * availability check may run while a real stream is open, and must never
+     * disturb that stream. The probe stays reachable until a later
+     * availability check, {@link #open(DeviceId, AudioFormat, int)}, or
+     * {@link #close()} confirms its release. Lifecycle entry points are
+     * synchronized so no concurrent probe/open can acquire a second line
+     * while this reference is retained.</p>
+     */
+    private SourceDataLine availabilityProbeLine;
+
     /** Actual line formats, pinned only after the corresponding line opens. */
     private javax.sound.sampled.AudioFormat outputLineFormat;
     private javax.sound.sampled.AudioFormat inputLineFormat;
@@ -153,7 +167,14 @@ public final class JavaxSoundBackend implements AudioBackend {
     }
 
     @Override
-    public boolean isAvailable() {
+    public synchronized boolean isAvailable() {
+        RuntimeException retainedProbeFailure = releaseAvailabilityProbeLine();
+        if (retainedProbeFailure != null) {
+            LOG.log(Level.FINE,
+                    "Java Sound availability probe still cannot be released",
+                    retainedProbeFailure);
+            return false;
+        }
         try {
             Mixer.Info[] mixerInfos = javaSound.mixerInfos();
             if (mixerInfos.length == 0) {
@@ -200,10 +221,26 @@ public final class JavaxSoundBackend implements AudioBackend {
             if (probe == null) {
                 continue;
             }
+            boolean codecSupported = false;
+            try {
+                // A provider accepting a wildcard DataLine.Info proves only
+                // that it can return some line. The unopened line's default
+                // format is the concrete capability that availability may
+                // advertise; a wildcard, padded, or otherwise unsupported
+                // default would still be rejected by open's format contract.
+                codecSupported = isSupportedPcmFormat(probe.getFormat());
+            } catch (RuntimeException invalidDefault) {
+                LOG.log(Level.FINE,
+                        "Java Sound availability probe exposed no usable default format",
+                        invalidDefault);
+            }
             try {
                 probe.close();
-                return AvailabilityProbe.AVAILABLE;
+                if (codecSupported) {
+                    return AvailabilityProbe.AVAILABLE;
+                }
             } catch (RuntimeException closeFailure) {
+                this.availabilityProbeLine = probe;
                 LOG.log(Level.FINE,
                         "Java Sound availability probe line could not be closed",
                         closeFailure);
@@ -318,9 +355,26 @@ public final class JavaxSoundBackend implements AudioBackend {
         List<javax.sound.sampled.AudioFormat> formats = new ArrayList<>();
         for (Line.Info lineInfo : javaSound.sourceLineInfo(mixerInfo)) {
             if (lineInfo instanceof DataLine.Info dataLineInfo) {
-                for (javax.sound.sampled.AudioFormat format : dataLineInfo.getFormats()) {
-                    if (isSupportedPcmFormat(format)) {
-                        formats.add(format);
+                for (javax.sound.sampled.AudioFormat advertised : dataLineInfo.getFormats()) {
+                    List<javax.sound.sampled.AudioFormat> concreteFormats =
+                            concreteProbeFormats(advertised);
+                    for (javax.sound.sampled.AudioFormat concrete : concreteFormats) {
+                        addCandidate(formats, concrete);
+                    }
+                    if (!concreteFormats.isEmpty() && containsWildcard(advertised)) {
+                        // A wildcard descriptor may represent a provider whose
+                        // only concrete layout is outside our conservative
+                        // 48/44.1-kHz mono/stereo probes (for example a
+                        // multichannel-only interface). DataLine.Info is
+                        // explicitly allowed to carry NOT_SPECIFIED, so ask
+                        // the provider for that generic line as the final
+                        // capability probe. The non-empty expansion proves
+                        // that the descriptor can represent a packed layout
+                        // our codec consumes; canObtainSourceLine additionally
+                        // requires the returned line to expose such a concrete
+                        // default. Actual opened formats remain subject to
+                        // requireActualFormat.
+                        addCandidate(formats, advertised);
                     }
                 }
             }
@@ -328,6 +382,126 @@ public final class JavaxSoundBackend implements AudioBackend {
         formats.addAll(candidateFormats(new AudioFormat(48_000.0, 2, 16)));
         formats.addAll(candidateFormats(AudioFormat.CD_QUALITY));
         return formats;
+    }
+
+    /**
+     * Expands a Java Sound capability descriptor into packed, concrete PCM
+     * layouts the SDK codec can actually consume.
+     *
+     * <p>{@link javax.sound.sampled.AudioSystem#NOT_SPECIFIED} is a wildcard
+     * in {@link DataLine.Info}: providers commonly advertise a fixed native
+     * rate with wildcard channels/frame size, or vice versa. Passing that
+     * descriptor through {@link #isSupportedPcmFormat} rejects it before the
+     * provider can answer. Instead, this method preserves every fixed part
+     * and fills only wildcard parts with concrete packed layouts. A fixed
+     * padded frame is still refused, so availability never advertises a line
+     * that {@link #encode(AudioBlock, javax.sound.sampled.AudioFormat)} cannot
+     * write.</p>
+     */
+    private static List<javax.sound.sampled.AudioFormat> concreteProbeFormats(
+            javax.sound.sampled.AudioFormat advertised) {
+        if (advertised == null || !isSupportedPcmEncoding(advertised.getEncoding())) {
+            return List.of();
+        }
+
+        List<Integer> sampleWidths = concreteSampleWidths(advertised);
+        List<Float> sampleRates = concreteSampleRates(advertised);
+        if (sampleWidths.isEmpty() || sampleRates.isEmpty()) {
+            return List.of();
+        }
+
+        List<javax.sound.sampled.AudioFormat> concrete = new ArrayList<>();
+        for (int bits : sampleWidths) {
+            int sampleBytes = bits / Byte.SIZE;
+            for (int channels : concreteChannelCounts(advertised, sampleBytes)) {
+                int packedFrameSize = Math.multiplyExact(channels, sampleBytes);
+                int advertisedFrameSize = advertised.getFrameSize();
+                if (advertisedFrameSize != javax.sound.sampled.AudioSystem.NOT_SPECIFIED
+                        && advertisedFrameSize != packedFrameSize) {
+                    continue;
+                }
+                for (float sampleRate : sampleRates) {
+                    float advertisedFrameRate = advertised.getFrameRate();
+                    if (advertisedFrameRate
+                                    != javax.sound.sampled.AudioSystem.NOT_SPECIFIED
+                            && Float.compare(advertisedFrameRate, sampleRate) != 0) {
+                        continue;
+                    }
+                    addCandidate(concrete, new javax.sound.sampled.AudioFormat(
+                            advertised.getEncoding(),
+                            sampleRate,
+                            bits,
+                            channels,
+                            packedFrameSize,
+                            sampleRate,
+                            advertised.isBigEndian()));
+                }
+            }
+        }
+        return List.copyOf(concrete);
+    }
+
+    private static List<Integer> concreteSampleWidths(
+            javax.sound.sampled.AudioFormat advertised) {
+        int advertisedBits = advertised.getSampleSizeInBits();
+        if (advertisedBits != javax.sound.sampled.AudioSystem.NOT_SPECIFIED) {
+            return supportsSampleWidth(advertised.getEncoding(), advertisedBits)
+                    ? List.of(advertisedBits) : List.of();
+        }
+        return Encoding.PCM_FLOAT.equals(advertised.getEncoding())
+                ? List.of(Float.SIZE)
+                : List.of(Short.SIZE, Byte.SIZE, 24, Integer.SIZE);
+    }
+
+    private static List<Float> concreteSampleRates(
+            javax.sound.sampled.AudioFormat advertised) {
+        float sampleRate = advertised.getSampleRate();
+        float frameRate = advertised.getFrameRate();
+        boolean sampleRateSpecified = sampleRate
+                != javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
+        boolean frameRateSpecified = frameRate
+                != javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
+        if ((sampleRateSpecified && !(sampleRate > 0.0f))
+                || (frameRateSpecified && !(frameRate > 0.0f))) {
+            return List.of();
+        }
+        if (sampleRateSpecified && frameRateSpecified
+                && Float.compare(sampleRate, frameRate) != 0) {
+            return List.of();
+        }
+        if (sampleRateSpecified) {
+            return List.of(sampleRate);
+        }
+        if (frameRateSpecified) {
+            return List.of(frameRate);
+        }
+        return List.of(48_000.0f, 44_100.0f);
+    }
+
+    private static List<Integer> concreteChannelCounts(
+            javax.sound.sampled.AudioFormat advertised, int sampleBytes) {
+        int channels = advertised.getChannels();
+        if (channels != javax.sound.sampled.AudioSystem.NOT_SPECIFIED) {
+            return channels > 0 ? List.of(channels) : List.of();
+        }
+        int frameSize = advertised.getFrameSize();
+        if (frameSize == javax.sound.sampled.AudioSystem.NOT_SPECIFIED) {
+            return List.of(2, 1);
+        }
+        if (frameSize <= 0 || frameSize % sampleBytes != 0) {
+            return List.of();
+        }
+        int derivedChannels = frameSize / sampleBytes;
+        return derivedChannels > 0 ? List.of(derivedChannels) : List.of();
+    }
+
+    private static boolean containsWildcard(javax.sound.sampled.AudioFormat format) {
+        return format.getSampleRate() == javax.sound.sampled.AudioSystem.NOT_SPECIFIED
+                || format.getSampleSizeInBits()
+                        == javax.sound.sampled.AudioSystem.NOT_SPECIFIED
+                || format.getChannels() == javax.sound.sampled.AudioSystem.NOT_SPECIFIED
+                || format.getFrameSize() == javax.sound.sampled.AudioSystem.NOT_SPECIFIED
+                || format.getFrameRate() == javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
     }
 
     /**
@@ -384,11 +558,22 @@ public final class JavaxSoundBackend implements AudioBackend {
                 && left.getSampleSizeInBits() == right.getSampleSizeInBits()
                 && left.getChannels() == right.getChannels()
                 && left.getFrameSize() == right.getFrameSize()
+                && Float.compare(left.getFrameRate(), right.getFrameRate()) == 0
                 && left.isBigEndian() == right.isBigEndian();
     }
 
     private static boolean isIntegerWidth(int bits) {
         return bits >= Byte.SIZE && bits <= Integer.SIZE && bits % Byte.SIZE == 0;
+    }
+
+    private static boolean isSupportedPcmEncoding(Encoding encoding) {
+        return Encoding.PCM_FLOAT.equals(encoding) || Encoding.PCM_SIGNED.equals(encoding);
+    }
+
+    private static boolean supportsSampleWidth(Encoding encoding, int bits) {
+        return Encoding.PCM_FLOAT.equals(encoding)
+                ? bits == Float.SIZE
+                : Encoding.PCM_SIGNED.equals(encoding) && isIntegerWidth(bits);
     }
 
     private static boolean isSupportedPcmFormat(javax.sound.sampled.AudioFormat format) {
@@ -398,11 +583,7 @@ public final class JavaxSoundBackend implements AudioBackend {
             return false;
         }
         int bits = format.getSampleSizeInBits();
-        boolean supportedEncoding = Encoding.PCM_FLOAT.equals(format.getEncoding())
-                ? bits == Float.SIZE
-                : Encoding.PCM_SIGNED.equals(format.getEncoding())
-                        && isIntegerWidth(bits);
-        if (!supportedEncoding) {
+        if (!supportsSampleWidth(format.getEncoding(), bits)) {
             return false;
         }
         int packedFrameSize = format.getChannels() * (bits / Byte.SIZE);
@@ -515,8 +696,8 @@ public final class JavaxSoundBackend implements AudioBackend {
      *                               could not release is retained
      */
     @Override
-    public void open(DeviceId device, AudioFormat format, int bufferFrames,
-                     CaptureRequirement capture) {
+    public synchronized void open(DeviceId device, AudioFormat format, int bufferFrames,
+                                  CaptureRequirement capture) {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
         Objects.requireNonNull(capture, "capture must not be null");
@@ -1177,13 +1358,14 @@ public final class JavaxSoundBackend implements AudioBackend {
      * final rung in {@code RELEASE_PENDING} over a thread that holds no
      * device.</p>
      *
-     * @throws AudioBackendException if either line could not be closed — the
+     * @throws AudioBackendException if any retained availability, capture, or
+     *                               output line could not be closed — the
      *                               un-released line(s) are named, the first
-     *                               failure is the cause, and a second is
-     *                               attached as a suppressed exception
+     *                               failure is the cause, and later failures
+     *                               are attached as suppressed exceptions
      */
     @Override
-    public void close() {
+    public synchronized void close() {
         support.close();
         Thread t = this.captureThread;
         if (t != null) {
@@ -1199,16 +1381,16 @@ public final class JavaxSoundBackend implements AudioBackend {
     }
 
     /**
-     * Attempts to release BOTH directions and reports whether the device is
-     * still held.
+     * Attempts to release the retained availability probe plus BOTH stream
+     * directions and reports whether the device is still held.
      *
-     * <p>Both attempts always run: one direction's failure must never strand
-     * the other direction's line. A line that closed is dropped from its
-     * field; a line whose {@link Line#close()} threw stays there, so the next
-     * attempt — the next {@link #close()}, or the guard in
+     * <p>All three attempts always run: one handle's failure must never strand
+     * another. A line that closed is dropped from its field; a line whose
+     * {@link Line#close()} threw stays there, so the next attempt — the next
+     * {@link #close()}, availability check, or the guard in
      * {@link #open(DeviceId, AudioFormat, int)} — reaches the same handle
-     * instead of leaking it. Doing nothing when both fields are already null
-     * is what keeps {@link #close()} idempotent on a never-opened or
+     * instead of leaking it. Doing nothing when all three fields are already
+     * null is what keeps {@link #close()} idempotent on a never-opened or
      * already-closed backend.</p>
      *
      * @param phase what this attempt is, named in the failure message so a
@@ -1220,27 +1402,64 @@ public final class JavaxSoundBackend implements AudioBackend {
      *         one as a suppressed exception
      */
     private AudioBackendException releaseLines(String phase) {
+        RuntimeException availabilityProbeFailure = releaseAvailabilityProbeLine();
         RuntimeException inputFailure = releaseInputLine();
         RuntimeException outputFailure = releaseOutputLine();
-        if (inputFailure == null && outputFailure == null) {
+        if (availabilityProbeFailure == null && inputFailure == null && outputFailure == null) {
             return null;
         }
-        String held;
-        if (inputFailure != null && outputFailure != null) {
-            held = "capture line and output line";
-        } else if (inputFailure != null) {
-            held = "capture line";
-        } else {
-            held = "output line";
-        }
-        RuntimeException first = inputFailure != null ? inputFailure : outputFailure;
+        List<String> heldLines = new ArrayList<>(3);
+        List<RuntimeException> failures = new ArrayList<>(3);
+        addReleaseFailure(heldLines, failures,
+                "availability probe line", availabilityProbeFailure);
+        addReleaseFailure(heldLines, failures, "capture line", inputFailure);
+        addReleaseFailure(heldLines, failures, "output line", outputFailure);
+        RuntimeException first = failures.getFirst();
         AudioBackendException failure = new AudioBackendException(
-                "Java Sound could not release its " + held + " (" + phase
+                "Java Sound could not release its " + describeHeldLines(heldLines) + " (" + phase
                         + "); the device is still held", first);
-        if (inputFailure != null && outputFailure != null) {
-            failure.addSuppressed(outputFailure);
+        for (int index = 1; index < failures.size(); index++) {
+            RuntimeException secondary = failures.get(index);
+            if (secondary != first) {
+                failure.addSuppressed(secondary);
+            }
         }
         return failure;
+    }
+
+    private static void addReleaseFailure(
+            List<String> heldLines,
+            List<RuntimeException> failures,
+            String heldLine,
+            RuntimeException failure) {
+        if (failure != null) {
+            heldLines.add(heldLine);
+            failures.add(failure);
+        }
+    }
+
+    private static String describeHeldLines(List<String> heldLines) {
+        return switch (heldLines.size()) {
+            case 1 -> heldLines.getFirst();
+            case 2 -> heldLines.getFirst() + " and " + heldLines.getLast();
+            default -> String.join(", ", heldLines.subList(0, heldLines.size() - 1))
+                    + " and " + heldLines.getLast();
+        };
+    }
+
+    /** Retries an availability probe close and clears it only on confirmation. */
+    private RuntimeException releaseAvailabilityProbeLine() {
+        SourceDataLine probe = this.availabilityProbeLine;
+        if (probe == null) {
+            return null;
+        }
+        try {
+            probe.close();
+        } catch (RuntimeException closeFailure) {
+            return closeFailure;
+        }
+        this.availabilityProbeLine = null;
+        return null;
     }
 
     /**

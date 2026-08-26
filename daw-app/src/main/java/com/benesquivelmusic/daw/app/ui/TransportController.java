@@ -8,7 +8,7 @@ import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportIntentHandler;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
-import com.benesquivelmusic.daw.core.audio.StreamingProvision;
+import com.benesquivelmusic.daw.core.audio.StreamStartFailure;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.MidiRecorder;
@@ -23,7 +23,6 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
-import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
@@ -302,7 +301,6 @@ final class TransportController implements TransportIntentHandler {
      * that did not produce a RUNNING stream (story 317).
      */
     private boolean startAudioOutputOrRefuse(String intent) {
-        boolean resuming = audioEngine.isStreamPaused();
         RuntimeException failure = null;
         try {
             audioEngine.startAudioOutput();
@@ -320,7 +318,7 @@ final class TransportController implements TransportIntentHandler {
         } else {
             LOG.warning("Audio output start returned without a running callback stream");
         }
-        String message = streamRefusalMessage(intent, failure, resuming);
+        String message = streamRefusalMessage(intent, failure);
         updateStatus();
         statusBarLabel.setText(message);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
@@ -329,21 +327,21 @@ final class TransportController implements TransportIntentHandler {
         return false;
     }
 
-    private String streamRefusalMessage(
-            String intent, RuntimeException failure, boolean resuming) {
-        StreamingProvision provision = audioEngine.getStreamingProvision();
-        Optional<String> openBackend = audioEngine.openStreamBackendName();
-        Optional<DeviceId> openDevice = audioEngine.openStreamDevice();
+    private String streamRefusalMessage(String intent, RuntimeException failure) {
+        Optional<StreamStartFailure> attribution = failure == null
+                ? Optional.empty()
+                : audioEngine.takeFailedStreamStart(failure);
         String endpoint;
-        if (openBackend.isPresent() && openDevice.isPresent()) {
-            endpoint = "backend '" + openBackend.orElseThrow() + "' device '"
-                    + openDevice.orElseThrow().name() + "' could not "
-                    + (resuming ? "resume" : "start");
-        } else if (provision != null) {
-            endpoint = "backend '" + provision.requestedBackendName() + "' device '"
-                    + provision.requestedDevice().name() + "' could not start";
+        if (attribution.isPresent()) {
+            StreamStartFailure attempt = attribution.orElseThrow();
+            String operation = switch (attempt.operation()) {
+                case START -> "start";
+                case RESUME -> "resume";
+            };
+            endpoint = "backend '" + attempt.endpoint().backendName() + "' device '"
+                    + attempt.endpoint().device().name() + "' could not " + operation;
         } else {
-            endpoint = "no audio backend/device is configured";
+            endpoint = "no audio backend/device was bound to this failed attempt";
         }
         String reason = failure == null || failure.getMessage() == null
                 || failure.getMessage().isBlank()
