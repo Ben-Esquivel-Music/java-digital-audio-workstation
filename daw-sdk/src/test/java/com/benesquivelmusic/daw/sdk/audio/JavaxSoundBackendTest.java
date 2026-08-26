@@ -447,6 +447,38 @@ class JavaxSoundBackendTest {
     }
 
     @Test
+    void everyAvailableSignedPcmWidthCanOpenAStreamForAnotherRequestedWidth() {
+        for (int availableBits : new int[] {Byte.SIZE, Short.SIZE, 24, Integer.SIZE}) {
+            Mixer.Info mixer = new TestMixerInfo(availableBits + "-bit Only Mixer");
+            javax.sound.sampled.AudioFormat availableFormat = javaFormat(
+                    javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                    availableBits,
+                    2,
+                    false);
+            TestJavaSoundAccess access = new TestJavaSoundAccess(
+                    new Mixer.Info[] {mixer}, availableFormat, null);
+            JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+            assertThat(backend.isAvailable())
+                    .as("%d-bit signed PCM is an advertised availability capability",
+                            availableBits)
+                    .isTrue();
+
+            assertThatCode(() -> backend.open(
+                    new DeviceId(JavaxSoundBackend.NAME, mixer.getName()),
+                    STREAM_FORMAT,
+                    STREAM_FRAMES))
+                    .as("the open candidates include the same %d-bit capability",
+                            availableBits)
+                    .doesNotThrowAnyException();
+            assertThat(access.lastSourceLine.openedFormat().getSampleSizeInBits())
+                    .isEqualTo(availableBits);
+
+            backend.close();
+        }
+    }
+
+    @Test
     void selectorRefreshAndDefaultQueriesIgnoreUnopenedProbeCloseFailures() {
         Mixer.Info mixer = new TestMixerInfo("Temporary Selector Probe");
         TestJavaSoundAccess access = new TestJavaSoundAccess(

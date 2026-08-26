@@ -111,9 +111,9 @@ public interface NativeAudioBackend extends AutoCloseable {
     /**
      * Returns whether this backend is available on the current platform.
      *
-     * <p>Implementations perform their live platform-specific capability
-     * probe, including any required native library and usable device or
-     * stream endpoint.</p>
+     * <p>Implementations perform a platform-specific availability probe. The
+     * exact scope is implementation-defined, so callers must still handle
+     * device-enumeration and stream-open failures.</p>
      *
      * @return true if the backend can be used
      */

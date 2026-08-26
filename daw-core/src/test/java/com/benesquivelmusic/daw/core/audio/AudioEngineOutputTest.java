@@ -1008,6 +1008,127 @@ class AudioEngineOutputTest {
     }
 
     @Test
+    void gateRejectedRequestAttributesAllRungsFailureToTheFirstConcreteFallback() {
+        DeviceId requestedDevice = new DeviceId("ASIO", "Requested Studio Device");
+        var first = new SynchronousTestBackend("PortAudio");
+        DeviceId firstDevice = new DeviceId("PortAudio", "First Fallback Device");
+        var firstFailure = new AudioBackendException("first fallback refused");
+        first.openFailure = firstFailure;
+        var second = new SynchronousTestBackend("Java Sound");
+        DeviceId secondDevice = new DeviceId("Java Sound", "Last Fallback Device");
+        second.openFailure = new AudioBackendException("last fallback refused");
+        engine.setStreamingProvision(new StreamingProvision(
+                "ASIO",
+                requestedDevice,
+                List.of(
+                        new BackendStreamRung(first, firstDevice),
+                        new BackendStreamRung(second, secondDevice)),
+                List.of("ASIO is not available on this host")));
+
+        Throwable propagated = catchThrowable(engine::startAudioOutput);
+
+        assertThat(propagated).isSameAs(firstFailure);
+        assertThat(first.openCount.get()).isEqualTo(1);
+        assertThat(second.openCount.get())
+                .as("the first propagated failure is retained after the whole ladder is tried")
+                .isEqualTo(1);
+        assertThat(engine.takeFailedStreamStart(propagated).orElseThrow())
+                .isEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("PortAudio", firstDevice),
+                        StreamStartFailure.Operation.START))
+                .isNotEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("ASIO", requestedDevice),
+                        StreamStartFailure.Operation.START))
+                .isNotEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("Java Sound", secondDevice),
+                        StreamStartFailure.Operation.START));
+    }
+
+    @Test
+    void terminalUnreleasedFallbackSupersedesAnEarlierRememberedHop() {
+        DeviceId requestedDevice = new DeviceId("ASIO", "Requested Studio Device");
+        var first = new SynchronousTestBackend("PortAudio");
+        DeviceId firstDevice = new DeviceId("PortAudio", "Released Fallback Device");
+        first.openFailure = new AudioBackendException("released fallback refused");
+        var terminal = new SynchronousTestBackend("Java Sound");
+        DeviceId terminalDevice = new DeviceId("Java Sound", "Retained Fallback Device");
+        var terminalFailure = new AudioBackendException("terminal fallback refused");
+        terminal.openFailure = terminalFailure;
+        terminal.deferReleaseOnClose = true;
+        var forbidden = new SynchronousTestBackend("Forbidden Third Rung");
+        engine.setStreamingProvision(new StreamingProvision(
+                "ASIO",
+                requestedDevice,
+                List.of(
+                        new BackendStreamRung(first, firstDevice),
+                        new BackendStreamRung(terminal, terminalDevice),
+                        new BackendStreamRung(
+                                forbidden, DeviceId.defaultFor("Forbidden Third Rung"))),
+                List.of("ASIO is not available on this host")));
+
+        Throwable propagated = catchThrowable(engine::startAudioOutput);
+
+        assertThat(propagated)
+                .isInstanceOf(AudioBackendException.class)
+                .hasCause(terminalFailure)
+                .hasMessageContaining("could not be released");
+        assertThat(forbidden.openCount.get())
+                .as("an unreleased handle terminates the ladder")
+                .isZero();
+        assertThat(engine.takeFailedStreamStart(propagated).orElseThrow())
+                .isEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("Java Sound", terminalDevice),
+                        StreamStartFailure.Operation.START))
+                .isNotEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("PortAudio", firstDevice),
+                        StreamStartFailure.Operation.START))
+                .isNotEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("ASIO", requestedDevice),
+                        StreamStartFailure.Operation.START));
+    }
+
+    @Test
+    void gateRejectedRequestAttributesPropagatedErrorToTheConcreteRung() {
+        DeviceId requestedDevice = new DeviceId("ASIO", "Requested Studio Device");
+        var first = new SynchronousTestBackend("PortAudio");
+        DeviceId firstDevice = new DeviceId("PortAudio", "Released Fallback Device");
+        first.openFailure = new AudioBackendException("released fallback refused");
+        var errorRung = new SynchronousTestBackend("Java Sound");
+        DeviceId errorDevice = new DeviceId("Java Sound", "Error Fallback Device");
+        var rungError = new AssertionError("driver blew up mid-open");
+        errorRung.openBarrier = () -> {
+            throw rungError;
+        };
+        var forbidden = new SynchronousTestBackend("Forbidden Third Rung");
+        engine.setStreamingProvision(new StreamingProvision(
+                "ASIO",
+                requestedDevice,
+                List.of(
+                        new BackendStreamRung(first, firstDevice),
+                        new BackendStreamRung(errorRung, errorDevice),
+                        new BackendStreamRung(
+                                forbidden, DeviceId.defaultFor("Forbidden Third Rung"))),
+                List.of("ASIO is not available on this host")));
+
+        Throwable propagated = catchThrowable(engine::startAudioOutput);
+
+        assertThat(propagated).isSameAs(rungError);
+        assertThat(forbidden.openCount.get())
+                .as("an Error abandons the ladder")
+                .isZero();
+        assertThat(engine.takeFailedStreamStart(propagated).orElseThrow())
+                .isEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("Java Sound", errorDevice),
+                        StreamStartFailure.Operation.START))
+                .isNotEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("PortAudio", firstDevice),
+                        StreamStartFailure.Operation.START))
+                .isNotEqualTo(new StreamStartFailure(
+                        new StreamStartEndpoint("ASIO", requestedDevice),
+                        StreamStartFailure.Operation.START));
+    }
+
+    @Test
     void reprovisionAfterFailureCannotRewriteTheInvocationBoundRequestedEndpoint()
             throws Exception {
         var original = new SynchronousTestBackend("Original Requested");

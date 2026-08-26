@@ -36,6 +36,16 @@ public final class JavaxSoundBackend implements AudioBackend {
     public static final String NAME = "Java Sound";
 
     /**
+     * Every packed signed-PCM width understood by {@link #encode(AudioBlock,
+     * javax.sound.sampled.AudioFormat)} and {@link #decode(byte[], int,
+     * AudioFormat, javax.sound.sampled.AudioFormat)}. The order after a
+     * requested width keeps 16 bit as the universal fallback, prefers the
+     * higher-fidelity alternatives next, and leaves 8 bit last.
+     */
+    private static final List<Integer> SIGNED_PCM_WIDTHS =
+            List.of(Short.SIZE, 24, Integer.SIZE, Byte.SIZE);
+
+    /**
      * Hard bound on the stop drain — never the JDK's unbounded
      * {@link SourceDataLine#drain()}, which would stall the lifecycle thread
      * for as long as the device takes to play its whole buffer out (story 316
@@ -288,11 +298,13 @@ public final class JavaxSoundBackend implements AudioBackend {
      * converter handles every one of those widths; unusual non-byte-aligned
      * requests fall back to 16 bit. The selected mixer's concrete encoding is
      * negotiated independently at open time:
-     * 32-bit {@link Encoding#PCM_FLOAT} first, then a signed-PCM format whose
-     * exact sample width and byte order {@link #encode(AudioBlock,
-     * javax.sound.sampled.AudioFormat)} honours. The SDK bus itself remains
-     * normalized float32, so the SDK bit depth never causes float bits to be
-     * written into an integer line.</p>
+     * 32-bit {@link Encoding#PCM_FLOAT} first, then signed-PCM formats whose
+     * sample widths and byte orders {@link #encode(AudioBlock,
+     * javax.sound.sampled.AudioFormat)} honours. The requested integer width
+     * is tried first, followed by every other supported packed width, so an
+     * endpoint accepted by {@link #isAvailable()} is also an open candidate.
+     * The SDK bus itself remains normalized float32, so the SDK bit depth never
+     * causes float bits to be written into an integer line.</p>
      */
     @Override
     public AudioFormat negotiateFormat(AudioFormat requested) {
@@ -459,7 +471,7 @@ public final class JavaxSoundBackend implements AudioBackend {
         }
         return Encoding.PCM_FLOAT.equals(advertised.getEncoding())
                 ? List.of(Float.SIZE)
-                : List.of(Short.SIZE, Byte.SIZE, 24, Integer.SIZE);
+                : SIGNED_PCM_WIDTHS;
     }
 
     private static List<Float> concreteSampleRates(
@@ -516,25 +528,35 @@ public final class JavaxSoundBackend implements AudioBackend {
     /**
      * Candidate order is deliberate: the engine bus is float32, so a float
      * line is bit-exact and avoids quantisation. Signed PCM is the universal
-     * fallback, tried at the requested width and then at 16 bit. Each width is
-     * tried little-endian first (the primary Windows host) and big-endian
-     * second so the encoder is always pinned to the exact selected layout.
+     * fallback: the requested width is tried first, then every remaining
+     * packed width supported by the codec, with 16 bit first among those
+     * alternatives. Each width is tried little-endian first (the primary
+     * Windows host) and big-endian second so the encoder is always pinned to
+     * the exact selected layout. This is the same signed-width set accepted by
+     * the availability probe.
      */
     private static List<javax.sound.sampled.AudioFormat> candidateFormats(AudioFormat format) {
-        List<javax.sound.sampled.AudioFormat> candidates = new ArrayList<>(6);
+        List<javax.sound.sampled.AudioFormat> candidates =
+                new ArrayList<>(2 + SIGNED_PCM_WIDTHS.size() * 2);
         addCandidate(candidates, pcmFormat(
                 Encoding.PCM_FLOAT, format, Float.SIZE, false));
         addCandidate(candidates, pcmFormat(
                 Encoding.PCM_FLOAT, format, Float.SIZE, true));
         if (isIntegerWidth(format.bitDepth())) {
-            addCandidate(candidates, pcmFormat(
-                    Encoding.PCM_SIGNED, format, format.bitDepth(), false));
-            addCandidate(candidates, pcmFormat(
-                    Encoding.PCM_SIGNED, format, format.bitDepth(), true));
+            addSignedPcmCandidates(candidates, format, format.bitDepth());
         }
-        addCandidate(candidates, pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, false));
-        addCandidate(candidates, pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, true));
+        for (int bits : SIGNED_PCM_WIDTHS) {
+            addSignedPcmCandidates(candidates, format, bits);
+        }
         return List.copyOf(candidates);
+    }
+
+    private static void addSignedPcmCandidates(
+            List<javax.sound.sampled.AudioFormat> candidates,
+            AudioFormat format,
+            int bits) {
+        addCandidate(candidates, pcmFormat(Encoding.PCM_SIGNED, format, bits, false));
+        addCandidate(candidates, pcmFormat(Encoding.PCM_SIGNED, format, bits, true));
     }
 
     private static void addCandidate(

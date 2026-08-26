@@ -2481,6 +2481,12 @@ public final class AudioEngine {
         frame.attempt = new StreamStartAttempt(backendName, device, operation);
     }
 
+    /** Records the concrete ladder endpoint whose start failure may propagate. */
+    private void rememberStreamStartAttempt(BackendStreamRung rung) {
+        rememberStreamStartAttempt(
+                rung.backend().name(), rung.device(), StreamStartFailure.Operation.START);
+    }
+
     /** Binds the exact propagated object to the active attempt while locked. */
     private void bindFailedStreamStart(Throwable failure) {
         FailedStreamStartFrame frame =
@@ -2690,6 +2696,11 @@ public final class AudioEngine {
                 // re-review).
                 boolean released = closeFailedHop(rung, hopFailure);
                 if (!released && openAttempted) {
+                    // This new abandonment exception is the object that
+                    // propagates, so its attribution belongs to THIS terminal
+                    // rung even when an earlier ordinary hop failure was
+                    // already remembered.
+                    rememberStreamStartAttempt(rung);
                     // The rung reached open() and its handle could NOT be
                     // given back, so it may still hold the device. Walking on
                     // would open a fallback rung beside it — two backends on
@@ -2716,6 +2727,11 @@ public final class AudioEngine {
                 }
                 if (firstFailure == null) {
                     firstFailure = hopFailure;
+                    // All released hops may fail, in which case this exact
+                    // object is rethrown below. The requested endpoint can be
+                    // absent from the ladder after the availability gate, so
+                    // bind the first concrete rung alongside its exception.
+                    rememberStreamStartAttempt(rung);
                 }
                 failedHopCauses.add(causeMessage(hopFailure));
                 LOG.log(Level.WARNING,
@@ -2751,6 +2767,10 @@ public final class AudioEngine {
                 // two-backends-on-one-device case), and a maintainer reading
                 // this SEVERE line is reading it to find out whether the
                 // device is free.
+                // This exact Error is propagated immediately, so its concrete
+                // rung supersedes the requested endpoint and any earlier
+                // recoverable hop.
+                rememberStreamStartAttempt(rung);
                 boolean released = closeFailedHop(rung, hopError);
                 LOG.log(Level.SEVERE,
                         "Backend ladder hop failed with an Error: " + rung.backend().name()
