@@ -719,9 +719,12 @@ public final class AsioBackend implements AudioBackend {
      * The teardown order matches {@link #close()}: stop and dispose the
      * driver's buffers, uninstall the upcall, and only then free the stub's
      * arena — a late callback must never jump into released memory. The
-     * {@code asioMessage} shim is closed too, so a failed open never leaves a
-     * registered upcall behind (it is now installed before
-     * {@code ASIOCreateBuffers}). The driver shim itself is handed to
+     * {@code asioMessage} shim is closed too (it is now installed before
+     * {@code ASIOCreateBuffers}); {@link AsioFormatChangeShim#close()}
+     * applies the same confirmed-uninstall/retain protocol internally, so a
+     * failed open uninstalls that upcall when it can CONFIRM the uninstall
+     * and otherwise retains the stub's arena rather than freeing memory a
+     * driver reset may still reach. The driver shim itself is handed to
      * {@link #releaseDriverShim(AsioDriverShim)}, which may defer its close for
      * the reason documented there; every Java-side field is cleared here
      * regardless, so a failed open never leaves a half-live backend behind.
@@ -1444,8 +1447,14 @@ public final class AsioBackend implements AudioBackend {
     /**
      * Tears the stream down in the order story 311 mandates:
      * {@code ASIOStop} &rarr; {@code ASIODisposeBuffers} &rarr; uninstall the
-     * buffer-switch upcall &rarr; free the upcall arena &rarr; the existing
-     * story-310 {@code asioMessage} uninstall and {@code ASIOExit}.
+     * buffer-switch upcall &rarr; free the upcall arena &rarr; the
+     * {@code asioMessage} teardown and {@code ASIOExit}. The
+     * {@code asioMessage} half is not an unconditional uninstall-then-free:
+     * {@link AsioFormatChangeShim#close()} applies the same
+     * confirmed-uninstall/retain protocol internally, freeing its stub's
+     * arena only when its uninstall downcall was CONFIRMED (or no install
+     * was ever started) and retaining it for the life of the process
+     * otherwise.
      *
      * <p>Freeing the upcall arena strictly after the uninstall is the load-
      * bearing part: a callback that arrives between the two would otherwise

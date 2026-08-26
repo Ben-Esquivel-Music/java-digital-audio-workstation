@@ -483,7 +483,10 @@ class AsioBackendStreamingTest {
                 "stop", "disposeBuffers", "uninstallBufferSwitchCallback",
                 "close", "unload");
         assertThat(backend.activeFormatChangeShim())
-                .as("a failed open must not leave the asioMessage upcall registered")
+                .as("a failed open must clear the backend's asioMessage shim"
+                        + " reference (the native registration itself is gone only"
+                        + " when the uninstall was CONFIRMED; an unconfirmed"
+                        + " uninstall retains the stub's arena — see rollbackOpen)")
                 .isNull();
     }
 

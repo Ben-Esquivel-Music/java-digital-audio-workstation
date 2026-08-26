@@ -763,7 +763,8 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * returning what
      * {@link AsioStreamingShim#uninstallBufferSwitchCallback()} answered. A
      * {@code false} there means the call was not made at all, was refused on
-     * arrival while an earlier downcall executed past its budget (so
+     * arrival because an earlier downcall its caller stopped waiting for — by
+     * budget or by interrupt — was still executing (so
      * {@link AsioControlThread#isQuiesced()} was false and every bounded
      * operation is rejected), did not complete within its own budget, was
      * interrupted, or failed at the FFM boundary. That method enumerates all

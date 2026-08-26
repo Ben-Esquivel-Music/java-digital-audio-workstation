@@ -441,6 +441,12 @@ cooperating mechanisms:
   (~100 ms against a monotonic clock), so a misbehaving driver can delay, but
   never hang, `asio-control`. Draining while holding `g_driverMutex` is safe
   precisely because the callback path never takes that mutex.
+  `asioshim_messageTrampoline` is guarded the same way over its own,
+  deliberately separate counter, drained only by
+  `uninstallAsioMessageCallback` (which, like the trampoline it drains, takes
+  no mutex at all) — so the buffer teardown never waits on message callbacks,
+  and `AsioFormatChangeShim.close()` may free its stub's arena only once that
+  uninstall downcall has returned normally.
 
 `ASIOOutputReady()` is likewise called natively from the trampoline rather
 than from Java, so no part of the ASIO driver API is ever invoked from
