@@ -8,6 +8,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.lang.reflect.Field;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,6 +66,52 @@ class MainControllerAudioSettingsWiringTest {
         assertThat(controller.lastRequest.get().backendName())
                 .as("a blank persisted backend resolves to the PROVISIONED backend")
                 .isEqualTo("ASIO");
+    }
+
+    @Test
+    void startupConfigurationFailurePostsAnActionableErrorThroughTheSeam()
+            throws Exception {
+        SettingsModel model = Story307TestSupport.model("startupFailureNotification");
+        model.setAudioBackend("ASIO");
+        model.setAudioInputDevice("Studio Interface In");
+        model.setAudioOutputDevice("Studio Interface Out");
+        Story307TestSupport.StubController controller =
+                new Story307TestSupport.StubController();
+        controller.failNextConfiguration = true;
+        AtomicReference<NotificationLevel> level = new AtomicReference<>();
+        AtomicReference<String> message = new AtomicReference<>();
+        AtomicReference<String> actionLabel = new AtomicReference<>();
+        AtomicReference<Runnable> action = new AtomicReference<>();
+        AtomicReference<Thread> producerThread = new AtomicReference<>();
+        AtomicInteger settingsOpens = new AtomicInteger();
+
+        Thread worker = MainController.applyStartupAudioSettings(
+                model,
+                controller,
+                (shownLevel, shownMessage, shownActionLabel, shownAction) -> {
+                    producerThread.set(Thread.currentThread());
+                    level.set(shownLevel);
+                    message.set(shownMessage);
+                    actionLabel.set(shownActionLabel);
+                    action.set(shownAction);
+                },
+                settingsOpens::incrementAndGet);
+
+        assertThat(controller.configurationApplied.await(5, TimeUnit.SECONDS)).isTrue();
+        worker.join(TimeUnit.SECONDS.toMillis(5));
+        assertThat(worker.isAlive()).isFalse();
+        assertThat(producerThread.get()).isSameAs(worker);
+        assertThat(producerThread.get().isVirtual()).isTrue();
+        assertThat(level).hasValue(NotificationLevel.ERROR);
+        assertThat(message.get())
+                .contains("ASIO", "Studio Interface In", "Studio Interface Out",
+                        "configuration failed")
+                .doesNotContain(IllegalStateException.class.getName());
+        assertThat(actionLabel).hasValue("Open Audio Settings");
+        assertThat(action.get()).isNotNull();
+
+        action.get().run();
+        assertThat(settingsOpens).hasValue(1);
     }
 
     @Test

@@ -14,7 +14,9 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.*;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -117,6 +119,26 @@ public final class AudioEngine {
      * nothing is listening.
      */
     private volatile StreamOpenListener streamOpenListener;
+
+    /**
+     * Exact failed stream-start invocations paired with the endpoint and
+     * START/RESUME operation captured under {@link #lifecycleLock}. This is
+     * lifecycle/reporting state only, never read by the real-time path.
+     *
+     * <p>The context is scoped to the lifecycle caller's thread and matched by
+     * throwable identity: the engine rethrows the backend/publisher's original
+     * failure object unchanged, and the app hands that same object back through
+     * {@link #takeFailedStreamStart(Throwable)}. Thread confinement prevents
+     * concurrent lifecycle callers from overwriting one another; active-frame
+     * stacking preserves an outer failure across same-thread announcement
+     * re-entry, and consume-on-read plus clearing at each new top-level start
+     * prevents a backend that reuses one exception instance from reviving stale
+     * attribution.</p>
+     */
+    private static final int MAX_COMPLETED_STREAM_START_CONTEXTS = 16;
+
+    private final ThreadLocal<FailedStreamStartContexts> failedStreamStartContexts =
+            ThreadLocal.withInitial(FailedStreamStartContexts::new);
 
     /**
      * Lifecycle state of the backend audio stream (story 315 review). One
@@ -1610,6 +1632,49 @@ public final class AudioEngine {
                 : Optional.empty();
     }
 
+    /**
+     * Takes the complete attribution bound to one failed stream-start
+     * invocation, consuming that one-shot context.
+     *
+     * <p>The endpoint and START/RESUME operation were captured under
+     * {@link #lifecycleLock}; neither is reconstructed from live stream or
+     * provision state here. Matching the exact throwable and confining the
+     * context to this lifecycle caller's thread keeps a previous, reentrant,
+     * or concurrent failure from being attributed to this caller. All
+     * completed contexts on the thread are removed after the lookup, even
+     * when the throwable does not match, so a reused exception instance can
+     * never revive stale attribution. This method is for immediate
+     * lifecycle/UI reporting only and never participates in audio processing.
+     * </p>
+     *
+     * @param failure the exact throwable returned by {@link #startAudioOutput()}
+     *                or {@link #startAudioInputOutput()}
+     * @return the failure-bound endpoint and operation, or empty when no
+     *         endpoint was configured, the throwable belongs to another
+     *         caller, or the context was already consumed
+     */
+    public Optional<StreamStartFailure> takeFailedStreamStart(Throwable failure) {
+        Objects.requireNonNull(failure, "failure must not be null");
+        FailedStreamStartContexts contexts = failedStreamStartContexts.get();
+        FailedStreamStartContext match = null;
+        for (FailedStreamStartContext context : contexts.completed()) {
+            if (context.failure() == failure) {
+                match = context;
+                break;
+            }
+        }
+        contexts.completed().clear();
+        if (contexts.active().isEmpty()) {
+            failedStreamStartContexts.remove();
+        }
+        return match != null
+                ? Optional.of(new StreamStartFailure(
+                        new StreamStartEndpoint(
+                                match.attempt().backendName(), match.attempt().device()),
+                        match.attempt().operation()))
+                : Optional.empty();
+    }
+
     /** Forgets the tracked stream's backend, device and negotiated format. */
     private void clearOpenStream() {
         this.openBackend = null;
@@ -1811,15 +1876,12 @@ public final class AudioEngine {
      * that close is retried first and the method fails — without opening a
      * second stream — when the handle still cannot be released.</p>
      *
-     * <p>If no provision is installed, the engine is started without
-     * hardware output: nothing drives the transport's clock, its RT-clock
-     * claim is never taken and seeks apply inline. Honest playing states for
-     * that case are story 317. That tolerance is the
-     * {@link CaptureRequirement#OPTIONAL} contract and it does NOT
-     * generalise (story 316 review): {@link #startAudioInputOutput()} throws
-     * in the same situation, because an engine with no provision has no
-     * capture device at all and a record that returns normally there is the
-     * silent take.</p>
+     * <p>If no provision is installed, the open is refused before the engine
+     * starts. Playback without a hardware callback has no clock and therefore
+     * cannot be represented honestly as PLAYING; recording additionally has
+     * no capture source. Both callers receive an actionable
+     * {@link AudioBackendException} instead of a normally-returning silent
+     * engine (story 317).</p>
      *
      * <p>The whole transition runs under {@link #lifecycleLock} (story 316
      * re-review), so two callers — a Play from the FX thread and a reopen
@@ -1828,7 +1890,8 @@ public final class AudioEngine {
      * {@link StreamOpenListener} and the failed hops' events are delivered
      * only AFTER that lock is released; see {@link PendingAnnouncements}.</p>
      *
-     * @throws AudioBackendException if every ladder rung failed to open (the
+     * @throws AudioBackendException if no streaming provision is installed,
+     *                               every ladder rung failed to open (the
      *                               first rung's failure), or a rung that had
      *                               reached {@code open} could not give its
      *                               handle back and the walk was abandoned,
@@ -1845,17 +1908,30 @@ public final class AudioEngine {
      *                               {@link #requireQuiescedPump()} — this
      *                               open would otherwise put a SECOND thread
      *                               into the single shared render pipeline)
-     */
+    */
     public void startAudioOutput() {
-        PendingAnnouncements announcements = new PendingAnnouncements();
-        lifecycleLock.lock();
+        beginStreamStartInvocation();
         try {
-            startAudioOutputLocked(announcements, CaptureRequirement.OPTIONAL);
+            PendingAnnouncements announcements = new PendingAnnouncements();
+            lifecycleLock.lock();
+            try {
+                try {
+                    startAudioOutputLocked(announcements, CaptureRequirement.OPTIONAL);
+                } catch (RuntimeException | Error failure) {
+                    bindFailedStreamStart(failure);
+                    throw failure;
+                }
+            } finally {
+                lifecycleLock.unlock();
+                // Outside the lock, on EVERY path — a failed open owes its
+                // fallback events just as a successful one owes the listener.
+                announcements.deliver();
+            }
         } finally {
-            lifecycleLock.unlock();
-            // Outside the lock, on EVERY path — a failed open owes its
-            // fallback events just as a successful one owes the listener.
-            announcements.deliver();
+            // AFTER announcement delivery: those callbacks may re-enter this
+            // method on the same thread, and that nested invocation needs its
+            // own frame without clearing the outer failure context.
+            finishStreamStartInvocation();
         }
     }
 
@@ -1877,12 +1953,12 @@ public final class AudioEngine {
      * {@link CaptureRequirement#OPTIONAL} and
      * {@link #startAudioInputOutputLocked(PendingAnnouncements)} asks for
      * {@link CaptureRequirement#REQUIRED}. Everything below behaves
-     * identically except in the two places where "this open produced no
-     * capture at all" is reachable — the no-provision early return here, and
-     * each rung's post-{@code open} verification inside
+     * identically except in each rung's post-{@code open} verification inside
      * {@link #openLadder(StreamingProvision, PendingAnnouncements,
-     * CaptureRequirement)} — and in both of them {@code REQUIRED} fails
-     * instead of succeeding into a stream that could never record. The two
+     * CaptureRequirement)}, where {@code REQUIRED} fails instead of
+     * succeeding into a stream that could never record. No provision is a
+     * failure for both directives: neither playback nor recording may claim a
+     * rolling state without a callback. The two
      * shortcuts above them — the {@link StreamState#RUNNING} early return and
      * the {@link StreamState#PAUSED} resume — open nothing, so there is
      * nothing for them to verify; they are unreachable under
@@ -1893,16 +1969,31 @@ public final class AudioEngine {
      *
      * @param announcements collects the facts this open owes the outside
      *                      world; delivered by the caller after the unlock
-     * @param capture       whether an open with no capture is a success
-     *                      ({@link CaptureRequirement#OPTIONAL}, playback) or
-     *                      a failure ({@link CaptureRequirement#REQUIRED},
-     *                      recording)
+     * @param capture       whether an opened rung must provide capture
+     *                      ({@link CaptureRequirement#REQUIRED}) or may be
+     *                      playback-only ({@link CaptureRequirement#OPTIONAL})
      */
     private void startAudioOutputLocked(PendingAnnouncements announcements,
                                         CaptureRequirement capture) {
         StreamState state = this.streamState;
         if (state == StreamState.RUNNING) {
             return; // already running
+        }
+        StreamingProvision provision = null;
+        if (state == StreamState.PAUSED) {
+            AudioBackend pausedBackend = this.openBackend;
+            DeviceId pausedDevice = this.openDevice;
+            if (pausedBackend != null && pausedDevice != null) {
+                rememberStreamStartAttempt(pausedBackend.name(), pausedDevice,
+                        StreamStartFailure.Operation.RESUME);
+            }
+        } else {
+            // This is the one provision snapshot the invocation uses. Bind its
+            // requested endpoint before any quiescence/release/engine/open
+            // failure can escape, so a later reprovision cannot rewrite the
+            // diagnostic history of this call.
+            provision = this.streamingProvision;
+            rememberRequestedStreamStartAttempt(provision);
         }
         requireQuiescedPump();
         if (state == StreamState.PAUSED) {
@@ -1917,30 +2008,31 @@ public final class AudioEngine {
             releaseRetainedStreamHandle(retained);
         }
 
-        // Ensure the engine is running (pre-allocates buffers)
-        startLocked();
-
-        StreamingProvision provision = this.streamingProvision;
         if (provision == null) {
-            // No provision is a ZERO-CAPTURE success, and that is exactly the
-            // shape of the silent take (story 316 review). For playback it is
-            // a legitimate configuration — the engine runs, the transport is
-            // driven by nothing, and honest playing states for that case are
-            // story 317 — so OPTIONAL keeps logging and returning. For
-            // recording there is no capture device at ALL, so returning
-            // normally would hand the record path a running engine with a
-            // publisher that can never emit a block.
-            if (capture == CaptureRequirement.REQUIRED) {
-                throw new AudioBackendException(
-                        "Cannot open a recording stream: no audio backend is configured,"
-                                + " so the engine has no capture device at all. Select an"
-                                + " audio device in Audio Settings before recording");
-            }
-            LOG.info("No audio backend configured; playback without hardware output");
-            return;
+            String purpose = capture == CaptureRequirement.REQUIRED
+                    ? "recording" : "playback";
+            throw new AudioBackendException(
+                    "Cannot open a " + purpose + " stream: no audio backend is configured,"
+                            + " so no device can be opened. Select an audio device in Audio"
+                            + " Settings before " + purpose);
         }
 
-        OpenedRung opened = openLadder(provision, announcements, capture);
+        // Pre-allocate render collaborators before opening the device. If
+        // this call started the engine, every failed open owns the matching
+        // rollback; a previously running engine is deliberately preserved.
+        boolean startedHere = startEngineForStream(announcements);
+        OpenedRung opened;
+        try {
+            opened = openLadder(provision, announcements, capture);
+        } catch (RuntimeException | Error openFailure) {
+            rollbackEngineStart(startedHere, announcements, openFailure);
+            throw openFailure;
+        }
+        // An opened fallback is now the endpoint whose pump is about to
+        // start. It supersedes the requested endpoint for a pump-start
+        // failure, even though unwind may immediately clear live stream state.
+        rememberStreamStartAttempt(opened.backendName(), opened.rung().device(),
+                StreamStartFailure.Operation.START);
         this.openBackend = opened.rung().backend();
         this.openDevice = opened.rung().device();
         this.openSdkFormat = opened.negotiatedFormat();
@@ -1952,6 +2044,7 @@ public final class AudioEngine {
             // stream became active, so the carried fallbacks name "none"
             // rather than the rung that never started (story 316 review).
             announcements.fallbacks(provision, opened.failedHopCauses(), "none", "none");
+            rollbackEngineStart(startedHere, announcements, startFailure);
             throw startFailure;
         }
         // Only now is the winner the active stream, so only now may the
@@ -1965,6 +2058,40 @@ public final class AudioEngine {
         // Announce the WINNER, not the requested rung (story 316 review).
         // Last, because only a stream that actually started is an open.
         announcements.streamOpened(opened.rung().backend(), opened.rung().device());
+    }
+
+    /** Starts stream-owned engine state and rolls back a partial preparation failure. */
+    private boolean startEngineForStream(PendingAnnouncements announcements) {
+        boolean wasRunning = running.get();
+        try {
+            return startLocked();
+        } catch (RuntimeException | Error startFailure) {
+            // startLocked publishes running=true before it allocates and
+            // prepares every render collaborator. If a later preparation
+            // throws, ownership is visible from the before/after state even
+            // though startLocked never returned its boolean result.
+            boolean startedBeforeFailure = !wasRunning && running.get();
+            rollbackEngineStart(startedBeforeFailure, announcements, startFailure);
+            throw startFailure;
+        }
+    }
+
+    /** Stops only the engine allocation owned by a failed open or resume. */
+    private void rollbackEngineStart(boolean startedHere,
+                                     PendingAnnouncements announcements,
+                                     Throwable failure) {
+        if (!startedHere) {
+            return;
+        }
+        try {
+            stopLocked(announcements);
+        } catch (RuntimeException | Error rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+            LOG.log(Level.WARNING,
+                    "Audio stream failed and the engine start it triggered could not be"
+                            + " rolled back cleanly",
+                    rollbackFailure);
+        }
     }
 
     /**
@@ -2250,10 +2377,125 @@ public final class AudioEngine {
     private record OpenedRung(
             BackendStreamRung rung,
             com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiatedFormat,
-            List<String> failedHopCauses) {
+            List<String> failedHopCauses,
+            String backendName) {
 
         private OpenedRung {
             failedHopCauses = List.copyOf(failedHopCauses);
+            Objects.requireNonNull(backendName, "backendName must not be null");
+        }
+    }
+
+    /** Raw failure-attribution snapshot safe to create while lifecycleLock is held. */
+    private record StreamStartAttempt(
+            String backendName,
+            DeviceId device,
+            StreamStartFailure.Operation operation) {
+
+        private StreamStartAttempt {
+            Objects.requireNonNull(backendName, "backendName must not be null");
+            Objects.requireNonNull(device, "device must not be null");
+            Objects.requireNonNull(operation, "operation must not be null");
+        }
+    }
+
+    /** Exact-identity diagnostic association for a failed start invocation. */
+    private record FailedStreamStartContext(
+            Throwable failure, StreamStartAttempt attempt) {
+
+        private FailedStreamStartContext {
+            Objects.requireNonNull(failure, "failure must not be null");
+            Objects.requireNonNull(attempt, "attempt must not be null");
+        }
+    }
+
+    /** One active public start invocation, including reentrant starts. */
+    private static final class FailedStreamStartFrame {
+        private StreamStartAttempt attempt;
+        private FailedStreamStartContext context;
+    }
+
+    /** Thread-confined active frames plus bounded completed contexts. */
+    private static final class FailedStreamStartContexts {
+        private final Deque<FailedStreamStartFrame> active = new ArrayDeque<>();
+        private final Deque<FailedStreamStartContext> completed = new ArrayDeque<>();
+
+        Deque<FailedStreamStartFrame> active() {
+            return active;
+        }
+
+        Deque<FailedStreamStartContext> completed() {
+            return completed;
+        }
+    }
+
+    /** Opens an invocation frame without invalidating an active outer call. */
+    private void beginStreamStartInvocation() {
+        FailedStreamStartContexts contexts = failedStreamStartContexts.get();
+        if (contexts.active().isEmpty()) {
+            // A new top-level lifecycle occurrence invalidates any failure a
+            // previous caller chose not to consume.
+            contexts.completed().clear();
+        }
+        contexts.active().addFirst(new FailedStreamStartFrame());
+    }
+
+    /** Completes the current frame after its post-unlock announcements. */
+    private void finishStreamStartInvocation() {
+        FailedStreamStartContexts contexts = failedStreamStartContexts.get();
+        FailedStreamStartFrame frame = contexts.active().pollFirst();
+        if (frame == null) {
+            failedStreamStartContexts.remove();
+            throw new IllegalStateException("no audio stream-start invocation is active");
+        }
+        if (frame.context != null) {
+            contexts.completed().addFirst(frame.context);
+            while (contexts.completed().size() > MAX_COMPLETED_STREAM_START_CONTEXTS) {
+                contexts.completed().removeLast();
+            }
+        }
+        if (contexts.active().isEmpty() && contexts.completed().isEmpty()) {
+            failedStreamStartContexts.remove();
+        }
+    }
+
+    /** Records the provision endpoint read by a fresh start invocation. */
+    private void rememberRequestedStreamStartAttempt(StreamingProvision provision) {
+        if (provision != null) {
+            rememberStreamStartAttempt(
+                    provision.requestedBackendName(), provision.requestedDevice(),
+                    StreamStartFailure.Operation.START);
+        }
+    }
+
+    /** Replaces the active invocation's raw attempt snapshot under lifecycleLock. */
+    private void rememberStreamStartAttempt(
+            String backendName,
+            DeviceId device,
+            StreamStartFailure.Operation operation) {
+        FailedStreamStartFrame frame =
+                failedStreamStartContexts.get().active().peekFirst();
+        if (frame == null) {
+            throw new IllegalStateException("no audio stream-start invocation is active");
+        }
+        frame.attempt = new StreamStartAttempt(backendName, device, operation);
+    }
+
+    /** Records the concrete ladder endpoint whose start failure may propagate. */
+    private void rememberStreamStartAttempt(BackendStreamRung rung) {
+        rememberStreamStartAttempt(
+                rung.backend().name(), rung.device(), StreamStartFailure.Operation.START);
+    }
+
+    /** Binds the exact propagated object to the active attempt while locked. */
+    private void bindFailedStreamStart(Throwable failure) {
+        FailedStreamStartFrame frame =
+                failedStreamStartContexts.get().active().peekFirst();
+        if (frame == null) {
+            throw new IllegalStateException("no audio stream-start invocation is active");
+        }
+        if (frame.attempt != null) {
+            frame.context = new FailedStreamStartContext(failure, frame.attempt);
         }
     }
 
@@ -2443,13 +2685,22 @@ public final class AudioEngine {
                 // handle goes back through closeFailedHop and the walk
                 // continues onto a rung that may have inputs.
                 requireCaptureOpened(rung, capture);
-                return new OpenedRung(rung, negotiated, failedHopCauses);
+                return new OpenedRung(
+                        rung,
+                        negotiated,
+                        failedHopCauses,
+                        rung.backend().name());
             } catch (RuntimeException hopFailure) {
                 // FIRST, before any bookkeeping: give the rung's handle back
                 // so no partial acquisition outlives the hop (story 316
                 // re-review).
                 boolean released = closeFailedHop(rung, hopFailure);
                 if (!released && openAttempted) {
+                    // This new abandonment exception is the object that
+                    // propagates, so its attribution belongs to THIS terminal
+                    // rung even when an earlier ordinary hop failure was
+                    // already remembered.
+                    rememberStreamStartAttempt(rung);
                     // The rung reached open() and its handle could NOT be
                     // given back, so it may still hold the device. Walking on
                     // would open a fallback rung beside it — two backends on
@@ -2476,6 +2727,11 @@ public final class AudioEngine {
                 }
                 if (firstFailure == null) {
                     firstFailure = hopFailure;
+                    // All released hops may fail, in which case this exact
+                    // object is rethrown below. The requested endpoint can be
+                    // absent from the ladder after the availability gate, so
+                    // bind the first concrete rung alongside its exception.
+                    rememberStreamStartAttempt(rung);
                 }
                 failedHopCauses.add(causeMessage(hopFailure));
                 LOG.log(Level.WARNING,
@@ -2511,6 +2767,10 @@ public final class AudioEngine {
                 // two-backends-on-one-device case), and a maintainer reading
                 // this SEVERE line is reading it to find out whether the
                 // device is free.
+                // This exact Error is propagated immediately, so its concrete
+                // rung supersedes the requested endpoint and any earlier
+                // recoverable hop.
+                rememberStreamStartAttempt(rung);
                 boolean released = closeFailedHop(rung, hopError);
                 LOG.log(Level.SEVERE,
                         "Backend ladder hop failed with an Error: " + rung.backend().name()
@@ -2697,8 +2957,9 @@ public final class AudioEngine {
      * open: the ladder falls through to the next rung and the hop publishes a
      * {@link BackendFallbackEvent} carrying this message as its cause, which
      * makes the mis-negotiation a visible fact rather than silent breakage.
-     * Real per-device negotiation — with resampling and re-planing — is story
-     * 317.</p>
+     * Story 317 broadens the backend's concrete encoding negotiation, but
+     * render-shape conversion through resampling or re-planing remains
+     * deliberately unsupported.</p>
      *
      * @throws AudioBackendException if the sample rate or channel count differs
      */
@@ -3325,11 +3586,11 @@ public final class AudioEngine {
      *                               that had reached {@code open} could
      *                               not give its handle back and the walk was
      *                               abandoned, or NO STREAMING PROVISION is
-     *                               configured at all (the engine then has no
-     *                               capture device whatsoever, which
-     *                               {@link #startAudioOutput()} is allowed to
-     *                               treat as silent playback and record is
-     *                               not), or the previous stream could
+     *                               configured at all (both playback and
+     *                               recording refuse that configuration;
+     *                               recording additionally requires a usable
+     *                               capture device), or the previous stream
+     *                               could
      *                               not be closed first, or a previously
      *                               retained stream handle still cannot be
      *                               released — including because that
@@ -3343,13 +3604,23 @@ public final class AudioEngine {
      *                               close-first step above fail
      */
     public void startAudioInputOutput() {
-        PendingAnnouncements announcements = new PendingAnnouncements();
-        lifecycleLock.lock();
+        beginStreamStartInvocation();
         try {
-            startAudioInputOutputLocked(announcements);
+            PendingAnnouncements announcements = new PendingAnnouncements();
+            lifecycleLock.lock();
+            try {
+                try {
+                    startAudioInputOutputLocked(announcements);
+                } catch (RuntimeException | Error failure) {
+                    bindFailedStreamStart(failure);
+                    throw failure;
+                }
+            } finally {
+                lifecycleLock.unlock();
+                announcements.deliver();
+            }
         } finally {
-            lifecycleLock.unlock();
-            announcements.deliver();
+            finishStreamStartInvocation();
         }
     }
 
@@ -3374,6 +3645,9 @@ public final class AudioEngine {
      *                      delivered by the caller after the unlock
      */
     private void startAudioInputOutputLocked(PendingAnnouncements announcements) {
+        // A close-first refusal still belongs to this recording start, so bind
+        // the provision this invocation read before touching the old stream.
+        rememberRequestedStreamStartAttempt(this.streamingProvision);
         if (streamState != StreamState.CLOSED) {
             stopAudioOutputLocked(announcements);
             if (streamState != StreamState.CLOSED) {
@@ -3738,16 +4012,19 @@ public final class AudioEngine {
      *
      * @param announcements collects the RT-clock release a failed resume
      *                      owes; delivered by the caller after the unlock
-     * @throws RuntimeException the pump-start failure, rethrown as-is (an
-     *                          {@link Error} unwinds the same way)
+     * @throws RuntimeException an engine-preparation or pump-start failure,
+     *                          rethrown as-is (an {@link Error} unwinds the
+     *                          same way)
      */
     private void resumeAudioOutputLocked(PendingAnnouncements announcements) {
         AudioBackend backend = this.openBackend;
         com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated = this.openSdkFormat;
         if (backend != null && negotiated != null && streamState == StreamState.PAUSED) {
             // No-op when already running; re-allocates the render pipeline
-            // when this resume follows a stop() (see the javadoc).
-            startLocked();
+            // when this resume follows a stop() (see the javadoc). A failure
+            // rolls back only an engine start performed by this attempt; the
+            // still-open stream remains PAUSED and retryable.
+            boolean startedHere = startEngineForStream(announcements);
             streamState = StreamState.RUNNING;
             claimTransportClock();
             try {
@@ -3758,6 +4035,7 @@ public final class AudioEngine {
             } catch (RuntimeException | Error startFailure) {
                 streamState = StreamState.PAUSED;
                 recordClockRelease(announcements);
+                rollbackEngineStart(startedHere, announcements, startFailure);
                 throw startFailure;
             }
         }
@@ -3772,11 +4050,10 @@ public final class AudioEngine {
      * {@link Transport#advancePosition(double)}.
      *
      * <p>This — not {@link Transport#getState()} — is the truth condition
-     * behind {@link Transport#setRealTimeClockActive(boolean)}. The transport
-     * can be {@code PLAYING} with no stream at all:
-     * {@link #startAudioOutput()} returns early when no provision is
-     * installed, and the UI starts the transport regardless (honest playing
-     * states are story 317).</p>
+     * behind {@link Transport#setRealTimeClockActive(boolean)}.
+     * {@link #startAudioOutput()} never returns successfully without a
+     * RUNNING stream, so callers can refuse their transport transition when
+     * the callback cannot take this clock (story 317).</p>
      */
     private boolean callbackIsDriving() {
         return streamState == StreamState.RUNNING;

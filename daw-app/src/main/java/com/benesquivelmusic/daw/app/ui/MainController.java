@@ -875,8 +875,10 @@ public final class MainController {
                     engineBinder.refreshPerformanceMonitor();
                 }));
         // Story 316: install the blank-name default streaming provision
-        // (PortAudio if available, else Java Sound) so the engine has an
-        // open ladder before the persisted settings refine it below.
+        // (PortAudio first, then Java Sound as the final attempted rung) so
+        // the engine has an open ladder before the persisted settings refine
+        // it below. Neither rung is assumed to be available; Play refuses
+        // visibly if both fail to open.
         try {
             audioEngineController.installDefaultProvision();
         } catch (RuntimeException e) {
@@ -884,7 +886,12 @@ public final class MainController {
                     "Failed to install the default audio backend provision;"
                             + " audio output stays unavailable until configured in Settings", e);
         }
-        applyStartupAudioSettings(startupSettings, audioEngineController);
+        applyStartupAudioSettings(
+                startupSettings,
+                audioEngineController,
+                (level, message, actionLabel, action) -> postFx(() ->
+                        notificationBar.show(level, message, actionLabel, action)),
+                this::onOpenAudioSettings);
 
         // Apply the persisted mix precision from user preferences to the
         // project's mixer so that a previously-saved FLOAT_32 choice is
@@ -1188,24 +1195,54 @@ public final class MainController {
         }
     }
 
+    /** Captures the complete actionable toast contract without a JavaFX dependency. */
+    @FunctionalInterface
+    interface ActionNotificationSink {
+        void show(NotificationLevel level,
+                  String message,
+                  String actionLabel,
+                  Runnable action);
+    }
+
     /** Applies restart-scoped persisted audio preferences away from the FX thread. */
     static Thread applyStartupAudioSettings(
             SettingsModel settings, AudioEngineController controller) {
+        return applyStartupAudioSettings(settings, controller,
+                (level, message, actionLabel, action) -> { }, () -> { });
+    }
+
+    /**
+     * Applies persisted audio preferences and exposes any failure through the
+     * injected actionable-notification seam. Production marshals that seam
+     * through {@link FxDispatcher}; this worker never touches JavaFX itself.
+     */
+    static Thread applyStartupAudioSettings(
+            SettingsModel settings,
+            AudioEngineController controller,
+            ActionNotificationSink notificationSink,
+            Runnable openAudioSettings) {
         Objects.requireNonNull(settings, "settings must not be null");
         Objects.requireNonNull(controller, "controller must not be null");
+        Objects.requireNonNull(notificationSink, "notificationSink must not be null");
+        Objects.requireNonNull(openAudioSettings, "openAudioSettings must not be null");
         Thread worker = Thread.ofVirtual().name("daw-startup-audio-configuration").unstarted(() -> {
+            String backend = "<configured backend>";
+            String inputDevice = "";
+            String outputDevice = "";
             try {
                 String persistedBackend = settings.getAudioBackend();
                 // Story 316 review: a blank persisted backend means "keep
                 // what is provisioned" — the backend the next open will try.
                 // Not getActiveBackendName(): nothing is streaming at
                 // startup, so that honestly answers BACKEND_NONE.
-                String backend = persistedBackend.isBlank()
+                backend = persistedBackend.isBlank()
                         ? controller.getProvisionedBackendName() : persistedBackend;
+                inputDevice = settings.getAudioInputDevice();
+                outputDevice = settings.getAudioOutputDevice();
                 controller.applyConfiguration(new AudioEngineController.Request(
                         backend,
-                        settings.getAudioInputDevice(),
-                        settings.getAudioOutputDevice(),
+                        inputDevice,
+                        outputDevice,
                         com.benesquivelmusic.daw.sdk.audio.SampleRate.fromHz(
                                 (int) settings.getSampleRate()),
                         settings.getBufferSize(),
@@ -1215,10 +1252,30 @@ public final class MainController {
             } catch (RuntimeException failure) {
                 LOG.log(Level.WARNING,
                         "Failed to apply persisted audio configuration at startup", failure);
+                String displayInput = configuredValue(inputDevice);
+                String displayOutput = configuredValue(outputDevice);
+                String endpoint = displayInput.equals(displayOutput)
+                        ? "backend '" + backend + "' device '" + displayOutput + "'"
+                        : "backend '" + backend + "' input device '" + displayInput
+                                + "' / output device '" + displayOutput + "'";
+                String reason = failure.getMessage() == null
+                        || failure.getMessage().isBlank()
+                        ? "the saved configuration was rejected"
+                        : failure.getMessage();
+                notificationSink.show(
+                        NotificationLevel.ERROR,
+                        "Startup audio configuration failed for " + endpoint + ": " + reason
+                                + ". Reconnect the device or choose another in Audio Settings.",
+                        "Open Audio Settings",
+                        openAudioSettings);
             }
         });
         worker.start();
         return worker;
+    }
+
+    private static String configuredValue(String value) {
+        return value == null || value.isBlank() ? "<default>" : value;
     }
 
     private void createToolbarAppearanceController() {
@@ -1293,6 +1350,7 @@ public final class MainController {
                 () -> audioEngineController != null
                         ? audioEngineController.reportedLatency()
                         : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
+                this::onOpenAudioSettings,
                 dispatcher());
     }
 

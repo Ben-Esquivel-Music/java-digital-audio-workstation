@@ -38,10 +38,17 @@ class AudioBackendSelectorTest {
     }
 
     @Test
-    void javaSoundIsAlwaysInAvailableList() {
-        AudioBackendSelector selector = new AudioBackendSelector();
-        List<String> available = selector.availableBackends();
-        assertTrue(available.contains("Java Sound"), available.toString());
+    void unavailableJavaSoundIsNotAdvertisedButRemainsTheFinalCandidate() {
+        List<String> order = new AudioBackendSelector().preferenceOrderForCurrentOs();
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        for (String name : order) {
+            factories.put(name, () -> new ProbeBackend(name, false, true));
+        }
+
+        AudioBackendSelector selector = new AudioBackendSelector(factories);
+        assertEquals(List.of(), selector.availableBackends());
+        assertEquals(List.of(), selector.availableBackendNames());
+        assertEquals(JavaxSoundBackend.NAME, selector.defaultBackendName());
     }
 
     @Test
@@ -70,7 +77,7 @@ class AudioBackendSelectorTest {
         List<String> order = new AudioBackendSelector().preferenceOrderForCurrentOs();
         Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
         for (String name : order) {
-            factories.put(name, () -> new AvailableNonStreamingBackend(name));
+            factories.put(name, () -> new ProbeBackend(name, true, false));
         }
         // The Java Sound rung streams (Mock stands in: supportsStreaming true).
         factories.put("Java Sound", MockAudioBackend::new);
@@ -95,22 +102,11 @@ class AudioBackendSelectorTest {
                 selector.availableBackends().toString());
     }
 
-    /**
-     * Available-but-non-streaming {@link AudioBackend} test double. Being a
-     * class outside the historical permitted set, it is also compile-level
-     * proof that story 316 unsealed the interface. It deliberately does NOT
-     * override {@code supportsStreaming()}, so it exercises the inherited
-     * {@code false} default the selector's streaming gate keys on.
-     */
-    private static final class AvailableNonStreamingBackend implements AudioBackend {
-        private final String name;
-
-        private AvailableNonStreamingBackend(String name) {
-            this.name = name;
-        }
-
-        @Override public String name() { return name; }
-        @Override public boolean isAvailable() { return true; }
+    /** Configurable probe that keeps availability tests independent of host audio. */
+    private record ProbeBackend(String name, boolean available, boolean streaming)
+            implements AudioBackend {
+        @Override public boolean isAvailable() { return available; }
+        @Override public boolean supportsStreaming() { return streaming; }
         @Override public List<AudioDeviceInfo> listDevices() { return List.of(); }
         @Override public void open(DeviceId device, AudioFormat format, int bufferFrames) { }
         @Override public java.util.concurrent.Flow.Publisher<AudioBlock> inputBlocks() {

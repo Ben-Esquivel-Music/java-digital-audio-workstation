@@ -51,8 +51,8 @@ import java.util.function.BooleanSupplier;
  *
  * <h2>Known implementations</h2>
  * <ul>
- *   <li>{@link JavaxSoundBackend} — always available; built on
- *       {@code javax.sound.sampled}.</li>
+ *   <li>{@link JavaxSoundBackend} — availability-probed final fallback built
+ *       on {@code javax.sound.sampled}.</li>
  *   <li>{@link AsioBackend} — Windows ASIO via FFM. Requires a
  *       user-installed ASIO driver (for example ASIO4ALL).</li>
  *   <li>{@link CoreAudioBackend} — macOS CoreAudio via FFM.</li>
@@ -136,13 +136,17 @@ public interface AudioBackend extends AutoCloseable {
     List<AudioDeviceInfo> listDevices();
 
     /**
-     * Returns the format this backend will actually open for the requested
+     * Returns the SDK-side format this backend can accept for the requested
      * format. The engine calls this before {@link #open(DeviceId,
-     * AudioFormat, int)} and passes the negotiated format to {@code open},
-     * so a backend with a narrower native capability (for example
-     * {@link JavaxSoundBackend}, whose output path only encodes 16-bit PCM)
-     * can substitute a format it can honestly deliver instead of throwing on
-     * every sink. The default implementation returns the request unchanged.
+     * AudioFormat, int)} and passes the negotiated bus shape to {@code open},
+     * so a backend with a narrower native capability can substitute a format
+     * it can honestly deliver instead of throwing on every sink.</p>
+     *
+     * <p>The default implementation returns the request unchanged. A backend may still map
+     * normalized float bus samples into a different concrete device encoding:
+     * {@link JavaxSoundBackend} preserves byte-aligned SDK widths here, then
+     * selects PCM_FLOAT or an exact signed-PCM line layout only after it knows
+     * the chosen mixer and encodes against {@code line.getFormat()}.</p>
      *
      * <p><b>Only the BIT DEPTH may be adjusted today (story 316 review).</b>
      * The engine renders every block through one pipeline shaped by its own
@@ -154,11 +158,12 @@ public interface AudioBackend extends AutoCloseable {
      * every {@link #sink(AudioBlock)} reject the block, and a different rate
      * would merely relabel un-resampled audio. Bit depth is safe because it
      * is the backend's own encoding concern: the engine always hands over
-     * normalized floats. Full per-device renegotiation — with resampling and
-     * re-planing — is story 317.</p>
+     * normalized floats. Per-device sample-rate/channel negotiation would
+     * additionally require resampling and re-planing and is outside this
+     * encoding seam.</p>
      *
      * @param requested the format the engine wants to open; must not be null
-     * @return the format the backend will actually open — either
+     * @return the SDK-side format the backend will accept — either
      *         {@code requested} itself or a variant differing only in bit
      *         depth; never null
      */

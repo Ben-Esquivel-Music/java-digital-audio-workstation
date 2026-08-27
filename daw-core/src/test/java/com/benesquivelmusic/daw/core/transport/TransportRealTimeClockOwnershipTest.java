@@ -15,14 +15,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Design Book §6.1 (thread ownership).
  *
  * <p>Deferring a seek is only safe while something is genuinely draining the
- * queue. {@code AudioEngine.startAudioOutput()} returns early when no audio
- * backend is configured ("playback without hardware output"), and the UI calls
- * {@code transport.play()} regardless — the transport is {@code PLAYING} with
- * nothing calling {@link Transport#advancePosition(double)}. Deferring in that
- * state queued every ruler click and skip behind a drain that never came: the
- * playhead and the time display froze, and the next {@code stop()} discarded
- * the queue. The claim makes the ownership explicit, so an unclaimed transport
- * behaves exactly as it did before the queue existed.</p>
+ * queue. Story 317 makes the application refuse PLAYING when no callback
+ * opened, but the core transport can still be driven directly by tests and
+ * recovery/import code. The independent clock claim therefore remains the
+ * authority: an unclaimed transport applies seeks inline instead of queueing
+ * them behind a drain that will never come.</p>
  */
 class TransportRealTimeClockOwnershipTest {
 

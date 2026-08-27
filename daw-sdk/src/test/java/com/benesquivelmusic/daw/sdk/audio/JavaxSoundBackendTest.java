@@ -3,20 +3,28 @@ package com.benesquivelmusic.daw.sdk.audio;
 import org.junit.jupiter.api.Test;
 
 import javax.sound.sampled.Control;
+import javax.sound.sampled.DataLine;
 import javax.sound.sampled.Line;
 import javax.sound.sampled.LineListener;
 import javax.sound.sampled.LineUnavailableException;
+import javax.sound.sampled.Mixer;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.TargetDataLine;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.classfile.Attributes;
+import java.lang.classfile.CodeElement;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
+import java.lang.classfile.Instruction;
 import java.lang.classfile.MethodModel;
+import java.lang.classfile.Opcode;
 import java.lang.classfile.attribute.CodeAttribute;
 import java.lang.classfile.constantpool.ClassEntry;
 import java.lang.classfile.instruction.ExceptionCatch;
+import java.lang.classfile.instruction.FieldInstruction;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -28,6 +36,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -104,6 +113,571 @@ class JavaxSoundBackendTest {
     private static final String CATCH_ALL = "<any>";
 
     @Test
+    void selectedMixerUsesFloatOutputBitExactlyAndNegotiatesCaptureSeparately() {
+        Mixer.Info studio = new TestMixerInfo("Studio Interface");
+        javax.sound.sampled.AudioFormat floatOutput = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT, 32, 2, false);
+        javax.sound.sampled.AudioFormat signedCapture = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {studio}, floatOutput, signedCapture);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+        AudioFormat sdkFormat = new AudioFormat(48_000.0, 2, 24);
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME,
+                        "Studio Interface [Java Sound]"), sdkFormat, 4);
+        float[] sine = {0.0f, 1.0f, 0.0f, -1.0f, 0.5f, -0.5f, 0.25f, -0.25f};
+        backend.sink(new AudioBlock(48_000.0, 2, 4, sine));
+
+        assertThat(access.selectedSourceMixer.get()).isSameAs(studio);
+        assertThat(access.selectedTargetMixer.get()).isSameAs(studio);
+        assertThat(access.lastSourceLine.openedFormat().getEncoding())
+                .isEqualTo(javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT);
+        assertThat(access.lastTargetLine.openedFormat().getEncoding())
+                .as("capture negotiates independently of float output")
+                .isEqualTo(javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED);
+        assertThat(access.lastSourceLine.openedBufferBytes())
+                .as("the output buffer uses the float line's actual frame size")
+                .isEqualTo(4 * floatOutput.getFrameSize() * 2);
+        assertThat(access.lastTargetLine.openedBufferBytes())
+                .as("the capture buffer uses its own signed-PCM frame size")
+                .isEqualTo(4 * signedCapture.getFrameSize() * 2);
+        assertThat(access.lastSourceLine.writtenBytes())
+                .containsExactly(rawFloatBytes(sine, false));
+        assertThat(backend.openedInputChannels()).isEqualTo(2);
+
+        backend.close();
+    }
+
+    @Test
+    void signedPcmLineReceivesSaturatedSamplesNeverRawFloatBits() {
+        Mixer.Info studio = new TestMixerInfo("Integer Interface");
+        javax.sound.sampled.AudioFormat signed24BigEndian = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 24, 2, true);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {studio}, signed24BigEndian, null);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, "Integer Interface"),
+                new AudioFormat(48_000.0, 2, 24), 2);
+
+        backend.sink(new AudioBlock(48_000.0, 2, 2,
+                new float[] {1.01f, -1.01f, 0.5f, Float.NaN}));
+
+        byte[] written = access.lastSourceLine.writtenBytes();
+        assertThat(written).containsExactly(java.util.HexFormat.of().parseHex(
+                "7fffff800001400000000000"));
+        assertThat(containsSequence(written, rawFloatBytes(new float[] {1.0f}, true)))
+                .as("an integer line must never receive an IEEE-754 full-scale pattern")
+                .isFalse();
+
+        backend.close();
+    }
+
+    @Test
+    void sinkPinsTheLineReportedActualFormatNotTheRequestedCandidate() {
+        Mixer.Info studio = new TestMixerInfo("Negotiating Interface");
+        javax.sound.sampled.AudioFormat advertisedFloat = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT, 32, 2, false);
+        javax.sound.sampled.AudioFormat actualSigned = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 32, 2, true);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {studio}, advertisedFloat, null);
+        access.actualOutputFormat = actualSigned;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, "Negotiating Interface"),
+                new AudioFormat(48_000.0, 2, 32), 1);
+        backend.sink(new AudioBlock(48_000.0, 2, 1, new float[] {1.0f, -1.0f}));
+
+        assertThat(access.lastSourceLine.openedFormat().getEncoding())
+                .as("the mixer was asked for its advertised float candidate")
+                .isEqualTo(javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT);
+        assertThat(access.lastSourceLine.getFormat()).isEqualTo(actualSigned);
+        assertThat(access.lastSourceLine.writtenBytes())
+                .as("sink converts against line.getFormat(), including signed layout/endian")
+                .containsExactly(java.util.HexFormat.of().parseHex(
+                        "7fffffff80000001"));
+
+        backend.close();
+    }
+
+    @Test
+    void closeThenReopenPublishesADistinctLineAndEncodingGeneration() {
+        Mixer.Info studio = new TestMixerInfo("Reopening Interface");
+        javax.sound.sampled.AudioFormat advertisedFloat = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT, 32, 2, false);
+        javax.sound.sampled.AudioFormat firstActualSigned = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {studio}, advertisedFloat, null);
+        access.actualOutputFormat = firstActualSigned;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+        AudioBlock block = new AudioBlock(48_000.0, 2, 1, new float[] {1.0f, -1.0f});
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, studio.getName()),
+                STREAM_FORMAT, 1);
+        Object firstGeneration = fieldValue(backend, "outputGeneration");
+        MemoryLine firstLine = access.lastSourceLine;
+        backend.sink(block);
+        backend.close();
+
+        assertThat(firstLine.writtenBytes()).containsExactly(
+                java.util.HexFormat.of().parseHex("ff7f0180"));
+        assertThat(fieldValue(backend, "outputGeneration"))
+                .as("close unpublishes the old generation before release")
+                .isNull();
+
+        access.actualOutputFormat = advertisedFloat;
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, studio.getName()),
+                STREAM_FORMAT, 1);
+        Object secondGeneration = fieldValue(backend, "outputGeneration");
+        MemoryLine secondLine = access.lastSourceLine;
+        backend.sink(block);
+
+        assertThat(secondGeneration).isNotNull().isNotSameAs(firstGeneration);
+        assertThat(secondLine).isNotSameAs(firstLine);
+        assertThat(secondLine.writtenBytes())
+                .containsExactly(rawFloatBytes(block.samples(), false));
+
+        backend.close();
+    }
+
+    /**
+     * A close/reopen can replace every lifecycle field between any two plain
+     * reads in {@code sink}. The concurrency contract is therefore structural:
+     * one acquire-read of one volatile immutable carrier, followed only by
+     * reads from that carrier, with no lifecycle monitor around the blocking
+     * line write.
+     */
+    @Test
+    void sinkUsesOneVolatileGenerationSnapshotWithoutALifecycleLock() throws IOException {
+        Field generation;
+        try {
+            generation = JavaxSoundBackend.class.getDeclaredField("outputGeneration");
+        } catch (NoSuchFieldException e) {
+            throw new AssertionError("sink needs one output-generation carrier", e);
+        }
+        assertThat(Modifier.isVolatile(generation.getModifiers())).isTrue();
+        assertThat(generation.getType().isRecord()).isTrue();
+        try {
+            assertThat(Modifier.isSynchronized(JavaxSoundBackend.class
+                    .getDeclaredMethod("sink", AudioBlock.class)
+                    .getModifiers())).isFalse();
+        } catch (NoSuchMethodException e) {
+            throw new AssertionError("AudioBackend.sink must remain implemented", e);
+        }
+
+        byte[] bytes = readClassBytes(JavaxSoundBackend.class);
+        assertThat(bytes).as("the JavaxSoundBackend class file must be readable").isNotNull();
+        ClassModel model = ClassFile.of().parse(bytes);
+        String backendOwner = JavaxSoundBackend.class.getName().replace('.', '/');
+        List<String> backendFieldReads = new ArrayList<>();
+        List<Opcode> monitorOperations = new ArrayList<>();
+        int scannedSinkMethods = 0;
+        for (MethodModel method : model.methods()) {
+            if (!method.methodName().stringValue().equals("sink")) {
+                continue;
+            }
+            CodeAttribute code = method.findAttribute(Attributes.code())
+                    .map(CodeAttribute.class::cast)
+                    .orElse(null);
+            if (code == null) {
+                continue;
+            }
+            scannedSinkMethods++;
+            for (CodeElement element : code) {
+                if (element instanceof FieldInstruction field
+                        && field.opcode() == Opcode.GETFIELD
+                        && field.owner().asInternalName().equals(backendOwner)) {
+                    backendFieldReads.add(field.name().stringValue());
+                }
+                if (element instanceof Instruction instruction
+                        && (instruction.opcode() == Opcode.MONITORENTER
+                        || instruction.opcode() == Opcode.MONITOREXIT)) {
+                    monitorOperations.add(instruction.opcode());
+                }
+            }
+        }
+
+        assertThat(scannedSinkMethods).isEqualTo(1);
+        assertThat(backendFieldReads)
+                .as("sink must acquire exactly one coherent generation, never separate"
+                        + " lifecycle line/format/support fields")
+                .containsExactly("outputGeneration");
+        assertThat(monitorOperations)
+                .as("the blocking SourceDataLine.write path must not hold a monitor")
+                .isEmpty();
+    }
+
+    @Test
+    void signedCodecCoversEveryNegotiableWidthAndByteOrder() {
+        AudioBlock block = new AudioBlock(48_000.0, 1, 4,
+                new float[] {1.1f, -1.1f, Float.NaN, 0.5f});
+        Map<Integer, String> bigEndianExpected = Map.of(
+                8, "7f810040",
+                16, "7fff800100004000",
+                24, "7fffff800001000000400000",
+                32, "7fffffff800000010000000040000000");
+        Map<Integer, String> littleEndianExpected = Map.of(
+                8, "7f810040",
+                16, "ff7f018000000040",
+                24, "ffff7f010080000000000040",
+                32, "ffffff7f010000800000000000000040");
+        for (int bits : new int[] {8, 16, 24, 32}) {
+            for (boolean bigEndian : new boolean[] {false, true}) {
+                javax.sound.sampled.AudioFormat format = new javax.sound.sampled.AudioFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                        48_000.0f, bits, 1, bits / 8, 48_000.0f, bigEndian);
+                byte[] encoded = JavaxSoundBackend.encode(block, format);
+                AudioBlock decoded = JavaxSoundBackend.decode(
+                        encoded, encoded.length, new AudioFormat(48_000.0, 1, bits), format);
+
+                String expectedHex = (bigEndian
+                        ? bigEndianExpected : littleEndianExpected).get(bits);
+                assertThat(encoded)
+                        .as("%d-bit %s-endian raw layout", bits,
+                                bigEndian ? "big" : "little")
+                        .containsExactly(java.util.HexFormat.of().parseHex(expectedHex));
+                assertThat(decoded.samples()[0]).isCloseTo(1.0f,
+                        org.assertj.core.data.Offset.offset(1.0f / (1L << (bits - 1))));
+                assertThat(decoded.samples()[1]).isCloseTo(-1.0f,
+                        org.assertj.core.data.Offset.offset(1.0f / (1L << (bits - 1))));
+                assertThat(decoded.samples()[2]).isZero();
+            }
+        }
+    }
+
+    @Test
+    void floatCodecPreservesRawBitsInBothByteOrders() {
+        float[] samples = {
+                1.0f,
+                -0.5f,
+                Float.intBitsToFloat(0x7fc0_1234)
+        };
+        AudioBlock block = new AudioBlock(48_000.0, 1, samples.length, samples);
+        for (boolean bigEndian : new boolean[] {false, true}) {
+            javax.sound.sampled.AudioFormat format = javaFormat(
+                    javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT,
+                    32, 1, bigEndian);
+            byte[] encoded = JavaxSoundBackend.encode(block, format);
+            AudioBlock decoded = JavaxSoundBackend.decode(encoded, encoded.length,
+                    new AudioFormat(48_000.0, 1, 32), format);
+
+            assertThat(encoded).containsExactly(rawFloatBytes(samples, bigEndian));
+            for (int sample = 0; sample < samples.length; sample++) {
+                assertThat(Float.floatToRawIntBits(decoded.samples()[sample]))
+                        .isEqualTo(Float.floatToRawIntBits(samples[sample]));
+            }
+        }
+    }
+
+    @Test
+    void namedSelectionIsExplicitlyRejectedWhenAccessCannotHonorIt() {
+        Mixer.Info studio = new TestMixerInfo("Restricted Interface");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {studio}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false), null);
+        access.deviceSelectionSupported = false;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThatThrownBy(() -> backend.open(
+                new DeviceId(JavaxSoundBackend.NAME, "Restricted Interface"),
+                AudioFormat.CD_QUALITY, 256))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("device selection not supported on this backend");
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    @Test
+    void ambiguousLegacyMixerNameIsRefusedInsteadOfChoosingTheFirst() {
+        Mixer.Info first = new TestMixerInfo("Duplicate");
+        Mixer.Info second = new TestMixerInfo("Duplicate");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {first, second}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false), null);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThatThrownBy(() -> backend.open(
+                new DeviceId(JavaxSoundBackend.NAME, "Duplicate"),
+                AudioFormat.CD_QUALITY, 256))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("ambiguous");
+    }
+
+    @Test
+    void selectionMatchingDifferentBareAndQualifiedMixerNamesIsRefused() {
+        Mixer.Info qualifiedMatch = new TestMixerInfo("Foo");
+        Mixer.Info bareMatch = new TestMixerInfo("Foo [Java Sound]");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {qualifiedMatch, bareMatch}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false), null);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThatThrownBy(() -> backend.open(
+                new DeviceId(JavaxSoundBackend.NAME, "Foo [Java Sound]"),
+                STREAM_FORMAT, 256))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("ambiguous");
+        assertThat(access.sourceLineAcquisitions)
+                .as("an ambiguous persisted label must not open either mixer")
+                .hasValue(0);
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    @Test
+    void bareMixerNameEndingInBackendQualifierResolvesWithoutACollision() {
+        Mixer.Info suffixNamedMixer = new TestMixerInfo("Foo [Java Sound]");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {suffixNamedMixer}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false), null);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, suffixNamedMixer.getName()),
+                STREAM_FORMAT, 256);
+
+        assertThat(access.selectedSourceMixer.get()).isSameAs(suffixNamedMixer);
+        backend.close();
+    }
+
+    @Test
+    void availabilitySkipsBrokenMixerWithoutClosingTheSuccessfulUnopenedProbe() {
+        Mixer.Info broken = new TestMixerInfo("Broken Mixer");
+        Mixer.Info healthy = new TestMixerInfo("Healthy Mixer");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {broken, healthy}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false), null);
+        access.lineInfoFailures.add(broken);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(access.selectedSourceMixer.get()).isSameAs(healthy);
+        assertThat(access.lastSourceLine.closeCalls())
+                .as("Mixer.getLine returns an unopened object; only open reserves resources")
+                .isZero();
+    }
+
+    @Test
+    void availabilityNeverOwnsOrClosesItsUnopenedProbeObject() {
+        Mixer.Info refusingClose = new TestMixerInfo("Unopened Probe Mixer");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {refusingClose}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_FLOAT,
+                        32, 2, false), null);
+        access.failSourceLineClose = true;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThat(backend.isAvailable()).isTrue();
+        MemoryLine firstProbe = access.lastSourceLine;
+        assertThatCode(backend::close).doesNotThrowAnyException();
+        assertThat(firstProbe.isOpen()).isFalse();
+        assertThat(firstProbe.closeCalls()).isZero();
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(access.sourceLineAcquisitions.get()).isEqualTo(2);
+        assertThat(access.sourceLines)
+                .allSatisfy(line -> {
+                    assertThat(line.isOpen()).isFalse();
+                    assertThat(line.closeCalls()).isZero();
+                });
+    }
+
+    @Test
+    void everyAvailableSignedPcmWidthCanOpenAStreamForAnotherRequestedWidth() {
+        for (int availableBits : new int[] {Byte.SIZE, Short.SIZE, 24, Integer.SIZE}) {
+            Mixer.Info mixer = new TestMixerInfo(availableBits + "-bit Only Mixer");
+            javax.sound.sampled.AudioFormat availableFormat = javaFormat(
+                    javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                    availableBits,
+                    2,
+                    false);
+            TestJavaSoundAccess access = new TestJavaSoundAccess(
+                    new Mixer.Info[] {mixer}, availableFormat, null);
+            JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+            assertThat(backend.isAvailable())
+                    .as("%d-bit signed PCM is an advertised availability capability",
+                            availableBits)
+                    .isTrue();
+
+            assertThatCode(() -> backend.open(
+                    new DeviceId(JavaxSoundBackend.NAME, mixer.getName()),
+                    STREAM_FORMAT,
+                    STREAM_FRAMES))
+                    .as("the open candidates include the same %d-bit capability",
+                            availableBits)
+                    .doesNotThrowAnyException();
+            assertThat(access.lastSourceLine.openedFormat().getSampleSizeInBits())
+                    .isEqualTo(availableBits);
+
+            backend.close();
+        }
+    }
+
+    @Test
+    void selectorRefreshAndDefaultQueriesIgnoreUnopenedProbeCloseFailures() {
+        Mixer.Info mixer = new TestMixerInfo("Temporary Selector Probe");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {mixer}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                        16, 2, false), null);
+        access.failSourceLineClose = true;
+        AtomicInteger temporaryBackends = new AtomicInteger();
+        AudioBackendSelector selector = new AudioBackendSelector(Map.of(
+                JavaxSoundBackend.NAME,
+                () -> {
+                    temporaryBackends.incrementAndGet();
+                    return new JavaxSoundBackend(access);
+                }));
+
+        assertThat(selector.availableBackends()).containsExactly(JavaxSoundBackend.NAME);
+        assertThat(selector.defaultBackendName()).isEqualTo(JavaxSoundBackend.NAME);
+        assertThat(selector.availableBackendNames()).containsExactly(JavaxSoundBackend.NAME);
+
+        assertThat(temporaryBackends.get()).isEqualTo(3);
+        assertThat(access.sourceLineAcquisitions.get()).isEqualTo(3);
+        assertThat(access.sourceLines)
+                .as("temporary selector backends must not create retained close ownership")
+                .allSatisfy(line -> {
+                    assertThat(line.isOpen()).isFalse();
+                    assertThat(line.closeCalls()).isZero();
+                });
+    }
+
+    @Test
+    void availabilityOfAnOpenStreamDoesNotAcquireASecondLineOrPoisonClose() {
+        Mixer.Info oneLineMixer = new TestMixerInfo("One-Line Mixer");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {oneLineMixer}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                        16, 2, false), null);
+        access.failSourceLineCloseAfterFirst = true;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, oneLineMixer.getName()),
+                STREAM_FORMAT, STREAM_FRAMES);
+        MemoryLine streamLine = access.lastSourceLine;
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(access.sourceLineAcquisitions.get())
+                .as("the already-open validated line is the availability proof")
+                .isEqualTo(1);
+        assertThatCode(backend::close).doesNotThrowAnyException();
+        assertThat(streamLine.closeCalls()).isEqualTo(1);
+        assertThat(access.sourceLines).containsExactly(streamLine);
+    }
+
+    @Test
+    void availabilityExpandsANonstandardRateWithWildcardChannels() {
+        Mixer.Info wildcard = new TestMixerInfo("96 kHz Wildcard Mixer");
+        javax.sound.sampled.AudioFormat advertised = new javax.sound.sampled.AudioFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                96_000.0f,
+                16,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                96_000.0f,
+                false);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {wildcard}, advertised, null);
+        access.actualOutputFormat = new javax.sound.sampled.AudioFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                96_000.0f, 16, 2, 4, 96_000.0f, false);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(access.selectedSourceFormat.get()).satisfies(probed -> {
+            assertThat(probed.getSampleRate()).isEqualTo(96_000.0f);
+            assertThat(probed.getChannels()).isEqualTo(2);
+            assertThat(probed.getFrameSize()).isEqualTo(4);
+        });
+    }
+
+    @Test
+    void availabilityCanObtainAValidatedGenericWildcardDescriptor() {
+        Mixer.Info genericOnly = new TestMixerInfo("Generic Multichannel Mixer");
+        javax.sound.sampled.AudioFormat advertised = new javax.sound.sampled.AudioFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                24,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                false);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {genericOnly}, advertised, null);
+        access.requireAdvertisedSourceProbe = true;
+        javax.sound.sampled.AudioFormat concreteDefault =
+                new javax.sound.sampled.AudioFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                        96_000.0f, 24, 6, 18, 96_000.0f, false);
+        access.actualOutputFormat = concreteDefault;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThat(backend.isAvailable()).isTrue();
+        assertThat(access.selectedSourceFormat.get())
+                .as("the generic descriptor is tried after conservative concrete probes")
+                .isSameAs(advertised);
+        assertThat(access.lastSourceLine.getFormat()).isSameAs(concreteDefault);
+        assertThat(access.sourceLineAcquisitions.get()).isEqualTo(1);
+    }
+
+    @Test
+    void genericWildcardAcceptanceWithoutAConcreteDefaultIsNotAvailable() {
+        Mixer.Info genericOnly = new TestMixerInfo("Unresolved Generic Mixer");
+        javax.sound.sampled.AudioFormat advertised = new javax.sound.sampled.AudioFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                24,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                javax.sound.sampled.AudioSystem.NOT_SPECIFIED,
+                false);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {genericOnly}, advertised, null);
+        access.requireAdvertisedSourceProbe = true;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThat(backend.isAvailable())
+                .as("accepting a wildcard descriptor does not prove open can encode the line")
+                .isFalse();
+        assertThat(access.selectedSourceFormat.get()).isSameAs(advertised);
+        assertThat(access.sourceLineAcquisitions.get()).isEqualTo(1);
+        assertThat(access.lastSourceLine.closeCalls())
+                .as("even an unusable probe is unopened and owns no device resource")
+                .isZero();
+    }
+
+    @Test
+    void paddedOnlyAdvertisedFormatIsNotReportedAvailable() {
+        Mixer.Info padded = new TestMixerInfo("Padded Mixer");
+        javax.sound.sampled.AudioFormat paddedSigned =
+                new javax.sound.sampled.AudioFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED,
+                        48_000.0f, 16, 2, 6, 48_000.0f, false);
+        JavaxSoundBackend backend = new JavaxSoundBackend(new TestJavaSoundAccess(
+                new Mixer.Info[] {padded}, paddedSigned, null));
+
+        assertThat(backend.isAvailable())
+                .as("availability may advertise only layouts the encoder can consume")
+                .isFalse();
+    }
+
+    @Test
+    void enumerationDoesNotInventPlaybackChannelsForCaptureOnlyMixer() {
+        Mixer.Info captureOnly = new TestMixerInfo("Capture Only");
+        javax.sound.sampled.AudioFormat input = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false);
+        JavaxSoundBackend backend = new JavaxSoundBackend(new TestJavaSoundAccess(
+                new Mixer.Info[] {captureOnly}, null, input));
+
+        assertThat(backend.listDevices()).singleElement().satisfies(device -> {
+            assertThat(device.maxInputChannels()).isEqualTo(2);
+            assertThat(device.maxOutputChannels()).isZero();
+            assertThat(device.supportsOutput()).isFalse();
+        });
+    }
+
+    @Test
     void unopenableOutputLineFailsTheOpenAndRollsBack() {
         // 192 interleaved channels is absurd for javax.sound.sampled — no
         // host mixer offers such a line, so the output-line open is refused
@@ -129,9 +703,8 @@ class JavaxSoundBackendTest {
         // The invariant EVERY failure inside open() owes the ladder (story 316
         // review): support.markOpen has already run by the time the lines are
         // touched, so a failure that escapes the rollback leaves isOpen()
-        // reporting true forever. The engine's next attempt on this rung —
-        // Java Sound is the MANDATORY FINAL RUNG, so there is always a next
-        // attempt — would then die on markOpen's "already has an open stream"
+        // reporting true forever. A later request that retries this final
+        // rung would then die on markOpen's "already has an open stream"
         // instead of on the real device problem, and the diagnosis would point
         // at the wrong thing.
         JavaxSoundBackend backend = new JavaxSoundBackend();
@@ -168,13 +741,11 @@ class JavaxSoundBackendTest {
      * had already succeeded, so the engine reads the whole rung as failed and
      * opens a second backend in parallel against that live line.</p>
      *
-     * <p>The check is on the bytecode rather than on a provoked exception
-     * because {@code javax.sound.sampled.AudioSystem} is a static JDK seam:
-     * this backend takes no injectable mixer, and provoking a runtime failure
-     * other than {@code IllegalArgumentException} out of the real
-     * {@code AudioSystem} would need either a production seam or a
-     * machine-specific driver quirk. The class file states the routing
-     * exactly and identically on every platform, so this asserts it there —
+     * <p>The check stays on the bytecode because it proves every recovery
+     * catch route without coupling this lifecycle sentinel to the format and
+     * mixer cases exercised through {@link JavaSoundAccess}. The class file
+     * states the routing exactly and identically on every platform, so this
+     * asserts it there —
      * the same Class-File API sentinel style {@code RealTimeSafeContractTest}
      * uses for the real-time contract. A multicatch compiles to one
      * exception-table entry per alternative sharing one handler, so each
@@ -1016,11 +1587,9 @@ class JavaxSoundBackendTest {
     /**
      * Plants {@code line} in one of the backend's private line fields.
      *
-     * <p>{@code javax.sound.sampled.AudioSystem} is a static JDK factory and
-     * this backend takes no injectable mixer, so a line whose {@code close()}
-     * refuses cannot be reached through {@link JavaxSoundBackend#open}. The
-     * stub is therefore planted directly rather than behind a production seam
-     * that would exist only for these tests — the same private-field injection
+     * <p>The stub is planted directly so this legacy lifecycle test isolates
+     * retained-line recovery from the format and device negotiation already
+     * covered through {@link JavaSoundAccess} — the same private-field injection
      * {@code SnapshotDiffTest} uses in daw-core. Surefire patches this test
      * into {@code daw.sdk} (the ASIO tests already call package-private
      * factory setters on production classes), so {@code setAccessible} here is
@@ -1039,14 +1608,282 @@ class JavaxSoundBackendTest {
 
     /** Reads back a line field: non-null means the backend still holds it. */
     private static Object retainedLine(JavaxSoundBackend backend, String field) {
+        return fieldValue(backend, field);
+    }
+
+    /** Reads a private backend field for a same-module lifecycle invariant. */
+    private static Object fieldValue(JavaxSoundBackend backend, String field) {
         try {
             Field declared = JavaxSoundBackend.class.getDeclaredField(field);
             declared.setAccessible(true);
             return declared.get(backend);
         } catch (ReflectiveOperationException e) {
-            throw new AssertionError("JavaxSoundBackend." + field + " must exist —"
-                    + " retention has nowhere to keep a line without it", e);
+            throw new AssertionError("JavaxSoundBackend." + field
+                    + " must exist for this lifecycle invariant", e);
         }
+    }
+
+    private static javax.sound.sampled.AudioFormat javaFormat(
+            javax.sound.sampled.AudioFormat.Encoding encoding,
+            int bits,
+            int channels,
+            boolean bigEndian) {
+        int frameSize = channels * bits / Byte.SIZE;
+        return new javax.sound.sampled.AudioFormat(
+                encoding, 48_000.0f, bits, channels, frameSize, 48_000.0f, bigEndian);
+    }
+
+    private static byte[] rawFloatBytes(float[] samples, boolean bigEndian) {
+        byte[] bytes = new byte[samples.length * Float.BYTES];
+        for (int sample = 0; sample < samples.length; sample++) {
+            int bits = Float.floatToRawIntBits(samples[sample]);
+            for (int byteIndex = 0; byteIndex < Float.BYTES; byteIndex++) {
+                int outputIndex = sample * Float.BYTES
+                        + (bigEndian ? Float.BYTES - 1 - byteIndex : byteIndex);
+                bytes[outputIndex] = (byte) (bits >>> (byteIndex * Byte.SIZE));
+            }
+        }
+        return bytes;
+    }
+
+    private static boolean containsSequence(byte[] source, byte[] sequence) {
+        for (int start = 0; start <= source.length - sequence.length; start++) {
+            boolean matches = true;
+            for (int index = 0; index < sequence.length; index++) {
+                if (source[start + index] != sequence[index]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Headless Java Sound provider with deterministic mixer/format behavior. */
+    private static final class TestJavaSoundAccess implements JavaSoundAccess {
+
+        private final Mixer.Info[] mixers;
+        private final javax.sound.sampled.AudioFormat outputFormat;
+        private final javax.sound.sampled.AudioFormat inputFormat;
+        private final Set<Mixer.Info> lineInfoFailures = new LinkedHashSet<>();
+        private final AtomicReference<Mixer.Info> selectedSourceMixer = new AtomicReference<>();
+        private final AtomicReference<Mixer.Info> selectedTargetMixer = new AtomicReference<>();
+        private final AtomicReference<javax.sound.sampled.AudioFormat> selectedSourceFormat =
+                new AtomicReference<>();
+        private final AtomicInteger sourceLineAcquisitions = new AtomicInteger();
+        private final List<MemoryLine> sourceLines = new ArrayList<>();
+        private boolean deviceSelectionSupported = true;
+        private boolean failSourceLineClose;
+        private boolean failSourceLineCloseAfterFirst;
+        private boolean requireAdvertisedSourceProbe;
+        private javax.sound.sampled.AudioFormat actualOutputFormat;
+        private javax.sound.sampled.AudioFormat actualInputFormat;
+        private MemoryLine lastSourceLine;
+        private MemoryLine lastTargetLine;
+
+        TestJavaSoundAccess(
+                Mixer.Info[] mixers,
+                javax.sound.sampled.AudioFormat outputFormat,
+                javax.sound.sampled.AudioFormat inputFormat) {
+            this.mixers = mixers.clone();
+            this.outputFormat = outputFormat;
+            this.inputFormat = inputFormat;
+            this.actualOutputFormat = outputFormat;
+            this.actualInputFormat = inputFormat;
+        }
+
+        @Override
+        public Mixer.Info[] mixerInfos() {
+            return mixers.clone();
+        }
+
+        @Override
+        public Line.Info[] sourceLineInfo(Mixer.Info mixerInfo) {
+            if (lineInfoFailures.contains(mixerInfo)) {
+                throw new IllegalStateException("mixer provider failed during enumeration");
+            }
+            return outputFormat == null
+                    ? new Line.Info[0]
+                    : new Line.Info[] {new DataLine.Info(SourceDataLine.class, outputFormat)};
+        }
+
+        @Override
+        public Line.Info[] targetLineInfo(Mixer.Info mixerInfo) {
+            return inputFormat == null
+                    ? new Line.Info[0]
+                    : new Line.Info[] {new DataLine.Info(TargetDataLine.class, inputFormat)};
+        }
+
+        @Override
+        public boolean supportsSourceLine(
+                Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format) {
+            if (requireAdvertisedSourceProbe) {
+                return sameJavaFormat(outputFormat, format);
+            }
+            return supportsAdvertisedFormat(outputFormat, format);
+        }
+
+        @Override
+        public boolean supportsTargetLine(
+                Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format) {
+            return sameJavaFormat(inputFormat, format);
+        }
+
+        @Override
+        public SourceDataLine sourceLine(
+                Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format) {
+            selectedSourceMixer.set(mixerInfo);
+            selectedSourceFormat.set(format);
+            int acquisition = sourceLineAcquisitions.incrementAndGet();
+            boolean failClose = failSourceLineClose
+                    || (failSourceLineCloseAfterFirst && acquisition > 1);
+            lastSourceLine = new MemoryLine(actualOutputFormat, failClose);
+            sourceLines.add(lastSourceLine);
+            return lastSourceLine;
+        }
+
+        @Override
+        public TargetDataLine targetLine(
+                Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format)
+                throws LineUnavailableException {
+            if (inputFormat == null) {
+                throw new LineUnavailableException("no capture line");
+            }
+            selectedTargetMixer.set(mixerInfo);
+            lastTargetLine = new MemoryLine(actualInputFormat, false);
+            return lastTargetLine;
+        }
+
+        @Override
+        public boolean supportsDeviceSelection() {
+            return deviceSelectionSupported;
+        }
+
+        private static boolean sameJavaFormat(
+                javax.sound.sampled.AudioFormat left,
+                javax.sound.sampled.AudioFormat right) {
+            return left != null && right != null
+                    && left.getEncoding().equals(right.getEncoding())
+                    && Float.compare(left.getSampleRate(), right.getSampleRate()) == 0
+                    && left.getSampleSizeInBits() == right.getSampleSizeInBits()
+                    && left.getChannels() == right.getChannels()
+                    && left.getFrameSize() == right.getFrameSize()
+                    && Float.compare(left.getFrameRate(), right.getFrameRate()) == 0
+                    && left.isBigEndian() == right.isBigEndian();
+        }
+
+        private static boolean supportsAdvertisedFormat(
+                javax.sound.sampled.AudioFormat advertised,
+                javax.sound.sampled.AudioFormat concrete) {
+            return concrete != null && advertised != null && concrete.matches(advertised);
+        }
+    }
+
+    /** Mixer.Info has a protected constructor, so tests name it through this value type. */
+    private static final class TestMixerInfo extends Mixer.Info {
+        TestMixerInfo(String name) {
+            super(name, "test vendor", "headless contract mixer", "1");
+        }
+    }
+
+    /** In-memory line implementing both directions for deterministic open tests. */
+    private static final class MemoryLine implements SourceDataLine, TargetDataLine {
+
+        private final javax.sound.sampled.AudioFormat actualFormat;
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        private javax.sound.sampled.AudioFormat openedFormat;
+        private int openedBufferBytes;
+        private int closeCalls;
+        private boolean open;
+        private boolean running;
+
+        private final boolean failClose;
+
+        MemoryLine(javax.sound.sampled.AudioFormat actualFormat, boolean failClose) {
+            this.actualFormat = actualFormat;
+            this.failClose = failClose;
+        }
+
+        javax.sound.sampled.AudioFormat openedFormat() {
+            return openedFormat;
+        }
+
+        int openedBufferBytes() {
+            return openedBufferBytes;
+        }
+
+        byte[] writtenBytes() {
+            return output.toByteArray();
+        }
+
+        int closeCalls() {
+            return closeCalls;
+        }
+
+        @Override
+        public void open(javax.sound.sampled.AudioFormat format, int bufferSize) {
+            this.openedFormat = format;
+            this.openedBufferBytes = bufferSize;
+            this.open = true;
+        }
+
+        @Override
+        public void open(javax.sound.sampled.AudioFormat format) {
+            open(format, format.getFrameSize() * 512);
+        }
+
+        @Override
+        public void open() {
+            this.open = true;
+        }
+
+        @Override
+        public int write(byte[] bytes, int offset, int length) {
+            output.write(bytes, offset, length);
+            return length;
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) {
+            return -1;
+        }
+
+        @Override public void start() { running = true; }
+        @Override public void stop() { running = false; }
+        @Override public boolean isRunning() { return running; }
+        @Override public boolean isActive() { return running; }
+        @Override public javax.sound.sampled.AudioFormat getFormat() { return actualFormat; }
+        @Override public int getBufferSize() { return openedBufferBytes; }
+        @Override public int available() { return openedBufferBytes; }
+        @Override public int getFramePosition() { return 0; }
+        @Override public long getLongFramePosition() { return 0L; }
+        @Override public long getMicrosecondPosition() { return 0L; }
+        @Override public float getLevel() { return 0.0f; }
+        @Override public void drain() { }
+        @Override public void flush() { }
+        @Override public Line.Info getLineInfo() {
+            return new DataLine.Info(SourceDataLine.class, actualFormat);
+        }
+        @Override
+        public void close() {
+            closeCalls++;
+            if (failClose) {
+                throw new IllegalStateException("test line refuses to close");
+            }
+            open = false;
+            running = false;
+        }
+        @Override public boolean isOpen() { return open; }
+        @Override public Control[] getControls() { return new Control[0]; }
+        @Override public boolean isControlSupported(Control.Type control) { return false; }
+        @Override public Control getControl(Control.Type control) {
+            throw new IllegalArgumentException("unsupported control: " + control);
+        }
+        @Override public void addLineListener(LineListener listener) { }
+        @Override public void removeLineListener(LineListener listener) { }
     }
 
     /**

@@ -95,7 +95,7 @@ public final class SettingsModel {
      * never again after completion or skip.
      */
     static final boolean DEFAULT_FIRST_RUN_WIZARD_COMPLETED = false;
-    /** Empty backend name means "auto-select best available". */
+    /** Empty backend name means "use the automatic fallback provision". */
     static final String DEFAULT_AUDIO_BACKEND = "";
     /** Empty device name means "use default device". */
     static final String DEFAULT_AUDIO_DEVICE = "";
@@ -344,8 +344,9 @@ public final class SettingsModel {
 
     /**
      * Returns the preferred audio backend name, or an empty string to let
-     * the engine's default streaming provision (story 316: PortAudio if
-     * available, else Java Sound) pick the best available one.
+     * the engine's default streaming provision try PortAudio first and Java
+     * Sound as its final candidate. Output remains unavailable when neither
+     * candidate can open.
      */
     public String getAudioBackend() {
         return audioBackend;

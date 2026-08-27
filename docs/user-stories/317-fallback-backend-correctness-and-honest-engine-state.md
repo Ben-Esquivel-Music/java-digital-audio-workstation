@@ -48,3 +48,7 @@ For a studio engineer this is the floor of the product: on any machine without A
 - Java Sound remains the **last rung**, not the default experience (book §4.2); story 316's ladder decides when it is reached. Reported active backend/device always equals the open stream's (book §3.2).
 - Cross-references: story **314** (stage 1 — makes the opened stream carry the project), **316** (stage 3 — backend consolidation above this rung), **325** (record-state integrity), **336/338/339** (failure surfacing and health), existing **130** (Audio Backend Selection — its honest floor on machines without ASIO).
 - **Review routing:** findings inside `JavaxSoundBackend` internals (line lifecycle, capture-thread lifecycle, format/mixer handling) raised after story 316 merges are owned here — see 316's "Review routing" note; the PortAudio rung's equivalent is story **349**.
+
+## Status
+
+- COMPLETE

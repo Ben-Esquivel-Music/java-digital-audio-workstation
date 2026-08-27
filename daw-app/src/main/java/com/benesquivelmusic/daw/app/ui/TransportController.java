@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportIntentHandler;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.audio.StreamStartFailure;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.MidiRecorder;
@@ -124,6 +125,9 @@ final class TransportController implements TransportIntentHandler {
     private final BooleanSupplier applyLatencyCompensation;
     private final Supplier<RoundTripLatency> reportedLatency;
 
+    /** Opens the Audio category from an actionable stream-refusal toast. */
+    private final Runnable openAudioSettings;
+
     /**
      * The FX-thread marshalling seam (story 289). Injected on the production
      * path by the composition root; {@code null} in a pure-unit context (the
@@ -183,6 +187,7 @@ final class TransportController implements TransportIntentHandler {
                 statusBarLabel, recIndicator, playButton,
                 recordButton, snapEnabled, gridResolution, countInMode,
                 flashMidiActivity, applyLatencyCompensation, reportedLatency,
+                () -> { },
                 FxDispatcher.getDefault());
     }
 
@@ -202,6 +207,29 @@ final class TransportController implements TransportIntentHandler {
                         BooleanSupplier applyLatencyCompensation,
                         Supplier<RoundTripLatency> reportedLatency,
                         FxDispatcher fxDispatcher) {
+        this(project, audioEngine, undoManager, notificationBar, statusLabel,
+                statusBarLabel, recIndicator, playButton, recordButton,
+                snapEnabled, gridResolution, countInMode, flashMidiActivity,
+                applyLatencyCompensation, reportedLatency, () -> { }, fxDispatcher);
+    }
+
+    TransportController(DawProject project,
+                        AudioEngine audioEngine,
+                        UndoManager undoManager,
+                        NotificationBar notificationBar,
+                        Label statusLabel,
+                        Label statusBarLabel,
+                        Label recIndicator,
+                        Button playButton,
+                        Button recordButton,
+                        BooleanSupplier snapEnabled,
+                        Supplier<GridResolution> gridResolution,
+                        Supplier<CountInMode> countInMode,
+                        Consumer<Track> flashMidiActivity,
+                        BooleanSupplier applyLatencyCompensation,
+                        Supplier<RoundTripLatency> reportedLatency,
+                        Runnable openAudioSettings,
+                        FxDispatcher fxDispatcher) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
@@ -218,6 +246,8 @@ final class TransportController implements TransportIntentHandler {
         this.applyLatencyCompensation = Objects.requireNonNull(
                 applyLatencyCompensation, "applyLatencyCompensation must not be null");
         this.reportedLatency = Objects.requireNonNull(reportedLatency, "reportedLatency must not be null");
+        this.openAudioSettings = Objects.requireNonNull(
+                openAudioSettings, "openAudioSettings must not be null");
         // May be null in a pure-unit context; postFx() falls back to the
         // static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
@@ -255,18 +285,71 @@ final class TransportController implements TransportIntentHandler {
         if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
             return;
         }
-        try {
-            audioEngine.startAudioOutput();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to start audio output", e);
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Audio device error: " + e.getMessage());
+        if (!startAudioOutputOrRefuse("Playback")) {
+            return;
         }
         // MUTATE + ANNOUNCE (Transport.play() → TransportEvent.Started).
         core.start();
         updateStatus();
         statusBarLabel.setText("Playing...");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
+    }
+
+    /**
+     * Starts the callback that owns transport time, refusing the caller's
+     * state transition on either a thrown open or a normally-returning open
+     * that did not produce a RUNNING stream (story 317).
+     */
+    private boolean startAudioOutputOrRefuse(String intent) {
+        RuntimeException failure = null;
+        try {
+            audioEngine.startAudioOutput();
+        } catch (RuntimeException openFailure) {
+            failure = openFailure;
+        }
+        if (failure == null
+                && audioEngine.isStreamOpen()
+                && !audioEngine.isStreamPaused()) {
+            return true;
+        }
+
+        if (failure != null) {
+            LOG.log(Level.WARNING, "Failed to start audio output", failure);
+        } else {
+            LOG.warning("Audio output start returned without a running callback stream");
+        }
+        String message = streamRefusalMessage(intent, failure);
+        updateStatus();
+        statusBarLabel.setText(message);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
+        notificationBar.show(NotificationLevel.ERROR, message,
+                "Open Audio Settings", openAudioSettings);
+        return false;
+    }
+
+    private String streamRefusalMessage(String intent, RuntimeException failure) {
+        Optional<StreamStartFailure> attribution = failure == null
+                ? Optional.empty()
+                : audioEngine.takeFailedStreamStart(failure);
+        String endpoint;
+        if (attribution.isPresent()) {
+            StreamStartFailure attempt = attribution.orElseThrow();
+            String operation = switch (attempt.operation()) {
+                case START -> "start";
+                case RESUME -> "resume";
+            };
+            endpoint = "backend '" + attempt.endpoint().backendName() + "' device '"
+                    + attempt.endpoint().device().name() + "' could not " + operation;
+        } else {
+            endpoint = "no audio backend/device was bound to this failed attempt";
+        }
+        String reason = failure == null || failure.getMessage() == null
+                || failure.getMessage().isBlank()
+                ? "no running audio callback was created"
+                : failure.getMessage();
+        return "Audio output refused for " + intent.toLowerCase(Locale.ROOT)
+                + " — " + endpoint + ": " + reason
+                + ". Reconnect the device or choose another in Audio Settings.";
     }
 
     /**
@@ -555,6 +638,17 @@ final class TransportController implements TransportIntentHandler {
 
         CountInMode countIn = countInMode.get();
 
+        // MIDI-only recording still needs the output callback to drive time
+        // and play existing tracks. Open it before creating any MidiRecorder:
+        // on refusal nothing has started, no track is marked recording and
+        // the transport remains STOPPED (story 317).
+        if (armedAudioTracks.isEmpty()
+                && !startAudioOutputOrRefuse("Recording")) {
+            recIndicator.setVisible(false);
+            recIndicator.setManaged(false);
+            return;
+        }
+
         // Start audio recording pipeline for non-MIDI armed tracks
         if (!armedAudioTracks.isEmpty()) {
             // Create output directory for recording segments
@@ -617,14 +711,9 @@ final class TransportController implements TransportIntentHandler {
             startMidiRecording(armedMidiTracks, countIn);
         }
 
-        // If no audio pipeline was started, transition transport to recording
-        // and start audio output (for playback of existing tracks during MIDI recording)
+        // If no audio pipeline was started, the output stream was already
+        // proved RUNNING above; now the transport may enter recording.
         if (armedAudioTracks.isEmpty()) {
-            try {
-                audioEngine.startAudioOutput();
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Failed to start audio output", e);
-            }
             project.getTransport().record();
         }
 
@@ -836,12 +925,8 @@ final class TransportController implements TransportIntentHandler {
         if (project.getTransport().getState() == TransportState.RECORDING) {
             return;
         }
-        try {
-            audioEngine.startAudioOutput();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to start audio output", e);
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Audio device error: " + e.getMessage());
+        if (!startAudioOutputOrRefuse("Pre-roll playback")) {
+            return;
         }
         double shift = project.getTransport().playWithPreRoll();
         EventBusPublisher.publish(new TransportEvent.Started(

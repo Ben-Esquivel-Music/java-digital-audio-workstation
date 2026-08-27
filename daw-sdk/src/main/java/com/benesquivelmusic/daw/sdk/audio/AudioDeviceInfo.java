@@ -252,9 +252,10 @@ public record AudioDeviceInfo(
      * {@code hostApi} the device has no qualified form, so only the bare
      * selection matches.</p>
      *
-     * <p>The one production caller is {@code TestTonePlayer} in
-     * {@code daw-app}: {@code javax.sound.sampled.Mixer.Info} carries no host
-     * API of its own, so it passes {@code JavaxSoundBackend.NAME}, the constant
+     * <p>The production callers are {@link JavaxSoundBackend}'s persisted-device
+     * resolver and {@code TestTonePlayer} in {@code daw-app}:
+     * {@code javax.sound.sampled.Mixer.Info} carries no host API of its own, so
+     * both pass {@code JavaxSoundBackend.NAME}, the constant
      * {@code JavaxSoundBackend} stamps on every mixer it enumerates.
      * {@code daw-core}'s {@code CallbackBackendAdapter} does NOT use it: its
      * resolver runs two prioritised passes &mdash; an exact qualified hit

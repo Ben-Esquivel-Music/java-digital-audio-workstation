@@ -8,10 +8,13 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -154,8 +157,8 @@ class AudioEngineTest {
         // Story 316 review: this used to assert the engine merely started.
         // With no provision there is no capture device AT ALL, so a record
         // that returned normally handed the recording pipeline a publisher
-        // that could never emit a block — the silent take. Playback keeps
-        // the old tolerance (see the sibling test below); record does not.
+        // that could never emit a block — the silent take. Story 317 applies
+        // the same honest refusal to playback because it has no callback clock.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
         assertThatThrownBy(engine::startAudioInputOutput)
@@ -164,35 +167,93 @@ class AudioEngineTest {
     }
 
     @Test
-    void shouldStartAudioOutputWithoutBackendEvenThoughInputOutputIsRefused() {
-        // The DISCRIMINATING half: refusing a capture-less record open must
-        // not have made playback stricter. Playback without hardware output
-        // is a legitimate configuration (honest playing states are story
-        // 317), so startAudioOutput still logs and returns.
+    void shouldRefuseAudioOutputWithoutBackendBeforeStarting() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
-        engine.startAudioOutput();
+        assertThatThrownBy(engine::startAudioOutput)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("no audio backend is configured");
 
-        assertThat(engine.isRunning()).isTrue();
+        assertThat(engine.isRunning()).isFalse();
         assertThat(engine.isStreamOpen()).isFalse();
     }
 
     @Test
-    void shouldRefuseStartAudioInputOutputAfterOutputStartedWithoutBackend() {
-        // Story 316 review: previously "starting input/output should not
-        // error" after an output start. The output start is still fine — it
-        // opened no stream, because there is no provision — but the record
-        // that follows now fails for the same reason as above, and the
-        // engine stays RUNNING rather than being torn down by the refusal.
+    void refusedOutputPreservesAnEngineThatWasAlreadyRunningForAnotherReason() {
+        // The failed output attempt owns only starts it performed itself. An
+        // engine already running for offline/in-process work stays running.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
-        engine.startAudioOutput();
+        engine.start();
         assertThat(engine.isRunning()).isTrue();
 
-        assertThatThrownBy(engine::startAudioInputOutput)
+        assertThatThrownBy(engine::startAudioOutput)
                 .isInstanceOf(AudioBackendException.class)
                 .hasMessageContaining("no audio backend is configured");
         assertThat(engine.isRunning()).isTrue();
+        assertThat(engine.isStreamOpen()).isFalse();
+        engine.stop();
+    }
+
+    @Test
+    void failedStreamOwnedEnginePreparationRollsBackBeforeOpeningTheBackend() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        var preparationFailure = installArmablePreparationFailure(engine);
+        var backend = new MockAudioBackend();
+        engine.setStreamingProvision(mockProvision(backend));
+        preparationFailure.set(true);
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("mixer preparation failed");
+
+        assertThat(engine.isRunning()).isFalse();
+        assertThat(engine.isStreamOpen()).isFalse();
+        assertThat(backend.isOpen())
+                .as("the backend is never reached after preparation fails")
+                .isFalse();
+    }
+
+    @Test
+    void failedEnginePreparationDuringResumeKeepsTheOpenStreamPaused() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        var backend = new MockAudioBackend();
+        engine.setStreamingProvision(mockProvision(backend));
+        engine.startAudioOutput();
+        engine.pauseAudioOutput();
+        engine.stop();
+        assertThat(engine.isRunning()).isFalse();
+        assertThat(engine.isStreamPaused()).isTrue();
+
+        var preparationFailure = installArmablePreparationFailure(engine);
+        preparationFailure.set(true);
+
+        assertThatThrownBy(engine::startAudioOutput)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("mixer preparation failed");
+
+        assertThat(engine.isRunning()).isFalse();
+        assertThat(engine.isStreamOpen()).isTrue();
+        assertThat(engine.isStreamPaused()).isTrue();
+        assertThat(backend.isOpen()).isTrue();
+        engine.stopAudioOutput();
+    }
+
+    private static StreamingProvision mockProvision(MockAudioBackend backend) {
+        DeviceId device = DeviceId.defaultFor(backend.name());
+        return new StreamingProvision(
+                backend.name(), List.of(new BackendStreamRung(backend, device)));
+    }
+
+    private static AtomicBoolean installArmablePreparationFailure(AudioEngine engine) {
+        AtomicBoolean fail = new AtomicBoolean();
+        Mixer mixer = new Mixer();
+        MixerChannel channel = new MixerChannel("Preparation failure");
+        channel.addInsert(new InsertSlot(
+                "Preparation failure", new ArmablePreparationFailureProcessor(fail)));
+        mixer.addChannel(channel);
+        engine.setGraph(new Transport(), mixer, List.of());
+        return fail;
     }
 
     @Test
@@ -242,6 +303,29 @@ class AudioEngineTest {
 
         @Override
         public int getOutputChannelCount() { return 1; }
+    }
+
+    private record ArmablePreparationFailureProcessor(AtomicBoolean fail)
+            implements AudioProcessor {
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            for (int channel = 0; channel < inputBuffer.length; channel++) {
+                System.arraycopy(
+                        inputBuffer[channel], 0, outputBuffer[channel], 0, numFrames);
+            }
+        }
+
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
+
+        @Override
+        public int getLatencySamples() {
+            if (fail.get()) {
+                throw new IllegalStateException("mixer preparation failed");
+            }
+            return 0;
+        }
     }
 
     /**

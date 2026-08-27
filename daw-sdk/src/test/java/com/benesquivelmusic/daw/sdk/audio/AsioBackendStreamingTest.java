@@ -670,7 +670,9 @@ class AsioBackendStreamingTest {
      * {@link AsioBackend#NAME}, because the selector only probes names its OS
      * preference walk visits: the head is ASIO on Windows and the platform's
      * own first rung on the Linux / macOS CI runners, so the same assertions
-     * describe the streaming gate wherever the suite runs.
+     * describe the streaming gate wherever the suite runs. The Java Sound
+     * entry uses a deterministic streaming fake because this test is about
+     * ASIO's gate, not whether the CI host exposes a physical audio endpoint.
      */
     @Test
     void selectorDropsAsioFromTheOfferedListWhenTheStreamingShimIsUnusable() {
@@ -680,7 +682,7 @@ class AsioBackendStreamingTest {
 
         Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
         factories.put(head, AsioBackend::new);
-        factories.put(JavaxSoundBackend.NAME, JavaxSoundBackend::new);
+        factories.put(JavaxSoundBackend.NAME, MockAudioBackend::new);
         AudioBackendSelector selector = new AudioBackendSelector(factories);
 
         assertThat(selector.availableBackends()).contains(head);

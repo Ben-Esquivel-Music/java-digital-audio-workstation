@@ -6,6 +6,8 @@ import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
+import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -18,6 +20,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 
 import javafx.application.Platform;
@@ -66,6 +70,7 @@ class TransportCommandPathTest {
     private static final long TIMEOUT_SECONDS = 5;
 
     private DefaultEventBus bus;
+    private AudioEngine audioEngine;
 
     /** The marker {@link #awaitBusDrained()} is currently waiting on, if any. */
     private final AtomicReference<DrainMarker> drainMarker = new AtomicReference<>();
@@ -80,6 +85,10 @@ class TransportCommandPathTest {
 
     @AfterEach
     void clearBus() {
+        if (audioEngine != null) {
+            audioEngine.stopAudioOutput();
+            audioEngine.stop();
+        }
         EventBusPublisher.setDefault(null);
         bus.close();
     }
@@ -197,7 +206,7 @@ class TransportCommandPathTest {
         Track armedMidi = new Track("Keys", TrackType.MIDI);
         armedMidi.setArmed(true);
         project.addTrack(armedMidi);
-        TransportController handler = newController(project);
+        TransportController handler = newUnprovisionedController(project);
 
         List<TransportEvent.Started> started = new CopyOnWriteArrayList<>();
         try (EventBus.Subscription sub = collectAnnouncements(TransportEvent.Started.class, started)) {
@@ -317,19 +326,36 @@ class TransportCommandPathTest {
 
     private TransportController newController(DawProject project) throws Exception {
         return computeOnFx(() -> {
-            statusBarLabel = new Label();
-            recIndicator = new Label();
-            return new TransportController(
-                    project, new AudioEngine(project.getFormat()), new UndoManager(),
-                    new NotificationBar(), new Label(), statusBarLabel, recIndicator,
-                    new Button(), new Button(),
-                    () -> false,
-                    () -> GridResolution.QUARTER,
-                    () -> CountInMode.OFF,
-                    track -> { },
-                    () -> true,
-                    () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN);
+            MockAudioBackend backend = new MockAudioBackend();
+            AudioEngine engine = new AudioEngine(project.getFormat());
+            engine.setStreamingProvision(new StreamingProvision(
+                    backend.name(), List.of(new BackendStreamRung(
+                            backend, DeviceId.defaultFor(backend.name())))));
+            return createController(project, engine);
         });
+    }
+
+    private TransportController newUnprovisionedController(DawProject project) throws Exception {
+        return computeOnFx(() -> createController(
+                project, new AudioEngine(project.getFormat())));
+    }
+
+    private TransportController createController(DawProject project, AudioEngine engine) {
+        audioEngine = engine;
+        statusBarLabel = new Label();
+        recIndicator = new Label();
+        recIndicator.setVisible(false);
+        recIndicator.setManaged(false);
+        return new TransportController(
+                project, engine, new UndoManager(),
+                new NotificationBar(), new Label(), statusBarLabel, recIndicator,
+                new Button(), new Button(),
+                () -> false,
+                () -> GridResolution.QUARTER,
+                () -> CountInMode.OFF,
+                track -> { },
+                () -> true,
+                () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN);
     }
 
     /** Runs {@code work} on the FX thread with capture-and-rethrow of assertion errors. */
