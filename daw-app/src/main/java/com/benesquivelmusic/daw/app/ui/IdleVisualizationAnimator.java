@@ -1,23 +1,27 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
-import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
 
 import java.util.Objects;
 
 /**
- * Generates the synthetic, breathing spectrum and level-meter data that
- * keeps the idle DAW visualization displays alive when no audio is being
- * processed.
+ * Generates the synthetic, breathing spectrum that keeps the idle DAW
+ * spectrum display alive when no audio is being processed.
  *
  * <p>Extracted from {@link AnimationController} so the deterministic
  * idle-animation math (pink-noise spectrum shape, frequency-dependent
- * wobble, low-mid breathing bump, RMS/peak breathing) can be unit tested
- * without a JavaFX toolkit. The class is purely a function of an
- * accumulated phase plus a per-frame delta — given a fixed phase value
- * its outputs are reproducible.</p>
+ * wobble, low-mid breathing bump) can be unit tested without a JavaFX
+ * toolkit. The class is purely a function of an accumulated phase plus a
+ * per-frame delta — given a fixed phase value its outputs are
+ * reproducible.</p>
+ *
+ * <p>Story 318 removed the synthetic RMS/peak push into the Peak / RMS
+ * level display: that display is now a real consumer of the engine's
+ * metering tap bus ({@code MASTER_OUT} through the {@code MeterFeed}), and a
+ * display never has the real feed and a fiction side by side. The spectrum
+ * arm stays until story 319 wires the analysis-lane consumers and deletes
+ * this class.</p>
  *
  * <p>Issue: "Decompose Remaining God-Class Controllers into Focused
  * Services."</p>
@@ -33,22 +37,18 @@ final class IdleVisualizationAnimator {
     private static final double IDLE_SAMPLE_RATE = 44100.0;
 
     private final SpectrumDisplay spectrumDisplay;
-    private final LevelMeterDisplay levelMeterDisplay;
     private final float[] bins = new float[BIN_COUNT];
 
     private double phaseSeconds;
 
-    IdleVisualizationAnimator(SpectrumDisplay spectrumDisplay,
-                              LevelMeterDisplay levelMeterDisplay) {
+    IdleVisualizationAnimator(SpectrumDisplay spectrumDisplay) {
         this.spectrumDisplay = Objects.requireNonNull(spectrumDisplay,
                 "spectrumDisplay must not be null");
-        this.levelMeterDisplay = Objects.requireNonNull(levelMeterDisplay,
-                "levelMeterDisplay must not be null");
     }
 
     /**
      * Advances the animation phase and pushes the next synthesized
-     * spectrum + level frame to the configured displays.
+     * spectrum frame to the configured display.
      *
      * @param deltaSeconds elapsed seconds since the previous tick
      */
@@ -56,10 +56,6 @@ final class IdleVisualizationAnimator {
         phaseSeconds += deltaSeconds;
         computeSpectrumBins(phaseSeconds, bins);
         spectrumDisplay.updateSpectrum(new SpectrumData(bins, IDLE_FFT_SIZE, IDLE_SAMPLE_RATE));
-        LevelData level = computeLevelData(phaseSeconds);
-        // The LevelMeterDisplay's GpuCanvas drives ballistics from its own
-        // per-frame deltaSeconds, so callers no longer compute deltas here.
-        levelMeterDisplay.update(level);
     }
 
     /**
@@ -84,18 +80,5 @@ final class IdleVisualizationAnimator {
             out[i] = (float) Math.max(-90.0, base + wobble + bump);
         }
         out[0] = out[1];
-    }
-
-    /**
-     * Computes the synthesized RMS/peak breathing level for the given
-     * accumulated phase. Pure function — exposed for testing.
-     */
-    static LevelData computeLevelData(double phaseSeconds) {
-        double rmsLinear = 0.18 + 0.12 * Math.abs(Math.sin(phaseSeconds * 0.75));
-        double peakBoost = 1.0 + 0.25 * Math.abs(Math.sin(phaseSeconds * 1.8));
-        double peakLinear = Math.min(rmsLinear * peakBoost * 1.3, 0.85);
-        double dbRms = 20.0 * Math.log10(Math.max(rmsLinear, 1e-9));
-        double dbPeak = 20.0 * Math.log10(Math.max(peakLinear, 1e-9));
-        return new LevelData(peakLinear, rmsLinear, dbPeak, dbRms, false);
     }
 }

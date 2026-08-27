@@ -100,6 +100,22 @@ import java.util.concurrent.atomic.AtomicLong;
  * for epoch N (VMs, ruler bindings, tap subscriptions) are disposed before
  * epoch N+1 binds (book §6.2); {@link #unbind()} does not advance the
  * epoch.</p>
+ *
+ * <h2>Metering tap bus (story 318)</h2>
+ * <p>The binder is also the one binding point of the engine's
+ * {@link com.benesquivelmusic.daw.core.metering.MeteringTapBus}: after the
+ * epoch bump, {@link #bind(DawProject)} calls
+ * {@code meteringTapBus().rebind(mixer, format, epoch)} — still under
+ * {@code bindingLock} — which disposes every tap subscription of an older
+ * epoch (firing its {@code onDisposed} callbacks after the bus's own lock is
+ * released) and derives one level slot per channel / return / master /
+ * insert from the live mixer. The tracks listener refreshes the slot set
+ * after every {@link AudioEngine#setTracks} (a new channel gets its slot
+ * without a rebind), {@link #refreshPerformanceMonitor()} refreshes it after
+ * a format apply, and {@link #unbind()} unbinds the bus (empty snapshot: the
+ * render thread taps nothing). Lock order is {@code bindingLock} → the
+ * bus's registry lock, never reversed; the bus never calls back into the
+ * binder while holding its own lock.</p>
  */
 public final class EngineBinder {
 
@@ -184,6 +200,10 @@ public final class EngineBinder {
                     synchronized (bindingLock) {
                         if (bindingGeneration == generation) {
                             engine.setTracks(List.copyOf(project.getTracks()));
+                            // Story 318: a structural change adds / removes
+                            // mixer channels — re-derive the tap slots so a
+                            // new channel's meter resolves without a rebind.
+                            engine.meteringTapBus().refreshSlots();
                         }
                     }
                 }
@@ -195,7 +215,12 @@ public final class EngineBinder {
             refreshPerformanceMonitor();
 
             boundProject = project;
-            epoch.incrementAndGet();
+            long newEpoch = epoch.incrementAndGet();
+            // Story 318: bind the metering tap bus under the new epoch —
+            // disposes every epoch-N tap subscription (book §6.2) and derives
+            // the slot set from the live mixer. Lock order bindingLock →
+            // registryLock; onDisposed callbacks fire after the bus unlocks.
+            engine.meteringTapBus().rebind(project.getMixer(), engine.getFormat(), newEpoch);
         }
     }
 
@@ -208,6 +233,9 @@ public final class EngineBinder {
      * same-format call keeps the existing instance, so attached warning
      * listeners survive rebinds. Called from {@link #bind(DawProject)} and
      * by the post-reconfigure callback after every engine format apply.
+     * Also re-derives the metering tap bus's slots (story 318): the format
+     * may have changed, and a bound bus sizes new analysis rings from it
+     * (a no-op while the bus is unbound).
      */
     public void refreshPerformanceMonitor() {
         PerformanceMonitor monitor = engine.getPerformanceMonitor();
@@ -215,6 +243,7 @@ public final class EngineBinder {
         if (monitor == null || !format.equals(monitor.getFormat())) {
             engine.setPerformanceMonitor(new PerformanceMonitor(format));
         }
+        engine.meteringTapBus().refreshSlots(format);
     }
 
     /**
@@ -235,6 +264,9 @@ public final class EngineBinder {
             detachTrackListener();
             engine.setGraph(null, null, null);
             boundProject = null;
+            // Story 318: dispose every tap subscription and publish the
+            // empty snapshot — the render thread taps nothing while unbound.
+            engine.meteringTapBus().unbind();
         }
     }
 

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.vm;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -52,12 +53,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * because soloing one silences non-solo-safe tracks. The constructor seeds the
  * values immediately so a binding is correct before the first signal.</p>
  *
+ * <h2>Meter binding (story 318)</h2>
+ *
+ * <p>The {@linkplain #TrackChannelRegistry(DawProject, FxDispatcher, MeterFeed)
+ * three-argument constructor} additionally binds every {@link ChannelVM} to its
+ * post-fader {@code CHANNEL_POST} tap on the engine's metering tap bus, so
+ * {@link ChannelVM#meterLevelProperty()} carries real levels. Every VM this
+ * registry creates goes through {@link #registerChannelVm(MixerChannel)}, so a
+ * channel registered later is bound the same way — the feed is not a
+ * constructor-time-only fact. {@link #dispose()} unbinds them all.</p>
+ *
+ * <p><strong>Production construction of this registry is story 322's.</strong>
+ * Story 318 supplies the feed-aware constructor and the binding; nothing in
+ * {@code MainController.rebuildViewModels()} instantiates a
+ * {@code TrackChannelRegistry} yet, so today the binding is exercised by tests
+ * and by any surface that builds a registry itself.</p>
+ *
  * <h2>Lifecycle</h2>
  *
  * <p>The constructor builds and seeds everything. {@link #dispose()} removes the
- * registry's own listeners and disposes every {@code TrackVM}/{@code ChannelVM}
- * (each of which closes its meter channel and unregisters its signal), so
- * nothing leaks. Idempotent and single-use.</p>
+ * registry's own listeners, unbinds every meter subscription, and disposes every
+ * {@code TrackVM}/{@code ChannelVM} (each of which closes its meter channel and
+ * unregisters its signal), so nothing leaks. Idempotent and single-use.</p>
  */
 public final class TrackChannelRegistry {
 
@@ -71,6 +88,13 @@ public final class TrackChannelRegistry {
 
     /** Removal tokens for the registry's own per-channel effective-mute listeners. */
     private final List<Runnable> channelListenerTokens = new ArrayList<>();
+
+    /**
+     * Story 318 — the tap-bus drain every {@link ChannelVM} this registry
+     * creates is bound to, or {@code null} when the registry was built without
+     * one (the two-argument constructor, and every pure-unit context).
+     */
+    private final MeterFeed meterFeed;
 
     /** The mixer, queried via {@link Mixer#isAnySolo()} for the project-wide solo picture. */
     private final Mixer mixer;
@@ -97,21 +121,33 @@ public final class TrackChannelRegistry {
      * @throws NullPointerException if either argument is {@code null}
      */
     public TrackChannelRegistry(DawProject project, FxDispatcher dispatcher) {
+        this(project, dispatcher, null);
+    }
+
+    /**
+     * Builds the registry over {@code project} and binds every
+     * {@link ChannelVM}'s meter to {@code meterFeed} (story 318), so
+     * {@link ChannelVM#meterLevelProperty()} carries the post-fader level the
+     * engine renders for that channel.
+     *
+     * @param project    the project whose tracks and channels are mirrored; must not be {@code null}
+     * @param dispatcher the marshalling seam (story 289); must not be {@code null}
+     * @param meterFeed  the FX-pulse meter drain, or {@code null} to leave every
+     *                   meter at its floor (the two-argument behaviour)
+     * @throws NullPointerException if {@code project} or {@code dispatcher} is {@code null}
+     */
+    public TrackChannelRegistry(DawProject project, FxDispatcher dispatcher, MeterFeed meterFeed) {
         Objects.requireNonNull(project, "project must not be null");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
         this.mixer = project.getMixer();
+        this.meterFeed = meterFeed;
 
         for (Track track : project.getTracks()) {
             TrackVM vm = new TrackVM(track, dispatcher);
             trackVms.put(vm.trackId(), vm);
         }
         for (MixerChannel channel : mixer.getChannels()) {
-            ChannelVM vm = new ChannelVM(channel, dispatcher);
-            channelVms.put(vm.channelId(), vm);
-            // The registry's OWN listener (distinct from the ChannelVM's): a
-            // MUTE/SOLO anywhere changes the project-wide solo picture, so every
-            // channel's effective mute must be recomputed, not just this one's.
-            channelListenerTokens.add(channel.addChangeListener(this::onChannelMuteOrSolo));
+            registerChannelVm(channel);
         }
         // Return buses have no ChannelVM, but soloing one silences non-solo-safe
         // tracks (Mixer.isAnySolo() counts return-bus solo), so the registry must
@@ -122,6 +158,26 @@ public final class TrackChannelRegistry {
 
         // Seed effective-mute for every channel from the current solo picture.
         recomputeAllEffectiveMutes();
+    }
+
+    /**
+     * Creates, registers, listens to and — when a {@link MeterFeed} was
+     * supplied — meter-binds one channel's view-model. Every {@link ChannelVM}
+     * this registry owns is created here, so a channel registered after
+     * construction is wired exactly like one present at construction.
+     *
+     * @param channel the mixer channel to mirror
+     */
+    private void registerChannelVm(MixerChannel channel) {
+        ChannelVM vm = new ChannelVM(channel, dispatcher);
+        channelVms.put(vm.channelId(), vm);
+        if (meterFeed != null && !meterFeed.isDisposed()) {
+            vm.bindMeter(meterFeed);
+        }
+        // The registry's OWN listener (distinct from the ChannelVM's): a
+        // MUTE/SOLO anywhere changes the project-wide solo picture, so every
+        // channel's effective mute must be recomputed, not just this one's.
+        channelListenerTokens.add(channel.addChangeListener(this::onChannelMuteOrSolo));
     }
 
     /**
@@ -231,9 +287,10 @@ public final class TrackChannelRegistry {
     }
 
     /**
-     * Removes the registry's own per-channel listeners and disposes every track
-     * and channel VM (each closes its meter channel and unregisters its signal),
-     * so nothing leaks. Idempotent — a second call is a no-op.
+     * Removes the registry's own per-channel listeners, unbinds every meter
+     * subscription (story 318) and disposes every track and channel VM (each
+     * closes its meter channel and unregisters its signal), so nothing leaks.
+     * Idempotent — a second call is a no-op.
      */
     public void dispose() {
         if (disposed) {
@@ -248,6 +305,8 @@ public final class TrackChannelRegistry {
             vm.dispose();
         }
         for (ChannelVM vm : channelVms.values()) {
+            // ChannelVM.dispose() unbinds its meter subscription first; the
+            // explicit unbind here is not needed and would be redundant.
             vm.dispose();
         }
         trackVms.clear();

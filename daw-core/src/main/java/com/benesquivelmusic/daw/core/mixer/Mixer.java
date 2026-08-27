@@ -3,6 +3,9 @@ package com.benesquivelmusic.daw.core.mixer;
 import com.benesquivelmusic.daw.core.audio.AudioGraphScheduler;
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
+import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
+import com.benesquivelmusic.daw.core.metering.SampleBlockRing;
+import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
@@ -490,9 +493,10 @@ public final class Mixer {
             }
 
             if (useDouble) {
-                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames);
+                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames,
+                        null, 0L, 0L);
             } else {
-                sumChannelToOutput(channel, src, outputBuffer, numFrames);
+                sumChannelToOutput(channel, src, outputBuffer, numFrames, null, 0L, 0L);
             }
         }
 
@@ -616,8 +620,45 @@ public final class Mixer {
     @RealTimeSafe
     public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
                         float[][][] returnBuffers, int numFrames) {
+        mixDown(channelBuffers, outputBuffer, returnBuffers, numFrames, null);
+    }
+
+    /**
+     * {@link #mixDown(float[][][], float[][], float[][][], int)} feeding the
+     * metering tap bus (story 318). With a non-null {@code taps} every
+     * channel, return and master slot this mix walks receives exactly one
+     * publish per call, accumulated inside the existing summing loops (no
+     * extra pass, no extra buffer). Note the render pipeline calls this only
+     * while the transport is playing or recording, so a stopped transport
+     * publishes none of these taps — only {@code MASTER_OUT} keeps
+     * publishing:
+     * <ul>
+     *   <li>{@code CHANNEL_POST}: the fader / pan-law-scaled value as it is
+     *       summed ({@link #sumChannelToOutput}); muted and solo-excluded
+     *       channels publish silence; direct-routed channels are published
+     *       by {@link #renderDirectOutputs(float[][][], float[][], int, TapSnapshot)};</li>
+     *   <li>{@code RETURN_POST}: the post-fader value written back into
+     *       {@code returnBuffers}; muted returns publish silence;</li>
+     *   <li>{@code MASTER_CHAIN}: the pre-master-fader sum (story 321
+     *       re-positions it post-mastering-chain), also while the master is
+     *       muted;</li>
+     *   <li>{@code INSERT_IO}: through each channel's tapped
+     *       {@code EffectsChain.process} — and only for the inserts that
+     *       actually run, so a bypassed insert (absent from the chain)
+     *       publishes nothing at all.</li>
+     * </ul>
+     * Analysis rings get a copy only when one is attached. A {@code null}
+     * {@code taps} is the untapped path, bit-identical to before.
+     *
+     * @param taps the block's tap snapshot, or {@code null} when untapped
+     */
+    @RealTimeSafe
+    public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
+                        float[][][] returnBuffers, int numFrames, TapSnapshot taps) {
         boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
         double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
+        long tapEpoch = taps != null ? taps.epoch() : 0L;
+        long tapBlock = taps != null ? taps.blockIndex() : 0L;
 
         // Clear output (and double accumulator when the 64-bit mix bus is active)
         for (float[] ch : outputBuffer) {
@@ -655,15 +696,17 @@ public final class Mixer {
         AudioGraphScheduler scheduler = this.graphScheduler;
         if (scheduler != null && channelCount >= 2) {
             scheduler.processInsertsParallel(channels, channelBuffers, numFrames,
-                    anySolo, Mixer::hasSidechainRouting, insertsDone);
+                    anySolo, Mixer::hasSidechainRouting, insertsDone, taps);
         }
 
         for (int i = 0; i < channelCount; i++) {
             MixerChannel channel = channels.get(i);
-            if (channel.isMuted()) {
-                continue;
-            }
-            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
+            // One slot resolution per channel per block (never per sample).
+            LevelTapSlot channelTap = taps != null ? taps.channelSlot(i, channel) : null;
+            if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
+                if (channelTap != null) {
+                    channelTap.publishSilence(tapEpoch, tapBlock, outputBuffer.length);
+                }
                 continue;
             }
 
@@ -676,7 +719,7 @@ public final class Mixer {
                 if (hasSidechainRouting(channel)) {
                     processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
                 } else {
-                    channel.getEffectsChain().process(src, src, numFrames);
+                    channel.getEffectsChain().process(src, src, numFrames, taps);
                 }
             }
 
@@ -691,15 +734,18 @@ public final class Mixer {
             // that the direct path is aligned at the summing bus
             delayCompensation.applyToChannel(i, src, numFrames);
 
-            // Skip channels routed to direct hardware outputs
+            // Skip channels routed to direct hardware outputs (their
+            // CHANNEL_POST frame is published by renderDirectOutputs)
             if (!channel.getOutputRouting().isMaster()) {
                 continue;
             }
 
             if (useDouble) {
-                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames);
+                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames,
+                        channelTap, tapEpoch, tapBlock);
             } else {
-                sumChannelToOutput(channel, src, outputBuffer, numFrames);
+                sumChannelToOutput(channel, src, outputBuffer, numFrames,
+                        channelTap, tapEpoch, tapBlock);
             }
         }
 
@@ -707,6 +753,7 @@ public final class Mixer {
         for (int r = 0; r < returnBusCount; r++) {
             MixerChannel returnBus = returnBuses.get(r);
             float[][] returnBuf = returnBuffers[r];
+            LevelTapSlot returnTap = taps != null ? taps.returnSlot(r, returnBus) : null;
 
             // Apply return bus insert effects
             if (!returnBus.getEffectsChain().isEmpty()) {
@@ -721,7 +768,7 @@ public final class Mixer {
                             dblBuf[ch][f] = returnBuf[ch][f];
                         }
                     }
-                    returnBus.getEffectsChain().processDouble(dblBuf, dblBuf, numFrames);
+                    returnBus.getEffectsChain().processDouble(dblBuf, dblBuf, numFrames, taps);
                     // Narrow back to the float return buffer for PDC and
                     // any downstream consumer that reads returnBuffers[r].
                     for (int ch = 0; ch < returnBuf.length; ch++) {
@@ -730,7 +777,7 @@ public final class Mixer {
                         }
                     }
                 } else {
-                    returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+                    returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames, taps);
                 }
             }
 
@@ -744,45 +791,83 @@ public final class Mixer {
                 for (float[] ch : returnBuf) {
                     Arrays.fill(ch, 0, numFrames, 0.0f);
                 }
+                if (returnTap != null) {
+                    returnTap.publishSilence(tapEpoch, tapBlock, returnAudioChannels);
+                }
             } else if (useDouble) {
                 double returnVolumeD = returnBus.getVolume();
+                if (returnTap != null) {
+                    returnTap.beginBlock(tapEpoch, tapBlock, returnAudioChannels);
+                }
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        // Apply return-bus volume in 64-bit and sum into the
-                        // double accumulator (keep returnBuf coherent by also
-                        // writing back the scaled value as float).
-                        double scaled = returnBuf[ch][f] * returnVolumeD;
-                        returnBuf[ch][f] = (float) scaled;
-                        acc[ch][f] += scaled;
-                    }
+                    // Apply return-bus volume in 64-bit and sum into the
+                    // double accumulator (keep returnBuf coherent by also
+                    // writing back the scaled value as float).
+                    sumReturnLaneDouble(returnBuf[ch], acc[ch], returnVolumeD, numFrames,
+                            returnTap, ch);
+                }
+                if (returnTap != null) {
+                    returnTap.publish(numFrames);
+                    writeRings(returnTap, returnBuf, returnAudioChannels, numFrames);
                 }
             } else {
+                if (returnTap != null) {
+                    returnTap.beginBlock(tapEpoch, tapBlock, returnAudioChannels);
+                }
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        returnBuf[ch][f] *= returnVolume;
-                        outputBuffer[ch][f] += returnBuf[ch][f];
-                    }
+                    sumReturnLane(returnBuf[ch], outputBuffer[ch], returnVolume, numFrames,
+                            returnTap, ch);
+                }
+                if (returnTap != null) {
+                    returnTap.publish(numFrames);
+                    writeRings(returnTap, returnBuf, returnAudioChannels, numFrames);
                 }
             }
         }
 
-        // Apply master volume
+        // Apply master volume (MASTER_CHAIN taps the pre-fader sum here)
         float masterVolume = (float) masterChannel.getVolume();
+        LevelTapSlot masterTap = taps != null ? taps.masterChain() : null;
         if (useDouble) {
             finalizeAccumulator(acc, outputBuffer, numFrames,
-                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume());
+                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume(),
+                    masterTap, tapEpoch, tapBlock);
             return;
         }
-        if (!masterChannel.isMuted()) {
-            for (float[] ch : outputBuffer) {
-                for (int f = 0; f < numFrames; f++) {
-                    ch[f] *= masterVolume;
-                }
+        applyMasterFader(outputBuffer, numFrames, masterVolume, masterChannel.isMuted(),
+                masterTap, tapEpoch, tapBlock);
+    }
+
+    /**
+     * The single-precision master stage: scales {@code outputBuffer} in
+     * place by the master fader (or silences it when muted), folding the
+     * <em>pre-fader</em> value into the {@code MASTER_CHAIN} tap inside the
+     * same pass when tapped — also while muted, because {@code MASTER_CHAIN}
+     * is what an export would measure. Analysis rings receive the pre-fader
+     * block before it is scaled.
+     */
+    @RealTimeSafe
+    private static void applyMasterFader(float[][] outputBuffer, int numFrames, float masterVolume,
+                                         boolean muted, LevelTapSlot masterTap,
+                                         long tapEpoch, long tapBlock) {
+        if (masterTap != null) {
+            masterTap.beginBlock(tapEpoch, tapBlock, outputBuffer.length);
+            writeRings(masterTap, outputBuffer, outputBuffer.length, numFrames);
+        }
+        if (!muted) {
+            for (int ch = 0; ch < outputBuffer.length; ch++) {
+                scaleMasterLane(outputBuffer[ch], masterVolume, numFrames, masterTap, ch);
             }
         } else {
-            for (float[] ch : outputBuffer) {
-                Arrays.fill(ch, 0, numFrames, 0.0f);
+            for (int ch = 0; ch < outputBuffer.length; ch++) {
+                if (masterTap != null) {
+                    masterTap.accumulate(ch, outputBuffer[ch], numFrames);
+                }
+                Arrays.fill(outputBuffer[ch], 0, numFrames, 0.0f);
             }
+        }
+        if (masterTap != null) {
+            masterTap.publish(numFrames);
         }
     }
 
@@ -829,8 +914,31 @@ public final class Mixer {
                                     int numFrames,
                                     java.util.List<com.benesquivelmusic.daw.core.track.Track> tracks,
                                     com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer enforcer) {
+        mixDownInstrumented(channelBuffers, outputBuffer, returnBuffers, numFrames, tracks,
+                enforcer, null);
+    }
+
+    /**
+     * {@link #mixDownInstrumented(float[][][], float[][], float[][][], int, java.util.List,
+     * com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer)} feeding the
+     * metering tap bus exactly as
+     * {@link #mixDown(float[][][], float[][], float[][][], int, TapSnapshot)} does
+     * (story 318). The two bodies are duplicates and must be kept in step.
+     *
+     * @param taps the block's tap snapshot, or {@code null} when untapped
+     */
+    @RealTimeSafe
+    public void mixDownInstrumented(float[][][] channelBuffers,
+                                    float[][] outputBuffer,
+                                    float[][][] returnBuffers,
+                                    int numFrames,
+                                    java.util.List<com.benesquivelmusic.daw.core.track.Track> tracks,
+                                    com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer enforcer,
+                                    TapSnapshot taps) {
         boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
         double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
+        long tapEpoch = taps != null ? taps.epoch() : 0L;
+        long tapBlock = taps != null ? taps.blockIndex() : 0L;
 
         for (float[] ch : outputBuffer) {
             Arrays.fill(ch, 0, numFrames, 0.0f);
@@ -865,15 +973,17 @@ public final class Mixer {
         AudioGraphScheduler scheduler = this.graphScheduler;
         if (scheduler != null && channelCount >= 2) {
             scheduler.processInsertsParallel(channels, channelBuffers, numFrames,
-                    anySolo, Mixer::hasSidechainRouting, insertsDone);
+                    anySolo, Mixer::hasSidechainRouting, insertsDone, taps);
         }
 
         for (int i = 0; i < channelCount; i++) {
             MixerChannel channel = channels.get(i);
-            if (channel.isMuted()) {
-                continue;
-            }
-            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
+            // One slot resolution per channel per block (never per sample).
+            LevelTapSlot channelTap = taps != null ? taps.channelSlot(i, channel) : null;
+            if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
+                if (channelTap != null) {
+                    channelTap.publishSilence(tapEpoch, tapBlock, outputBuffer.length);
+                }
                 continue;
             }
 
@@ -895,7 +1005,7 @@ public final class Mixer {
                 if (hasSidechainRouting(channel)) {
                     processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
                 } else {
-                    channel.getEffectsChain().process(src, src, numFrames);
+                    channel.getEffectsChain().process(src, src, numFrames, taps);
                 }
             }
 
@@ -907,7 +1017,8 @@ public final class Mixer {
             delayCompensation.applyToChannel(i, src, numFrames);
 
             if (!channel.getOutputRouting().isMaster()) {
-                // Record timing even for direct-output tracks
+                // Record timing even for direct-output tracks (their
+                // CHANNEL_POST frame is published by renderDirectOutputs)
                 long trackElapsed = System.nanoTime() - trackStart;
                 if (i < trackListSize) {
                     enforcer.recordTrackCpu(tracks.get(i).getId(), trackElapsed);
@@ -916,9 +1027,11 @@ public final class Mixer {
             }
 
             if (useDouble) {
-                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames);
+                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames,
+                        channelTap, tapEpoch, tapBlock);
             } else {
-                sumChannelToOutput(channel, src, outputBuffer, numFrames);
+                sumChannelToOutput(channel, src, outputBuffer, numFrames,
+                        channelTap, tapEpoch, tapBlock);
             }
 
             // Record per-track CPU measurement
@@ -932,6 +1045,7 @@ public final class Mixer {
         for (int r = 0; r < returnBusCount; r++) {
             MixerChannel returnBus = returnBuses.get(r);
             float[][] returnBuf = returnBuffers[r];
+            LevelTapSlot returnTap = taps != null ? taps.returnSlot(r, returnBus) : null;
             if (!returnBus.getEffectsChain().isEmpty()) {
                 if (useDouble) {
                     double[][] dblBuf = ensureReturnBusScratchDouble(returnBuf.length, numFrames);
@@ -940,14 +1054,14 @@ public final class Mixer {
                             dblBuf[ch][f] = returnBuf[ch][f];
                         }
                     }
-                    returnBus.getEffectsChain().processDouble(dblBuf, dblBuf, numFrames);
+                    returnBus.getEffectsChain().processDouble(dblBuf, dblBuf, numFrames, taps);
                     for (int ch = 0; ch < returnBuf.length; ch++) {
                         for (int f = 0; f < numFrames; f++) {
                             returnBuf[ch][f] = (float) dblBuf[ch][f];
                         }
                     }
                 } else {
-                    returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+                    returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames, taps);
                 }
             }
             delayCompensation.applyToReturnBus(r, returnBuf, numFrames);
@@ -958,42 +1072,47 @@ public final class Mixer {
                 for (float[] ch : returnBuf) {
                     Arrays.fill(ch, 0, numFrames, 0.0f);
                 }
+                if (returnTap != null) {
+                    returnTap.publishSilence(tapEpoch, tapBlock, returnAudioChannels);
+                }
             } else if (useDouble) {
                 double returnVolumeD = returnBus.getVolume();
+                if (returnTap != null) {
+                    returnTap.beginBlock(tapEpoch, tapBlock, returnAudioChannels);
+                }
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        double scaled = returnBuf[ch][f] * returnVolumeD;
-                        returnBuf[ch][f] = (float) scaled;
-                        acc[ch][f] += scaled;
-                    }
+                    sumReturnLaneDouble(returnBuf[ch], acc[ch], returnVolumeD, numFrames,
+                            returnTap, ch);
+                }
+                if (returnTap != null) {
+                    returnTap.publish(numFrames);
+                    writeRings(returnTap, returnBuf, returnAudioChannels, numFrames);
                 }
             } else {
+                if (returnTap != null) {
+                    returnTap.beginBlock(tapEpoch, tapBlock, returnAudioChannels);
+                }
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        returnBuf[ch][f] *= returnVolume;
-                        outputBuffer[ch][f] += returnBuf[ch][f];
-                    }
+                    sumReturnLane(returnBuf[ch], outputBuffer[ch], returnVolume, numFrames,
+                            returnTap, ch);
+                }
+                if (returnTap != null) {
+                    returnTap.publish(numFrames);
+                    writeRings(returnTap, returnBuf, returnAudioChannels, numFrames);
                 }
             }
         }
 
         float masterVolume = (float) masterChannel.getVolume();
+        LevelTapSlot masterTap = taps != null ? taps.masterChain() : null;
         if (useDouble) {
             finalizeAccumulator(acc, outputBuffer, numFrames,
-                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume());
+                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume(),
+                    masterTap, tapEpoch, tapBlock);
             return;
         }
-        if (!masterChannel.isMuted()) {
-            for (float[] ch : outputBuffer) {
-                for (int f = 0; f < numFrames; f++) {
-                    ch[f] *= masterVolume;
-                }
-            }
-        } else {
-            for (float[] ch : outputBuffer) {
-                Arrays.fill(ch, 0, numFrames, 0.0f);
-            }
-        }
+        applyMasterFader(outputBuffer, numFrames, masterVolume, masterChannel.isMuted(),
+                masterTap, tapEpoch, tapBlock);
     }
 
     // ── Channel → output summing ─────────────────────────────────────────
@@ -1203,22 +1322,203 @@ public final class Mixer {
     @RealTimeSafe
     private static void finalizeAccumulator(double[][] acc, float[][] outputBuffer,
                                             int numFrames, double masterVolume) {
+        finalizeAccumulator(acc, outputBuffer, numFrames, masterVolume, null, 0L, 0L);
+    }
+
+    /**
+     * {@link #finalizeAccumulator(double[][], float[][], int, double)} with
+     * the {@code MASTER_CHAIN} tap (story 318): the <em>pre-fader</em>
+     * accumulator value is folded into {@code masterTap} inside the same
+     * narrowing pass — also when the master is muted, because
+     * {@code MASTER_CHAIN} is what an export would measure. Analysis rings
+     * receive the pre-fader accumulator, narrowed while copying.
+     */
+    @RealTimeSafe
+    private static void finalizeAccumulator(double[][] acc, float[][] outputBuffer,
+                                            int numFrames, double masterVolume,
+                                            LevelTapSlot masterTap, long tapEpoch, long tapBlock) {
         int channelCount = Math.min(acc.length, outputBuffer.length);
+        if (masterTap != null) {
+            masterTap.beginBlock(tapEpoch, tapBlock, channelCount);
+            SampleBlockRing[] rings = masterTap.rings();
+            for (int r = 0; r < rings.length; r++) {
+                rings[r].write(acc, channelCount, numFrames);
+            }
+        }
         if (masterVolume == 0.0) {
+            if (masterTap != null) {
+                for (int ch = 0; ch < channelCount; ch++) {
+                    masterTap.accumulate(ch, acc[ch], numFrames);
+                }
+                masterTap.publish(numFrames);
+            }
             for (int ch = 0; ch < outputBuffer.length; ch++) {
                 Arrays.fill(outputBuffer[ch], 0, numFrames, 0.0f);
             }
             return;
         }
         for (int ch = 0; ch < channelCount; ch++) {
-            for (int f = 0; f < numFrames; f++) {
-                outputBuffer[ch][f] = (float) (acc[ch][f] * masterVolume);
-            }
+            narrowLane(acc[ch], outputBuffer[ch], masterVolume, numFrames, masterTap, ch);
+        }
+        if (masterTap != null) {
+            masterTap.publish(numFrames);
         }
         // Zero any trailing hardware-output channels that the mixer did not
         // drive (they may later receive direct-output audio).
         for (int ch = channelCount; ch < outputBuffer.length; ch++) {
             Arrays.fill(outputBuffer[ch], 0, numFrames, 0.0f);
+        }
+    }
+
+    /**
+     * Narrows one accumulator lane into its float output lane at
+     * {@code masterVolume}, folding the pre-scale value into {@code tap}
+     * lane {@code lane} when tapped. The untapped loop is the original
+     * narrowing loop verbatim.
+     */
+    @RealTimeSafe
+    private static void narrowLane(double[] acc, float[] out, double masterVolume, int numFrames,
+                                   LevelTapSlot tap, int lane) {
+        if (tap == null) {
+            for (int f = 0; f < numFrames; f++) {
+                out[f] = (float) (acc[f] * masterVolume);
+            }
+            return;
+        }
+        for (int f = 0; f < numFrames; f++) {
+            double x = acc[f];
+            tap.accumulate(lane, (float) x);
+            out[f] = (float) (x * masterVolume);
+        }
+    }
+
+    /**
+     * Sums {@code in * gain} into {@code out} for one lane — the summing
+     * multiply the channel fader and pan law fold into — accumulating the
+     * scaled value into {@code tap} lane {@code lane} when tapped, so the
+     * post-fader signal is metered without being materialised (story 318).
+     * The untapped loop is the original summing loop verbatim.
+     */
+    @RealTimeSafe
+    private static void sumLane(float[] in, float[] out, float gain, int numFrames,
+                                LevelTapSlot tap, int lane) {
+        if (tap == null) {
+            for (int f = 0; f < numFrames; f++) {
+                out[f] += in[f] * gain;
+            }
+            return;
+        }
+        for (int f = 0; f < numFrames; f++) {
+            float v = in[f] * gain;
+            out[f] += v;
+            tap.accumulate(lane, v);
+        }
+    }
+
+    /** {@link #sumLane(float[], float[], float, int, LevelTapSlot, int)} into a 64-bit accumulator lane. */
+    @RealTimeSafe
+    private static void sumLaneDouble(float[] in, double[] acc, double gain, int numFrames,
+                                      LevelTapSlot tap, int lane) {
+        if (tap == null) {
+            for (int f = 0; f < numFrames; f++) {
+                acc[f] += in[f] * gain;
+            }
+            return;
+        }
+        for (int f = 0; f < numFrames; f++) {
+            double v = in[f] * gain;
+            acc[f] += v;
+            tap.accumulate(lane, (float) v);
+        }
+    }
+
+    /**
+     * Applies the return-bus fader to one lane in place and sums it into the
+     * float output lane, accumulating the post-fader value when tapped.
+     */
+    @RealTimeSafe
+    private static void sumReturnLane(float[] buf, float[] out, float gain, int numFrames,
+                                      LevelTapSlot tap, int lane) {
+        if (tap == null) {
+            for (int f = 0; f < numFrames; f++) {
+                buf[f] *= gain;
+                out[f] += buf[f];
+            }
+            return;
+        }
+        for (int f = 0; f < numFrames; f++) {
+            float v = buf[f] * gain;
+            buf[f] = v;
+            out[f] += v;
+            tap.accumulate(lane, v);
+        }
+    }
+
+    /**
+     * Applies the return-bus fader to one lane in 64-bit, writes the scaled
+     * value back as float (keeps {@code returnBuf} coherent) and sums it into
+     * the accumulator lane, accumulating the post-fader value when tapped.
+     */
+    @RealTimeSafe
+    private static void sumReturnLaneDouble(float[] buf, double[] acc, double gain, int numFrames,
+                                            LevelTapSlot tap, int lane) {
+        if (tap == null) {
+            for (int f = 0; f < numFrames; f++) {
+                double scaled = buf[f] * gain;
+                buf[f] = (float) scaled;
+                acc[f] += scaled;
+            }
+            return;
+        }
+        for (int f = 0; f < numFrames; f++) {
+            double scaled = buf[f] * gain;
+            float v = (float) scaled;
+            buf[f] = v;
+            acc[f] += scaled;
+            tap.accumulate(lane, v);
+        }
+    }
+
+    /**
+     * Applies the master fader to one output lane in place, accumulating the
+     * pre-fader value into the {@code MASTER_CHAIN} tap when tapped.
+     */
+    @RealTimeSafe
+    private static void scaleMasterLane(float[] out, float masterVolume, int numFrames,
+                                        LevelTapSlot tap, int lane) {
+        if (tap == null) {
+            for (int f = 0; f < numFrames; f++) {
+                out[f] *= masterVolume;
+            }
+            return;
+        }
+        for (int f = 0; f < numFrames; f++) {
+            float x = out[f];
+            tap.accumulate(lane, x);
+            out[f] = x * masterVolume;
+        }
+    }
+
+    /** Copies the (already post-fader) block into every analysis ring of {@code tap}; no-op without rings. */
+    @RealTimeSafe
+    private static void writeRings(LevelTapSlot tap, float[][] buffer, int channels, int numFrames) {
+        SampleBlockRing[] rings = tap.rings();
+        for (int r = 0; r < rings.length; r++) {
+            rings[r].write(buffer, channels, numFrames);
+        }
+    }
+
+    /**
+     * Copies the post-fader stereo image of a channel — the pan-law gains
+     * applied exactly as the sum applied them, a mono source duplicated —
+     * into every analysis ring of {@code tap}; no-op without rings.
+     */
+    @RealTimeSafe
+    private static void writeScaledRings(LevelTapSlot tap, float[][] src, int channels,
+                                         int numFrames, float gainLeft, float gainRight) {
+        SampleBlockRing[] rings = tap.rings();
+        for (int r = 0; r < rings.length; r++) {
+            rings[r].writeScaled(src, channels, numFrames, gainLeft, gainRight);
         }
     }
 
@@ -1230,7 +1530,8 @@ public final class Mixer {
     @RealTimeSafe
     private static void sumChannelToOutputDouble(MixerChannel channel, float[][] src,
                                                  double[][] acc, int outChannels,
-                                                 int numFrames) {
+                                                 int numFrames, LevelTapSlot tap,
+                                                 long tapEpoch, long tapBlock) {
         double volume = channel.getVolume();
         int audioChannels = Math.min(src.length, outChannels);
 
@@ -1240,39 +1541,46 @@ public final class Mixer {
             double leftGain = Math.cos(angle) * volume;
             double rightGain = Math.sin(angle) * volume;
 
-            for (int f = 0; f < numFrames; f++) {
-                acc[0][f] += src[0][f] * leftGain;
+            if (tap != null) {
+                tap.beginBlock(tapEpoch, tapBlock, Math.max(2, audioChannels));
             }
-            if (audioChannels >= 2) {
-                for (int f = 0; f < numFrames; f++) {
-                    acc[1][f] += src[1][f] * rightGain;
-                }
-            } else {
-                for (int f = 0; f < numFrames; f++) {
-                    acc[1][f] += src[0][f] * rightGain;
-                }
-            }
+            sumLaneDouble(src[0], acc[0], leftGain, numFrames, tap, 0);
+            sumLaneDouble(audioChannels >= 2 ? src[1] : src[0], acc[1], rightGain, numFrames, tap, 1);
             for (int ch = 2; ch < audioChannels; ch++) {
-                for (int f = 0; f < numFrames; f++) {
-                    acc[ch][f] += src[ch][f] * volume;
-                }
+                sumLaneDouble(src[ch], acc[ch], volume, numFrames, tap, ch);
+            }
+            if (tap != null) {
+                tap.publish(numFrames);
+                writeScaledRings(tap, src, audioChannels, numFrames,
+                        (float) leftGain, (float) rightGain);
             }
         } else {
+            if (tap != null) {
+                tap.beginBlock(tapEpoch, tapBlock, audioChannels);
+            }
             for (int ch = 0; ch < audioChannels; ch++) {
-                for (int f = 0; f < numFrames; f++) {
-                    acc[ch][f] += src[ch][f] * volume;
-                }
+                sumLaneDouble(src[ch], acc[ch], volume, numFrames, tap, ch);
+            }
+            if (tap != null) {
+                tap.publish(numFrames);
+                writeScaledRings(tap, src, audioChannels, numFrames, (float) volume, (float) volume);
             }
         }
     }
 
     /**
      * Sums a single channel's post-insert audio into the given output buffer,
-     * applying the channel's volume and constant-power pan law.
+     * applying the channel's volume and constant-power pan law. When
+     * {@code tap} is non-null (the channel's {@code CHANNEL_POST} slot,
+     * story 318) the scaled per-lane value is accumulated inside the same
+     * summing loop — the post-fader signal is metered without an extra pass
+     * or buffer — and the frame is published here; a mono source panned into
+     * a stereo bus meters as two lanes, exactly as it sums.
      */
     @RealTimeSafe
     private static void sumChannelToOutput(MixerChannel channel, float[][] src,
-                                           float[][] outputBuffer, int numFrames) {
+                                           float[][] outputBuffer, int numFrames,
+                                           LevelTapSlot tap, long tapEpoch, long tapBlock) {
         float volume = (float) channel.getVolume();
         int audioChannels = Math.min(src.length, outputBuffer.length);
 
@@ -1282,28 +1590,28 @@ public final class Mixer {
             float leftGain = (float) (Math.cos(angle) * volume);
             float rightGain = (float) (Math.sin(angle) * volume);
 
-            for (int f = 0; f < numFrames; f++) {
-                outputBuffer[0][f] += src[0][f] * leftGain;
+            if (tap != null) {
+                tap.beginBlock(tapEpoch, tapBlock, Math.max(2, audioChannels));
             }
-            if (audioChannels >= 2) {
-                for (int f = 0; f < numFrames; f++) {
-                    outputBuffer[1][f] += src[1][f] * rightGain;
-                }
-            } else {
-                for (int f = 0; f < numFrames; f++) {
-                    outputBuffer[1][f] += src[0][f] * rightGain;
-                }
-            }
+            sumLane(src[0], outputBuffer[0], leftGain, numFrames, tap, 0);
+            sumLane(audioChannels >= 2 ? src[1] : src[0], outputBuffer[1], rightGain, numFrames, tap, 1);
             for (int ch = 2; ch < audioChannels; ch++) {
-                for (int f = 0; f < numFrames; f++) {
-                    outputBuffer[ch][f] += src[ch][f] * volume;
-                }
+                sumLane(src[ch], outputBuffer[ch], volume, numFrames, tap, ch);
+            }
+            if (tap != null) {
+                tap.publish(numFrames);
+                writeScaledRings(tap, src, audioChannels, numFrames, leftGain, rightGain);
             }
         } else {
+            if (tap != null) {
+                tap.beginBlock(tapEpoch, tapBlock, audioChannels);
+            }
             for (int ch = 0; ch < audioChannels; ch++) {
-                for (int f = 0; f < numFrames; f++) {
-                    outputBuffer[ch][f] += src[ch][f] * volume;
-                }
+                sumLane(src[ch], outputBuffer[ch], volume, numFrames, tap, ch);
+            }
+            if (tap != null) {
+                tap.publish(numFrames);
+                writeScaledRings(tap, src, audioChannels, numFrames, volume, volume);
             }
         }
     }
@@ -1331,7 +1639,26 @@ public final class Mixer {
     @RealTimeSafe
     public void renderDirectOutputs(float[][][] channelBuffers, float[][] hwOutputBuffer,
                                     int numFrames) {
+        renderDirectOutputs(channelBuffers, hwOutputBuffer, numFrames, null);
+    }
+
+    /**
+     * {@link #renderDirectOutputs(float[][][], float[][], int)} publishing
+     * the {@code CHANNEL_POST} frame of every direct-routed channel from the
+     * post-fader values it writes (story 318). Muted / solo-excluded direct
+     * channels are <em>not</em> published here: the preceding
+     * {@link #mixDown(float[][][], float[][], float[][][], int, TapSnapshot)}
+     * already published their silence, so every channel slot the mix walked
+     * still sees exactly one publish for that block.
+     *
+     * @param taps the block's tap snapshot, or {@code null} when untapped
+     */
+    @RealTimeSafe
+    public void renderDirectOutputs(float[][][] channelBuffers, float[][] hwOutputBuffer,
+                                    int numFrames, TapSnapshot taps) {
         boolean anySolo = isAnySolo();
+        long tapEpoch = taps != null ? taps.epoch() : 0L;
+        long tapBlock = taps != null ? taps.blockIndex() : 0L;
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         for (int i = 0; i < channelCount; i++) {
@@ -1351,6 +1678,7 @@ public final class Mixer {
             float volume = (float) channel.getVolume();
             int firstOut = routing.firstChannel();
             int outChannels = routing.channelCount();
+            LevelTapSlot tap = taps != null ? taps.channelSlot(i, channel) : null;
 
             // Apply constant-power pan law for stereo direct outputs
             if (outChannels >= 2 && src.length >= 1) {
@@ -1359,43 +1687,46 @@ public final class Mixer {
                 float leftGain = (float) (Math.cos(angle) * volume);
                 float rightGain = (float) (Math.sin(angle) * volume);
 
+                if (tap != null) {
+                    tap.beginBlock(tapEpoch, tapBlock,
+                            Math.max(2, Math.min(outChannels, src.length)));
+                }
                 int leftDest = firstOut;
                 int rightDest = firstOut + 1;
                 if (leftDest < hwOutputBuffer.length) {
-                    for (int f = 0; f < numFrames; f++) {
-                        hwOutputBuffer[leftDest][f] += src[0][f] * leftGain;
-                    }
+                    sumLane(src[0], hwOutputBuffer[leftDest], leftGain, numFrames, tap, 0);
                 }
                 if (rightDest < hwOutputBuffer.length) {
-                    if (src.length >= 2) {
-                        for (int f = 0; f < numFrames; f++) {
-                            hwOutputBuffer[rightDest][f] += src[1][f] * rightGain;
-                        }
-                    } else {
-                        // Mono source panned into stereo output pair
-                        for (int f = 0; f < numFrames; f++) {
-                            hwOutputBuffer[rightDest][f] += src[0][f] * rightGain;
-                        }
-                    }
+                    // A mono source is panned into the stereo output pair.
+                    sumLane(src.length >= 2 ? src[1] : src[0], hwOutputBuffer[rightDest],
+                            rightGain, numFrames, tap, 1);
                 }
                 // Extra channels beyond the stereo pair (surround)
                 for (int ch = 2; ch < Math.min(outChannels, src.length); ch++) {
                     int destCh = firstOut + ch;
                     if (destCh < hwOutputBuffer.length) {
-                        for (int f = 0; f < numFrames; f++) {
-                            hwOutputBuffer[destCh][f] += src[ch][f] * volume;
-                        }
+                        sumLane(src[ch], hwOutputBuffer[destCh], volume, numFrames, tap, ch);
                     }
+                }
+                if (tap != null) {
+                    tap.publish(numFrames);
+                    writeScaledRings(tap, src, src.length, numFrames, leftGain, rightGain);
                 }
             } else {
                 // Mono direct output: volume only, no pan
-                for (int ch = 0; ch < Math.min(outChannels, src.length); ch++) {
+                int lanes = Math.min(outChannels, src.length);
+                if (tap != null) {
+                    tap.beginBlock(tapEpoch, tapBlock, lanes);
+                }
+                for (int ch = 0; ch < lanes; ch++) {
                     int destCh = firstOut + ch;
                     if (destCh < hwOutputBuffer.length) {
-                        for (int f = 0; f < numFrames; f++) {
-                            hwOutputBuffer[destCh][f] += src[ch][f] * volume;
-                        }
+                        sumLane(src[ch], hwOutputBuffer[destCh], volume, numFrames, tap, ch);
                     }
+                }
+                if (tap != null) {
+                    tap.publish(numFrames);
+                    writeScaledRings(tap, src, src.length, numFrames, volume, volume);
                 }
             }
         }

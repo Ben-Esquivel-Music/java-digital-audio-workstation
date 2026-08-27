@@ -157,6 +157,19 @@ stage 1 wires it up:
 
 ### 1.4 Exactly one meter in the application is real
 
+> **As audited (2026-05); superseded by story 318.** Stage 5 has since landed the
+> `core.metering` tap bus, so the first four bullets below describe the tree *before*
+> it: mixer track/return/master strips, the docked "Peak / RMS" row and the Performance
+> Stage meters are now live tap-bus consumers, the synthetic RMS/peak
+> push is deleted (`NoSyntheticLevelFeedScanTest` keeps it deleted), `MeterAnimator` is
+> delta-correct, `LevelMeterDisplay` latches clip with click-to-reset, and `LoudnessMeter`
+> is bounded and off-RT. What remains open from this section is the analyzer fleet
+> (story 319), the mastering-view meters (story 321), and `ChannelVM.meterLevel` — its
+> producer exists (`ChannelVM.bindMeter`, bound by `TrackChannelRegistry`), but nothing
+> in `MainController.rebuildViewModels()` constructs that registry until story 322, so
+> no production surface reads the fact yet. The critique is kept verbatim
+> because §4.3 and §5.3 are written against it.
+
 The armed-track input meters (`InputMeterStrip` fed by `InputLevelMonitorRegistry` from
 `AudioEngine.tapArmedTrackInputs`, `AudioEngine.java:935/:958`) are genuinely live.
 Everything else is dark or fictional:
@@ -1134,7 +1147,11 @@ for the mixer; Book 5's conformance harness can assert no-dead-controls app-wide
 
 ## Appendix A — Mapping to existing code
 
-Where each construct in this book attaches to today's tree.
+Where each construct in this book attaches to today's tree, **as audited (2026-05)**.
+The "Today's code" column is the audit snapshot, not a live description: rows whose
+stage has since landed (stage 1 — story 314; stage 5 — story 318: the tap-bus level
+lane, synthetic-feed removal, ballistics + clip latch and loudness rework rows) now
+describe the "What changes" column instead.
 
 | Book concept | Today's code | What changes |
 |---|---|---|

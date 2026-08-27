@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.drag.AnimationProfile;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
@@ -17,8 +16,10 @@ import java.util.Objects;
  * main DAW window. Heavy lifting is delegated to focused collaborators:
  *
  * <ul>
- *   <li>{@link IdleVisualizationAnimator} — synthesized spectrum and
- *       level-meter data while the engine is idle.</li>
+ *   <li>{@link IdleVisualizationAnimator} — synthesized spectrum data while
+ *       the engine is idle (story 318 removed its level-meter push: the Peak /
+ *       RMS display is fed by the metering tap bus; story 319 deletes the
+ *       spectrum arm).</li>
  *   <li>{@link TransportGlowAnimator} — pulsing play-button glow and
  *       blinking record-button glow.</li>
  *   <li>{@link ButtonPressAnimator} — scale-bounce press animations on
@@ -36,10 +37,11 @@ import java.util.Objects;
  * {@link MainController}. Issue: "Decompose Remaining God-Class
  * Controllers into Focused Services."</p>
  */
-@FxAnimationTimerAllowed("Owns the single per-frame animation timer driving idle "
-        + "visualization, transport glow, and the per-frame playhead overlay tick "
-        + "(javafx-application-design §6 control-owns-timer); not a cross-thread "
-        + "seam — story 289 sentinel.")
+@FxAnimationTimerAllowed("Owns the single per-frame animation timer driving the idle "
+        + "spectrum demo (story 319 removes it), transport glow, and the per-frame "
+        + "playhead overlay tick (javafx-application-design §6 control-owns-timer); "
+        + "level meters are NOT ticked here — they are MeterFeed pulse consumers "
+        + "(story 318); not a cross-thread seam — story 289 sentinel.")
 final class AnimationController {
 
     /**
@@ -75,13 +77,11 @@ final class AnimationController {
     private Runnable playheadUpdateCallback;
 
     AnimationController(SpectrumDisplay spectrumDisplay,
-                        LevelMeterDisplay levelMeterDisplay,
                         Button playButton,
                         Button recordButton,
                         Button[] animatedButtons,
                         Host host) {
-        this.idleVisualizationAnimator = new IdleVisualizationAnimator(
-                spectrumDisplay, levelMeterDisplay);
+        this.idleVisualizationAnimator = new IdleVisualizationAnimator(spectrumDisplay);
         this.transportGlowAnimator = new TransportGlowAnimator(playButton, recordButton);
         this.buttonPressAnimator = new ButtonPressAnimator(animatedButtons);
         this.host = Objects.requireNonNull(host, "host must not be null");
@@ -91,7 +91,7 @@ final class AnimationController {
 
     /**
      * Creates and starts the single {@link AnimationTimer} that drives
-     * all continuous frame-by-frame animations: idle visualization demo,
+     * all continuous frame-by-frame animations: idle spectrum demo,
      * transport glow, and the per-frame playhead overlay tick.
      */
     void start() {

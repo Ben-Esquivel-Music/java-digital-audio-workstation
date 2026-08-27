@@ -6,6 +6,7 @@ import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -83,12 +84,28 @@ import java.util.function.DoubleConsumer;
  * {@link RealTimeSafe} producer allocates no {@link Double} box. See
  * {@link DoubleChannel}.</p>
  *
+ * <h2>Pulse participants — {@link #addPulseParticipant(Runnable)}</h2>
+ *
+ * <p>Story 318 — the Audio Engine Wiring Design Book §4.3 "FX PULSE drain"
+ * seam. A participant is a {@link Runnable} the pulse runs on the FX thread
+ * <em>first</em>, before the keyed work and the continuous-channel drains, on
+ * every frame. It exists for the pull-style consumers of the engine's
+ * metering tap bus ({@code MeterFeed}): a meter's latest frame lives in a
+ * preallocated RT-written slot, and the pulse is where the FX thread reads
+ * it — one slot read per <em>visible</em> meter, no queue, no per-frame
+ * allocation. Participants must therefore be cheap; anything that is not a
+ * handful of field reads belongs in keyed work. The registration returns a
+ * removal token; participants are held in a volatile snapshot array (rebuilt
+ * on add / remove, iterated without locking), and {@link #dispose()} clears
+ * them.</p>
+ *
  * <h2>Coalescing pulse</h2>
  *
  * <p>{@link #start()} creates and starts a single {@link AnimationTimer} (the
  * only one this seam owns); its {@code handle} body is exactly {@link #pulse()}.
- * Each pulse runs every pending keyed runnable once then clears the keyed map,
- * and drains every continuous channel. {@link #onFx(Runnable)} does
+ * Each pulse runs every pulse participant, then every pending keyed runnable
+ * once (clearing the keyed map), then drains every continuous channel.
+ * {@link #onFx(Runnable)} does
  * <em>not</em> depend on the timer — it goes straight to {@code Platform
  * .runLater}; the timer only flushes the keyed-coalesce map and the continuous
  * channels. {@link #dispose()} stops the timer and clears both. Both
@@ -161,6 +178,19 @@ public final class FxDispatcher {
      * no second field.
      */
     private static final long DOUBLE_CHANNEL_EMPTY = Double.doubleToRawLongBits(Double.NaN);
+
+    /** Empty participant snapshot — shared, never mutated. */
+    private static final Runnable[] NO_PARTICIPANTS = new Runnable[0];
+
+    /**
+     * Pulse participants (story 318). A volatile immutable snapshot array:
+     * {@link #pulse()} reads it once per frame and iterates without locking;
+     * {@link #addPulseParticipant(Runnable)} and the removal token rebuild it
+     * under {@link #participantLock} (the {@code ChangeNotifier} idiom — never
+     * copy-on-write iteration, never a mutable list on the hot path).
+     */
+    private volatile Runnable[] pulseParticipants = NO_PARTICIPANTS;
+    private final Object participantLock = new Object();
 
     /** The single per-frame coalescing timer; non-null only between
      *  {@link #start()} and {@link #dispose()}. */
@@ -427,12 +457,86 @@ public final class FxDispatcher {
         return channels.size();
     }
 
+    // ── pulse participants (story 318, book §4.3 "FX PULSE drain") ──────────
+
+    /**
+     * Registers {@code participant} to run on the FX thread at the start of
+     * every {@link #pulse()}, before the keyed work and the channel drains.
+     * This is the seam a pull-style consumer of the engine's metering tap bus
+     * hangs off: the participant reads each visible meter's preallocated slot
+     * once and hands the frame to its sink — no queue, no allocation, and a
+     * hidden meter costs nothing because the participant skips it. Keep
+     * participants cheap (a handful of field reads); anything heavier belongs
+     * in {@link #onFx(Object, Runnable) keyed work}.
+     *
+     * <p>Thread-safe. The same participant instance may be registered more
+     * than once; each token removes one registration. A participant that
+     * throws does not stop the others, nor the rest of the frame: the first
+     * throwable (with the later ones suppressed onto it) is rethrown from
+     * {@link #pulse()} only after the keyed work and the channel drains have
+     * run.</p>
+     *
+     * @param participant the per-frame runnable; must not be {@code null}
+     * @return an idempotent removal token — run it from the owner's
+     *         {@code dispose()} so the participant (and everything it holds)
+     *         cannot leak in this long-lived, app-scoped seam
+     */
+    public Runnable addPulseParticipant(Runnable participant) {
+        Objects.requireNonNull(participant, "participant must not be null");
+        synchronized (participantLock) {
+            Runnable[] current = pulseParticipants;
+            Runnable[] next = Arrays.copyOf(current, current.length + 1);
+            next[current.length] = participant;
+            pulseParticipants = next;
+        }
+        return new Runnable() {
+            private boolean removed;
+
+            @Override
+            public void run() {
+                synchronized (participantLock) {
+                    if (removed) {
+                        return;
+                    }
+                    removed = true;
+                    removeParticipantLocked(participant);
+                }
+            }
+        };
+    }
+
+    /**
+     * Returns the number of registered pulse participants. Exposed — like
+     * {@link #openChannelCount()} — so a test can verify an owner's
+     * {@code dispose()} removed its participant rather than leaking it.
+     *
+     * @return the participant count
+     */
+    public int pulseParticipantCount() {
+        return pulseParticipants.length;
+    }
+
+    /** Removes one registration of {@code participant} (identity). Caller holds {@link #participantLock}. */
+    private void removeParticipantLocked(Runnable participant) {
+        Runnable[] current = pulseParticipants;
+        for (int i = 0; i < current.length; i++) {
+            if (current[i] == participant) {
+                Runnable[] next = new Runnable[current.length - 1];
+                System.arraycopy(current, 0, next, 0, i);
+                System.arraycopy(current, i + 1, next, i, current.length - i - 1);
+                pulseParticipants = next.length == 0 ? NO_PARTICIPANTS : next;
+                return;
+            }
+        }
+    }
+
     // ── pulse / lifecycle ────────────────────────────────────────────────────
 
     /**
-     * Drains the keyed-coalesce map (running each pending keyed runnable once)
-     * then every continuous channel. The owned {@link AnimationTimer}'s {@code
-     * handle} body is exactly this call; it runs on the FX thread.
+     * Runs every pulse participant, then drains the keyed-coalesce map
+     * (running each pending keyed runnable once), then every continuous
+     * channel. The owned {@link AnimationTimer}'s {@code handle} body is
+     * exactly this call; it runs on the FX thread.
      *
      * <p>Exposed (the enclosing module exports / opens nothing, so this is not a
      * widened public API) so the story's tests — which must live in the {@code
@@ -441,6 +545,11 @@ public final class FxDispatcher {
      * than relying on a live timer.</p>
      */
     public void pulse() {
+        // Participants first (story 318): the metering drain reads the newest
+        // RT-published frames before this frame's keyed work runs. A participant
+        // failure is held back to the END of the pulse so a broken meter cannot
+        // starve the keyed work and the channel drains of this frame.
+        RuntimeException participantFailure = runPulseParticipants();
         // Snapshot the keyed entries first, then remove each by key AND value, so
         // work posted while this pulse runs (including a runnable that re-posts
         // under the same key) stays queued for the NEXT pulse. A weakly
@@ -459,6 +568,33 @@ public final class FxDispatcher {
         for (DrainableChannel channel : channels) {
             channel.drain();
         }
+        if (participantFailure != null) {
+            throw participantFailure;
+        }
+    }
+
+    /**
+     * Runs every registered participant on one volatile read of the snapshot
+     * array — a participant added or removed during the loop takes effect on
+     * the next pulse. Returns the first {@link RuntimeException} thrown (the
+     * later ones suppressed onto it), or {@code null}: the caller rethrows it
+     * only after the rest of the frame has drained.
+     */
+    private RuntimeException runPulseParticipants() {
+        Runnable[] participants = pulseParticipants;
+        RuntimeException failure = null;
+        for (Runnable participant : participants) {
+            try {
+                participant.run();
+            } catch (RuntimeException e) {
+                if (failure == null) {
+                    failure = e;
+                } else {
+                    failure.addSuppressed(e);
+                }
+            }
+        }
+        return failure;
     }
 
     /**
@@ -476,15 +612,18 @@ public final class FxDispatcher {
     }
 
     /**
-     * Stops the pulse timer and clears the keyed map and continuous channels.
-     * Idempotent — safe to call when never started or already disposed. Must be
-     * called on the FX thread.
+     * Stops the pulse timer and clears the pulse participants, the keyed map
+     * and the continuous channels. Idempotent — safe to call when never
+     * started or already disposed. Must be called on the FX thread.
      */
     public void dispose() {
         started = false;
         if (pulseTimer != null) {
             pulseTimer.stop();
             pulseTimer = null;
+        }
+        synchronized (participantLock) {
+            pulseParticipants = NO_PARTICIPANTS;
         }
         keyedWork.clear();
         channels.clear();

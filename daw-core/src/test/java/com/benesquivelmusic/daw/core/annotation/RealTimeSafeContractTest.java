@@ -12,8 +12,16 @@ import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.attribute.CodeAttribute;
+import java.lang.classfile.constantpool.LoadableConstantEntry;
+import java.lang.classfile.constantpool.MemberRefEntry;
+import java.lang.classfile.constantpool.MethodHandleEntry;
+import java.lang.classfile.instruction.InvokeDynamicInstruction;
 import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.MonitorInstruction;
+import java.lang.classfile.instruction.NewMultiArrayInstruction;
+import java.lang.classfile.instruction.NewObjectInstruction;
+import java.lang.classfile.instruction.NewPrimitiveArrayInstruction;
+import java.lang.classfile.instruction.NewReferenceArrayInstruction;
 import java.lang.foreign.MemorySegment;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -22,12 +30,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.BiPredicate;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -37,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reflection-based verification of the {@link RealTimeSafe} contract.
  *
  * <p>This suite discovers every class under {@code com.benesquivelmusic.daw}
- * at test time and enforces six invariants:</p>
+ * at test time and enforces seven invariants:</p>
  * <ol>
  *   <li>Critical-path methods carry {@code @RealTimeSafe}
  *       ({@code Mixer.mixDown}, {@code EffectsChain.process},
@@ -69,6 +80,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       boxed primitive, or has a boxed-primitive parameter.</li>
  *   <li>All {@code @RealTimeSafe} methods are discoverable by reflection
  *       (sanity check that at least the critical paths were found).</li>
+ *   <li>Story 318 — the render path and the metering tap bus: from every
+ *       render-path root ({@link #RENDER_PATH_ROOTS}) and every
+ *       {@code @RealTimeSafe} method of every {@code core.metering} class,
+ *       the reachable bytecode (same-class callees, and callees in
+ *       {@code core.metering} followed ACROSS classes) takes no lock,
+ *       publishes nothing, logs nothing, sleeps / waits / notifies nowhere
+ *       and performs no atomic read-modify-write; the metering closure
+ *       additionally allocates nothing (no {@code new}, no array
+ *       allocation, no {@code invokedynamic}) and enters no monitor, and
+ *       the render-path roots do the same modulo an explicit, exact
+ *       allow-list of pre-existing sites; and the metering RT classes are
+ *       annotated bidirectionally — every producer-side public method
+ *       carries {@code @RealTimeSafe}, every consumer-side one does not.</li>
  * </ol>
  *
  * <p>These checks run as part of {@code mvn test} and fail the build if
@@ -650,6 +674,605 @@ class RealTimeSafeContractTest {
         return mm.findAttribute(java.lang.classfile.Attributes.code())
                 .map(CodeAttribute.class::cast)
                 .orElse(null);
+    }
+
+    // ------------------------------------------------------------------
+    // Story 318: the render path and the metering tap bus
+    // ------------------------------------------------------------------
+
+    /** The package whose classes the reachable-set walk follows ACROSS class boundaries. */
+    private static final String METERING_PACKAGE = "com.benesquivelmusic.daw.core.metering";
+
+    /** {@link #METERING_PACKAGE} as a class-file internal-name prefix. */
+    private static final String METERING_INTERNAL_PREFIX = METERING_PACKAGE.replace('.', '/') + "/";
+
+    /**
+     * One render-path root: a class and a method NAME — every overload of
+     * that name with a {@code Code} attribute is walked, so a new overload
+     * (the story-318 {@code TapSnapshot}-carrying ones) is covered without
+     * listing its signature, and a rename fails the non-empty guard.
+     */
+    private record RenderRoot(String className, String methodName) {
+        @Override
+        public String toString() {
+            return className.substring(className.lastIndexOf('.') + 1) + "#" + methodName;
+        }
+    }
+
+    /**
+     * Story 318 — every engine render-path entry the tap accumulation and
+     * slot publication hang off. The walk from each follows same-class
+     * callees (the existing bridge discipline) plus every callee whose
+     * owner is a {@code core.metering} class, across classes, so the tap
+     * bus is scanned as PART of the render path rather than in isolation.
+     */
+    private static final List<RenderRoot> RENDER_PATH_ROOTS = List.of(
+            new RenderRoot("com.benesquivelmusic.daw.core.mixer.Mixer", "mixDown"),
+            new RenderRoot("com.benesquivelmusic.daw.core.mixer.Mixer", "mixDownInstrumented"),
+            new RenderRoot("com.benesquivelmusic.daw.core.mixer.Mixer", "renderDirectOutputs"),
+            new RenderRoot("com.benesquivelmusic.daw.core.audio.RenderPipeline", "renderBlock"),
+            new RenderRoot("com.benesquivelmusic.daw.core.audio.EffectsChain", "process"),
+            // Roots are matched by NAME, and "processDouble" is NOT matched by
+            // "process" — yet it is the overload the return-bus insert chains
+            // run under the DEFAULT MixPrecision.DOUBLE_64, carrying the same
+            // INSERT_IO tap accumulation. Listed explicitly so a violation
+            // there cannot hide behind the float root.
+            new RenderRoot("com.benesquivelmusic.daw.core.audio.EffectsChain", "processDouble"),
+            new RenderRoot("com.benesquivelmusic.daw.core.audio.AudioEngine", "processBlock"));
+
+    /**
+     * Metering roots that must exist, so the reflective discovery of
+     * {@code @RealTimeSafe} methods in {@link #METERING_PACKAGE} cannot
+     * silently shrink to nothing (or to the wrong classes) and pass.
+     */
+    private static final Set<String> REQUIRED_METERING_ROOTS = Set.of(
+            "LevelTapSlot#beginBlock", "LevelTapSlot#accumulate", "LevelTapSlot#publish",
+            "LevelTapSlot#publishSilence", "LevelTapSlot#rings",
+            "SampleBlockRing#write", "SampleBlockRing#writeScaled",
+            "TapSnapshot#channelSlot", "TapSnapshot#returnSlot", "TapSnapshot#masterChain",
+            "TapSnapshot#masterOut", "TapSnapshot#insertTapFor", "TapSnapshot#blockIndex",
+            "MeteringTapBus#snapshot", "MeteringTapBus#blockCompleted");
+
+    /**
+     * Story 318 — the render-path invoke predicate: locks, publishers,
+     * {@code ConcurrentHashMap}, logging, sleeping, waiting, notifying and
+     * atomic read-modify-writes. The ONE exemption inside
+     * {@code java/util/concurrent/locks/} is {@code LockSupport.unpark}:
+     * the house idiom for the render thread's only cross-thread signal
+     * ({@code XrunEventRingBuffer}, {@code CallbackBackendAdapter.drainLoop},
+     * and now {@code AnalysisThread.wake}) — a single wait-free syscall
+     * with no queue and no lock, which the locks package merely hosts.
+     */
+    private static final BiPredicate<String, String> RENDER_PATH_INVOKE_OFFENDER = (owner, name) ->
+            (owner.startsWith("java/util/concurrent/locks/")
+                    && !(owner.equals("java/util/concurrent/locks/LockSupport")
+                            && name.equals("unpark")))
+                    || owner.contains("SubmissionPublisher")
+                    || owner.contains("ConcurrentHashMap")
+                    || owner.startsWith("java/util/logging/")
+                    || (owner.equals("java/lang/Thread") && name.equals("sleep"))
+                    || (owner.equals("java/lang/Object")
+                            && (name.equals("wait") || name.startsWith("notify")))
+                    || ((owner.startsWith("java/util/concurrent/atomic/")
+                            || owner.equals("java/lang/invoke/VarHandle"))
+                            && ATOMIC_RMW_METHODS.contains(name));
+
+    /**
+     * Story 318 — PRE-EXISTING invoke offenders on the render path, keyed
+     * {@code Owner#method → what}, each with the reason it is tolerated. The
+     * list is asserted EXACTLY (every entry must still be observed), so a
+     * fixed site fails here and gets its entry removed in the same change,
+     * and a NEW site anywhere on the path fails the per-root sentinel.
+     */
+    private static final Map<String, String> RENDER_PATH_INVOKE_ALLOWLIST = Map.of(
+            // Pre-existing (pre-318): the return-bus-cap warning is guarded by
+            // the once-only returnBusCapWarningLogged flag, so the Logger is
+            // entered at most once per pipeline lifetime; the metering tap
+            // path adds no logging. Flagged, not fixed, in story 318.
+            "RenderPipeline#renderBlock: invokes java/util/logging/Logger#log",
+            "warn-once return-bus cap notice behind returnBusCapWarningLogged");
+
+    /**
+     * Story 318 — PRE-EXISTING allocation / invokedynamic sites reachable
+     * from the render-path roots, keyed {@code Owner#method → what}. Each
+     * is on a guard, throw, lazy-growth or documented-non-RT path that
+     * predates the tap bus; the metering closure itself is held to ZERO
+     * such sites (no allow-list). Asserted exactly, like
+     * {@link #RENDER_PATH_INVOKE_ALLOWLIST}.
+     */
+    private static final Map<String, String> RENDER_PATH_ALLOCATION_ALLOWLIST = new LinkedHashMap<>();
+
+    static {
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "AudioEngine#processBlock: new java/lang/IllegalStateException",
+                "throw path of the engine-not-running guard");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "EffectsChain#createTempBuffer: new multi array [[F",
+                "pre-existing hole: fallback when intermediate buffers were never "
+                        + "pre-allocated (flagged by story 318, not fixed)");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "EffectsChain#createTempDoubleBuffer: new multi array [[D",
+                "pre-existing hole: the 64-bit twin of createTempBuffer — fallback when "
+                        + "intermediate double buffers were never pre-allocated (flagged by "
+                        + "story 318, not fixed). Keyed on the dedicated helper, not on "
+                        + "processDouble, so the tapped loop body itself stays at zero "
+                        + "allocations (labels carry no descriptor or bytecode offset, so a "
+                        + "method-level entry would blanket every allocation in the method)");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "Mixer#mixDown: invokedynamic test -> com/benesquivelmusic/daw/core/mixer/Mixer#hasSidechainRouting",
+                "the non-capturing Mixer::hasSidechainRouting method reference handed to "
+                        + "AudioGraphScheduler — linked once, no per-block allocation");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "Mixer#mixDownInstrumented: invokedynamic test -> com/benesquivelmusic/daw/core/mixer/Mixer#hasSidechainRouting",
+                "same non-capturing method reference as mixDown");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "Mixer#ensureAccumulator: new multi array [[D",
+                "one-time lazy growth of the 64-bit accumulator");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "Mixer#ensureReturnBusScratchDouble: new multi array [[D",
+                "one-time lazy growth of the return-bus double scratch");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "Mixer#ensureInsertsProcessedFlags: new primitive array BOOLEAN",
+                "one-time lazy growth of the parallel-pre-pass flag array");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "Mixer#capturePreInsertsForActiveChannels: new multi array [[F",
+                "lazy per-channel pre-insert capture buffer, allocated once per channel");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "Mixer#routeSends: new java/lang/MatchException",
+                "javac-synthesised default branch of the exhaustive SendTap enum switch — "
+                        + "unreachable unless the enum changes under a stale class file");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "RenderPipeline#renderBlock: invokedynamic get -> com/benesquivelmusic/daw/core/audio/RenderPipeline#lambda$renderBlock$0",
+                "the capturing Supplier of the warn-once return-bus cap notice, behind "
+                        + "returnBusCapWarningLogged (see RENDER_PATH_INVOKE_ALLOWLIST)");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "RenderPipeline#resolveAudioData: invokedynamic get -> com/benesquivelmusic/daw/core/audio/RenderPipeline#lambda$resolveAudioData$0",
+                "pre-existing hole: the SampleRateConversionCache lookup hands a capturing "
+                        + "Supplier per clip per block (flagged by story 318, not fixed)");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "RenderPipeline#scheduleSegmentClicks: new primitive array FLOAT",
+                "story 136's documented bounded per-click allocation on the metronome path "
+                        + "(renderBlock's 'Allocation note')");
+    }
+
+    /** A method reached by the walk, keyed by internal owner + name + descriptor. */
+    private record MethodRef(String owner, String name, String descriptor) {
+        String key() {
+            return owner + "#" + name + descriptor;
+        }
+
+        String label() {
+            return owner.substring(owner.lastIndexOf('/') + 1) + "#" + name;
+        }
+    }
+
+    /** One offending site: the reached method it sits in and what it does. */
+    private record Finding(String where, String what) {
+        @Override
+        public String toString() {
+            return where + ": " + what;
+        }
+    }
+
+    /**
+     * The result of one reachable-set walk.
+     *
+     * @param scannedRoots         how many root methods with a {@code Code}
+     *                             attribute the walk started from (the
+     *                             non-empty guard)
+     * @param reached              every method key reached, for the message
+     * @param invokeFindings       invocations the invoke predicate rejected
+     * @param allocationFindings   allocation / invokedynamic sites
+     * @param monitorFindings      MONITORENTER / MONITOREXIT sites
+     */
+    private record ReachableScan(int scannedRoots, Set<String> reached,
+                                 List<Finding> invokeFindings,
+                                 List<Finding> allocationFindings,
+                                 List<Finding> monitorFindings) {
+    }
+
+    /**
+     * Story 318 — the generalised walk behind {@link #assertNoBridgeMethodInvokes}:
+     * a BFS from every method of {@code rootClass} that {@code isRoot}
+     * accepts, following {@link InvokeInstruction} callees whose owner is
+     * the root class itself OR any class under {@link #METERING_PACKAGE}
+     * (loaded on demand, so the tap bus is scanned as part of the render
+     * path), and never any other owner. Records every rejected invocation,
+     * every allocation-family instruction (including {@code invokedynamic},
+     * which the JIT may or may not allocate for) and every monitor
+     * instruction in the reached set.
+     *
+     * <p>Limitation, shared with the bridge walk: {@code invokedynamic} is
+     * not followed, so a lambda BODY is not reached — which is exactly why
+     * the presence of an {@code invokedynamic} is itself reported.</p>
+     */
+    private static ReachableScan walkReachable(Class<?> rootClass, Predicate<MethodModel> isRoot,
+                                               BiPredicate<String, String> invokeOffender)
+            throws Exception {
+        Map<String, ClassModel> models = new HashMap<>();
+        ClassModel rootModel = modelOf(rootClass.getName().replace('.', '/'), models);
+        String rootInternal = rootModel.thisClass().asInternalName();
+
+        Set<String> reached = new LinkedHashSet<>();
+        Deque<MethodRef> pending = new ArrayDeque<>();
+        int scannedRoots = 0;
+        for (MethodModel mm : rootModel.methods()) {
+            if (!isRoot.test(mm) || codeOf(mm) == null) {
+                continue;
+            }
+            scannedRoots++;
+            MethodRef ref = new MethodRef(rootInternal, mm.methodName().stringValue(),
+                    mm.methodType().stringValue());
+            if (reached.add(ref.key())) {
+                pending.add(ref);
+            }
+        }
+
+        List<Finding> invokes = new ArrayList<>();
+        List<Finding> allocations = new ArrayList<>();
+        List<Finding> monitors = new ArrayList<>();
+        while (!pending.isEmpty()) {
+            MethodRef ref = pending.poll();
+            ClassModel model = modelOf(ref.owner(), models);
+            MethodModel mm = model == null ? null : findMethod(model, ref.name(), ref.descriptor());
+            CodeAttribute code = mm == null ? null : codeOf(mm);
+            if (code == null) {
+                continue;
+            }
+            String where = ref.label();
+            for (var element : code) {
+                switch (element) {
+                    case InvokeInstruction invoke -> {
+                        String owner = invoke.owner().asInternalName();
+                        String name = invoke.name().stringValue();
+                        if (invokeOffender.test(owner, name)) {
+                            invokes.add(new Finding(where, "invokes " + owner + "#" + name));
+                        }
+                        if (owner.equals(rootInternal) || owner.startsWith(METERING_INTERNAL_PREFIX)) {
+                            MethodRef callee = new MethodRef(owner, name, invoke.type().stringValue());
+                            if (reached.add(callee.key())) {
+                                pending.add(callee);
+                            }
+                        }
+                    }
+                    case InvokeDynamicInstruction indy ->
+                            allocations.add(new Finding(where, "invokedynamic "
+                                    + indy.name().stringValue() + " -> " + implementationOf(indy)));
+                    case NewObjectInstruction n ->
+                            allocations.add(new Finding(where, "new " + n.className().asInternalName()));
+                    case NewPrimitiveArrayInstruction n ->
+                            allocations.add(new Finding(where, "new primitive array " + n.typeKind()));
+                    case NewReferenceArrayInstruction n ->
+                            allocations.add(new Finding(where,
+                                    "new reference array " + n.componentType().asInternalName()));
+                    case NewMultiArrayInstruction n ->
+                            allocations.add(new Finding(where,
+                                    "new multi array " + n.arrayType().asInternalName()));
+                    case MonitorInstruction m ->
+                            monitors.add(new Finding(where, "MONITORENTER/EXIT"));
+                    default -> {
+                    }
+                }
+            }
+        }
+        return new ReachableScan(scannedRoots, reached, invokes, allocations, monitors);
+    }
+
+    /**
+     * The implementation method behind an {@code invokedynamic}'s bootstrap —
+     * for a {@code LambdaMetafactory} call site, the lambda body or method
+     * reference target ({@code Owner#name}); {@code "?"} when the bootstrap
+     * carries no method handle.
+     *
+     * <p>Without it a finding would read {@code "Mixer#mixDown: invokedynamic
+     * test"} — a SAM name plus an enclosing method name, which a future
+     * <em>capturing</em> lambda implementing the same SAM in the same method
+     * would match, silently inheriting the allow-list entry that justifies
+     * today's non-capturing method reference. Naming the target pins the
+     * allow-list to one exact call site.</p>
+     */
+    private static String implementationOf(InvokeDynamicInstruction indy) {
+        for (LoadableConstantEntry argument : indy.invokedynamic().bootstrap().arguments()) {
+            if (argument instanceof MethodHandleEntry handle
+                    && handle.reference() instanceof MemberRefEntry ref) {
+                return ref.owner().asInternalName() + "#" + ref.name().stringValue();
+            }
+        }
+        return "?";
+    }
+
+    /** Parses (and caches) the class file behind an internal name, or {@code null} when unloadable. */
+    private static ClassModel modelOf(String internalName, Map<String, ClassModel> cache)
+            throws Exception {
+        if (cache.containsKey(internalName)) {
+            return cache.get(internalName);
+        }
+        ClassModel model = null;
+        try {
+            Class<?> c = Class.forName(internalName.replace('/', '.'), false,
+                    Thread.currentThread().getContextClassLoader());
+            byte[] bytes = readClassBytes(c);
+            if (bytes != null) {
+                model = ClassFile.of().parse(bytes);
+            }
+        } catch (ClassNotFoundException e) {
+            model = null;
+        }
+        cache.put(internalName, model);
+        return model;
+    }
+
+    private static MethodModel findMethod(ClassModel model, String name, String descriptor) {
+        for (MethodModel mm : model.methods()) {
+            if (mm.methodName().stringValue().equals(name)
+                    && mm.methodType().stringValue().equals(descriptor)) {
+                return mm;
+            }
+        }
+        return null;
+    }
+
+    /** {@code Owner#method} labels of every {@code @RealTimeSafe} method declared by a metering class. */
+    private static Map<Class<?>, Set<String>> meteringRealTimeSafeMethodsByClass() {
+        Map<Class<?>, Set<String>> byClass = new LinkedHashMap<>();
+        for (Method m : REAL_TIME_SAFE_METHODS) {
+            Class<?> declaring = m.getDeclaringClass();
+            if (declaring.getPackageName().equals(METERING_PACKAGE)) {
+                byClass.computeIfAbsent(declaring, _ -> new TreeSet<>()).add(m.getName());
+            }
+        }
+        return byClass;
+    }
+
+    private static Predicate<MethodModel> namedAnyOf(Set<String> names) {
+        return mm -> names.contains(mm.methodName().stringValue());
+    }
+
+    private static Predicate<MethodModel> named(String name) {
+        return mm -> mm.methodName().stringValue().equals(name);
+    }
+
+    private static List<String> notAllowed(List<Finding> findings, Map<String, String> allowList) {
+        return findings.stream()
+                .map(Finding::toString)
+                .filter(f -> !allowList.containsKey(f))
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Story 318 — every reflectively discovered metering root the walk
+     * starts from must include the producer-side methods the render path
+     * actually calls; otherwise the metering sentinels below would be
+     * scanning the wrong (or an empty) set.
+     */
+    @Test
+    void meteringRootsAreDiscoveredAndCoverTheProducerSide() {
+        Map<Class<?>, Set<String>> roots = meteringRealTimeSafeMethodsByClass();
+        assertThat(roots)
+                .as("at least one class under %s must declare a @RealTimeSafe method", METERING_PACKAGE)
+                .isNotEmpty();
+        Set<String> labels = new TreeSet<>();
+        roots.forEach((c, names) -> names.forEach(n -> labels.add(c.getSimpleName() + "#" + n)));
+        assertThat(labels)
+                .as("the discovered metering roots must include every producer-side method the "
+                        + "render path calls; a missing one means the annotation was dropped "
+                        + "or the class was renamed out of the sweep")
+                .containsAll(REQUIRED_METERING_ROOTS);
+    }
+
+    /**
+     * Story 318 — from every render-path root, nothing reachable (same
+     * class + the metering closure) takes a lock, publishes, logs, sleeps,
+     * waits, notifies or CASes — modulo {@link #RENDER_PATH_INVOKE_ALLOWLIST}.
+     */
+    @TestFactory
+    Stream<DynamicTest> renderPathMustNotBlockPublishLogOrSpin() {
+        assertThat(RENDER_PATH_ROOTS).as("render-path roots must be listed").isNotEmpty();
+        return RENDER_PATH_ROOTS.stream().map(root -> DynamicTest.dynamicTest(
+                root + " must not block, publish, log or spin on the render thread",
+                () -> {
+                    ReachableScan scan = walkReachable(Class.forName(root.className()),
+                            named(root.methodName()), RENDER_PATH_INVOKE_OFFENDER);
+                    assertThat(scan.scannedRoots())
+                            .as("no method named %s with a Code attribute was found on %s — the "
+                                    + "root was renamed and this sentinel would pass vacuously; "
+                                    + "update RENDER_PATH_ROOTS", root.methodName(), root.className())
+                            .isGreaterThanOrEqualTo(1);
+                    assertThat(notAllowed(scan.invokeFindings(), RENDER_PATH_INVOKE_ALLOWLIST))
+                            .as("%s (reached: %s) must hand nothing to a lock, a publisher, a "
+                                    + "logger or a CAS loop on the render thread; the metering "
+                                    + "tap path is lock-free by construction (LockSupport.unpark "
+                                    + "is the one sanctioned signal)", root, scan.reached())
+                            .isEmpty();
+                }));
+    }
+
+    /**
+     * Story 318 — from every render-path root, nothing reachable allocates
+     * (object, array, multi-array or {@code invokedynamic}) or enters a
+     * monitor, modulo {@link #RENDER_PATH_ALLOCATION_ALLOWLIST}. Monitors
+     * have no allow-list at all.
+     */
+    @TestFactory
+    Stream<DynamicTest> renderPathMustNotAllocateOrEnterAMonitor() {
+        assertThat(RENDER_PATH_ROOTS).as("render-path roots must be listed").isNotEmpty();
+        return RENDER_PATH_ROOTS.stream().map(root -> DynamicTest.dynamicTest(
+                root + " must not allocate or enter a monitor on the render thread",
+                () -> {
+                    ReachableScan scan = walkReachable(Class.forName(root.className()),
+                            named(root.methodName()), RENDER_PATH_INVOKE_OFFENDER);
+                    assertThat(scan.scannedRoots())
+                            .as("no method named %s with a Code attribute was found on %s",
+                                    root.methodName(), root.className())
+                            .isGreaterThanOrEqualTo(1);
+                    assertThat(notAllowed(scan.allocationFindings(), RENDER_PATH_ALLOCATION_ALLOWLIST))
+                            .as("%s (reached: %s) allocates on the render thread outside the "
+                                    + "explicit pre-existing allow-list — tap accumulation and "
+                                    + "slot publication must be allocation-free", root, scan.reached())
+                            .isEmpty();
+                    assertThat(scan.monitorFindings())
+                            .as("%s (reached: %s) enters a monitor on the render thread",
+                                    root, scan.reached())
+                            .isEmpty();
+                }));
+    }
+
+    /**
+     * Story 318 — the two render-path allow-lists are exact: every entry is
+     * still observed by the walk, so a site that has been fixed (or moved)
+     * fails here and its entry is removed in the same change instead of
+     * tolerating a future regression at that label.
+     */
+    @Test
+    void renderPathAllowListsAreExact() throws Exception {
+        Set<String> observedInvokes = new TreeSet<>();
+        Set<String> observedAllocations = new TreeSet<>();
+        for (RenderRoot root : RENDER_PATH_ROOTS) {
+            ReachableScan scan = walkReachable(Class.forName(root.className()),
+                    named(root.methodName()), RENDER_PATH_INVOKE_OFFENDER);
+            scan.invokeFindings().stream().map(Finding::toString)
+                    .filter(RENDER_PATH_INVOKE_ALLOWLIST::containsKey).forEach(observedInvokes::add);
+            scan.allocationFindings().stream().map(Finding::toString)
+                    .filter(RENDER_PATH_ALLOCATION_ALLOWLIST::containsKey).forEach(observedAllocations::add);
+        }
+        assertThat(observedInvokes)
+                .as("every RENDER_PATH_INVOKE_ALLOWLIST entry must still be observed")
+                .containsExactlyInAnyOrderElementsOf(RENDER_PATH_INVOKE_ALLOWLIST.keySet());
+        assertThat(observedAllocations)
+                .as("every RENDER_PATH_ALLOCATION_ALLOWLIST entry must still be observed")
+                .containsExactlyInAnyOrderElementsOf(RENDER_PATH_ALLOCATION_ALLOWLIST.keySet());
+    }
+
+    /**
+     * Story 318 — from every {@code @RealTimeSafe} method of every metering
+     * class, the reachable closure (across the metering package) takes no
+     * lock, publishes nothing, logs nothing, CASes nothing, allocates
+     * NOTHING and enters no monitor. No allow-list: the tap bus was built
+     * to this rule.
+     */
+    @TestFactory
+    Stream<DynamicTest> meteringRealTimeSafeMethodsMustBeLockFreeAndAllocationFree() {
+        Map<Class<?>, Set<String>> roots = meteringRealTimeSafeMethodsByClass();
+        assertThat(roots).as("metering roots must be discovered").isNotEmpty();
+        return roots.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
+                entry.getKey().getSimpleName() + " @RealTimeSafe methods " + entry.getValue()
+                        + " must be lock-free and allocation-free",
+                () -> {
+                    ReachableScan scan = walkReachable(entry.getKey(), namedAnyOf(entry.getValue()),
+                            RENDER_PATH_INVOKE_OFFENDER);
+                    assertThat(scan.scannedRoots())
+                            .as("%s declares @RealTimeSafe methods %s but none has a Code attribute",
+                                    entry.getKey().getSimpleName(), entry.getValue())
+                            .isGreaterThanOrEqualTo(1);
+                    assertThat(scan.invokeFindings())
+                            .as("%s (reached: %s) must not lock, publish, log, sleep, wait, notify "
+                                    + "or CAS on the render thread", entry.getKey().getSimpleName(),
+                                    scan.reached())
+                            .isEmpty();
+                    assertThat(scan.allocationFindings())
+                            .as("%s (reached: %s) must not allocate (new / array / invokedynamic) "
+                                    + "on the render thread", entry.getKey().getSimpleName(),
+                                    scan.reached())
+                            .isEmpty();
+                    assertThat(scan.monitorFindings())
+                            .as("%s (reached: %s) must not enter a monitor on the render thread",
+                                    entry.getKey().getSimpleName(), scan.reached())
+                            .isEmpty();
+                }));
+    }
+
+    /**
+     * Story 318 — the consumer-side public methods of the metering RT
+     * classes, which must NOT carry {@code @RealTimeSafe}: they spin
+     * ({@code readInto} retries a seqlock / a per-slot sequence), read
+     * consumer-written counters, or format text. Everything else public on
+     * these classes is producer-side and MUST carry it. Asserted in both
+     * directions so that an annotation added to a spinning reader, or
+     * dropped from a producer method, fails at the moment it happens.
+     */
+    private static final Map<String, Set<String>> METERING_CONSUMER_SIDE_METHODS = Map.of(
+            "com.benesquivelmusic.daw.core.metering.LevelTapSlot",
+            Set.of("readInto", "hasPublished", "toString"),
+            "com.benesquivelmusic.daw.core.metering.SampleBlockRing",
+            Set.of("readInto", "lastChannelCount", "droppedBlocks", "truncatedBlocks",
+                    "capacity", "blockFrames", "size", "isEmpty", "toString"),
+            "com.benesquivelmusic.daw.core.metering.TapSnapshot",
+            Set.of("toString"),
+            "com.benesquivelmusic.daw.core.metering.InsertTapPair",
+            Set.of("toString"));
+
+    /**
+     * Story 318 — on {@code MeteringTapBus} the direction is inverted: it
+     * is an off-RT registry (every mutator takes the registry lock), and
+     * exactly these two methods are the render thread's.
+     */
+    private static final Set<String> METERING_BUS_RT_METHODS = Set.of("snapshot", "blockCompleted");
+
+    @TestFactory
+    Stream<DynamicTest> meteringRtClassesAreAnnotatedBidirectionally() {
+        List<DynamicTest> tests = new ArrayList<>();
+        METERING_CONSUMER_SIDE_METHODS.forEach((className, consumerSide) -> tests.add(
+                DynamicTest.dynamicTest(className.substring(className.lastIndexOf('.') + 1)
+                        + " producer side annotated, consumer side not", () -> {
+                    Class<?> c = Class.forName(className);
+                    List<Method> publicMethods = publicDeclaredMethods(c);
+                    assertThat(publicMethods).as("%s must have public methods", className).isNotEmpty();
+                    List<String> unannotatedProducers = new ArrayList<>();
+                    List<String> annotatedConsumers = new ArrayList<>();
+                    Set<String> seenConsumers = new TreeSet<>();
+                    for (Method m : publicMethods) {
+                        boolean consumer = consumerSide.contains(m.getName());
+                        if (consumer) {
+                            seenConsumers.add(m.getName());
+                        }
+                        if (consumer && isRealTimeSafe(m)) {
+                            annotatedConsumers.add(m.getName());
+                        } else if (!consumer && !isRealTimeSafe(m)) {
+                            unannotatedProducers.add(m.getName());
+                        }
+                    }
+                    assertThat(seenConsumers)
+                            .as("%s's documented consumer-side set must match its public methods",
+                                    className)
+                            .containsExactlyInAnyOrderElementsOf(consumerSide);
+                    assertThat(unannotatedProducers)
+                            .as("%s producer-side public methods must carry @RealTimeSafe", className)
+                            .isEmpty();
+                    assertThat(annotatedConsumers)
+                            .as("%s consumer-side methods (they spin or read consumer counters) must "
+                                    + "NOT carry @RealTimeSafe — it would be a promise they cannot keep",
+                                    className)
+                            .isEmpty();
+                })));
+        tests.add(DynamicTest.dynamicTest("MeteringTapBus: only snapshot()/blockCompleted() are RT",
+                () -> {
+                    Class<?> c = Class.forName("com.benesquivelmusic.daw.core.metering.MeteringTapBus");
+                    List<Method> publicMethods = publicDeclaredMethods(c);
+                    assertThat(publicMethods).isNotEmpty();
+                    Set<String> annotated = new TreeSet<>();
+                    Set<String> unannotated = new TreeSet<>();
+                    for (Method m : publicMethods) {
+                        (isRealTimeSafe(m) ? annotated : unannotated).add(m.getName());
+                    }
+                    assertThat(annotated)
+                            .as("the bus's render-thread API is exactly snapshot() and blockCompleted()")
+                            .containsExactlyInAnyOrderElementsOf(METERING_BUS_RT_METHODS);
+                    assertThat(unannotated)
+                            .as("the off-RT registry API must exist and stay unannotated")
+                            .isNotEmpty()
+                            .doesNotContainAnyElementsOf(METERING_BUS_RT_METHODS);
+                }));
+        return tests.stream();
+    }
+
+    private static List<Method> publicDeclaredMethods(Class<?> c) {
+        return Arrays.stream(c.getDeclaredMethods())
+                .filter(m -> Modifier.isPublic(m.getModifiers()))
+                .filter(m -> !m.isSynthetic() && !m.isBridge())
+                .sorted((a, b) -> a.getName().compareTo(b.getName()))
+                .toList();
     }
 
     // ------------------------------------------------------------------

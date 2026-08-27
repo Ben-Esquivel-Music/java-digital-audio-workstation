@@ -1,14 +1,16 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
-import javafx.animation.AnimationTimer;
-
 /**
  * Smooth meter animation engine with professional ballistics.
  *
- * <p>Provides peak-hold, smooth attack/release decay, and configurable
- * refresh rate for driving audio meters, spectrum analyzers, and other
- * real-time visual displays. Uses JavaFX {@link AnimationTimer} for
- * frame-synchronized updates.</p>
+ * <p>Provides peak-hold and smooth attack/release decay for driving audio
+ * meters, spectrum analyzers, and other real-time visual displays. The host
+ * (a {@code GpuCanvas} frame loop) calls {@link #update(double, long)} once
+ * per frame with the real elapsed time; the smoothing coefficient is derived
+ * from that delta on every call — {@code coeff = 1 − exp(−Δt/τ)} — so the
+ * decay per unit time is identical at 60 Hz, 120 Hz or across a dropped
+ * frame (story 318). Because the form is a first-order exponential approach,
+ * a large gap converges to the target without overshoot.</p>
  *
  * <p>Supports the metering and visualization requirements from the
  * mastering-techniques research (§4 — Dynamics Processing, §8 —
@@ -24,14 +26,17 @@ public final class MeterAnimator {
     /** Default peak hold time in seconds. */
     public static final double DEFAULT_PEAK_HOLD_SECONDS = 1.5;
 
-    private final double attackCoeff;
-    private final double releaseCoeff;
+    private static final double NANOS_PER_SECOND = 1_000_000_000.0;
+    /** Below this the smoothed value snaps to zero (an exponential never reaches it). */
+    private static final double ZERO_SNAP = 0.0001;
+
+    private final double attackSeconds;
+    private final double releaseSeconds;
     private final double peakHoldSeconds;
 
     private double currentValue;
     private double peakValue;
     private double peakHoldTimer;
-    private long lastNanos;
 
     /**
      * Creates a meter animator with the specified time constants.
@@ -50,8 +55,8 @@ public final class MeterAnimator {
         if (peakHoldSeconds < 0) {
             throw new IllegalArgumentException("peakHoldSeconds must not be negative: " + peakHoldSeconds);
         }
-        this.attackCoeff = 1.0 - Math.exp(-1.0 / (attackSeconds * 60.0));
-        this.releaseCoeff = 1.0 - Math.exp(-1.0 / (releaseSeconds * 60.0));
+        this.attackSeconds = attackSeconds;
+        this.releaseSeconds = releaseSeconds;
         this.peakHoldSeconds = peakHoldSeconds;
         this.currentValue = 0.0;
         this.peakValue = 0.0;
@@ -66,42 +71,46 @@ public final class MeterAnimator {
     }
 
     /**
-     * Updates the animation state with a new target value.
+     * Advances the animation by {@code deltaNanos} towards {@code targetValue}.
      *
-     * <p>Should be called once per animation frame (typically 60 fps).
-     * Uses exponential smoothing for natural-looking meter movement.</p>
+     * <p>Exponential smoothing with the attack time constant while rising and
+     * the release time constant while falling; the peak-hold indicator
+     * latches the target, holds for the configured time, then falls with the
+     * release time constant. A delta of zero or less leaves every value
+     * unchanged — no time passed, so nothing moves.</p>
      *
      * @param targetValue the new target value (0.0 to 1.0+)
      * @param deltaNanos  time elapsed since last update in nanoseconds
      */
     public void update(double targetValue, long deltaNanos) {
-        double deltaSeconds = deltaNanos / 1_000_000_000.0;
-
-        // Smooth towards target with different attack/release rates
-        if (targetValue > currentValue) {
-            currentValue += (targetValue - currentValue) * attackCoeff;
-        } else {
-            currentValue += (targetValue - currentValue) * releaseCoeff;
+        if (deltaNanos <= 0L) {
+            return;
         }
+        double deltaSeconds = deltaNanos / NANOS_PER_SECOND;
 
-        // Clamp to zero
-        if (currentValue < 0.0001) {
+        double tau = targetValue > currentValue ? attackSeconds : releaseSeconds;
+        currentValue += (targetValue - currentValue) * coefficient(deltaSeconds, tau);
+        if (currentValue < ZERO_SNAP) {
             currentValue = 0.0;
         }
 
-        // Peak hold logic
         if (targetValue >= peakValue) {
             peakValue = targetValue;
             peakHoldTimer = peakHoldSeconds;
         } else {
             peakHoldTimer -= deltaSeconds;
             if (peakHoldTimer <= 0) {
-                peakValue += (0.0 - peakValue) * releaseCoeff * 0.5;
-                if (peakValue < 0.0001) {
+                peakValue += (0.0 - peakValue) * coefficient(deltaSeconds, releaseSeconds);
+                if (peakValue < ZERO_SNAP) {
                     peakValue = 0.0;
                 }
             }
         }
+    }
+
+    /** {@code 1 − exp(−Δt/τ)}: the fraction of the remaining distance covered in {@code deltaSeconds}. */
+    private static double coefficient(double deltaSeconds, double tauSeconds) {
+        return 1.0 - Math.exp(-deltaSeconds / tauSeconds);
     }
 
     /**
