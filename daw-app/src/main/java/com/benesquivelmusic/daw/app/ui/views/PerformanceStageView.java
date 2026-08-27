@@ -3,7 +3,11 @@ package com.benesquivelmusic.daw.app.ui.views;
 import com.benesquivelmusic.daw.app.ui.controls.LevelMeter;
 import com.benesquivelmusic.daw.app.ui.controls.TrackStrip;
 import com.benesquivelmusic.daw.app.ui.design.SpacingTokens;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.metering.MeterSubscription;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
+import com.benesquivelmusic.daw.core.metering.MeterFrame;
+import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 
@@ -26,6 +30,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.ResourceBundle;
+import java.util.UUID;
+import java.util.function.BooleanSupplier;
 
 /**
  * Performance Stage view — an oversized-control "cockpit" for live use
@@ -50,7 +56,10 @@ import java.util.ResourceBundle;
  * <ul>
  *   <li><strong>Top band</strong>: a stereo bus {@link LevelMeter}
  *       ({@code .size-performance}, 24&nbsp;×&nbsp;320&nbsp;px) on the
- *       left; LUFS / true-peak / PLR readouts centred.</li>
+ *       left, fed by the engine's {@code MASTER_OUT} tap when
+ *       {@link #bindMeters(MeterFeed)} is called (story 318); LUFS /
+ *       true-peak / PLR readouts centred — still placeholders, they await
+ *       the analysis lane (319) and the mastering chain (321).</li>
  *   <li><strong>Centre band</strong>: an oversized 48&nbsp;px monospaced
  *       transport clock ({@code .numeric-display-stage}).</li>
  *   <li><strong>Transport row</strong>: 64&nbsp;px tall PLAY / STOP / REC /
@@ -58,7 +67,9 @@ import java.util.ResourceBundle;
  *   <li><strong>Track tile grid</strong>: one {@link TrackStrip}
  *       ({@code .size-performance}, 80&nbsp;px tall) per project track,
  *       each paired with a 28&nbsp;px CUE button
- *       ({@code .dawg-button.size-tile-action}).</li>
+ *       ({@code .dawg-button.size-tile-action}). Each tile's inline meter
+ *       is fed by that channel's post-fader {@code CHANNEL_POST} tap
+ *       (story 318).</li>
  *   <li><strong>Floating {@code ☰} hamburger</strong> bottom-right that
  *       opens a translucent overlay (switch to Standard view, Audio
  *       Settings, Project/File menu, Exit Performance Stage).</li>
@@ -93,6 +104,14 @@ public final class PerformanceStageView extends BorderPane {
 
     /** Stable style class — selectable as {@code .performance-stage-view}. */
     public static final String STYLE_CLASS = "performance-stage-view";
+
+    /**
+     * Lanes the top-band bus meter renders (it is built {@code .channels(2)}).
+     * A {@code MeterFrame} may carry more (up to
+     * {@code MeterFrame.MAX_CHANNELS}); the extra lanes are dropped rather
+     * than pushed into slots the meter does not show.
+     */
+    private static final int BUS_METER_CHANNELS = 2;
 
     /**
      * Callbacks the application controller supplies so the stage drives
@@ -133,6 +152,15 @@ public final class PerformanceStageView extends BorderPane {
     private final Button loopButton;
     private final VBox trackTileColumn;
     private final List<TrackStrip> trackTiles = new ArrayList<>();
+    /**
+     * Story 318 — the {@code MixerChannel} id each tile meters, parallel to
+     * {@link #trackTiles}. A track whose id is not a UUID (forged test
+     * fixture) has no channel identity to tap and gets a {@code null} entry,
+     * so its tile meter simply stays at floor.
+     */
+    private final List<UUID> tileChannelIds = new ArrayList<>();
+    /** Story 318 — live tap-bus tokens; created by {@link #bindMeters}, released by {@link #unbindMeters}. */
+    private final List<MeterSubscription> meterSubscriptions = new ArrayList<>();
     private final Button hamburgerButton;
     private final StackPane overlay;
     /** Main overlay panel (Standard View / Audio Settings / Project / Exit). */
@@ -206,6 +234,12 @@ public final class PerformanceStageView extends BorderPane {
     // ── Top band — stereo bus meter + loudness readouts ───────────────────
 
     private HBox topBand() {
+        // Story 318 wires the stereo bus meter to MASTER_OUT (see
+        // bindMeters). The three loudness readouts below stay PLACEHOLDERS:
+        // integrated LUFS / true-peak / PLR need the analysis lane's
+        // LoudnessMeter consumer (story 319) and the engine-owned mastering
+        // chain (story 321) — this story deliberately does not invent values
+        // for them.
         Label lufs = numericReadout("LUFS  −∞");
         Label truePeak = numericReadout("TP  −∞ dB");
         Label plr = numericReadout("PLR  —");
@@ -291,6 +325,7 @@ public final class PerformanceStageView extends BorderPane {
         Objects.requireNonNull(project, "project must not be null");
         trackTileColumn.getChildren().clear();
         trackTiles.clear();
+        tileChannelIds.clear();
         List<Track> tracks = project.getTracks();
         for (int i = 0; i < tracks.size(); i++) {
             Track track = tracks.get(i);
@@ -311,6 +346,9 @@ public final class PerformanceStageView extends BorderPane {
             tile.soloedProperty().addListener((_, _, newVal) -> track.setSolo(newVal));
             tile.armedProperty().addListener((_, _, newVal) -> track.setArmed(newVal));
             trackTiles.add(tile);
+            // Story 318 — remember the channel identity this tile meters. The
+            // addTrack invariant makes the track id the MixerChannel id.
+            tileChannelIds.add(parseChannelId(track));
 
             Button cue = new Button(messages.getString("performanceStage.cue"));
             cue.getStyleClass().addAll("dawg-button", "size-tile-action", "performance-stage-cue");
@@ -326,6 +364,83 @@ public final class PerformanceStageView extends BorderPane {
             tileRow.getStyleClass().add("performance-stage-tile-row");
             trackTileColumn.getChildren().add(tileRow);
         }
+    }
+
+    /** The addTrack invariant: a track id is its {@code MixerChannel} id, or {@code null} if not a UUID. */
+    private static UUID parseChannelId(Track track) {
+        try {
+            return UUID.fromString(track.getId());
+        } catch (IllegalArgumentException notAUuid) {
+            return null;
+        }
+    }
+
+    // ── Story 318 — meters fed by the engine's metering tap bus ───────────
+
+    /**
+     * Subscribes the stage's meters to the engine's metering tap bus through
+     * the app-scoped FX-pulse drain (story 318; Audio Engine Wiring Design
+     * Book §4.3, §5.3): the stereo bus {@link LevelMeter} to
+     * {@link MeterTapPoint#MASTER_OUT} (per-lane, capped at the meter's two
+     * channels) and each track tile's inline meter to its channel's
+     * post-fader {@link MeterTapPoint.ChannelPost} tap.
+     *
+     * <p>Every subscription's visibility predicate is
+     * {@code getScene() != null}, so a stage that has been swapped out of the
+     * {@code BorderPane} costs the pulse nothing; the meters fall to their
+     * floor through the feed's silent frame when rendering stops. Calling this
+     * twice re-subscribes (the previous tokens are disposed first), and
+     * {@link #unbindMeters()} releases everything — the caller
+     * ({@code ViewNavigationController}) does so before discarding the view.</p>
+     *
+     * @param feed the FX-pulse meter drain; must not be {@code null}
+     */
+    public void bindMeters(MeterFeed feed) {
+        Objects.requireNonNull(feed, "feed must not be null");
+        unbindMeters();
+        if (feed.isDisposed()) {
+            return;
+        }
+        BooleanSupplier onScreen = () -> getScene() != null;
+
+        LevelMeter bus = busMeter;
+        meterSubscriptions.add(feed.subscribe(MeterTapPoint.MASTER_OUT, bus, onScreen, frame -> {
+            int lanes = Math.min(frame.channelCount(), BUS_METER_CHANNELS);
+            for (int channel = 0; channel < lanes; channel++) {
+                bus.submitLevels(channel,
+                        MeterFrame.toDb(frame.peak(channel)),
+                        MeterFrame.toDb(frame.rms(channel)));
+            }
+        }));
+
+        for (int i = 0; i < trackTiles.size(); i++) {
+            UUID channelId = tileChannelIds.get(i);
+            if (channelId == null) {
+                continue;
+            }
+            LevelMeter tileMeter = trackTiles.get(i).getMeter();
+            meterSubscriptions.add(feed.subscribe(new MeterTapPoint.ChannelPost(channelId),
+                    tileMeter, onScreen,
+                    frame -> tileMeter.submitLevels(
+                            MeterFrame.toDb(frame.maxPeak()),
+                            MeterFrame.toDb(frame.maxRms()))));
+        }
+    }
+
+    /**
+     * Releases every tap-bus subscription this stage holds. Idempotent; safe
+     * to call when {@link #bindMeters(MeterFeed)} was never called.
+     */
+    public void unbindMeters() {
+        for (MeterSubscription subscription : meterSubscriptions) {
+            subscription.dispose();
+        }
+        meterSubscriptions.clear();
+    }
+
+    /** Live tap-bus subscription count (test seam). */
+    int meterSubscriptionCount() {
+        return meterSubscriptions.size();
     }
 
     // ── Floating hamburger + translucent overlay ──────────────────────────

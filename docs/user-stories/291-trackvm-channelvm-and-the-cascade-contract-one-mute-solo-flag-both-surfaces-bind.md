@@ -178,8 +178,10 @@ precedent):
   (whose mute/solo handlers still call `track.setMuted(...)` inline) — that rewiring, undo capture, and
   the PROJECT/`dirty` phase are **stories 292/293**. The existing undoable mute/solo/volume actions remain
   for that wiring.
-- **`ChannelVM.meterLevel`** uses a `ContinuousDoubleChannel` with no live audio producer yet — the
-  `daw-core` metering tap is a later stage, exactly as stories 289/290 noted for the playhead.
+- **`ChannelVM.meterLevel`** uses a `ContinuousDoubleChannel` with no live audio producer *as of this
+  story* — the `daw-core` metering tap was a later stage, exactly as stories 289/290 noted for the
+  playhead. **Story 318 gave it that producer**: `ChannelVM.bindMeter(MeterFeed)` subscribes the
+  `CHANNEL_POST` tap and feeds `meterLevel` (peak dBFS, floor −120).
 - **dB-fader ↔ linear conversion** is deferred: `TrackControlBinder.bindFader`/`bindPan` operate on a
   linear `DoubleProperty`; the `MixerChannelStrip` dB fader's conversion lands with the live wiring (293).
 

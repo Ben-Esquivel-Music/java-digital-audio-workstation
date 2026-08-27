@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -53,6 +54,18 @@ final class ViewNavigationController {
          *         (story 272)
          */
         com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel inspectorSelectionModel();
+
+        // ── Metering tap bus (story 318) ──────────────────────────────────
+        /**
+         * @return the app-scoped {@link MeterFeed} — the FX-pulse drain of the
+         *         engine's metering tap bus (Audio Engine Wiring Design Book
+         *         §4.3) — that the {@link MixerView} built here and every
+         *         activated Performance Stage subscribe their output meters
+         *         through, or {@code null} in a context with no engine (pure
+         *         unit tests). A {@code null} feed leaves every meter at its
+         *         floor; it never disables the view.
+         */
+        MeterFeed meterFeed();
 
         // ── Performance Stage (story 280) ─────────────────────────────────
         /**
@@ -235,6 +248,11 @@ final class ViewNavigationController {
 
         // Mixer view — real channel-strip mixer panel
         mixerView = new MixerView(host.project(), host.undoManager(), fxDispatcher);
+        // Story 318 — subscribe the freshly built track / return / master strip
+        // meters to the engine's tap bus. Done here (not only by the host)
+        // because this controller owns the view's construction; the host
+        // re-applies it after a project rebuild replaces the view.
+        mixerView.setMeterFeed(host.meterFeed());
         viewCache.put(DawView.MIXER, mixerView);
 
         // Editor view — MIDI piano-roll / audio waveform editor panel
@@ -544,6 +562,13 @@ final class ViewNavigationController {
         // in real-time even though the toolbar is hidden (hide-not-unload).
         performanceStageView.clockLabel().textProperty()
                 .bind(host.timeDisplay().textProperty());
+        // Story 318 — the stage is built fresh on every activation, so its bus
+        // and tile meters subscribe here and are released in
+        // deactivatePerformanceStage() before the view is discarded.
+        MeterFeed feed = host.meterFeed();
+        if (feed != null) {
+            performanceStageView.bindMeters(feed);
+        }
 
         // Attach first, then fade — a FadeTransition started before the
         // node is in the scene can briefly flash at opacity 0 on the first
@@ -574,6 +599,10 @@ final class ViewNavigationController {
         removeStageEscFilter();
         // Unbind the stage clock before discarding the view.
         performanceStageView.clockLabel().textProperty().unbind();
+        // Story 318 — release the stage's tap-bus subscriptions before the
+        // view is dropped, so the app-scoped feed keeps no reference to it
+        // (javafx-application-design §10/§15).
+        performanceStageView.unbindMeters();
         rootPane.setCenter(savedCenter);
         rootPane.setTop(savedTop);
         rootPane.setLeft(savedLeft);

@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
+import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
@@ -841,6 +843,13 @@ public final class AudioEngine {
     // input-meter column and the arrangement-view clip indicator stay live.
     private volatile InputLevelMonitorRegistry inputLevelMonitorRegistry;
 
+    // The engine-owned metering tap bus (story 318, book §3.5 / §4.3): the
+    // registry every output meter subscribes to. The render path reads its
+    // immutable TapSnapshot once per block (one volatile load hoisted with
+    // the graph) and taps nothing when the bus is unbound. Bound / unbound /
+    // refreshed by the EngineBinder; closed by shutdown().
+    private final MeteringTapBus meteringTapBus = new MeteringTapBus();
+
     // Metronome click-generation pipeline (story 136). All three are
     // published volatilely so the audio thread sees a consistent view
     // without locking. The router writes its side output via
@@ -1095,6 +1104,30 @@ public final class AudioEngine {
         } finally {
             lifecycleLock.unlock();
             announcements.deliver();
+        }
+    }
+
+    /**
+     * End of the engine's life (story 318): {@linkplain #stop() stops} the
+     * engine if it is running, then closes the {@linkplain #meteringTapBus()
+     * metering tap bus} — every subscription is disposed and the analysis
+     * thread is joined with a bounded timeout. Unlike {@link #stop()} this
+     * is terminal for the tap bus: it accepts no attachments afterwards, so
+     * an engine that has been shut down must not be started again. Runs
+     * outside {@code lifecycleLock}; the bus close itself takes only the
+     * bus's own registry lock. Idempotent.
+     *
+     * <p>The bus close is in a {@code finally}: {@link #stop()} joins the
+     * render pump, tears down the render collaborators and delivers
+     * announcement callbacks into app code, so a failure there must not
+     * strand the {@code daw-metering-analysis} thread — the one resource
+     * only this method releases.</p>
+     */
+    public void shutdown() {
+        try {
+            stop();
+        } finally {
+            meteringTapBus.close();
         }
     }
 
@@ -4510,6 +4543,19 @@ public final class AudioEngine {
     }
 
     /**
+     * Story 318 — the engine-owned metering tap bus every output meter
+     * subscribes to (book §3.5). The {@link EngineBinder} binds it to the
+     * live project's mixer under the binding epoch, refreshes its slots on
+     * structural change, and unbinds it with the project; the render path
+     * reads its snapshot once per block. Never {@code null}.
+     *
+     * @return the metering tap bus
+     */
+    public MeteringTapBus meteringTapBus() {
+        return meteringTapBus;
+    }
+
+    /**
      * Story 136 — sets the {@link Metronome} the audio callback uses to
      * generate a click on each scheduled beat (and subdivision) that
      * lands inside the current buffer.
@@ -4643,6 +4689,10 @@ public final class AudioEngine {
         // The OPEN stream's backend (story 316): metronome writeToChannel
         // routing finally targets the stream that is actually playing.
         AudioBackend currentBackend = this.openBackend;
+        // Story 318: the metering slot set for this block — one volatile
+        // load, used for the whole block, so a registry swap mid-render can
+        // never mix two snapshots.
+        TapSnapshot taps = meteringTapBus.snapshot();
 
         // Story 137: tap the raw input signal per armed track BEFORE any
         // processing so the mixer's input-meter column and the clip LED
@@ -4657,7 +4707,11 @@ public final class AudioEngine {
                 currentMidiRenderer, masterChain, cb, monitor,
                 enforcer,
                 currentMetronome, currentRouter,
-                currentCueBusManager, currentBackend);
+                currentCueBusManager, currentBackend, taps);
+
+        // Story 318: stamp the next block and wake the analysis lane (only
+        // when a ring exists) — the render thread's sole cross-thread signal.
+        meteringTapBus.blockCompleted(taps);
     }
 
     /**

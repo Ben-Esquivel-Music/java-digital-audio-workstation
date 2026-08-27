@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.input.MouseButton;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.LinearGradient;
@@ -17,6 +18,15 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * <p>Renders a vertical or horizontal level meter with gradient bar
  * (green → yellow → red), peak-hold indicator, RMS bar, clip indicator,
  * and dB scale markings.
+ *
+ * <p>The clip indicator is a <em>latch</em> (story 318): one clipping
+ * {@link #update(LevelData) update} lights it and it stays lit across any
+ * number of quiet updates until {@link #resetClip()} — or a primary-button
+ * click on the clip bar itself (the {@value #CLIP_BAR_PX}&nbsp;px strip at
+ * the top of a vertical meter / right edge of a horizontal one; clicking the
+ * meter body is a no-op so a stray click cannot wipe clip state) — clears
+ * it. This mirrors {@link InputMeterStrip}'s latch-and-click-to-reset so the
+ * two meter families behave identically.</p>
  *
  * <p>This display composes a {@link GpuCanvas} from the {@code daw-fx}
  * module: the GpuCanvas owns the size binding, per-frame
@@ -39,13 +49,27 @@ public final class LevelMeterDisplay extends GpuCanvasView {
     private static final double MIN_DB = -60.0;
     private static final double MAX_DB = 6.0;
 
+    /** Thickness of the clip bar — the render size AND the click-to-reset hit zone. */
+    static final double CLIP_BAR_PX = 4.0;
+
+    /**
+     * Delta applied to the ballistics by a one-off render ({@code GpuCanvas}
+     * hands {@code deltaSeconds == 0.0} to renders it did not drive from its
+     * timer). One nominal 60 fps step keeps a detached / one-shot display
+     * moving the way it always has; the timer-driven frames use the real
+     * delta.
+     */
+    private static final long ONE_SHOT_FRAME_NANOS = 16_666_667L;
+
     private final MeterAnimator rmsAnimator;
     private final MeterAnimator peakAnimator;
     private final boolean vertical;
 
     private double pendingRmsDb = -120.0;
     private double pendingPeakDb = -120.0;
-    private boolean clipping;
+    /** The clip latch: set by a clipping update, cleared only by {@link #resetClip()}. */
+    private boolean clipLatched;
+
     /**
      * Creates a level meter display.
      *
@@ -58,6 +82,17 @@ public final class LevelMeterDisplay extends GpuCanvasView {
         peakAnimator = new MeterAnimator(0.001, 0.5, 1.5);
 
         setRenderer(this::renderFrame);
+
+        setOnMouseClicked(event -> {
+            if (event.getButton() != MouseButton.PRIMARY) {
+                return;
+            }
+            // Only the clip bar resets — the InputMeterStrip hit-zone rule.
+            if (!isInClipZone(event.getX(), event.getY())) {
+                return;
+            }
+            resetClip();
+        });
     }
 
     /**
@@ -77,15 +112,90 @@ public final class LevelMeterDisplay extends GpuCanvasView {
      * @param data the current level data
      */
     public void update(LevelData data) {
-        if (data == null || isDisposed()) return;
-        pendingRmsDb = data.rmsDb();
-        pendingPeakDb = data.peakDb();
-        clipping = data.clipping();
+        if (data == null) return;
+        update(data.peakDb(), data.rmsDb(), data.clipping());
+    }
+
+    /**
+     * The allocation-free ingest: the same update as
+     * {@link #update(LevelData)} without the caller having to build a
+     * {@link LevelData} record. The tap-bus sinks run on every FX pulse for
+     * every visible meter, so they use this form
+     * ({@code javafx-application-design} §6 — no per-frame allocation).
+     *
+     * @param peakDb   peak level in dBFS ({@code -Infinity} for silence)
+     * @param rmsDb    RMS level in dBFS ({@code -Infinity} for silence)
+     * @param clipping {@code true} to light (and latch) the clip indicator
+     */
+    public void update(double peakDb, double rmsDb, boolean clipping) {
+        if (isDisposed()) return;
+        pendingRmsDb = rmsDb;
+        pendingPeakDb = peakDb;
+        if (clipping) {
+            clipLatched = true;
+        }
         // When the animation timer is running (scene-attached), the next
         // timer frame will pick up the new snapshot — no extra render needed.
         // When the timer is gated off (e.g. one-shot updates from tests),
         // request an immediate render so the value is visible.
         requestRender();
+    }
+
+    /**
+     * Clears the clip latch and repaints immediately (without waiting for the
+     * next timer frame). The click-to-reset gesture on the clip bar calls
+     * this; a host may also call it from a "clear all clips" action.
+     */
+    public void resetClip() {
+        clipLatched = false;
+        if (!isDisposed()) {
+            gpuCanvas().requestRender();
+        }
+    }
+
+    /** {@code true} while the clip latch is lit. */
+    public boolean isClipLatched() {
+        return clipLatched;
+    }
+
+    /**
+     * The peak level, in dBFS, of the most recent {@link #update(LevelData)} —
+     * the raw ingest value, <em>before</em> the {@link MeterAnimator}
+     * ballistics the next frame applies. Stays at the −120 dB floor until the
+     * first update, so it is also the honest answer for a display that has no
+     * feed. Story 318 exposes it so a host (or a test) can tell "this meter is
+     * receiving frames" from "this meter is dark" without reaching into the
+     * render loop.
+     *
+     * @return the last submitted peak dBFS
+     */
+    public double getPendingPeakDb() {
+        return pendingPeakDb;
+    }
+
+    /**
+     * The RMS level, in dBFS, of the most recent {@link #update(LevelData)}.
+     * See {@link #getPendingPeakDb()}.
+     *
+     * @return the last submitted RMS dBFS
+     */
+    public double getPendingRmsDb() {
+        return pendingRmsDb;
+    }
+
+    /**
+     * The click-to-reset hit test: the clip bar only, in either orientation.
+     * Both axes are bounded, because the bar is painted inset by 2 px on its
+     * cross axis ({@code fillRect(2, 0, w - 4, CLIP_BAR_PX)} vertically,
+     * {@code fillRect(w - CLIP_BAR_PX, 2, CLIP_BAR_PX, h - 4)} horizontally)
+     * — the hit zone is the painted LED, nothing more, so a click just past
+     * its end cannot wipe clip state.
+     */
+    boolean isInClipZone(double x, double y) {
+        return vertical
+                ? y >= 0 && y <= CLIP_BAR_PX && x >= 2 && x <= getWidth() - 2
+                : x <= getWidth() && x >= getWidth() - CLIP_BAR_PX
+                        && y >= 2 && y <= getHeight() - 2;
     }
 
     /**
@@ -108,8 +218,11 @@ public final class LevelMeterDisplay extends GpuCanvasView {
 
     private void renderFrame(GpuRenderContext ctx) {
         // Advance ballistics from the host's per-frame delta. The MeterAnimator
-        // API operates on deltaNanos, so convert from deltaSeconds.
-        long deltaNanos = (long) (ctx.deltaSeconds() * 1_000_000_000.0);
+        // API operates on deltaNanos, so convert from deltaSeconds; a one-off
+        // render (delta 0) takes one nominal frame step.
+        long deltaNanos = ctx.deltaSeconds() > 0.0
+                ? (long) (ctx.deltaSeconds() * 1_000_000_000.0)
+                : ONE_SHOT_FRAME_NANOS;
         double rmsNorm = dbToNormalized(pendingRmsDb);
         double peakNorm = dbToNormalized(pendingPeakDb);
         rmsAnimator.update(rmsNorm, deltaNanos);
@@ -169,10 +282,10 @@ public final class LevelMeterDisplay extends GpuCanvasView {
                 gc.strokeLine(2, holdY, w - 2, holdY);
             }
 
-            // Clip indicator
-            if (clipping) {
+            // Clip indicator (latched)
+            if (clipLatched) {
                 gc.setFill(CLIP_COLOR);
-                gc.fillRect(2, 0, w - 4, 4);
+                gc.fillRect(2, 0, w - 4, CLIP_BAR_PX);
             }
 
             // dB scale
@@ -203,9 +316,9 @@ public final class LevelMeterDisplay extends GpuCanvasView {
                 gc.strokeLine(holdX, 2, holdX, h - 2);
             }
 
-            if (clipping) {
+            if (clipLatched) {
                 gc.setFill(CLIP_COLOR);
-                gc.fillRect(w - 4, 2, 4, h - 4);
+                gc.fillRect(w - CLIP_BAR_PX, 2, CLIP_BAR_PX, h - 4);
             }
 
             gc.setGlobalAlpha(1.0);
