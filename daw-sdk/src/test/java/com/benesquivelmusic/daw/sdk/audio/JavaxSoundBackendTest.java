@@ -405,6 +405,41 @@ class JavaxSoundBackendTest {
     }
 
     @Test
+    void selectionMatchingDifferentBareAndQualifiedMixerNamesIsRefused() {
+        Mixer.Info qualifiedMatch = new TestMixerInfo("Foo");
+        Mixer.Info bareMatch = new TestMixerInfo("Foo [Java Sound]");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {qualifiedMatch, bareMatch}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false), null);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThatThrownBy(() -> backend.open(
+                new DeviceId(JavaxSoundBackend.NAME, "Foo [Java Sound]"),
+                STREAM_FORMAT, 256))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("ambiguous");
+        assertThat(access.sourceLineAcquisitions)
+                .as("an ambiguous persisted label must not open either mixer")
+                .hasValue(0);
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    @Test
+    void bareMixerNameEndingInBackendQualifierResolvesWithoutACollision() {
+        Mixer.Info suffixNamedMixer = new TestMixerInfo("Foo [Java Sound]");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {suffixNamedMixer}, javaFormat(
+                        javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, false), null);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, suffixNamedMixer.getName()),
+                STREAM_FORMAT, 256);
+
+        assertThat(access.selectedSourceMixer.get()).isSameAs(suffixNamedMixer);
+        backend.close();
+    }
+
+    @Test
     void availabilitySkipsBrokenMixerWithoutClosingTheSuccessfulUnopenedProbe() {
         Mixer.Info broken = new TestMixerInfo("Broken Mixer");
         Mixer.Info healthy = new TestMixerInfo("Healthy Mixer");

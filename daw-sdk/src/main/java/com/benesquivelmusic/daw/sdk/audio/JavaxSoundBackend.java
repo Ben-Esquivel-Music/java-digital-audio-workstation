@@ -851,34 +851,26 @@ public final class JavaxSoundBackend implements AudioBackend {
         }
 
         Mixer.Info[] mixers = javaSound.mixerInfos();
-        List<Mixer.Info> qualifiedMatches = new ArrayList<>(1);
+        List<Mixer.Info> matches = new ArrayList<>(1);
+        // One persisted value can be mixer A's qualified label and mixer B's
+        // literal bare name. Decide over the union so neither form silently
+        // outranks the other.
         for (Mixer.Info mixer : mixers) {
-            String qualified = mixer.getName() + " [" + NAME + "]";
-            if (device.name().equals(qualified)) {
-                qualifiedMatches.add(mixer);
+            if (AudioDeviceInfo.isSelectionFor(
+                    device.name(), mixer.getName(), NAME)) {
+                matches.add(mixer);
             }
         }
-        Mixer.Info qualified = requireUniqueMixer(device.name(), qualifiedMatches);
-        if (qualified != null) {
-            return qualified;
-        }
-
-        List<Mixer.Info> bareMatches = new ArrayList<>(1);
-        for (Mixer.Info mixer : mixers) {
-            if (device.name().equals(mixer.getName())) {
-                bareMatches.add(mixer);
-            }
-        }
-        Mixer.Info bare = requireUniqueMixer(device.name(), bareMatches);
-        if (bare != null) {
-            return bare;
+        Mixer.Info match = requireUniqueMixer(device.name(), matches);
+        if (match != null) {
+            return match;
         }
         throw new IllegalArgumentException(
                 "Java Sound device '" + device.name() + "' is not available;"
                         + " reconnect it or choose another device in Audio Settings");
     }
 
-    /** Returns null only when this pass had no match. */
+    /** Returns null only when no mixer matches the selection. */
     private static Mixer.Info requireUniqueMixer(
             String selection, List<Mixer.Info> matches) {
         if (matches.size() == 1) {
