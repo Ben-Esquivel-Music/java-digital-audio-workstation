@@ -154,41 +154,45 @@ public final class SampleBlockRing {
     }
 
     /**
-     * Writes the post-fader stereo image of a channel exactly as the mix sum
-     * produces it: lane 0 is {@code source[0] * gainLeft}, lane 1 is
-     * {@code source[1] * gainRight} — or {@code source[0] * gainRight} when
-     * the source is mono (duplicated, as in the constant-power pan law). The
-     * written block always carries two lanes; a source with more than two
-     * lanes contributes only its first two here.
+     * Writes the post-fader image with the mix's output lane count. The first
+     * two lanes use their pan gains; remaining lanes use the channel volume.
+     * A mono source is duplicated only when two output lanes are requested.
+     * Gains retain double precision until each sample is narrowed, matching
+     * both the float and double mix paths.
      */
     @RealTimeSafe
-    public void writeScaled(float[][] source, int channels, int numFrames,
-                            float gainLeft, float gainRight) {
+    public void writeScaled(float[][] source, int outputChannels, int numFrames,
+                            double gainLeft, double gainRight, double volume) {
         if (source == null) {
             return;
         }
-        int lanes = clampLanes(source.length, channels);
-        if (lanes == 0) {
+        if (source.length == 0) {
             return;
         }
+        int lanes = clampLanes(Math.max(2, source.length), outputChannels);
         int frames = clampFrames(numFrames);
         long t = (long) TAIL.getOpaque(this);
         int index = (int) (t & mask);
         SLOT_SEQUENCE.setOpaque(slotSequence, index, -1L);
         VarHandle.storeStoreFence();
         float[][] slot = slots[index];
-        float[] left = source[0];
-        float[] right = lanes >= 2 && source[1] != null ? source[1] : left;
-        scaleInto(left, slot[0], frames, gainLeft);
-        scaleInto(right, slot[1], frames, gainRight);
-        commit(index, 2, frames, t);
+        for (int ch = 0; ch < lanes; ch++) {
+            float[] src = source[ch == 1 && source.length == 1 ? 0 : ch];
+            double gain = switch (ch) {
+                case 0 -> gainLeft;
+                case 1 -> gainRight;
+                default -> volume;
+            };
+            scaleInto(src, slot[ch], frames, gain);
+        }
+        commit(index, lanes, frames, t);
     }
 
     @RealTimeSafe
-    private static void scaleInto(float[] src, float[] dst, int frames, float gain) {
+    private static void scaleInto(float[] src, float[] dst, int frames, double gain) {
         int copied = src == null ? 0 : Math.min(frames, src.length);
         for (int f = 0; f < copied; f++) {
-            dst[f] = src[f] * gain;
+            dst[f] = (float) (src[f] * gain);
         }
         if (copied < frames) {
             Arrays.fill(dst, copied, frames, 0f);

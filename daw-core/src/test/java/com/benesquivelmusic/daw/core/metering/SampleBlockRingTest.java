@@ -123,7 +123,7 @@ class SampleBlockRingTest {
         SampleBlockRing ring = new SampleBlockRing(2, FRAMES);
         float[][] mono = new float[1][FRAMES];
         Arrays.fill(mono[0], 1f);
-        ring.writeScaled(mono, 1, FRAMES, 0.25f, 0.75f);
+        ring.writeScaled(mono, 2, FRAMES, 0.25f, 0.75f, 1.0f);
         float[][] dst = scratch();
         assertThat(ring.readInto(dst)).isEqualTo(FRAMES);
         assertThat(ring.lastChannelCount()).isEqualTo(2);
@@ -137,7 +137,7 @@ class SampleBlockRingTest {
         float[][] stereo = new float[2][FRAMES];
         Arrays.fill(stereo[0], 1f);
         Arrays.fill(stereo[1], -1f);
-        ring.writeScaled(stereo, 2, FRAMES, 0.5f, 0.5f);
+        ring.writeScaled(stereo, 2, FRAMES, 0.5f, 0.5f, 1.0f);
         float[][] dst = scratch();
         assertThat(ring.readInto(dst)).isEqualTo(FRAMES);
         assertThat(dst[0]).containsOnly(0.5f);
@@ -145,12 +145,38 @@ class SampleBlockRingTest {
     }
 
     @Test
+    void scaledSurroundLanesUseVolumeAndClampToTheMeterCapacity() {
+        var ring = new SampleBlockRing(1, FRAMES);
+        float[][] source = block(1, SampleBlockRing.MAX_CHANNELS + 2);
+        ring.writeScaled(source, source.length, FRAMES, 0.25, 0.5, 0.75);
+        float[][] result = scratch();
+        assertThat(ring.readInto(result)).isEqualTo(FRAMES);
+        assertThat(ring.lastChannelCount()).isEqualTo(SampleBlockRing.MAX_CHANNELS);
+        for (int lane = 2; lane < SampleBlockRing.MAX_CHANNELS; lane++) {
+            assertThat(result[lane]).containsOnly(source[lane][0] * 0.75f);
+        }
+    }
+
+    @Test
+    void scaledNullAndShortLanesClearSamplesFromThePreviousSlotUse() {
+        var ring = new SampleBlockRing(1, FRAMES);
+        ring.writeScaled(block(3, 3), 3, FRAMES, 1, 1, 1);
+        float[][] result = scratch();
+        ring.readInto(result);
+        ring.writeScaled(new float[][]{{2f}, null, {4f, 4f}}, 3, FRAMES, 0.5, 0.25, 0.125);
+        assertThat(ring.readInto(result)).isEqualTo(FRAMES);
+        assertThat(result[0]).containsExactly(1f, 0f, 0f, 0f, 0f, 0f, 0f, 0f);
+        assertThat(result[1]).containsOnly(0f);
+        assertThat(result[2]).containsExactly(0.5f, 0.5f, 0f, 0f, 0f, 0f, 0f, 0f);
+    }
+
+    @Test
     void nullOrEmptySourcesAreIgnored() {
         SampleBlockRing ring = new SampleBlockRing(2, FRAMES);
         ring.write((float[][]) null, 2, FRAMES);
         ring.write((double[][]) null, 2, FRAMES);
-        ring.writeScaled(null, 2, FRAMES, 1f, 1f);
-        ring.writeScaled(new float[0][], 0, FRAMES, 1f, 1f);
+        ring.writeScaled(null, 2, FRAMES, 1f, 1f, 1f);
+        ring.writeScaled(new float[0][], 0, FRAMES, 1f, 1f, 1f);
         assertThat(ring.isEmpty()).isTrue();
         assertThat(ring.readInto(null)).isEqualTo(-1);
     }

@@ -1509,16 +1509,16 @@ public final class Mixer {
     }
 
     /**
-     * Copies the post-fader stereo image of a channel — the pan-law gains
-     * applied exactly as the sum applied them, a mono source duplicated —
+     * Copies the post-fader image of a channel with the sum's lane count,
+     * pan gains, and volume on the remaining lanes —
      * into every analysis ring of {@code tap}; no-op without rings.
      */
     @RealTimeSafe
-    private static void writeScaledRings(LevelTapSlot tap, float[][] src, int channels,
-                                         int numFrames, float gainLeft, float gainRight) {
+    private static void writeScaledRings(LevelTapSlot tap, float[][] src, int outputChannels,
+                                         int numFrames, double gainLeft, double gainRight, double volume) {
         SampleBlockRing[] rings = tap.rings();
         for (int r = 0; r < rings.length; r++) {
-            rings[r].writeScaled(src, channels, numFrames, gainLeft, gainRight);
+            rings[r].writeScaled(src, outputChannels, numFrames, gainLeft, gainRight, volume);
         }
     }
 
@@ -1551,8 +1551,8 @@ public final class Mixer {
             }
             if (tap != null) {
                 tap.publish(numFrames);
-                writeScaledRings(tap, src, audioChannels, numFrames,
-                        (float) leftGain, (float) rightGain);
+                writeScaledRings(tap, src, Math.max(2, audioChannels), numFrames,
+                        leftGain, rightGain, volume);
             }
         } else {
             if (tap != null) {
@@ -1563,7 +1563,7 @@ public final class Mixer {
             }
             if (tap != null) {
                 tap.publish(numFrames);
-                writeScaledRings(tap, src, audioChannels, numFrames, (float) volume, (float) volume);
+                writeScaledRings(tap, src, audioChannels, numFrames, volume, volume, volume);
             }
         }
     }
@@ -1600,7 +1600,7 @@ public final class Mixer {
             }
             if (tap != null) {
                 tap.publish(numFrames);
-                writeScaledRings(tap, src, audioChannels, numFrames, leftGain, rightGain);
+                writeScaledRings(tap, src, Math.max(2, audioChannels), numFrames, leftGain, rightGain, volume);
             }
         } else {
             if (tap != null) {
@@ -1611,7 +1611,7 @@ public final class Mixer {
             }
             if (tap != null) {
                 tap.publish(numFrames);
-                writeScaledRings(tap, src, audioChannels, numFrames, volume, volume);
+                writeScaledRings(tap, src, audioChannels, numFrames, volume, volume, volume);
             }
         }
     }
@@ -1678,18 +1678,19 @@ public final class Mixer {
             float volume = (float) channel.getVolume();
             int firstOut = routing.firstChannel();
             int outChannels = routing.channelCount();
+            int availableOutputs = Math.max(0, Math.min(outChannels, hwOutputBuffer.length - firstOut));
             LevelTapSlot tap = taps != null ? taps.channelSlot(i, channel) : null;
 
             // Apply constant-power pan law for stereo direct outputs
             if (outChannels >= 2 && src.length >= 1) {
+                int lanes = Math.min(availableOutputs, Math.max(2, src.length));
                 double pan = channel.getPan();
                 double angle = (pan + 1.0) * 0.25 * Math.PI;
                 float leftGain = (float) (Math.cos(angle) * volume);
                 float rightGain = (float) (Math.sin(angle) * volume);
 
                 if (tap != null) {
-                    tap.beginBlock(tapEpoch, tapBlock,
-                            Math.max(2, Math.min(outChannels, src.length)));
+                    tap.beginBlock(tapEpoch, tapBlock, lanes);
                 }
                 int leftDest = firstOut;
                 int rightDest = firstOut + 1;
@@ -1710,11 +1711,11 @@ public final class Mixer {
                 }
                 if (tap != null) {
                     tap.publish(numFrames);
-                    writeScaledRings(tap, src, src.length, numFrames, leftGain, rightGain);
+                    writeScaledRings(tap, src, lanes, numFrames, leftGain, rightGain, volume);
                 }
             } else {
                 // Mono direct output: volume only, no pan
-                int lanes = Math.min(outChannels, src.length);
+                int lanes = Math.min(availableOutputs, src.length);
                 if (tap != null) {
                     tap.beginBlock(tapEpoch, tapBlock, lanes);
                 }
@@ -1726,7 +1727,7 @@ public final class Mixer {
                 }
                 if (tap != null) {
                     tap.publish(numFrames);
-                    writeScaledRings(tap, src, src.length, numFrames, volume, volume);
+                    writeScaledRings(tap, src, lanes, numFrames, volume, volume, volume);
                 }
             }
         }

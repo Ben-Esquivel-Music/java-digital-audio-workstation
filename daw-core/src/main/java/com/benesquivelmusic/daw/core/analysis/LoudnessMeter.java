@@ -54,7 +54,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * per-block {@link LoudnessData} record:</p>
  * <ul>
  *   <li>Momentary and short-term mean-square windows are primitive rings
- *       sized from the block rate.</li>
+ *       sized from the sample rate, independent of processing blocks.</li>
  *   <li>The loudness history is a primitive ring of
  *       {@link #HISTORY_CAPACITY} points (6 min at 100 blocks/s);
  *       older points are dropped, and {@link #getHistory()} materializes
@@ -78,7 +78,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * short-term (3 s) loudness: absolute at {@value #ABSOLUTE_GATE_LUFS} LUFS,
  * relative at {@value #RELATIVE_GATE_LU} LU below the absolute-gated mean,
  * and reports the 95th minus the 10th percentile of the surviving
- * distribution.</p>
+ * distribution. Full short-term windows are observed every 100 ms of
+ * sample time, including when a callback spans several observations.</p>
  *
  * <p>Directly supports the loudness standards and metering requirements
  * from the mastering-techniques research document (§8), including
@@ -167,13 +168,16 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private final double[] kw1Coeffs;
     private final double[] kw2Coeffs;
 
-    // Ring buffers for per-block mean-square values
+    // Ring buffers for per-sample K-weighted power.
     private final double[] momentaryBuffer;
     private final double[] shortTermBuffer;
     private int momentaryIndex;
     private int shortTermIndex;
     private int momentaryCount;
     private int shortTermCount;
+    private double momentaryPower;
+    private double shortTermPower;
+    private int framesUntilLraObservation;
 
     // Integrated loudness: absolute-gated streaming sums plus a fixed
     // histogram (count + power per bin) for the BS.1770-4 relative gate.
@@ -195,7 +199,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private final long[] lraBins = new long[HISTOGRAM_BINS];
     private long lraCount;
     private double lraPowerSum;
-    // Recomputed at the snapshot cadence, not every block.
+    // Recomputed when a callback includes a 100 ms LRA observation.
     private double loudnessRange;
 
     // Loudness history: fixed-capacity primitive ring, oldest dropped first.
@@ -227,7 +231,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * with the default {@link #HISTORY_CAPACITY history capacity}.
      *
      * @param sampleRate the audio sample rate in Hz
-     * @param blockSize  processing block size in samples
+     * @param blockSize  nominal processing block size; actual callback sizes may vary
      */
     public LoudnessMeter(double sampleRate, int blockSize) {
         this(sampleRate, blockSize, HISTORY_CAPACITY);
@@ -238,7 +242,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * Package-private so tests can exercise the ring bound cheaply.
      *
      * @param sampleRate      the audio sample rate in Hz
-     * @param blockSize       processing block size in samples
+     * @param blockSize       nominal processing block size; actual callback sizes may vary
      * @param historyCapacity maximum number of retained history points
      */
     LoudnessMeter(double sampleRate, int blockSize, int historyCapacity) {
@@ -254,15 +258,15 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         this.sampleRate = sampleRate;
 
         // Ring sizes for momentary (400 ms) and short-term (3 s) windows
-        double blocksPerSecond = sampleRate / blockSize;
-        this.momentaryFrames = Math.max(1, (int) Math.ceil(0.4 * blocksPerSecond));
-        this.shortTermFrames = Math.max(1, (int) Math.ceil(3.0 * blocksPerSecond));
+        this.momentaryFrames = Math.max(1, (int) Math.round(0.4 * sampleRate));
+        this.shortTermFrames = Math.max(1, (int) Math.round(3.0 * sampleRate));
 
         this.momentaryBuffer = new double[momentaryFrames];
         this.shortTermBuffer = new double[shortTermFrames];
         this.integratedWindow = new double[Math.max(1, (int) Math.round(0.4 * sampleRate))];
         this.integratedHopFrames = Math.max(1, (int) Math.round(0.1 * sampleRate));
         this.framesUntilIntegratedGate = integratedWindow.length;
+        this.framesUntilLraObservation = shortTermFrames;
 
         this.historyCapacity = historyCapacity;
         this.historyTimestamp = new double[historyCapacity];
@@ -289,10 +293,10 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * <p>Per block this performs the K-weighting pass, updates the fixed
      * windows and histograms, computes the gated integrated loudness from
      * the histogram (bounded, {@value #HISTOGRAM_BINS} bins), records one
-     * history point, and publishes one {@link LoudnessData}. At the 10 Hz
-     * snapshot cadence it additionally recomputes LRA from the short-term
-     * histogram and, if there are subscribers, offers a
-     * {@link LoudnessSnapshot} to the {@link #snapshotPublisher()}.</p>
+     * history point, and publishes one {@link LoudnessData}. A callback that
+     * includes a 100 ms LRA observation also recomputes the short-term
+     * histogram's range. Separately, the 10 Hz snapshot cadence offers a
+     * {@link LoudnessSnapshot} to subscribers of {@link #snapshotPublisher()}.</p>
      *
      * @param leftChannel  left or mono channel samples
      * @param rightChannel right channel samples (may be same as left for mono)
@@ -302,8 +306,8 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         if (numFrames <= 0) {
             return;
         }
-        double blockMeanSquare = 0.0;
         double blockPeak = 0.0;
+        boolean lraObservationDue = false;
 
         for (int i = 0; i < numFrames; i++) {
             double sampleL = leftChannel[i];
@@ -320,29 +324,19 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
             // Mean square (equal power for L/R)
             double framePower = (weightedL * weightedL + weightedR * weightedR) / 2.0;
-            blockMeanSquare += framePower;
+            lraObservationDue |= accumulateWindowSample(framePower);
             accumulateIntegratedSample(framePower);
         }
-
-        blockMeanSquare /= numFrames;
 
         if (blockPeak > truePeak) {
             truePeak = blockPeak;
         }
 
-        momentaryBuffer[momentaryIndex] = blockMeanSquare;
-        momentaryIndex = (momentaryIndex + 1) % momentaryFrames;
-        momentaryCount = Math.min(momentaryCount + 1, momentaryFrames);
-
-        shortTermBuffer[shortTermIndex] = blockMeanSquare;
-        shortTermIndex = (shortTermIndex + 1) % shortTermFrames;
-        shortTermCount = Math.min(shortTermCount + 1, shortTermFrames);
-
-        double momentaryLufs = meanSquareToLufs(windowMeanSquare(momentaryBuffer, momentaryCount));
-        double shortTermMeanSquare = windowMeanSquare(shortTermBuffer, shortTermCount);
-        double shortTermLufs = meanSquareToLufs(shortTermMeanSquare);
-
-        accumulateLoudnessRange(shortTermMeanSquare, shortTermLufs);
+        double momentaryLufs = meanSquareToLufs(Math.max(0.0, momentaryPower / momentaryCount));
+        double shortTermLufs = meanSquareToLufs(Math.max(0.0, shortTermPower / shortTermCount));
+        if (lraObservationDue) {
+            loudnessRange = computeLoudnessRange();
+        }
         double integratedLufs = computeIntegratedLufs();
 
         double truePeakDb = (truePeak > 0) ? 20.0 * Math.log10(truePeak) : LUFS_FLOOR;
@@ -354,8 +348,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         samplesSinceLastSnapshot += numFrames;
         boolean snapshotDue = samplesSinceLastSnapshot >= snapshotIntervalSamples;
         if (snapshotDue) {
-            samplesSinceLastSnapshot = 0;
-            loudnessRange = computeLoudnessRange();
+            samplesSinceLastSnapshot %= snapshotIntervalSamples;
         }
 
         latestData = new LoudnessData(momentaryLufs, shortTermLufs, integratedLufs,
@@ -388,6 +381,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         Arrays.fill(kw2_y2, 0);
         momentaryIndex = shortTermIndex = 0;
         momentaryCount = shortTermCount = 0;
+        momentaryPower = shortTermPower = 0.0;
         Arrays.fill(momentaryBuffer, 0);
         Arrays.fill(shortTermBuffer, 0);
         clearIntegratedState();
@@ -573,11 +567,6 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         snapshotPublisher.close();
     }
 
-    /** Number of processing blocks in the short-term (3 s) window; test seam. */
-    int shortTermWindowBlocks() {
-        return shortTermFrames;
-    }
-
     /** Capacity of the history ring; test seam. */
     int historyCapacity() {
         return historyCapacity;
@@ -587,13 +576,29 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     // Streaming statistics
     // ----------------------------------------------------------------
 
-    private void accumulateLoudnessRange(double shortTermMeanSquare, double shortTermLufs) {
-        // Only once the window is full, and only above the absolute gate.
-        if (shortTermCount >= shortTermFrames && shortTermLufs > ABSOLUTE_GATE_LUFS) {
+    /** Sliding windows and LRA observations follow sample time, not callback boundaries. */
+    private boolean accumulateWindowSample(double power) {
+        momentaryPower += power - momentaryBuffer[momentaryIndex];
+        momentaryBuffer[momentaryIndex] = power;
+        momentaryIndex = (momentaryIndex + 1) % momentaryFrames;
+        momentaryCount = Math.min(momentaryCount + 1, momentaryFrames);
+
+        shortTermPower += power - shortTermBuffer[shortTermIndex];
+        shortTermBuffer[shortTermIndex] = power;
+        shortTermIndex = (shortTermIndex + 1) % shortTermFrames;
+        shortTermCount = Math.min(shortTermCount + 1, shortTermFrames);
+        if (--framesUntilLraObservation != 0) {
+            return false;
+        }
+        framesUntilLraObservation = integratedHopFrames;
+        double meanSquare = Math.max(0.0, shortTermPower / shortTermFrames);
+        double shortTermLufs = meanSquareToLufs(meanSquare);
+        if (shortTermLufs > ABSOLUTE_GATE_LUFS) {
             lraBins[binIndexFor(shortTermLufs)]++;
             lraCount++;
-            lraPowerSum += shortTermMeanSquare;
+            lraPowerSum += meanSquare;
         }
+        return true;
     }
 
     private void accumulateIntegrated(double blockMeanSquare) {
@@ -717,6 +722,9 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         lraCount = 0;
         lraPowerSum = 0;
         loudnessRange = 0.0;
+        // Keep running M/S windows on resetIntegrated; observe next on a fresh hop.
+        framesUntilLraObservation = shortTermCount < shortTermFrames
+                ? shortTermFrames - shortTermCount : integratedHopFrames;
     }
 
     // ----------------------------------------------------------------
@@ -775,15 +783,6 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         kw2_y1[ch] = y2;
 
         return y2;
-    }
-
-    private static double windowMeanSquare(double[] buffer, int count) {
-        if (count == 0) return 0.0;
-        double sum = 0.0;
-        for (int i = 0; i < count; i++) {
-            sum += buffer[i];
-        }
-        return sum / count;
     }
 
     private static double meanSquareToLufs(double meanSquare) {

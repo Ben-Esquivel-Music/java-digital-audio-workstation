@@ -27,6 +27,7 @@ class LoudnessMeterBoundedMemoryTest {
     /** 100 ms blocks: 10 blocks/s, equal to the meter's snapshot cadence, so LRA is fresh after every block. */
     private static final int BLOCK_SIZE = 800;
     private static final int BLOCKS_PER_SECOND = 10;
+    private static final int SHORT_TERM_WINDOW_BLOCKS = 3 * BLOCKS_PER_SECOND;
     private static final int SECTION_SECONDS = 60;
     /** Eight 60 s sections cycle through this amplitude pattern (dBFS); NaN = digital silence. */
     private static final double[] SECTION_LEVELS_DB = {-12, -18, -24, -15, Double.NaN, -55, -20, -30};
@@ -60,7 +61,7 @@ class LoudnessMeterBoundedMemoryTest {
                 .isCloseTo((PROGRAMME_BLOCKS - LoudnessMeter.HISTORY_CAPACITY + 1)
                         * (double) BLOCK_SIZE / SAMPLE_RATE, offset(1e-6));
 
-        double offlineLra = offlineLoudnessRange(shortTermPerBlock, meter.shortTermWindowBlocks(), true);
+        double offlineLra = offlineLoudnessRange(shortTermPerBlock, SHORT_TERM_WINDOW_BLOCKS, true);
         // The programme is genuinely dynamic, so agreement is not a 0 == 0 coincidence.
         assertThat(offlineLra).isGreaterThan(5.0);
         assertThat(meter.getLatestData().loudnessRange()).isCloseTo(offlineLra, offset(LRA_AGREEMENT_LU));
@@ -83,8 +84,8 @@ class LoudnessMeterBoundedMemoryTest {
             shortTermPerBlock[b] = meter.getLatestData().shortTermLufs();
         }
 
-        double withoutRelativeGate = offlineLoudnessRange(shortTermPerBlock, meter.shortTermWindowBlocks(), false);
-        double withRelativeGate = offlineLoudnessRange(shortTermPerBlock, meter.shortTermWindowBlocks(), true);
+        double withoutRelativeGate = offlineLoudnessRange(shortTermPerBlock, SHORT_TERM_WINDOW_BLOCKS, false);
+        double withRelativeGate = offlineLoudnessRange(shortTermPerBlock, SHORT_TERM_WINDOW_BLOCKS, true);
         // Discriminating: absolute-only gating would report the 35 LU swing.
         assertThat(withoutRelativeGate).isGreaterThan(20.0);
         assertThat(withRelativeGate).isLessThan(3.0);
@@ -142,8 +143,7 @@ class LoudnessMeterBoundedMemoryTest {
         for (int b = 301; b <= 309; b++) {
             meter.process(loud, loud, blockSize);
         }
-        // Readings 301..309 are spread over ~6 LU but no cadence tick has happened since
-        // block 300 (one reading -> 0.0), so the published LRA is still exactly 0.0.
+        // No second 100 ms observation has happened since block 300, so LRA is still 0.0.
         assertThat(meter.getLatestData().loudnessRange()).isEqualTo(0.0);
 
         meter.process(loud, loud, blockSize); // block 310: cadence tick
