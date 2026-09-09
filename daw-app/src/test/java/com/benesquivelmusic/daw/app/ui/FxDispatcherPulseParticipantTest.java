@@ -132,6 +132,38 @@ class FxDispatcherPulseParticipantTest {
     }
 
     @Test
+    void repeatedParticipantFailureDoesNotStopTheFrameOrHideDistinctFailures() {
+        FxDispatcher dispatcher = new FxDispatcher();
+        List<String> order = new ArrayList<>();
+        var repeatedFailure = new IllegalStateException("repeated failure");
+        var distinctFailure = new IllegalArgumentException("distinct failure");
+        Runnable throwingParticipant = () -> {
+            order.add("throwing participant");
+            throw repeatedFailure;
+        };
+        dispatcher.addPulseParticipant(throwingParticipant);
+        dispatcher.addPulseParticipant(throwingParticipant);
+        dispatcher.addPulseParticipant(() -> {
+            order.add("distinct failure");
+            throw distinctFailure;
+        });
+        dispatcher.addPulseParticipant(() -> order.add("survivor"));
+        dispatcher.onFx("key", () -> order.add("keyed"));
+        FxDispatcher.ContinuousChannel<String> channel = dispatcher.openContinuous(order::add);
+        FxDispatcher.ContinuousDoubleChannel doubleChannel =
+                dispatcher.openContinuousDouble(value -> order.add("double channel " + value));
+        channel.publish("generic channel");
+        doubleChannel.publish(1.0);
+
+        assertThatThrownBy(dispatcher::pulse)
+                .isSameAs(repeatedFailure)
+                .satisfies(failure -> assertThat(failure.getSuppressed())
+                        .containsExactly(distinctFailure));
+        assertThat(order).containsExactly("throwing participant", "throwing participant",
+                "distinct failure", "survivor", "keyed", "generic channel", "double channel 1.0");
+    }
+
+    @Test
     void nullParticipantIsRejected() {
         assertThatNullPointerException()
                 .isThrownBy(() -> new FxDispatcher().addPulseParticipant(null));

@@ -589,7 +589,7 @@ public final class FxDispatcher {
             } catch (RuntimeException e) {
                 if (failure == null) {
                     failure = e;
-                } else {
+                } else if (failure != e) {
                     failure.addSuppressed(e);
                 }
             }
