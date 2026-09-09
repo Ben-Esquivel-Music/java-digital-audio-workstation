@@ -17,6 +17,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -81,6 +82,107 @@ class AudioEngineLockedOutwardCallTest {
                 .map(b -> new BackendStreamRung(b, DeviceId.defaultFor(b.name())))
                 .toList();
         return new StreamingProvision(backends[0].name(), ladder);
+    }
+
+    @Test
+    void shutdownRejectsEveryStartWhilePostStopAnnouncementsAreStillRunning() throws Exception {
+        var backend = new StallableBackend("Shutdown race");
+        backend.stallSink = true;
+        var engine = new AudioEngine(FORMAT);
+        var transport = new Transport();
+        engine.setStreamingProvision(provisionOf(backend));
+        engine.setGraph(transport, null, null);
+        engine.startAudioOutput();
+        awaitPumpStalledInSink(backend);
+        transport.play();
+        transport.setPositionInBeats(24.0);
+        var entered = new CountDownLatch(1);
+        var released = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        transport.addChangeListener(kind -> {
+            if (kind == ChangeKind.POSITION) {
+                entered.countDown();
+                await(released, "release of shutdown announcement");
+            }
+        });
+        Thread shutdownThread = Thread.ofPlatform().daemon(true).name("shutdown-race").start(() -> {
+            try {
+                engine.shutdown();
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            }
+        });
+        try {
+            await(entered, "shutdown announcement after stopping");
+            assertThat(engine.isRunning()).isFalse();
+            assertThat(engine.meteringTapBus().isClosed()).isFalse();
+            assertEveryStartRejected(engine);
+            assertThat(backend.openAttempts).hasValue(1);
+            assertThat(backend.closeAttempts).hasValue(0);
+        } finally {
+            released.countDown();
+            shutdownThread.join(GUARD_BUDGET_MILLIS);
+            engine.stopAudioOutput();
+        }
+        assertThat(shutdownThread.isAlive()).isFalse();
+        assertThat(failure.get()).isNull();
+        assertThat(engine.meteringTapBus().isClosed()).isTrue();
+        assertEveryStartRejected(engine);
+        engine.shutdown();
+    }
+
+    @Test
+    void shutdownClosesTheBusEvenWhenStopAnnouncementThrowsAnError() {
+        var backend = new StallableBackend("Shutdown failure");
+        backend.stallSink = true;
+        var engine = new AudioEngine(FORMAT);
+        var transport = new Transport();
+        engine.setStreamingProvision(provisionOf(backend));
+        engine.setGraph(transport, null, null);
+        engine.startAudioOutput();
+        awaitPumpStalledInSink(backend);
+        transport.play();
+        transport.setPositionInBeats(24.0);
+        var announcementFailure = new AssertionError("shutdown announcement");
+        transport.addChangeListener(kind -> {
+            if (kind == ChangeKind.POSITION) {
+                throw announcementFailure;
+            }
+        });
+        try {
+            assertThatThrownBy(engine::shutdown).isSameAs(announcementFailure);
+            assertThat(engine.meteringTapBus().isClosed()).isTrue();
+            assertThat(engine.isRunning()).isFalse();
+            assertEveryStartRejected(engine);
+        } finally {
+            engine.stopAudioOutput();
+            engine.shutdown();
+        }
+    }
+
+    @Test
+    void shutdownOfPausedEngineRejectsResumeWithoutTouchingTheBackend() {
+        var backend = new StallableBackend("Paused shutdown");
+        var engine = new AudioEngine(FORMAT);
+        engine.setStreamingProvision(provisionOf(backend));
+        engine.startAudioOutput();
+        engine.pauseAudioOutput();
+        engine.shutdown();
+        try {
+            assertEveryStartRejected(engine);
+            assertThat(backend.openAttempts).hasValue(1);
+            assertThat(backend.closeAttempts).hasValue(0);
+        } finally {
+            engine.stopAudioOutput();
+        }
+    }
+
+    private static void assertEveryStartRejected(AudioEngine engine) {
+        for (Runnable start : List.<Runnable>of(engine::start, engine::startAudioOutput,
+                engine::startAudioInputOutput)) {
+            assertThatThrownBy(start::run).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("shut down");
+        }
     }
 
     // ── E1: the RT-clock release is an OUTWARD seam, delivered unlocked ──

@@ -426,7 +426,7 @@ public final class BundleExportService {
             float[] r = new float[n];
             System.arraycopy(left, offset, l, 0, n);
             System.arraycopy(right, offset, r, 0, n);
-            meter.process(l, r, n);
+            meter.process(l, r, n, Math.min(channels, 2));
             offset += n;
         }
         double lufs = meter.hasData()

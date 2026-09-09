@@ -109,6 +109,38 @@ class AudioEngineMeteringSeamTest {
         }
     }
 
+    @Test
+    void renderingStopsPublishingWhenTheLastMeterDetaches() {
+        var project = new DawProject("No meter demand", FORMAT);
+        var track = project.createAudioTrack("Lead");
+        track.addClip(sineClip());
+        var channel = project.getMixerChannelForTrack(track);
+        var engine = new AudioEngine(FORMAT);
+        try {
+            new EngineBinder(engine).bind(project);
+            project.getTransport().play();
+            engine.start();
+            var bus = engine.meteringTapBus();
+            var channelMeter = bus.attachLevel(new MeterTapPoint.ChannelPost(channel.getId()));
+            var masterMeter = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+            var observed = bus.snapshot();
+            drive(engine, 2);
+            var frame = new MeterFrame();
+            assertThat(channelMeter.readInto(frame)).isTrue();
+            long lastPublished = frame.blockIndex();
+            channelMeter.dispose();
+            masterMeter.dispose();
+            assertThat(bus.snapshot().isEmpty()).isTrue();
+            drive(engine, 3);
+            assertThat(observed.channelSlot(0, channel).readInto(frame)).isTrue();
+            assertThat(frame.blockIndex()).isEqualTo(lastPublished);
+            assertThat(observed.masterOut().readInto(frame)).isTrue();
+            assertThat(frame.blockIndex()).isEqualTo(lastPublished);
+        } finally {
+            engine.shutdown();
+        }
+    }
+
     private static AudioClip sineClip() {
         AudioClip clip = new AudioClip("Clip", 0.0, TOTAL_FRAMES / SAMPLES_PER_BEAT, null);
         float[][] data = new float[CHANNELS][TOTAL_FRAMES];

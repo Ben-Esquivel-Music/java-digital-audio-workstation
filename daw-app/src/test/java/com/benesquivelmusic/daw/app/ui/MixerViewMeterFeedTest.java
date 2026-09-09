@@ -168,6 +168,7 @@ class MixerViewMeterFeedTest {
             new Scene(mixerView, 900, 600);
             mixerView.applyCss();
             mixerView.layout();
+            boundDispatcher.pulse(); // Observe visibility and attach before rendering the next block.
             feed = created;
             return mixerView;
         });
@@ -289,7 +290,12 @@ class MixerViewMeterFeedTest {
         assertThat(before).hasSize(EXPECTED_STRIP_METERS);
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
 
-        onFxRun(view::refresh);
+        onFxRun(() -> {
+            view.refresh();
+            view.applyCss();
+            view.layout();
+            dispatcher.pulse();
+        });
 
         assertThat(before).allSatisfy(subscription ->
                 assertThat(subscription.isDisposed())
@@ -350,6 +356,7 @@ class MixerViewMeterFeedTest {
             scene.setRoot(view);
             view.applyCss();
             view.layout();
+            dispatcher.pulse();
         });
 
         assertThat(view.getScene()).as("the view is back in the scene graph").isNotNull();

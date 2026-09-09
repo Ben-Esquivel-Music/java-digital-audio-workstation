@@ -137,6 +137,7 @@ class PluginEditorSessionInsertMetersTest {
         runOnFxThread(() -> {
             stage = new Stage();
             stage.setScene(new Scene(new StackPane(session.frame()), 480, 320));
+            dispatcher.pulse();
             return null;
         });
     }
@@ -153,7 +154,8 @@ class PluginEditorSessionInsertMetersTest {
         });
         assertThat(session.hasInsertMeters()).isTrue();
         assertThat(feed.subscriptionCount()).isEqualTo(1);
-        assertThat(bus.levelSubscriptionCount()).isEqualTo(1);
+        assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().insertTapFor(slot)).isNull();
 
         renderInsertBlock(0.8f, 0.4f);
         pulseOnFx();
@@ -162,10 +164,14 @@ class PluginEditorSessionInsertMetersTest {
                 .isSameAs(PluginMeterSnapshot.SILENT);
 
         showEditor();
+        assertThat(bus.levelSubscriptionCount()).isEqualTo(1);
+        assertThat(session.store().meters()).as("hidden blocks were never collected")
+                .isSameAs(PluginMeterSnapshot.SILENT);
+        renderInsertBlock(0.6f, 0.3f);
         pulseOnFx();
         PluginMeterSnapshot meters = session.store().meters();
-        assertThat(meters.inputLevelDb()).isCloseTo(db(0.8), within(1e-4));
-        assertThat(meters.outputLevelDb()).isCloseTo(db(0.4), within(1e-4));
+        assertThat(meters.inputLevelDb()).isCloseTo(db(0.6), within(1e-4));
+        assertThat(meters.outputLevelDb()).isCloseTo(db(0.3), within(1e-4));
 
         renderInsertBlock(0.25f, 0.125f);
         pulseOnFx();
@@ -174,6 +180,7 @@ class PluginEditorSessionInsertMetersTest {
 
     @Test
     void rebindingReplacesTheSubscriptionAndUnbindDetaches() {
+        showEditor();
         runOnFxThread(() -> {
             session.bindInsertMeters(feed, slot.getPluginInstanceId());
             session.bindInsertMeters(feed, slot.getPluginInstanceId());

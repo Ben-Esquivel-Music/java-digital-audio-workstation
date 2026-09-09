@@ -66,7 +66,7 @@ class AnalysisLaneTest {
         assertThat(taps.hasAnalysisRings()).isTrue();
         LevelTapSlot slot = taps.channelSlot(0, channel);
         assertThat(slot.rings()).hasSize(1);
-        assertThat(taps.masterOut().rings()).isEmpty();
+        assertThat(taps.masterOut()).isNull();
 
         for (int i = 1; i <= 5; i++) {
             renderBlock(taps, slot, i);
@@ -156,12 +156,12 @@ class AnalysisLaneTest {
         TapSnapshot after = bus.snapshot();
         assertThat(after).isNotSameAs(before);
         assertThat(after.hasAnalysisRings()).isFalse();
-        assertThat(after.masterOut().rings()).isEmpty();
+        assertThat(after.masterOut()).isNull();
         assertThat(ringsBefore).as("the previous array is never mutated in place").hasSize(1);
         assertThat(bus.analysisSubscriptionCount()).isZero();
         assertThat(bus.lanes()).isEmpty();
 
-        renderBlock(after, after.masterOut(), 2);
+        bus.blockCompleted(after);
         Thread.sleep(50L);
         assertThat(consumer.values()).containsExactly(1f);
         assertThat(bus.isAnalysisThreadAlive()).as("the thread outlives its last lane").isTrue();
@@ -176,7 +176,7 @@ class AnalysisLaneTest {
         bus.refreshSlots();
 
         TapSnapshot after = bus.snapshot();
-        assertThat(after.channelSlotCount()).isEqualTo(2);
+        assertThat(after.channelSlotCount()).isEqualTo(1);
         assertThat(after.channelSlot(0, channel).rings()).containsExactly(ring);
         assertThat(after.hasAnalysisRings()).isTrue();
     }

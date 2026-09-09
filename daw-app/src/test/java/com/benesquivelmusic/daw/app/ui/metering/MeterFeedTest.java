@@ -89,6 +89,9 @@ class MeterFeedTest {
     }
 
     private static void publish(LevelTapSlot slot, TapSnapshot taps, float[] lane) {
+        if (slot == null) {
+            return;
+        }
         slot.beginBlock(taps.epoch(), taps.blockIndex(), 2);
         slot.accumulate(0, lane, BLOCK);
         slot.accumulate(1, lane, BLOCK);
@@ -157,7 +160,9 @@ class MeterFeedTest {
         dispatcher.pulse();
         dispatcher.pulse();
 
-        assertThat(visibleCalls.get()).as("the visible supplier is consulted once per pulse").isEqualTo(3);
+        assertThat(visibleCalls.get()).as("visibility is checked on subscription and once per pulse").isEqualTo(4);
+        assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().isEmpty()).isTrue();
         assertThat(sinkCalls.get()).as("a hidden meter's sink is never called").isZero();
         assertThat(feed.readAttempts()).as("a hidden meter performs no slot read").isZero();
     }
@@ -433,18 +438,90 @@ class MeterFeedTest {
     }
 
     @Test
+    void hidingAnAttachedStripRemovesRenderDemandUntilShownAgain() {
+        var visible = new AtomicBoolean(true);
+        var delivered = subscribeChannelA(visible);
+        renderBlock(0.5f);
+        dispatcher.pulse();
+        long reads = feed.readAttempts();
+
+        visible.set(false);
+        dispatcher.pulse();
+        assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().channelSlot(0, channelA)).isNull();
+        assertThat(bus.snapshot().isEmpty()).isTrue();
+        renderBlock(0.8f);
+        dispatcher.pulse();
+        assertThat(feed.readAttempts()).isEqualTo(reads);
+        assertThat(delivered).hasSize(1);
+
+        visible.set(true);
+        dispatcher.pulse();
+        assertThat(bus.levelSubscriptionCount()).isEqualTo(1);
+        assertThat(delivered).hasSize(2);
+        assertThat(delivered.getLast().silent()).isTrue();
+        renderBlock(0.25f);
+        dispatcher.pulse();
+        assertThat(delivered).hasSize(3);
+        assertThat(delivered.getLast().peak()).isEqualTo(0.25f);
+    }
+
+    @Test
+    void hidingAnInsertEditorRemovesBothTapsAndReattachesWhenShown() {
+        var insert = new InsertSlot("Gain", new PassThrough());
+        channelA.addInsert(insert);
+        var visible = new AtomicBoolean(false);
+        var delivered = new AtomicInteger();
+        var subscription = feed.subscribeInsertIo(insert.getPluginInstanceId(), "editor",
+                visible::get, (input, output) -> delivered.incrementAndGet());
+        assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().insertTapFor(insert)).isNull();
+
+        visible.set(true);
+        dispatcher.pulse();
+        assertThat(bus.levelSubscriptionCount()).isEqualTo(1);
+        assertThat(bus.snapshot().insertTapFor(insert)).isNotNull();
+        visible.set(false);
+        dispatcher.pulse();
+        assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().insertTapFor(insert)).isNull();
+        assertThat(subscription.isDisposed()).isFalse();
+        assertThat(delivered).hasValue(0);
+
+        bus.rebind(mixer, FORMAT, 2L);
+        visible.set(true);
+        dispatcher.pulse();
+        assertThat(subscription.epoch()).isEqualTo(2L);
+        var taps = bus.snapshot();
+        var pair = taps.insertTapFor(insert);
+        publish(pair.input(), taps, new float[BLOCK]);
+        publish(pair.output(), taps, new float[BLOCK]);
+        bus.blockCompleted(taps);
+        dispatcher.pulse();
+        assertThat(delivered).hasValue(2);
+    }
+
+    @Test
     void failingVisibilityAndSinksCannotStarveLaterMetersAndFailuresAreAggregated() {
         var visibilityFailure = new IllegalStateException("visibility");
         var levelFailure = new IllegalArgumentException("level sink");
         var insertFailure = new IllegalStateException("insert sink");
-        feed.subscribe(MeterTapPoint.MASTER_OUT, "bad visibility", () -> { throw visibilityFailure; }, f -> { });
-        feed.subscribe(MeterTapPoint.MASTER_OUT, "same failure", () -> { throw visibilityFailure; }, f -> { });
+        var failVisibility = new AtomicBoolean(false);
+        java.util.function.BooleanSupplier visibility = () -> {
+            if (failVisibility.get()) {
+                throw visibilityFailure;
+            }
+            return true;
+        };
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "bad visibility", visibility, f -> { });
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "same failure", visibility, f -> { });
         feed.subscribe(MeterTapPoint.MASTER_OUT, "bad level", () -> true, f -> { throw levelFailure; });
         var insert = new InsertSlot("Metered", new PassThrough());
         channelA.addInsert(insert);
         feed.subscribeInsertIo(insert.getPluginInstanceId(), "bad insert", () -> true,
                 (input, output) -> { throw insertFailure; });
         var delivered = subscribeChannelA(new AtomicBoolean(true));
+        failVisibility.set(true);
         var taps = bus.snapshot();
         var pair = taps.insertTapFor(insert);
         publish(pair.input(), taps, new float[BLOCK]);
@@ -492,6 +569,35 @@ class MeterFeedTest {
 
         feed.pulse();
 
+        assertThat(feed.subscriptionCount()).isZero();
+        assertThat(bus.levelSubscriptionCount()).isZero();
+    }
+
+    @Test
+    void disposingAnInitiallyHiddenIntentInsideVisibilityDoesNotAttachAToken() {
+        var show = new AtomicBoolean(false);
+        MeterSubscription[] subscription = new MeterSubscription[1];
+        subscription[0] = feed.subscribe(MeterTapPoint.MASTER_OUT, "self-disposing visibility", () -> {
+            if (show.get()) {
+                subscription[0].dispose();
+                return true;
+            }
+            return false;
+        }, frame -> { });
+        show.set(true);
+        feed.pulse();
+        assertThat(feed.subscriptionCount()).isZero();
+        assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().isEmpty()).isTrue();
+    }
+
+    @Test
+    void disposingTheFeedDuringInitialVisibilityDoesNotInstallAnIntent() {
+        assertThatIllegalStateException().isThrownBy(() -> feed.subscribe(
+                MeterTapPoint.MASTER_OUT, "closing visibility", () -> {
+                    feed.dispose();
+                    return true;
+                }, frame -> { }));
         assertThat(feed.subscriptionCount()).isZero();
         assertThat(bus.levelSubscriptionCount()).isZero();
     }

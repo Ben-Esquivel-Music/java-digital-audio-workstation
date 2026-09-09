@@ -23,8 +23,8 @@ import java.util.function.LongSupplier;
  *
  * <h2>Per pulse, per subscription</h2>
  * <ol>
- *   <li>{@code visible.getAsBoolean()} is {@code false} &rarr; skip entirely.
- *       A hidden meter costs zero: no slot read, no sink call (book
+ *   <li>{@code visible.getAsBoolean()} is {@code false} &rarr; detach the engine
+ *       token until shown. A hidden meter has no render demand, slot read or sink call (book
  *       &sect;3.5 "a meter that is not on screen costs zero").</li>
  *   <li>The engine token was disposed by a rebind / unbind &rarr; deliver
  *       one silent frame, then re-attach under the bus's current epoch (the
@@ -47,9 +47,9 @@ import java.util.function.LongSupplier;
  * and removes the pulse participant; the owner ({@code MainController})
  * calls it from the primary stage's {@code setOnHidden}. Everything here runs
  * on the JavaFX Application Thread — the feed touches JavaFX only through
- * the sinks, which run on the pulse. The bus's {@code onDisposed} callbacks
- * may arrive on the binder's thread; they only flip a {@code volatile} flag
- * the next pulse acts on.</p>
+ * the sinks, which run on the pulse. The pulse checks the current engine
+ * token's volatile disposal state, so delayed disposal of an older token
+ * cannot invalidate its replacement.</p>
  */
 public final class MeterFeed {
 
@@ -94,8 +94,8 @@ public final class MeterFeed {
      *
      * @param point   the tap point
      * @param surface the consuming surface (coalescing identity)
-     * @param visible consulted first on every pulse; {@code false} skips the
-     *                subscription entirely
+     * @param visible consulted on subscription and first on every pulse;
+     *                {@code false} suspends the engine subscription
      * @param sink    the FX-thread consumer
      * @return the subscription token
      * @throws IllegalStateException if the feed is disposed
@@ -175,7 +175,14 @@ public final class MeterFeed {
         RuntimeException failure = null;
         for (Entry entry : all) {
             try {
-                if (entry.disposed || !entry.visible.getAsBoolean()) {
+                if (entry.disposed) {
+                    continue;
+                }
+                if (!entry.visible.getAsBoolean()) {
+                    entry.suspend();
+                    continue;
+                }
+                if (entry.disposed) {
                     continue;
                 }
                 if (!clockRead) {
@@ -203,12 +210,17 @@ public final class MeterFeed {
     }
 
     private void install(Entry entry) {
+        boolean visible = entry.visible.getAsBoolean();
+        ensureOpen();
         Entry previous = entries.put(entry.key, entry);
         if (previous != null) {
             previous.detach();
         }
         entry.lastDeliveryNanos = clock.getAsLong();
-        entry.attach();
+        entry.tokenEpoch = bus.epoch();
+        if (visible) {
+            entry.attach();
+        }
         rebuildArray();
     }
 
@@ -234,8 +246,8 @@ public final class MeterFeed {
         final MeterFeed feed;
         final MeterKey key;
         final BooleanSupplier visible;
-        /** Set by the bus's {@code onDisposed} callback (any thread); consumed on the pulse. */
-        volatile boolean tokenLost;
+        private TapSubscription engineToken;
+        private boolean resumeSilence;
         long tokenEpoch;
         long lastDeliveryNanos;
         long lastBlockIndex = -1L;
@@ -272,8 +284,8 @@ public final class MeterFeed {
         }
 
         final void pulse(long now) {
-            if (tokenLost) {
-                tokenLost = false;
+            if (resumeSilence || (engineToken != null && engineToken.isDisposed())) {
+                resumeSilence = false;
                 try {
                     deliverSilence(now);
                 } finally {
@@ -283,6 +295,13 @@ public final class MeterFeed {
                     }
                 }
                 return;
+            }
+            if (engineToken == null) {
+                attach();
+                if (disposed) {
+                    return;
+                }
+                lastDeliveryNanos = now;
             }
             feed.readAttempts++;
             if (readFresh()) {
@@ -310,23 +329,29 @@ public final class MeterFeed {
         final void attach() {
             try {
                 TapSubscription token = attachToken();
+                engineToken = token;
                 tokenEpoch = token.epoch();
-                token.onDisposed(() -> tokenLost = true);
             } catch (IllegalStateException closed) {
                 feed.remove(this);
             }
         }
 
-        /** Marks disposed and disposes the engine token (the callback it fires is ignored). */
+        /** Releases render demand while retaining the UI intent and last displayed state. */
+        final void suspend() {
+            if (engineToken != null) {
+                engineToken.dispose();
+                engineToken = null;
+                resumeSilence = true;
+            }
+        }
+
+        /** Marks disposed and releases the engine token. */
         final void detach() {
             disposed = true;
-            tokenLost = false;
-            disposeToken();
+            suspend();
         }
 
         abstract TapSubscription attachToken();
-
-        abstract void disposeToken();
 
         /**
          * Reads the newest frame(s); {@code true} only when coherent, of the
@@ -365,14 +390,6 @@ public final class MeterFeed {
         TapSubscription attachToken() {
             token = feed.bus.attachLevel(key.point());
             return token;
-        }
-
-        @Override
-        void disposeToken() {
-            LevelSubscription current = token;
-            if (current != null) {
-                current.dispose();
-            }
         }
 
         @Override
@@ -423,14 +440,6 @@ public final class MeterFeed {
         TapSubscription attachToken() {
             token = feed.bus.attachInsertIo((MeterTapPoint.InsertIo) key.point());
             return token;
-        }
-
-        @Override
-        void disposeToken() {
-            InsertIoSubscription current = token;
-            if (current != null) {
-                current.dispose();
-            }
         }
 
         /**

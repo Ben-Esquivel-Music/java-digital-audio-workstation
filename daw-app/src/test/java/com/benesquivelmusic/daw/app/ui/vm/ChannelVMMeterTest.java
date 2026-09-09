@@ -76,6 +76,10 @@ class ChannelVMMeterTest {
     private void renderBlock(float level) {
         TapSnapshot taps = bus.snapshot();
         LevelTapSlot slot = taps.channelSlot(0, channel);
+        if (slot == null) {
+            bus.blockCompleted(taps);
+            return;
+        }
         float[] lane = new float[BLOCK];
         Arrays.fill(lane, level);
         slot.beginBlock(taps.epoch(), taps.blockIndex(), 2);
@@ -136,6 +140,7 @@ class ChannelVMMeterTest {
         assertThat(vm.isMeterBound()).isFalse();
         assertThat(feed.subscriptionCount()).isZero();
         assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().channelSlot(0, channel)).isNull();
 
         renderBlock(1.0f);
         dispatcher.pulse();
@@ -166,6 +171,7 @@ class ChannelVMMeterTest {
                 .as("dispose() releases the tap-bus subscription")
                 .isZero();
         assertThat(dispatcher.openChannelCount()).isEqualTo(channelsBefore - 1);
+        assertThat(bus.snapshot().isEmpty()).isTrue();
 
         // A pulse after disposal must not publish into the closed channel.
         renderBlock(1.0f);

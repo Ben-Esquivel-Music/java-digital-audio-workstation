@@ -49,7 +49,7 @@ class EngineBinderMeteringTest {
     }
 
     @Test
-    void bindBindsTheBusUnderTheBindingEpochWithOneSlotPerChannelReturnAndMaster() {
+    void bindBindsTheBusUnderTheBindingEpochAndSubscriptionsCreateTheRequestedSlots() {
         project.createAudioTrack("Drums");
         project.createAudioTrack("Bass");
         assertThat(bus.isBound()).as("unbound before the first bind").isFalse();
@@ -59,6 +59,15 @@ class EngineBinderMeteringTest {
 
         assertThat(bus.isBound()).isTrue();
         assertThat(bus.epoch()).as("the bus epoch is the binder's").isEqualTo(binder.epoch());
+        assertThat(bus.snapshot().isEmpty()).isTrue();
+        for (MixerChannel channel : project.getMixer().getChannels()) {
+            bus.attachLevel(new MeterTapPoint.ChannelPost(channel.getId()));
+        }
+        for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
+            bus.attachLevel(new MeterTapPoint.ReturnPost(returnBus.getId()));
+        }
+        bus.attachLevel(MeterTapPoint.MASTER_CHAIN);
+        bus.attachLevel(MeterTapPoint.MASTER_OUT);
         TapSnapshot taps = bus.snapshot();
         assertThat(taps.epoch()).isEqualTo(binder.epoch());
         assertThat(taps.sampleRate()).isEqualTo(FORMAT.sampleRate());
@@ -80,24 +89,27 @@ class EngineBinderMeteringTest {
         Track drums = project.createAudioTrack("Drums");
         binder.bind(project);
         MixerChannel drumsChannel = project.getMixer().getChannels().get(0);
-        TapSnapshot before = bus.snapshot();
         LevelSubscription existing = bus.attachLevel(
                 new MeterTapPoint.ChannelPost(UUID.fromString(drums.getId())));
+        TapSnapshot before = bus.snapshot();
 
         Track bass = project.createAudioTrack("Bass");
 
         TapSnapshot after = bus.snapshot();
         assertThat(after).isNotSameAs(before);
-        assertThat(after.channelSlotCount()).isEqualTo(2);
+        assertThat(after.channelSlotCount()).isEqualTo(1);
         MixerChannel bassChannel = project.getMixer().getChannels().get(1);
         assertThat(bassChannel.getId()).isEqualTo(UUID.fromString(bass.getId()));
         assertThat(after.channelSlot(1, bassChannel))
-                .as("the new channel's CHANNEL_POST slot resolves without a rebind").isNotNull();
+                .as("a new unobserved channel has no tap").isNull();
         assertThat(after.channelSlot(0, drumsChannel))
                 .as("an unchanged channel keeps its slot instance across the refresh")
                 .isSameAs(before.channelSlot(0, drumsChannel));
         assertThat(existing.isDisposed()).as("a refresh disposes nothing").isFalse();
         assertThat(bus.epoch()).as("a refresh does not bump the epoch").isEqualTo(binder.epoch());
+        bus.attachLevel(new MeterTapPoint.ChannelPost(bassChannel.getId()));
+        assertThat(bus.snapshot().channelSlotCount()).isEqualTo(2);
+        assertThat(bus.snapshot().channelSlot(1, bassChannel)).isNotNull();
 
         project.removeTrack(bass);
         assertThat(bus.snapshot().channelSlotCount()).isEqualTo(1);
@@ -122,7 +134,7 @@ class EngineBinderMeteringTest {
         assertThat(disposedCallback).isTrue();
         assertThat(bus.levelSubscriptionCount()).isZero();
         assertThat(bus.snapshot().epoch()).isEqualTo(binder.epoch());
-        assertThat(bus.snapshot().channelSlotCount()).isEqualTo(1);
+        assertThat(bus.snapshot().channelSlotCount()).isZero();
 
         LevelSubscription epochN1 = bus.attachLevel(MeterTapPoint.MASTER_OUT);
         binder.unbind();
@@ -144,7 +156,7 @@ class EngineBinderMeteringTest {
 
         TapSnapshot after = bus.snapshot();
         assertThat(after).as("a refresh publishes a new snapshot").isNotSameAs(before);
-        assertThat(after.channelSlotCount()).isEqualTo(1);
+        assertThat(after.channelSlotCount()).isZero();
         assertThat(after.sampleRate()).isEqualTo(engine.getFormat().sampleRate());
         assertThat(after.epoch()).isEqualTo(binder.epoch());
     }

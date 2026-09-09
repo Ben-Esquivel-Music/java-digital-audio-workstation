@@ -89,7 +89,10 @@ final class PerformanceStageViewMeterTest {
 
     /** Puts the stage into a scene — the "visible" predicate every subscription reads. */
     private void attachScene() throws Exception {
-        onFxRun(() -> new Scene(new StackPane(view), 1280, 800));
+        onFxRun(() -> {
+            new Scene(new StackPane(view), 1280, 800);
+            dispatcher.pulse();
+        });
     }
 
     /** Publishes one block of constant {@code level} into MASTER_OUT and every channel slot. */
@@ -106,7 +109,9 @@ final class PerformanceStageViewMeterTest {
     }
 
     private static void publish(LevelTapSlot slot, TapSnapshot taps, float[] lane) {
-        assertThat(slot).as("the bus must expose a slot for every bound tap point").isNotNull();
+        if (slot == null) {
+            return;
+        }
         slot.beginBlock(taps.epoch(), taps.blockIndex(), 2);
         slot.accumulate(0, lane, BLOCK);
         slot.accumulate(1, lane, BLOCK);
@@ -127,12 +132,15 @@ final class PerformanceStageViewMeterTest {
                 .as("MASTER_OUT plus one CHANNEL_POST per tile")
                 .isEqualTo(1 + tracks.size());
         assertThat(feed.subscriptionCount()).isEqualTo(1 + tracks.size());
+        assertThat(bus.levelSubscriptionCount()).as("off-screen intents hold no render demand").isZero();
+        attachScene();
         assertThat(bus.levelSubscriptionCount()).isEqualTo(1 + tracks.size());
     }
 
     @Test
     void aStageOutsideTheSceneGraphCostsThePulseNothing() throws Exception {
         onFxRun(() -> view.bindMeters(feed));
+        assertThat(bus.snapshot().isEmpty()).isTrue();
         renderBlock(0.5f);
         onFxRun(dispatcher::pulse);
 
@@ -142,12 +150,15 @@ final class PerformanceStageViewMeterTest {
         assertThat(tileMeter(0).hasSubmission()).isFalse();
 
         attachScene();
-        renderBlock(0.5f);
+        assertThat(bus.levelSubscriptionCount()).isEqualTo(1 + tracks.size());
+        assertThat(view.busMeter().hasSubmission()).as("hidden frames were not collected").isFalse();
+        renderBlock(0.25f);
         onFxRun(dispatcher::pulse);
 
         assertThat(view.busMeter().hasSubmission())
                 .as("once on screen the same subscription delivers")
                 .isTrue();
+        assertThat(view.busMeter().consumeSubmittedPeakDb(0)).isCloseTo(-12.0412, within(0.01));
     }
 
     @Test
@@ -217,6 +228,7 @@ final class PerformanceStageViewMeterTest {
         assertThat(view.meterSubscriptionCount()).isZero();
         assertThat(feed.subscriptionCount()).isZero();
         assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().isEmpty()).isTrue();
 
         renderBlock(1.0f);
         onFxRun(dispatcher::pulse);

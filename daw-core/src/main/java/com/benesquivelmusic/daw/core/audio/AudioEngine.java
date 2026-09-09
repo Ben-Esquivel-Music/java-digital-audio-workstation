@@ -85,6 +85,8 @@ public final class AudioEngine {
      */
     private volatile AudioFormat format;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** Terminal lifecycle state, guarded by lifecycleLock. */
+    private boolean shutdown;
 
     private final EffectsChain masterChain;
     private AudioBufferPool bufferPool;
@@ -339,17 +341,19 @@ public final class AudioEngine {
      * device-event and format-change workers.
      *
      * <h2>What it guards</h2>
-     * <p>ELEVEN public methods take it, in two shapes.</p>
+     * <p>Twelve public methods take it, in two shapes.</p>
      * <p>SEVEN read-then-write the quintet and delegate to a {@code …Locked}
      * body that holds the whole transition: {@link #start()}, {@link #stop()},
      * {@link #setStreamingProvision(StreamingProvision)},
      * {@link #startAudioOutput()}, {@link #startAudioInputOutput()},
      * {@link #stopAudioOutput()} and {@link #pauseAudioOutput()}.</p>
-     * <p>FOUR take it around an INLINE body and have no {@code …Locked}
+     * <p>Five take it around an INLINE body and have no {@code …Locked}
      * method of their own — {@link #setFormat(AudioFormat)},
      * {@link #setEngineSettings(AudioEngineSettings)},
      * {@link #beginControlPanelSession(AudioBackend)} and
-     * {@link #endControlPanelSession(AudioBackend)}. The first two are here
+     * {@link #endControlPanelSession(AudioBackend)}, plus {@link #shutdown()},
+     * which marks the engine terminal before calling {@code stopLocked}.
+     * The first two are here
      * because each is a read-then-write (a running check, then a store) over
      * a field the locked open path consumes; see their own javadoc. The
      * control-panel pair is here for a different reason: the registration it
@@ -359,7 +363,7 @@ public final class AudioEngine {
      * taking it with a bare volatile store would let a close that
      * is ALREADY inside {@code backend.close()} race the registration instead
      * of being waited for. Anything that reasons about this lock from the
-     * {@code …Locked} NAMING alone will miss all four, which is why
+     * {@code …Locked} NAMING alone will miss these methods, which is why
      * {@code AudioEngineLifecycleLockContractTest} derives its root set from
      * the lock ACQUISITION in the bytecode instead.</p>
      * <p>The control-panel pair also fixes a LOCK ORDER, and it is NOT the
@@ -986,6 +990,7 @@ public final class AudioEngine {
      * {@link #resumeAudioOutputLocked()}, which already hold the lock.
      */
     private boolean startLocked() {
+        ensureNotShutdown();
         if (collaboratorTeardownDeferred) {
             stopPump(); // retry join; drains the deferral when it confirms
             if (collaboratorTeardownDeferred) {
@@ -1112,10 +1117,9 @@ public final class AudioEngine {
      * engine if it is running, then closes the {@linkplain #meteringTapBus()
      * metering tap bus} — every subscription is disposed and the analysis
      * thread is joined with a bounded timeout. Unlike {@link #stop()} this
-     * is terminal for the tap bus: it accepts no attachments afterwards, so
-     * an engine that has been shut down must not be started again. Runs
-     * outside {@code lifecycleLock}; the bus close itself takes only the
-     * bus's own registry lock. Idempotent.
+     * is terminal: every start path rejects further starts. The terminal
+     * state and stop transition share {@code lifecycleLock}; announcements
+     * and the bus close run after unlocking. Idempotent.
      *
      * <p>The bus close is in a {@code finally}: {@link #stop()} joins the
      * render pump, tears down the render collaborators and delivers
@@ -1124,10 +1128,24 @@ public final class AudioEngine {
      * only this method releases.</p>
      */
     public void shutdown() {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
         try {
-            stop();
+            shutdown = true;
+            stopLocked(announcements);
         } finally {
-            meteringTapBus.close();
+            lifecycleLock.unlock();
+            try {
+                announcements.deliver();
+            } finally {
+                meteringTapBus.close();
+            }
+        }
+    }
+
+    private void ensureNotShutdown() {
+        if (shutdown) {
+            throw new IllegalStateException("AudioEngine has been shut down");
         }
     }
 
@@ -2008,6 +2026,7 @@ public final class AudioEngine {
      */
     private void startAudioOutputLocked(PendingAnnouncements announcements,
                                         CaptureRequirement capture) {
+        ensureNotShutdown();
         StreamState state = this.streamState;
         if (state == StreamState.RUNNING) {
             return; // already running
@@ -3678,6 +3697,7 @@ public final class AudioEngine {
      *                      delivered by the caller after the unlock
      */
     private void startAudioInputOutputLocked(PendingAnnouncements announcements) {
+        ensureNotShutdown();
         // A close-first refusal still belongs to this recording start, so bind
         // the provision this invocation read before touching the old stream.
         rememberRequestedStreamStartAttempt(this.streamingProvision);

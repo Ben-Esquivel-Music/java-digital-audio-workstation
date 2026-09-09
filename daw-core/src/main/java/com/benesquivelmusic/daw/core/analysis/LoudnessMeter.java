@@ -298,11 +298,35 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * histogram's range. Separately, the 10 Hz snapshot cadence offers a
      * {@link LoudnessSnapshot} to subscribers of {@link #snapshotPublisher()}.</p>
      *
-     * @param leftChannel  left or mono channel samples
-     * @param rightChannel right channel samples (may be same as left for mono)
+     * <p>This overload always measures stereo, including when both arguments
+     * reference the same array (dual mono). Use {@link #processMono(float[], int)}
+     * for a single channel.</p>
+     *
+     * @param leftChannel  left channel samples
+     * @param rightChannel right channel samples
      * @param numFrames    number of frames to process
      */
     public void process(float[] leftChannel, float[] rightChannel, int numFrames) {
+        process(leftChannel, rightChannel, numFrames, 2);
+    }
+
+    /** Measures a single channel with unit BS.1770 channel weight. */
+    public void processMono(float[] samples, int numFrames) {
+        process(samples, samples, numFrames, 1);
+    }
+
+    /**
+     * Measures an explicitly mono or stereo block, independently of array identity.
+     * For mono, {@code rightChannel} is ignored. Other layouts require a meter
+     * with their own BS.1770 channel weights.
+     *
+     * @param channelCount one for mono, two for stereo
+     * @throws IllegalArgumentException if the channel count is not one or two
+     */
+    public void process(float[] leftChannel, float[] rightChannel, int numFrames, int channelCount) {
+        if (channelCount != 1 && channelCount != 2) {
+            throw new IllegalArgumentException("channelCount must be one or two: " + channelCount);
+        }
         if (numFrames <= 0) {
             return;
         }
@@ -311,7 +335,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
         for (int i = 0; i < numFrames; i++) {
             double sampleL = leftChannel[i];
-            double sampleR = rightChannel[i];
+            double sampleR = channelCount == 2 ? rightChannel[i] : 0.0;
 
             double framePeak = Math.max(Math.abs(sampleL), Math.abs(sampleR));
             if (framePeak > blockPeak) {
@@ -322,8 +346,9 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
             double weightedL = applyKWeighting(sampleL, 0);
             double weightedR = applyKWeighting(sampleR, 1);
 
-            // Mean square (equal power for L/R)
-            double framePower = (weightedL * weightedL + weightedR * weightedR) / 2.0;
+            // BS.1770 sums unit-weighted channel energies; it does not average L/R.
+            double framePower = weightedL * weightedL
+                    + (channelCount == 2 ? weightedR * weightedR : 0.0);
             lraObservationDue |= accumulateWindowSample(framePower);
             accumulateIntegratedSample(framePower);
         }

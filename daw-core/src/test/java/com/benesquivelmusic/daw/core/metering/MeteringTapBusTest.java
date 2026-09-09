@@ -160,11 +160,12 @@ class MeteringTapBusTest {
     @Test
     void refreshReusesSlotsForUnchangedChannelsAndDropsRemovedOnes() {
         bus.rebind(mixer, FORMAT, 1L);
+        LevelSubscription tokenA = bus.attachLevel(new MeterTapPoint.ChannelPost(channelA.getId()));
+        LevelSubscription tokenB = bus.attachLevel(new MeterTapPoint.ChannelPost(channelB.getId()));
+        bus.attachLevel(new MeterTapPoint.ReturnPost(defaultReturn.getId()));
         TapSnapshot before = bus.snapshot();
         LevelTapSlot slotA = before.channelSlot(0, channelA);
         LevelTapSlot slotReturn = before.returnSlot(0, defaultReturn);
-        LevelSubscription tokenA = bus.attachLevel(new MeterTapPoint.ChannelPost(channelA.getId()));
-        LevelSubscription tokenB = bus.attachLevel(new MeterTapPoint.ChannelPost(channelB.getId()));
         publish(slotA, before, 0.25f);
 
         MixerChannel channelC = new MixerChannel("C");
@@ -174,10 +175,10 @@ class MeteringTapBusTest {
 
         TapSnapshot after = bus.snapshot();
         assertThat(after).isNotSameAs(before);
-        assertThat(after.channelSlotCount()).isEqualTo(2);
+        assertThat(after.channelSlotCount()).isEqualTo(1);
         assertThat(after.channelSlot(0, channelA)).isSameAs(slotA);
         assertThat(after.returnSlot(0, defaultReturn)).isSameAs(slotReturn);
-        assertThat(after.channelSlot(1, channelC)).isNotNull().isNotSameAs(slotA);
+        assertThat(after.channelSlot(1, channelC)).as("new unobserved channel costs no metering").isNull();
         assertThat(after.masterChain()).isSameAs(before.masterChain());
         assertThat(after.masterOut()).isSameAs(before.masterOut());
 
@@ -192,13 +193,13 @@ class MeteringTapBusTest {
     @Test
     void attachOnAMissRefreshesTheSlots() {
         bus.rebind(mixer, FORMAT, 1L);
-        assertThat(bus.snapshot().returnSlotCount()).isEqualTo(1);
+        assertThat(bus.snapshot().returnSlotCount()).isZero();
 
         MixerChannel added = mixer.addReturnBus("Delay Return");
         LevelSubscription token = bus.attachLevel(new MeterTapPoint.ReturnPost(added.getId()));
 
         TapSnapshot taps = bus.snapshot();
-        assertThat(taps.returnSlotCount()).isEqualTo(2);
+        assertThat(taps.returnSlotCount()).isEqualTo(1);
         LevelTapSlot slot = taps.returnSlot(1, added);
         assertThat(slot).isNotNull();
         publish(slot, taps, 0.75f);
@@ -264,6 +265,11 @@ class MeteringTapBusTest {
     @Test
     void snapshotResolvesSlotsByIndexAndIdentity() {
         bus.rebind(mixer, FORMAT, 1L);
+        bus.attachLevel(new MeterTapPoint.ChannelPost(channelA.getId()));
+        bus.attachLevel(new MeterTapPoint.ChannelPost(channelB.getId()));
+        bus.attachLevel(new MeterTapPoint.ReturnPost(defaultReturn.getId()));
+        bus.attachLevel(MeterTapPoint.MASTER_CHAIN);
+        bus.attachLevel(MeterTapPoint.MASTER_OUT);
         TapSnapshot taps = bus.snapshot();
 
         assertThat(taps.isEmpty()).isFalse();
@@ -454,6 +460,8 @@ class MeteringTapBusTest {
     @Test
     void blockCompletedAdvancesTheStampEveryFrameOfABlockShares() {
         bus.rebind(mixer, FORMAT, 1L);
+        bus.attachLevel(new MeterTapPoint.ChannelPost(channelA.getId()));
+        bus.attachLevel(MeterTapPoint.MASTER_OUT);
         TapSnapshot taps = bus.snapshot();
         assertThat(taps.blockIndex()).isEqualTo(bus.blockIndex()).isZero();
 
@@ -500,6 +508,50 @@ class MeteringTapBusTest {
 
         assertThat(first.isDisposed()).isTrue();
         assertThat(secondFired.get()).isTrue();
+    }
+
+    @Test
+    void boundBusWithoutSubscribersPublishesNoSlots() {
+        bus.rebind(mixer, FORMAT, 1L);
+        var taps = bus.snapshot();
+        assertThat(taps.isEmpty()).isTrue();
+        assertThat(taps.channelSlotCount()).isZero();
+        assertThat(taps.returnSlotCount()).isZero();
+        assertThat(taps.channelSlot(0, channelA)).isNull();
+        assertThat(taps.channelSlot(1, channelB)).isNull();
+        assertThat(taps.returnSlot(0, defaultReturn)).isNull();
+        assertThat(taps.masterChain()).isNull();
+        assertThat(taps.masterOut()).isNull();
+        assertThat(taps.hasAnalysisRings()).isFalse();
+        assertThat(bus.isAnalysisThreadAlive()).isFalse();
+    }
+
+    @Test
+    void everyTapRemainsOnlyUntilItsLastLevelOrAnalysisConsumerDetaches() {
+        bus.rebind(mixer, FORMAT, 1L);
+        var points = List.of(new MeterTapPoint.ChannelPost(channelB.getId()),
+                new MeterTapPoint.ReturnPost(defaultReturn.getId()),
+                MeterTapPoint.MASTER_CHAIN, MeterTapPoint.MASTER_OUT);
+        for (MeterTapPoint point : points) {
+            var first = bus.attachLevel(point);
+            var second = bus.attachLevel(point);
+            var analysis = bus.attachAnalysis(point, 2, (samples, channels, frames, rate) -> { });
+            assertThat(bus.snapshot().resolve(point)).isNotNull();
+            assertThat(bus.snapshot().channelSlot(0, channelA)).isNull();
+            first.dispose();
+            second.dispose();
+            assertThat(bus.snapshot().resolve(point).rings()).hasSize(1);
+            analysis.dispose();
+            assertThat(bus.snapshot().resolve(point)).isNull();
+            assertThat(bus.snapshot().isEmpty()).isTrue();
+
+            analysis = bus.attachAnalysis(point, 2, (samples, channels, frames, rate) -> { });
+            first = bus.attachLevel(point);
+            analysis.dispose();
+            assertThat(bus.snapshot().resolve(point).rings()).isEmpty();
+            first.dispose();
+            assertThat(bus.snapshot().isEmpty()).isTrue();
+        }
     }
 
     /** Simulates one render-thread publish into {@code slot}: both lanes at {@code value}. */

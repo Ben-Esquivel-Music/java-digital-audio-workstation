@@ -8,6 +8,15 @@ import static org.assertj.core.api.Assertions.*;
 class LoudnessNormalizerTest {
 
     @Test
+    void monoAndDualMonoRetainTheirChannelCountsAcrossBlockCopies() {
+        float[][] stereo = generateStereoSine(48_000, 4.0, 1000.0, 0.1f);
+        float[][] mono = {stereo[0]};
+        double monoLufs = LoudnessNormalizer.measureIntegratedLoudness(mono, 48_000);
+        double stereoLufs = LoudnessNormalizer.measureIntegratedLoudness(stereo, 48_000);
+        assertThat(stereoLufs - monoLufs).isCloseTo(10.0 * Math.log10(2.0), within(1e-9));
+    }
+
+    @Test
     void shouldMeasureLoudnessOfSilence() {
         float[][] audio = new float[2][44100]; // 1 second of silence
         double lufs = LoudnessNormalizer.measureIntegratedLoudness(audio, 44100);

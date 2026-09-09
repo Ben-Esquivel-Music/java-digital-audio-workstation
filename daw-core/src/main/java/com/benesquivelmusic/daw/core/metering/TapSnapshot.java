@@ -50,6 +50,8 @@ public final class TapSnapshot {
     private final MixerChannel[] insertOwners;
     private final InsertTapPair[] insertPairs;
     private final boolean hasAnalysisRings;
+    private final int channelSlotCount;
+    private final int returnSlotCount;
     private final Map<MeterTapPoint, LevelTapSlot> slotsByPoint;
     private final Map<MeterTapPoint, InsertTapPair> pairsByPoint;
 
@@ -90,11 +92,21 @@ public final class TapSnapshot {
         }
         Map<MeterTapPoint, LevelTapSlot> byPoint = new HashMap<>();
         boolean rings = false;
+        int channelCount = 0;
         for (LevelTapSlot slot : channelSlots) {
+            if (slot == null) {
+                continue;
+            }
+            channelCount++;
             byPoint.put(slot.point(), slot);
             rings |= slot.rings().length > 0;
         }
+        int returnCount = 0;
         for (LevelTapSlot slot : returnSlots) {
+            if (slot == null) {
+                continue;
+            }
+            returnCount++;
             byPoint.put(slot.point(), slot);
             rings |= slot.rings().length > 0;
         }
@@ -116,6 +128,8 @@ public final class TapSnapshot {
         this.slotsByPoint = byPoint;
         this.pairsByPoint = pairs;
         this.hasAnalysisRings = rings;
+        this.channelSlotCount = channelCount;
+        this.returnSlotCount = returnCount;
     }
 
     /** The binding epoch this snapshot was built under. */
@@ -154,16 +168,16 @@ public final class TapSnapshot {
         return hasAnalysisRings;
     }
 
-    /** {@code true} when nothing is tapped (unbound bus). */
+    /** {@code true} when nothing is tapped, including a bound bus with no demand. */
     @RealTimeSafe
     public boolean isEmpty() {
-        return channelSlots.length == 0 && returnSlots.length == 0
+        return channelSlotCount == 0 && returnSlotCount == 0
                 && masterChain == null && masterOut == null && insertPairs.length == 0;
     }
 
     /**
      * The {@code CHANNEL_POST} slot for the mixer channel at {@code index},
-     * or {@code null} when the index is out of range or the channel at that
+     * or {@code null} when there is no demand, the index is out of range or the channel at that
      * index is not the one this snapshot was derived from.
      */
     @RealTimeSafe
@@ -183,13 +197,13 @@ public final class TapSnapshot {
         return returnSubjects[index] == bus ? returnSlots[index] : null;
     }
 
-    /** The {@code MASTER_CHAIN} slot, or {@code null} when unbound. */
+    /** The {@code MASTER_CHAIN} slot, or {@code null} when unbound or unobserved. */
     @RealTimeSafe
     public LevelTapSlot masterChain() {
         return masterChain;
     }
 
-    /** The {@code MASTER_OUT} slot, or {@code null} when unbound. */
+    /** The {@code MASTER_OUT} slot, or {@code null} when unbound or unobserved. */
     @RealTimeSafe
     public LevelTapSlot masterOut() {
         return masterOut;
@@ -222,13 +236,13 @@ public final class TapSnapshot {
     /** Number of {@code CHANNEL_POST} slots. */
     @RealTimeSafe
     public int channelSlotCount() {
-        return channelSlots.length;
+        return channelSlotCount;
     }
 
     /** Number of {@code RETURN_POST} slots. */
     @RealTimeSafe
     public int returnSlotCount() {
-        return returnSlots.length;
+        return returnSlotCount;
     }
 
     /** Number of {@code INSERT_IO} pairs. */
@@ -252,8 +266,8 @@ public final class TapSnapshot {
 
     @Override
     public String toString() {
-        return "TapSnapshot[epoch=" + epoch + ", channels=" + channelSlots.length
-                + ", returns=" + returnSlots.length + ", master=" + (masterChain != null)
+        return "TapSnapshot[epoch=" + epoch + ", channels=" + channelSlotCount
+                + ", returns=" + returnSlotCount + ", master=" + (masterChain != null)
                 + ", inserts=" + insertPairs.length + ", rings=" + hasAnalysisRings + "]";
     }
 }
