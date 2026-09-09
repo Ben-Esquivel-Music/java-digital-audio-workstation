@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.metering.LevelSubscription;
+import com.benesquivelmusic.daw.core.metering.MeterFrame;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
 import com.benesquivelmusic.daw.core.metering.TapSnapshot;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -145,6 +147,56 @@ class EngineBinderMeteringTest {
         assertThat(after.channelSlotCount()).isEqualTo(1);
         assertThat(after.sampleRate()).isEqualTo(engine.getFormat().sampleRate());
         assertThat(after.epoch()).isEqualTo(binder.epoch());
+    }
+
+    @Test
+    void renderSkipsTapsDuringBothGraphAndRegistryPublicationOrders() {
+        binder.bind(project);
+        engine.start();
+        var oldToken = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+        float[][] audio = new float[2][FORMAT.bufferSize()];
+        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        var oldFrame = new MeterFrame();
+        assertThat(oldToken.readInto(oldFrame)).isTrue();
+        long oldBlock = oldFrame.blockIndex();
+
+        var next = new DawProject("Next", FORMAT);
+        long nextEpoch = binder.epoch() + 1;
+        engine.setGraph(next.getTransport(), next.getMixer(), List.of(), nextEpoch);
+        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        assertThat(oldToken.readInto(oldFrame)).isTrue();
+        assertThat(oldFrame.blockIndex()).as("new graph cannot feed old project consumers").isEqualTo(oldBlock);
+
+        bus.rebind(next.getMixer(), FORMAT, nextEpoch);
+        var nextToken = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        assertThat(nextToken.readInto(new MeterFrame())).isTrue();
+
+        bus.rebind(next.getMixer(), FORMAT, nextEpoch + 1);
+        var newestToken = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        assertThat(newestToken.readInto(new MeterFrame()))
+                .as("same mixer with a different graph epoch is also untapped").isFalse();
+        engine.setGraph(next.getTransport(), next.getMixer(), List.of(), nextEpoch + 1);
+        engine.setTracks(List.of());
+        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        assertThat(newestToken.readInto(new MeterFrame())).as("track refresh preserves binding epoch").isTrue();
+    }
+
+    @Test
+    void renderSkipsOldRingsUntilFormatRefreshHasCompleted() {
+        binder.bind(project);
+        var token = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+        var larger = new AudioFormat(48_000.0, 2, 24, 64);
+        engine.setFormat(larger);
+        engine.start();
+        float[][] audio = new float[2][larger.bufferSize()];
+
+        engine.processBlock(audio, audio, larger.bufferSize());
+        assertThat(token.readInto(new MeterFrame())).isFalse();
+        binder.refreshPerformanceMonitor();
+        engine.processBlock(audio, audio, larger.bufferSize());
+        assertThat(token.readInto(new MeterFrame())).isTrue();
     }
 
     @Test

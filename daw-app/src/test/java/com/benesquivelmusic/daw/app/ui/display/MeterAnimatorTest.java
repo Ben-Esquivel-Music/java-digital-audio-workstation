@@ -215,4 +215,39 @@ class MeterAnimatorTest {
         assertThat(animator.getCurrentValue()).isEqualTo(value);
         assertThat(animator.getPeakValue()).isEqualTo(peak);
     }
+
+    @Test
+    void peakReleaseUsesOnlyTheTimeAfterTheHoldExpires() {
+        var singleGap = new MeterAnimator();
+        var splitGap = new MeterAnimator();
+        singleGap.update(1.0, FRAME_NANOS);
+        splitGap.update(1.0, FRAME_NANOS);
+
+        singleGap.update(0.0, 2_000_000_000L);
+        splitGap.update(0.0, 1_500_000_000L);
+        assertThat(splitGap.getPeakValue()).as("exact hold boundary has no release time").isEqualTo(1.0);
+        splitGap.update(0.0, 500_000_000L);
+
+        double expected = Math.exp(-0.5 / MeterAnimator.DEFAULT_RELEASE_SECONDS);
+        assertThat(singleGap.getPeakValue()).isCloseTo(expected, org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(splitGap.getPeakValue()).isEqualTo(singleGap.getPeakValue());
+    }
+
+    @Test
+    void peakHoldAndReleaseAreIndependentOfDisplayRefreshRate() {
+        var at60 = new MeterAnimator();
+        var at120 = new MeterAnimator();
+        at60.update(0.9, FRAME_NANOS);
+        at120.update(0.9, FRAME_NANOS);
+        for (int frame = 0; frame < 120; frame++) {
+            at60.update(0, FRAME_NANOS);
+        }
+        for (int frame = 0; frame < 240; frame++) {
+            at120.update(0, FRAME_NANOS_120);
+        }
+        assertThat(at60.getPeakValue()).isCloseTo(0.9 * Math.exp(-0.5 / 0.3),
+                org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(at120.getPeakValue()).isCloseTo(at60.getPeakValue(),
+                org.assertj.core.data.Offset.offset(1e-6));
+    }
 }

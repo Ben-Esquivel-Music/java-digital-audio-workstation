@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
 import com.benesquivelmusic.daw.app.ui.metering.MeterSinks;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.app.ui.help.HelpControls;
@@ -189,6 +190,7 @@ public final class MainController {
      * {@code audioEngine.meteringTapBus()}; see {@link #meterFeed()}.
      */
     private MeterFeed meterFeed;
+    private VisibleMeterBinding levelMeterBinding;
     // Story 137: registry of per-track input-level monitors used by the
     // mixer's input-meter column and the arrangement-view clip indicator.
     private final InputLevelMonitorRegistry inputLevelMonitorRegistry = new InputLevelMonitorRegistry();
@@ -990,14 +992,8 @@ public final class MainController {
         spectrumDisplay = new SpectrumDisplay();
         levelMeterDisplay = new LevelMeterDisplay();
         if (meterFeed != null) {
-            // Surface = the display; visible = mounted in the scene graph
-            // (mountBottomVizPanel removes a hidden panel from the strip, so
-            // a hidden Peak / RMS panel has no scene and costs the pulse
-            // nothing). Idle / stop → floor comes from the feed's silent frame.
-            LevelMeterDisplay masterOutDisplay = levelMeterDisplay;
-            meterFeed.subscribe(MeterTapPoint.MASTER_OUT, masterOutDisplay,
-                    () -> masterOutDisplay.getScene() != null,
-                    MeterSinks.levelMeterDisplay(masterOutDisplay));
+            levelMeterBinding = new VisibleMeterBinding(meterFeed, MeterTapPoint.MASTER_OUT,
+                    levelMeterDisplay, MeterSinks.levelMeterDisplay(levelMeterDisplay));
         }
         waveformDisplay = new com.benesquivelmusic.daw.app.ui.display.WaveformDisplay();
         loudnessDisplay = new com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay();
@@ -3061,6 +3057,7 @@ public final class MainController {
      * is idempotent, so a display also disposed elsewhere is safe.
      */
     private void disposeVisualizationDisplays() {
+        if (levelMeterBinding != null) levelMeterBinding.close();
         if (spectrumDisplay != null) spectrumDisplay.dispose();
         if (levelMeterDisplay != null) levelMeterDisplay.dispose();
         if (waveformDisplay != null) waveformDisplay.dispose();

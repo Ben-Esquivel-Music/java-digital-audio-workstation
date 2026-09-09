@@ -179,6 +179,32 @@ final class PerformanceStageViewMeterTest {
     }
 
     @Test
+    void monoAndEmptyFramesClearEveryAbsentStereoMeterLane() throws Exception {
+        attachScene();
+        onFxRun(() -> view.bindMeters(feed));
+        renderBlock(0.5f);
+        onFxRun(dispatcher::pulse);
+        var taps = bus.snapshot();
+        taps.masterOut().beginBlock(taps.epoch(), taps.blockIndex(), 1);
+        taps.masterOut().accumulate(0, 0.25f);
+        taps.masterOut().publish(1);
+        bus.blockCompleted(taps);
+        onFxRun(dispatcher::pulse);
+
+        assertThat(view.busMeter().consumeSubmittedPeakDb(0)).isCloseTo(-12.0412, within(0.01));
+        assertThat(view.busMeter().consumeSubmittedPeakDb(1)).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(view.busMeter().consumeSubmittedRmsDb(1)).isEqualTo(Double.NEGATIVE_INFINITY);
+
+        taps.masterOut().publishSilence(taps.epoch(), taps.blockIndex(), 0);
+        bus.blockCompleted(taps);
+        onFxRun(dispatcher::pulse);
+        for (int channel = 0; channel < 2; channel++) {
+            assertThat(view.busMeter().consumeSubmittedPeakDb(channel)).isEqualTo(Double.NEGATIVE_INFINITY);
+            assertThat(view.busMeter().consumeSubmittedRmsDb(channel)).isEqualTo(Double.NEGATIVE_INFINITY);
+        }
+    }
+
+    @Test
     void unbindMetersReleasesEveryTokenAndStopsDelivery() throws Exception {
         attachScene();
         onFxRun(() -> view.bindMeters(feed));

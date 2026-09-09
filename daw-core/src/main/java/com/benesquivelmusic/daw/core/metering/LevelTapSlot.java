@@ -100,13 +100,39 @@ public final class LevelTapSlot {
     private long publishedBlockIndex;
 
     /**
-     * Analysis rings attached to this tap point. Immutable array, swapped
-     * wholesale off-RT by the bus; the render thread reads it once per block.
+     * Analysis rings fixed for this slot's snapshot generation. A registry
+     * change creates a replacement slot; an in-flight render keeps its rings.
      */
-    private volatile SampleBlockRing[] rings = NO_RINGS;
+    private final SampleBlockRing[] rings;
 
     LevelTapSlot(MeterTapPoint point) {
+        this(point, NO_RINGS);
+    }
+
+    LevelTapSlot(MeterTapPoint point, SampleBlockRing[] rings) {
         this.point = Objects.requireNonNull(point, "point must not be null");
+        this.rings = rings.length == 0 ? NO_RINGS : rings.clone();
+    }
+
+    /** Off-RT replacement that preserves the latest coherent level reading. */
+    LevelTapSlot withRings(SampleBlockRing[] nextRings) {
+        if (java.util.Arrays.equals(rings, nextRings)) {
+            return this;
+        }
+        var replacement = new LevelTapSlot(point, nextRings);
+        var frame = new MeterFrame();
+        if (readInto(frame)) {
+            for (int channel = 0; channel < frame.channelCount(); channel++) {
+                replacement.publishedPeak[channel] = frame.peak(channel);
+                replacement.publishedRms[channel] = frame.rms(channel);
+            }
+            replacement.publishedChannels = frame.channelCount();
+            replacement.publishedClipped = frame.clipped();
+            replacement.publishedEpoch = frame.epoch();
+            replacement.publishedBlockIndex = frame.blockIndex();
+            SEQUENCE.setRelease(replacement, 2L);
+        }
+        return replacement;
     }
 
     /** The tap point this slot publishes for. */
@@ -325,11 +351,6 @@ public final class LevelTapSlot {
     /** The current seqlock sequence (test seam; even when stable). */
     long sequence() {
         return (long) SEQUENCE.getAcquire(this);
-    }
-
-    /** Swaps the ring array (off-RT, bus only). Never mutates the previous array. */
-    void setRings(SampleBlockRing[] rings) {
-        this.rings = rings == null || rings.length == 0 ? NO_RINGS : rings;
     }
 
     private static int clampLanes(int channelCount) {

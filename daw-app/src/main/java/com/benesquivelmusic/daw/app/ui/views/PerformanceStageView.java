@@ -405,11 +405,10 @@ public final class PerformanceStageView extends BorderPane {
 
         LevelMeter bus = busMeter;
         meterSubscriptions.add(feed.subscribe(MeterTapPoint.MASTER_OUT, bus, onScreen, frame -> {
-            int lanes = Math.min(frame.channelCount(), BUS_METER_CHANNELS);
-            for (int channel = 0; channel < lanes; channel++) {
+            for (int channel = 0; channel < BUS_METER_CHANNELS; channel++) {
                 bus.submitLevels(channel,
-                        MeterFrame.toDb(frame.peak(channel)),
-                        MeterFrame.toDb(frame.rms(channel)));
+                        MeterFrame.toDb(channel < frame.channelCount() ? frame.peak(channel) : 0f),
+                        MeterFrame.toDb(channel < frame.channelCount() ? frame.rms(channel) : 0f));
             }
         }));
 

@@ -315,6 +315,10 @@ class MeteringTapBusTest {
         mixer.getMasterChannel().addInsert(masterLimiter);
         bus.rebind(mixer, FORMAT, 1L);
 
+        assertThat(bus.snapshot().insertTapCount()).isZero();
+        for (InsertSlot insert : List.of(eq, comp, verb, masterLimiter)) {
+            bus.attachInsertIo(new MeterTapPoint.InsertIo(insert.getPluginInstanceId()));
+        }
         Map<InsertSlot, InsertTapPair> pairs = bus.insertTapPairs();
         assertThat(pairs).hasSize(4).containsKeys(eq, comp, verb, masterLimiter);
         TapSnapshot taps = bus.snapshot();
@@ -335,7 +339,87 @@ class MeteringTapBusTest {
         channelA.addInsert(new InsertSlot("Gate", new PassThrough()));
         bus.refreshSlots();
         assertThat(bus.snapshot().insertTapFor(comp)).as("refresh reuses the pair").isSameAs(pair);
-        assertThat(bus.snapshot().insertTapCount()).isEqualTo(5);
+        assertThat(bus.snapshot().insertTapCount()).as("an unobserved insert is not tapped").isEqualTo(4);
+    }
+
+    @Test
+    void insertTapsExistOnlyWhileAtLeastOneConsumerIsAttached() {
+        InsertSlot insert = new InsertSlot("Observed", new PassThrough());
+        channelA.addInsert(insert);
+        channelB.addInsert(new InsertSlot("Unobserved", new PassThrough()));
+        bus.rebind(mixer, FORMAT, 1L);
+        var point = new MeterTapPoint.InsertIo(insert.getPluginInstanceId());
+        assertThat(bus.snapshot().hasInsertTaps(channelA)).isFalse();
+
+        var level = bus.attachLevel(point);
+        assertThat(bus.snapshot().insertTapCount()).isEqualTo(1);
+        var pair = bus.attachInsertIo(point);
+        var analysis = bus.attachAnalysis(point, 2, (samples, channels, frames, rate) -> { });
+        level.dispose();
+        pair.dispose();
+        assertThat(bus.snapshot().hasInsertTaps(channelA)).isTrue();
+        assertThat(bus.snapshot().hasInsertTaps(channelB)).isFalse();
+        analysis.dispose();
+        assertThat(bus.snapshot().insertTapCount()).isZero();
+        assertThat(bus.snapshot().hasInsertTaps(channelA)).isFalse();
+        assertThat(bus.insertTapPairs()).isEmpty();
+
+        var ioOnly = bus.attachInsertIo(point);
+        assertThat(bus.snapshot().hasInsertTaps(channelA)).isTrue();
+        ioOnly.dispose();
+        assertThat(bus.snapshot().hasInsertTaps(channelA)).isFalse();
+    }
+
+    @Test
+    void retainedSnapshotsKeepTheirRingsAndPublishedLevelsAcrossRegistryChanges() {
+        bus.rebind(mixer, FORMAT, 1L);
+        var level = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+        var before = bus.snapshot();
+        publish(before.masterOut(), before, 0.5f);
+        var first = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2, (s, c, f, r) -> { });
+        var attached = bus.snapshot();
+        assertThat(before.masterOut().rings()).isEmpty();
+        assertThat(attached.masterOut().rings()).containsExactly(first.ring());
+        var frame = new MeterFrame();
+        assertThat(level.readInto(frame)).isTrue();
+        assertThat(frame.peak(0)).isEqualTo(0.5f);
+        first.dispose();
+        assertThat(attached.masterOut().rings()).containsExactly(first.ring());
+        assertThat(bus.snapshot().masterOut().rings()).isEmpty();
+
+        bus.rebind(mixer, FORMAT, 2L);
+        var next = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2, (s, c, f, r) -> { });
+        assertThat(attached.masterOut().rings()).containsExactly(first.ring());
+        assertThat(bus.snapshot().masterOut().rings()).containsExactly(next.ring());
+        assertThat(bus.snapshot().masterOut()).isNotSameAs(attached.masterOut());
+        publish(attached.masterOut(), attached, 1f);
+        assertThat(bus.attachLevel(MeterTapPoint.MASTER_OUT).readInto(frame)).isFalse();
+        bus.unbind();
+        assertThat(attached.masterOut().rings()).containsExactly(first.ring());
+    }
+
+    @Test
+    void formatChangeInvalidatesAnalysisAndCallbacksCanReattachAtTheNewCapacity() {
+        bus.rebind(mixer, FORMAT, 1L);
+        var level = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+        var old = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2, (s, c, f, r) -> { });
+        var before = bus.snapshot();
+        var replacement = new AtomicReference<AnalysisSubscription>();
+        old.onDisposed(() -> replacement.set(bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2,
+                (s, c, f, r) -> { })));
+        var larger = new AudioFormat(96_000.0, 2, 24, 1024);
+
+        bus.refreshSlots(larger);
+
+        assertThat(old.isDisposed()).isTrue();
+        assertThat(level.isDisposed()).isFalse();
+        assertThat(replacement.get().ringBlockFrames()).isEqualTo(1024);
+        assertThat(bus.snapshot().matchesFormat(larger)).isTrue();
+        assertThat(before.matchesFormat(larger)).isFalse();
+        assertThat(before.masterOut().rings()).containsExactly(old.ring());
+        assertThat(bus.snapshot().masterOut().rings()).containsExactly(replacement.get().ring());
+        bus.refreshSlots(larger);
+        assertThat(replacement.get().isDisposed()).isFalse();
     }
 
     @Test

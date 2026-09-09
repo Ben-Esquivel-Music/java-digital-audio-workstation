@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -429,6 +430,70 @@ class MeterFeedTest {
         assertThat(calls.get()).isEqualTo(2);
         assertThat(feed.subscriptionCount()).isEqualTo(1);
         assertThat(holder[0].isDisposed()).isTrue();
+    }
+
+    @Test
+    void failingVisibilityAndSinksCannotStarveLaterMetersAndFailuresAreAggregated() {
+        var visibilityFailure = new IllegalStateException("visibility");
+        var levelFailure = new IllegalArgumentException("level sink");
+        var insertFailure = new IllegalStateException("insert sink");
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "bad visibility", () -> { throw visibilityFailure; }, f -> { });
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "same failure", () -> { throw visibilityFailure; }, f -> { });
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "bad level", () -> true, f -> { throw levelFailure; });
+        var insert = new InsertSlot("Metered", new PassThrough());
+        channelA.addInsert(insert);
+        feed.subscribeInsertIo(insert.getPluginInstanceId(), "bad insert", () -> true,
+                (input, output) -> { throw insertFailure; });
+        var delivered = subscribeChannelA(new AtomicBoolean(true));
+        var taps = bus.snapshot();
+        var pair = taps.insertTapFor(insert);
+        publish(pair.input(), taps, new float[BLOCK]);
+        publish(pair.output(), taps, new float[BLOCK]);
+        renderBlock(0.5f);
+
+        assertThatThrownBy(feed::pulse).hasCause(visibilityFailure)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).containsExactly(levelFailure, insertFailure));
+        assertThat(delivered).hasSize(1);
+        assertThat(delivered.getFirst().peak()).isEqualTo(0.5f);
+
+        publish(pair.input(), taps, new float[BLOCK]);
+        publish(pair.output(), taps, new float[BLOCK]);
+        renderBlock(0.25f);
+        assertThatThrownBy(feed::pulse).hasCause(visibilityFailure)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).containsExactly(levelFailure, insertFailure));
+        assertThat(visibilityFailure.getSuppressed()).as("reused exceptions never retain earlier pulse failures").isEmpty();
+        assertThat(delivered).hasSize(2);
+        assertThat(delivered.getLast().peak()).isEqualTo(0.25f);
+    }
+
+    @Test
+    void throwingLostTokenSilenceStillReattachesForLaterFrames() {
+        var delivered = new AtomicInteger();
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "sink", () -> true, frame -> {
+            if (frame.isSilent()) {
+                throw new IllegalStateException("silent frame failure");
+            }
+            delivered.incrementAndGet();
+        });
+        bus.rebind(mixer, FORMAT, 2L);
+
+        assertThatThrownBy(feed::pulse).hasRootCauseMessage("silent frame failure");
+        assertThat(bus.levelSubscriptionCount()).isEqualTo(1);
+        renderBlock(0.5f);
+        feed.pulse();
+        assertThat(delivered).hasValue(1);
+    }
+
+    @Test
+    void disposingDuringLostTokenSilenceDoesNotLeakANewEngineToken() {
+        MeterSubscription[] token = new MeterSubscription[1];
+        token[0] = feed.subscribe(MeterTapPoint.MASTER_OUT, "sink", () -> true, frame -> token[0].dispose());
+        bus.rebind(mixer, FORMAT, 2L);
+
+        feed.pulse();
+
+        assertThat(feed.subscriptionCount()).isZero();
+        assertThat(bus.levelSubscriptionCount()).isZero();
     }
 
     /** Minimal processor for an insert slot; never runs in these tests. */

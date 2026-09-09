@@ -70,13 +70,11 @@ import java.util.concurrent.locks.ReentrantLock;
  * <h2>Gating</h2>
  *
  * <p>Integrated loudness applies the ITU-R BS.1770-4 two-stage gate to
- * the per-processing-block loudness: the absolute gate at
+ * 400 ms K-weighted windows at constant 100 ms steps: the absolute gate at
  * {@value #ABSOLUTE_GATE_LUFS} LUFS, then the relative gate
  * {@value #INTEGRATED_RELATIVE_GATE_LU} LU below the absolute-gated mean.
- * The gating block is the caller's processing block rather than the
- * 400 ms / 75 % overlap block of the recommendation; that block geometry
- * is a known deviation retained so the offline callers' measurements stay
- * comparable across releases. LRA applies the EBU Tech 3342 gates to the
+ * Partial final windows are excluded, and window boundaries are independent
+ * of the caller's processing blocks. LRA applies the EBU Tech 3342 gates to the
  * short-term (3 s) loudness: absolute at {@value #ABSOLUTE_GATE_LUFS} LUFS,
  * relative at {@value #RELATIVE_GATE_LU} LU below the absolute-gated mean,
  * and reports the 95th minus the 10th percentile of the surviving
@@ -153,7 +151,6 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private static final double SNAPSHOT_INTERVAL_SECONDS = 0.1;
 
     private final double sampleRate;
-    private final int blockSize;
     private final int momentaryFrames;
     private final int shortTermFrames;
 
@@ -184,6 +181,11 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private long integratedBlocks;
     private final long[] integratedBins = new long[HISTOGRAM_BINS];
     private final double[] integratedBinPower = new double[HISTOGRAM_BINS];
+    private final double[] integratedWindow;
+    private final int integratedHopFrames;
+    private int integratedWindowIndex;
+    private int framesUntilIntegratedGate;
+    private double integratedWindowPower;
 
     // Sample peak since the last reset (see LoudnessSnapshot: not oversampled).
     private double truePeak;
@@ -208,7 +210,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     // getHistory(); never on the render thread (see class javadoc).
     private final ReentrantLock historyLock = new ReentrantLock();
 
-    private long totalBlocksProcessed;
+    private long totalFramesProcessed;
 
     private volatile LoudnessData latestData;
 
@@ -250,7 +252,6 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
             throw new IllegalArgumentException("historyCapacity must be positive: " + historyCapacity);
         }
         this.sampleRate = sampleRate;
-        this.blockSize = blockSize;
 
         // Ring sizes for momentary (400 ms) and short-term (3 s) windows
         double blocksPerSecond = sampleRate / blockSize;
@@ -259,6 +260,9 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
         this.momentaryBuffer = new double[momentaryFrames];
         this.shortTermBuffer = new double[shortTermFrames];
+        this.integratedWindow = new double[Math.max(1, (int) Math.round(0.4 * sampleRate))];
+        this.integratedHopFrames = Math.max(1, (int) Math.round(0.1 * sampleRate));
+        this.framesUntilIntegratedGate = integratedWindow.length;
 
         this.historyCapacity = historyCapacity;
         this.historyTimestamp = new double[historyCapacity];
@@ -295,6 +299,9 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * @param numFrames    number of frames to process
      */
     public void process(float[] leftChannel, float[] rightChannel, int numFrames) {
+        if (numFrames <= 0) {
+            return;
+        }
         double blockMeanSquare = 0.0;
         double blockPeak = 0.0;
 
@@ -312,7 +319,9 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
             double weightedR = applyKWeighting(sampleR, 1);
 
             // Mean square (equal power for L/R)
-            blockMeanSquare += (weightedL * weightedL + weightedR * weightedR) / 2.0;
+            double framePower = (weightedL * weightedL + weightedR * weightedR) / 2.0;
+            blockMeanSquare += framePower;
+            accumulateIntegratedSample(framePower);
         }
 
         blockMeanSquare /= numFrames;
@@ -334,13 +343,12 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         double shortTermLufs = meanSquareToLufs(shortTermMeanSquare);
 
         accumulateLoudnessRange(shortTermMeanSquare, shortTermLufs);
-        accumulateIntegrated(blockMeanSquare);
         double integratedLufs = computeIntegratedLufs();
 
         double truePeakDb = (truePeak > 0) ? 20.0 * Math.log10(truePeak) : LUFS_FLOOR;
 
-        totalBlocksProcessed++;
-        double timestampSeconds = (totalBlocksProcessed * blockSize) / sampleRate;
+        totalFramesProcessed += numFrames;
+        double timestampSeconds = totalFramesProcessed / sampleRate;
         recordHistory(timestampSeconds, momentaryLufs, shortTermLufs, integratedLufs);
 
         samplesSinceLastSnapshot += numFrames;
@@ -385,7 +393,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         clearIntegratedState();
         clearLoudnessRangeState();
         truePeak = 0;
-        totalBlocksProcessed = 0;
+        totalFramesProcessed = 0;
         clearHistory();
         latestData = LoudnessData.SILENCE;
         samplesSinceLastSnapshot = 0;
@@ -393,7 +401,8 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
     /**
      * Restarts the integrated loudness and loudness-range measurements
-     * without clearing filter state, momentary/short-term windows,
+     * clearing the integrated gating window and its cadence, without clearing
+     * filter state, momentary/short-term windows,
      * history, or the peak.
      *
      * <p>This allows engineers to restart the programme-level statistics
@@ -598,6 +607,17 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         }
     }
 
+    /** BS.1770 gating geometry follows sample time, including across partial callbacks. */
+    private void accumulateIntegratedSample(double power) {
+        integratedWindowPower += power - integratedWindow[integratedWindowIndex];
+        integratedWindow[integratedWindowIndex] = power;
+        integratedWindowIndex = (integratedWindowIndex + 1) % integratedWindow.length;
+        if (--framesUntilIntegratedGate == 0) {
+            accumulateIntegrated(Math.max(0.0, integratedWindowPower / integratedWindow.length));
+            framesUntilIntegratedGate = integratedHopFrames;
+        }
+    }
+
     /**
      * ITU-R BS.1770-4 gated integrated loudness: the power mean of the
      * absolute-gated blocks that also lie above the relative gate
@@ -686,6 +706,10 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         integratedBlocks = 0;
         Arrays.fill(integratedBins, 0L);
         Arrays.fill(integratedBinPower, 0.0);
+        Arrays.fill(integratedWindow, 0.0);
+        integratedWindowIndex = 0;
+        integratedWindowPower = 0.0;
+        framesUntilIntegratedGate = integratedWindow.length;
     }
 
     private void clearLoudnessRangeState() {

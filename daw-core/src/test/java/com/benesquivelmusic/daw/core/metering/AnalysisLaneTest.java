@@ -231,6 +231,41 @@ class AnalysisLaneTest {
         assertThat(bus.isAnalysisThreadAlive()).isFalse();
     }
 
+    @Test
+    void aReplacementAfterFormatChangeReceivesTheWholeBlockAtTheNewRate() throws Exception {
+        var consumer = new RecordingConsumer();
+        var old = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 4, consumer);
+        var replacement = new AtomicReference<AnalysisSubscription>();
+        old.onDisposed(() -> replacement.set(bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 4, consumer)));
+        bus.refreshSlots(new AudioFormat(96_000, 2, 24, 1024));
+        var taps = bus.snapshot();
+        float[][] samples = new float[2][1024];
+        Arrays.fill(samples[0], 1f);
+        Arrays.fill(samples[1], -1f);
+
+        taps.masterOut().rings()[0].write(samples, 2, 1024);
+        bus.blockCompleted(taps);
+        awaitUntil(() -> consumer.values().size() == 1, "complete resized block");
+
+        assertThat(consumer.frameCounts()).containsExactly(1024);
+        assertThat(consumer.sampleRates()).containsExactly(96_000.0);
+        assertThat(replacement.get().ring().truncatedBlocks()).isZero();
+        assertThat(replacement.get().droppedBlocks()).isZero();
+    }
+
+    @Test
+    void anOldLaneCapturedBeforeDisposalDoesNotStartAnotherDrain() {
+        var consumer = new RecordingConsumer();
+        var subscription = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 4, consumer);
+        var oldLane = bus.lanes()[0];
+        subscription.dispose();
+        subscription.ring().write(new float[2][BLOCK_FRAMES], 2, BLOCK_FRAMES);
+
+        oldLane.drain();
+
+        assertThat(consumer.values()).isEmpty();
+    }
+
     /** Simulates the render path for one block: level publish, ring copies, block end. */
     private void renderBlock(TapSnapshot taps, LevelTapSlot slot, int value) {
         float[][] src = new float[2][BLOCK_FRAMES];

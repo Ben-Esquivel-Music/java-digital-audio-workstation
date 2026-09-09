@@ -207,10 +207,11 @@ class LevelTapSlotTest {
         SampleBlockRing[] before = slot.rings();
         assertThat(before).isEmpty();
         SampleBlockRing ring = new SampleBlockRing(2, 16);
-        slot.setRings(new SampleBlockRing[] {ring});
-        assertThat(slot.rings()).containsExactly(ring);
+        LevelTapSlot attached = slot.withRings(new SampleBlockRing[] {ring});
+        assertThat(attached.rings()).containsExactly(ring);
         assertThat(before).isEmpty();
-        slot.setRings(null);
+        assertThat(attached.withRings(new SampleBlockRing[0]).rings()).isEmpty();
+        assertThat(attached.rings()).containsExactly(ring);
         assertThat(slot.rings()).isEmpty();
     }
 

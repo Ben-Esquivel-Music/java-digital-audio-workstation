@@ -109,7 +109,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@code bindingLock} — which disposes every tap subscription of an older
  * epoch (firing its {@code onDisposed} callbacks after the bus's own lock is
  * released) and derives one level slot per channel / return / master /
- * insert from the live mixer. The tracks listener refreshes the slot set
+ * observed insert from the live mixer. The graph carries the same epoch;
+ * rendering skips metering during either publication mismatch. The tracks listener refreshes the slot set
  * after every {@link AudioEngine#setTracks} (a new channel gets its slot
  * without a rebind), {@link #refreshPerformanceMonitor()} refreshes it after
  * a format apply, and {@link #unbind()} unbinds the bus (empty snapshot: the
@@ -209,13 +210,13 @@ public final class EngineBinder {
                 }
             });
 
+            long newEpoch = epoch.incrementAndGet();
             engine.setGraph(project.getTransport(), project.getMixer(),
-                    List.copyOf(project.getTracks()));
+                    List.copyOf(project.getTracks()), newEpoch);
 
             refreshPerformanceMonitor();
 
             boundProject = project;
-            long newEpoch = epoch.incrementAndGet();
             // Story 318: bind the metering tap bus under the new epoch —
             // disposes every epoch-N tap subscription (book §6.2) and derives
             // the slot set from the live mixer. Lock order bindingLock →

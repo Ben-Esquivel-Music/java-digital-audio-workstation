@@ -40,7 +40,8 @@ import java.util.logging.Logger;
  *       (TRACKS listener, post-reconfigure, and an {@code attach} whose tap
  *       point is not in the current snapshot). Slots for
  *       {@link MixerChannel}s / {@link InsertSlot}s that already have one are
- *       <em>reused</em> (identity map) so an attached token keeps its slot.</li>
+ *       <em>reused</em> while their ring sets are unchanged. Ring changes
+ *       replace slots while preserving their latest coherent level frame.</li>
  *   <li>{@link #unbind()} — disposes everything and publishes an empty
  *       snapshot: the render thread then taps nothing.</li>
  *   <li>{@link #close()} — engine shutdown: unbind plus stop the analysis
@@ -63,8 +64,8 @@ public final class MeteringTapBus {
     private static final SampleBlockRing[] NO_RINGS = new SampleBlockRing[0];
 
     private final Object registryLock = new Object();
-    private final LevelTapSlot masterChainSlot = new LevelTapSlot(MeterTapPoint.MASTER_CHAIN);
-    private final LevelTapSlot masterOutSlot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
+    private LevelTapSlot masterChainSlot = new LevelTapSlot(MeterTapPoint.MASTER_CHAIN);
+    private LevelTapSlot masterOutSlot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
 
     private volatile TapSnapshot snapshot = TapSnapshot.empty(this, 0L);
     private volatile long epoch;
@@ -93,7 +94,8 @@ public final class MeteringTapBus {
      * subscription attached under an older epoch is disposed (its
      * {@code onDisposed} callbacks run after the lock is released), then the
      * slot set is derived from the mixer's channels, return buses, master and
-     * every insert slot of each.
+     * every observed insert slot of each. A new binding gets fresh slots so
+     * an in-flight old render cannot publish into the new binding.
      *
      * @throws IllegalArgumentException if {@code epoch} is below the current one
      * @throws IllegalStateException    if the bus is closed
@@ -108,7 +110,17 @@ public final class MeteringTapBus {
                 throw new IllegalArgumentException(
                         "epoch must not go backwards: " + epoch + " < " + this.epoch);
             }
-            callbacks = disposeLocked(sub -> sub.epoch() < epoch);
+            boolean newBinding = this.epoch != epoch || this.mixer != mixer;
+            boolean newFormat = !format.equals(this.format);
+            callbacks = disposeLocked(sub -> sub.epoch() < epoch
+                    || (this.mixer != null && this.mixer != mixer)
+                    || (newFormat && sub instanceof AnalysisSubscription));
+            if (newBinding) {
+                slotsByChannel.clear();
+                pairsByInsert.clear();
+                masterChainSlot = new LevelTapSlot(MeterTapPoint.MASTER_CHAIN);
+                masterOutSlot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
+            }
             this.mixer = mixer;
             this.format = format;
             this.epoch = epoch;
@@ -145,18 +157,24 @@ public final class MeteringTapBus {
      * {@link #refreshSlots()} after an engine format apply: adopts
      * {@code format} (the sample rate the next snapshot reports and the
      * block size new analysis rings are sized from) and re-derives the slot
-     * set. No-op when unbound. Existing rings are not resized.
+     * set. No-op when unbound. A format change disposes analysis tokens so
+     * consumers can reattach with correctly sized rings and reset analyzers.
      *
      * @param format the engine's current format
      */
     public void refreshSlots(AudioFormat format) {
         Objects.requireNonNull(format, "format must not be null");
+        List<Runnable> callbacks = List.of();
         synchronized (registryLock) {
             if (mixer != null) {
+                if (!format.equals(this.format)) {
+                    callbacks = disposeLocked(sub -> sub instanceof AnalysisSubscription);
+                }
                 this.format = format;
                 rebuildLocked();
             }
         }
+        fire(callbacks);
     }
 
     /**
@@ -201,6 +219,9 @@ public final class MeteringTapBus {
             ensureResolvableLocked(point);
             LevelSubscription subscription = new LevelSubscription(this, point, epoch);
             subscriptions.add(subscription);
+            if (point instanceof MeterTapPoint.InsertIo) {
+                rebuildLocked();
+            }
             return subscription;
         }
     }
@@ -217,6 +238,7 @@ public final class MeteringTapBus {
             ensureResolvableLocked(point);
             InsertIoSubscription subscription = new InsertIoSubscription(this, point, epoch);
             subscriptions.add(subscription);
+            rebuildLocked();
             return subscription;
         }
     }
@@ -246,7 +268,8 @@ public final class MeteringTapBus {
             SampleBlockRing ring = new SampleBlockRing(ringBlocks, blockFrames);
             AnalysisSubscription subscription = new AnalysisSubscription(this, point, epoch, ring);
             subscriptions.add(subscription);
-            lanesBySubscription.put(subscription, new AnalysisLane(this, subscription, consumer));
+            lanesBySubscription.put(subscription, new AnalysisLane(subscription, consumer,
+                    format != null ? format.sampleRate() : 0.0));
             rebuildLocked();
             if (analysisThread == null) {
                 AnalysisThread thread = new AnalysisThread(() -> lanes);
@@ -355,8 +378,10 @@ public final class MeteringTapBus {
         synchronized (registryLock) {
             boolean removed = subscriptions.remove(subscription);
             callbacks = subscription.markDisposed();
-            if (removed && subscription instanceof AnalysisSubscription analysis) {
-                lanesBySubscription.remove(analysis);
+            if (removed) {
+                if (subscription instanceof AnalysisSubscription analysis) {
+                    lanesBySubscription.remove(analysis);
+                }
                 rebuildLocked();
             }
         }
@@ -407,9 +432,9 @@ public final class MeteringTapBus {
     }
 
     /**
-     * Derives the slot set from the bound mixer (reusing existing slots by
-     * subject identity), assigns each slot its immutable ring array from the
-     * live analysis lanes, and publishes a new snapshot plus lane array.
+     * Derives the slot set from the bound mixer, reusing slots by subject and
+     * ring identities, and publishes a new snapshot plus lane array. Inserts
+     * appear only while at least one subscription requests their I/O point.
      */
     private void rebuildLocked() {
         AnalysisLane[] laneArray = lanesBySubscription.values().toArray(NO_LANES);
@@ -417,8 +442,8 @@ public final class MeteringTapBus {
         if (bound == null) {
             slotsByChannel.clear();
             pairsByInsert.clear();
-            masterChainSlot.setRings(NO_RINGS);
-            masterOutSlot.setRings(NO_RINGS);
+            masterChainSlot = new LevelTapSlot(MeterTapPoint.MASTER_CHAIN);
+            masterOutSlot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
             lanes = laneArray;
             snapshot = TapSnapshot.empty(this, epoch);
             return;
@@ -437,6 +462,7 @@ public final class MeteringTapBus {
             if (slot == null) {
                 slot = new LevelTapSlot(new MeterTapPoint.ChannelPost(channel.getId()));
             }
+            slot = slot.withRings(ringsFor(slot.point(), laneArray));
             nextSlots.put(channel, slot);
             channelSubjects[i] = channel;
             channelSlots[i] = slot;
@@ -449,6 +475,7 @@ public final class MeteringTapBus {
             if (slot == null) {
                 slot = new LevelTapSlot(new MeterTapPoint.ReturnPost(returnBus.getId()));
             }
+            slot = slot.withRings(ringsFor(slot.point(), laneArray));
             nextSlots.put(returnBus, slot);
             returnSubjects[i] = returnBus;
             returnSlots[i] = slot;
@@ -466,11 +493,17 @@ public final class MeteringTapBus {
         }
         for (MixerChannel owner : owners) {
             for (InsertSlot insert : owner.getInsertSlots()) {
+                MeterTapPoint.InsertIo point = new MeterTapPoint.InsertIo(insert.getPluginInstanceId());
+                if (subscriptions.stream().noneMatch(sub -> sub.point().equals(point))) {
+                    continue;
+                }
                 InsertTapPair pair = pairsByInsert.get(insert);
                 if (pair == null) {
-                    MeterTapPoint.InsertIo point =
-                            new MeterTapPoint.InsertIo(insert.getPluginInstanceId());
                     pair = new InsertTapPair(insert, new LevelTapSlot(point), new LevelTapSlot(point));
+                }
+                LevelTapSlot output = pair.output().withRings(ringsFor(point, laneArray));
+                if (output != pair.output()) {
+                    pair = new InsertTapPair(insert, pair.input(), output);
                 }
                 nextPairs.put(insert, pair);
                 insertSubjects.add(insert);
@@ -484,21 +517,11 @@ public final class MeteringTapBus {
         pairsByInsert.clear();
         pairsByInsert.putAll(nextPairs);
 
-        for (LevelTapSlot slot : channelSlots) {
-            slot.setRings(ringsFor(slot.point(), laneArray));
-        }
-        for (LevelTapSlot slot : returnSlots) {
-            slot.setRings(ringsFor(slot.point(), laneArray));
-        }
-        masterChainSlot.setRings(ringsFor(MeterTapPoint.MASTER_CHAIN, laneArray));
-        masterOutSlot.setRings(ringsFor(MeterTapPoint.MASTER_OUT, laneArray));
-        for (InsertTapPair pair : insertPairs) {
-            pair.input().setRings(NO_RINGS);
-            pair.output().setRings(ringsFor(pair.output().point(), laneArray));
-        }
+        masterChainSlot = masterChainSlot.withRings(ringsFor(MeterTapPoint.MASTER_CHAIN, laneArray));
+        masterOutSlot = masterOutSlot.withRings(ringsFor(MeterTapPoint.MASTER_OUT, laneArray));
 
         lanes = laneArray;
-        snapshot = new TapSnapshot(this, epoch, format.sampleRate(),
+        snapshot = new TapSnapshot(this, bound, epoch, format,
                 channelSubjects, channelSlots, returnSubjects, returnSlots,
                 masterChainSlot, masterOutSlot,
                 insertSubjects.toArray(new InsertSlot[0]),

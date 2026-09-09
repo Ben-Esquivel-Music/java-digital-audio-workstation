@@ -98,9 +98,10 @@ public final class MeterAnimator {
             peakValue = targetValue;
             peakHoldTimer = peakHoldSeconds;
         } else {
-            peakHoldTimer -= deltaSeconds;
-            if (peakHoldTimer <= 0) {
-                peakValue += (0.0 - peakValue) * coefficient(deltaSeconds, releaseSeconds);
+            double releaseDelta = Math.max(0.0, deltaSeconds - peakHoldTimer);
+            peakHoldTimer = Math.max(0.0, peakHoldTimer - deltaSeconds);
+            if (releaseDelta > 0.0) {
+                peakValue += (0.0 - peakValue) * coefficient(releaseDelta, releaseSeconds);
                 if (peakValue < ZERO_SNAP) {
                     peakValue = 0.0;
                 }

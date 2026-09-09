@@ -172,15 +172,27 @@ public final class MeterFeed {
         }
         long now = 0L;
         boolean clockRead = false;
+        RuntimeException failure = null;
         for (Entry entry : all) {
-            if (entry.disposed || !entry.visible.getAsBoolean()) {
-                continue;
+            try {
+                if (entry.disposed || !entry.visible.getAsBoolean()) {
+                    continue;
+                }
+                if (!clockRead) {
+                    now = clock.getAsLong();
+                    clockRead = true;
+                }
+                entry.pulse(now);
+            } catch (RuntimeException exception) {
+                if (failure == null) {
+                    failure = new IllegalStateException("Meter pulse failed", exception);
+                } else if (failure.getCause() != exception) {
+                    failure.addSuppressed(exception);
+                }
             }
-            if (!clockRead) {
-                now = clock.getAsLong();
-                clockRead = true;
-            }
-            entry.pulse(now);
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 
@@ -262,9 +274,14 @@ public final class MeterFeed {
         final void pulse(long now) {
             if (tokenLost) {
                 tokenLost = false;
-                deliverSilence(now);
-                lastBlockIndex = -1L;
-                attach();
+                try {
+                    deliverSilence(now);
+                } finally {
+                    lastBlockIndex = -1L;
+                    if (!disposed) {
+                        attach();
+                    }
+                }
                 return;
             }
             feed.readAttempts++;

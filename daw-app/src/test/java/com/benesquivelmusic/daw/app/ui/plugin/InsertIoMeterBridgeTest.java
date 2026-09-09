@@ -62,9 +62,15 @@ class InsertIoMeterBridgeTest {
     }
 
     private void renderInsertBlock(float inLevel, float outLevel) {
-        TapSnapshot taps = bus.snapshot();
+        renderInsertBlock(bus.snapshot(), inLevel, outLevel);
+    }
+
+    private void renderInsertBlock(TapSnapshot taps, float inLevel, float outLevel) {
         InsertTapPair pair = taps.insertTapFor(slot);
-        assertThat(pair).as("the insert is tapped").isNotNull();
+        if (pair == null) {
+            bus.blockCompleted(taps);
+            return;
+        }
         float[] in = new float[BLOCK];
         float[] out = new float[BLOCK];
         Arrays.fill(in, inLevel);
@@ -102,14 +108,17 @@ class InsertIoMeterBridgeTest {
         assertThat(meters.outputLevelDb()).isCloseTo(db(0.4), within(1e-4));
         assertThat(meters.gainReductionDb()).as("the plugin's own GR reading is preserved").isEqualTo(-3.5);
 
+        TapSnapshot inFlight = bus.snapshot();
         detach.run();
         detach.run();
         assertThat(feed.subscriptionCount()).isZero();
         assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().insertTapFor(slot)).as("no insert scan remains after its last consumer detaches").isNull();
 
         renderInsertBlock(0.2f, 0.1f);
+        renderInsertBlock(inFlight, 0.9f, 0.7f);
         dispatcher.pulse();
-        assertThat(store.meters()).as("nothing after detach").isSameAs(meters);
+        assertThat(store.meters()).as("neither fresh nor in-flight blocks publish after detach").isSameAs(meters);
     }
 
     @Test

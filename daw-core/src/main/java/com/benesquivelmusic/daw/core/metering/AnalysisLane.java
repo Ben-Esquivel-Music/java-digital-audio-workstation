@@ -10,15 +10,15 @@ import java.util.Objects;
  */
 final class AnalysisLane {
 
-    private final MeteringTapBus bus;
+    private final double sampleRate;
     private final AnalysisSubscription subscription;
     private final AnalysisConsumer consumer;
     private final float[][] scratch;
     /** Analysis-thread owned: the dropped count last reported to the consumer. */
     private long reportedDropped;
 
-    AnalysisLane(MeteringTapBus bus, AnalysisSubscription subscription, AnalysisConsumer consumer) {
-        this.bus = Objects.requireNonNull(bus, "bus must not be null");
+    AnalysisLane(AnalysisSubscription subscription, AnalysisConsumer consumer, double sampleRate) {
+        this.sampleRate = sampleRate;
         this.subscription = Objects.requireNonNull(subscription, "subscription must not be null");
         this.consumer = Objects.requireNonNull(consumer, "consumer must not be null");
         this.scratch = new float[SampleBlockRing.MAX_CHANNELS][subscription.ring().blockFrames()];
@@ -42,10 +42,15 @@ final class AnalysisLane {
      * one hot lane cannot starve the others.
      */
     void drain() {
+        if (subscription.isDisposed()) {
+            return;
+        }
         SampleBlockRing ring = subscription.ring();
-        double sampleRate = bus.snapshot().sampleRate();
         int budget = ring.capacity();
         for (int i = 0; i < budget; i++) {
+            if (subscription.isDisposed()) {
+                break;
+            }
             int numFrames = ring.readInto(scratch);
             if (numFrames < 0) {
                 break;

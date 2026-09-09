@@ -25,8 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ol>
  *   <li>the docked {@code PANEL_LEVELS} "Peak / RMS" display is subscribed to
  *       {@code MASTER_OUT} through the feed, with a
- *       {@code MeterSinks.levelMeterDisplay} sink and a scene-gated
- *       visibility predicate;</li>
+ *       {@code MeterSinks.levelMeterDisplay} sink and a retained binding
+ *       that releases its token while the display is hidden;</li>
  *   <li>the window's teardown order — the meter consumers go first, then the
  *       binder unbinds the engine, then the engine (and with it the tap bus
  *       and its analysis thread) is shut down;</li>
@@ -66,12 +66,12 @@ final class MeterWiringConformanceScanTest {
         assertThat(code)
                 .as("the PANEL_LEVELS Peak / RMS display must be a MASTER_OUT consumer of the "
                         + "tap bus — book §5.3 'transport/main meter row' (story 318)")
-                .contains("meterFeed.subscribe(MeterTapPoint.MASTER_OUT, masterOutDisplay,")
-                .contains("MeterSinks.levelMeterDisplay(masterOutDisplay)")
-                .contains("LevelMeterDisplay masterOutDisplay = levelMeterDisplay;");
+                .contains("levelMeterBinding = new VisibleMeterBinding(meterFeed, MeterTapPoint.MASTER_OUT,")
+                .contains("MeterSinks.levelMeterDisplay(levelMeterDisplay)")
+                .contains("private VisibleMeterBinding levelMeterBinding;");
         assertThat(code)
-                .as("a hidden Peak / RMS panel must cost the pulse nothing (visibility predicate)")
-                .contains("() -> masterOutDisplay.getScene() != null");
+                .as("the retained binding must release its token and listeners at shutdown")
+                .contains("if (levelMeterBinding != null) levelMeterBinding.close();");
         assertThat(code)
                 .as("the feed itself must be created over the engine's tap bus")
                 .contains("new MeterFeed(audioEngine.meteringTapBus()");

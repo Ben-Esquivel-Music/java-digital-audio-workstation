@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.metering;
 
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
@@ -35,8 +37,9 @@ public final class TapSnapshot {
     private static final InsertTapPair[] NO_PAIRS = new InsertTapPair[0];
 
     private final MeteringTapBus bus;
+    private final Mixer mixer;
     private final long epoch;
-    private final double sampleRate;
+    private final AudioFormat format;
     private final MixerChannel[] channelSubjects;
     private final LevelTapSlot[] channelSlots;
     private final MixerChannel[] returnSubjects;
@@ -52,7 +55,7 @@ public final class TapSnapshot {
 
     /** An unbound snapshot: nothing is tapped. */
     static TapSnapshot empty(MeteringTapBus bus, long epoch) {
-        return new TapSnapshot(bus, epoch, 0.0, NO_CHANNELS, NO_SLOTS, NO_CHANNELS, NO_SLOTS,
+        return new TapSnapshot(bus, null, epoch, null, NO_CHANNELS, NO_SLOTS, NO_CHANNELS, NO_SLOTS,
                 null, null, NO_INSERTS, NO_CHANNELS, NO_PAIRS);
     }
 
@@ -60,15 +63,16 @@ public final class TapSnapshot {
      * Builds a snapshot over arrays the bus has just constructed; the
      * snapshot takes ownership of them and never mutates them.
      */
-    TapSnapshot(MeteringTapBus bus, long epoch, double sampleRate,
+    TapSnapshot(MeteringTapBus bus, Mixer mixer, long epoch, AudioFormat format,
                 MixerChannel[] channelSubjects, LevelTapSlot[] channelSlots,
                 MixerChannel[] returnSubjects, LevelTapSlot[] returnSlots,
                 LevelTapSlot masterChain, LevelTapSlot masterOut,
                 InsertSlot[] insertSubjects, MixerChannel[] insertOwners,
                 InsertTapPair[] insertPairs) {
         this.bus = Objects.requireNonNull(bus, "bus must not be null");
+        this.mixer = mixer;
         this.epoch = epoch;
-        this.sampleRate = sampleRate;
+        this.format = format;
         this.channelSubjects = Objects.requireNonNull(channelSubjects);
         this.channelSlots = Objects.requireNonNull(channelSlots);
         this.returnSubjects = Objects.requireNonNull(returnSubjects);
@@ -120,10 +124,22 @@ public final class TapSnapshot {
         return epoch;
     }
 
+    /** A transition between graph and registry publications must skip metering. */
+    @RealTimeSafe
+    public boolean matches(Mixer mixer, long epoch) {
+        return this.mixer == mixer && this.epoch == epoch;
+    }
+
+    /** Rejects blocks rendered before the off-RT format notification reaches the registry. */
+    @RealTimeSafe
+    public boolean matchesFormat(AudioFormat format) {
+        return this.format != null && this.format.equals(format);
+    }
+
     /** The engine sample rate in Hz at build time ({@code 0.0} when unbound). */
     @RealTimeSafe
     public double sampleRate() {
-        return sampleRate;
+        return format == null ? 0.0 : format.sampleRate();
     }
 
     /** The bus block counter to stamp every frame of the current block with. */

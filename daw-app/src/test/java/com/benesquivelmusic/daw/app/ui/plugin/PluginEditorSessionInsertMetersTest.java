@@ -100,9 +100,15 @@ class PluginEditorSessionInsertMetersTest {
 
     /** Publishes one block into the insert's I/O pair exactly as the effects chain does. */
     private void renderInsertBlock(float inLevel, float outLevel) {
-        TapSnapshot taps = bus.snapshot();
+        renderInsertBlock(bus.snapshot(), inLevel, outLevel);
+    }
+
+    private void renderInsertBlock(TapSnapshot taps, float inLevel, float outLevel) {
         InsertTapPair pair = taps.insertTapFor(slot);
-        assertThat(pair).as("the insert is tapped").isNotNull();
+        if (pair == null) {
+            bus.blockCompleted(taps);
+            return;
+        }
         float[] in = new float[BLOCK];
         float[] out = new float[BLOCK];
         Arrays.fill(in, inLevel);
@@ -195,6 +201,7 @@ class PluginEditorSessionInsertMetersTest {
         PluginMeterSnapshot afterOneBlock = session.store().meters();
         assertThat(afterOneBlock.inputLevelDb()).isCloseTo(db(0.5), within(1e-4));
 
+        TapSnapshot inFlight = bus.snapshot();
         PluginEditorSession disposed = session;
         runOnFxThread(() -> {
             disposed.dispose();
@@ -204,10 +211,13 @@ class PluginEditorSessionInsertMetersTest {
         assertThat(disposed.hasInsertMeters()).isFalse();
         assertThat(feed.subscriptionCount()).isZero();
         assertThat(bus.levelSubscriptionCount()).isZero();
+        assertThat(bus.snapshot().insertTapFor(slot)).as("the disposed editor leaves no insert scan active").isNull();
 
         renderInsertBlock(0.1f, 0.1f);
+        renderInsertBlock(inFlight, 0.9f, 0.7f);
         pulseOnFx();
-        assertThat(disposed.store().meters()).as("nothing after dispose").isSameAs(afterOneBlock);
+        assertThat(disposed.store().meters()).as("neither fresh nor in-flight blocks publish after dispose")
+                .isSameAs(afterOneBlock);
     }
 
     /** Minimal story-300 contract plugin: a host-generated parameter grid, no timer. */

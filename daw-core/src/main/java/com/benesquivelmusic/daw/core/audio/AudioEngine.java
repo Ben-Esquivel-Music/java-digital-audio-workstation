@@ -4289,6 +4289,11 @@ public final class AudioEngine {
      *                  disable playback rendering
      */
     public void setGraph(Transport transport, Mixer mixer, List<Track> tracks) {
+        setGraph(transport, mixer, tracks, meteringTapBus.epoch());
+    }
+
+    /** Publishes the graph's binding generation for matching its metering snapshot. */
+    public void setGraph(Transport transport, Mixer mixer, List<Track> tracks, long meteringEpoch) {
         PendingAnnouncements announcements = new PendingAnnouncements();
         try {
             synchronized (graphLock) {
@@ -4297,7 +4302,7 @@ public final class AudioEngine {
                 if (outgoing != null && outgoing != transport) {
                     announcements.clockReleased(outgoing);
                 }
-                this.graph = new EngineGraph(transport, mixer, tracks);
+                this.graph = new EngineGraph(transport, mixer, tracks, meteringEpoch);
                 if (transport != null) {
                     if (callbackIsDriving()) {
                         transport.setRealTimeClockActive(true);
@@ -4399,7 +4404,7 @@ public final class AudioEngine {
     public void setTracks(List<Track> tracks) {
         synchronized (graphLock) {
             EngineGraph current = this.graph;
-            this.graph = new EngineGraph(current.transport(), current.mixer(), tracks);
+            this.graph = new EngineGraph(current.transport(), current.mixer(), tracks, current.meteringEpoch());
         }
     }
 
@@ -4690,9 +4695,13 @@ public final class AudioEngine {
         // routing finally targets the stream that is actually playing.
         AudioBackend currentBackend = this.openBackend;
         // Story 318: the metering slot set for this block — one volatile
-        // load, used for the whole block, so a registry swap mid-render can
-        // never mix two snapshots.
+        // load, used for the whole block. Matching both graph identity and
+        // epoch rejects either order of a concurrent binding publication;
+        // format matching also covers a deferred format-refresh callback.
         TapSnapshot taps = meteringTapBus.snapshot();
+        if (!taps.matches(currentMixer, currentGraph.meteringEpoch()) || !taps.matchesFormat(format)) {
+            taps = null;
+        }
 
         // Story 137: tap the raw input signal per armed track BEFORE any
         // processing so the mixer's input-meter column and the clip LED
@@ -4873,8 +4882,8 @@ public final class AudioEngine {
      * {@code tracks} is deliberately NOT normalized to an empty list:
      * {@link #getTracks()} must keep returning {@code null} when unset.
      */
-    private record EngineGraph(Transport transport, Mixer mixer, List<Track> tracks) {
-        static final EngineGraph EMPTY = new EngineGraph(null, null, null);
+    private record EngineGraph(Transport transport, Mixer mixer, List<Track> tracks, long meteringEpoch) {
+        static final EngineGraph EMPTY = new EngineGraph(null, null, null, 0L);
     }
 
     /**

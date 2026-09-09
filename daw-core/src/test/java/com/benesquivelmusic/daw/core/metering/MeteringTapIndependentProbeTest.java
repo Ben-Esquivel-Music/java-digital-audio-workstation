@@ -573,10 +573,8 @@ class MeteringTapIndependentProbeTest {
     /**
      * A rebind to a higher epoch disposes the epoch-5 tokens and the frames a
      * freshly attached epoch-9 token reads carry the new epoch. Before the
-     * first block of the new epoch is rendered, the reused slots still hold
-     * epoch-5 frames — a fresh token must therefore never see the NEW epoch on
-     * stale data, which is exactly why the FX drain gates on
-     * {@code frame.epoch()}.
+     * first block of the new epoch is rendered, fresh slots are unpublished:
+     * neither a stale frame nor an in-flight old writer reaches new consumers.
      */
     @Test
     void aRebindBumpsTheEpochAFreshlyAttachedSubscriptionSees() {
@@ -600,18 +598,8 @@ class MeteringTapIndependentProbeTest {
             rig.subscribeAll();
             MeterFrame beforeAnyNewBlock = new MeterFrame();
             assertThat(rig.masterOutTap.readInto(beforeAnyNewBlock))
-                    .as("the rebind reuses the MASTER_OUT slot, so an epoch-%s token resolves it "
-                            + "immediately — before any block of the new epoch has been rendered",
-                            REBIND_EPOCH)
-                    .isTrue();
-            assertThat(beforeAnyNewBlock.epoch())
-                    .as("that first read is STALE: the reused slot still carries the OLD epoch "
-                            + "until the next block publishes — never the new one, which is why a "
-                            + "drain must gate on frame.epoch() and not merely on the token's")
-                    .isEqualTo(PROBE_EPOCH);
-            assertThat(beforeAnyNewBlock.blockIndex())
-                    .as("and the stale frame still carries the pre-rebind block index")
-                    .isEqualTo(stampBeforeRebind);
+                    .as("a new epoch has no reading until its first block is rendered")
+                    .isFalse();
 
             long stampAfterRebind = rig.renderBlock();
             rig.readAll();
