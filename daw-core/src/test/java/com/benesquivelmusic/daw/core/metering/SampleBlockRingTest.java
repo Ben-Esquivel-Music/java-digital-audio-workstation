@@ -1,6 +1,9 @@
 package com.benesquivelmusic.daw.core.metering;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -142,6 +145,52 @@ class SampleBlockRingTest {
         assertThat(ring.readInto(dst)).isEqualTo(FRAMES);
         assertThat(dst[0]).containsOnly(0.5f);
         assertThat(dst[1]).containsOnly(-0.5f);
+    }
+
+    @ParameterizedTest
+    @Timeout(value = 1, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    @ValueSource(ints = {(1 << 30) + 1, Integer.MAX_VALUE})
+    void constructorRejectsCapacitiesThatWouldOverflowRounding(int requestedBlocks) {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new SampleBlockRing(requestedBlocks, FRAMES))
+                .withMessage("requestedBlocks exceeds maximum power-of-two capacity: " + requestedBlocks);
+    }
+
+    @Test
+    void silenceClearsReusedSlotsAndPreservesEachBlockLength() {
+        var ring = new SampleBlockRing(1, FRAMES);
+        float[][] destination = scratch();
+        ring.write(block(1, SampleBlockRing.MAX_CHANNELS), SampleBlockRing.MAX_CHANNELS, FRAMES);
+        assertThat(ring.readInto(destination)).isEqualTo(FRAMES);
+
+        ring.writeSilence(1, 3);
+        assertThat(ring.readInto(destination)).isEqualTo(3);
+        assertThat(ring.lastChannelCount()).isEqualTo(1);
+        assertThat(Arrays.copyOf(destination[0], 3)).containsOnly(0f);
+
+        ring.writeSilence(SampleBlockRing.MAX_CHANNELS, FRAMES);
+        assertThat(ring.readInto(destination)).isEqualTo(FRAMES);
+        assertThat(ring.lastChannelCount()).isEqualTo(SampleBlockRing.MAX_CHANNELS);
+        for (float[] lane : destination) {
+            assertThat(lane).containsOnly(0f);
+        }
+        assertThat(ring.isEmpty()).isTrue();
+        assertThat(ring.droppedBlocks()).isZero();
+    }
+
+    @Test
+    void silenceClampsFramesAndChannelsAndCountsTruncation() {
+        var ring = new SampleBlockRing(1, FRAMES);
+        float[][] destination = scratch();
+        ring.writeSilence(SampleBlockRing.MAX_CHANNELS + 1, FRAMES + 1);
+        assertThat(ring.readInto(destination)).isEqualTo(FRAMES);
+        assertThat(ring.lastChannelCount()).isEqualTo(SampleBlockRing.MAX_CHANNELS);
+        assertThat(ring.truncatedBlocks()).isEqualTo(1);
+
+        ring.writeSilence(-1, -1);
+        assertThat(ring.readInto(destination)).isZero();
+        assertThat(ring.lastChannelCount()).isZero();
+        assertThat(ring.truncatedBlocks()).isEqualTo(1);
     }
 
     @Test

@@ -728,7 +728,7 @@ class RealTimeSafeContractTest {
     private static final Set<String> REQUIRED_METERING_ROOTS = Set.of(
             "LevelTapSlot#beginBlock", "LevelTapSlot#accumulate", "LevelTapSlot#publish",
             "LevelTapSlot#publishSilence", "LevelTapSlot#rings",
-            "SampleBlockRing#write", "SampleBlockRing#writeScaled",
+            "SampleBlockRing#write", "SampleBlockRing#writeScaled", "SampleBlockRing#writeSilence",
             "TapSnapshot#channelSlot", "TapSnapshot#returnSlot", "TapSnapshot#masterChain",
             "TapSnapshot#masterOut", "TapSnapshot#insertTapFor", "TapSnapshot#blockIndex",
             "MeteringTapBus#snapshot", "MeteringTapBus#blockCompleted");

@@ -40,6 +40,7 @@ public final class SampleBlockRing {
     /** Bounded retry budget for {@link #readInto(float[][])} against a lapping producer. */
     public static final int MAX_READ_ATTEMPTS = 16;
 
+    private static final int POWER_OF_TWO_CAPACITY = 1 << 30;
     private static final VarHandle TAIL;
     private static final VarHandle SLOT_SEQUENCE = MethodHandles.arrayElementVarHandle(long[].class);
 
@@ -70,11 +71,15 @@ public final class SampleBlockRing {
      * Creates a ring of at least {@code requestedBlocks} slots (rounded up to
      * a power of two), each holding {@code blockFrames} frames per lane.
      *
-     * @throws IllegalArgumentException if either argument is not positive
+     * @throws IllegalArgumentException if either argument is not positive,
+     *         or {@code requestedBlocks} exceeds the largest positive power of two
      */
     public SampleBlockRing(int requestedBlocks, int blockFrames) {
         if (requestedBlocks <= 0) {
             throw new IllegalArgumentException("requestedBlocks must be positive: " + requestedBlocks);
+        }
+        if (requestedBlocks > POWER_OF_TWO_CAPACITY) {
+            throw new IllegalArgumentException("requestedBlocks exceeds maximum power-of-two capacity: " + requestedBlocks);
         }
         if (blockFrames <= 0) {
             throw new IllegalArgumentException("blockFrames must be positive: " + blockFrames);
@@ -94,6 +99,25 @@ public final class SampleBlockRing {
     }
 
     // Producer side.
+
+    /**
+     * Publishes a zero-filled block so muted taps advance analysis sample time.
+     * Lanes and frames are clamped exactly as for a sample copy.
+     */
+    @RealTimeSafe
+    public void writeSilence(int channels, int numFrames) {
+        int lanes = clampLanes(MAX_CHANNELS, channels);
+        int frames = clampFrames(numFrames);
+        long t = (long) TAIL.getOpaque(this);
+        int index = (int) (t & mask);
+        SLOT_SEQUENCE.setOpaque(slotSequence, index, -1L);
+        VarHandle.storeStoreFence();
+        float[][] slot = slots[index];
+        for (int ch = 0; ch < lanes; ch++) {
+            Arrays.fill(slot[ch], 0, frames, 0f);
+        }
+        commit(index, lanes, frames, t);
+    }
 
     /**
      * Copies a planar block into the next slot, overwriting the oldest if the

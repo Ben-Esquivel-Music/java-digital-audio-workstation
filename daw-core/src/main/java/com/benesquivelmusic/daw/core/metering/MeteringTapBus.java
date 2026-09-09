@@ -252,6 +252,7 @@ public final class MeteringTapBus {
      * point the insert's output is ringed.
      *
      * @throws IllegalArgumentException if {@code ringBlocks} is not positive
+     *         or exceeds the largest positive power of two
      * @throws IllegalStateException    if the bus is closed
      */
     public AnalysisSubscription attachAnalysis(MeterTapPoint point, int ringBlocks,

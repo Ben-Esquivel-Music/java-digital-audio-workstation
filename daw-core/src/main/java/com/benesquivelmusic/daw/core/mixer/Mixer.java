@@ -706,6 +706,7 @@ public final class Mixer {
             if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
                 if (channelTap != null) {
                     channelTap.publishSilence(tapEpoch, tapBlock, outputBuffer.length);
+                    writeSilentRings(channelTap, outputBuffer.length, numFrames);
                 }
                 continue;
             }
@@ -793,6 +794,7 @@ public final class Mixer {
                 }
                 if (returnTap != null) {
                     returnTap.publishSilence(tapEpoch, tapBlock, returnAudioChannels);
+                    writeRings(returnTap, returnBuf, returnAudioChannels, numFrames);
                 }
             } else if (useDouble) {
                 double returnVolumeD = returnBus.getVolume();
@@ -983,6 +985,7 @@ public final class Mixer {
             if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
                 if (channelTap != null) {
                     channelTap.publishSilence(tapEpoch, tapBlock, outputBuffer.length);
+                    writeSilentRings(channelTap, outputBuffer.length, numFrames);
                 }
                 continue;
             }
@@ -1074,6 +1077,7 @@ public final class Mixer {
                 }
                 if (returnTap != null) {
                     returnTap.publishSilence(tapEpoch, tapBlock, returnAudioChannels);
+                    writeRings(returnTap, returnBuf, returnAudioChannels, numFrames);
                 }
             } else if (useDouble) {
                 double returnVolumeD = returnBus.getVolume();
@@ -1496,6 +1500,15 @@ public final class Mixer {
             float x = out[f];
             tap.accumulate(lane, x);
             out[f] = x * masterVolume;
+        }
+    }
+
+    /** Advances every analysis ring of a muted tap without reading or changing its source. */
+    @RealTimeSafe
+    private static void writeSilentRings(LevelTapSlot tap, int channels, int numFrames) {
+        SampleBlockRing[] rings = tap.rings();
+        for (int r = 0; r < rings.length; r++) {
+            rings[r].writeSilence(channels, numFrames);
         }
     }
 
