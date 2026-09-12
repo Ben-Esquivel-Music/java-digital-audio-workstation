@@ -86,6 +86,8 @@ public final class InsertEffectRack extends VBox {
 
     /** Tracks external-plugin resources keyed by the InsertSlot they belong to. */
     private final Map<InsertSlot, ExternalPluginResources> externalResources = new HashMap<>();
+    private final Map<InsertSlot, Stage> analyzerEditors = new HashMap<>();
+    private Runnable removeAnalyzerEditorPulse;
 
     /**
      * Creates a new insert-effects rack for the given mixer channel.
@@ -173,6 +175,7 @@ public final class InsertEffectRack extends VBox {
         }
 
         List<InsertSlot> slots = channel.getInsertSlots();
+        closeRemovedAnalyzerEditors();
 
         // Reconcile external-plugin resources: dispose any entries whose
         // InsertSlot is no longer present on the channel (removed via
@@ -232,6 +235,11 @@ public final class InsertEffectRack extends VBox {
      * is rebuilt) to prevent stale listeners from accumulating.
      */
     public void dispose() {
+        for (Stage editor : List.copyOf(analyzerEditors.values())) editor.close();
+        if (removeAnalyzerEditorPulse != null) {
+            removeAnalyzerEditorPulse.run();
+            removeAnalyzerEditorPulse = null;
+        }
         if (undoManager != null && historyListener != null) {
             undoManager.removeHistoryListener(historyListener);
         }
@@ -288,6 +296,7 @@ public final class InsertEffectRack extends VBox {
             return false;
         }
         addEffect(slotIndex, optSlot.get());
+        if (plugin instanceof com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin) plugin.activate();
         return true;
     }
 
@@ -537,7 +546,39 @@ public final class InsertEffectRack extends VBox {
 
     // ── Parameter editor ────────────────────────────────────────────────────
 
-    private void openParameterEditor(InsertSlot slot) {
+    void openParameterEditor(InsertSlot slot) {
+        if (slot.getPlugin() instanceof com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin) {
+            Stage existing = analyzerEditors.get(slot);
+            if (existing != null) {
+                existing.toFront();
+                existing.requestFocus();
+                return;
+            }
+            var session = com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.open(
+                    slot.getPlugin(), channel.getName(),
+                    new com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.Deps(
+                            () -> sampleRate, null, null, null));
+            Stage stage = new Stage();
+            if (getScene() != null) stage.initOwner(getScene().getWindow());
+            stage.setTitle(slot.getName());
+            stage.setScene(new Scene(session.frame(), 640, 420));
+            if (getScene() != null) stage.getScene().getStylesheets().setAll(getScene().getStylesheets());
+            analyzerEditors.put(slot, stage);
+            if (removeAnalyzerEditorPulse == null && fxDispatcher != null) {
+                removeAnalyzerEditorPulse = fxDispatcher.addPulseParticipant(this::closeRemovedAnalyzerEditors);
+            }
+            stage.setOnHidden(_ -> {
+                session.dispose();
+                analyzerEditors.remove(slot);
+                if (analyzerEditors.isEmpty() && removeAnalyzerEditorPulse != null) {
+                    removeAnalyzerEditorPulse.run();
+                    removeAnalyzerEditorPulse = null;
+                }
+            });
+            session.frame().setOnCloseRequested(stage::close);
+            stage.show();
+            return;
+        }
         InsertEffectType type = slot.getEffectType();
         if (type == null) {
             return;
@@ -568,6 +609,13 @@ public final class InsertEffectRack extends VBox {
         stage.setTitle(slot.getName() + " — Parameters");
         stage.setScene(new Scene(editor, 420, 320));
         stage.show();
+    }
+
+    private void closeRemovedAnalyzerEditors() {
+        var slots = channel.getInsertSlots();
+        for (var entry : List.copyOf(analyzerEditors.entrySet())) {
+            if (!slots.contains(entry.getKey())) entry.getValue().close();
+        }
     }
 
     // ── Sidechain selector ───────────────────────────────────────────────────

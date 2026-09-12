@@ -31,15 +31,13 @@ import java.lang.foreign.MemorySegment;
  * {@code pixels} from the FX thread inside {@code render}.
  *
  * <h2>Lifetime</h2>
- * The {@code pixels} segment is owned by the {@link GpuCanvas}'s confined
- * {@link java.lang.foreign.Arena} and is valid <strong>only for the duration
- * of the {@link GpuRenderer#render(GpuRenderContext)} call</strong>. The arena
- * is reallocated on resize and closed on {@link GpuCanvas#dispose()} or when
- * the canvas shrinks to zero size. Renderers MUST NOT retain a reference to
- * the segment beyond the render callback; doing so risks
- * {@link IllegalStateException} (the arena was closed by a later resize or
- * dispose) or {@link java.lang.WrongThreadException} (a worker thread that
- * captured the segment touches it after a resize swapped it out).
+ * The {@code pixels} segment is borrowed <strong>only for the duration
+ * of the {@link GpuRenderer#render(GpuRenderContext)} call</strong>. Renderers
+ * MUST NOT retain or access it beyond the callback. Its automatic
+ * {@link java.lang.foreign.Arena} keeps storage alive while Prism uploads
+ * the aliased buffer from its render thread, including uploads still in
+ * flight after resize or {@link GpuCanvas#dispose()}. This storage lifetime
+ * does not authorize asynchronous renderer writes.
  *
  * <p>Both {@code nowNanos} and {@link System#nanoTime()} read the same
  * monotonic clock, so renderers can compare them safely.

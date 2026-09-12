@@ -206,7 +206,7 @@ public final class TunerEditor implements PluginEditorFactory.Panel {
 
         private void updateReadout(TuningResult result) {
             if (result == null) {
-                noteLabel.setText("--");
+                noteLabel.setText("No signal");
                 centsLabel.setText("-- ¢");
                 freqLabel.setText("-- Hz");
             } else {

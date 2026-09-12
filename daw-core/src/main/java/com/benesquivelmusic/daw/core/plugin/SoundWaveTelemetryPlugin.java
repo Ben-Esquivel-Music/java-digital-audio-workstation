@@ -9,6 +9,9 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import java.util.Objects;
+import java.util.function.Consumer;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot;
 
 /**
  * Built-in sound wave telemetry plugin.
@@ -31,7 +34,7 @@ import java.util.Objects;
  * </ol>
  */
 @BuiltInPlugin(label = "Sound Wave Telemetry", icon = "surround", category = BuiltInPluginCategory.ANALYZER)
-public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
+public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin, LiveAnalyzerPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
     public static final String PLUGIN_ID = "com.benesquivelmusic.daw.builtin.sound-wave-telemetry";
@@ -48,6 +51,19 @@ public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
 
     private PluginContext context;
     private boolean active;
+    private volatile com.benesquivelmusic.daw.sdk.visualization.WaveformData waveform;
+
+    @Override
+    public AnalyzerProcessor createAnalysisConsumer(Consumer<AnalyzerSnapshot> publish) {
+        return new AnalyzerProcessor(AnalyzerProcessor.Kind.WAVEFORM, publish);
+    }
+
+    @Override
+    public void acceptAnalysis(AnalyzerSnapshot snapshot) {
+        waveform = snapshot instanceof AnalyzerSnapshot.Waveform wave ? wave.data() : null;
+    }
+
+    public com.benesquivelmusic.daw.sdk.visualization.WaveformData getWaveform() { return waveform; }
     private ArmedTrackSourceProvider armedTrackSourceProvider;
     private ArmedTrackSourceProvider.Listener armedTrackListener;
 
@@ -101,12 +117,14 @@ public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
     @Override
     public void deactivate() {
         unsubscribeFromProvider();
+        waveform = null;
         active = false;
     }
 
     @Override
     public void dispose() {
         unsubscribeFromProvider();
+        waveform = null;
         active = false;
         armedTrackSourceProvider = null;
         context = null;
@@ -134,8 +152,8 @@ public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
      * {@inheritDoc}
      *
      * <p>Story 302 (Plugin View Design Book §8.3 item 5): returns the
-     * immersive {@link SoundWaveTelemetryEditor} canvas — a status surface,
-     * not a duplicate renderer. The rich room-telemetry display remains the
+     * immersive {@link SoundWaveTelemetryEditor} canvas with live host-tap
+     * waveform and provider status. Room geometry remains in the
      * story-287 docked {@code TelemetryView} (daw-app), which this plugin
      * holds no data for; see the editor's class Javadoc.</p>
      */

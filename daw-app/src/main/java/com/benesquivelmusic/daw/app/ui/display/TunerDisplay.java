@@ -62,6 +62,7 @@ public final class TunerDisplay extends GpuCanvasView {
         // Callers that remove the display from the scene graph should call
         // dispose() to release the off-heap surface and stop the timer.
         setRenderer(this::renderFrame);
+        setAccessibleText("No signal");
     }
 
     /**
@@ -71,6 +72,7 @@ public final class TunerDisplay extends GpuCanvasView {
      */
     public void update(TuningResult result) {
         this.currentResult = result;
+        setAccessibleText(result == null ? "No signal" : result.noteName() + result.octave());
         // When the animation timer is running (scene-attached), the next
         // timer frame will pick up the new snapshot — no extra render needed.
         // When the timer is gated off (e.g. one-shot updates from tests),
@@ -110,7 +112,7 @@ public final class TunerDisplay extends GpuCanvasView {
         double fontSize = Math.min(w, h) * 0.08;
         gc.setFont(Font.font("System", FontWeight.NORMAL, fontSize));
         gc.setFill(NO_SIGNAL_COLOR);
-        gc.fillText("No Signal", w / 2, h * 0.45);
+        gc.fillText("No signal", w / 2, h * 0.45);
 
         // Hint text
         double hintSize = fontSize * 0.5;

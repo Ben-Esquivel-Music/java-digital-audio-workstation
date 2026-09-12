@@ -42,7 +42,7 @@ import java.util.logging.Logger;
  *
  * <h2>Pixel pathway</h2>
  * <ol>
- *   <li>A confined {@link Arena} owned by the FX thread allocates a
+ *   <li>An automatic {@link Arena} shared with Prism allocates a
  *       {@link MemorySegment} of {@code height * stride} bytes (packed BGRA,
  *       4 bytes/pixel, {@code stride == width * 4}).</li>
  *   <li>Each frame: the host clears the segment to
@@ -58,14 +58,14 @@ import java.util.logging.Logger;
  * The internal {@link AnimationTimer} starts when {@link #animatedProperty()}
  * is {@code true} <em>and</em> the canvas is attached to a {@link Scene}, and
  * stops when either condition no longer holds. {@link #dispose()} unregisters
- * all listeners, stops the timer, and closes the owning {@link Arena} —
- * after which the {@link MemorySegment} (and the {@link ByteBuffer} view
- * inside the {@link PixelBuffer}) become invalid and any access throws
- * {@link IllegalStateException}. Call {@code dispose()} when the canvas is
+ * all listeners, stops the timer, and releases the canvas's references to
+ * its pixel surface. The automatic arena keeps the native storage alive
+ * while Prism still retains its {@link ByteBuffer}; the runtime reclaims it
+ * once the last reference disappears. Call {@code dispose()} when the canvas is
  * permanently removed (e.g. the parent view is being destroyed).
  *
  * <p>When the canvas shrinks to zero width or height the surface is released
- * eagerly; the next non-zero size reallocates from scratch.
+ * from the canvas eagerly; the next non-zero size reallocates from scratch.
  *
  * <h2>HiDPI</h2>
  * The surface is allocated at <strong>logical-pixel</strong> resolution
@@ -84,8 +84,9 @@ import java.util.logging.Logger;
  * surface (re)allocation must occur on the JavaFX Application Thread.
  * Calling {@code requestRender()} or {@code dispose()} from any other thread
  * throws {@link IllegalStateException}. {@link PixelBuffer#updateBuffer}
- * requires the FX thread, and the FFM {@link Arena#ofConfined()} pins
- * ownership to it as well.
+ * requires the FX thread. The backing FFM {@link Arena#ofAuto()} permits
+ * Prism's render thread to read the aliased buffer during texture uploads;
+ * renderer mutation and lifetime management remain FX-thread-owned.
  *
  * @see GpuRenderer
  * @see GpuRenderContext
@@ -129,9 +130,8 @@ public final class GpuCanvas extends Region {
     private final ChangeListener<Number> overlayWidthListener;
     private final ChangeListener<Number> overlayHeightListener;
 
-    // Off-heap pixel surface. Reallocated on resize, closed on dispose or
-    // when the canvas shrinks to zero width or height.
-    private Arena arena;
+    // Native storage follows the PixelBuffer's lifetime, including any
+    // outstanding Prism upload after resize or disposal.
     private MemorySegment pixels;
     private PixelBuffer<ByteBuffer> pixelBuffer;
     private int surfaceWidth;
@@ -337,22 +337,20 @@ public final class GpuCanvas extends Region {
         if (pixels != null && w == surfaceWidth && h == surfaceHeight) {
             return true;
         }
-        // (Re)allocate atomically: build the new surface, then close the old
-        // arena. Anything that referenced the old segment is invalidated, but
-        // the renderer never retains it across calls (per GpuRenderContext
-        // contract) and the displayed image is replaced before the close.
-        Arena oldArena = arena;
         int stride = w * BPP;
         long byteSize = (long) h * stride;
 
-        Arena newArena = Arena.ofConfined();
+        // FFM (JEP 454, final in Java 22): Prism reads on another thread and
+        // may retain the buffer after the FX thread replaces the image.
+        // An automatic arena follows those references; runLater is not an
+        // upload-completion fence and must not close the backing storage.
+        Arena newArena = Arena.ofAuto();
         MemorySegment newSegment = newArena.allocate(byteSize, BPP);
         // Native-backed segments give a direct ByteBuffer that aliases the
         // off-heap memory; Prism uploads from that address without copying.
         // A non-native segment would force per-commit copies into a staging
         // buffer, defeating the whole point of this pathway.
         if (!newSegment.isNative()) {
-            newArena.close();
             throw new IllegalStateException(
                     "GpuCanvas surface must be backed by a native MemorySegment");
         }
@@ -361,7 +359,6 @@ public final class GpuCanvas extends Region {
                 w, h, newBuffer, PixelFormat.getByteBgraPreInstance());
         WritableImage newImage = new WritableImage(newPixelBuffer);
 
-        this.arena = newArena;
         this.pixels = newSegment;
         this.pixelBuffer = newPixelBuffer;
         this.surfaceWidth = w;
@@ -370,30 +367,16 @@ public final class GpuCanvas extends Region {
 
         imageView.setImage(newImage);
 
-        // Defer closing the old arena to the next FX pulse so that any
-        // in-flight Prism upload that still references the previous
-        // PixelBuffer's ByteBuffer (which aliases the old MemorySegment)
-        // can complete before the memory is unmapped.
-        if (oldArena != null) {
-            Platform.runLater(oldArena::close);
-        }
         return true;
     }
 
     private void releaseSurface() {
-        if (arena == null) return;
-        // Defer closing to the next FX pulse so that any in-flight Prism
-        // upload referencing the PixelBuffer's aliased ByteBuffer can
-        // complete before the backing MemorySegment is unmapped.
-        Arena old = arena;
-        arena = null;
         pixels = null;
         pixelBuffer = null;
         surfaceWidth = 0;
         surfaceHeight = 0;
         surfaceStride = 0;
         imageView.setImage(null);
-        Platform.runLater(old::close);
     }
 
     private void clearSurface() {
@@ -484,9 +467,9 @@ public final class GpuCanvas extends Region {
      * to call multiple times; further property mutations and
      * {@link #requestRender()} calls have no effect after disposal.
      *
-     * <p>After disposal, any retained reference to the prior
-     * {@link GpuRenderContext#pixels()} segment becomes invalid — accessing
-     * it throws {@link IllegalStateException}.
+     * <p>Native storage is reclaimed after outstanding Prism references
+     * disappear. Renderers must still obey the borrowed-segment contract of
+     * {@link GpuRenderContext#pixels()}.
      */
     public void dispose() {
         requireFxThread("dispose");
@@ -510,19 +493,7 @@ public final class GpuCanvas extends Region {
         clearColor.removeListener(repaintOnChange);
         animated.removeListener(animatedListener);
         sceneProperty().removeListener(sceneListener);
-        if (arena != null) {
-            // Defer closing to the next FX pulse so that any in-flight Prism
-            // upload referencing the PixelBuffer's aliased ByteBuffer can
-            // complete before the backing MemorySegment is unmapped.
-            Arena old = arena;
-            arena = null;
-            pixels = null;
-            pixelBuffer = null;
-            surfaceWidth = 0;
-            surfaceHeight = 0;
-            surfaceStride = 0;
-            Platform.runLater(old::close);
-        }
+        releaseSurface();
     }
 
     // ------------------------------------------------------------------

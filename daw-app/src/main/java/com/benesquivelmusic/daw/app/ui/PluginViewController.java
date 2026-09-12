@@ -91,6 +91,11 @@ final class PluginViewController {
      * Workshop right pane hosts one focused editor at a time (§5.A).
      */
     private PluginEditorSession activeEditorSession;
+    private com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds analyzerFeeds;
+
+    void setAnalyzerFeeds(com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds feeds) {
+        analyzerFeeds = feeds;
+    }
 
     /**
      * External plugins this controller has already {@code initialize(...)}d
@@ -244,6 +249,7 @@ final class PluginViewController {
                         deps.openPluginFaultLog(),
                         deps.showNotification()));
         activeEditorSession = session;
+        session.bindAnalyzer(analyzerFeeds);
         // §6.1 [×] close — focus-only: the session is torn down and the pane
         // cleared, but the plugin stays registered and activated.
         session.frame().setOnCloseRequested(() -> {

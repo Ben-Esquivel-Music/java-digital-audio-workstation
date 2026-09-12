@@ -64,6 +64,7 @@ public final class LoudnessDisplay extends GpuCanvasView {
      */
     public LoudnessDisplay() {
         super(BACKGROUND, false);
+        setAccessibleText("M: --- S: --- I: ---");
         momentaryHistory = new double[HISTORY_SIZE];
         shortTermHistory = new double[HISTORY_SIZE];
         integratedHistory = new double[HISTORY_SIZE];
@@ -80,7 +81,17 @@ public final class LoudnessDisplay extends GpuCanvasView {
      * @param data the latest loudness measurement
      */
     public void update(LoudnessData data) {
-        if (data == null || isDisposed()) return;
+        if (isDisposed()) return;
+        if (data == null) {
+            momentaryLufs = shortTermLufs = integratedLufs = truePeakDbfs = Double.NEGATIVE_INFINITY;
+            loudnessRange = 0;
+            historyIndex = historyCount = 0;
+            setAccessibleText("M: --- S: --- I: ---");
+            gpuCanvas().requestRender();
+            return;
+        }
+        setAccessibleText(String.format(java.util.Locale.ROOT, "M: %.1f S: %.1f I: %.1f",
+                data.momentaryLufs(), data.shortTermLufs(), data.integratedLufs()));
 
         momentaryHistory[historyIndex] = Math.max(data.momentaryLufs(), MIN_LUFS);
         shortTermHistory[historyIndex] = Math.max(data.shortTermLufs(), MIN_LUFS);

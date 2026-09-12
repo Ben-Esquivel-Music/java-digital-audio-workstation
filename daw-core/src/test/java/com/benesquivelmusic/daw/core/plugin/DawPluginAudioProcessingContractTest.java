@@ -68,24 +68,24 @@ class DawPluginAudioProcessingContractTest {
     // ── Non-processing plugins return empty ────────────────────────────────
 
     @Test
-    void spectrumAnalyzerPluginShouldReturnEmpty() {
+    void spectrumAnalyzerPluginShouldProvideTransparentInsert() {
         var plugin = new SpectrumAnalyzerPlugin();
         plugin.initialize(stubContext());
-        assertThat(plugin.asAudioProcessor()).isEmpty();
+        assertThat(plugin.asAudioProcessor()).hasValueSatisfying(this::assertTransparent);
     }
 
     @Test
-    void tunerPluginShouldReturnEmpty() {
+    void tunerPluginShouldProvideTransparentInsert() {
         var plugin = new TunerPlugin();
         plugin.initialize(stubContext());
-        assertThat(plugin.asAudioProcessor()).isEmpty();
+        assertThat(plugin.asAudioProcessor()).hasValueSatisfying(this::assertTransparent);
     }
 
     @Test
-    void soundWaveTelemetryPluginShouldReturnEmpty() {
+    void soundWaveTelemetryPluginShouldProvideTransparentInsert() {
         var plugin = new SoundWaveTelemetryPlugin();
         plugin.initialize(stubContext());
-        assertThat(plugin.asAudioProcessor()).isEmpty();
+        assertThat(plugin.asAudioProcessor()).hasValueSatisfying(this::assertTransparent);
     }
 
     @Test
@@ -199,7 +199,7 @@ class DawPluginAudioProcessingContractTest {
     void allNonEffectTypeBuiltInPluginsShouldReturnEmpty() {
         int checked = 0;
         for (BuiltInDawPlugin plugin : BuiltInDawPlugin.discoverAll()) {
-            if (plugin.getDescriptor().type() != PluginType.EFFECT) {
+            if (plugin.getDescriptor().type() != PluginType.EFFECT && !(plugin instanceof LiveAnalyzerPlugin)) {
                 injectStubRendererIfNeeded(plugin);
                 plugin.initialize(stubContext());
                 assertThat(plugin.asAudioProcessor())
@@ -290,10 +290,23 @@ class DawPluginAudioProcessingContractTest {
 
     @Test
     void nonProcessingPluginShouldNotWireIntoMixerChannel() {
-        var plugin = new SpectrumAnalyzerPlugin();
+        var plugin = new MetronomePlugin();
         plugin.initialize(stubContext());
 
         assertThat(InsertEffectFactory.createSlotFromPlugin(plugin)).isEmpty();
+    }
+
+    private void assertTransparent(com.benesquivelmusic.daw.sdk.audio.AudioProcessor processor) {
+        float[][] input = {{0.25f, -0.5f}, {-0.75f, 0.125f}};
+        float[][] output = new float[2][2];
+        processor.process(input, output, 2);
+        assertThat(output).isDeepEqualTo(input);
+        assertThat(processor.getLatencySamples()).isZero();
+        assertThat(processor.supportsDouble()).isTrue();
+        double[][] precise = {{0.123456789123, -0.456789123456}, {0.789123456789, -0.123456789123}};
+        double[][] doubleOutput = new double[2][2];
+        processor.processDouble(precise, doubleOutput, 2);
+        assertThat(doubleOutput).isDeepEqualTo(precise);
     }
 
     @Test

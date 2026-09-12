@@ -38,7 +38,7 @@ final class AnalysisLane {
 
     /**
      * Drains up to one ring's worth of blocks into the consumer, in order,
-     * then reports any new overrun. Analysis thread only; bounded per call so
+     * reporting an overrun before delivering surviving blocks. Analysis thread only; bounded per call so
      * one hot lane cannot starve the others.
      */
     void drain() {
@@ -55,8 +55,13 @@ final class AnalysisLane {
             if (numFrames < 0) {
                 break;
             }
+            reportOverrun(ring);
             consumer.onBlock(scratch, ring.lastChannelCount(), numFrames, sampleRate);
         }
+        reportOverrun(ring);
+    }
+
+    private void reportOverrun(SampleBlockRing ring) {
         long dropped = ring.droppedBlocks();
         if (dropped != reportedDropped) {
             reportedDropped = dropped;

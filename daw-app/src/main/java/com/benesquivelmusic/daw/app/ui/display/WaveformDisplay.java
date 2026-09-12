@@ -63,6 +63,7 @@ public final class WaveformDisplay extends GpuCanvasView {
      */
     public void setWaveformData(WaveformData data) {
         this.data = data;
+        if (data == null) cursorPosition = cursorVelocity = 0;
         gpuCanvas().requestRender();
     }
 
