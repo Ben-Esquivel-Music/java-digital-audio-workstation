@@ -57,6 +57,12 @@ import java.util.Objects;
  * frame's live fields, so a torn frame mixing two blocks or two epochs is
  * impossible (the "latest-wins publication" acceptance test).</p>
  *
+ * <p>The engine brackets a render attempt with deferred publication: the
+ * first tentative write leaves the seqlock odd until the entire render
+ * completes. A failed render replaces that hidden frame and its analysis
+ * samples with silence before releasing either lane. Unvisited healthy taps
+ * retain their previous frame and stamp.</p>
+ *
  * <p>No allocation, no lock and no atomic read-modify-write on any producer
  * ({@code @RealTimeSafe}) path. The consumer-side
  * {@link #readInto(MeterFrame)}, {@link #hasPublished()} and
@@ -99,6 +105,9 @@ public final class LevelTapSlot {
     private boolean publishedClipped;
     private long publishedEpoch;
     private long publishedBlockIndex;
+    // Render-thread owned: keep the seqlock odd until the entire render succeeds.
+    private boolean publicationDeferred;
+    private boolean publicationPending;
 
     /**
      * Analysis rings fixed for this slot's snapshot generation. A registry
@@ -250,9 +259,7 @@ public final class LevelTapSlot {
     public void publish(int numFrames) {
         int lanes = accumulatedChannels;
         double inverseFrames = numFrames > 0 ? 1.0 / numFrames : 0.0;
-        long s = (long) SEQUENCE.getOpaque(this);
-        SEQUENCE.setOpaque(this, s + 1L);
-        VarHandle.storeStoreFence();
+        beginPublication();
         boolean clipped = false;
         for (int ch = 0; ch < lanes; ch++) {
             float peak = accumulatedPeak[ch];
@@ -270,7 +277,7 @@ public final class LevelTapSlot {
         publishedClipped = clipped;
         publishedEpoch = accumulatedEpoch;
         publishedBlockIndex = accumulatedBlockIndex;
-        SEQUENCE.setRelease(this, s + 2L);
+        finishPublication();
     }
 
     /**
@@ -281,9 +288,7 @@ public final class LevelTapSlot {
     @RealTimeSafe
     public void publishSilence(long epoch, long blockIndex, int channelCount) {
         int lanes = clampLanes(channelCount);
-        long s = (long) SEQUENCE.getOpaque(this);
-        SEQUENCE.setOpaque(this, s + 1L);
-        VarHandle.storeStoreFence();
+        beginPublication();
         for (int ch = 0; ch < MAX_CHANNELS; ch++) {
             publishedPeak[ch] = 0f;
             publishedRms[ch] = 0f;
@@ -292,7 +297,53 @@ public final class LevelTapSlot {
         publishedClipped = false;
         publishedEpoch = epoch;
         publishedBlockIndex = blockIndex;
-        SEQUENCE.setRelease(this, s + 2L);
+        finishPublication();
+    }
+
+    @RealTimeSafe
+    void deferPublication() {
+        publicationDeferred = true;
+        for (SampleBlockRing ring : rings) {
+            ring.deferPublication();
+        }
+    }
+
+    @RealTimeSafe
+    private void beginPublication() {
+        if (!publicationPending) {
+            long sequence = (long) SEQUENCE.getOpaque(this);
+            SEQUENCE.setOpaque(this, sequence + 1L);
+            VarHandle.storeStoreFence();
+            publicationPending = true;
+        }
+    }
+
+    @RealTimeSafe
+    private void finishPublication() {
+        if (!publicationDeferred && publicationPending) {
+            long sequence = (long) SEQUENCE.getOpaque(this);
+            SEQUENCE.setRelease(this, sequence + 1L);
+            publicationPending = false;
+        }
+    }
+
+    /** Replaces all tentative levels and samples before any consumer can see them. */
+    @RealTimeSafe
+    void abortBlock(long epoch, long blockIndex, int channelCount, int numFrames) {
+        int lanes = publicationPending ? publishedChannels : channelCount;
+        publishSilence(epoch, blockIndex, lanes);
+        for (SampleBlockRing ring : rings) {
+            ring.writeSilence(lanes, numFrames);
+        }
+    }
+
+    @RealTimeSafe
+    void completePublication() {
+        publicationDeferred = false;
+        finishPublication();
+        for (SampleBlockRing ring : rings) {
+            ring.completePublication();
+        }
     }
 
     /**

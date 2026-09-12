@@ -54,6 +54,7 @@ public final class TapSnapshot {
     private final int returnSlotCount;
     private final Map<MeterTapPoint, LevelTapSlot> slotsByPoint;
     private final Map<MeterTapPoint, InsertTapPair> pairsByPoint;
+    private final LevelTapSlot[] publicationSlots;
 
     /** An unbound snapshot: nothing is tapped. */
     static TapSnapshot empty(MeteringTapBus bus, long epoch) {
@@ -127,6 +128,11 @@ public final class TapSnapshot {
         }
         this.slotsByPoint = byPoint;
         this.pairsByPoint = pairs;
+        var publicationSlots = new java.util.ArrayList<>(byPoint.values());
+        for (InsertTapPair pair : insertPairs) {
+            publicationSlots.add(pair.input());
+        }
+        this.publicationSlots = publicationSlots.toArray(NO_SLOTS);
         this.hasAnalysisRings = rings;
         this.channelSlotCount = channelCount;
         this.returnSlotCount = returnCount;
@@ -160,6 +166,30 @@ public final class TapSnapshot {
     @RealTimeSafe
     public long blockIndex() {
         return bus.currentBlockIndex();
+    }
+
+    /** Holds level and analysis publication until the engine finishes this render attempt. */
+    @RealTimeSafe
+    public void beginPublication() {
+        for (LevelTapSlot slot : publicationSlots) {
+            slot.deferPublication();
+        }
+    }
+
+    /** Replaces every demanded tap, including unvisited inserts, with one silent block. */
+    @RealTimeSafe
+    public void abortBlock(int channelCount, int numFrames) {
+        long stamp = blockIndex();
+        for (LevelTapSlot slot : publicationSlots) {
+            slot.abortBlock(epoch, stamp, channelCount, numFrames);
+        }
+    }
+
+    @RealTimeSafe
+    void completePublication() {
+        for (LevelTapSlot slot : publicationSlots) {
+            slot.completePublication();
+        }
     }
 
     /** {@code true} when at least one analysis ring is attached anywhere in this snapshot. */

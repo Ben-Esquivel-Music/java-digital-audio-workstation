@@ -196,9 +196,12 @@ public final class MeteringTapBus {
             thread = analysisThread;
             analysisThread = null;
         }
-        fire(callbacks);
-        if (thread != null) {
-            thread.close();
+        try {
+            fire(callbacks);
+        } finally {
+            if (thread != null) {
+                thread.close();
+            }
         }
     }
 
@@ -346,12 +349,17 @@ public final class MeteringTapBus {
     }
 
     /**
-     * Ends a block: advances the block counter and, iff {@code taps} carries
-     * analysis rings, unparks the analysis thread. The render thread's only
+     * Ends an attempt: releases its staged levels and samples, advances the
+     * block counter and, iff {@code taps} carries analysis rings, unparks the
+     * analysis thread. Failed renders replace their tentative data with
+     * silence before completing. The wake is the render thread's only
      * cross-thread signal.
      */
     @RealTimeSafe
     public void blockCompleted(TapSnapshot taps) {
+        if (taps != null) {
+            taps.completePublication();
+        }
         blockIndex++;
         if (taps != null && taps.hasAnalysisRings()) {
             AnalysisThread thread = analysisThread;

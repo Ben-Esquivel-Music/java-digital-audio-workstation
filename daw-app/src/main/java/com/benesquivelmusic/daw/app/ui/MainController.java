@@ -1129,23 +1129,26 @@ public final class MainController {
                     if (commandPaletteView != null) {
                         commandPaletteView.setOwner(primaryStage);
                     }
-                    primaryStage.setOnHidden(_ -> {
+                    primaryStage.setOnHidden(_ -> runWindowTeardown(() -> {
                         // Story 293 — release the view-model layer (binders + VM
                         // listeners + continuous channels) so nothing leaks on close.
                         for (Runnable disposer : vmDisposers) { disposer.run(); }
                         vmDisposers.clear();
+                    }, () -> {
                         // Story 318 — detach every meter consumer (and the
                         // feed's pulse participant) before the engine unbinds
                         // the tap bus.
                         if (meterFeed != null) {
                             meterFeed.dispose();
                         }
+                    }, () -> {
                         // Story 314 — detach the engine from the project
                         // (transport nulled first, killing playbackActive)
                         // before the audio/engine teardown below.
                         if (engineBinder != null) {
                             engineBinder.unbind();
                         }
+                    }, () -> {
                         // Story 318 — end of the engine's life: stop it if it
                         // is still running and CLOSE the metering tap bus.
                         // unbind() only disposes the subscriptions and
@@ -1153,31 +1156,26 @@ public final class MainController {
                         // "daw-metering-analysis" thread is never joined and
                         // outlives the window (story 319 attaches the first
                         // analysis consumers that make it wake at 100 Hz).
-                        // Guarded: shutdown() joins the render pump, tears down
-                        // the render collaborators and delivers announcement
-                        // callbacks, and an escape from any of those would skip
-                        // the journal close and the working-session seal below —
-                        // losing user data to a teardown fault.
                         if (audioEngine != null) {
-                            try {
-                                audioEngine.shutdown();
-                            } catch (RuntimeException e) {
-                                LOG.log(Level.WARNING,
-                                        "Audio engine shutdown failed; continuing window teardown",
-                                        e);
-                            }
+                            audioEngine.shutdown();
                         }
-                        disposeRenderQueue();
-                        pluginViewController.dispose();
+                    }, this::disposeRenderQueue, () -> {
+                        if (pluginViewController != null) {
+                            pluginViewController.dispose();
+                        }
+                    }, () -> {
                         if (pluginFaultUiController != null) {
                             pluginFaultUiController.dispose();
                         }
+                    }, () -> {
                         if (pluginSupervisor != null) {
                             pluginSupervisor.close();
                         }
+                    }, () -> {
                         if (backupRetentionController != null) {
                             backupRetentionController.shutdown();
                         }
+                    }, () -> {
                         // Story 281 (review N5) — release the
                         // selection-model listener wired by Workshop's
                         // host controller, alongside the other lifetime-
@@ -1185,22 +1183,27 @@ public final class MainController {
                         if (viewNavigationController != null) {
                             viewNavigationController.dispose();
                         }
+                    }, () -> {
                         if (lockIndicatorTimeline != null) {
                             lockIndicatorTimeline.stop();
                             lockIndicatorTimeline = null;
                         }
+                    }, () -> {
                         // Story 295 — release the disk-scan scheduler thread.
                         if (diskScanner != null) {
                             diskScanner.stop();
                         }
+                    }, () -> {
                         if (dockManifestModel != null) {
                             dockManifestModel.dispose();
                         }
+                    }, () -> {
                         // Story 287 — stop AnimationTimers and free the
                         // off-heap GpuCanvas surfaces of the analyzer
                         // displays + telemetry view we now own (FX thread;
                         // GpuCanvasView.dispose() is idempotent).
                         disposeVisualizationDisplays();
+                    }, () -> {
                         // Story 298 — close the write-ahead journal on shutdown,
                         // BEFORE the EventBus closes (DawApplication's WINDOW_HIDDEN
                         // handler closes the bus). Detach the recorder from the bus
@@ -1240,7 +1243,7 @@ public final class MainController {
                                 }
                             });
                         }
-                    });
+                    }));
                 }
             }
         });
@@ -1264,6 +1267,34 @@ public final class MainController {
         // standard event dispatch chain in response.
         if (inspectorDrawer != null && rootPane != null) {
             inspectorDrawer.installSourceEventForwarding(rootPane);
+        }
+    }
+
+    /** Runs every lifetime cleanup before propagating the first teardown failure. */
+    static void runWindowTeardown(Runnable first, Runnable... remaining) {
+        Throwable failure = null;
+        try {
+            first.run();
+        } catch (RuntimeException | Error e) {
+            failure = e;
+        } finally {
+            for (Runnable cleanup : remaining) {
+                try {
+                    cleanup.run();
+                } catch (RuntimeException | Error e) {
+                    if (failure == null) {
+                        failure = e;
+                    } else if (failure != e) {
+                        failure.addSuppressed(e);
+                    }
+                }
+            }
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
         }
     }
 

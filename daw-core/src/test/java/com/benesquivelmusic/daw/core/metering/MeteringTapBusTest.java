@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -508,6 +509,30 @@ class MeteringTapBusTest {
 
         assertThat(first.isDisposed()).isTrue();
         assertThat(secondFired.get()).isTrue();
+    }
+
+    @Test
+    void disposalCallbackErrorStillTerminatesTheActualAnalysisThread() throws Exception {
+        bus.rebind(mixer, FORMAT, 1L);
+        var subscription = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2,
+                (samples, channels, frames, rate) -> { });
+        var analysisField = MeteringTapBus.class.getDeclaredField("analysisThread");
+        analysisField.setAccessible(true);
+        var threadField = AnalysisThread.class.getDeclaredField("thread");
+        threadField.setAccessible(true);
+        var thread = (Thread) threadField.get(analysisField.get(bus));
+        var original = new AssertionError("disposal callback");
+        subscription.onDisposed(() -> { throw original; });
+        assertThat(thread.isAlive()).isTrue();
+
+        assertThatThrownBy(bus::close).isSameAs(original);
+
+        assertThat(thread.isAlive()).as("the captured worker was joined, not merely forgotten").isFalse();
+        assertThat(subscription.isDisposed()).isTrue();
+        assertThat(bus.isClosed()).isTrue();
+        assertThat(bus.snapshot().isEmpty()).isTrue();
+        bus.close();
+        assertThatIllegalStateException().isThrownBy(() -> bus.attachLevel(MeterTapPoint.MASTER_OUT));
     }
 
     @Test

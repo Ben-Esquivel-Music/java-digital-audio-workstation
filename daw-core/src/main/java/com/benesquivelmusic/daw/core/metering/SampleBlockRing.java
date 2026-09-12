@@ -20,6 +20,12 @@ import java.util.Arrays;
  * was overwritten underneath it. Oversized blocks are clamped to
  * {@link #blockFrames()} and counted in {@link #truncatedBlocks()}.</p>
  *
+ * <p>During an engine render attempt the current tail slot remains private:
+ * its sequence and the tail are released only when the whole render finishes.
+ * A failed attempt overwrites that pending slot with silence. The consumer
+ * may drop an overwritten old block while the ring is full, but cannot read
+ * tentative samples or count an aborted attempt as two blocks.</p>
+ *
  * <h2>Consumer (analysis thread)</h2>
  * <p>{@link #readInto(float[][])} detects a lap ({@code tail - head > capacity})
  * or a torn slot, skips forward to the oldest surviving block, adds the
@@ -66,6 +72,8 @@ public final class SampleBlockRing {
     private int lastChannelCount;            // consumer-owned
     private volatile long droppedBlocks;     // consumer-written, single writer
     private volatile long truncatedBlocks;   // producer-written, single writer
+    private boolean publicationDeferred;     // producer-owned
+    private boolean publicationPending;      // producer-owned
 
     /**
      * Creates a ring of at least {@code requestedBlocks} slots (rounded up to
@@ -227,8 +235,30 @@ public final class SampleBlockRing {
     private void commit(int index, int lanes, int frames, long t) {
         slotChannels[index] = lanes;
         slotFrames[index] = frames;
-        SLOT_SEQUENCE.setRelease(slotSequence, index, t);
-        TAIL.setRelease(this, t + 1L);
+        if (publicationDeferred) {
+            // Keep the current tail slot private until the whole render completes.
+            // An abort overwrites this same slot with silence, without advancing time twice.
+            publicationPending = true;
+        } else {
+            SLOT_SEQUENCE.setRelease(slotSequence, index, t);
+            TAIL.setRelease(this, t + 1L);
+        }
+    }
+
+    @RealTimeSafe
+    void deferPublication() {
+        publicationDeferred = true;
+    }
+
+    @RealTimeSafe
+    void completePublication() {
+        publicationDeferred = false;
+        if (publicationPending) {
+            long t = (long) TAIL.getOpaque(this);
+            SLOT_SEQUENCE.setRelease(slotSequence, (int) (t & mask), t);
+            TAIL.setRelease(this, t + 1L);
+            publicationPending = false;
+        }
     }
 
     @RealTimeSafe

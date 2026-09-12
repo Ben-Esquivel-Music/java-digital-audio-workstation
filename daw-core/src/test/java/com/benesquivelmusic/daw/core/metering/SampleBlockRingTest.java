@@ -179,6 +179,35 @@ class SampleBlockRingTest {
     }
 
     @Test
+    void anAbortedDeferredWriteReplacesThePendingFullRingSlotOnlyOnce() {
+        var ring = new SampleBlockRing(1, FRAMES);
+        var destination = scratch();
+        ring.write(block(1, 2), 2, FRAMES);
+        ring.deferPublication();
+        ring.write(block(2, 2), 2, FRAMES);
+        assertThat(ring.readInto(destination)).isEqualTo(-1);
+        assertThat(ring.droppedBlocks()).isEqualTo(1);
+        ring.write(block(3, 2), 2, FRAMES);
+        ring.writeSilence(2, FRAMES);
+        assertThat(ring.readInto(destination)).isEqualTo(-1);
+
+        ring.completePublication();
+
+        assertThat(ring.readInto(destination)).isEqualTo(FRAMES);
+        assertThat(destination[0]).containsOnly(0f);
+        assertThat(destination[1]).containsOnly(0f);
+        assertThat(ring.lastChannelCount()).isEqualTo(2);
+        assertThat(ring.readInto(destination)).isEqualTo(-1);
+        assertThat(ring.droppedBlocks()).isEqualTo(1);
+        ring.deferPublication();
+        ring.write(block(4, 2), 2, FRAMES);
+        ring.completePublication();
+        assertThat(ring.readInto(destination)).isEqualTo(FRAMES);
+        assertThat(destination[0]).containsOnly(4f);
+        assertThat(ring.droppedBlocks()).isEqualTo(1);
+    }
+
+    @Test
     void silenceClampsFramesAndChannelsAndCountsTruncation() {
         var ring = new SampleBlockRing(1, FRAMES);
         float[][] destination = scratch();

@@ -22,6 +22,33 @@ class LevelTapSlotTest {
     }
 
     @Test
+    void deferredPublicationKeepsTentativeLevelsPrivateUntilAbortCompletes() {
+        var slot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
+        var frame = new MeterFrame();
+        slot.publishSilence(1, 0, 2);
+        assertThat(slot.readInto(frame)).isTrue();
+        slot.deferPublication();
+        slot.beginBlock(1, 1, 2);
+        slot.accumulate(0, 0.75f);
+        slot.publish(1);
+        assertThat(slot.readInto(frame)).isFalse();
+        assertThat(frame.blockIndex()).isZero();
+        assertThat(frame.maxPeak()).isZero();
+        slot.abortBlock(1, 1, 2, 1);
+        assertThat(slot.readInto(frame)).isFalse();
+
+        slot.completePublication();
+
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.blockIndex()).isEqualTo(1);
+        assertThat(frame.maxPeak()).isZero();
+        slot.deferPublication();
+        slot.completePublication();
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.blockIndex()).as("an unvisited healthy tap stays stale").isEqualTo(1);
+    }
+
+    @Test
     void perSampleAccumulationPublishesPeakAndRms() {
         LevelTapSlot slot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
         slot.beginBlock(5L, 17L, 2);

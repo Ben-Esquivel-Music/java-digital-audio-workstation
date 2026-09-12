@@ -4742,24 +4742,37 @@ public final class AudioEngine {
             taps = null;
         }
 
-        // Story 137: tap the raw input signal per armed track BEFORE any
-        // processing so the mixer's input-meter column and the clip LED
-        // always reflect the converter-side signal (not post-gain / post-
-        // inserts). No-op when no registry is bound or no track is armed.
-        if (inputRegistry != null && inputBuffer != null && currentTracks != null) {
-            tapArmedTrackInputs(inputRegistry, inputBuffer, numFrames, currentTracks);
+        if (taps != null) {
+            taps.beginPublication();
         }
+        boolean rendered = false;
+        try {
+            // Story 137: tap the raw input signal per armed track BEFORE any
+            // processing so the mixer's input-meter column and the clip LED
+            // always reflect the converter-side signal (not post-gain / post-
+            // inserts). No-op when no registry is bound or no track is armed.
+            if (inputRegistry != null && inputBuffer != null && currentTracks != null) {
+                tapArmedTrackInputs(inputRegistry, inputBuffer, numFrames, currentTracks);
+            }
 
-        renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
-                currentTransport, currentMixer, currentTracks,
-                currentMidiRenderer, masterChain, cb, monitor,
-                enforcer,
-                currentMetronome, currentRouter,
-                currentCueBusManager, currentBackend, taps, interleavedOutput);
-
-        // Story 318: stamp the next block and wake the analysis lane (only
-        // when a ring exists) — the render thread's sole cross-thread signal.
-        meteringTapBus.blockCompleted(taps);
+            renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
+                    currentTransport, currentMixer, currentTracks,
+                    currentMidiRenderer, masterChain, cb, monitor,
+                    enforcer,
+                    currentMetronome, currentRouter,
+                    currentCueBusManager, currentBackend, taps, interleavedOutput);
+            rendered = true;
+        } finally {
+            try {
+                if (!rendered && taps != null) {
+                    taps.abortBlock(format.channels(), numFrames);
+                }
+            } finally {
+                // Every attempted render consumes one stamp, including a failed
+                // block that the stream pump replaces with silence.
+                meteringTapBus.blockCompleted(taps);
+            }
+        }
     }
 
     /**
