@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
@@ -154,6 +155,28 @@ public final class AudioGraphScheduler {
                                         boolean anySolo,
                                         Predicate<MixerChannel> hasSidechain,
                                         boolean[] processed) {
+        processInsertsParallel(channels, channelBuffers, numFrames, anySolo, hasSidechain,
+                processed, null);
+    }
+
+    /**
+     * {@link #processInsertsParallel(List, float[][][], int, boolean, Predicate, boolean[])}
+     * carrying the block's {@link TapSnapshot} into each worker's
+     * {@code EffectsChain.process(in, out, n, taps)} call (story 318), so a
+     * channel whose inserts run on a worker still publishes its
+     * {@code INSERT_IO} frames — one channel's chain runs on exactly one
+     * thread per block, so every tap slot keeps a single writer.
+     *
+     * @param taps the block's tap snapshot, or {@code null} when untapped
+     */
+    @RealTimeSafe
+    public void processInsertsParallel(List<MixerChannel> channels,
+                                        float[][][] channelBuffers,
+                                        int numFrames,
+                                        boolean anySolo,
+                                        Predicate<MixerChannel> hasSidechain,
+                                        boolean[] processed,
+                                        TapSnapshot taps) {
         lastDispatchedTaskCount = 0;
         if (pool.size() <= 1 || numFrames < minParallelBlockSize) {
             return;
@@ -182,7 +205,7 @@ public final class AudioGraphScheduler {
                 continue;
             }
             ChannelTask task = taskImpls[taskIdx++];
-            task.configure(channel, channelBuffers[i], numFrames, processed, i);
+            task.configure(channel, channelBuffers[i], numFrames, processed, i, taps);
         }
 
         // Require at least two eligible tasks to amortize coordination cost.
@@ -213,14 +236,16 @@ public final class AudioGraphScheduler {
         private int numFrames;
         private boolean[] processed;
         private int channelIndex;
+        private TapSnapshot taps;
 
         void configure(MixerChannel channel, float[][] buffer, int numFrames,
-                       boolean[] processed, int channelIndex) {
+                       boolean[] processed, int channelIndex, TapSnapshot taps) {
             this.channel = channel;
             this.buffer = buffer;
             this.numFrames = numFrames;
             this.processed = processed;
             this.channelIndex = channelIndex;
+            this.taps = taps;
         }
 
         /** Clears retained references to allow GC between blocks / sessions. */
@@ -228,12 +253,13 @@ public final class AudioGraphScheduler {
             this.channel = null;
             this.buffer = null;
             this.processed = null;
+            this.taps = null;
         }
 
         @Override
         @RealTimeSafe
         public void run() {
-            channel.getEffectsChain().process(buffer, buffer, numFrames);
+            channel.getEffectsChain().process(buffer, buffer, numFrames, taps);
             processed[channelIndex] = true;
         }
     }

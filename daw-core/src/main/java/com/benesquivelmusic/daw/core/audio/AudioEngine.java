@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
+import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
@@ -83,6 +85,8 @@ public final class AudioEngine {
      */
     private volatile AudioFormat format;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** Terminal lifecycle state, guarded by lifecycleLock. */
+    private boolean shutdown;
 
     private final EffectsChain masterChain;
     private AudioBufferPool bufferPool;
@@ -337,17 +341,19 @@ public final class AudioEngine {
      * device-event and format-change workers.
      *
      * <h2>What it guards</h2>
-     * <p>ELEVEN public methods take it, in two shapes.</p>
+     * <p>Twelve public methods take it, in two shapes.</p>
      * <p>SEVEN read-then-write the quintet and delegate to a {@code …Locked}
      * body that holds the whole transition: {@link #start()}, {@link #stop()},
      * {@link #setStreamingProvision(StreamingProvision)},
      * {@link #startAudioOutput()}, {@link #startAudioInputOutput()},
      * {@link #stopAudioOutput()} and {@link #pauseAudioOutput()}.</p>
-     * <p>FOUR take it around an INLINE body and have no {@code …Locked}
+     * <p>Five take it around an INLINE body and have no {@code …Locked}
      * method of their own — {@link #setFormat(AudioFormat)},
      * {@link #setEngineSettings(AudioEngineSettings)},
      * {@link #beginControlPanelSession(AudioBackend)} and
-     * {@link #endControlPanelSession(AudioBackend)}. The first two are here
+     * {@link #endControlPanelSession(AudioBackend)}, plus {@link #shutdown()},
+     * which marks the engine terminal before calling {@code stopLocked}.
+     * The first two are here
      * because each is a read-then-write (a running check, then a store) over
      * a field the locked open path consumes; see their own javadoc. The
      * control-panel pair is here for a different reason: the registration it
@@ -357,7 +363,7 @@ public final class AudioEngine {
      * taking it with a bare volatile store would let a close that
      * is ALREADY inside {@code backend.close()} race the registration instead
      * of being waited for. Anything that reasons about this lock from the
-     * {@code …Locked} NAMING alone will miss all four, which is why
+     * {@code …Locked} NAMING alone will miss these methods, which is why
      * {@code AudioEngineLifecycleLockContractTest} derives its root set from
      * the lock ACQUISITION in the bytecode instead.</p>
      * <p>The control-panel pair also fixes a LOCK ORDER, and it is NOT the
@@ -841,6 +847,13 @@ public final class AudioEngine {
     // input-meter column and the arrangement-view clip indicator stay live.
     private volatile InputLevelMonitorRegistry inputLevelMonitorRegistry;
 
+    // The engine-owned metering tap bus (story 318, book §3.5 / §4.3): the
+    // registry every output meter subscribes to. The render path reads its
+    // immutable TapSnapshot once per block (one volatile load hoisted with
+    // the graph) and taps nothing when the bus is unbound. Bound / unbound /
+    // refreshed by the EngineBinder; closed by shutdown().
+    private final MeteringTapBus meteringTapBus = new MeteringTapBus();
+
     // Metronome click-generation pipeline (story 136). All three are
     // published volatilely so the audio thread sees a consistent view
     // without locking. The router writes its side output via
@@ -977,6 +990,7 @@ public final class AudioEngine {
      * {@link #resumeAudioOutputLocked()}, which already hold the lock.
      */
     private boolean startLocked() {
+        ensureNotShutdown();
         if (collaboratorTeardownDeferred) {
             stopPump(); // retry join; drains the deferral when it confirms
             if (collaboratorTeardownDeferred) {
@@ -1095,6 +1109,43 @@ public final class AudioEngine {
         } finally {
             lifecycleLock.unlock();
             announcements.deliver();
+        }
+    }
+
+    /**
+     * End of the engine's life (story 318): {@linkplain #stop() stops} the
+     * engine if it is running, then closes the {@linkplain #meteringTapBus()
+     * metering tap bus} — every subscription is disposed and the analysis
+     * thread is joined with a bounded timeout. Unlike {@link #stop()} this
+     * is terminal: every start path rejects further starts. The terminal
+     * state and stop transition share {@code lifecycleLock}; announcements
+     * and the bus close run after unlocking. Idempotent.
+     *
+     * <p>The bus close is in a {@code finally}: {@link #stop()} joins the
+     * render pump, tears down the render collaborators and delivers
+     * announcement callbacks into app code, so a failure there must not
+     * strand the {@code daw-metering-analysis} thread — the one resource
+     * only this method releases.</p>
+     */
+    public void shutdown() {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            shutdown = true;
+            stopLocked(announcements);
+        } finally {
+            lifecycleLock.unlock();
+            try {
+                announcements.deliver();
+            } finally {
+                meteringTapBus.close();
+            }
+        }
+    }
+
+    private void ensureNotShutdown() {
+        if (shutdown) {
+            throw new IllegalStateException("AudioEngine has been shut down");
         }
     }
 
@@ -1975,6 +2026,7 @@ public final class AudioEngine {
      */
     private void startAudioOutputLocked(PendingAnnouncements announcements,
                                         CaptureRequirement capture) {
+        ensureNotShutdown();
         StreamState state = this.streamState;
         if (state == StreamState.RUNNING) {
             return; // already running
@@ -3645,6 +3697,7 @@ public final class AudioEngine {
      *                      delivered by the caller after the unlock
      */
     private void startAudioInputOutputLocked(PendingAnnouncements announcements) {
+        ensureNotShutdown();
         // A close-first refusal still belongs to this recording start, so bind
         // the provision this invocation read before touching the old stream.
         rememberRequestedStreamStartAttempt(this.streamingProvision);
@@ -4256,6 +4309,11 @@ public final class AudioEngine {
      *                  disable playback rendering
      */
     public void setGraph(Transport transport, Mixer mixer, List<Track> tracks) {
+        setGraph(transport, mixer, tracks, meteringTapBus.epoch());
+    }
+
+    /** Publishes the graph's binding generation for matching its metering snapshot. */
+    public void setGraph(Transport transport, Mixer mixer, List<Track> tracks, long meteringEpoch) {
         PendingAnnouncements announcements = new PendingAnnouncements();
         try {
             synchronized (graphLock) {
@@ -4264,7 +4322,7 @@ public final class AudioEngine {
                 if (outgoing != null && outgoing != transport) {
                     announcements.clockReleased(outgoing);
                 }
-                this.graph = new EngineGraph(transport, mixer, tracks);
+                this.graph = new EngineGraph(transport, mixer, tracks, meteringEpoch);
                 if (transport != null) {
                     if (callbackIsDriving()) {
                         transport.setRealTimeClockActive(true);
@@ -4366,7 +4424,7 @@ public final class AudioEngine {
     public void setTracks(List<Track> tracks) {
         synchronized (graphLock) {
             EngineGraph current = this.graph;
-            this.graph = new EngineGraph(current.transport(), current.mixer(), tracks);
+            this.graph = new EngineGraph(current.transport(), current.mixer(), tracks, current.meteringEpoch());
         }
     }
 
@@ -4510,6 +4568,19 @@ public final class AudioEngine {
     }
 
     /**
+     * Story 318 — the engine-owned metering tap bus every output meter
+     * subscribes to (book §3.5). The {@link EngineBinder} binds it to the
+     * live project's mixer under the binding epoch, refreshes its slots on
+     * structural change, and unbinds it with the project; the render path
+     * reads its snapshot once per block. Never {@code null}.
+     *
+     * @return the metering tap bus
+     */
+    public MeteringTapBus meteringTapBus() {
+        return meteringTapBus;
+    }
+
+    /**
      * Story 136 — sets the {@link Metronome} the audio callback uses to
      * generate a click on each scheduled beat (and subdivision) that
      * lands inside the current buffer.
@@ -4612,6 +4683,10 @@ public final class AudioEngine {
      * Metronome, MetronomeSideOutputRouter, CueBusManager,
      * AudioBackend)}).</p>
      *
+     * <p>This planar-only overload does not publish {@code MASTER_OUT}.
+     * Interface consumers use {@link #processBlock(float[][], float[][], int, float[])}
+     * so the meter is accumulated during the required output write.</p>
+     *
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}
      * @param numFrames    the number of sample frames to process
@@ -4619,6 +4694,21 @@ public final class AudioEngine {
      */
     @RealTimeSafe
     public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        processBlock(inputBuffer, outputBuffer, numFrames, null);
+    }
+
+    /**
+     * Processes a block and writes the final samples into the stream pump's
+     * preallocated interleaved interface destination. {@code MASTER_OUT} is
+     * accumulated in that existing output-write loop, after master effects and
+     * all direct routes, and published before the bus completes the block.
+     * The planar-only overload omits this write and does not publish that tap.
+     *
+     * @param interleavedOutput interface samples, or {@code null} for planar-only output
+     */
+    @RealTimeSafe
+    public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
+                             float[] interleavedOutput) {
         if (!running.get()) {
             throw new IllegalStateException("Engine is not running");
         }
@@ -4643,21 +4733,46 @@ public final class AudioEngine {
         // The OPEN stream's backend (story 316): metronome writeToChannel
         // routing finally targets the stream that is actually playing.
         AudioBackend currentBackend = this.openBackend;
-
-        // Story 137: tap the raw input signal per armed track BEFORE any
-        // processing so the mixer's input-meter column and the clip LED
-        // always reflect the converter-side signal (not post-gain / post-
-        // inserts). No-op when no registry is bound or no track is armed.
-        if (inputRegistry != null && inputBuffer != null && currentTracks != null) {
-            tapArmedTrackInputs(inputRegistry, inputBuffer, numFrames, currentTracks);
+        // Story 318: the metering slot set for this block — one volatile
+        // load, used for the whole block. Matching both graph identity and
+        // epoch rejects either order of a concurrent binding publication;
+        // format matching also covers a deferred format-refresh callback.
+        TapSnapshot taps = meteringTapBus.snapshot();
+        if (!taps.matches(currentMixer, currentGraph.meteringEpoch()) || !taps.matchesFormat(format)) {
+            taps = null;
         }
 
-        renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
-                currentTransport, currentMixer, currentTracks,
-                currentMidiRenderer, masterChain, cb, monitor,
-                enforcer,
-                currentMetronome, currentRouter,
-                currentCueBusManager, currentBackend);
+        if (taps != null) {
+            taps.beginPublication();
+        }
+        boolean rendered = false;
+        try {
+            // Story 137: tap the raw input signal per armed track BEFORE any
+            // processing so the mixer's input-meter column and the clip LED
+            // always reflect the converter-side signal (not post-gain / post-
+            // inserts). No-op when no registry is bound or no track is armed.
+            if (inputRegistry != null && inputBuffer != null && currentTracks != null) {
+                tapArmedTrackInputs(inputRegistry, inputBuffer, numFrames, currentTracks);
+            }
+
+            renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
+                    currentTransport, currentMixer, currentTracks,
+                    currentMidiRenderer, masterChain, cb, monitor,
+                    enforcer,
+                    currentMetronome, currentRouter,
+                    currentCueBusManager, currentBackend, taps, interleavedOutput);
+            rendered = true;
+        } finally {
+            try {
+                if (!rendered && taps != null) {
+                    taps.abortBlock(format.channels(), numFrames);
+                }
+            } finally {
+                // Every attempted render consumes one stamp, including a failed
+                // block that the stream pump replaces with silence.
+                meteringTapBus.blockCompleted(taps);
+            }
+        }
     }
 
     /**
@@ -4819,8 +4934,8 @@ public final class AudioEngine {
      * {@code tracks} is deliberately NOT normalized to an empty list:
      * {@link #getTracks()} must keep returning {@code null} when unset.
      */
-    private record EngineGraph(Transport transport, Mixer mixer, List<Track> tracks) {
-        static final EngineGraph EMPTY = new EngineGraph(null, null, null);
+    private record EngineGraph(Transport transport, Mixer mixer, List<Track> tracks, long meteringEpoch) {
+        static final EngineGraph EMPTY = new EngineGraph(null, null, null, 0L);
     }
 
     /**

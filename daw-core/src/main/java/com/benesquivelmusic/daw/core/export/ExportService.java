@@ -111,7 +111,7 @@ public final class ExportService {
                 float[] rightBlock = new float[blockSize];
                 System.arraycopy(left, offset, leftBlock, 0, blockSize);
                 System.arraycopy(right, offset, rightBlock, 0, blockSize);
-                meter.process(leftBlock, rightBlock, blockSize);
+                meter.process(leftBlock, rightBlock, blockSize, Math.min(rangeData.length, 2));
                 offset += blockSize;
             }
             validationResult = meter.validateForExport(loudnessTarget);

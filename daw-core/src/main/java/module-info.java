@@ -95,6 +95,9 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.export.aaf;
     exports com.benesquivelmusic.daw.core.marker;
     exports com.benesquivelmusic.daw.core.mastering;
+    // Story 318 — the RT-safe metering tap bus (MeteringTapBus, MeterFrame,
+    // MeterTapPoint, subscription tokens) consumed by daw.app's meter feed.
+    exports com.benesquivelmusic.daw.core.metering;
     exports com.benesquivelmusic.daw.core.midi;
     exports com.benesquivelmusic.daw.core.mixer;
     exports com.benesquivelmusic.daw.core.mixer.snapshot;

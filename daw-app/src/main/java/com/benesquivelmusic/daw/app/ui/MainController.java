@@ -2,6 +2,10 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
+import com.benesquivelmusic.daw.app.ui.metering.MeterSinks;
+import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.app.ui.help.HelpControls;
 import com.benesquivelmusic.daw.app.ui.help.HelpKeyHandler;
 import com.benesquivelmusic.daw.app.ui.help.HelpOverlay;
@@ -181,6 +185,12 @@ public final class MainController {
     private AudioEngine audioEngine;
     /** Story 314 — the one binding point handing the engine the live project. */
     private EngineBinder engineBinder;
+    /**
+     * Story 318 — the {@code MeterFeed} pulse drain over
+     * {@code audioEngine.meteringTapBus()}; see {@link #meterFeed()}.
+     */
+    private MeterFeed meterFeed;
+    private VisibleMeterBinding levelMeterBinding;
     // Story 137: registry of per-track input-level monitors used by the
     // mixer's input-meter column and the arrangement-view clip indicator.
     private final InputLevelMonitorRegistry inputLevelMonitorRegistry = new InputLevelMonitorRegistry();
@@ -359,11 +369,13 @@ public final class MainController {
     private ClipInteractionController clipInteractionController;
     private TimelineRuler timelineRuler;
     // ── Story 287 — dockable analyzer displays ──────────────────────────────
-    // The spectrum + level-meter displays are still the live, idle-demo-fed
-    // instances handed to AnimationController; the other four are decorative
-    // shells (Non-Goal #1). All six are wrapped in DockableVisualizationPanel
-    // adapters (keyed by panel id in vizDockables) and mounted into the
-    // bottom dock strip when visible.
+    // Story 318: levelMeterDisplay is a real MASTER_OUT consumer of the
+    // engine's metering tap bus (subscribed through meterFeed in
+    // initialize()); spectrumDisplay is still the idle-demo-fed instance
+    // handed to AnimationController (story 319 wires the analysis lane) and
+    // the other four are decorative shells (Non-Goal #1). All six are wrapped
+    // in DockableVisualizationPanel adapters (keyed by panel id in
+    // vizDockables) and mounted into the bottom dock strip when visible.
     private SpectrumDisplay spectrumDisplay;
     private LevelMeterDisplay levelMeterDisplay;
     private com.benesquivelmusic.daw.app.ui.display.WaveformDisplay waveformDisplay;
@@ -466,6 +478,19 @@ public final class MainController {
      */
     private FxDispatcher dispatcher() {
         return fxDispatcher != null ? fxDispatcher : FxDispatcher.getDefault();
+    }
+
+    /**
+     * Story 318 — the FX-pulse drain every level meter subscribes through
+     * (Audio Engine Wiring Design Book §4.3). Created beside the engine and
+     * binder in {@link #initialize()}; the view wiring ({@code MixerView.
+     * setMeterFeed}, {@code PerformanceStageView.bindMeters}) reads it from
+     * here. {@code null} only in a pure-unit context with no dispatcher.
+     *
+     * @return the feed, or {@code null}
+     */
+    MeterFeed meterFeed() {
+        return meterFeed;
     }
 
     /**
@@ -852,6 +877,14 @@ public final class MainController {
         this.settingsModel = startupSettings;
         audioEngine = new AudioEngine(project.getFormat());
         engineBinder = new EngineBinder(audioEngine);
+        // Story 318 — the FX-pulse drain of the engine's metering tap bus
+        // (book §4.3): every output level meter subscribes through this one
+        // feed. Created right after the engine/binder so the displays built
+        // below can subscribe; disposed in setOnHidden. Null only in a
+        // pure-unit context with no dispatcher installed.
+        FxDispatcher feedDispatcher = dispatcher();
+        meterFeed = feedDispatcher == null ? null
+                : new MeterFeed(audioEngine.meteringTapBus(), feedDispatcher);
         // Story 137: bind the input-level-monitor registry so the engine
         // taps the raw input signal per armed track before any processing.
         audioEngine.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
@@ -950,12 +983,18 @@ public final class MainController {
         toolbarAppearanceController.apply();
         // Story 287 — construct the analyzer displays directly (the fixed
         // vizTileRow + VisualizationTileBuilder/VisualizationPanelController
-        // are retired). spectrumDisplay + levelMeterDisplay remain the
-        // idle-demo-fed instances AnimationController needs; the rest are
-        // decorative shells. They are wrapped + registered in
-        // installDockManager().
+        // are retired). They are wrapped + registered in installDockManager().
+        // Story 318: levelMeterDisplay (dock panel PANEL_LEVELS, "Peak / RMS")
+        // is a real MASTER_OUT consumer of the metering tap bus below;
+        // spectrumDisplay is still the idle-demo-fed instance
+        // AnimationController ticks until story 319 wires the analysis lane;
+        // the remaining displays are decorative shells until 319/321.
         spectrumDisplay = new SpectrumDisplay();
         levelMeterDisplay = new LevelMeterDisplay();
+        if (meterFeed != null) {
+            levelMeterBinding = new VisibleMeterBinding(meterFeed, MeterTapPoint.MASTER_OUT,
+                    levelMeterDisplay, MeterSinks.levelMeterDisplay(levelMeterDisplay));
+        }
         waveformDisplay = new com.benesquivelmusic.daw.app.ui.display.WaveformDisplay();
         loudnessDisplay = new com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay();
         correlationDisplay = new com.benesquivelmusic.daw.app.ui.display.CorrelationDisplay();
@@ -1016,6 +1055,12 @@ public final class MainController {
         // also show the miniature clip indicator in the arrangement view.
         viewNavigationController.getMixerView()
                 .setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+        // Story 318: subscribe every mixer strip's output meter to the engine's
+        // metering tap bus (track → CHANNEL_POST, return → RETURN_POST, master
+        // → MASTER_OUT). ViewNavigationController already applied the feed when
+        // it built the view; re-applying is idempotent and keeps the wiring
+        // visible beside the other post-construction mixer wiring.
+        viewNavigationController.getMixerView().setMeterFeed(meterFeed());
         // Story 215: wire driver-reported input/output channel-info
         // suppliers into the mixer so per-track routing dropdowns render
         // "Mic/Line 1" / "S/PDIF L" / "Phones 1 L" rather than the
@@ -1084,28 +1129,53 @@ public final class MainController {
                     if (commandPaletteView != null) {
                         commandPaletteView.setOwner(primaryStage);
                     }
-                    primaryStage.setOnHidden(_ -> {
+                    primaryStage.setOnHidden(_ -> runWindowTeardown(() -> {
                         // Story 293 — release the view-model layer (binders + VM
                         // listeners + continuous channels) so nothing leaks on close.
                         for (Runnable disposer : vmDisposers) { disposer.run(); }
                         vmDisposers.clear();
+                    }, () -> {
+                        // Story 318 — detach every meter consumer (and the
+                        // feed's pulse participant) before the engine unbinds
+                        // the tap bus.
+                        if (meterFeed != null) {
+                            meterFeed.dispose();
+                        }
+                    }, () -> {
                         // Story 314 — detach the engine from the project
                         // (transport nulled first, killing playbackActive)
                         // before the audio/engine teardown below.
                         if (engineBinder != null) {
                             engineBinder.unbind();
                         }
-                        disposeRenderQueue();
-                        pluginViewController.dispose();
+                    }, () -> {
+                        // Story 318 — end of the engine's life: stop it if it
+                        // is still running and CLOSE the metering tap bus.
+                        // unbind() only disposes the subscriptions and
+                        // publishes the empty snapshot; without this the
+                        // "daw-metering-analysis" thread is never joined and
+                        // outlives the window (story 319 attaches the first
+                        // analysis consumers that make it wake at 100 Hz).
+                        if (audioEngine != null) {
+                            audioEngine.shutdown();
+                        }
+                    }, this::disposeRenderQueue, () -> {
+                        if (pluginViewController != null) {
+                            pluginViewController.dispose();
+                        }
+                    }, () -> {
                         if (pluginFaultUiController != null) {
                             pluginFaultUiController.dispose();
                         }
+                    }, () -> {
                         if (pluginSupervisor != null) {
                             pluginSupervisor.close();
                         }
+                    }, () -> {
                         if (backupRetentionController != null) {
                             backupRetentionController.shutdown();
                         }
+                    }, () -> {
                         // Story 281 (review N5) — release the
                         // selection-model listener wired by Workshop's
                         // host controller, alongside the other lifetime-
@@ -1113,22 +1183,27 @@ public final class MainController {
                         if (viewNavigationController != null) {
                             viewNavigationController.dispose();
                         }
+                    }, () -> {
                         if (lockIndicatorTimeline != null) {
                             lockIndicatorTimeline.stop();
                             lockIndicatorTimeline = null;
                         }
+                    }, () -> {
                         // Story 295 — release the disk-scan scheduler thread.
                         if (diskScanner != null) {
                             diskScanner.stop();
                         }
+                    }, () -> {
                         if (dockManifestModel != null) {
                             dockManifestModel.dispose();
                         }
+                    }, () -> {
                         // Story 287 — stop AnimationTimers and free the
                         // off-heap GpuCanvas surfaces of the analyzer
                         // displays + telemetry view we now own (FX thread;
                         // GpuCanvasView.dispose() is idempotent).
                         disposeVisualizationDisplays();
+                    }, () -> {
                         // Story 298 — close the write-ahead journal on shutdown,
                         // BEFORE the EventBus closes (DawApplication's WINDOW_HIDDEN
                         // handler closes the bus). Detach the recorder from the bus
@@ -1168,7 +1243,7 @@ public final class MainController {
                                 }
                             });
                         }
-                    });
+                    }));
                 }
             }
         });
@@ -1192,6 +1267,34 @@ public final class MainController {
         // standard event dispatch chain in response.
         if (inspectorDrawer != null && rootPane != null) {
             inspectorDrawer.installSourceEventForwarding(rootPane);
+        }
+    }
+
+    /** Runs every lifetime cleanup before propagating the first teardown failure. */
+    static void runWindowTeardown(Runnable first, Runnable... remaining) {
+        Throwable failure = null;
+        try {
+            first.run();
+        } catch (RuntimeException | Error e) {
+            failure = e;
+        } finally {
+            for (Runnable cleanup : remaining) {
+                try {
+                    cleanup.run();
+                } catch (RuntimeException | Error e) {
+                    if (failure == null) {
+                        failure = e;
+                    } else if (failure != e) {
+                        failure.addSuppressed(e);
+                    }
+                }
+            }
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
         }
     }
 
@@ -1422,7 +1525,7 @@ public final class MainController {
 
     private void createAnimationController() {
         animationController = new AnimationController(
-                spectrumDisplay, levelMeterDisplay,
+                spectrumDisplay,
                 playButton, recordButton,
                 new Button[]{
                         skipBackButton, playButton, stopButton, recordButton,
@@ -1607,6 +1710,11 @@ public final class MainController {
         // lazily as tracks are armed.
         inputLevelMonitorRegistry.clear();
         newMixerView.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+        // Story 318: the freshly built MixerView starts with no meter feed —
+        // subscribe its strip meters to the (unchanged, app-scoped) tap-bus
+        // drain. The outgoing view's subscriptions are released by its own
+        // scene-detach listener when it leaves the scene graph.
+        newMixerView.setMeterFeed(meterFeed());
         // Story 215: the freshly-built MixerView starts with the default
         // empty supplier — re-wire the live driver-channel suppliers so
         // routing dropdowns show driver-reported names.
@@ -1837,6 +1945,9 @@ public final class MainController {
                     @Override public void onEditorFadeIn() { clipEditController.onEditorFadeIn(); }
                     @Override public void onEditorFadeOut() { clipEditController.onEditorFadeOut(); }
                     @Override public void markProjectDirty() { project.markDirty(); }
+                    // Story 318 — the app-scoped FX-pulse meter drain the
+                    // MixerView and Performance Stage subscribe through.
+                    @Override public MeterFeed meterFeed() { return MainController.this.meterFeed(); }
                     // ── Performance Stage (story 280) ─────────────────────────
                     // Story 315 — stage transport gestures ride the SAME
                     // command path as the toolbar and keyboard (§2.8).
@@ -2977,6 +3088,7 @@ public final class MainController {
      * is idempotent, so a display also disposed elsewhere is safe.
      */
     private void disposeVisualizationDisplays() {
+        if (levelMeterBinding != null) levelMeterBinding.close();
         if (spectrumDisplay != null) spectrumDisplay.dispose();
         if (levelMeterDisplay != null) levelMeterDisplay.dispose();
         if (waveformDisplay != null) waveformDisplay.dispose();

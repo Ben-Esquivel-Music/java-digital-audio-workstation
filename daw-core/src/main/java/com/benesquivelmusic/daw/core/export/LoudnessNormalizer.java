@@ -103,7 +103,7 @@ public final class LoudnessNormalizer {
             System.arraycopy(left, offset, leftBlock, 0, framesToProcess);
             System.arraycopy(right, offset, rightBlock, 0, framesToProcess);
 
-            meter.process(leftBlock, rightBlock, framesToProcess);
+            meter.process(leftBlock, rightBlock, framesToProcess, Math.min(channels, 2));
             offset += framesToProcess;
         }
 

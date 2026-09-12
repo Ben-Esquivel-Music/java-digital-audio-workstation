@@ -8,7 +8,11 @@ import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.metering.MeterSinks;
+import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
@@ -62,7 +66,9 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * <ul>
  *   <li>Channel name label</li>
  *   <li>Insert effects rack ({@link InsertEffectRack})</li>
- *   <li>Level meter (vertical bar via {@link LevelMeterDisplay})</li>
+ *   <li>Level meter (vertical bar via {@link LevelMeterDisplay}), showing the
+ *       channel's post-fader level from the engine's metering tap bus once
+ *       {@link #setMeterFeed(MeterFeed)} has been called (story 318)</li>
  *   <li>Volume fader (vertical {@link Slider})</li>
  *   <li>Pan control (horizontal {@link Slider})</li>
  *   <li>Mute / Solo / Arm buttons</li>
@@ -113,6 +119,18 @@ public final class MixerView extends VBox implements Dockable {
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
     private final List<InputMeterStrip> activeInputMeterStrips = new ArrayList<>();
+    /**
+     * Story 318 — the output meter of every track / return strip built by the
+     * last {@link #refresh()}, paired with the tap point it shows
+     * ({@code ChannelPost(channelId)} / {@code ReturnPost(busId)}). Insertion
+     * ordered (strip order) and keyed by the display <em>instance</em>, which
+     * is also the {@code MeterKey} surface — a strip meter is exactly one
+     * subscription. Rebuilt with the strips; the master strip is built once in
+     * the constructor and lives in {@link #masterMeterDisplay} instead.
+     */
+    private final Map<LevelMeterDisplay, MeterTapPoint> stripMeterPoints = new LinkedHashMap<>();
+    /** Visibility-owned meter bindings for {@link #stripMeterPoints}; closed by {@link #refresh()}. */
+    private final List<VisibleMeterBinding> stripMeterBindings = new ArrayList<>();
     /**
      * Channel UUIDs (track ids) currently selected via Ctrl/Shift-click on a
      * channel strip. Used to seed the "Create VCA from selection" right-click
@@ -219,6 +237,35 @@ public final class MixerView extends VBox implements Dockable {
      */
     private com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor dragVisualAdvisor;
     private InputLevelMonitorRegistry inputLevelMonitorRegistry;
+    /**
+     * Story 318 — the FX-pulse drain every strip meter subscribes through
+     * (Audio Engine Wiring Design Book §4.3). {@code null} until
+     * {@link #setMeterFeed(MeterFeed)} is called (and in every pure-unit
+     * context), in which case the strips render at their −120 dB floor exactly
+     * as they did before the tap bus existed.
+     */
+    private MeterFeed meterFeed;
+    /** The master strip's output meter — built once in the constructor, never rebuilt. */
+    private LevelMeterDisplay masterMeterDisplay;
+    /** The master strip's {@code MASTER_OUT} binding; survives strip refreshes. */
+    private VisibleMeterBinding masterMeterBinding;
+    /**
+     * Story 318 — {@code true} before the first scene attachment and while detached.
+     * While it is set this view holds NO meter subscription, so a
+     * {@link #refresh()} driven from elsewhere (a track added while the Mixer
+     * is off screen) cannot re-acquire live tokens on a view that may never be
+     * shown again — which would pin the view, its displays and the old
+     * project's channels in the app-scoped feed for the life of the process.
+     */
+    private boolean meterSceneDetached = true;
+    /**
+     * Story 318 — {@code true} while the channel-link and undo-history
+     * listeners are registered. The scene-detach branch removes them; the
+     * re-attach branch has to put them back, because the
+     * {@code ViewNavigationController} re-mounts the SAME instance on every
+     * return to the Mixer.
+     */
+    private boolean modelListenersAttached;
     private java.util.function.Supplier<List<AudioChannelInfo>> inputChannelInfoSupplier =
             () -> List.of();
     private java.util.function.Supplier<List<AudioChannelInfo>> outputChannelInfoSupplier =
@@ -325,6 +372,7 @@ public final class MixerView extends VBox implements Dockable {
             }
         };
         project.getChannelLinkManager().addListener(this.channelLinkListener);
+        this.modelListenersAttached = true;
 
         // Auto-unregister listeners when this view is removed from a scene
         // so a replaced MixerView (e.g. on project reload via
@@ -332,10 +380,25 @@ public final class MixerView extends VBox implements Dockable {
         // referenced by ChannelLinkManager or UndoManager (memory-leak fix).
         sceneProperty().addListener((_, _, newScene) -> {
             if (newScene == null) {
-                project.getChannelLinkManager().removeListener(channelLinkListener);
-                if (undoManager != null) {
-                    undoManager.removeHistoryListener(undoHistoryListener);
-                }
+                releaseModelListeners();
+                // Story 318 — a detached MixerView keeps no meter subscription
+                // alive in the app-scoped MeterFeed (javafx-application-design
+                // §10/§15). The feed reference is kept so the re-attach branch
+                // below can subscribe again.
+                meterSceneDetached = true;
+                disposeAllMeterSubscriptions();
+            } else {
+                // Re-mounted: the ViewNavigationController caches this view and
+                // puts the SAME instance back into the BorderPane's centre on
+                // every return to the Mixer, and no host calls setMeterFeed
+                // again — so EVERY resource the detach branch released has to
+                // be re-acquired here or it is gone for the rest of the
+                // session: the meters would stay dark, undo/redo would stop
+                // refreshing the solo-safe rings, and a channel-link edit would
+                // stop re-rendering the strips.
+                acquireModelListeners();
+                meterSceneDetached = false;
+                resubscribeAllMeters();
             }
         });
 
@@ -742,6 +805,173 @@ public final class MixerView extends VBox implements Dockable {
         return inputLevelMonitorRegistry;
     }
 
+    // ── Story 318 — output meters fed by the metering tap bus ────────────────
+
+    /**
+     * Binds the app-scoped {@link MeterFeed} so every strip's output meter
+     * shows the level the engine actually renders (story 318; Audio Engine
+     * Wiring Design Book §4.3, §5.3).
+     *
+     * <p>Each track strip subscribes {@link MeterTapPoint.ChannelPost} for its
+     * channel id, each return strip {@link MeterTapPoint.ReturnPost} for its
+     * bus id, and the master strip {@link MeterTapPoint#MASTER_OUT} — always
+     * <em>post-fader</em>, so a fader move is visible on the meter. The
+     * {@code MeterKey} surface is the {@link LevelMeterDisplay} instance, so a
+     * strip can never accumulate two subscriptions for the same meter, and the
+     * {@link VisibleMeterBinding} acquires a subscription only while the
+     * display and its ancestors are visible in a showing window. Hidden or
+     * unmounted meters leave no entry in the FX-pulse drain. Meters fall to their
+     * −120 dB floor at stop through the feed's silent frame ("honest idle") —
+     * this view runs no timer and holds no synthetic feed.</p>
+     *
+     * <p>Call it any time: the strips built before the feed arrived are
+     * subscribed here, and every later {@link #refresh()} re-subscribes the
+     * strips it rebuilds. Passing a different feed replaces every
+     * subscription; passing {@code null} (or a disposed feed) disposes them,
+     * after which the displays keep whatever level they last showed and
+     * decay through their own ballistics — an unsubscribed meter is not
+     * reset, it simply stops being told anything.</p>
+     *
+     * @param feed the FX-pulse meter drain, or {@code null} to unsubscribe
+     */
+    public void setMeterFeed(MeterFeed feed) {
+        this.meterFeed = feed;
+        resubscribeAllMeters();
+    }
+
+    /**
+     * Disposes every meter subscription this view owns and — when a usable
+     * feed is bound — creates them again from the retained
+     * {@link #stripMeterPoints} plus the master display. This is the single
+     * subscription pass: {@link #setMeterFeed(MeterFeed)} runs it on a feed
+     * swap and the scene listener runs it when the view is re-mounted, so a
+     * MixerView that the {@code ViewNavigationController} cached and put back
+     * on screen meters again instead of staying dark
+     * ({@code javafx-application-design} §10/§15 — release on detach, but
+     * re-acquire on re-attach).
+     */
+    private void resubscribeAllMeters() {
+        disposeAllMeterSubscriptions();
+        if (meterSceneDetached || !meterFeedUsable()) {
+            return;
+        }
+        if (masterMeterDisplay != null) {
+            masterMeterBinding = bindMeter(masterMeterDisplay, MeterTapPoint.MASTER_OUT);
+        }
+        for (Map.Entry<LevelMeterDisplay, MeterTapPoint> entry : stripMeterPoints.entrySet()) {
+            stripMeterBindings.add(bindMeter(entry.getKey(), entry.getValue()));
+        }
+    }
+
+    /** Returns the currently bound {@link MeterFeed}, or {@code null}. Visible for testing. */
+    MeterFeed getMeterFeed() {
+        return meterFeed;
+    }
+
+    /**
+     * Registers the channel-link and undo-history listeners. Idempotent: the
+     * constructor registers them once and the scene re-attach branch calls
+     * this, so a view that is mounted, unmounted and mounted again ends with
+     * exactly one registration of each.
+     */
+    private void acquireModelListeners() {
+        if (modelListenersAttached) {
+            return;
+        }
+        project.getChannelLinkManager().addListener(channelLinkListener);
+        if (undoManager != null) {
+            undoManager.addHistoryListener(undoHistoryListener);
+        }
+        modelListenersAttached = true;
+    }
+
+    /** The inverse of {@link #acquireModelListeners()}; run on scene detach. */
+    private void releaseModelListeners() {
+        if (!modelListenersAttached) {
+            return;
+        }
+        project.getChannelLinkManager().removeListener(channelLinkListener);
+        if (undoManager != null) {
+            undoManager.removeHistoryListener(undoHistoryListener);
+        }
+        modelListenersAttached = false;
+    }
+
+    /**
+     * Records a freshly built strip meter and, when a feed is already bound,
+     * subscribes it immediately. Called from the strip builders so the
+     * display, its tap point, and its subscription are created together.
+     */
+    private void registerStripMeter(LevelMeterDisplay display, MeterTapPoint point) {
+        stripMeterPoints.put(display, point);
+        // Not while detached: a refresh() driven from outside the Mixer (a track
+        // created while another view is on screen) must not hand the app-scoped
+        // feed live tokens on a view that has already left the scene graph and
+        // may be replaced without ever coming back. The re-attach branch
+        // subscribes everything from stripMeterPoints.
+        if (!meterSceneDetached && meterFeedUsable()) {
+            stripMeterBindings.add(bindMeter(display, point));
+        }
+    }
+
+    /** Binds one display's subscription to its visibility. Only called with a usable feed. */
+    private VisibleMeterBinding bindMeter(LevelMeterDisplay display, MeterTapPoint point) {
+        return new VisibleMeterBinding(meterFeed, point, display,
+                MeterSinks.levelMeterDisplay(display));
+    }
+
+    /**
+     * A feed that has been disposed (primary stage hidden) rejects further
+     * subscriptions, so a late rebuild must not try — the meters simply stay
+     * at floor while the window tears down.
+     */
+    private boolean meterFeedUsable() {
+        return meterFeed != null && !meterFeed.isDisposed();
+    }
+
+    /**
+     * Disposes the track / return strip subscriptions (the master's survives a
+     * refresh). {@link #stripMeterPoints} is deliberately <em>not</em> cleared:
+     * a feed swap or a scene detach must keep knowing which meter shows which
+     * tap point so the strips can be re-subscribed without being rebuilt. Only
+     * {@link #refresh()}, which discards the strips themselves, clears it.
+     */
+    private void disposeStripMeterSubscriptions() {
+        for (VisibleMeterBinding binding : stripMeterBindings) {
+            binding.close();
+        }
+        stripMeterBindings.clear();
+    }
+
+    /** Disposes every meter subscription this view owns, master included. */
+    private void disposeAllMeterSubscriptions() {
+        disposeStripMeterSubscriptions();
+        if (masterMeterBinding != null) {
+            masterMeterBinding.close();
+            masterMeterBinding = null;
+        }
+    }
+
+    /** The track / return strip meters built by the last refresh. Visible for testing. */
+    List<LevelMeterDisplay> getStripMeterDisplays() {
+        return List.copyOf(stripMeterPoints.keySet());
+    }
+
+    /** The strip meter bindings, in strip order. Visible for testing. */
+    List<VisibleMeterBinding> getStripMeterBindings() {
+        return List.copyOf(stripMeterBindings);
+    }
+
+    /** The master strip's output meter. Visible for testing. */
+    LevelMeterDisplay getMasterMeterDisplay() {
+        return masterMeterDisplay;
+    }
+
+    /** The master strip's {@code MASTER_OUT} binding, or {@code null}. Visible for testing. */
+    VisibleMeterBinding getMasterMeterBinding() {
+        return masterMeterBinding;
+    }
+
     /**
      * Configures the source of driver-reported input-channel metadata used
      * to populate the per-track input-routing dropdown — story 199. When
@@ -821,6 +1051,12 @@ public final class MixerView extends VBox implements Dockable {
             strip.stop();
         }
         activeInputMeterStrips.clear();
+        // Story 318 — the track / return strips (and their output meters) are
+        // about to be discarded, so their tap-bus subscriptions go with them;
+        // the builders below re-subscribe the freshly built meters. The master
+        // strip is not rebuilt, so its MASTER_OUT subscription survives.
+        disposeStripMeterSubscriptions();
+        stripMeterPoints.clear();
 
         // Channel-link lookup tables are rebuilt with the strips below so
         // the propagation paths reference the live JavaFX widgets.
@@ -1155,13 +1391,20 @@ public final class MixerView extends VBox implements Dockable {
             }
         }
 
-        // Level meter
+        // Level meter — story 318: the post-fader CHANNEL_POST tap of this
+        // strip's channel, drained on the FX pulse. A non-UUID track id
+        // (forged test fixture) has no mixer-channel identity to tap, so that
+        // strip keeps an unsubscribed meter at floor, exactly like the VCA
+        // wiring above.
         LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
         levelMeter.setPrefWidth(METER_WIDTH);
         levelMeter.setMinWidth(METER_WIDTH);
         levelMeter.setMaxWidth(METER_WIDTH);
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
+        if (channelId != null) {
+            registerStripMeter(levelMeter, new MeterTapPoint.ChannelPost(channelId));
+        }
 
         // ── Input meter (second column, armed tracks only) ──────────────
         // Story 137: when a track is armed, show a dedicated input-signal
@@ -1630,12 +1873,14 @@ public final class MixerView extends VBox implements Dockable {
         nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
         nameLabel.setStyle("-fx-text-fill: #00e5ff; -fx-font-weight: bold;");
 
+        // Story 318 — the post-fader RETURN_POST tap of this bus.
         LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
         levelMeter.setPrefWidth(METER_WIDTH);
         levelMeter.setMinWidth(METER_WIDTH);
         levelMeter.setMaxWidth(METER_WIDTH);
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
+        registerStripMeter(levelMeter, new MeterTapPoint.ReturnPost(returnBus.getId()));
 
         Slider volumeFader = new Slider(0.0, 1.0, returnBus.getVolume());
         volumeFader.setOrientation(Orientation.VERTICAL);
@@ -2253,12 +2498,17 @@ public final class MixerView extends VBox implements Dockable {
         nameLabel.getStyleClass().add("mixer-channel-name");
         nameLabel.setStyle("-fx-text-fill: #e040fb; -fx-font-weight: bold;");
 
+        // Story 318 — MASTER_OUT: the post-master-fader, post-mute signal the
+        // interface receives. The master strip is built once (constructor) and
+        // never rebuilt, so its subscription is created in setMeterFeed(...)
+        // rather than here.
         LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
         levelMeter.setPrefWidth(METER_WIDTH);
         levelMeter.setMinWidth(METER_WIDTH);
         levelMeter.setMaxWidth(METER_WIDTH);
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
+        this.masterMeterDisplay = levelMeter;
 
         Slider volumeFader = new Slider(0.0, 1.0, master.getVolume());
         volumeFader.setOrientation(Orientation.VERTICAL);

@@ -109,9 +109,60 @@ final class PerformanceStageActivationTest {
         }
     }
 
+    /**
+     * Story 318 — the controller glue, not the view API: activating the stage
+     * must hand it the app-scoped {@link com.benesquivelmusic.daw.app.ui.metering.MeterFeed}
+     * (bus meter + one tile meter per track) and deactivating must release
+     * every one of them (book §6.2). Covered here because
+     * {@code PerformanceStageViewMeterTest} calls {@code bindMeters} directly
+     * on the view — nothing else proves the controller does.
+     */
+    @Test
+    void activatingBindsTheStageMetersAndDeactivatingReleasesThem() throws Exception {
+        MotionManager reduced = new MotionManager(
+                Preferences.userRoot().node("psMeters_" + System.nanoTime()));
+        reduced.setReduceMotion(true);
+        MotionManager.setDefaultForTest(reduced);
+        com.benesquivelmusic.daw.core.metering.MeteringTapBus bus =
+                new com.benesquivelmusic.daw.core.metering.MeteringTapBus();
+        try {
+            onFxThread(() -> {
+                com.benesquivelmusic.daw.app.ui.metering.MeterFeed feed =
+                        new com.benesquivelmusic.daw.app.ui.metering.MeterFeed(
+                                bus, new com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher());
+                BorderPane rootPane = new BorderPane();
+                rootPane.setCenter(new VBox(new Label("arrangement")));
+                new Scene(rootPane, 1000, 700);
+
+                ViewNavigationController controller = newController(rootPane, feed);
+                int beforeStage = feed.subscriptionCount();
+
+                controller.switchView(DawView.PERFORMANCE_STAGE);
+                assertThat(feed.subscriptionCount())
+                        .as("activating the Performance Stage subscribes its bus + tile meters")
+                        .isGreaterThan(beforeStage);
+
+                controller.switchView(DawView.PERFORMANCE_STAGE);
+                assertThat(feed.subscriptionCount())
+                        .as("deactivating releases every stage meter subscription")
+                        .isEqualTo(beforeStage);
+                feed.dispose();
+                return null;
+            });
+        } finally {
+            bus.close();
+            MotionManager.setDefaultForTest(null);
+        }
+    }
+
     // ── Harness ───────────────────────────────────────────────────────────
 
     private static ViewNavigationController newController(BorderPane rootPane) {
+        return newController(rootPane, null);
+    }
+
+    private static ViewNavigationController newController(BorderPane rootPane,
+                                                          com.benesquivelmusic.daw.app.ui.metering.MeterFeed feed) {
         DawProject project = new DawProject("PS Test", AudioFormat.STUDIO_QUALITY);
         project.addTrack(new Track("Drums", TrackType.AUDIO));
         project.addTrack(new Track("Bass", TrackType.AUDIO));
@@ -124,15 +175,17 @@ final class PerformanceStageActivationTest {
         return new ViewNavigationController(
                 rootPane, statusBar, store, snap,
                 DawView.ARRANGEMENT, EditTool.POINTER, true, GridResolution.QUARTER,
-                new StubHost(project));
+                new StubHost(project, feed));
     }
 
     /** Stub host — transport callbacks are inert; only navigation matters here. */
     private static final class StubHost implements ViewNavigationController.Host {
         private final DawProject project;
+        private final com.benesquivelmusic.daw.app.ui.metering.MeterFeed feed;
 
-        StubHost(DawProject project) {
+        StubHost(DawProject project, com.benesquivelmusic.daw.app.ui.metering.MeterFeed feed) {
             this.project = project;
+            this.feed = feed;
         }
 
         @Override public DawProject project() { return project; }
@@ -161,6 +214,14 @@ final class PerformanceStageActivationTest {
         public com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel
                 inspectorSelectionModel() {
             return null;
+        }
+        // Story 318 — the feed the controller hands to the MixerView and to
+        // the Performance Stage on activation. Null for the navigation-only
+        // tests (every meter stays at its floor); a real feed over a real
+        // MeteringTapBus for the meter hand-off test.
+        @Override
+        public com.benesquivelmusic.daw.app.ui.metering.MeterFeed meterFeed() {
+            return feed;
         }
     }
 

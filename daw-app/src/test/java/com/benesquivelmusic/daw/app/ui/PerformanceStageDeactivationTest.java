@@ -150,6 +150,12 @@ final class PerformanceStageDeactivationTest {
                 inspectorSelectionModel() {
             return null;
         }
+        // Story 318 — no engine here, so no meter feed: every stage / mixer
+        // meter stays at its floor, which is what this navigation test wants.
+        @Override
+        public com.benesquivelmusic.daw.app.ui.metering.MeterFeed meterFeed() {
+            return null;
+        }
     }
 
     // ── FX helper (capture + rethrow — swallowed-assertion pitfall) ───────

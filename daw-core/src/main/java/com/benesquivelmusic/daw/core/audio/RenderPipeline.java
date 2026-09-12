@@ -4,6 +4,9 @@ import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.PluginParameterTarget;
+import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
+import com.benesquivelmusic.daw.core.metering.SampleBlockRing;
+import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.CueBus;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -606,6 +609,75 @@ public final class RenderPipeline {
                             MetronomeSideOutputRouter router,
                             CueBusManager cueBusManager,
                             AudioBackend backend) {
+        renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
+                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                cpuBudgetEnforcer, metronome, router, cueBusManager, backend, null);
+    }
+
+    /**
+     * Story 318 — the canonical render step: the 15-arg overload above plus
+     * the block's metering {@link TapSnapshot}. Every other overload (and
+     * {@link #renderOffline}) delegates here with {@code null} taps, the
+     * untapped path. With a snapshot, {@code taps} is handed to
+     * {@link Mixer#mixDown(float[][][], float[][], float[][][], int, TapSnapshot)}
+     * / {@code mixDownInstrumented} and
+     * {@link Mixer#renderDirectOutputs(float[][][], float[][], int, TapSnapshot)},
+     * while {@code MASTER_OUT} requires the overload with an interleaved
+     * output destination. Planar-only rendering does not write to the
+     * interface or publish that tap; its consumers follow the feed's usual
+     * stale-frame timeout.
+     *
+     * @param taps the block's tap snapshot (one volatile read by the caller),
+     *             or {@code null} when untapped
+     */
+    public void renderBlock(float[][] inputBuffer,
+                            float[][] outputBuffer,
+                            int numFrames,
+                            Transport transport,
+                            Mixer mixer,
+                            List<Track> tracks,
+                            MidiTrackRenderer midiRenderer,
+                            EffectsChain masterChain,
+                            AudioEngine.RecordingCallback recordingCallback,
+                            PerformanceMonitor performanceMonitor,
+                            TrackCpuBudgetEnforcer cpuBudgetEnforcer,
+                            Metronome metronome,
+                            MetronomeSideOutputRouter router,
+                            CueBusManager cueBusManager,
+                            AudioBackend backend,
+                            TapSnapshot taps) {
+        renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
+                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                cpuBudgetEnforcer, metronome, router, cueBusManager, backend, taps, null);
+    }
+
+    /**
+     * Renders and writes the interface's interleaved samples. The write loop
+     * accumulates {@code MASTER_OUT} after all master effects and direct-output
+     * sums, so metering adds no traversal or buffer. The destination is the
+     * stream pump's preallocated buffer and contains {@code format.channels()}
+     * lanes (or fewer when {@code outputBuffer} is narrower).
+     *
+     * @param interleavedOutput the interface destination, or {@code null} for
+     *                          planar-only rendering without a master-output tap
+     */
+    public void renderBlock(float[][] inputBuffer,
+                            float[][] outputBuffer,
+                            int numFrames,
+                            Transport transport,
+                            Mixer mixer,
+                            List<Track> tracks,
+                            MidiTrackRenderer midiRenderer,
+                            EffectsChain masterChain,
+                            AudioEngine.RecordingCallback recordingCallback,
+                            PerformanceMonitor performanceMonitor,
+                            TrackCpuBudgetEnforcer cpuBudgetEnforcer,
+                            Metronome metronome,
+                            MetronomeSideOutputRouter router,
+                            CueBusManager cueBusManager,
+                            AudioBackend backend,
+                            TapSnapshot taps,
+                            float[] interleavedOutput) {
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
         Objects.requireNonNull(masterChain, "masterChain must not be null");
 
@@ -661,11 +733,11 @@ public final class RenderPipeline {
             // no instrumentation overhead.
             if (cpuBudgetEnforcer != null) {
                 mixer.mixDownInstrumented(trackBuffers, mixBuffer, returnBuffers,
-                        numFrames, tracks, cpuBudgetEnforcer);
+                        numFrames, tracks, cpuBudgetEnforcer, taps);
             } else {
                 // Mix through the mixer into the mix buffer, routing sends to
                 // return buses which are summed into the main output.
-                mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames);
+                mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
             }
         } else if (inputBuffer != null) {
             // Fallback: copy input into the mix buffer (pass-through)
@@ -709,7 +781,19 @@ public final class RenderPipeline {
         // outputBuffer (channels 0..N) does not clobber direct-output data
         // on higher channels.
         if (playbackActive) {
-            mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames);
+            mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps);
+        }
+
+        if (interleavedOutput != null) {
+            int lanes = Math.min(outputBuffer.length, format.channels());
+            LevelTapSlot masterOut = taps != null ? taps.masterOut() : null;
+            if (masterOut != null) {
+                masterOut.beginBlock(taps.epoch(), taps.blockIndex(), lanes);
+            }
+            writeInterleavedOutput(outputBuffer, interleavedOutput, lanes, numFrames, masterOut);
+            if (masterOut != null) {
+                publishMasterOut(masterOut, outputBuffer, lanes, numFrames);
+            }
         }
 
         // Advance the transport position
@@ -728,6 +812,44 @@ public final class RenderPipeline {
         // Evaluate master budget after all per-track recordings for this block
         if (cpuBudgetEnforcer != null && playbackActive) {
             cpuBudgetEnforcer.evaluateMasterBudget();
+        }
+    }
+
+    /**
+     * Writes final interface samples and, when demanded, folds their levels
+     * into the already-started slot inside that same loop. The untapped branch
+     * keeps all per-sample tap work out of hidden-meter rendering.
+     */
+    @RealTimeSafe
+    static void writeInterleavedOutput(float[][] outputBuffer, float[] destination,
+                                       int lanes, int numFrames, LevelTapSlot masterOut) {
+        for (int ch = 0; ch < lanes; ch++) {
+            float[] plane = outputBuffer[ch];
+            if (masterOut == null) {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    destination[frame * lanes + ch] = plane[frame];
+                }
+            } else {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    float sample = plane[frame];
+                    destination[frame * lanes + ch] = sample;
+                    masterOut.accumulate(ch, sample);
+                }
+            }
+        }
+    }
+
+    /**
+     * Publishes the completed output slot. Only an explicitly attached
+     * analysis consumer requires a copy of the final sample block.
+     */
+    @RealTimeSafe
+    private static void publishMasterOut(LevelTapSlot masterOut, float[][] outputBuffer,
+                                         int lanes, int numFrames) {
+        masterOut.publish(numFrames);
+        SampleBlockRing[] rings = masterOut.rings();
+        for (int r = 0; r < rings.length; r++) {
+            rings[r].write(outputBuffer, lanes, numFrames);
         }
     }
 

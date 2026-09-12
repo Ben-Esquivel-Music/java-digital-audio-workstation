@@ -14,6 +14,7 @@ import java.util.concurrent.Flow;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 class LoudnessMeterTest {
 
@@ -365,8 +366,7 @@ class LoudnessMeterTest {
     @Test
     void shouldMeasureFullScaleSineNearExpectedLufs() {
         // A 0 dBFS (amplitude 1.0) 1 kHz sine on both channels should measure
-        // approximately −3.01 LUFS (mono power) plus K-weighting effect.
-        // This is a sanity check that the result is in a reasonable range.
+        // approximately 0 LUFS. The existing approximate K filter adds 0.26 LU.
         LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] fullScale = new float[BLOCK_SIZE];
         for (int i = 0; i < BLOCK_SIZE; i++) {
@@ -378,9 +378,49 @@ class LoudnessMeterTest {
         }
 
         double intLufs = meter.getLatestData().integratedLufs();
-        // Expected approximately -3.01 LUFS for 0 dBFS mono sine (K-weighting has
-        // minimal effect at 1 kHz). Allow some tolerance.
-        assertThat(intLufs).isBetween(-6.0, 0.0);
+        assertThat(intLufs).isCloseTo(0.26, within(0.05));
+    }
+
+    @Test
+    void stereoSumsBothChannelEnergiesEvenWhenTheArraysAreAliased() {
+        var mono = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        var dualMono = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        var stereo = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        var leftOnly = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        float[] tone = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+        float[] silence = new float[BLOCK_SIZE];
+        for (int block = 0; block < 500; block++) {
+            mono.processMono(tone, BLOCK_SIZE);
+            dualMono.process(tone, tone, BLOCK_SIZE);
+            stereo.process(tone, tone.clone(), BLOCK_SIZE);
+            leftOnly.process(tone, silence, BLOCK_SIZE);
+        }
+        double stereoGain = 10.0 * Math.log10(2.0);
+        LoudnessData single = mono.getLatestData();
+        LoudnessData dual = dualMono.getLatestData();
+        assertThat(stereo.getLatestData()).isEqualTo(dual);
+        assertThat(leftOnly.getLatestData()).isEqualTo(single);
+        assertThat(dual.momentaryLufs() - single.momentaryLufs()).isCloseTo(stereoGain, within(1e-9));
+        assertThat(dual.shortTermLufs() - single.shortTermLufs()).isCloseTo(stereoGain, within(1e-9));
+        assertThat(dual.integratedLufs() - single.integratedLufs()).isCloseTo(stereoGain, within(1e-9));
+        assertThat(dual.truePeakDbfs()).isEqualTo(single.truePeakDbfs());
+    }
+
+    @Test
+    void explicitMonoIgnoresTheRightChannelAndItsFilterTail() {
+        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        float[] silence = new float[BLOCK_SIZE];
+        float[] right = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+        meter.process(silence, right, BLOCK_SIZE);
+        meter.resetIntegrated();
+        for (int block = 0; block < 400; block++) {
+            meter.process(silence, right, BLOCK_SIZE, 1);
+        }
+        assertThat(meter.getLatestData().momentaryLufs()).isEqualTo(-120.0);
+        assertThat(meter.getLatestData().shortTermLufs()).isEqualTo(-120.0);
+        assertThat(meter.getLatestData().integratedLufs()).isEqualTo(-120.0);
+        assertThatThrownBy(() -> meter.process(silence, right, BLOCK_SIZE, 3))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

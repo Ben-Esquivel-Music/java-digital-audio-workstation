@@ -92,8 +92,6 @@ public final class MixerChannel {
     private final List<InsertSlot> insertSlots = new ArrayList<>();
     private final EffectsChain effectsChain = new EffectsChain();
     private TrackCpuBudget cpuBudget;
-    private int allocatedChannels;
-    private int allocatedBlockSize;
     private Runnable onEffectsChainChanged;
     private PluginInvocationSupervisor pluginSupervisor;
 
@@ -390,16 +388,17 @@ public final class MixerChannel {
      * that real-time processing remains zero-allocation.
      *
      * <p>Call this when the audio engine starts or when the buffer size changes.
-     * The dimensions are remembered so that {@link #rebuildEffectsChain()} can
-     * re-allocate automatically when inserts are added or removed.</p>
+     * The chain remembers the dimensions and re-sizes its own scratch inside
+     * the publication of every later chain rebuild, so an insert added to a
+     * playing channel never renders a block through the allocating fallback.
+     * It is therefore called unconditionally — an empty chain must learn the
+     * dimensions too, or the first insert added to it would have none.</p>
      *
      * @param audioChannels the number of audio channels (e.g., 2 for stereo)
      * @param blockSize     the number of sample frames per processing block
      */
     public void prepareEffectsChain(int audioChannels, int blockSize) {
-        this.allocatedChannels = audioChannels;
-        this.allocatedBlockSize = blockSize;
-        if (!effectsChain.isEmpty()) {
+        if (audioChannels > 0 && blockSize > 0) {
             effectsChain.allocateIntermediateBuffers(audioChannels, blockSize);
         }
     }
@@ -569,24 +568,34 @@ public final class MixerChannel {
      * Rebuilds the internal {@link EffectsChain} from the current insert slots.
      *
      * <p>Only non-bypassed slots contribute their processors to the chain.
-     * This method is called automatically by all insert-mutating methods.</p>
+     * This method is called automatically by all insert-mutating methods.
+     * Each processor is tagged with its {@link InsertSlot} so the chain's
+     * tapped {@code process} overload can publish the slot's
+     * {@code INSERT_IO} meter frames (story 318) — through the supervised
+     * wrapper, which is what actually runs.</p>
+     *
+     * <p>The new chain is handed to {@link EffectsChain#replaceAll(List, List)}
+     * as ONE publication. A drain-then-refill loop would publish every
+     * intermediate chain to the render thread — including the empty one, so a
+     * bypass toggle or a reorder could drop a block's inserts entirely.</p>
      */
     private void rebuildEffectsChain() {
-        while (!effectsChain.isEmpty()) {
-            effectsChain.removeProcessor(0);
-        }
+        List<AudioProcessor> rebuilt = new ArrayList<>(insertSlots.size());
+        List<Object> rebuiltTags = new ArrayList<>(insertSlots.size());
         for (InsertSlot slot : insertSlots) {
             if (!slot.isBypassed()) {
                 AudioProcessor processor = slot.getProcessor();
                 if (pluginSupervisor != null) {
                     processor = pluginSupervisor.supervise(slot, processor);
                 }
-                effectsChain.addProcessor(processor);
+                rebuilt.add(processor);
+                rebuiltTags.add(slot);
             }
         }
-        if (allocatedChannels > 0 && allocatedBlockSize > 0 && !effectsChain.isEmpty()) {
-            effectsChain.allocateIntermediateBuffers(allocatedChannels, allocatedBlockSize);
-        }
+        // The chain grows its own pre-allocated scratch inside that same
+        // publication (it remembers the dimensions prepareEffectsChain gave
+        // it), so there is no allocate-after-publish window here.
+        effectsChain.replaceAll(rebuilt, rebuiltTags);
         Runnable callback = onEffectsChainChanged;
         if (callback != null) {
             callback.run();

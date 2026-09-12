@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui.plugin;
 import com.benesquivelmusic.daw.app.ui.NotificationLevel;
 import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.views.DetachPluginRequestedEvent;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
@@ -45,6 +46,7 @@ import java.util.Map;
 import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.ResourceBundle;
+import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
@@ -280,6 +282,14 @@ public final class PluginEditorSession {
     private boolean bypassed;
     private boolean disposed;
 
+    // ── Story 318 — INSERT_IO footer meters ───────────────────────────────
+
+    /**
+     * Detach token of the {@link InsertIoMeterBridge} feeding this session's
+     * store from the metering tap bus; {@code null} while unbound.
+     */
+    private Runnable insertMeterDetach;
+
     private PluginEditorSession(DawPlugin plugin, String insertLocation, Deps deps) {
         this.plugin = Objects.requireNonNull(plugin, "plugin must not be null");
         this.deps = Objects.requireNonNull(deps, "deps must not be null");
@@ -410,6 +420,7 @@ public final class PluginEditorSession {
         }
         disposed = true;
         timer.stop();
+        unbindInsertMeters();
         teardownCanvas();
         grid = null;
         if (frame.getScene() != null) {
@@ -432,6 +443,61 @@ public final class PluginEditorSession {
         frame.setOnPresetSelected(null);
         frame.setOnSavePresetRequested(null);
         frame.setOnSaveAsPresetRequested(null);
+    }
+
+    // ── Story 318 — INSERT_IO footer meters ───────────────────────────────
+
+    /**
+     * Feeds this editor's IN / OUT footer meters from the engine's
+     * {@code INSERT_IO} tap of the live insert slot {@code pluginInstanceId}
+     * (story 318, book §5.3): an {@link InsertIoMeterBridge} subscribes the
+     * pair on {@code feed} and publishes each rendered block into
+     * {@link #store()} via {@code publishMeters}, which {@link #tick} already
+     * mirrors into the frame every FX frame. The bridge reads the store
+     * through a supplier, so a {@code [Reload]} that replaces the store
+     * instance is picked up automatically. The subscription is skipped
+     * entirely (zero cost) while the frame has no scene. Rebinding replaces
+     * any earlier binding; {@link #dispose()} detaches.
+     *
+     * <p>Story 320 (one-plugin-world editor binding) calls this when an
+     * editor opens for a live {@code InsertSlot}; today's menu-world editors
+     * have no slot and stay unbound.</p>
+     *
+     * @param feed             the FX-pulse drain; must not be {@code null}
+     * @param pluginInstanceId {@code InsertSlot.getPluginInstanceId()} of the
+     *                         slot this editor edits; must not be {@code null}
+     */
+    public void bindInsertMeters(MeterFeed feed, UUID pluginInstanceId) {
+        Objects.requireNonNull(feed, "feed must not be null");
+        Objects.requireNonNull(pluginInstanceId, "pluginInstanceId must not be null");
+        if (disposed) {
+            return;
+        }
+        unbindInsertMeters();
+        // The coalescing surface is this session (a stable object); the store
+        // is reached through a fresh supplier each call, which is fine because
+        // it is no longer the MeterKey identity.
+        insertMeterDetach = InsertIoMeterBridge.attach(
+                feed, pluginInstanceId, this, this::store, this::insertMetersVisible);
+    }
+
+    /** Detaches the {@code INSERT_IO} bridge, if bound. Idempotent. */
+    public void unbindInsertMeters() {
+        Runnable detach = insertMeterDetach;
+        insertMeterDetach = null;
+        if (detach != null) {
+            detach.run();
+        }
+    }
+
+    /** @return {@code true} while {@link #bindInsertMeters} is in effect (test seam). */
+    public boolean hasInsertMeters() {
+        return insertMeterDetach != null;
+    }
+
+    /** The bridge's visibility gate: the frame is in a scene and the session is live. */
+    private boolean insertMetersVisible() {
+        return !disposed && frame.getScene() != null;
     }
 
     // ── Factory pipeline (§8.2, §2.7) ─────────────────────────────────────

@@ -163,7 +163,7 @@ public final class MixFeatureAnalyzer {
         double stereoWidth = computeStereoWidth(track.left(), track.right(), n);
 
         // Integrated loudness via existing LoudnessMeter
-        double integratedLufs = computeIntegratedLufs(track.left(), track.right(), n);
+        double integratedLufs = computeIntegratedLufs(track);
 
         return new MixFeatureReport.TrackFeatures(
                 track.name(), rmsDb, peakDb, crestFactorDb,
@@ -304,7 +304,11 @@ public final class MixFeatureAnalyzer {
      * Computes integrated LUFS for the given stereo buffer using the
      * existing {@link LoudnessMeter}.
      */
-    private double computeIntegratedLufs(float[] left, float[] right, int numFrames) {
+    private double computeIntegratedLufs(Track track) {
+        float[] left = track.left();
+        float[] right = track.right();
+        int numFrames = left.length;
+        int channelCount = left == right ? 1 : 2;
         int blockSize = (int) Math.round(sampleRate * 0.1); // 100 ms blocks
         if (blockSize <= 0 || numFrames < blockSize) {
             return Double.NEGATIVE_INFINITY;
@@ -316,7 +320,7 @@ public final class MixFeatureAnalyzer {
         while (offset + blockSize <= numFrames) {
             System.arraycopy(left, offset, lBlock, 0, blockSize);
             System.arraycopy(right, offset, rBlock, 0, blockSize);
-            meter.process(lBlock, rBlock, blockSize);
+            meter.process(lBlock, rBlock, blockSize, channelCount);
             offset += blockSize;
         }
         LoudnessData data = meter.getLatestData();

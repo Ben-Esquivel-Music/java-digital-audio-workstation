@@ -1,6 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.vm;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
+import com.benesquivelmusic.daw.core.metering.MeterFrame;
+import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel.ChangeKind;
 
@@ -8,7 +12,10 @@ import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.ReadOnlyDoubleProperty;
 import javafx.beans.property.ReadOnlyDoubleWrapper;
+import javafx.scene.Node;
 
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -52,11 +59,23 @@ import java.util.function.Consumer;
  * double} buffer and delivered once per frame by the drain — never a per-tick
  * {@code runLater} — exactly as {@code TransportVM}'s playhead (§4.5, §5.2). The
  * producer side ({@code publish}) is wait-free and allocation-free, safe to call
- * from the {@code @RealTimeSafe} audio thread (§4.1, §4.6). As in story 289/290
- * <strong>no live audio producer is wired yet</strong>: the channel exists for
- * the §4.5 binding contract (and is closed in {@link #dispose()}); its
- * audio-thread metering tap arrives when {@code daw-core} gains one (§4.6,
- * §5.8).</p>
+ * from the {@code @RealTimeSafe} audio thread (§4.1, §4.6).</p>
+ *
+ * <h2>The meter producer (story 318)</h2>
+ *
+ * <p>{@link #meterLevel} now has a live producer: {@link #bindMeter(Node)}
+ * subscribes this channel's post-fader {@link MeterTapPoint.ChannelPost} tap on
+ * the engine's metering tap bus (Audio Engine Wiring Design Book §3.3, §4.3).
+ * The render thread writes peak / RMS into a preallocated slot; the FX pulse
+ * reads the newest coherent frame once per frame and publishes its peak, in
+ * <strong>dBFS with a {@value #METER_FLOOR_DB} dB floor</strong>, through the
+ * continuous channel — so the value a strip binds is exactly the level the
+ * engine rendered, and it falls to the floor at stop (the feed's silent
+ * frame). A surface owns its binding and supplies scene/window/visibility
+ * demand; a project-owned VM alone acquires no subscription.
+ * {@link #unbindMeter()} — and {@link #dispose()} — release every surface's
+ * binding. Binding is optional: an unbound VM keeps its floor value, which
+ * is what a pure-unit context or a project with no engine shows.</p>
  *
  * <h2>Lifecycle</h2>
  *
@@ -66,6 +85,17 @@ import java.util.function.Consumer;
  * Idempotent and single-use.</p>
  */
 public final class ChannelVM {
+
+    /**
+     * The {@link #meterLevelProperty() meterLevel} floor, in dBFS. Digital
+     * silence is {@code -Infinity} dB, which no {@code double} property should
+     * carry into a binding (and which the continuous channel would happily
+     * relay into a layout calculation), so every published value — and the
+     * seeded initial value — is clamped here. −120 dBFS is two orders of
+     * magnitude below the −60 dB bottom of the app's meter scales, so the
+     * clamp is never visible as a level.
+     */
+    public static final double METER_FLOOR_DB = -120.0;
 
     private final MixerChannel channel;
     private final FxDispatcher dispatcher;
@@ -100,6 +130,9 @@ public final class ChannelVM {
     /** Removal token returned by {@link MixerChannel#addChangeListener(Consumer)}. */
     private final Runnable unregister;
 
+    private final MeterFeed meterFeed;
+    private final Map<Node, VisibleMeterBinding> meterBindings = new IdentityHashMap<>();
+
     private boolean disposed;
 
     /**
@@ -111,9 +144,19 @@ public final class ChannelVM {
      * @throws NullPointerException if either argument is {@code null}
      */
     public ChannelVM(MixerChannel channel, FxDispatcher dispatcher) {
+        this(channel, dispatcher, null);
+    }
+
+    /**
+     * Supplies a meter feed without acquiring render demand. Each consuming
+     * surface must call {@link #bindMeter(Node)} and release its returned token
+     * when disposed. A {@code null} feed leaves this VM unmetered.
+     */
+    public ChannelVM(MixerChannel channel, FxDispatcher dispatcher, MeterFeed meterFeed) {
         this.channel = Objects.requireNonNull(channel, "channel must not be null");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
         this.channelId = channel.getId();
+        this.meterFeed = meterFeed;
 
         this.meterChannel = dispatcher.openContinuousDouble(meterLevel::set);
 
@@ -122,8 +165,80 @@ public final class ChannelVM {
         // seeded by the registry once it knows project-wide solo state.
         volume.set(channel.getVolume());
         pan.set(channel.getPan());
+        // Story 318 — an unmetered channel reads as digital silence, not 0 dBFS
+        // (which is full scale). Seeding the floor means a strip bound before
+        // the first frame shows "no signal" rather than "clipping".
+        meterLevel.set(METER_FLOOR_DB);
 
         this.unregister = channel.addChangeListener(this::onCoreChange);
+    }
+
+    /**
+     * Subscribes this channel's post-fader {@code CHANNEL_POST} tap on
+     * its configured feed so {@link #meterLevelProperty()} carries the level the
+     * engine actually renders (story 318).
+     *
+     * <p>Each delivered {@code MeterFrame} contributes one value: the loudest
+     * lane's peak in dBFS, clamped to {@value #METER_FLOOR_DB} (the continuous
+     * channel rejects {@code NaN}, and {@code -Infinity} — digital silence —
+     * must never reach a binding). Only a surface in a showing window, with
+     * visible ancestors, owns a feed subscription. Hidden surfaces have no
+     * render demand or per-pulse callback. Different surfaces bind independently;
+     * binding the same surface again replaces only its previous binding.</p>
+     *
+     * @param surface the actual scene-graph consumer; must not be {@code null}
+     * @return an idempotent removal token for this surface's binding only
+     * @throws NullPointerException if {@code surface} is {@code null}
+     * @throws IllegalStateException if this VM is disposed or has no meter feed
+     */
+    public Runnable bindMeter(Node surface) {
+        Objects.requireNonNull(surface, "surface must not be null");
+        if (disposed) {
+            throw new IllegalStateException("ChannelVM is disposed");
+        }
+        if (meterFeed == null || meterFeed.isDisposed()) {
+            throw new IllegalStateException("ChannelVM has no active meter feed");
+        }
+        VisibleMeterBinding previous = meterBindings.remove(surface);
+        if (previous != null) {
+            previous.close();
+        }
+        var binding = new VisibleMeterBinding(meterFeed, new MeterTapPoint.ChannelPost(channelId),
+                surface, frame -> meterChannel.publish(peakDbFloored(frame)));
+        meterBindings.put(surface, binding);
+        return () -> {
+            meterBindings.remove(surface, binding);
+            binding.close();
+        };
+    }
+
+    /**
+     * Releases every surface binding opened by {@link #bindMeter(Node)}.
+     * Idempotent; a no-op when never bound. The last published level stays on
+     * the property — the surface that unbinds decides what to show next.
+     */
+    public void unbindMeter() {
+        for (VisibleMeterBinding binding : meterBindings.values()) {
+            binding.close();
+        }
+        meterBindings.clear();
+    }
+
+    /** {@code true} while a surface is bound, including temporarily hidden surfaces. */
+    public boolean isMeterBound() {
+        return !meterBindings.isEmpty();
+    }
+
+    /**
+     * The frame's loudest-lane peak in dBFS, floored at
+     * {@value #METER_FLOOR_DB}. Equivalent to
+     * {@code frame.toLevelData().peakDb()} without that method's per-frame
+     * {@code LevelData} allocation — this runs on every FX pulse
+     * ({@code javafx-application-design} §6).
+     */
+    private static double peakDbFloored(MeterFrame frame) {
+        double peakDb = MeterFrame.toDb(frame.maxPeak());
+        return Double.isNaN(peakDb) || peakDb < METER_FLOOR_DB ? METER_FLOOR_DB : peakDb;
     }
 
     /**
@@ -186,15 +301,17 @@ public final class ChannelVM {
     }
 
     /**
-     * The continuous meter level. Read-only; bound by the strip meter. Updated
-     * once per frame via the dispatcher drain (no live producer yet — see the
-     * class Javadoc).
+     * The continuous meter level: this channel's post-fader <strong>peak in
+     * dBFS</strong>, floored at {@value #METER_FLOOR_DB} (its initial value).
+     * Read-only; bound by the strip meter. Updated once per frame via the
+     * dispatcher drain from the engine's {@code CHANNEL_POST} tap once
+     * {@link #bindMeter(Node)} has been called for a visible surface.
      */
     public ReadOnlyDoubleProperty meterLevelProperty() {
         return meterLevel.getReadOnlyProperty();
     }
 
-    /** Returns the latest drained meter level. */
+    /** Returns the latest drained meter level (peak dBFS, floor {@value #METER_FLOOR_DB}). */
     public double getMeterLevel() {
         return meterLevel.get();
     }
@@ -228,6 +345,10 @@ public final class ChannelVM {
             return;
         }
         disposed = true;
+        // Story 318 — release the tap-bus subscription BEFORE closing the
+        // channel it publishes into, so no pulse can publish into a closed
+        // channel.
+        unbindMeter();
         unregister.run();
         meterChannel.close();
     }

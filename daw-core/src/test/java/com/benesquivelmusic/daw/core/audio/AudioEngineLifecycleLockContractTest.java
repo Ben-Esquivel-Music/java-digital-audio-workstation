@@ -236,7 +236,7 @@ class AudioEngineLifecycleLockContractTest {
      * scan would silently shrink and this fails instead.
      */
     private static final List<String> REQUIRED_ACQUIRERS = List.of(
-            "start", "stop", "setStreamingProvision", "startAudioOutput",
+            "start", "stop", "shutdown", "setStreamingProvision", "startAudioOutput",
             "startAudioInputOutput", "stopAudioOutput", "pauseAudioOutput",
             // The two with no …Locked body — the hole a name-derived root set
             // had, and the reason this test reads lock acquisitions instead.
