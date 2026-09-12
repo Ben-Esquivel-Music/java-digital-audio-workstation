@@ -72,8 +72,10 @@ public final class InsertEffectFactory {
      *
      * <p>If the plugin returns a non-empty {@link Optional} from
      * {@code asAudioProcessor()}, an insert slot is created using the plugin's
-     * descriptor name and its audio processor. If the plugin does not process
-     * audio (analyzers, utilities), an empty {@link Optional} is returned.</p>
+     * descriptor name and its audio processor. Hosted analyzers intentionally
+     * provide a transparent processor and are represented as inserts, with their
+     * analysis running in the tap lane. An empty {@link Optional} is returned
+     * only when the plugin exposes no audio processor.</p>
      *
      * <p>This method enables the mixer to treat built-in effect plugins,
      * external JAR plugins, and CLAP plugins uniformly — each is wired into the
@@ -81,7 +83,7 @@ public final class InsertEffectFactory {
      *
      * @param plugin the plugin to create an insert slot from
      * @return an insert slot wrapping the plugin's audio processor, or empty
-     *         if the plugin does not process audio
+     *         if {@link DawPlugin#asAudioProcessor()} returns an empty optional
      */
     public static Optional<InsertSlot> createSlotFromPlugin(DawPlugin plugin) {
         Objects.requireNonNull(plugin, "plugin must not be null");

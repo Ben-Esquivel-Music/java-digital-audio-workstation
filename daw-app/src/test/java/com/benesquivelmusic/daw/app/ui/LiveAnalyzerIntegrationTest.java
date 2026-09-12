@@ -8,6 +8,8 @@ import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
 import com.benesquivelmusic.daw.core.metering.TapSnapshot;
+import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.SoundWaveTelemetryPlugin;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
@@ -26,6 +28,7 @@ import javafx.stage.Window;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.concurrent.Callable;
@@ -91,6 +94,81 @@ class LiveAnalyzerIntegrationTest {
                 fixture.rack.dispose();
                 assertThat(Window.getWindows().stream().noneMatch(window -> window instanceof Stage stage
                         && stage.getOwner() == fixture.stage && stage.isShowing())).isTrue();
+                return null;
+            });
+        } finally { onFx(() -> { fixture.close(); return null; }); }
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "spectrum, track", "spectrum, return", "spectrum, master",
+            "tuner, track", "tuner, return", "tuner, master",
+            "telemetry, track", "telemetry, return", "telemetry, master"
+    })
+    void bypassedInsertsStayIdleWithoutUtilityFallbackAndResumeTheirHostFeed(String name, String hostName)
+            throws Exception {
+        Fixture fixture = onFx(() -> new Fixture(name));
+        try {
+            MixerChannel host = onFx(() -> {
+                fixture.session = PluginEditorSession.open(fixture.plugin, null,
+                        new PluginEditorSession.Deps(() -> 48_000, null, null, null));
+                fixture.session.bindAnalyzer(fixture.feeds);
+                fixture.root.getChildren().add(fixture.session.frame());
+                MixerChannel channel = switch (hostName) {
+                    case "track" -> fixture.channel();
+                    case "return" -> fixture.project.getMixer().addReturnBus("Analyzer return");
+                    case "master" -> fixture.project.getMixer().getMasterChannel();
+                    default -> throw new IllegalArgumentException(hostName);
+                };
+                channel.addInsert(InsertEffectFactory.createSlotFromPlugin(fixture.plugin).orElseThrow());
+                fixture.dispatcher.pulse();
+                fixture.dispatcher.pulse();
+                assertThat(fixture.bus.analysisSubscriptionCount()).isEqualTo(1);
+                return channel;
+            });
+            fixture.render(4096);
+            awaitFx(fixture, fixture::hasData);
+            onFx(() -> {
+                fixture.assertSource(!hostName.equals("master"));
+                return null;
+            });
+
+            fixture.render(4096);
+            onFx(() -> {
+                host.setInsertBypassed(0, true);
+                fixture.dispatcher.pulse();
+                fixture.dispatcher.pulse();
+                assertThat(fixture.plugin.isActive()).isTrue();
+                assertThat(fixture.bus.analysisSubscriptionCount()).isZero();
+                assertThat(fixture.bus.snapshot().hasAnalysisRings()).isFalse();
+                assertThat(fixture.bus.snapshot().masterChain()).isNull();
+                assertThat(fixture.hasData()).isFalse();
+                return null;
+            });
+            fixture.render(4096);
+            onFx(() -> {
+                fixture.dispatcher.pulse();
+                assertThat(fixture.hasData()).isFalse();
+                host.setInsertBypassed(0, false);
+                fixture.dispatcher.pulse();
+                assertThat(fixture.bus.analysisSubscriptionCount()).isEqualTo(1);
+                assertThat(fixture.hasData()).isFalse();
+                return null;
+            });
+            fixture.render(4096);
+            awaitFx(fixture, fixture::hasData);
+            onFx(() -> {
+                fixture.assertSource(!hostName.equals("master"));
+                host.removeInsert(0);
+                fixture.dispatcher.pulse();
+                var bypassed = InsertEffectFactory.createSlotFromPlugin(fixture.plugin).orElseThrow();
+                bypassed.setBypassed(true);
+                host.addInsert(bypassed);
+                fixture.dispatcher.pulse();
+                fixture.dispatcher.pulse();
+                assertThat(fixture.bus.analysisSubscriptionCount()).isZero();
+                assertThat(fixture.bus.snapshot().hasAnalysisRings()).isFalse();
+                assertThat(fixture.hasData()).isFalse();
                 return null;
             });
         } finally { onFx(() -> { fixture.close(); return null; }); }
@@ -226,6 +304,10 @@ class LiveAnalyzerIntegrationTest {
             for (int offset = 0; offset < frames; offset += 512) {
                 TapSnapshot taps = bus.snapshot();
                 publish(taps.channelSlot(0, channel()), taps, offset, true);
+                var returns = project.getMixer().getReturnBuses();
+                for (int i = 0; i < returns.size(); i++) {
+                    publish(taps.returnSlot(i, returns.get(i)), taps, offset, true);
+                }
                 publish(taps.masterChain(), taps, offset, false);
                 bus.blockCompleted(taps);
             }

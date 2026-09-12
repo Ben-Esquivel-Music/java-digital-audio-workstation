@@ -96,7 +96,10 @@ public final class AnalyzerFeeds implements AutoCloseable {
     private void collect(MixerChannel channel, MeterTapPoint point) {
         if (channel == null) return;
         for (var slot : channel.getInsertSlots()) {
-            if (slot.getPlugin() instanceof LiveAnalyzerPlugin analyzer) hosts.put(analyzer, point);
+            if (slot.getPlugin() instanceof LiveAnalyzerPlugin analyzer) {
+                // Keep bypassed instances inserted so utility editors cannot fall back to the master feed.
+                hosts.put(analyzer, slot.isBypassed() ? null : point);
+            }
         }
     }
 
