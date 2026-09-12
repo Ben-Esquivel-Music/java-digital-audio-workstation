@@ -167,7 +167,8 @@ class EngineBinderMeteringTest {
         engine.start();
         var oldToken = bus.attachLevel(MeterTapPoint.MASTER_OUT);
         float[][] audio = new float[2][FORMAT.bufferSize()];
-        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        float[] interleaved = new float[2 * FORMAT.bufferSize()];
+        engine.processBlock(audio, audio, FORMAT.bufferSize(), interleaved);
         var oldFrame = new MeterFrame();
         assertThat(oldToken.readInto(oldFrame)).isTrue();
         long oldBlock = oldFrame.blockIndex();
@@ -175,23 +176,23 @@ class EngineBinderMeteringTest {
         var next = new DawProject("Next", FORMAT);
         long nextEpoch = binder.epoch() + 1;
         engine.setGraph(next.getTransport(), next.getMixer(), List.of(), nextEpoch);
-        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        engine.processBlock(audio, audio, FORMAT.bufferSize(), interleaved);
         assertThat(oldToken.readInto(oldFrame)).isTrue();
         assertThat(oldFrame.blockIndex()).as("new graph cannot feed old project consumers").isEqualTo(oldBlock);
 
         bus.rebind(next.getMixer(), FORMAT, nextEpoch);
         var nextToken = bus.attachLevel(MeterTapPoint.MASTER_OUT);
-        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        engine.processBlock(audio, audio, FORMAT.bufferSize(), interleaved);
         assertThat(nextToken.readInto(new MeterFrame())).isTrue();
 
         bus.rebind(next.getMixer(), FORMAT, nextEpoch + 1);
         var newestToken = bus.attachLevel(MeterTapPoint.MASTER_OUT);
-        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        engine.processBlock(audio, audio, FORMAT.bufferSize(), interleaved);
         assertThat(newestToken.readInto(new MeterFrame()))
                 .as("same mixer with a different graph epoch is also untapped").isFalse();
         engine.setGraph(next.getTransport(), next.getMixer(), List.of(), nextEpoch + 1);
         engine.setTracks(List.of());
-        engine.processBlock(audio, audio, FORMAT.bufferSize());
+        engine.processBlock(audio, audio, FORMAT.bufferSize(), interleaved);
         assertThat(newestToken.readInto(new MeterFrame())).as("track refresh preserves binding epoch").isTrue();
     }
 
@@ -203,11 +204,12 @@ class EngineBinderMeteringTest {
         engine.setFormat(larger);
         engine.start();
         float[][] audio = new float[2][larger.bufferSize()];
+        float[] interleaved = new float[2 * larger.bufferSize()];
 
-        engine.processBlock(audio, audio, larger.bufferSize());
+        engine.processBlock(audio, audio, larger.bufferSize(), interleaved);
         assertThat(token.readInto(new MeterFrame())).isFalse();
         binder.refreshPerformanceMonitor();
-        engine.processBlock(audio, audio, larger.bufferSize());
+        engine.processBlock(audio, audio, larger.bufferSize(), interleaved);
         assertThat(token.readInto(new MeterFrame())).isTrue();
     }
 

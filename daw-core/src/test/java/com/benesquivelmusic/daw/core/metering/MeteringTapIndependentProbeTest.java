@@ -180,6 +180,7 @@ class MeteringTapIndependentProbeTest {
         final RenderPipeline pipeline = new RenderPipeline(FORMAT, 4, BLOCK);
         final MeteringTapBus bus = new MeteringTapBus();
         final float[][] output = new float[CHANNELS][BLOCK];
+        final float[] interleaved = new float[CHANNELS * BLOCK];
 
         LevelSubscription channelTap;
         LevelSubscription returnTap;
@@ -231,7 +232,7 @@ class MeteringTapIndependentProbeTest {
                 Arrays.fill(lane, 0f);
             }
             pipeline.renderBlock(null, output, BLOCK, transport, mixer, tracks, null,
-                    engineMasterChain, null, null, null, null, null, null, null, taps);
+                    engineMasterChain, null, null, null, null, null, null, null, taps, interleaved);
             bus.blockCompleted(taps);
             return stamp;
         }

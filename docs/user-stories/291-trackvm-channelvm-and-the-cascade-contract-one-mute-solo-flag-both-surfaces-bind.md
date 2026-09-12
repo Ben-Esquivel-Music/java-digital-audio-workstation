@@ -180,8 +180,9 @@ precedent):
   for that wiring.
 - **`ChannelVM.meterLevel`** uses a `ContinuousDoubleChannel` with no live audio producer *as of this
   story* — the `daw-core` metering tap was a later stage, exactly as stories 289/290 noted for the
-  playhead. **Story 318 gave it that producer**: `ChannelVM.bindMeter(MeterFeed)` subscribes the
-  `CHANNEL_POST` tap and feeds `meterLevel` (peak dBFS, floor −120).
+  playhead. **Story 318 gave it that producer**: the registry supplies a `MeterFeed`, and a surface
+  calls `ChannelVM.bindMeter(surfaceNode)` to subscribe to `CHANNEL_POST` only while showing.
+  The returned removal token belongs to that surface; `meterLevel` carries peak dBFS, floor −120.
 - **dB-fader ↔ linear conversion** is deferred: `TrackControlBinder.bindFader`/`bindPan` operate on a
   linear `DoubleProperty`; the `MixerChannelStrip` dB fader's conversion lands with the live wiring (293).
 

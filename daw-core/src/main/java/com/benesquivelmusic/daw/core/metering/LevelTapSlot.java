@@ -26,8 +26,9 @@ import java.util.Objects;
  * often that actually happens depends on the tap point:</p>
  * <ul>
  *   <li>{@code MASTER_OUT} publishes on <em>every</em> block, playing or
- *       stopped — it is the render pipeline's unconditional tap, which is what
- *       returns every master meter to floor at stop;</li>
+ *       stopped — when the render pipeline writes the interface's
+ *       interleaved output, which returns every master meter to floor at
+ *       stop. Planar-only rendering does not publish this tap;</li>
  *   <li>{@code CHANNEL_POST}, {@code RETURN_POST} and {@code MASTER_CHAIN}
  *       publish exactly once per block <em>while the mixer runs</em> (muted and
  *       solo-excluded owners publish silence, so no slot the mix walks is

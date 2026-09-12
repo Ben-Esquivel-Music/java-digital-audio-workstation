@@ -3,10 +3,13 @@ package com.benesquivelmusic.daw.app.ui.metering;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import javafx.beans.value.ChangeListener;
 import javafx.scene.Node;
+import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.stage.Window;
 
 import java.util.Objects;
+import java.util.ArrayList;
+import java.util.List;
 
 /** Owns a meter token only while its surface belongs to a showing window. FX thread only. */
 public final class VisibleMeterBinding implements AutoCloseable {
@@ -18,6 +21,8 @@ public final class VisibleMeterBinding implements AutoCloseable {
     private final ChangeListener<Scene> sceneListener = (_, _, scene) -> observeScene(scene);
     private final ChangeListener<Window> windowListener = (_, _, window) -> observeWindow(window);
     private final ChangeListener<Boolean> visibilityListener = (_, _, _) -> reconcile();
+    private final ChangeListener<Parent> parentListener = (_, _, _) -> observeAncestors();
+    private final List<Node> ancestors = new ArrayList<>();
     private Scene scene;
     private Window window;
     private MeterSubscription subscription;
@@ -29,8 +34,24 @@ public final class VisibleMeterBinding implements AutoCloseable {
         this.surface = Objects.requireNonNull(surface);
         this.sink = Objects.requireNonNull(sink);
         surface.sceneProperty().addListener(sceneListener);
-        surface.visibleProperty().addListener(visibilityListener);
+        observeAncestors();
         observeScene(surface.getScene());
+    }
+
+    private void observeAncestors() {
+        for (Node ancestor : ancestors) {
+            ancestor.visibleProperty().removeListener(visibilityListener);
+            ancestor.parentProperty().removeListener(parentListener);
+        }
+        ancestors.clear();
+        if (!closed) {
+            for (Node ancestor = surface; ancestor != null; ancestor = ancestor.getParent()) {
+                ancestors.add(ancestor);
+                ancestor.visibleProperty().addListener(visibilityListener);
+                ancestor.parentProperty().addListener(parentListener);
+            }
+        }
+        reconcile();
     }
 
     private void observeScene(Scene next) {
@@ -56,7 +77,15 @@ public final class VisibleMeterBinding implements AutoCloseable {
     }
 
     private boolean isShowing() {
-        return !closed && surface.isVisible() && scene != null && window != null && window.isShowing();
+        if (closed || scene == null || window == null || !window.isShowing()) {
+            return false;
+        }
+        for (Node ancestor : ancestors) {
+            if (!ancestor.isVisible()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void reconcile() {
@@ -77,7 +106,7 @@ public final class VisibleMeterBinding implements AutoCloseable {
         }
         closed = true;
         surface.sceneProperty().removeListener(sceneListener);
-        surface.visibleProperty().removeListener(visibilityListener);
+        observeAncestors();
         observeScene(null);
     }
 }

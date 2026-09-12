@@ -330,7 +330,7 @@ final class EngineStreamPump {
         while (running) {
             fillInputPlanes();
             try {
-                engine.processBlock(input, output, bufferFrames);
+                engine.processBlock(input, output, bufferFrames, interleaved);
             } catch (RuntimeException renderFault) {
                 // Test the STATE, not the exception type (story 316 review):
                 // any collaborator reachable from processBlock — the mixer, an
@@ -358,8 +358,8 @@ final class EngineStreamPump {
                             renderFault);
                 }
                 zeroOutputPlanes();
+                RenderPipeline.writeInterleavedOutput(output, interleaved, channels, bufferFrames, null);
             }
-            interleaveOutput();
             // A fault below owes this iteration a FLOOR of one block period,
             // measured from the moment the fault happened. It is deliberately
             // not an extra park: the awaitSinkCapacity that follows may pace
@@ -525,15 +525,6 @@ final class EngineStreamPump {
             java.util.Arrays.fill(input[ch], 0f);
         }
         inputPlanesDirty = true;
-    }
-
-    private void interleaveOutput() {
-        for (int ch = 0; ch < channels; ch++) {
-            float[] plane = output[ch];
-            for (int frame = 0; frame < bufferFrames; frame++) {
-                interleaved[frame * channels + ch] = plane[frame];
-            }
-        }
     }
 
     /**

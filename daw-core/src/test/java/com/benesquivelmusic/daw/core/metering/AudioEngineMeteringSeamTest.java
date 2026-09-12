@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Story 318 — the PRODUCTION engine seam, driven through
- * {@link AudioEngine#processBlock(float[][], float[][], int)}.
+ * {@link AudioEngine#processBlock(float[][], float[][], int, float[])}.
  *
  * <p>Every other metering test hand-rolls the three lines that make meters
  * work in the shipped app — hoist {@code meteringTapBus.snapshot()}, hand it
@@ -104,8 +104,9 @@ class AudioEngineMeteringSeamTest {
     private static void drive(AudioEngine engine, int blocks) {
         float[][] input = new float[CHANNELS][BLOCK];
         float[][] output = new float[CHANNELS][BLOCK];
+        float[] interleaved = new float[CHANNELS * BLOCK];
         for (int block = 0; block < blocks; block++) {
-            engine.processBlock(input, output, BLOCK);
+            engine.processBlock(input, output, BLOCK, interleaved);
         }
     }
 

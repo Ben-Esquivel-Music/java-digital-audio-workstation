@@ -165,7 +165,8 @@ stage 1 wires it up:
 > delta-correct, `LevelMeterDisplay` latches clip with click-to-reset, and `LoudnessMeter`
 > is bounded and off-RT. What remains open from this section is the analyzer fleet
 > (story 319), the mastering-view meters (story 321), and `ChannelVM.meterLevel` — its
-> producer exists (`ChannelVM.bindMeter`, bound by `TrackChannelRegistry`), but nothing
+> producer exists (`ChannelVM.bindMeter(surfaceNode)`, with the feed supplied by `TrackChannelRegistry`
+> and demand owned by each visible surface), but nothing
 > in `MainController.rebuildViewModels()` constructs that registry until story 322, so
 > no production surface reads the fact yet. The critique is kept verbatim
 > because §4.3 and §5.3 are written against it.

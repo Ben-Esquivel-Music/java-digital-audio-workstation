@@ -89,6 +89,7 @@ class MixerViewMeterFeedTest {
     private RenderPipeline pipeline;
     private EffectsChain masterChain;
     private float[][] output;
+    private final float[] interleaved = new float[CHANNELS * BLOCK];
     private FxDispatcher dispatcher;
     private MeterFeed feed;
     private MixerView view;
@@ -208,7 +209,7 @@ class MixerViewMeterFeedTest {
         }
         pipeline.renderBlock(null, output, BLOCK, project.getTransport(), project.getMixer(),
                 project.getTracks(), null, masterChain, null, null, null, null, null, null,
-                null, taps);
+                null, taps, interleaved);
         bus.blockCompleted(taps);
     }
 

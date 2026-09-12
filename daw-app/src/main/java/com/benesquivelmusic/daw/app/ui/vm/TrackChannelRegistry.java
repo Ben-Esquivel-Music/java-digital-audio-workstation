@@ -56,11 +56,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <h2>Meter binding (story 318)</h2>
  *
  * <p>The {@linkplain #TrackChannelRegistry(DawProject, FxDispatcher, MeterFeed)
- * three-argument constructor} additionally binds every {@link ChannelVM} to its
- * post-fader {@code CHANNEL_POST} tap on the engine's metering tap bus, so
- * {@link ChannelVM#meterLevelProperty()} carries real levels. Every VM this
+ * three-argument constructor} supplies every {@link ChannelVM} with a feed,
+ * without creating any subscriptions. Each consuming surface calls
+ * {@link ChannelVM#bindMeter(javafx.scene.Node)} to supply its visibility and
+ * owns the returned removal token. Every VM this
  * registry creates goes through {@link #registerChannelVm(MixerChannel)}, so a
- * channel registered later is bound the same way — the feed is not a
+ * channel registered later is configured the same way — the feed is not a
  * constructor-time-only fact. {@link #dispose()} unbinds them all.</p>
  *
  * <p><strong>Production construction of this registry is story 322's.</strong>
@@ -91,7 +92,7 @@ public final class TrackChannelRegistry {
 
     /**
      * Story 318 — the tap-bus drain every {@link ChannelVM} this registry
-     * creates is bound to, or {@code null} when the registry was built without
+     * creates can bind a surface to, or {@code null} when the registry was built without
      * one (the two-argument constructor, and every pure-unit context).
      */
     private final MeterFeed meterFeed;
@@ -125,10 +126,9 @@ public final class TrackChannelRegistry {
     }
 
     /**
-     * Builds the registry over {@code project} and binds every
-     * {@link ChannelVM}'s meter to {@code meterFeed} (story 318), so
-     * {@link ChannelVM#meterLevelProperty()} carries the post-fader level the
-     * engine renders for that channel.
+     * Builds the registry over {@code project} and supplies {@code meterFeed}
+     * to every {@link ChannelVM}. Meter demand begins only when an actual
+     * surface binds itself to the VM and is visible.
      *
      * @param project    the project whose tracks and channels are mirrored; must not be {@code null}
      * @param dispatcher the marshalling seam (story 289); must not be {@code null}
@@ -161,19 +161,16 @@ public final class TrackChannelRegistry {
     }
 
     /**
-     * Creates, registers, listens to and — when a {@link MeterFeed} was
-     * supplied — meter-binds one channel's view-model. Every {@link ChannelVM}
+     * Creates, registers and supplies the optional meter feed to one channel's
+     * view-model without acquiring a subscription. Every {@link ChannelVM}
      * this registry owns is created here, so a channel registered after
      * construction is wired exactly like one present at construction.
      *
      * @param channel the mixer channel to mirror
      */
     private void registerChannelVm(MixerChannel channel) {
-        ChannelVM vm = new ChannelVM(channel, dispatcher);
+        ChannelVM vm = new ChannelVM(channel, dispatcher, meterFeed);
         channelVms.put(vm.channelId(), vm);
-        if (meterFeed != null && !meterFeed.isDisposed()) {
-            vm.bindMeter(meterFeed);
-        }
         // The registry's OWN listener (distinct from the ChannelVM's): a
         // MUTE/SOLO anywhere changes the project-wide solo picture, so every
         // channel's effective mute must be recomputed, not just this one's.

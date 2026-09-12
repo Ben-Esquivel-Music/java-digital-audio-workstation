@@ -107,6 +107,44 @@ class VisibleMeterBindingTest {
         assertThat(bus.levelSubscriptionCount()).isEqualTo(expected);
     }
 
+    @Test
+    void ancestorVisibilityAndReparentingFollowTheCurrentSurfaceTree() throws Exception {
+        onFx(() -> {
+            var bus = new MeteringTapBus();
+            bus.rebind(new Mixer(), new AudioFormat(48_000, 2, 24, 64), 1L);
+            var feed = new MeterFeed(bus, new FxDispatcher());
+            var surface = new Pane();
+            var branch = new Pane(surface);
+            var hidden = new Pane(branch);
+            hidden.setVisible(false);
+            var visible = new Pane();
+            var stage = new Stage();
+            stage.setScene(new Scene(new Pane(hidden, visible), 100, 100));
+            stage.show();
+            try (var binding = new VisibleMeterBinding(feed, MeterTapPoint.MASTER_OUT, surface, _ -> { })) {
+                assertCounts(feed, bus, 0);
+                hidden.getChildren().remove(branch);
+                visible.getChildren().add(branch);
+                assertCounts(feed, bus, 1);
+                hidden.setVisible(true);
+                hidden.setVisible(false);
+                assertCounts(feed, bus, 1);
+                visible.setVisible(false);
+                assertCounts(feed, bus, 0);
+                visible.setVisible(true);
+                assertCounts(feed, bus, 1);
+                binding.close();
+                visible.setVisible(false);
+                visible.setVisible(true);
+                assertCounts(feed, bus, 0);
+            } finally {
+                stage.close();
+                feed.dispose();
+                bus.close();
+            }
+        });
+    }
+
     private static void onFx(Runnable action) throws Exception {
         var task = new FutureTask<Void>(() -> {
             action.run();

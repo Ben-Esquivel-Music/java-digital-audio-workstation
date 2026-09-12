@@ -85,6 +85,7 @@ class MeteringTapCorrectnessTest {
         final RenderPipeline pipeline = new RenderPipeline(FORMAT, 8, BLOCK);
         final MeteringTapBus bus = new MeteringTapBus();
         final float[][] output;
+        final float[] interleaved = new float[CHANNELS * BLOCK];
         final LevelSubscription tapA;
         final LevelSubscription tapB;
         final LevelSubscription tapReturn;
@@ -158,7 +159,7 @@ class MeteringTapCorrectnessTest {
                 Arrays.fill(lane, 0f);
             }
             pipeline.renderBlock(null, output, BLOCK, transport, mixer, tracks, null,
-                    masterChain, null, null, enforcer, null, null, null, null, taps);
+                    masterChain, null, null, enforcer, null, null, null, null, taps, interleaved);
             bus.blockCompleted(taps);
             return stamp;
         }

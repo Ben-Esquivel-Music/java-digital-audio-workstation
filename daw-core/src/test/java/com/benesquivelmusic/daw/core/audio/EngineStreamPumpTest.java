@@ -4,6 +4,10 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.core.metering.MeterFrame;
+import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
+import com.benesquivelmusic.daw.core.project.DawProject;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -301,6 +305,72 @@ class EngineStreamPumpTest {
                 "blocks rendered AFTER the fault still reach the sink");
         assertThat(pump.isRunning()).isTrue();
         assertThat(pump.renderFaults()).isEqualTo(1);
+    }
+
+    @Test
+    void aFaultAfterAudibleOutputWritesSilenceInsteadOfReplayingThePreviousInterleavedBlock() {
+        var backend = new RecordingBackend();
+        engine = new AudioEngine(FORMAT);
+        engine.getMasterChain().addProcessor(new AudioProcessor() {
+            private int blocks;
+
+            @Override
+            public void process(float[][] input, float[][] output, int frames) {
+                if (++blocks == 2) {
+                    output[0][0] = 0.9f;
+                    throw new IllegalStateException("partial master write on the second block");
+                }
+                for (float[] lane : output) {
+                    java.util.Arrays.fill(lane, 0, frames, 0.5f);
+                }
+            }
+
+            @Override public void reset() { }
+            @Override public int getInputChannelCount() { return 2; }
+            @Override public int getOutputChannelCount() { return 2; }
+        });
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+        pump.start();
+        awaitCondition(() -> backend.sunkSamples.size() >= 3, "audio, fault silence and resumed audio reached the sink");
+        assertThat(backend.sunkSamples.get(0)).containsOnly(0.5f);
+        assertThat(backend.sunkSamples.get(1)).containsOnly(0f);
+        assertThat(backend.sunkSamples.get(2)).containsOnly(0.5f);
+        assertThat(pump.renderFaults()).isEqualTo(1);
+    }
+
+    @Test
+    void pumpPublishesTheMasterMeterBeforeTheSameInterleavedBlockReachesTheBackend() {
+        var backend = new RecordingBackend();
+        engine = new AudioEngine(FORMAT);
+        new EngineBinder(engine).bind(new DawProject("Pump meters", FORMAT));
+        engine.setRecordingCallback((input, frames) -> {
+            for (float[] lane : input) {
+                java.util.Arrays.fill(lane, 0, frames, 0.5f);
+            }
+        });
+        var meter = engine.meteringTapBus().attachLevel(MeterTapPoint.MASTER_OUT);
+        var frame = new MeterFrame();
+        backend.inspectSink = block -> {
+            assertThat(meter.readInto(frame)).isTrue();
+            assertThat(frame.channelCount()).isEqualTo(block.channels());
+            for (int channel = 0; channel < block.channels(); channel++) {
+                float peak = 0;
+                double squares = 0;
+                for (int sample = channel; sample < block.samples().length; sample += block.channels()) {
+                    float value = block.samples()[sample];
+                    peak = Math.max(peak, Math.abs(value));
+                    squares += (double) value * value;
+                }
+                assertThat(frame.peak(channel)).isEqualTo(peak);
+                assertThat(frame.rms(channel)).isEqualTo((float) Math.sqrt(squares / block.frames()));
+            }
+        };
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+        pump.start();
+        awaitCondition(() -> backend.inspectedSinks.get() >= 3, "backend saw coherent master frames before sink");
+        assertThat(backend.sunkSamples.get(2)).containsOnly(0.5f);
     }
 
     @Test
@@ -656,6 +726,9 @@ class EngineStreamPumpTest {
         final java.util.concurrent.atomic.AtomicLong lastAwaitTimeoutNanos =
                 new java.util.concurrent.atomic.AtomicLong();
         final List<AudioBlock> sunkInstances = new CopyOnWriteArrayList<>();
+        final List<float[]> sunkSamples = new CopyOnWriteArrayList<>();
+        final AtomicInteger inspectedSinks = new AtomicInteger();
+        java.util.function.Consumer<AudioBlock> inspectSink;
         final SubmissionPublisher<AudioBlock> inputPublisher = new SubmissionPublisher<>();
         volatile boolean failSink;
         volatile boolean failAwait;
@@ -722,6 +795,11 @@ class EngineStreamPumpTest {
             sinkCalls.incrementAndGet();
             if (sunkInstances.size() < 16) {
                 sunkInstances.add(block);
+                sunkSamples.add(block.samples().clone());
+            }
+            if (inspectSink != null) {
+                inspectSink.accept(block);
+                inspectedSinks.incrementAndGet();
             }
             if (failSink) {
                 throw new IllegalArgumentException("shape mismatch after driver reset");

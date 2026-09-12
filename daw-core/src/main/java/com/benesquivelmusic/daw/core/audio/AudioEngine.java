@@ -4683,6 +4683,10 @@ public final class AudioEngine {
      * Metronome, MetronomeSideOutputRouter, CueBusManager,
      * AudioBackend)}).</p>
      *
+     * <p>This planar-only overload does not publish {@code MASTER_OUT}.
+     * Interface consumers use {@link #processBlock(float[][], float[][], int, float[])}
+     * so the meter is accumulated during the required output write.</p>
+     *
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}
      * @param numFrames    the number of sample frames to process
@@ -4690,6 +4694,21 @@ public final class AudioEngine {
      */
     @RealTimeSafe
     public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        processBlock(inputBuffer, outputBuffer, numFrames, null);
+    }
+
+    /**
+     * Processes a block and writes the final samples into the stream pump's
+     * preallocated interleaved interface destination. {@code MASTER_OUT} is
+     * accumulated in that existing output-write loop, after master effects and
+     * all direct routes, and published before the bus completes the block.
+     * The planar-only overload omits this write and does not publish that tap.
+     *
+     * @param interleavedOutput interface samples, or {@code null} for planar-only output
+     */
+    @RealTimeSafe
+    public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
+                             float[] interleavedOutput) {
         if (!running.get()) {
             throw new IllegalStateException("Engine is not running");
         }
@@ -4736,7 +4755,7 @@ public final class AudioEngine {
                 currentMidiRenderer, masterChain, cb, monitor,
                 enforcer,
                 currentMetronome, currentRouter,
-                currentCueBusManager, currentBackend, taps);
+                currentCueBusManager, currentBackend, taps, interleavedOutput);
 
         // Story 318: stamp the next block and wake the analysis lane (only
         // when a ring exists) — the render thread's sole cross-thread signal.

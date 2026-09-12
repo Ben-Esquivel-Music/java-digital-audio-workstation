@@ -622,13 +622,10 @@ public final class RenderPipeline {
      * {@link Mixer#mixDown(float[][][], float[][], float[][][], int, TapSnapshot)}
      * / {@code mixDownInstrumented} and
      * {@link Mixer#renderDirectOutputs(float[][][], float[][], int, TapSnapshot)},
-     * and {@code MASTER_OUT} is accumulated from
-     * {@code outputBuffer[0..format.channels())} after the engine master
-     * chain AND after {@code renderDirectOutputs} — what the interface
-     * receives on the master pair, including metronome clicks, input
-     * passthrough and any direct output routed onto those lanes — and
-     * published EVERY block, silence included, so meters return to the floor
-     * at stop.
+     * while {@code MASTER_OUT} requires the overload with an interleaved
+     * output destination. Planar-only rendering does not write to the
+     * interface or publish that tap; its consumers follow the feed's usual
+     * stale-frame timeout.
      *
      * @param taps the block's tap snapshot (one volatile read by the caller),
      *             or {@code null} when untapped
@@ -649,6 +646,38 @@ public final class RenderPipeline {
                             CueBusManager cueBusManager,
                             AudioBackend backend,
                             TapSnapshot taps) {
+        renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
+                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                cpuBudgetEnforcer, metronome, router, cueBusManager, backend, taps, null);
+    }
+
+    /**
+     * Renders and writes the interface's interleaved samples. The write loop
+     * accumulates {@code MASTER_OUT} after all master effects and direct-output
+     * sums, so metering adds no traversal or buffer. The destination is the
+     * stream pump's preallocated buffer and contains {@code format.channels()}
+     * lanes (or fewer when {@code outputBuffer} is narrower).
+     *
+     * @param interleavedOutput the interface destination, or {@code null} for
+     *                          planar-only rendering without a master-output tap
+     */
+    public void renderBlock(float[][] inputBuffer,
+                            float[][] outputBuffer,
+                            int numFrames,
+                            Transport transport,
+                            Mixer mixer,
+                            List<Track> tracks,
+                            MidiTrackRenderer midiRenderer,
+                            EffectsChain masterChain,
+                            AudioEngine.RecordingCallback recordingCallback,
+                            PerformanceMonitor performanceMonitor,
+                            TrackCpuBudgetEnforcer cpuBudgetEnforcer,
+                            Metronome metronome,
+                            MetronomeSideOutputRouter router,
+                            CueBusManager cueBusManager,
+                            AudioBackend backend,
+                            TapSnapshot taps,
+                            float[] interleavedOutput) {
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
         Objects.requireNonNull(masterChain, "masterChain must not be null");
 
@@ -755,17 +784,16 @@ public final class RenderPipeline {
             mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps);
         }
 
-        // Story 318 — MASTER_OUT: what the interface receives, published
-        // every block (silence when idle) so meters fall to the floor at stop.
-        // Published AFTER renderDirectOutputs because a direct output whose
-        // routing starts on lane 0 or 1 SUMS into the master pair — taking the
-        // frame before that write would under-read exactly the signal the
-        // engineer can hear.
-        LevelTapSlot masterOut = taps != null ? taps.masterOut() : null;
-        if (masterOut != null) {
-            publishMasterOut(masterOut, outputBuffer,
-                    Math.min(outputBuffer.length, format.channels()), numFrames,
-                    taps.epoch(), taps.blockIndex());
+        if (interleavedOutput != null) {
+            int lanes = Math.min(outputBuffer.length, format.channels());
+            LevelTapSlot masterOut = taps != null ? taps.masterOut() : null;
+            if (masterOut != null) {
+                masterOut.beginBlock(taps.epoch(), taps.blockIndex(), lanes);
+            }
+            writeInterleavedOutput(outputBuffer, interleavedOutput, lanes, numFrames, masterOut);
+            if (masterOut != null) {
+                publishMasterOut(masterOut, outputBuffer, lanes, numFrames);
+            }
         }
 
         // Advance the transport position
@@ -788,18 +816,36 @@ public final class RenderPipeline {
     }
 
     /**
-     * Story 318 — publishes the {@code MASTER_OUT} frame from the first
-     * {@code lanes} lanes of {@code outputBuffer} (a pass over the block, the
-     * only one this tap adds) and copies the block into any attached
-     * analysis ring.
+     * Writes final interface samples and, when demanded, folds their levels
+     * into the already-started slot inside that same loop. The untapped branch
+     * keeps all per-sample tap work out of hidden-meter rendering.
+     */
+    @RealTimeSafe
+    static void writeInterleavedOutput(float[][] outputBuffer, float[] destination,
+                                       int lanes, int numFrames, LevelTapSlot masterOut) {
+        for (int ch = 0; ch < lanes; ch++) {
+            float[] plane = outputBuffer[ch];
+            if (masterOut == null) {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    destination[frame * lanes + ch] = plane[frame];
+                }
+            } else {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    float sample = plane[frame];
+                    destination[frame * lanes + ch] = sample;
+                    masterOut.accumulate(ch, sample);
+                }
+            }
+        }
+    }
+
+    /**
+     * Publishes the completed output slot. Only an explicitly attached
+     * analysis consumer requires a copy of the final sample block.
      */
     @RealTimeSafe
     private static void publishMasterOut(LevelTapSlot masterOut, float[][] outputBuffer,
-                                         int lanes, int numFrames, long epoch, long blockIndex) {
-        masterOut.beginBlock(epoch, blockIndex, lanes);
-        for (int ch = 0; ch < lanes; ch++) {
-            masterOut.accumulate(ch, outputBuffer[ch], numFrames);
-        }
+                                         int lanes, int numFrames) {
         masterOut.publish(numFrames);
         SampleBlockRing[] rings = masterOut.rings();
         for (int r = 0; r < rings.length; r++) {
