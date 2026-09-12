@@ -23,6 +23,7 @@ public final class AnalyzerProcessor implements AnalysisConsumer, AutoCloseable 
     public static final int FFT_SIZE = 4096;
     public static final int FFT_HOP = 1024;
     public static final long IDLE_NANOS = 500_000_000L;
+    private static final double MIN_MEAN_SQUARE = 1e-12;
     private static final String[] NOTES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
     private final Kind kind;
@@ -131,24 +132,30 @@ public final class AnalyzerProcessor implements AnalysisConsumer, AutoCloseable 
 
     private void analyze() {
         int size = window[0].length;
-        double energy = 0;
-        double leftEnergy = 0;
         for (int channel = 0; channel < 2; channel++) {
             int tail = size - cursor;
             System.arraycopy(history[channel], cursor, window[channel], 0, tail);
             System.arraycopy(history[channel], 0, window[channel], tail, cursor);
-            for (float value : window[channel]) energy += value * value;
-            if (channel == 0) leftEnergy = energy;
         }
-        dominantChannel = energy - leftEnergy > leftEnergy ? 1 : 0;
-        boolean signal = energy / (2 * size) > 1e-12;
+        double leftEnergy = 0;
+        double rightEnergy = 0;
+        for (int frame = 0; frame < size; frame++) {
+            double left = window[0][frame];
+            double right = window[1][frame];
+            leftEnergy += left * left;
+            rightEnergy += right * right;
+        }
+        dominantChannel = rightEnergy > leftEnergy ? 1 : 0;
+        boolean signal = (leftEnergy + rightEnergy) / (2 * size) > MIN_MEAN_SQUARE;
         // Pattern switch is final since Java 21 (JEP 441); no preview needed.
         publish.accept(switch (kind) {
             case SPECTRUM -> new AnalyzerSnapshot.Spectrum(signal ? spectrum() : null);
             case WAVEFORM -> new AnalyzerSnapshot.Waveform(signal ? waveform() : null);
             case CORRELATION -> {
-                correlation.process(window[0], window[1], size);
-                yield new AnalyzerSnapshot.Correlation(signal ? correlation.getLatestData() : null);
+                boolean signalInBothChannels = leftEnergy / size > MIN_MEAN_SQUARE
+                        && rightEnergy / size > MIN_MEAN_SQUARE;
+                if (signalInBothChannels) correlation.process(window[0], window[1], size);
+                yield new AnalyzerSnapshot.Correlation(signalInBothChannels ? correlation.getLatestData() : null);
             }
             case LOUDNESS -> {
                 if (mono) loudness.processMono(window[0], size);

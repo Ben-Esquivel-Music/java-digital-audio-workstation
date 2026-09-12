@@ -56,10 +56,10 @@ public final class AnalyzerFeeds implements AutoCloseable {
         if (current == null) return null;
         var transport = current.getTransport();
         var punch = transport.getPunchRegion();
-        double positionFrames = transport.getPositionInBeats() * 60.0 / transport.getTempo()
-                * current.getFormat().sampleRate();
+        long positionFrames = Math.round(transport.getTempoMap().beatsToSeconds(transport.getPositionInBeats())
+                * current.getFormat().sampleRate());
         boolean insidePunch = punch == null || !punch.enabled()
-                || (positionFrames >= punch.startFrames() && positionFrames < punch.endFrames());
+                || punch.containsFrame(positionFrames);
         var armed = current.getTracks().stream().filter(track -> track.isArmed()).toList();
         var selected = armed.stream()
                 .filter(track -> track.getInputMonitoringMode().resolve(transport.getState(),

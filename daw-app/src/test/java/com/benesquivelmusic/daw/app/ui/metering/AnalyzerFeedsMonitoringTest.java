@@ -7,8 +7,13 @@ import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.transport.TempoChangeEvent;
+import com.benesquivelmusic.daw.core.transport.TempoTransitionType;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,6 +62,46 @@ class AnalyzerFeedsMonitoringTest {
         }
     }
 
+    @ParameterizedTest
+    @EnumSource(TempoTransitionType.class)
+    void tapeFollowsTempoMapAtPunchBoundaries(TempoTransitionType transition) {
+        try (var fixture = new Fixture(InputMonitoringMode.TAPE)) {
+            var transport = fixture.project.getTransport();
+            transport.setTempo(120);
+            transport.getTempoMap().addTempoChange(new TempoChangeEvent(2, 60, transition));
+            transport.setPunchRegion(PunchRegion.enabled(72_000, 144_000));
+            transport.record();
+
+            fixture.seekToFrame(71_999);
+            fixture.assertSelected(fixture.second);
+            fixture.seekToFrame(72_000);
+            fixture.assertSelected(fixture.first);
+            fixture.seekToFrame(143_999);
+            fixture.assertSelected(fixture.first);
+            fixture.seekToFrame(144_000);
+            fixture.assertSelected(fixture.second);
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "95999.25, false", "95999.75, true", "96000.25, true",
+            "143999.25, true", "143999.75, false", "144000.25, false"
+    })
+    void tapeRoundsMappedPositionToNearestFrameAtPunchBoundaries(double positionFrames, boolean insidePunch) {
+        try (var fixture = new Fixture(InputMonitoringMode.TAPE)) {
+            var transport = fixture.project.getTransport();
+            transport.setTempo(120);
+            transport.getTempoMap().addTempoChange(TempoChangeEvent.instant(2, 60));
+            transport.setPunchRegion(PunchRegion.enabled(96_000, 144_000));
+            transport.record();
+
+            fixture.seekToFrame(positionFrames);
+
+            fixture.assertSelected(insidePunch ? fixture.first : fixture.second);
+        }
+    }
+
     @Test
     void fallsBackToFirstArmedTrackAndNeverToTheMaster() {
         try (var fixture = new Fixture(InputMonitoringMode.OFF)) {
@@ -96,6 +141,12 @@ class AnalyzerFeedsMonitoringTest {
         void assertSelected(Track track) {
             assertThat(feeds.tunerPoint()).isEqualTo(
                     new MeterTapPoint.ChannelPost(project.getMixerChannelForTrack(track).getId()));
+        }
+
+        void seekToFrame(double positionFrames) {
+            var transport = project.getTransport();
+            transport.setPositionInBeats(transport.getTempoMap()
+                    .secondsToBeats(positionFrames / FORMAT.sampleRate()));
         }
 
         @Override public void close() {
