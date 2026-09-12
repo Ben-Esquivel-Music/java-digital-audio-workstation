@@ -31,6 +31,96 @@ class MeteringAnalysisSilenceTest {
 
     private enum Subject { MASTER_CHANNEL, DIRECT_CHANNEL, RETURN }
 
+    private record ChannelLayout(int sourceLanes, int masterLanes, int hardwareLanes,
+                                 OutputRouting routing, int tappedLanes) { }
+
+    static Stream<Arguments> channelLayouts() {
+        var layouts = List.of(
+                new ChannelLayout(1, 6, 6, OutputRouting.MASTER, 2),
+                new ChannelLayout(2, 6, 6, OutputRouting.MASTER, 2),
+                new ChannelLayout(6, 2, 6, OutputRouting.MASTER, 2),
+                new ChannelLayout(1, 1, 1, OutputRouting.MASTER, 1),
+                new ChannelLayout(6, 6, 6, new OutputRouting(1, 2), 2),
+                new ChannelLayout(2, 6, 6, new OutputRouting(0, 6), 2),
+                new ChannelLayout(1, 6, 6, new OutputRouting(4, 2), 2),
+                new ChannelLayout(6, 2, 6, new OutputRouting(4, 4), 2),
+                new ChannelLayout(1, 6, 6, new OutputRouting(5, 2), 1));
+        return Arrays.stream(MixPrecision.values()).flatMap(precision ->
+                Stream.of(false, true).flatMap(instrumented ->
+                        layouts.stream().map(layout -> Arguments.of(precision, instrumented, layout))));
+    }
+
+    @ParameterizedTest(name = "{0}, instrumented={1}, layout={2}")
+    @MethodSource("channelLayouts")
+    void mutingAndSoloExclusionPreserveTheAudibleChannelTapLayout(
+            MixPrecision precision, boolean instrumented, ChannelLayout layout) throws Exception {
+        var mixer = new Mixer();
+        mixer.setMixPrecision(precision);
+        var channel = new MixerChannel("Signal");
+        channel.setOutputRouting(layout.routing());
+        channel.setSoloSafe(false);
+        var other = new MixerChannel("Solo control");
+        mixer.addChannel(channel);
+        mixer.addChannel(other);
+        mixer.prepareForPlayback(layout.masterLanes(), FRAMES);
+        var sources = new float[2][layout.sourceLanes()][FRAMES];
+        for (float[] lane : sources[0]) {
+            Arrays.fill(lane, SOURCE_LEVEL);
+        }
+        var master = new float[layout.masterLanes()][FRAMES];
+        var hardware = new float[layout.hardwareLanes()][FRAMES];
+        var returns = new float[Mixer.MAX_RETURN_BUSES][layout.masterLanes()][FRAMES];
+        var tracks = List.of(new Track("Signal", TrackType.AUDIO), new Track("Solo control", TrackType.AUDIO));
+        var bus = new MeteringTapBus();
+        try (var enforcer = new TrackCpuBudgetEnforcer(RATE, FRAMES)) {
+            bus.rebind(mixer, new AudioFormat(RATE, layout.hardwareLanes(), 24, FRAMES), 1L);
+            var point = new MeterTapPoint.ChannelPost(channel.getId());
+            var level = bus.attachLevel(point);
+            var captured = new Capture();
+            var analysis = bus.attachAnalysis(point, 8, captured::accept);
+            var frame = new MeterFrame();
+            for (int block = 0; block < 4; block++) {
+                channel.setMuted(block == 1);
+                other.setSolo(block == 2);
+                boolean silent = block == 1 || block == 2;
+                var taps = bus.snapshot();
+                var slot = taps.channelSlot(0, channel);
+                long previousSequence = slot.sequence();
+                if (instrumented) {
+                    mixer.mixDownInstrumented(sources, master, returns, FRAMES, tracks, enforcer, taps);
+                } else {
+                    mixer.mixDown(sources, master, returns, FRAMES, taps);
+                }
+                if (!layout.routing().isMaster()) {
+                    assertThat(slot.sequence()).as("direct taps publish at the hardware route only")
+                            .isEqualTo(previousSequence);
+                }
+                mixer.renderDirectOutputs(sources, hardware, FRAMES, taps);
+                bus.blockCompleted(taps);
+
+                assertThat(slot.sequence()).as("exactly one publication for block %d", block)
+                        .isEqualTo(previousSequence + 2);
+                assertThat(level.readInto(frame)).isTrue();
+                assertThat(frame.blockIndex()).isEqualTo(block);
+                assertThat(frame.channelCount()).as("level lanes in block %d", block).isEqualTo(layout.tappedLanes());
+                assertThat(frame.isSilent()).isEqualTo(silent);
+                var samples = captured.nextBlock();
+                assertThat(samples).hasDimensions(layout.tappedLanes(), FRAMES);
+                for (float[] lane : samples) {
+                    if (silent) {
+                        assertThat(lane).containsOnly(0f);
+                    } else {
+                        assertThat(lane[0]).isPositive();
+                    }
+                }
+            }
+            assertThat(analysis.droppedBlocks()).isZero();
+            assertThat(captured.blocks).isEmpty();
+        } finally {
+            bus.close();
+        }
+    }
+
     static Stream<Arguments> renderPaths() {
         return Arrays.stream(MixPrecision.values()).flatMap(precision ->
                 Stream.of(false, true).flatMap(instrumented ->

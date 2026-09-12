@@ -257,6 +257,7 @@ public final class MeterFeed {
         long lastBlockIndex = -1L;
         int lastChannels = DEFAULT_SILENT_CHANNELS;
         boolean silentDelivered;
+        boolean silencePending;
         boolean disposed;
 
         Entry(MeterFeed feed, MeterKey key, BooleanSupplier visible) {
@@ -314,15 +315,18 @@ public final class MeterFeed {
                 lastDeliveryNanos = now;
                 silentDelivered = false;
                 deliverFrame();
-            } else if (!silentDelivered && now - lastDeliveryNanos >= STALE_NANOS) {
+                silencePending = false;
+            } else if (silencePending || (!silentDelivered && now - lastDeliveryNanos >= STALE_NANOS)) {
                 deliverSilence(now);
             }
         }
 
         private void deliverSilence(long now) {
+            silencePending = true;
+            deliverSilentFrame(tokenEpoch, Math.max(lastBlockIndex, 0L), lastChannels);
+            silencePending = false;
             silentDelivered = true;
             lastDeliveryNanos = now;
-            deliverSilentFrame(tokenEpoch, Math.max(lastBlockIndex, 0L), lastChannels);
         }
 
         /**

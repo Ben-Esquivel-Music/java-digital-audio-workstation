@@ -704,9 +704,10 @@ public final class Mixer {
             // One slot resolution per channel per block (never per sample).
             LevelTapSlot channelTap = taps != null ? taps.channelSlot(i, channel) : null;
             if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
-                if (channelTap != null) {
-                    channelTap.publishSilence(tapEpoch, tapBlock, outputBuffer.length);
-                    writeSilentRings(channelTap, outputBuffer.length, numFrames);
+                if (channelTap != null && channel.getOutputRouting().isMaster()) {
+                    int lanes = channelTapLanes(channelBuffers[i].length, outputBuffer.length);
+                    channelTap.publishSilence(tapEpoch, tapBlock, lanes);
+                    writeSilentRings(channelTap, lanes, numFrames);
                 }
                 continue;
             }
@@ -983,9 +984,10 @@ public final class Mixer {
             // One slot resolution per channel per block (never per sample).
             LevelTapSlot channelTap = taps != null ? taps.channelSlot(i, channel) : null;
             if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
-                if (channelTap != null) {
-                    channelTap.publishSilence(tapEpoch, tapBlock, outputBuffer.length);
-                    writeSilentRings(channelTap, outputBuffer.length, numFrames);
+                if (channelTap != null && channel.getOutputRouting().isMaster()) {
+                    int lanes = channelTapLanes(channelBuffers[i].length, outputBuffer.length);
+                    channelTap.publishSilence(tapEpoch, tapBlock, lanes);
+                    writeSilentRings(channelTap, lanes, numFrames);
                 }
                 continue;
             }
@@ -1503,6 +1505,12 @@ public final class Mixer {
         }
     }
 
+    /** A mono source expands to a stereo pair when the destination has room. */
+    @RealTimeSafe
+    private static int channelTapLanes(int sourceChannels, int outputChannels) {
+        return Math.min(outputChannels, sourceChannels == 1 ? 2 : sourceChannels);
+    }
+
     /** Advances every analysis ring of a muted tap without reading or changing its source. */
     @RealTimeSafe
     private static void writeSilentRings(LevelTapSlot tap, int channels, int numFrames) {
@@ -1659,10 +1667,10 @@ public final class Mixer {
      * {@link #renderDirectOutputs(float[][][], float[][], int)} publishing
      * the {@code CHANNEL_POST} frame of every direct-routed channel from the
      * post-fader values it writes (story 318). Muted / solo-excluded direct
-     * channels are <em>not</em> published here: the preceding
+     * channels publish silence here with the same source and available
+     * hardware lane count as an audible block. The preceding
      * {@link #mixDown(float[][][], float[][], float[][][], int, TapSnapshot)}
-     * already published their silence, so every channel slot the mix walked
-     * still sees exactly one publish for that block.
+     * leaves these taps to this method, so each publishes once per block.
      *
      * @param taps the block's tap snapshot, or {@code null} when untapped
      */
@@ -1680,10 +1688,15 @@ public final class Mixer {
             if (routing.isMaster()) {
                 continue;
             }
-            if (channel.isMuted()) {
-                continue;
-            }
-            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
+            LevelTapSlot tap = taps != null ? taps.channelSlot(i, channel) : null;
+            if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
+                if (tap != null) {
+                    int availableOutputs = Math.max(0,
+                            Math.min(routing.channelCount(), hwOutputBuffer.length - routing.firstChannel()));
+                    int lanes = channelTapLanes(channelBuffers[i].length, availableOutputs);
+                    tap.publishSilence(tapEpoch, tapBlock, lanes);
+                    writeSilentRings(tap, lanes, numFrames);
+                }
                 continue;
             }
 
@@ -1692,7 +1705,6 @@ public final class Mixer {
             int firstOut = routing.firstChannel();
             int outChannels = routing.channelCount();
             int availableOutputs = Math.max(0, Math.min(outChannels, hwOutputBuffer.length - firstOut));
-            LevelTapSlot tap = taps != null ? taps.channelSlot(i, channel) : null;
 
             // Apply constant-power pan law for stereo direct outputs
             if (outChannels >= 2 && src.length >= 1) {

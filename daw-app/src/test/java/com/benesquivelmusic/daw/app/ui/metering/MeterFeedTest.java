@@ -16,6 +16,8 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -374,6 +376,63 @@ class MeterFeedTest {
         assertThat(delivered).hasSize(3);
         assertThat(delivered.get(2).silent()).isFalse();
         assertThat(delivered.get(2).peak()).isCloseTo(0.3f, within(1e-6f));
+    }
+
+    @ParameterizedTest(name = "insert I/O={0}, silence reason={1}")
+    @CsvSource({"false,stale", "true,stale", "false,rebind", "true,rebind",
+            "false,resume", "true,resume"})
+    void failedSilenceDeliveryRetriesWithoutAnotherRender(boolean insertIo, String reason) {
+        var visible = new AtomicBoolean(true);
+        var failSilence = new AtomicBoolean(true);
+        var delivered = new ArrayList<Delivered>();
+        MeterSink sink = frame -> {
+            if (frame.isSilent() && failSilence.getAndSet(false)) {
+                throw new IllegalStateException("silent frame failure");
+            }
+            delivered.add(Delivered.of(frame));
+        };
+        if (insertIo) {
+            var insert = new InsertSlot("Metered", new PassThrough());
+            channelA.addInsert(insert);
+            feed.subscribeInsertIo(insert.getPluginInstanceId(), "editor", visible::get,
+                    (input, output) -> sink.accept(output));
+            var taps = bus.snapshot();
+            var pair = taps.insertTapFor(insert);
+            var samples = new float[BLOCK];
+            Arrays.fill(samples, 0.5f);
+            publish(pair.input(), taps, samples);
+            publish(pair.output(), taps, samples);
+            bus.blockCompleted(taps);
+        } else {
+            feed.subscribe(MeterTapPoint.MASTER_OUT, "meter", visible::get, sink);
+            renderBlock(0.5f);
+        }
+        feed.pulse();
+        assertThat(delivered).hasSize(1);
+        assertThat(delivered.getFirst().silent()).isFalse();
+
+        switch (reason) {
+            case "stale" -> nanos.addAndGet(MeterFeed.STALE_NANOS);
+            case "rebind" -> bus.rebind(mixer, FORMAT, 2L);
+            case "resume" -> {
+                visible.set(false);
+                feed.pulse();
+                visible.set(true);
+            }
+            default -> throw new AssertionError(reason);
+        }
+        assertThatThrownBy(feed::pulse).hasRootCauseMessage("silent frame failure");
+        assertThat(delivered).hasSize(1);
+        assertThat(bus.levelSubscriptionCount()).isEqualTo(1);
+
+        feed.pulse();
+        assertThat(delivered).hasSize(2);
+        assertThat(delivered.getLast().silent()).isTrue();
+        nanos.addAndGet(10L * MeterFeed.STALE_NANOS);
+        feed.pulse();
+        feed.pulse();
+        assertThat(delivered).as("successful silence is acknowledged only once").hasSize(2);
+        assertThat(bus.levelSubscriptionCount()).isEqualTo(1);
     }
 
     @Test
