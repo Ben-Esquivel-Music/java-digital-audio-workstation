@@ -10,7 +10,7 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.metering.MeterSinks;
-import com.benesquivelmusic.daw.app.ui.metering.MeterSubscription;
+import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
@@ -129,8 +129,8 @@ public final class MixerView extends VBox implements Dockable {
      * the constructor and lives in {@link #masterMeterDisplay} instead.
      */
     private final Map<LevelMeterDisplay, MeterTapPoint> stripMeterPoints = new LinkedHashMap<>();
-    /** Live {@link MeterFeed} tokens for {@link #stripMeterPoints}; disposed by {@link #refresh()}. */
-    private final List<MeterSubscription> stripMeterSubscriptions = new ArrayList<>();
+    /** Visibility-owned meter bindings for {@link #stripMeterPoints}; closed by {@link #refresh()}. */
+    private final List<VisibleMeterBinding> stripMeterBindings = new ArrayList<>();
     /**
      * Channel UUIDs (track ids) currently selected via Ctrl/Shift-click on a
      * channel strip. Used to seed the "Create VCA from selection" right-click
@@ -247,19 +247,17 @@ public final class MixerView extends VBox implements Dockable {
     private MeterFeed meterFeed;
     /** The master strip's output meter — built once in the constructor, never rebuilt. */
     private LevelMeterDisplay masterMeterDisplay;
-    /** The master strip's {@code MASTER_OUT} token; created / replaced by {@link #setMeterFeed}. */
-    private MeterSubscription masterMeterSubscription;
+    /** The master strip's {@code MASTER_OUT} binding; survives strip refreshes. */
+    private VisibleMeterBinding masterMeterBinding;
     /**
-     * Story 318 — {@code true} between a scene detach and the next re-attach.
+     * Story 318 — {@code true} before the first scene attachment and while detached.
      * While it is set this view holds NO meter subscription, so a
      * {@link #refresh()} driven from elsewhere (a track added while the Mixer
      * is off screen) cannot re-acquire live tokens on a view that may never be
      * shown again — which would pin the view, its displays and the old
      * project's channels in the app-scoped feed for the life of the process.
-     * Starts {@code false} so a freshly constructed, not-yet-mounted view
-     * subscribes exactly as before.
      */
-    private boolean meterSceneDetached;
+    private boolean meterSceneDetached = true;
     /**
      * Story 318 — {@code true} while the channel-link and undo-history
      * listeners are registered. The scene-detach branch removes them; the
@@ -820,8 +818,9 @@ public final class MixerView extends VBox implements Dockable {
      * <em>post-fader</em>, so a fader move is visible on the meter. The
      * {@code MeterKey} surface is the {@link LevelMeterDisplay} instance, so a
      * strip can never accumulate two subscriptions for the same meter, and the
-     * visibility predicate is {@code display.getScene() != null}: a mixer that
-     * is not the active view costs the FX pulse nothing. Meters fall to their
+     * {@link VisibleMeterBinding} acquires a subscription only while the
+     * display and its ancestors are visible in a showing window. Hidden or
+     * unmounted meters leave no entry in the FX-pulse drain. Meters fall to their
      * −120 dB floor at stop through the feed's silent frame ("honest idle") —
      * this view runs no timer and holds no synthetic feed.</p>
      *
@@ -857,10 +856,10 @@ public final class MixerView extends VBox implements Dockable {
             return;
         }
         if (masterMeterDisplay != null) {
-            masterMeterSubscription = subscribeMeter(masterMeterDisplay, MeterTapPoint.MASTER_OUT);
+            masterMeterBinding = bindMeter(masterMeterDisplay, MeterTapPoint.MASTER_OUT);
         }
         for (Map.Entry<LevelMeterDisplay, MeterTapPoint> entry : stripMeterPoints.entrySet()) {
-            stripMeterSubscriptions.add(subscribeMeter(entry.getKey(), entry.getValue()));
+            stripMeterBindings.add(bindMeter(entry.getKey(), entry.getValue()));
         }
     }
 
@@ -911,13 +910,13 @@ public final class MixerView extends VBox implements Dockable {
         // may be replaced without ever coming back. The re-attach branch
         // subscribes everything from stripMeterPoints.
         if (!meterSceneDetached && meterFeedUsable()) {
-            stripMeterSubscriptions.add(subscribeMeter(display, point));
+            stripMeterBindings.add(bindMeter(display, point));
         }
     }
 
-    /** Subscribes one display to one tap point. Only called with a usable feed. */
-    private MeterSubscription subscribeMeter(LevelMeterDisplay display, MeterTapPoint point) {
-        return meterFeed.subscribe(point, display, () -> display.getScene() != null,
+    /** Binds one display's subscription to its visibility. Only called with a usable feed. */
+    private VisibleMeterBinding bindMeter(LevelMeterDisplay display, MeterTapPoint point) {
+        return new VisibleMeterBinding(meterFeed, point, display,
                 MeterSinks.levelMeterDisplay(display));
     }
 
@@ -938,18 +937,18 @@ public final class MixerView extends VBox implements Dockable {
      * {@link #refresh()}, which discards the strips themselves, clears it.
      */
     private void disposeStripMeterSubscriptions() {
-        for (MeterSubscription subscription : stripMeterSubscriptions) {
-            subscription.dispose();
+        for (VisibleMeterBinding binding : stripMeterBindings) {
+            binding.close();
         }
-        stripMeterSubscriptions.clear();
+        stripMeterBindings.clear();
     }
 
     /** Disposes every meter subscription this view owns, master included. */
     private void disposeAllMeterSubscriptions() {
         disposeStripMeterSubscriptions();
-        if (masterMeterSubscription != null) {
-            masterMeterSubscription.dispose();
-            masterMeterSubscription = null;
+        if (masterMeterBinding != null) {
+            masterMeterBinding.close();
+            masterMeterBinding = null;
         }
     }
 
@@ -958,9 +957,9 @@ public final class MixerView extends VBox implements Dockable {
         return List.copyOf(stripMeterPoints.keySet());
     }
 
-    /** The live strip meter subscriptions, in strip order. Visible for testing. */
-    List<MeterSubscription> getStripMeterSubscriptions() {
-        return List.copyOf(stripMeterSubscriptions);
+    /** The strip meter bindings, in strip order. Visible for testing. */
+    List<VisibleMeterBinding> getStripMeterBindings() {
+        return List.copyOf(stripMeterBindings);
     }
 
     /** The master strip's output meter. Visible for testing. */
@@ -968,9 +967,9 @@ public final class MixerView extends VBox implements Dockable {
         return masterMeterDisplay;
     }
 
-    /** The master strip's {@code MASTER_OUT} subscription, or {@code null}. Visible for testing. */
-    MeterSubscription getMasterMeterSubscription() {
-        return masterMeterSubscription;
+    /** The master strip's {@code MASTER_OUT} binding, or {@code null}. Visible for testing. */
+    VisibleMeterBinding getMasterMeterBinding() {
+        return masterMeterBinding;
     }
 
     /**

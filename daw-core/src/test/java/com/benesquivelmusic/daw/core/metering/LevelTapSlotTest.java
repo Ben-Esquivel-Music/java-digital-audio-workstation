@@ -213,6 +213,62 @@ class LevelTapSlotTest {
     }
 
     @Test
+    void committedClippingRemainsAvailableAfterQuietBlocksAndRingReplacement() {
+        var slot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
+        slot.beginBlock(1L, 0L, 1);
+        slot.accumulate(0, 1.25f);
+        slot.publish(1);
+        slot.publishSilence(1L, 1L, 1);
+        var replacement = slot.withRings(new SampleBlockRing[] {new SampleBlockRing(2, 16)});
+        var frame = new MeterFrame();
+        assertThat(replacement.readInto(frame)).isTrue();
+        assertThat(frame.isSilent()).as("levels still describe the newest quiet block").isTrue();
+        assertThat(frame.blockIndex()).isEqualTo(1L);
+        assertThat(frame.lastClippedBlockIndex()).isZero();
+        frame.reportClippingAfter(-1L);
+        assertThat(frame.toLevelData().clipping()).isTrue();
+        frame.reportClippingAfter(0L);
+        assertThat(frame.toLevelData().clipping()).isFalse();
+    }
+
+    @Test
+    void replacementDuringDeferredPublicationRetainsPriorAndLaterCommittedClipping() {
+        var slot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
+        slot.beginBlock(1L, 3L, 1);
+        slot.accumulate(0, 1.25f);
+        slot.publish(1);
+        slot.deferPublication();
+        slot.beginBlock(1L, 4L, 1);
+        slot.accumulate(0, 1.5f);
+        slot.publish(1);
+        var replacement = slot.withRings(new SampleBlockRing[] {new SampleBlockRing(2, 16)});
+        assertThat(replacement.readInto(new MeterFrame())).isFalse();
+        assertThat(replacement.lastClippedBlockIndex()).as("prior committed clipping survives failed level copy")
+                .isEqualTo(3L);
+        slot.completePublication();
+        assertThat(replacement.lastClippedBlockIndex()).as("predecessor completion needs no new replacement frame")
+                .isEqualTo(4L);
+    }
+
+    @Test
+    void abortedRenderDoesNotErasePriorClippingOrCommitTentativeClipping() {
+        var slot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
+        slot.beginBlock(1L, 3L, 1);
+        slot.accumulate(0, 1.25f);
+        slot.publish(1);
+        slot.deferPublication();
+        slot.beginBlock(1L, 4L, 1);
+        slot.accumulate(0, 1.5f);
+        slot.publish(1);
+        slot.abortBlock(1L, 4L, 1, 1);
+        slot.completePublication();
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.isSilent()).isTrue();
+        assertThat(frame.lastClippedBlockIndex()).isEqualTo(3L);
+    }
+
+    @Test
     void lanesAboveANarrowerBlockAreZeroedNotStale() {
         LevelTapSlot slot = new LevelTapSlot(MeterTapPoint.MASTER_OUT);
         slot.beginBlock(1L, 1L, 2);

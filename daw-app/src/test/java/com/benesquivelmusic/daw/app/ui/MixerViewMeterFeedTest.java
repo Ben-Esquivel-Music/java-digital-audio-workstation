@@ -3,7 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
-import com.benesquivelmusic.daw.app.ui.metering.MeterSubscription;
+import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -23,6 +23,8 @@ import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 
 import javafx.application.Platform;
 import javafx.scene.Scene;
+import javafx.scene.layout.StackPane;
+import javafx.stage.Stage;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -93,6 +95,7 @@ class MixerViewMeterFeedTest {
     private FxDispatcher dispatcher;
     private MeterFeed feed;
     private MixerView view;
+    private Stage stage;
 
     // ── FX helpers (capture + rethrow — the swallowed-assertion pitfall) ──
 
@@ -160,13 +163,11 @@ class MixerViewMeterFeedTest {
             MeterFeed created = new MeterFeed(boundBus, boundDispatcher);
             MixerView mixerView = new MixerView(boundProject, null, boundDispatcher);
             mixerView.setMeterFeed(created);
-            // A Scene is what makes every strip meter "visible" — the feed
-            // skips a subscription whose display has no scene. applyCss() +
-            // layout() are required, not decoration: the strips live inside a
-            // ScrollPane, and a ScrollPane parents its content only once its
-            // skin exists, so without them every meter would (correctly)
-            // report getScene() == null and the pulse would skip it.
-            new Scene(mixerView, 900, 600);
+            // A showing window is required for demand. Applying CSS creates
+            // the ScrollPane skin that attaches the strips to the scene graph.
+            stage = new Stage();
+            stage.setScene(new Scene(new StackPane(mixerView), 900, 600));
+            stage.show();
             mixerView.applyCss();
             mixerView.layout();
             boundDispatcher.pulse(); // Observe visibility and attach before rendering the next block.
@@ -177,6 +178,12 @@ class MixerViewMeterFeedTest {
 
     @AfterEach
     void tearDown() throws Exception {
+        if (stage != null) {
+            onFxRun(stage::close);
+        }
+        if (view != null) {
+            onFxRun(() -> view.setMeterFeed(null));
+        }
         if (feed != null) {
             onFxRun(feed::dispose);
         }
@@ -233,11 +240,136 @@ class MixerViewMeterFeedTest {
                 .as("two track strips and the default return strip")
                 .hasSize(EXPECTED_STRIP_METERS);
         assertThat(view.getMasterMeterDisplay()).as("the master strip meter").isNotNull();
-        assertThat(view.getMasterMeterSubscription()).as("MASTER_OUT token").isNotNull();
+        assertThat(view.getMasterMeterBinding()).as("MASTER_OUT binding").isNotNull();
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
         assertThat(bus.levelSubscriptionCount())
                 .as("one engine token per strip meter")
                 .isEqualTo(EXPECTED_SUBSCRIPTIONS);
+    }
+
+    @Test
+    void replacingAnUnvisitedMixerLeavesNoAbandonedEntriesInTheFeed() throws Exception {
+        onFxRun(() -> {
+            stage.getScene().setRoot(new StackPane());
+            assertMeterDemand(0);
+
+            var previousProject = new DawProject("Unvisited project", FORMAT);
+            previousProject.createAudioTrack("Unvisited track");
+            var unvisited = new MixerView(previousProject, null, dispatcher);
+            unvisited.setMeterFeed(feed);
+            unvisited.refresh();
+            assertThat(unvisited.getScene()).isNull();
+            assertThat(unvisited.getStripMeterBindings()).isEmpty();
+            assertThat(unvisited.getMasterMeterBinding()).isNull();
+            assertMeterDemand(0);
+
+            view = new MixerView(project, null, dispatcher);
+            view.setMeterFeed(feed);
+            assertMeterDemand(0);
+            stage.getScene().setRoot(view);
+            view.applyCss();
+            view.layout();
+            assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
+            stage.getScene().setRoot(new StackPane());
+            dispatcher.pulse();
+            assertMeterDemand(0);
+        });
+    }
+
+    @Test
+    void hidingTheWindowReleasesDemandAndStopsDeliveryUntilShownAgain() throws Exception {
+        renderBlock();
+        onFxRun(dispatcher::pulse);
+        assertThat(view.getMasterMeterDisplay().getPendingPeakDb()).isGreaterThan(-60.0);
+        VisibleMeterBinding masterBefore = view.getMasterMeterBinding();
+
+        onFxRun(() -> {
+            stage.hide();
+            assertThat(view.getScene()).as("floating docks retain their Scene when hidden").isNotNull();
+            assertMeterDemand(0);
+            allMeters().forEach(meter -> meter.update(LevelData.SILENCE));
+        });
+        renderBlock();
+        onFxRun(() -> {
+            dispatcher.pulse();
+            assertMeterDemand(0);
+            assertThat(allMeters()).allSatisfy(meter ->
+                    assertThat(meter.getPendingPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY));
+            stage.show();
+            assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
+            assertThat(view.getMasterMeterBinding()).isSameAs(masterBefore);
+        });
+
+        renderBlock();
+        onFxRun(dispatcher::pulse);
+        assertThat(allMeters()).allSatisfy(meter ->
+                assertThat(meter.getPendingPeakDb()).isGreaterThan(-60.0));
+    }
+
+    @Test
+    void hidingAnAncestorOrTheMixerReleasesEveryMeterImmediately() throws Exception {
+        onFxRun(() -> {
+            var parent = (StackPane) stage.getScene().getRoot();
+            parent.setVisible(false);
+            assertMeterDemand(0);
+            dispatcher.pulse();
+            assertThat(allMeters()).allSatisfy(meter ->
+                    assertThat(meter.getPendingPeakDb()).isEqualTo(-120.0));
+            parent.setVisible(true);
+            assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
+            view.setVisible(false);
+            assertMeterDemand(0);
+            view.setVisible(true);
+            assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
+        });
+    }
+
+    @Test
+    void refreshingWhileTheWindowIsHiddenReactivatesOnlyTheCurrentStrips() throws Exception {
+        List<LevelMeterDisplay> discardedMeters = view.getStripMeterDisplays();
+        VisibleMeterBinding masterBefore = view.getMasterMeterBinding();
+        onFxRun(() -> {
+            stage.hide();
+            view.refresh();
+            view.applyCss();
+            view.layout();
+            dispatcher.pulse();
+            assertMeterDemand(0);
+            assertThat(view.getMasterMeterBinding()).isSameAs(masterBefore);
+            stage.show();
+            assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
+        });
+
+        renderBlock();
+        onFxRun(dispatcher::pulse);
+        assertThat(discardedMeters).allSatisfy(meter ->
+                assertThat(meter.getPendingPeakDb()).isEqualTo(-120.0));
+        assertThat(allMeters()).allSatisfy(meter ->
+                assertThat(meter.getPendingPeakDb()).isGreaterThan(-60.0));
+    }
+
+    @Test
+    void clearingTheFeedPreventsVisibilityChangesFromResurrectingSubscriptions() throws Exception {
+        onFxRun(() -> {
+            view.setMeterFeed(null);
+            assertMeterDemand(0);
+            stage.hide();
+            stage.show();
+            view.refresh();
+            view.applyCss();
+            view.layout();
+            assertMeterDemand(0);
+            stage.hide();
+            view.setMeterFeed(feed);
+            assertMeterDemand(0);
+            stage.show();
+            assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
+        });
+    }
+
+    private void assertMeterDemand(int expected) {
+        assertThat(feed.subscriptionCount()).as("entries visited by every FX pulse").isEqualTo(expected);
+        assertThat(bus.levelSubscriptionCount()).as("engine level demand").isEqualTo(expected);
     }
 
     @Test
@@ -286,8 +418,9 @@ class MixerViewMeterFeedTest {
     @Test
     void refreshDisposesTheDiscardedStripSubscriptionsAndSubscribesTheRebuiltOnes()
             throws Exception {
-        List<MeterSubscription> before = view.getStripMeterSubscriptions();
-        MeterSubscription masterBefore = view.getMasterMeterSubscription();
+        List<VisibleMeterBinding> before = view.getStripMeterBindings();
+        List<LevelMeterDisplay> discardedMeters = view.getStripMeterDisplays();
+        VisibleMeterBinding masterBefore = view.getMasterMeterBinding();
         assertThat(before).hasSize(EXPECTED_STRIP_METERS);
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
 
@@ -298,14 +431,10 @@ class MixerViewMeterFeedTest {
             dispatcher.pulse();
         });
 
-        assertThat(before).allSatisfy(subscription ->
-                assertThat(subscription.isDisposed())
-                        .as("a strip discarded by refresh() leaves no live subscription")
-                        .isTrue());
-        assertThat(masterBefore.isDisposed())
-                .as("the master strip is not rebuilt, so its subscription survives")
-                .isFalse();
-        assertThat(view.getStripMeterSubscriptions())
+        assertThat(view.getMasterMeterBinding())
+                .as("the master strip is not rebuilt, so its binding survives")
+                .isSameAs(masterBefore);
+        assertThat(view.getStripMeterBindings())
                 .as("the rebuilt strips are subscribed")
                 .hasSize(EXPECTED_STRIP_METERS)
                 .doesNotContainAnyElementsOf(before);
@@ -317,6 +446,10 @@ class MixerViewMeterFeedTest {
         // The rebuilt strips are live: they meter the next rendered blocks.
         renderBlocks(BLOCKS);
         onFxRun(dispatcher::pulse);
+        assertThat(discardedMeters).allSatisfy(meter ->
+                assertThat(meter.getPendingPeakDb())
+                        .as("discarded strip receives no frames after refresh")
+                        .isEqualTo(-120.0));
         for (LevelMeterDisplay meter : allMeters()) {
             assertThat(meter.getPendingPeakDb())
                     .as("rebuilt strip meter is fed")
@@ -328,15 +461,14 @@ class MixerViewMeterFeedTest {
     void detachingTheViewFromItsSceneReleasesEveryMeterSubscription() throws Exception {
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
 
-        // Replacing the scene's root is how ViewNavigationController drops a
-        // view: the MixerView leaves the scene graph and its listener fires.
-        onFxRun(() -> view.getScene().setRoot(new javafx.scene.layout.StackPane()));
+        // Navigation removes the cached view from its host's children.
+        onFxRun(() -> ((StackPane) view.getParent()).getChildren().remove(view));
 
         assertThat(view.getScene()).as("the view left the scene graph").isNull();
         assertThat(feed.subscriptionCount())
                 .as("a detached MixerView holds no subscription in the app-scoped feed")
                 .isZero();
-        assertThat(view.getMasterMeterSubscription()).isNull();
+        assertThat(view.getMasterMeterBinding()).isNull();
     }
 
     /**
@@ -349,21 +481,21 @@ class MixerViewMeterFeedTest {
      */
     @Test
     void reAttachingTheViewSubscribesEveryMeterAgain() throws Exception {
-        Scene scene = onFx(view::getScene);
-        onFxRun(() -> scene.setRoot(new javafx.scene.layout.StackPane()));
+        StackPane host = onFx(() -> (StackPane) view.getParent());
+        onFxRun(() -> host.getChildren().remove(view));
         assertThat(feed.subscriptionCount()).isZero();
 
         onFxRun(() -> {
-            scene.setRoot(view);
+            host.getChildren().add(view);
             view.applyCss();
             view.layout();
             dispatcher.pulse();
         });
 
         assertThat(view.getScene()).as("the view is back in the scene graph").isNotNull();
-        assertThat(view.getMasterMeterSubscription())
+        assertThat(view.getMasterMeterBinding())
                 .as("the master strip re-subscribes MASTER_OUT").isNotNull();
-        assertThat(view.getStripMeterSubscriptions()).hasSize(EXPECTED_STRIP_METERS);
+        assertThat(view.getStripMeterBindings()).hasSize(EXPECTED_STRIP_METERS);
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
         assertThat(bus.levelSubscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
 
@@ -390,21 +522,21 @@ class MixerViewMeterFeedTest {
      */
     @Test
     void refreshingWhileDetachedAcquiresNoSubscriptionsAndReAttachRestoresThem() throws Exception {
-        Scene scene = onFx(view::getScene);
-        onFxRun(() -> scene.setRoot(new javafx.scene.layout.StackPane()));
+        StackPane host = onFx(() -> (StackPane) view.getParent());
+        onFxRun(() -> host.getChildren().remove(view));
         assertThat(feed.subscriptionCount()).isZero();
 
         onFxRun(view::refresh);
 
         assertThat(view.getStripMeterDisplays())
                 .as("the strips were still rebuilt").hasSize(EXPECTED_STRIP_METERS);
-        assertThat(view.getStripMeterSubscriptions())
+        assertThat(view.getStripMeterBindings())
                 .as("a detached view acquires no strip subscription on refresh").isEmpty();
         assertThat(feed.subscriptionCount())
                 .as("nothing was handed to the app-scoped feed").isZero();
 
         onFxRun(() -> {
-            scene.setRoot(view);
+            host.getChildren().add(view);
             view.applyCss();
             view.layout();
         });
@@ -421,10 +553,10 @@ class MixerViewMeterFeedTest {
      */
     @Test
     void reAttachingTheViewRestoresTheChannelLinkListener() throws Exception {
-        Scene scene = onFx(view::getScene);
-        onFxRun(() -> scene.setRoot(new javafx.scene.layout.StackPane()));
+        StackPane host = onFx(() -> (StackPane) view.getParent());
+        onFxRun(() -> host.getChildren().remove(view));
         onFxRun(() -> {
-            scene.setRoot(view);
+            host.getChildren().add(view);
             view.applyCss();
             view.layout();
         });

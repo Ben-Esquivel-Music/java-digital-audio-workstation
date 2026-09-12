@@ -61,10 +61,14 @@ import java.util.concurrent.locks.ReentrantLock;
  *       a snapshot on the caller's thread.</li>
  *   <li>LRA and the integrated relative gate are computed from fixed
  *       {@value #HISTOGRAM_BINS}-bin histograms with {@value #HISTOGRAM_BIN_LU}
- *       LU resolution over [{@value #HISTOGRAM_MIN_LUFS}, {@value #HISTOGRAM_MAX_LUFS})
- *       LUFS plus streaming power sums — no list growth, no boxing, and
- *       no sort. LRA is recomputed at the 10 Hz snapshot cadence, so the
- *       histogram walk is bounded work per block.</li>
+ *       LU bins over [{@value #HISTOGRAM_MIN_LUFS}, {@value #HISTOGRAM_MAX_LUFS})
+ *       LUFS plus streaming power sums. Each bin retains up to 32 ordered,
+ *       weighted observations, so gating uses observed levels within the
+ *       threshold bin rather than rounding the gate to its edge. When full,
+ *       the nearest observations merge, preserving their count and power;
+ *       gates and percentiles within a merged cluster are approximate.
+ *       There is no list growth or boxing. LRA is recomputed at the 10 Hz
+ *       snapshot cadence, so the histogram walk is bounded work per block.</li>
  * </ul>
  *
  * <h2>Gating</h2>
@@ -140,8 +144,6 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private static final double EXPORT_LOUDNESS_TOLERANCE_LU = 1.0;
     private static final double LRA_LOW_PERCENTILE = 0.10;
     private static final double LRA_HIGH_PERCENTILE = 0.95;
-    /** Guards floor/ceil bin arithmetic against binary rounding of exact bin edges. */
-    private static final double BIN_EDGE_EPSILON = 1e-9;
 
     /**
      * Target publication interval, in seconds, for the
@@ -183,8 +185,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     // histogram (count + power per bin) for the BS.1770-4 relative gate.
     private double integratedSum;
     private long integratedBlocks;
-    private final long[] integratedBins = new long[HISTOGRAM_BINS];
-    private final double[] integratedBinPower = new double[HISTOGRAM_BINS];
+    private final LoudnessHistogram integratedHistogram = new LoudnessHistogram();
     private final double[] integratedWindow;
     private final int integratedHopFrames;
     private int integratedWindowIndex;
@@ -196,7 +197,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
     // LRA (EBU Tech 3342): fixed histogram of absolute-gated short-term
     // readings plus streaming power sum/count for the relative gate.
-    private final long[] lraBins = new long[HISTOGRAM_BINS];
+    private final LoudnessHistogram lraHistogram = new LoudnessHistogram();
     private long lraCount;
     private double lraPowerSum;
     // Recomputed when a callback includes a 100 ms LRA observation.
@@ -619,7 +620,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         double meanSquare = Math.max(0.0, shortTermPower / shortTermFrames);
         double shortTermLufs = meanSquareToLufs(meanSquare);
         if (shortTermLufs > ABSOLUTE_GATE_LUFS) {
-            lraBins[binIndexFor(shortTermLufs)]++;
+            lraHistogram.add(shortTermLufs, meanSquare);
             lraCount++;
             lraPowerSum += meanSquare;
         }
@@ -631,9 +632,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         if (blockLufs > ABSOLUTE_GATE_LUFS) {
             integratedSum += blockMeanSquare;
             integratedBlocks++;
-            int bin = binIndexFor(blockLufs);
-            integratedBins[bin]++;
-            integratedBinPower[bin] += blockMeanSquare;
+            integratedHistogram.add(blockLufs, blockMeanSquare);
         }
     }
 
@@ -659,14 +658,10 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
             return LUFS_FLOOR;
         }
         double absoluteGatedMean = meanSquareToLufs(integratedSum / integratedBlocks);
-        int firstBin = firstBinAtOrAbove(absoluteGatedMean + INTEGRATED_RELATIVE_GATE_LU);
-        long count = 0;
-        double power = 0.0;
-        for (int b = firstBin; b < HISTOGRAM_BINS; b++) {
-            count += integratedBins[b];
-            power += integratedBinPower[b];
-        }
-        return (count == 0) ? absoluteGatedMean : meanSquareToLufs(power / count);
+        integratedHistogram.gate(absoluteGatedMean + INTEGRATED_RELATIVE_GATE_LU);
+        long count = integratedHistogram.gatedCount();
+        return (count == 0) ? absoluteGatedMean
+                : meanSquareToLufs(integratedHistogram.gatedPower() / count);
     }
 
     /**
@@ -674,8 +669,8 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * the short-term loudness distribution after the absolute gate
      * ({@value #ABSOLUTE_GATE_LUFS} LUFS) and the relative gate
      * ({@value #RELATIVE_GATE_LU} LU below the absolute-gated mean).
-     * Percentiles are read from the fixed histogram at bin-centre
-     * resolution ({@value #HISTOGRAM_BIN_LU} LU); the rank convention
+     * Percentiles are read from the ordered weighted observations retained
+     * within each fixed histogram bin; the rank convention
      * (0-based rank ⌊n·p⌋, top rank clamped to n−1) matches the former
      * copy-and-sort implementation.
      */
@@ -684,58 +679,23 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
             return 0.0;
         }
         double gatedMean = meanSquareToLufs(lraPowerSum / lraCount);
-        int firstBin = firstBinAtOrAbove(gatedMean + RELATIVE_GATE_LU);
-
-        long n = 0;
-        for (int b = firstBin; b < HISTOGRAM_BINS; b++) {
-            n += lraBins[b];
-        }
+        lraHistogram.gate(gatedMean + RELATIVE_GATE_LU);
+        long n = lraHistogram.gatedCount();
         if (n < 2) {
             return 0.0;
         }
         long lowRank = (long) Math.floor(n * LRA_LOW_PERCENTILE);
         long highRank = Math.min((long) Math.floor(n * LRA_HIGH_PERCENTILE), n - 1);
 
-        double low = Double.NaN;
-        double high = Double.NaN;
-        long cumulative = 0;
-        for (int b = firstBin; b < HISTOGRAM_BINS; b++) {
-            cumulative += lraBins[b];
-            if (Double.isNaN(low) && cumulative > lowRank) {
-                low = binCentre(b);
-            }
-            if (cumulative > highRank) {
-                high = binCentre(b);
-                break;
-            }
-        }
+        double low = lraHistogram.gatedValueAtRank(lowRank);
+        double high = lraHistogram.gatedValueAtRank(highRank);
         return Math.max(0.0, high - low);
-    }
-
-    /** Bin containing {@code lufs}, clamped into the histogram range. */
-    private static int binIndexFor(double lufs) {
-        int bin = (int) Math.floor((lufs - HISTOGRAM_MIN_LUFS) / HISTOGRAM_BIN_LU + BIN_EDGE_EPSILON);
-        return Math.max(0, Math.min(HISTOGRAM_BINS - 1, bin));
-    }
-
-    /**
-     * First bin whose lower edge is at or above {@code thresholdLufs};
-     * {@link #HISTOGRAM_BINS} when the threshold is above every bin.
-     */
-    private static int firstBinAtOrAbove(double thresholdLufs) {
-        int bin = (int) Math.ceil((thresholdLufs - HISTOGRAM_MIN_LUFS) / HISTOGRAM_BIN_LU - BIN_EDGE_EPSILON);
-        return Math.max(0, Math.min(HISTOGRAM_BINS, bin));
-    }
-
-    private static double binCentre(int bin) {
-        return HISTOGRAM_MIN_LUFS + (bin + 0.5) * HISTOGRAM_BIN_LU;
     }
 
     private void clearIntegratedState() {
         integratedSum = 0;
         integratedBlocks = 0;
-        Arrays.fill(integratedBins, 0L);
-        Arrays.fill(integratedBinPower, 0.0);
+        integratedHistogram.clear();
         Arrays.fill(integratedWindow, 0.0);
         integratedWindowIndex = 0;
         integratedWindowPower = 0.0;
@@ -743,7 +703,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     }
 
     private void clearLoudnessRangeState() {
-        Arrays.fill(lraBins, 0L);
+        lraHistogram.clear();
         lraCount = 0;
         lraPowerSum = 0;
         loudnessRange = 0.0;

@@ -34,6 +34,7 @@ public final class MeterFrame {
     private boolean clipped;
     private long epoch;
     private long blockIndex;
+    private long lastClippedBlockIndex = -1L;
 
     /** Creates an empty (silent, zero-channel, epoch 0, block 0) frame. */
     public MeterFrame() {
@@ -78,9 +79,39 @@ public final class MeterFrame {
         return channelCount;
     }
 
-    /** {@code true} when any sample of the block reached or exceeded full scale. */
+    /**
+     * On a slot read, whether the source block reached full scale. After
+     * {@link #reportClippingAfter(long)}, whether an unacknowledged clipping
+     * occurrence is included in this consumer's delivery, even if its newest
+     * level block is quiet.
+     */
     public boolean clipped() {
         return clipped;
+    }
+
+    /**
+     * Latest committed clipping occurrence in this tap's binding, or {@code -1}
+     * before any clip. Unlike the instantaneous levels, it survives quiet
+     * blocks and ring-generation replacements. An in-flight predecessor may
+     * commit an occurrence newer than the replacement's copied level frame.
+     */
+    public long lastClippedBlockIndex() {
+        return lastClippedBlockIndex;
+    }
+
+    /** Retains an independently read occurrence without replacing the coherent level fields. */
+    public void retainClipOccurrence(long clipBlockIndex) {
+        lastClippedBlockIndex = Math.max(lastClippedBlockIndex, clipBlockIndex);
+    }
+
+    /**
+     * Prepares a consumer delivery: clipping reports only occurrences after
+     * that consumer's last acknowledged clip block (or {@code -1} initially).
+     * Readers keep independent acknowledgements, so resetting one display
+     * neither consumes another display's event nor replays a previous clip.
+     */
+    public void reportClippingAfter(long acknowledgedBlockIndex) {
+        clipped = lastClippedBlockIndex > acknowledgedBlockIndex;
     }
 
     /** The binding epoch the producing block rendered under. */
@@ -106,6 +137,7 @@ public final class MeterFrame {
         clipped = false;
         epoch = 0L;
         blockIndex = 0L;
+        lastClippedBlockIndex = -1L;
     }
 
     /**
@@ -126,6 +158,7 @@ public final class MeterFrame {
         this.clipped = false;
         this.epoch = epoch;
         this.blockIndex = blockIndex;
+        this.lastClippedBlockIndex = -1L;
     }
 
     /**
@@ -155,13 +188,15 @@ public final class MeterFrame {
     }
 
     /** Commits a stable staged read into the live fields. */
-    void commitStaged(int channelCount, boolean clipped, long epoch, long blockIndex) {
+    void commitStaged(int channelCount, boolean clipped, long epoch, long blockIndex,
+                      long lastClippedBlockIndex) {
         System.arraycopy(stagePeak, 0, peakLinear, 0, MAX_CHANNELS);
         System.arraycopy(stageRms, 0, rmsLinear, 0, MAX_CHANNELS);
         this.channelCount = channelCount;
         this.clipped = clipped;
         this.epoch = epoch;
         this.blockIndex = blockIndex;
+        this.lastClippedBlockIndex = lastClippedBlockIndex;
     }
 
     @Override

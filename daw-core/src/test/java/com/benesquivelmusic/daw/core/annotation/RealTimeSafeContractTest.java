@@ -1194,7 +1194,7 @@ class RealTimeSafeContractTest {
      */
     private static final Map<String, Set<String>> METERING_CONSUMER_SIDE_METHODS = Map.of(
             "com.benesquivelmusic.daw.core.metering.LevelTapSlot",
-            Set.of("readInto", "hasPublished", "toString"),
+            Set.of("readInto", "hasPublished", "lastClippedBlockIndex", "toString"),
             "com.benesquivelmusic.daw.core.metering.SampleBlockRing",
             Set.of("readInto", "lastChannelCount", "droppedBlocks", "truncatedBlocks",
                     "capacity", "blockFrames", "size", "isEmpty", "toString"),

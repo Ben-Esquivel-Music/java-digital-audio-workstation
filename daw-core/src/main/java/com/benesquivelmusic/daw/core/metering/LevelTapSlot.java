@@ -63,9 +63,16 @@ import java.util.Objects;
  * samples with silence before releasing either lane. Unvisited healthy taps
  * retain their previous frame and stamp.</p>
  *
+ * <p>Clipping occurrences also have an independent, single-writer volatile
+ * block stamp shared by ring-generation replacements. Only completed
+ * publication updates it, so quiet frames cannot erase an unseen clip and an
+ * aborted render cannot invent one. Consumers can poll this occurrence even
+ * before a replacement has a stable level frame; each consuming surface
+ * acknowledges occurrences independently of its display's resettable latch.</p>
+ *
  * <p>No allocation, no lock and no atomic read-modify-write on any producer
  * ({@code @RealTimeSafe}) path. The consumer-side
- * {@link #readInto(MeterFrame)}, {@link #hasPublished()} and
+ * {@link #readInto(MeterFrame)}, {@link #hasPublished()}, {@link #lastClippedBlockIndex()} and
  * {@link #toString()} are off-RT and unannotated — {@code readInto} spins and
  * {@code toString} builds a String.</p>
  */
@@ -88,6 +95,13 @@ public final class LevelTapSlot {
     }
 
     private final MeterTapPoint point;
+    /** Shared across ring generations; a new binding starts a fresh history. */
+    private final ClipHistory clipHistory;
+
+    private static final class ClipHistory {
+        /** Single render writer, read independently by each consumer. */
+        private volatile long lastBlockIndex = -1L;
+    }
 
     // Accumulation state — render-thread owned, never read by consumers.
     private final float[] accumulatedPeak = new float[MAX_CHANNELS];
@@ -120,8 +134,13 @@ public final class LevelTapSlot {
     }
 
     LevelTapSlot(MeterTapPoint point, SampleBlockRing[] rings) {
+        this(point, rings, new ClipHistory());
+    }
+
+    private LevelTapSlot(MeterTapPoint point, SampleBlockRing[] rings, ClipHistory clipHistory) {
         this.point = Objects.requireNonNull(point, "point must not be null");
         this.rings = rings.length == 0 ? NO_RINGS : rings.clone();
+        this.clipHistory = clipHistory;
     }
 
     /** Off-RT replacement that preserves the latest coherent level reading. */
@@ -129,7 +148,7 @@ public final class LevelTapSlot {
         if (java.util.Arrays.equals(rings, nextRings)) {
             return this;
         }
-        var replacement = new LevelTapSlot(point, nextRings);
+        var replacement = new LevelTapSlot(point, nextRings, clipHistory);
         var frame = new MeterFrame();
         if (readInto(frame)) {
             for (int channel = 0; channel < frame.channelCount(); channel++) {
@@ -321,6 +340,12 @@ public final class LevelTapSlot {
     @RealTimeSafe
     private void finishPublication() {
         if (!publicationDeferred && publicationPending) {
+            // Commit occurrences only after abort has had its chance to replace
+            // tentative clipping with silence. Ring replacements share this
+            // history even when their predecessor is still rendering.
+            if (publishedClipped) {
+                clipHistory.lastBlockIndex = publishedBlockIndex;
+            }
             long sequence = (long) SEQUENCE.getOpaque(this);
             SEQUENCE.setRelease(this, sequence + 1L);
             publicationPending = false;
@@ -387,7 +412,7 @@ public final class LevelTapSlot {
             VarHandle.loadLoadFence();
             long after = (long) SEQUENCE.getAcquire(this);
             if (before == after) {
-                frame.commitStaged(channels, clipped, epoch, blockIndex);
+                frame.commitStaged(channels, clipped, epoch, blockIndex, clipHistory.lastBlockIndex);
                 return true;
             }
             Thread.onSpinWait();
@@ -398,6 +423,15 @@ public final class LevelTapSlot {
     /** {@code true} once at least one frame has been published (test / diagnostic seam). */
     public boolean hasPublished() {
         return (long) SEQUENCE.getAcquire(this) != 0L;
+    }
+
+    /**
+     * Latest committed clip occurrence, independently of level-frame availability.
+     * A ring replacement can inherit an in-flight predecessor's occurrence
+     * before the replacement itself has published any levels.
+     */
+    public long lastClippedBlockIndex() {
+        return clipHistory.lastBlockIndex;
     }
 
     /** The current seqlock sequence (test seam; even when stable). */

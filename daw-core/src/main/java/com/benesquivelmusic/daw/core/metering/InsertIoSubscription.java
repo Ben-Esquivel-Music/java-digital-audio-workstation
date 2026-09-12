@@ -35,6 +35,18 @@ public final class InsertIoSubscription extends TapSubscription {
         return pair != null && pair.output().readInto(frame);
     }
 
+    /** Latest committed input clipping occurrence, independently of level-frame availability. */
+    public long lastInputClippedBlockIndex() {
+        InsertTapPair pair = resolvePair();
+        return pair == null ? -1L : pair.input().lastClippedBlockIndex();
+    }
+
+    /** Latest committed output clipping occurrence, independently of level-frame availability. */
+    public long lastOutputClippedBlockIndex() {
+        InsertTapPair pair = resolvePair();
+        return pair == null ? -1L : pair.output().lastClippedBlockIndex();
+    }
+
     private InsertTapPair resolvePair() {
         if (isDisposed()) {
             return null;

@@ -31,8 +31,12 @@ import java.util.function.LongSupplier;
  *       subscription is a lasting intent; see {@link MeterSubscription}).</li>
  *   <li>{@code readInto(frame)} &rarr; deliver only when the frame is
  *       coherent, its epoch equals the token's and its block index advanced
- *       since the last delivery — one sink call per rendered block, never a
- *       repeat.</li>
+ *       since the last delivery, or a new clipping occurrence is pending.
+ *       Clipping survives quiet blocks between pulses and is acknowledged
+ *       independently by each surface after its sink succeeds. If a ring
+ *       replacement has no stable levels yet, its inherited clip occurrence
+ *       is delivered with the surface's last coherent levels (initially
+ *       silence), without waiting for another render.</li>
  *   <li><strong>Honest idle:</strong> no new block for {@link #STALE_NANOS}
  *       (measured with the injected clock on the FX thread) &rarr; deliver
  *       exactly one silent frame ({@link MeterFrame#markSilent}), then
@@ -379,6 +383,7 @@ public final class MeterFeed {
 
         private final MeterSink sink;
         private final MeterFrame frame = new MeterFrame();
+        private final ClipDelivery clipping = new ClipDelivery();
         private LevelSubscription token;
 
         LevelEntry(MeterFeed feed, MeterKey key, BooleanSupplier visible, MeterSink sink) {
@@ -389,16 +394,26 @@ public final class MeterFeed {
         @Override
         TapSubscription attachToken() {
             token = feed.bus.attachLevel(key.point());
+            clipping.startObserving(token.epoch(), token.lastClippedBlockIndex());
             return token;
         }
 
         @Override
         boolean readFresh() {
             LevelSubscription current = token;
-            if (current == null || !current.readInto(frame)) {
+            if (current == null) {
                 return false;
             }
-            return frame.epoch() == tokenEpoch && frame.blockIndex() != lastBlockIndex;
+            boolean levelsRead = current.readInto(frame) && frame.epoch() == tokenEpoch;
+            long clipBlockIndex = current.lastClippedBlockIndex();
+            if (!levelsRead && !clipping.hasUnreportedClip(tokenEpoch, clipBlockIndex)) {
+                return false;
+            }
+            if (frame.epoch() != tokenEpoch) {
+                frame.markSilent(tokenEpoch, Math.max(lastBlockIndex, 0L), lastChannels);
+            }
+            frame.retainClipOccurrence(clipBlockIndex);
+            return (levelsRead && frame.blockIndex() != lastBlockIndex) || clipping.hasUnreportedClip(frame);
         }
 
         @Override
@@ -413,7 +428,9 @@ public final class MeterFeed {
 
         @Override
         void deliverFrame() {
+            clipping.prepare(frame);
             sink.accept(frame);
+            clipping.acknowledge(frame);
         }
 
         @Override
@@ -429,6 +446,8 @@ public final class MeterFeed {
         private final InsertIoSink sink;
         private final MeterFrame input = new MeterFrame();
         private final MeterFrame output = new MeterFrame();
+        private final ClipDelivery inputClipping = new ClipDelivery();
+        private final ClipDelivery outputClipping = new ClipDelivery();
         private InsertIoSubscription token;
 
         InsertEntry(MeterFeed feed, MeterKey key, BooleanSupplier visible, InsertIoSink sink) {
@@ -439,6 +458,8 @@ public final class MeterFeed {
         @Override
         TapSubscription attachToken() {
             token = feed.bus.attachInsertIo((MeterTapPoint.InsertIo) key.point());
+            inputClipping.startObserving(token.epoch(), token.lastInputClippedBlockIndex());
+            outputClipping.startObserving(token.epoch(), token.lastOutputClippedBlockIndex());
             return token;
         }
 
@@ -458,17 +479,27 @@ public final class MeterFeed {
         @Override
         boolean readFresh() {
             InsertIoSubscription current = token;
-            if (current == null || !current.readOutputInto(output)) {
+            if (current == null) {
                 return false;
             }
-            if (output.epoch() != tokenEpoch || output.blockIndex() == lastBlockIndex) {
+            boolean outputRead = current.readOutputInto(output) && output.epoch() == tokenEpoch;
+            long outputClip = current.lastOutputClippedBlockIndex();
+            long inputClip = current.lastInputClippedBlockIndex();
+            if ((!outputRead || output.blockIndex() == lastBlockIndex)
+                    && !outputClipping.hasUnreportedClip(tokenEpoch, outputClip)
+                    && !inputClipping.hasUnreportedClip(tokenEpoch, inputClip)) {
                 return false;
             }
+            if (output.epoch() != tokenEpoch) {
+                output.markSilent(tokenEpoch, Math.max(lastBlockIndex, 0L), lastChannels);
+            }
+            output.retainClipOccurrence(outputClip);
             if (!current.readInputInto(input)
                     || input.epoch() != output.epoch()
                     || input.blockIndex() != output.blockIndex()) {
                 input.markSilent(output.epoch(), output.blockIndex(), output.channelCount());
             }
+            input.retainClipOccurrence(inputClip);
             return true;
         }
 
@@ -484,7 +515,11 @@ public final class MeterFeed {
 
         @Override
         void deliverFrame() {
+            inputClipping.prepare(input);
+            outputClipping.prepare(output);
             sink.accept(input, output);
+            inputClipping.acknowledge(input);
+            outputClipping.acknowledge(output);
         }
 
         @Override
@@ -492,6 +527,39 @@ public final class MeterFeed {
             input.markSilent(epoch, blockIndex, channels);
             output.markSilent(epoch, blockIndex, channels);
             sink.accept(input, output);
+        }
+    }
+
+    /** Occurrences are acknowledged per surface, independently of its displayed clip latch. */
+    private static final class ClipDelivery {
+        private long epoch;
+        private long lastClippedBlockIndex = -1L;
+
+        void startObserving(long epoch, long lastClippedBlockIndex) {
+            this.epoch = epoch;
+            this.lastClippedBlockIndex = lastClippedBlockIndex;
+        }
+
+        boolean hasUnreportedClip(MeterFrame frame) {
+            return hasUnreportedClip(frame.epoch(), frame.lastClippedBlockIndex());
+        }
+
+        boolean hasUnreportedClip(long frameEpoch, long clipBlockIndex) {
+            return clipBlockIndex > acknowledgedBlock(frameEpoch);
+        }
+
+        void prepare(MeterFrame frame) {
+            frame.reportClippingAfter(acknowledgedBlock(frame.epoch()));
+        }
+
+        void acknowledge(MeterFrame frame) {
+            long acknowledged = acknowledgedBlock(frame.epoch());
+            epoch = frame.epoch();
+            lastClippedBlockIndex = Math.max(acknowledged, frame.lastClippedBlockIndex());
+        }
+
+        private long acknowledgedBlock(long frameEpoch) {
+            return epoch == frameEpoch ? lastClippedBlockIndex : -1L;
         }
     }
 }

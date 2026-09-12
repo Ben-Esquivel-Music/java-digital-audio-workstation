@@ -1,6 +1,12 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
+import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 
 import javafx.application.Platform;
@@ -90,6 +96,68 @@ class LevelMeterDisplayClipLatchTest {
         } finally {
             onFxRun(display::dispose);
         }
+    }
+
+    @Test
+    void oneClippedAudioBlockBetweenPulsesLatchesBothDisplaysAndEachClickResetsIndependently() throws Exception {
+        onFxRun(() -> {
+            var bus = new MeteringTapBus();
+            bus.rebind(new Mixer(), new AudioFormat(48_000.0, 2, 24, 64), 1L);
+            var dispatcher = new FxDispatcher();
+            var feed = new MeterFeed(bus, dispatcher);
+            var first = new LevelMeterDisplay();
+            var second = new LevelMeterDisplay();
+            try {
+                first.resize(40, 120);
+                second.resize(40, 120);
+                var firstSubscription = feed.subscribe(MeterTapPoint.MASTER_OUT, first, () -> true,
+                        frame -> first.update(frame.toLevelData()));
+                feed.subscribe(MeterTapPoint.MASTER_OUT, second, () -> true,
+                        frame -> second.update(frame.toLevelData()));
+                publishMaster(bus, 1.25f);
+                publishMaster(bus, 0.25f);
+                dispatcher.pulse();
+                assertThat(first.isClipLatched()).isTrue();
+                assertThat(second.isClipLatched()).isTrue();
+
+                Event.fireEvent(first, click(MouseButton.PRIMARY, 20, 2));
+                dispatcher.pulse();
+                publishMaster(bus, 0.125f);
+                dispatcher.pulse();
+                assertThat(first.isClipLatched()).as("old occurrence cannot relatch a reset display").isFalse();
+                assertThat(second.isClipLatched()).as("another display retains its own latch").isTrue();
+
+                firstSubscription.dispose();
+                feed.subscribe(MeterTapPoint.MASTER_OUT, first, () -> true,
+                        frame -> first.update(frame.toLevelData()));
+                publishMaster(bus, 0.25f);
+                dispatcher.pulse();
+                assertThat(first.isClipLatched()).as("hide/show cannot replay clips retained by another surface")
+                        .isFalse();
+
+                Event.fireEvent(second, click(MouseButton.PRIMARY, 20, 2));
+                publishMaster(bus, 1.5f);
+                publishMaster(bus, 0.25f);
+                dispatcher.pulse();
+                assertThat(first.isClipLatched()).isTrue();
+                assertThat(second.isClipLatched()).isTrue();
+            } finally {
+                feed.dispose();
+                first.dispose();
+                second.dispose();
+                bus.close();
+            }
+        });
+    }
+
+    private static void publishMaster(MeteringTapBus bus, float peak) {
+        var taps = bus.snapshot();
+        var slot = taps.masterOut();
+        slot.beginBlock(taps.epoch(), taps.blockIndex(), 2);
+        slot.accumulate(0, peak);
+        slot.accumulate(1, peak);
+        slot.publish(1);
+        bus.blockCompleted(taps);
     }
 
     @Test

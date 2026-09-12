@@ -145,6 +145,183 @@ class MeterFeedTest {
     }
 
     @Test
+    void clippingBetweenPulsesReachesEachSurfaceOnceWithTheNewestQuietLevels() {
+        var first = new ArrayList<Boolean>();
+        var second = new ArrayList<Boolean>();
+        var levels = new ArrayList<Float>();
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "first", () -> true, frame -> {
+            first.add(frame.clipped());
+            levels.add(frame.maxPeak());
+        });
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "second", () -> true,
+                frame -> second.add(frame.clipped()));
+
+        renderBlock(1.25f);
+        renderBlock(0.25f);
+        dispatcher.pulse();
+        dispatcher.pulse();
+        renderBlock(0.125f);
+        dispatcher.pulse();
+
+        assertThat(first).containsExactly(true, false);
+        assertThat(second).containsExactly(true, false);
+        assertThat(levels).containsExactly(0.25f, 0.125f);
+        renderBlock(1.5f);
+        renderBlock(0.25f);
+        dispatcher.pulse();
+        assertThat(first).containsExactly(true, false, true);
+        assertThat(second).containsExactly(true, false, true);
+    }
+
+    @Test
+    void separatePulseReadersCannotConsumeEachOthersClippingOccurrences() {
+        var slowerDispatcher = new FxDispatcher();
+        var slowerFeed = new MeterFeed(bus, slowerDispatcher, nanos::get);
+        var fast = new ArrayList<Boolean>();
+        var slow = new ArrayList<Boolean>();
+        try {
+            feed.subscribe(MeterTapPoint.MASTER_OUT, "fast", () -> true,
+                    frame -> fast.add(frame.clipped()));
+            slowerFeed.subscribe(MeterTapPoint.MASTER_OUT, "slow", () -> true,
+                    frame -> slow.add(frame.clipped()));
+            renderBlock(1.25f);
+            dispatcher.pulse();
+            renderBlock(0.25f);
+            dispatcher.pulse();
+            slowerDispatcher.pulse();
+            assertThat(fast).containsExactly(true, false);
+            assertThat(slow).containsExactly(true);
+        } finally {
+            slowerFeed.dispose();
+        }
+    }
+
+    @Test
+    void completedClipReachesAReplacementCreatedDuringTheFirstDeferredBlockWithoutAnotherRender() {
+        var clips = new ArrayList<Boolean>();
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "meter", () -> true, frame -> clips.add(frame.clipped()));
+        var predecessor = bus.snapshot();
+        predecessor.beginPublication();
+        var lane = new float[BLOCK];
+        Arrays.fill(lane, 1.25f);
+        publish(predecessor.masterOut(), predecessor, lane);
+        var analysis = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2, (s, c, f, r) -> { });
+        assertThat(bus.snapshot().masterOut()).isNotSameAs(predecessor.masterOut());
+        dispatcher.pulse();
+        assertThat(clips).as("tentative clipping is still private").isEmpty();
+
+        bus.blockCompleted(predecessor);
+        dispatcher.pulse();
+        dispatcher.pulse();
+        assertThat(clips).containsExactly(true);
+        nanos.addAndGet(MeterFeed.STALE_NANOS);
+        dispatcher.pulse();
+        dispatcher.pulse();
+        assertThat(clips).as("stale silence never replays the acknowledged occurrence").containsExactly(true, false);
+        analysis.dispose();
+    }
+
+    @Test
+    void abortedClippingNeverReachesAReplacementOrASubsequentQuietFrame() {
+        var clips = new ArrayList<Boolean>();
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "meter", () -> true, frame -> clips.add(frame.clipped()));
+        var predecessor = bus.snapshot();
+        predecessor.beginPublication();
+        var lane = new float[BLOCK];
+        Arrays.fill(lane, 1.25f);
+        publish(predecessor.masterOut(), predecessor, lane);
+        var analysis = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2, (s, c, f, r) -> { });
+        predecessor.abortBlock(2, BLOCK);
+        bus.blockCompleted(predecessor);
+        dispatcher.pulse();
+        renderBlock(0.25f);
+        dispatcher.pulse();
+        assertThat(clips).containsExactly(false);
+        analysis.dispose();
+    }
+
+    @Test
+    void clippingAcknowledgementsSurviveRingReplacementAndVisibilityResumeButNotNewEpochs() {
+        var visible = new AtomicBoolean(true);
+        var clips = new ArrayList<Boolean>();
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "meter", visible::get, frame -> clips.add(frame.clipped()));
+        renderBlock(1.25f);
+        dispatcher.pulse();
+        var analysis = bus.attachAnalysis(MeterTapPoint.MASTER_OUT, 2, (s, c, f, r) -> { });
+        renderBlock(0.25f);
+        dispatcher.pulse();
+        visible.set(false);
+        dispatcher.pulse();
+        visible.set(true);
+        dispatcher.pulse();
+        dispatcher.pulse();
+        assertThat(clips).containsExactly(true, false, false, false);
+        bus.rebind(mixer, FORMAT, 2L);
+        dispatcher.pulse();
+        renderBlock(0.25f);
+        dispatcher.pulse();
+        assertThat(clips.getLast()).isFalse();
+        renderBlock(1.25f);
+        renderBlock(0.25f);
+        dispatcher.pulse();
+        assertThat(clips.getLast()).isTrue();
+        analysis.dispose();
+    }
+
+    @Test
+    void failedSinkDeliveryDoesNotAcknowledgeClipping() {
+        var fail = new AtomicBoolean(true);
+        var clips = new ArrayList<Boolean>();
+        feed.subscribe(MeterTapPoint.MASTER_OUT, "meter", () -> true, frame -> {
+            if (fail.getAndSet(false)) {
+                throw new IllegalStateException("sink failure");
+            }
+            clips.add(frame.clipped());
+        });
+        renderBlock(1.25f);
+        renderBlock(0.25f);
+        assertThatThrownBy(feed::pulse).hasRootCauseMessage("sink failure");
+        feed.pulse();
+        assertThat(clips).containsExactly(true);
+    }
+
+    @Test
+    void insertInputAndOutputClipsSurviveQuietBlocksBetweenPulses() {
+        var insert = new InsertSlot("Metered", new PassThrough());
+        channelA.addInsert(insert);
+        var inputs = new ArrayList<Boolean>();
+        var outputs = new ArrayList<Boolean>();
+        feed.subscribeInsertIo(insert.getPluginInstanceId(), "editor", () -> true, (input, output) -> {
+            inputs.add(input.clipped());
+            outputs.add(output.clipped());
+        });
+        var taps = bus.snapshot();
+        var pair = taps.insertTapFor(insert);
+        var clipping = new float[BLOCK];
+        Arrays.fill(clipping, 1.25f);
+        var quiet = new float[BLOCK];
+        Arrays.fill(quiet, 0.25f);
+        publish(pair.input(), taps, clipping);
+        publish(pair.output(), taps, quiet);
+        bus.blockCompleted(taps);
+        publish(pair.input(), taps, quiet);
+        publish(pair.output(), taps, clipping);
+        bus.blockCompleted(taps);
+        publish(pair.input(), taps, quiet);
+        publish(pair.output(), taps, quiet);
+        bus.blockCompleted(taps);
+        dispatcher.pulse();
+        assertThat(inputs).containsExactly(true);
+        assertThat(outputs).containsExactly(true);
+        publish(pair.input(), taps, quiet);
+        publish(pair.output(), taps, quiet);
+        bus.blockCompleted(taps);
+        dispatcher.pulse();
+        assertThat(inputs).containsExactly(true, false);
+        assertThat(outputs).containsExactly(true, false);
+    }
+
+    @Test
     void hiddenSubscriptionConsultsOnlyTheVisibleSupplier() {
         AtomicInteger visibleCalls = new AtomicInteger();
         AtomicInteger sinkCalls = new AtomicInteger();

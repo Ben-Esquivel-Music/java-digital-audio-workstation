@@ -45,4 +45,17 @@ public final class LevelSubscription extends TapSubscription {
         LevelTapSlot slot = snapshot.resolve(point());
         return slot != null && slot.readInto(frame);
     }
+
+    /** Latest committed clipping occurrence, even while no stable level frame is available. */
+    public long lastClippedBlockIndex() {
+        if (isDisposed()) {
+            return -1L;
+        }
+        TapSnapshot snapshot = bus().snapshot();
+        if (snapshot.epoch() != epoch()) {
+            return -1L;
+        }
+        LevelTapSlot slot = snapshot.resolve(point());
+        return slot == null ? -1L : slot.lastClippedBlockIndex();
+    }
 }

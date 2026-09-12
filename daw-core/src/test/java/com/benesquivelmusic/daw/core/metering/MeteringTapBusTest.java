@@ -400,7 +400,12 @@ class MeteringTapBusTest {
         assertThat(bus.snapshot().masterOut().rings()).containsExactly(next.ring());
         assertThat(bus.snapshot().masterOut()).isNotSameAs(attached.masterOut());
         publish(attached.masterOut(), attached, 1f);
-        assertThat(bus.attachLevel(MeterTapPoint.MASTER_OUT).readInto(frame)).isFalse();
+        var reboundLevel = bus.attachLevel(MeterTapPoint.MASTER_OUT);
+        assertThat(reboundLevel.readInto(frame)).isFalse();
+        assertThat(reboundLevel.lastClippedBlockIndex()).as("old renders cannot clip the new binding")
+                .isEqualTo(-1L);
+        assertThat(level.lastClippedBlockIndex()).as("disposed readers expose no clipping")
+                .isEqualTo(-1L);
         bus.unbind();
         assertThat(attached.masterOut().rings()).containsExactly(first.ring());
     }
