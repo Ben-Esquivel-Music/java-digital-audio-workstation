@@ -507,6 +507,7 @@ public final class ProjectSerializer {
                 // which silently re-enabled the flag on types that default
                 // to expensive (e.g. REVERB) after the user cleared it.
                 slotElem.setAttribute("expensive", String.valueOf(slot.isExpensive()));
+                AnalyzerInsertPersistence.write(slotElem, slot);
                 InsertEffectType effectType = slot.getEffectType();
                 if (effectType != null) {
                     slotElem.setAttribute("effect-type", effectType.name());

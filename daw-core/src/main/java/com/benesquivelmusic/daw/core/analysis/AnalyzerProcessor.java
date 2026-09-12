@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.DoubleSupplier;
+import java.util.function.LongSupplier;
 
 /**
  * Bounded streaming adapters for the story-318 analysis lane. Transforms and
@@ -29,7 +30,9 @@ public final class AnalyzerProcessor implements AnalysisConsumer, AutoCloseable 
     private final DoubleSupplier referencePitch;
     private final int fftSize;
     private final WindowType windowType;
+    private final LongSupplier nanoTime;
     private double sampleRate;
+    private int channels;
     private float[][] history;
     private float[][] window;
     private int cursor;
@@ -51,22 +54,35 @@ public final class AnalyzerProcessor implements AnalysisConsumer, AutoCloseable 
         this(kind, publish, () -> 440.0, FFT_SIZE, WindowType.HANN);
     }
 
+    public AnalyzerProcessor(Kind kind, Consumer<AnalyzerSnapshot> publish, LongSupplier nanoTime) {
+        this(kind, publish, () -> 440.0, FFT_SIZE, WindowType.HANN, nanoTime);
+    }
+
     public AnalyzerProcessor(Kind kind, Consumer<AnalyzerSnapshot> publish,
                              DoubleSupplier referencePitch, int fftSize, WindowType windowType) {
+        this(kind, publish, referencePitch, fftSize, windowType, System::nanoTime);
+    }
+
+    private AnalyzerProcessor(Kind kind, Consumer<AnalyzerSnapshot> publish,
+                              DoubleSupplier referencePitch, int fftSize, WindowType windowType,
+                              LongSupplier nanoTime) {
         this.kind = Objects.requireNonNull(kind);
         this.publish = Objects.requireNonNull(publish);
         this.referencePitch = Objects.requireNonNull(referencePitch);
         this.fftSize = fftSize;
         this.windowType = Objects.requireNonNull(windowType);
+        this.nanoTime = Objects.requireNonNull(nanoTime);
     }
 
     @Override
     public void onBlock(float[][] samples, int channelCount, int numFrames, double rate) {
         if (closed || rate <= 0 || channelCount < 1 || numFrames < 1) return;
-        long now = System.nanoTime();
-        if (history == null || rate != sampleRate || mono != (channelCount == 1)
-                || now - lastBlockNanos > IDLE_NANOS) {
+        long now = nanoTime.getAsLong();
+        if (history == null || rate != sampleRate || channels != channelCount) {
             configure(rate);
+            channels = channelCount;
+        } else if (now - lastBlockNanos > IDLE_NANOS) {
+            resetWindow();
         }
         mono = channelCount == 1;
         lastBlockNanos = now;
@@ -178,7 +194,12 @@ public final class AnalyzerProcessor implements AnalysisConsumer, AutoCloseable 
     @Override
     public void onOverrun(long count) {
         droppedBlocks = count;
+        resetWindow();
+    }
+
+    private void resetWindow() {
         // A gap must not join unrelated samples into an FFT or pitch window.
+        // Keep the loudness meter's integrated and LRA program history.
         if (history != null) {
             for (float[] channel : history) Arrays.fill(channel, 0);
             filled = cursor = 0;

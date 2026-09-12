@@ -8,7 +8,6 @@ import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import javafx.scene.Node;
 
 import java.util.ArrayList;
@@ -55,9 +54,16 @@ public final class AnalyzerFeeds implements AutoCloseable {
     public MeterTapPoint tunerPoint() {
         DawProject current = project.get();
         if (current == null) return null;
+        var transport = current.getTransport();
+        var punch = transport.getPunchRegion();
+        double positionFrames = transport.getPositionInBeats() * 60.0 / transport.getTempo()
+                * current.getFormat().sampleRate();
+        boolean insidePunch = punch == null || !punch.enabled()
+                || (positionFrames >= punch.startFrames() && positionFrames < punch.endFrames());
         var armed = current.getTracks().stream().filter(track -> track.isArmed()).toList();
         var selected = armed.stream()
-                .filter(track -> track.getInputMonitoringMode() != InputMonitoringMode.OFF)
+                .filter(track -> track.getInputMonitoringMode().resolve(transport.getState(),
+                        track.isArmed(), insidePunch, current.getFormat().sampleRate()).inputAudible())
                 .findFirst().or(() -> armed.stream().findFirst());
         return selected.map(current::getMixerChannelForTrack)
                 .map(channel -> (MeterTapPoint) new MeterTapPoint.ChannelPost(channel.getId())).orElse(null);

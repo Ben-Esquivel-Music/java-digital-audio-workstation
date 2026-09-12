@@ -15,7 +15,7 @@ class NoSyntheticAnalyzerFeedScanTest {
             try (var paths = Files.walk(repo.resolve(module + "/src/main/java"))) {
                 for (Path path : paths.filter(file -> file.toString().endsWith(".java")).toList()) {
                     scanned++;
-                    String source = SourceScanSupport.stripComments(Files.readString(path));
+                    String source = executableSource(Files.readString(path));
                     assertThat(source).as(path.toString()).doesNotContain(
                             "IdleVisualizationAnimator", "LoudnessDisplayWindow", "CorrelationDisplayWindow");
                     if (path.getFileName().toString().equals("SoundWaveTelemetryEditor.java")) {
@@ -33,9 +33,39 @@ class NoSyntheticAnalyzerFeedScanTest {
 
     @Test
     void productionRootPersistsVisibilityAfterBothSingleAndGroupedToggles() throws Exception {
-        String source = Files.readString(SourceScanSupport.locateDawAppModule()
-                .resolve("src/main/java/com/benesquivelmusic/daw/app/ui/MainController.java"));
+        String source = executableSource(Files.readString(SourceScanSupport.locateDawAppModule()
+                .resolve("src/main/java/com/benesquivelmusic/daw/app/ui/MainController.java")));
         assertThat(source).contains("visualizationPreferences.saveLayout(newLayout)",
                 "visualizationPreferences.saveLayout(dockManager.layout())", "prefs.restore(dockManager)");
+    }
+
+    @Test
+    void harmlessCommentsAndLiteralsAreExcludedFromBothSentinels() {
+        String source = executableSource("""
+                // IdleVisualizationAnimator visualizationPreferences.saveLayout(newLayout)
+                /* LoudnessDisplayWindow prefs.restore(dockManager) */
+                String retired = "CorrelationDisplayWindow";
+                String example = "visualizationPreferences.saveLayout(dockManager.layout())";
+                plugin.getWaveform();
+                """);
+        assertThat(source).doesNotContain("IdleVisualizationAnimator", "LoudnessDisplayWindow",
+                "CorrelationDisplayWindow", "visualizationPreferences.saveLayout", "prefs.restore");
+        assertThat(source).contains("plugin.getWaveform()");
+    }
+
+    @Test
+    void executableReferencesSurvivePreprocessing() {
+        String source = executableSource("""
+                new IdleVisualizationAnimator();
+                visualizationPreferences.saveLayout(newLayout);
+                visualizationPreferences.saveLayout(dockManager.layout());
+                prefs.restore(dockManager);
+                """);
+        assertThat(source).contains("IdleVisualizationAnimator", "visualizationPreferences.saveLayout(newLayout)",
+                "visualizationPreferences.saveLayout(dockManager.layout())", "prefs.restore(dockManager)");
+    }
+
+    private static String executableSource(String source) {
+        return SourceScanSupport.stripStringLiterals(SourceScanSupport.stripComments(source));
     }
 }
