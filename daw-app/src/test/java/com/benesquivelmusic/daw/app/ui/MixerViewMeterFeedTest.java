@@ -310,11 +310,13 @@ class MixerViewMeterFeedTest {
     void hidingAnAncestorOrTheMixerReleasesEveryMeterImmediately() throws Exception {
         onFxRun(() -> {
             var parent = (StackPane) stage.getScene().getRoot();
+            var pendingBeforeHide = allMeters().stream().map(LevelMeterDisplay::getPendingPeakDb).toList();
             parent.setVisible(false);
             assertMeterDemand(0);
             dispatcher.pulse();
-            assertThat(allMeters()).allSatisfy(meter ->
-                    assertThat(meter.getPendingPeakDb()).isEqualTo(-120.0));
+            assertThat(allMeters().stream().map(LevelMeterDisplay::getPendingPeakDb).toList())
+                    .as("a hidden surface receives no frame and retains its last pending value")
+                    .containsExactlyElementsOf(pendingBeforeHide);
             parent.setVisible(true);
             assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
             view.setVisible(false);
@@ -327,6 +329,7 @@ class MixerViewMeterFeedTest {
     @Test
     void refreshingWhileTheWindowIsHiddenReactivatesOnlyTheCurrentStrips() throws Exception {
         List<LevelMeterDisplay> discardedMeters = view.getStripMeterDisplays();
+        var discardedPeaks = discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList();
         VisibleMeterBinding masterBefore = view.getMasterMeterBinding();
         onFxRun(() -> {
             stage.hide();
@@ -342,8 +345,8 @@ class MixerViewMeterFeedTest {
 
         renderBlock();
         onFxRun(dispatcher::pulse);
-        assertThat(discardedMeters).allSatisfy(meter ->
-                assertThat(meter.getPendingPeakDb()).isEqualTo(-120.0));
+        assertThat(discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList())
+                .containsExactlyElementsOf(discardedPeaks);
         assertThat(allMeters()).allSatisfy(meter ->
                 assertThat(meter.getPendingPeakDb()).isGreaterThan(-60.0));
     }
@@ -374,11 +377,12 @@ class MixerViewMeterFeedTest {
 
     @Test
     void renderedPlaybackPutsEveryStripAndMasterMeterAboveTheFloor() throws Exception {
-        // Guard: nothing has been fed yet, so every meter sits at its floor.
+        // The fixture visibility pulse may already have delivered a silent frame.
+        // Both untouched defaults and raw silence are below the visible meter floor.
         for (LevelMeterDisplay meter : allMeters()) {
             assertThat(meter.getPendingPeakDb())
-                    .as("meter is dark before the first pulse")
-                    .isEqualTo(-120.0);
+                    .as("meter is dark before the first audio block")
+                    .isLessThanOrEqualTo(-120.0);
         }
 
         renderBlocks(BLOCKS);
@@ -420,6 +424,7 @@ class MixerViewMeterFeedTest {
             throws Exception {
         List<VisibleMeterBinding> before = view.getStripMeterBindings();
         List<LevelMeterDisplay> discardedMeters = view.getStripMeterDisplays();
+        var discardedPeaks = discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList();
         VisibleMeterBinding masterBefore = view.getMasterMeterBinding();
         assertThat(before).hasSize(EXPECTED_STRIP_METERS);
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
@@ -446,10 +451,9 @@ class MixerViewMeterFeedTest {
         // The rebuilt strips are live: they meter the next rendered blocks.
         renderBlocks(BLOCKS);
         onFxRun(dispatcher::pulse);
-        assertThat(discardedMeters).allSatisfy(meter ->
-                assertThat(meter.getPendingPeakDb())
-                        .as("discarded strip receives no frames after refresh")
-                        .isEqualTo(-120.0));
+        assertThat(discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList())
+                .as("discarded strip receives no frames after refresh")
+                .containsExactlyElementsOf(discardedPeaks);
         for (LevelMeterDisplay meter : allMeters()) {
             assertThat(meter.getPendingPeakDb())
                     .as("rebuilt strip meter is fed")

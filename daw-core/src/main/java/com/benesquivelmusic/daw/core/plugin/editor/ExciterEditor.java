@@ -39,6 +39,16 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  */
 public final class ExciterEditor implements PluginEditorFactory.Panel {
 
+    private EditorParameterBindings bindings;
+
+    @Override public void parameterChanged(int id, double value) {
+        if (bindings != null) bindings.parameterChanged(id, value);
+    }
+
+    @Override public void detach() {
+        if (bindings != null) bindings.close();
+    }
+
     /** Number of harmonic bins sketched in the mini FFT display. */
     static final int FFT_DISPLAY_HARMONICS = 8;
 
@@ -77,6 +87,7 @@ public final class ExciterEditor implements PluginEditorFactory.Panel {
 
     @Override
     public Region createPanel(EditorContext context) {
+        bindings = new EditorParameterBindings(context.parameterStore());
         this.context = Objects.requireNonNull(context, "context must not be null");
         this.store = context.parameterStore();
         ExciterProcessor p = plugin.getProcessor();
@@ -93,52 +104,36 @@ public final class ExciterEditor implements PluginEditorFactory.Panel {
         Slider frequency = slider(ExciterProcessor.MIN_FREQUENCY_HZ,
                 ExciterProcessor.MAX_FREQUENCY_HZ,
                 processor.getFrequencyHz());
-        frequency.valueProperty().addListener((_, _, v) -> {
-            processor.setFrequencyHz(v.doubleValue());
-            store.writeFromUiById(PARAM_FREQUENCY, processor.getFrequencyHz());
-            redrawFft();
-        });
+        bindings.bindNumber(PARAM_FREQUENCY, frequency.valueProperty());
+        frequency.valueProperty().addListener((_, _, _) -> redrawFft());
 
         // ── Drive (0–100%) ───────────────────────────────────────────
         Slider drive = slider(ExciterProcessor.MIN_DRIVE_PERCENT,
                 ExciterProcessor.MAX_DRIVE_PERCENT,
                 processor.getDrivePercent());
-        drive.valueProperty().addListener((_, _, v) -> {
-            processor.setDrivePercent(v.doubleValue());
-            store.writeFromUiById(PARAM_DRIVE, processor.getDrivePercent());
-            redrawFft();
-        });
+        bindings.bindNumber(PARAM_DRIVE, drive.valueProperty());
+        drive.valueProperty().addListener((_, _, _) -> redrawFft());
 
         // ── Mix (0–100%) ─────────────────────────────────────────────
         Slider mix = slider(ExciterProcessor.MIN_MIX_PERCENT,
                 ExciterProcessor.MAX_MIX_PERCENT,
                 processor.getMixPercent());
-        mix.valueProperty().addListener((_, _, v) -> {
-            processor.setMixPercent(v.doubleValue());
-            store.writeFromUiById(PARAM_MIX, processor.getMixPercent());
-            redrawFft();
-        });
+        bindings.bindNumber(PARAM_MIX, mix.valueProperty());
+        mix.valueProperty().addListener((_, _, _) -> redrawFft());
 
         // ── Output trim (-12 to +12 dB) ──────────────────────────────
         Slider output = slider(ExciterProcessor.MIN_OUTPUT_GAIN_DB,
                 ExciterProcessor.MAX_OUTPUT_GAIN_DB,
                 processor.getOutputGainDb());
-        output.valueProperty().addListener((_, _, v) -> {
-            processor.setOutputGainDb(v.doubleValue());
-            store.writeFromUiById(PARAM_OUTPUT_GAIN, processor.getOutputGainDb());
-        });
+        bindings.bindNumber(PARAM_OUTPUT_GAIN, output.valueProperty());
 
         // ── Mode cycler ──────────────────────────────────────────────
         ComboBox<ExciterProcessor.Mode> mode = new ComboBox<>();
         mode.getItems().addAll(ExciterProcessor.Mode.values());
         mode.setValue(processor.getMode());
-        mode.valueProperty().addListener((_, _, v) -> {
-            if (v != null) {
-                processor.setMode(v);
-                store.writeFromUiById(PARAM_MODE, processor.getMode().ordinal());
-                redrawFft();
-            }
-        });
+        bindings.bindSelection(PARAM_MODE, mode,
+                value -> ExciterProcessor.Mode.values()[(int) Math.round(value)], Enum::ordinal);
+        mode.valueProperty().addListener((_, _, _) -> redrawFft());
 
         HBox controls = new HBox(12,
                 labelled("Frequency (Hz)", frequency),
@@ -157,7 +152,7 @@ public final class ExciterEditor implements PluginEditorFactory.Panel {
         root.setPadding(new Insets(12));
         root.setAlignment(Pos.TOP_CENTER);
 
-        context.themeProperty().addListener((_, _, _) -> redrawFft());
+        bindings.observe(context.themeProperty(), (_, _, _) -> redrawFft());
         redrawFft();
         return root;
     }
@@ -184,6 +179,7 @@ public final class ExciterEditor implements PluginEditorFactory.Panel {
      * loop.
      */
     private void redrawFft() {
+        if (fftCanvas == null) return;
         GraphicsContext g = fftCanvas.getGraphicsContext2D();
         Theme theme = context.theme();
         double w = fftCanvas.getWidth();

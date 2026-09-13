@@ -46,7 +46,9 @@ public final class Metronome {
 
     private final double sampleRate;
     private final int channels;
-    private boolean enabled;
+    private volatile boolean enabled;
+    private volatile boolean pluginBypassed;
+    private volatile Object pluginBypassOwner;
     private float volume;
     private ClickSound clickSound;
     private Subdivision subdivision;
@@ -101,7 +103,7 @@ public final class Metronome {
         }
 
         int totalBeats = mode.getTotalBeats(beatsPerBar);
-        if (totalBeats == 0 || !enabled) {
+        if (totalBeats == 0 || !isEnabled()) {
             return new float[channels][0];
         }
 
@@ -190,7 +192,7 @@ public final class Metronome {
      * @return {@code true} if the metronome is enabled
      */
     public boolean isEnabled() {
-        return enabled;
+        return enabled && !pluginBypassed;
     }
 
     /**
@@ -202,6 +204,19 @@ public final class Metronome {
      */
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    /** Host insert bypass leaves the transport's enabled preference intact. */
+    public void setPluginBypassed(Object owner, boolean bypassed) {
+        pluginBypassOwner = owner;
+        pluginBypassed = bypassed;
+    }
+
+    public void releasePluginBypass(Object owner) {
+        if (pluginBypassOwner == owner) {
+            pluginBypassed = false;
+            pluginBypassOwner = null;
+        }
     }
 
     /**

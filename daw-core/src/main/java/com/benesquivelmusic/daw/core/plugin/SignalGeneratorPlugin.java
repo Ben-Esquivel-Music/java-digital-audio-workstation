@@ -7,6 +7,11 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import java.util.Objects;
 import java.util.Random;
+import java.util.List;
+import java.util.Optional;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Built-in signal generator plugin for test signal generation.
@@ -44,7 +49,7 @@ import java.util.Random;
  * </ol>
  */
 @BuiltInPlugin(label = "Signal Generator", icon = "waveform", category = BuiltInPluginCategory.UTILITY)
-public final class SignalGeneratorPlugin implements BuiltInDawPlugin {
+public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProcessor {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
     public static final String PLUGIN_ID = "com.benesquivelmusic.daw.signal-generator";
@@ -138,6 +143,45 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin {
     public PluginDescriptor getDescriptor() {
         return DESCRIPTOR;
     }
+
+    @Override
+    public Optional<AudioProcessor> asAudioProcessor() {
+        return context == null ? Optional.empty() : Optional.of(this);
+    }
+
+    @Override
+    public List<PluginParameter> getParameters() {
+        return List.of(new PluginParameter(0, "Frequency (Hz)", MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, frequencyHz),
+                new PluginParameter(1, "Amplitude (dBFS)", -90, 0, amplitudeDb),
+                new PluginParameter(2, "Muted", 0, 1, muted ? 1 : 0));
+    }
+
+    @Override
+    public void setAutomatableParameter(int id, double value) {
+        switch (id) {
+            case 0 -> setFrequencyHz(value);
+            case 1 -> setAmplitudeDb(value);
+            case 2 -> setMuted(value >= 0.5);
+            default -> { }
+        }
+    }
+
+    @Override @RealTimeSafe
+    public void process(float[][] input, float[][] output, int frames) {
+        double sampleRate = context.getSampleRate();
+        double amplitude = active && !muted ? dbToLinear(amplitudeDb) : 0;
+        for (int frame = 0; frame < frames; frame++) {
+            float signal = (float) (generateSample(sampleRate, frame, frames) * amplitude);
+            for (int ch = 0; ch < output.length; ch++) {
+                output[ch][frame] = (ch < input.length ? input[ch][frame] : 0) + signal;
+            }
+        }
+        advancePhase(frames, sampleRate);
+    }
+
+    @Override public void reset() { phase = 0; }
+    @Override public int getInputChannelCount() { return context == null ? 2 : context.getAudioChannels(); }
+    @Override public int getOutputChannelCount() { return getInputChannelCount(); }
 
     @Override
     public void initialize(PluginContext context) {

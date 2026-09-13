@@ -130,6 +130,9 @@ public final class ExternalPluginLoader {
             closeQuietly(classLoader);
             throw new PluginLoadException(
                     "Failed to load plugin from " + jarPath + ": " + e.getMessage(), e);
+        } catch (RuntimeException | Error failure) {
+            closeQuietly(classLoader);
+            throw failure;
         }
     }
 

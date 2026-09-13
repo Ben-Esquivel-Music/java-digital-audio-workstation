@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ExternalPluginLoaderTest {
@@ -91,6 +92,23 @@ class ExternalPluginLoaderTest {
         assertThatThrownBy(() -> ExternalPluginLoader.loadWithClassLoader(emptyJar, "com.example.Missing"))
                 .isInstanceOf(PluginLoadException.class);
         // If we reach here without hanging file locks, the classloader was closed
+    }
+
+    @Test
+    void malformedPluginClassClosesItsJarBeforePropagatingLinkageError() throws Exception {
+        Path jar = tempDir.resolve("malformed-plugin.jar");
+        try (var output = new java.util.jar.JarOutputStream(Files.newOutputStream(jar))) {
+            output.putNextEntry(new java.util.jar.JarEntry("broken/Plugin.class"));
+            output.write(new byte[]{0, 1, 2, 3});
+            output.closeEntry();
+        }
+
+        assertThatThrownBy(() -> ExternalPluginLoader.loadWithClassLoader(jar, "broken.Plugin"))
+                .isInstanceOf(ClassFormatError.class);
+
+        // Windows refuses this deletion while URLClassLoader retains its open JAR handle.
+        Files.delete(jar);
+        assertThat(jar).doesNotExist();
     }
 
     @Test

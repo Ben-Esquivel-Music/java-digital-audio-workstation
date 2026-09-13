@@ -22,6 +22,8 @@ import java.util.Optional;
  */
 @BuiltInPlugin(label = "Waveshaper / Saturation", icon = "waveshaper", category = BuiltInPluginCategory.EFFECT)
 public final class WaveshaperPlugin implements BuiltInDawPlugin {
+    private static final WaveshaperProcessor.OversampleFactor[] OVERSAMPLING = WaveshaperProcessor.OversampleFactor.values();
+    private static final WaveshaperProcessor.TransferFunction[] TRANSFERS = WaveshaperProcessor.TransferFunction.values();
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
     public static final String PLUGIN_ID = "com.benesquivelmusic.daw.builtin.waveshaper";
@@ -114,5 +116,18 @@ public final class WaveshaperPlugin implements BuiltInDawPlugin {
                         WaveshaperProcessor.OversampleFactor.TWO_X.ordinal()),
                 new PluginParameter(4, "Transfer Function", 0.0, transferMax,
                         WaveshaperProcessor.TransferFunction.SOFT_CLIP.ordinal()));
+    }
+
+    @Override
+    public void setAutomatableParameter(int id, double value) {
+        if (processor == null) { return; }
+        switch (id) {
+            case 0 -> processor.setDriveDb(value);
+            case 1 -> processor.setMix(value);
+            case 2 -> processor.setOutputGainDb(value);
+            case 3 -> processor.setOversampleFactor(OVERSAMPLING[(int) Math.clamp(Math.round(value), 0, OVERSAMPLING.length - 1)]);
+            case 4 -> processor.setTransferFunction(TRANSFERS[(int) Math.clamp(Math.round(value), 0, TRANSFERS.length - 1)]);
+            default -> { }
+        }
     }
 }

@@ -57,7 +57,7 @@ public final class PluginInvocationSupervisor {
     public static final int QUARANTINE_THRESHOLD = 3;
 
     /** Sentinel pushed into the work queue to signal shutdown to the drain thread. */
-    private static final PendingFault SHUTDOWN = new PendingFault(null, null, null, false);
+    private static final PendingFault SHUTDOWN = new PendingFault(null, null, null, false, null);
 
     private final SubmissionPublisher<PluginFault> publisher = new SubmissionPublisher<>();
     private final Map<String, AtomicInteger> faultCounts = new ConcurrentHashMap<>();
@@ -135,7 +135,7 @@ public final class PluginInvocationSupervisor {
         if (!running) {
             return; // closed — the drain thread is gone, nothing would consume it
         }
-        faultQueue.offer(new PendingFault(pluginId, throwable, Instant.now(), true));
+        faultQueue.offer(new PendingFault(pluginId, throwable, Instant.now(), true, null));
     }
 
     /** Returns the fault count recorded for {@code pluginId} in this session. */
@@ -160,14 +160,21 @@ public final class PluginInvocationSupervisor {
 
     /**
      * Re-enables a previously-bypassed slot and clears any quarantine flag
-     * for its resolved plugin id. The caller is responsible for triggering
-     * whatever chain rebuild is necessary (e.g.
-     * {@code MixerChannel#setInsertBypassed}).
+     * for its resolved plugin id, then republishes its owning channel's chain.
      */
     public void reenable(InsertSlot slot) {
         Objects.requireNonNull(slot, "slot must not be null");
         slot.setBypassed(false);
         clearQuarantine(SupervisedProcessor.resolvePluginId(slot));
+        slot.rebuildOwningChain();
+    }
+
+    /** Routes a live parameter callback fault through the same exact-slot eviction path. */
+    public void reportAudioFault(InsertSlot slot, Throwable failure) {
+        // InsertSlot de-duplicates setter faults, including writes made while bypassed.
+        slot.setBypassed(true);
+        faultQueue.offer(new PendingFault(SupervisedProcessor.resolvePluginId(slot), failure,
+                Instant.now(), false, slot));
     }
 
     /**
@@ -222,6 +229,9 @@ public final class PluginInvocationSupervisor {
                 if (pending.throwable == null) {
                     continue;
                 }
+                if (pending.slot() != null) {
+                    pending.slot().rebuildOwningChain();
+                }
                 PluginFault fault = materialize(pending);
                 // Persist before publishing so a subscriber that latches on
                 // onNext can assert the log file exists (deterministic tests).
@@ -271,7 +281,8 @@ public final class PluginInvocationSupervisor {
                 stack,
                 pending.clock,
                 count,
-                isQuarantined
+                isQuarantined,
+                pending.slot()
         );
     }
 
@@ -352,12 +363,12 @@ public final class PluginInvocationSupervisor {
     // fault harness via reportUiFault (uiSourced = true); materialized
     // off-thread into the public PluginFault. UI-sourced faults never count
     // toward quarantine (§6.6).
-    private record PendingFault(String pluginId, Throwable throwable, Instant clock, boolean uiSourced) {
+    private record PendingFault(String pluginId, Throwable throwable, Instant clock, boolean uiSourced, InsertSlot slot) {
     }
 
     // ── Supervised wrapper ──────────────────────────────────────────────────
 
-    private final class SupervisedProcessor implements AudioProcessor {
+    private final class SupervisedProcessor implements com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor {
 
         private final InsertSlot slot;
         private final AudioProcessor delegate;
@@ -384,6 +395,12 @@ public final class PluginInvocationSupervisor {
             // in an undefined state — we still bypass to keep audio flowing
             // but log at SEVERE so the collapse isn't silenced alongside
             // routine plugin bugs.
+            if (slot.isBypassed()) {
+                for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
+                    System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+                }
+                return;
+            }
             try {
                 delegate.process(inputBuffer, outputBuffer, numFrames);
             } catch (Exception e) {
@@ -398,6 +415,12 @@ public final class PluginInvocationSupervisor {
 
         @Override
         public void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames) {
+            if (slot.isBypassed()) {
+                for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
+                    System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+                }
+                return;
+            }
             try {
                 delegate.processDouble(inputBuffer, outputBuffer, numFrames);
             } catch (Exception e) {
@@ -407,6 +430,24 @@ public final class PluginInvocationSupervisor {
                 zeroDouble(outputBuffer, numFrames);
                 logJvmError(err);
                 handleFault(err);
+            }
+        }
+
+        @Override
+        public void processSidechain(float[][] input, float[][] sidechain, float[][] output, int frames) {
+            if (slot.isBypassed() || !(delegate instanceof com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor processor)) {
+                process(input, output, frames);
+                return;
+            }
+            try {
+                processor.processSidechain(input, sidechain, output, frames);
+            } catch (Exception e) {
+                zero(output, frames);
+                handleFault(e);
+            } catch (Error error) {
+                zero(output, frames);
+                logJvmError(error);
+                handleFault(error);
             }
         }
 
@@ -453,7 +494,7 @@ public final class PluginInvocationSupervisor {
             // LinkedBlockingQueue.offer allocates one Node wrapper; the
             // Instant.now() and PendingFault allocations are unavoidable but
             // tiny and only occur on the exception path, not the hot path.
-            faultQueue.offer(new PendingFault(pluginId, t, Instant.now(), false));
+            faultQueue.offer(new PendingFault(pluginId, t, Instant.now(), false, slot));
         }
 
         private void logJvmError(Error err) {

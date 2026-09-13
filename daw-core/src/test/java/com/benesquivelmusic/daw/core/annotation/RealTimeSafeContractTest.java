@@ -575,6 +575,21 @@ class RealTimeSafeContractTest {
                                 + "plain volatile long with ++")));
     }
 
+    @Test
+    void pluginParameterStoreAudioHandoffUsesOnlyBoundedAtomicLoadsAndStores() throws Exception {
+        var store = com.benesquivelmusic.daw.sdk.editor.PluginParameterStore.class;
+        var roots = List.of(
+                RtCallbackBridge.annotated(store.getName(), "drainToAudio",
+                        List.of(com.benesquivelmusic.daw.sdk.editor.PluginParameterStore.IndexConsumer.class)),
+                RtCallbackBridge.annotated(store.getName(), "writeFromAudio", List.of(int.class, double.class)));
+        for (var root : roots) {
+            assertNoBridgeMethodInvokes(root,
+                    (owner, name) -> (owner.startsWith("java/util/concurrent/atomic/")
+                            || owner.equals("java/lang/invoke/VarHandle")) && ATOMIC_RMW_METHODS.contains(name),
+                    "plugin parameter handoff must have bounded cost on the audio thread");
+        }
+    }
+
     /**
      * Shared bytecode walk behind both bridge sentinels: collects every
      * invocation reachable from a bridge method that {@code isOffender}
@@ -786,18 +801,6 @@ class RealTimeSafeContractTest {
         RENDER_PATH_ALLOCATION_ALLOWLIST.put(
                 "AudioEngine#processBlock: new java/lang/IllegalStateException",
                 "throw path of the engine-not-running guard");
-        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
-                "EffectsChain#createTempBuffer: new multi array [[F",
-                "pre-existing hole: fallback when intermediate buffers were never "
-                        + "pre-allocated (flagged by story 318, not fixed)");
-        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
-                "EffectsChain#createTempDoubleBuffer: new multi array [[D",
-                "pre-existing hole: the 64-bit twin of createTempBuffer — fallback when "
-                        + "intermediate double buffers were never pre-allocated (flagged by "
-                        + "story 318, not fixed). Keyed on the dedicated helper, not on "
-                        + "processDouble, so the tapped loop body itself stays at zero "
-                        + "allocations (labels carry no descriptor or bytecode offset, so a "
-                        + "method-level entry would blanket every allocation in the method)");
         RENDER_PATH_ALLOCATION_ALLOWLIST.put(
                 "Mixer#mixDown: invokedynamic test -> com/benesquivelmusic/daw/core/mixer/Mixer#hasSidechainRouting",
                 "the non-capturing Mixer::hasSidechainRouting method reference handed to "

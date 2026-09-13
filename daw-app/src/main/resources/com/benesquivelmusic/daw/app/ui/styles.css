@@ -2449,6 +2449,12 @@
     -fx-background-color: -surface-1;
 }
 
+.editor-frame-body-scroll,
+.editor-frame-body-scroll > .viewport {
+    -fx-background-color: -surface-1;
+    -fx-padding: 0;
+}
+
 /* §6.4 footer: preset bar + always-present IN/OUT meters. */
 .editor-frame-footer {
     -fx-background-color: -surface-2;

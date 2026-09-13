@@ -52,6 +52,16 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
  */
 public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
 
+    private EditorParameterBindings bindings;
+
+    @Override public void parameterChanged(int id, double value) {
+        if (bindings != null) bindings.parameterChanged(id, value);
+    }
+
+    @Override public void detach() {
+        if (bindings != null) bindings.close();
+    }
+
     /** Maximum gain-reduction shown on the meter, in dB. */
     static final double GR_METER_MAX_DB = 20.0;
 
@@ -82,6 +92,7 @@ public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
 
     @Override
     public Region createPanel(EditorContext context) {
+        bindings = new EditorParameterBindings(context.parameterStore());
         Objects.requireNonNull(context, "context must not be null");
         TruePeakLimiterProcessor processor = Objects.requireNonNull(
                 plugin.getProcessor(),
@@ -89,24 +100,15 @@ public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
 
         // ── Ceiling (-3 to 0 dBTP) ─────────────────────────────────────
         Slider ceiling = slider(-3.0, 0.0, processor.getCeilingDb());
-        ceiling.valueProperty().addListener((_, _, v) -> {
-            processor.setCeilingDb(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_CEILING, v.doubleValue());
-        });
+        bindings.bindNumber(PARAM_CEILING, ceiling.valueProperty());
 
         // ── Release (1–1000 ms, log-friendly tick spacing) ────────────
         Slider release = slider(1.0, 1000.0, processor.getReleaseMs());
-        release.valueProperty().addListener((_, _, v) -> {
-            processor.setReleaseMs(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_RELEASE, v.doubleValue());
-        });
+        bindings.bindNumber(PARAM_RELEASE, release.valueProperty());
 
         // ── Lookahead (1–10 ms; reports PDC) ──────────────────────────
         Slider lookahead = slider(1.0, 10.0, processor.getLookaheadMs());
-        lookahead.valueProperty().addListener((_, _, v) -> {
-            processor.setLookaheadMs(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_LOOKAHEAD, v.doubleValue());
-        });
+        bindings.bindNumber(PARAM_LOOKAHEAD, lookahead.valueProperty());
 
         // ── ISR (oversampling factor selector) ────────────────────────
         ComboBox<Integer> isr = new ComboBox<>();
@@ -114,34 +116,18 @@ public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
             isr.getItems().add(step);
         }
         isr.setValue(processor.getIsr());
-        isr.valueProperty().addListener((_, _, v) -> {
-            if (v != null) {
-                processor.setIsr(v);
-                context.parameterStore().writeFromUiById(PARAM_ISR, v);
-            }
-        });
+        bindings.bindSelection(PARAM_ISR, isr, value -> (int) Math.round(value), Integer::doubleValue);
 
         // ── Channel link (0–100%) ─────────────────────────────────────
         Slider link = slider(0.0, 100.0, processor.getChannelLinkPercent());
-        link.valueProperty().addListener((_, _, v) -> {
-            processor.setChannelLinkPercent(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_CHANNEL_LINK, v.doubleValue());
-        });
-
-        // ── Bypass (instant null-comparison; no declared parameter, so
-        //    the processor accessor alone is the write path) ────────────
-        ToggleButton bypass = new ToggleButton("Bypass");
-        bypass.setSelected(processor.isBypass());
-        bypass.setStyle("-fx-font-weight: bold;");
-        bypass.selectedProperty().addListener((_, _, v) -> processor.setBypass(v));
+        bindings.bindNumber(PARAM_CHANNEL_LINK, link.valueProperty());
 
         HBox controls = new HBox(12,
                 labelled("Ceiling (dBTP)", ceiling),
                 labelled("Release (ms)",   release),
                 labelled("Lookahead (ms)", lookahead),
                 labelled("ISR",            isr),
-                labelled("Link (%)",       link),
-                bypass);
+                labelled("Link (%)",       link));
         controls.setAlignment(Pos.CENTER_LEFT);
 
         // ── Meters: GR (vertical) + IN/OUT true-peak (horizontal) ─────
@@ -169,7 +155,7 @@ public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
         root.setAlignment(Pos.TOP_CENTER);
 
         drawMeters(grCanvas, inCanvas, outCanvas, PluginMeterSnapshot.SILENT, context.theme());
-        context.themeProperty().addListener((_, _, theme) ->
+        bindings.observe(context.themeProperty(), (_, _, theme) ->
                 drawMeters(grCanvas, inCanvas, outCanvas, processor.getMeterSnapshot(), theme));
 
         // One showing-window-gated meter timer (see class Javadoc: the Panel
@@ -182,7 +168,7 @@ public final class TruePeakLimiterEditor implements PluginEditorFactory.Panel {
                 drawMeters(grCanvas, inCanvas, outCanvas, snapshot, context.theme());
             }
         };
-        ShowingWindowGate.install(root, meterTimer::start, meterTimer::stop);
+        bindings.onDetach(ShowingWindowGate.install(root, meterTimer::start, meterTimer::stop));
         return root;
     }
 

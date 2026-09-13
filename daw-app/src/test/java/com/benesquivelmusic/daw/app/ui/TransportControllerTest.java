@@ -778,6 +778,40 @@ class TransportControllerTest {
     }
 
     @Test
+    void graphKeyboardKeepsAuditionStreamThroughPauseStopAndBypassUntilRemoved() throws Exception {
+        var project = new DawProject("Keyboard", new AudioFormat(48_000, 2, 16, 256));
+        var track = project.createAudioTrack("Keyboard");
+        var channel = project.getMixerChannelForTrack(track);
+        var slot = PluginSignalPathActivationTest.builtInSlot(
+                com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin.class);
+        channel.addInsert(slot);
+        var controller = newController(project);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::start);
+            runHandler(controller::pause);
+            assertThat(project.getTransport().getState()).isEqualTo(
+                    com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
+            assertThat(audioEngine.isStreamOpen()).isTrue();
+            assertThat(audioEngine.isStreamPaused()).isFalse();
+            runHandler(controller::stop);
+            assertThat(project.getTransport().getState()).isEqualTo(
+                    com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+            assertThat(audioEngine.isStreamOpen()).isTrue();
+            assertThat(audioEngine.isStreamPaused()).isFalse();
+            channel.setInsertBypassed(0, true);
+            runHandler(controller::stop);
+            assertThat(audioEngine.isStreamOpen()).as("unbypass can audition without transport restart").isTrue();
+            channel.removeInsert(slot);
+            runHandler(controller::stop);
+            assertThat(audioEngine.isStreamOpen()).isFalse();
+        } finally {
+            audioEngine.stopAudioOutput();
+            project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void pauseWhilePlayingShouldPause() throws Exception {
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));

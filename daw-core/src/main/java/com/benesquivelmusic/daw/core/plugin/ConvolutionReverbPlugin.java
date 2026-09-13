@@ -70,6 +70,7 @@ public final class ConvolutionReverbPlugin implements BuiltInDawPlugin {
     @Override
     public void dispose() {
         active = false;
+        if (processor != null) processor.close();
         processor = null;
     }
 

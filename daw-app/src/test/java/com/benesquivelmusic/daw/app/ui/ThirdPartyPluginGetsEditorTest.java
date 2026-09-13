@@ -66,6 +66,7 @@ final class ThirdPartyPluginGetsEditorTest {
                         container.setPluginView(node);
                     },
                     notifications));
+            PluginSignalPathActivationTest.configure(controller, new com.benesquivelmusic.daw.core.mixer.MixerChannel("Track"));
             FakeThirdPartyPlugin fake = new FakeThirdPartyPlugin("editor");
 
             controller.onActivateExternalPlugin(fake);
@@ -113,8 +114,8 @@ final class ThirdPartyPluginGetsEditorTest {
                     .as("a second activation must NOT re-initialise the plugin")
                     .isEqualTo(1);
             assertThat(fake.activateCalls())
-                    .as("every activation calls activate()")
-                    .isEqualTo(2);
+                    .as("re-activation focuses the existing live instance")
+                    .isEqualTo(1);
             assertThat(controller.activeEditorSessionForTest())
                     .as("a live session remains after re-activation")
                     .isNotNull();
@@ -151,7 +152,6 @@ final class ThirdPartyPluginGetsEditorTest {
                 () -> 512,
                 () -> null,
                 () -> { },
-                () -> { },
                 (status, icon) -> { },
                 (level, message) -> notificationLog.add(level + ": " + message),
                 showEditorInWorkshopPane,
@@ -165,7 +165,7 @@ final class ThirdPartyPluginGetsEditorTest {
      * {@code editorFactory()} override returning
      * {@link PluginEditorFactory.Declarative}.
      */
-    private static final class FakeThirdPartyPlugin implements DawPlugin {
+    private static final class FakeThirdPartyPlugin implements DawPlugin, com.benesquivelmusic.daw.sdk.audio.AudioProcessor {
 
         private final PluginDescriptor descriptor;
         private int initializeCalls;
@@ -182,6 +182,18 @@ final class ThirdPartyPluginGetsEditorTest {
         public PluginDescriptor getDescriptor() {
             return descriptor;
         }
+
+        @Override public java.util.Optional<com.benesquivelmusic.daw.sdk.audio.AudioProcessor> asAudioProcessor() {
+            return java.util.Optional.of(this);
+        }
+        @Override public void process(float[][] input, float[][] output, int frames) {
+            for (int channel = 0; channel < output.length; channel++) {
+                System.arraycopy(input[channel], 0, output[channel], 0, frames);
+            }
+        }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 2; }
+        @Override public int getOutputChannelCount() { return 2; }
 
         @Override
         public void initialize(PluginContext context) {

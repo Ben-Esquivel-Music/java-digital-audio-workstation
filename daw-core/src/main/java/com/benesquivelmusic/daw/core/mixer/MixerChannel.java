@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.concurrent.ChangeNotifier;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 
 import java.util.ArrayList;
@@ -90,6 +91,8 @@ public final class MixerChannel {
     private String outputRoutingDisplayName = "";
     private final List<Send> sends = new ArrayList<>();
     private final List<InsertSlot> insertSlots = new ArrayList<>();
+    private final java.util.Set<InsertSlot> ownedSlots = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private volatile List<InsertSlot> insertSnapshot = List.of();
     private final EffectsChain effectsChain = new EffectsChain();
     private TrackCpuBudget cpuBudget;
     private Runnable onEffectsChainChanged;
@@ -449,13 +452,15 @@ public final class MixerChannel {
      * @param slot the insert slot to add
      * @throws IllegalStateException if the channel already has {@value #MAX_INSERT_SLOTS} inserts
      */
-    public void addInsert(InsertSlot slot) {
+    public synchronized void addInsert(InsertSlot slot) {
         Objects.requireNonNull(slot, "slot must not be null");
         if (insertSlots.size() >= MAX_INSERT_SLOTS) {
             throw new IllegalStateException(
                     "cannot exceed " + MAX_INSERT_SLOTS + " insert slots");
         }
         insertSlots.add(slot);
+        ownedSlots.add(slot);
+        slot.attachOwner(this);
         rebuildEffectsChain();
     }
 
@@ -466,13 +471,15 @@ public final class MixerChannel {
      * @param slot  the insert slot to add
      * @throws IllegalStateException if the channel already has {@value #MAX_INSERT_SLOTS} inserts
      */
-    public void insertInsert(int index, InsertSlot slot) {
+    public synchronized void insertInsert(int index, InsertSlot slot) {
         Objects.requireNonNull(slot, "slot must not be null");
         if (insertSlots.size() >= MAX_INSERT_SLOTS) {
             throw new IllegalStateException(
                     "cannot exceed " + MAX_INSERT_SLOTS + " insert slots");
         }
         insertSlots.add(index, slot);
+        ownedSlots.add(slot);
+        slot.attachOwner(this);
         rebuildEffectsChain();
     }
 
@@ -482,8 +489,9 @@ public final class MixerChannel {
      * @param index the index of the slot to remove
      * @return the removed insert slot
      */
-    public InsertSlot removeInsert(int index) {
+    public synchronized InsertSlot removeInsert(int index) {
         InsertSlot removed = insertSlots.remove(index);
+        removed.removedFromGraph();
         rebuildEffectsChain();
         return removed;
     }
@@ -494,9 +502,10 @@ public final class MixerChannel {
      * @param slot the insert slot to remove
      * @return {@code true} if the slot was removed
      */
-    public boolean removeInsert(InsertSlot slot) {
+    public synchronized boolean removeInsert(InsertSlot slot) {
         boolean removed = insertSlots.remove(slot);
         if (removed) {
+            slot.removedFromGraph();
             rebuildEffectsChain();
         }
         return removed;
@@ -509,7 +518,7 @@ public final class MixerChannel {
      * @param toIndex   the target index for the slot
      * @throws IndexOutOfBoundsException if either index is out of range
      */
-    public void moveInsert(int fromIndex, int toIndex) {
+    public synchronized void moveInsert(int fromIndex, int toIndex) {
         if (fromIndex < 0 || fromIndex >= insertSlots.size()) {
             throw new IndexOutOfBoundsException("fromIndex out of range: " + fromIndex);
         }
@@ -531,7 +540,7 @@ public final class MixerChannel {
      * @param index    the index of the insert slot
      * @param bypassed {@code true} to bypass the insert
      */
-    public void setInsertBypassed(int index, boolean bypassed) {
+    public synchronized void setInsertBypassed(int index, boolean bypassed) {
         insertSlots.get(index).setBypassed(bypassed);
         rebuildEffectsChain();
     }
@@ -542,7 +551,49 @@ public final class MixerChannel {
      * @return the list of insert slots
      */
     public List<InsertSlot> getInsertSlots() {
-        return Collections.unmodifiableList(insertSlots);
+        return insertSnapshot;
+    }
+
+    @RealTimeSafe
+    public void drainInsertParameters() {
+        effectsChain.enterRender();
+        try {
+            List<InsertSlot> slots = insertSnapshot;
+            for (int i = 0; i < slots.size(); i++) {
+                slots.get(i).drainParametersToAudio();
+            }
+        } finally {
+            effectsChain.leaveRender();
+        }
+    }
+
+    public boolean hasInstrumentInsert() {
+        List<InsertSlot> slots = insertSnapshot;
+        for (int i = 0; i < slots.size(); i++) {
+            if (slots.get(i).isInstrument()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Project shutdown retires processors; rack view refresh never owns this operation. */
+    public synchronized java.util.concurrent.CompletableFuture<Void> disposeInsertsWhenQuiescent() {
+        List<InsertSlot> retired = List.copyOf(ownedSlots);
+        ownedSlots.clear();
+        insertSlots.clear();
+        insertSnapshot = List.of();
+        return effectsChain.retireAll(() -> {
+            RuntimeException failure = null;
+            for (InsertSlot slot : retired) {
+                try {
+                    slot.disposeAfterQuiescence();
+                } catch (RuntimeException e) {
+                    if (failure == null) { failure = e; } else { failure.addSuppressed(e); }
+                }
+            }
+            if (failure != null) { throw failure; }
+        });
     }
 
     /**
@@ -579,10 +630,11 @@ public final class MixerChannel {
      * intermediate chain to the render thread — including the empty one, so a
      * bypass toggle or a reorder could drop a block's inserts entirely.</p>
      */
-    private void rebuildEffectsChain() {
+    private synchronized void rebuildEffectsChain() {
         List<AudioProcessor> rebuilt = new ArrayList<>(insertSlots.size());
         List<Object> rebuiltTags = new ArrayList<>(insertSlots.size());
         for (InsertSlot slot : insertSlots) {
+            slot.attachSupervisor(pluginSupervisor);
             if (!slot.isBypassed()) {
                 AudioProcessor processor = slot.getProcessor();
                 if (pluginSupervisor != null) {
@@ -596,11 +648,14 @@ public final class MixerChannel {
         // publication (it remembers the dimensions prepareEffectsChain gave
         // it), so there is no allocate-after-publish window here.
         effectsChain.replaceAll(rebuilt, rebuiltTags);
+        insertSnapshot = List.copyOf(insertSlots);
         Runnable callback = onEffectsChainChanged;
         if (callback != null) {
             callback.run();
         }
     }
+
+    synchronized void refreshInsertChain() { rebuildEffectsChain(); }
 
     // ── Toolkit-neutral change notification ────────────────────────────────
 

@@ -22,6 +22,7 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SkinBase;
 import javafx.scene.control.TextInputControl;
 import javafx.scene.control.ToggleButton;
@@ -67,10 +68,11 @@ import java.util.ResourceBundle;
  *       non-blank; inline above the body, never modal, and <em>never</em>
  *       auto-hidden by the immersive chrome retraction.</li>
  *   <li><strong>Body host</strong> {@code .editor-frame-body} (§6.3) — a
- *       {@link StackPane} holding {@link EditorFrame#bodyProperty()},
+ *       a scrollable {@link StackPane} holding {@link EditorFrame#bodyProperty()},
  *       clipped to its own bounds so a misbehaving plugin cannot paint
  *       over the breadcrumb or footer. When the body is a {@link Region}
- *       the host enforces {@link EditorFrame#applyResizePolicy}.</li>
+ *       the host enforces {@link EditorFrame#applyResizePolicy}. Oversized
+ *       bodies scroll within the available viewport while chrome stays visible.</li>
  *   <li><strong>Footer</strong> {@code .editor-frame-footer} (§6.4) —
  *       preset selector + Save / Save As, then IN / OUT
  *       {@link LevelMeter}s fed from {@link EditorFrame#metersProperty()}
@@ -314,6 +316,7 @@ public final class EditorFrameSkin extends SkinBase<EditorFrame> {
         // ── 4. Body host (§6.3) ──────────────────────────────────────────
         bodyHost = new StackPane();
         bodyHost.getStyleClass().add("editor-frame-body");
+        bodyHost.setAlignment(Pos.TOP_CENTER);
         // Clip to the host's own bounds — a misbehaving plugin cannot paint
         // over the breadcrumb or footer (§6.3). A Region's layout bounds
         // are (0, 0, width, height), so binding the rectangle to the
@@ -322,7 +325,12 @@ public final class EditorFrameSkin extends SkinBase<EditorFrame> {
         bodyClip.widthProperty().bind(bodyHost.widthProperty());
         bodyClip.heightProperty().bind(bodyHost.heightProperty());
         bodyHost.setClip(bodyClip);
-        VBox.setVgrow(bodyHost, Priority.ALWAYS);
+        var bodyViewport = new ScrollPane(bodyHost);
+        bodyViewport.getStyleClass().add("editor-frame-body-scroll");
+        bodyViewport.setFitToWidth(true);
+        bodyViewport.setFitToHeight(true);
+        bodyViewport.setMinSize(0, 0);
+        VBox.setVgrow(bodyViewport, Priority.ALWAYS);
 
         // ── 5. Footer (§6.4) ─────────────────────────────────────────────
         Label presetLabel = new Label(msg("editor.frame.preset.label"));
@@ -374,7 +382,7 @@ public final class EditorFrameSkin extends SkinBase<EditorFrame> {
         footer.getStyleClass().add("editor-frame-footer");
         footer.setAlignment(Pos.CENTER_LEFT);
 
-        root = new VBox(header, abBar, faultBanner, bodyHost, footer);
+        root = new VBox(header, abBar, faultBanner, bodyViewport, footer);
         getChildren().add(root);
 
         // ── Two-way syncs (listener + setter guard — never bind()) ───────

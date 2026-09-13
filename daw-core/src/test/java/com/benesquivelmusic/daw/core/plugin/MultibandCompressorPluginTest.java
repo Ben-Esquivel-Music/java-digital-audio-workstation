@@ -208,11 +208,14 @@ class MultibandCompressorPluginTest {
         // Out-of-range band index for the current 4-band layout: must not throw
         plugin.setAutomatableParameter(6 + 8 * 4, -10.0);
 
-        // Band Count (id 0) must not rebuild the processor via automation
-        var beforeProcessor = plugin.getProcessor();
+        // Band Count selects a configuration allocated at initialization; the
+        // processor captured by the insert stays stable across that selection.
+        var signalPath = plugin.asAudioProcessor().orElseThrow();
         plugin.setAutomatableParameter(0, 5.0);
-        assertThat(plugin.getProcessor()).isSameAs(beforeProcessor);
-        assertThat(plugin.getBandCount()).isEqualTo(4);
+        assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(signalPath);
+        assertThat(plugin.getBandCount()).isEqualTo(5);
+        assertThat(plugin.getProcessor().getBandCount()).isEqualTo(5);
+        assertThat(plugin.getProcessor().getBandCompressor(0).getThresholdDb()).isEqualTo(-33);
     }
 
     @Test
@@ -221,6 +224,27 @@ class MultibandCompressorPluginTest {
                 .anyMatch(p -> p instanceof MultibandCompressorPlugin);
         assertThat(BuiltInDawPlugin.menuEntries())
                 .anyMatch(e -> e.pluginClass().equals(MultibandCompressorPlugin.class));
+    }
+
+    @Test
+    void booleanRecallBypassesAndRestoresTheBandsSavedMakeup() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+        try {
+            plugin.setAutomatableParameter(10, 6.0);
+            plugin.setAutomatableParameter(11, 1.0);
+            assertThat(plugin.getProcessor().isBandBypassed(0)).isTrue();
+            plugin.setAutomatableParameter(12, 1.0);
+            assertThat(plugin.getProcessor().getBandMakeupGainDb(0)).isEqualTo(-120.0);
+            plugin.setAutomatableParameter(10, 9.0);
+            assertThat(plugin.getProcessor().getBandMakeupGainDb(0)).isEqualTo(-120.0);
+            plugin.setAutomatableParameter(12, 0.0);
+            assertThat(plugin.getProcessor().getBandMakeupGainDb(0)).isEqualTo(9.0);
+            plugin.setAutomatableParameter(11, 0.0);
+            assertThat(plugin.getProcessor().isBandBypassed(0)).isFalse();
+        } finally {
+            plugin.dispose();
+        }
     }
 
     private static PluginContext stubContext() {

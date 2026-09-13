@@ -21,10 +21,17 @@ class MatchEqPluginTest {
 
     @TempDir
     Path tempDir;
+    private MatchEqPlugin initializedPlugin;
+
+    @org.junit.jupiter.api.AfterEach
+    void disposePlugin() {
+        if (initializedPlugin != null) initializedPlugin.dispose();
+    }
 
     @Test
     void shouldLoadReferenceFileAndPopulateReferenceSpectrum() throws IOException {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         plugin.initialize(stubContext());
 
         // Generate a short 440 Hz sine tone and write it as a 16-bit WAV file.
@@ -50,6 +57,7 @@ class MatchEqPluginTest {
     @Test
     void shouldResampleReferenceFileWhenSampleRatesDiffer() throws IOException {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         plugin.initialize(stubContext()); // processor sample rate = 48 000
 
         // Reference file at 44.1 kHz — must be resampled to 48 kHz to keep
@@ -79,6 +87,7 @@ class MatchEqPluginTest {
     @Test
     void shouldFailWhenPluginNotInitialized() {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         assertThatThrownBy(() -> plugin.loadReferenceFile(tempDir.resolve("x.wav")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not been initialized");
@@ -87,6 +96,7 @@ class MatchEqPluginTest {
     @Test
     void shouldRejectUnsupportedFileExtension() throws IOException {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         plugin.initialize(stubContext());
         Path unsupported = tempDir.resolve("ref.xyz");
         java.nio.file.Files.writeString(unsupported, "not audio");

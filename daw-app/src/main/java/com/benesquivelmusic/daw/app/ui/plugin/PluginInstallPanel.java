@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.dialogs.DialogDismissibility;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginJarScanner.JarInspection;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifest;
@@ -55,6 +57,12 @@ public final class PluginInstallPanel extends VBox {
 
     private final Button primaryButton;
     private Runnable onCloseRequest;
+    private java.util.concurrent.CompletableFuture<Void> installation =
+            java.util.concurrent.CompletableFuture.completedFuture(null);
+
+    java.util.concurrent.CompletableFuture<Void> installationForTest() { return installation; }
+
+    private record PreparedInstall(ExternalPluginEntry entry, ExternalPluginLoader.LoadResult loaded) { }
 
     /**
      * Builds the install content for {@code inspection}.
@@ -176,14 +184,39 @@ public final class PluginInstallPanel extends VBox {
 
     private void installAll(Path jar, List<PluginManifest> manifests,
                             PluginRegistry registry, Runnable onInstalled) {
-        List<String> failures = new ArrayList<>();
-        for (PluginManifest manifest : manifests) {
+        if (!installation.isDone()) return;
+        installation = new java.util.concurrent.CompletableFuture<>();
+        primaryButton.setDisable(true);
+        // Virtual threads (JEP 444, final since Java 21) isolate arbitrary constructors from FX.
+        Thread.ofVirtual().name("plugin-install-load").start(() -> {
+            List<PreparedInstall> prepared = new ArrayList<>();
+            List<String> failures = new ArrayList<>();
+            for (PluginManifest manifest : manifests) {
+                ExternalPluginEntry entry = new ExternalPluginEntry(jar, manifest.pluginClass());
+                try {
+                    prepared.add(new PreparedInstall(entry, ExternalPluginLoader.loadWithClassLoader(entry)));
+                } catch (PluginLoadException | RuntimeException | LinkageError failure) {
+                    failures.add(manifest.pluginClass() + " — " + failure.getMessage());
+                }
+            }
+            FxDispatcher.runOnFx(() -> completeInstallation(prepared, failures, registry, onInstalled));
+        });
+    }
+
+    private void completeInstallation(List<PreparedInstall> prepared, List<String> failures,
+                                      PluginRegistry registry, Runnable onInstalled) {
+        for (PreparedInstall candidate : prepared) {
             try {
-                registry.register(new ExternalPluginEntry(jar, manifest.pluginClass()));
-            } catch (PluginLoadException e) {
-                failures.add(manifest.pluginClass() + " — " + e.getMessage());
+                registry.registerLoaded(candidate.entry(), candidate.loaded());
+            } catch (PluginLoadException failure) {
+                failures.add(candidate.entry().className() + " — " + failure.getMessage());
+                Thread.ofVirtual().name("rejected-plugin-dispose").start(() -> {
+                    try { candidate.loaded().plugin().dispose(); }
+                    finally { ExternalPluginLoader.closeQuietly(candidate.loaded().classLoader()); }
+                });
             }
         }
+        primaryButton.setDisable(false);
         if (!failures.isEmpty()) {
             DawgDialog.error("Install plugin",
                     "Some plugins could not be installed:\n" + String.join("\n", failures))
@@ -191,6 +224,7 @@ public final class PluginInstallPanel extends VBox {
         }
         onInstalled.run();
         requestClose();
+        installation.complete(null);
     }
 
     // ── Rejection copy (no / invalid manifest, unreadable JAR) ────────────────

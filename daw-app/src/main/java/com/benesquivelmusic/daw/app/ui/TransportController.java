@@ -365,7 +365,7 @@ final class TransportController implements TransportIntentHandler {
             return;
         }
         core.pause();
-        audioEngine.pauseAudioOutput();
+        if (!hasGraphInstruments()) audioEngine.pauseAudioOutput();
         updateStatus();
         statusBarLabel.setText("Paused");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
@@ -440,6 +440,7 @@ final class TransportController implements TransportIntentHandler {
         Transport transport = project.getTransport();
         boolean wasRolling = transport.getState() != TransportState.STOPPED;
         if (!wasRolling && !isRecordingInFlight()) {
+            stopAudioOutputWhenIdle();
             // Double-stop: second Stop returns to zero, if the preference says
             // so. Immediate while stopped — fires POSITION so the VM/playhead/
             // time display follow.
@@ -532,7 +533,7 @@ final class TransportController implements TransportIntentHandler {
         if (wasRolling) {
             EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
         }
-        audioEngine.stopAudioOutput();
+        stopAudioOutputWhenIdle();
         updateStatus();
         if (statusBarLabel.getText() == null
                 || !stripCellSeparator(statusBarLabel.getText()).startsWith("Recording stopped")) {
@@ -545,6 +546,18 @@ final class TransportController implements TransportIntentHandler {
         // Hide the REC indicator
         recIndicator.setVisible(false);
         recIndicator.setManaged(false);
+    }
+
+    private void stopAudioOutputWhenIdle() {
+        if (!hasGraphInstruments()) audioEngine.stopAudioOutput();
+    }
+
+    private boolean hasGraphInstruments() {
+        var mixer = project.getMixer();
+        // Retain the callback for bypassed instruments so unbypassing while stopped can audition immediately.
+        return mixer.getChannels().stream().anyMatch(com.benesquivelmusic.daw.core.mixer.MixerChannel::hasInstrumentInsert)
+                || mixer.getReturnBuses().stream().anyMatch(com.benesquivelmusic.daw.core.mixer.MixerChannel::hasInstrumentInsert)
+                || mixer.getMasterChannel().hasInstrumentInsert();
     }
 
     /**
@@ -577,7 +590,7 @@ final class TransportController implements TransportIntentHandler {
         if (wasRolling) {
             EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
         }
-        audioEngine.stopAudioOutput();
+        stopAudioOutputWhenIdle();
         updateStatus();
         statusBarLabel.setText("Stopped");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
@@ -698,7 +711,11 @@ final class TransportController implements TransportIntentHandler {
             // open and the pipeline start reach a recording callback that is
             // still null: they were never part of any take.
             try {
-                audioEngine.startAudioInputOutput();
+                if (armedAudioTracks.stream().allMatch(audioEngine::hasGraphInstrument)) {
+                    audioEngine.startAudioOutput();
+                } else {
+                    audioEngine.startAudioInputOutput();
+                }
             } catch (RuntimeException e) {
                 abortRecordingTake(outputDir, e);
                 return;

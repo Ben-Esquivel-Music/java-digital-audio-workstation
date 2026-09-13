@@ -10,6 +10,9 @@ import com.benesquivelmusic.daw.app.ui.inspector.sections.RoutingSection;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.SendsSection;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.TrackSection;
 import com.benesquivelmusic.daw.app.ui.inspector.skin.InspectorDrawerSkin;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanProperty;
@@ -152,6 +155,11 @@ public final class InspectorDrawer extends Control {
     private final RoutingSection routingSection;
     private final NotesSection notesSection;
     private final NotificationsSection notificationsSection;
+    private java.util.function.Supplier<MixerChannel> selectedInsertChannel;
+    private MixerChannel displayedInsertChannel;
+    private List<InsertSlot> displayedSlots = List.of();
+    private List<InsertsSection.Row> displayedRows = List.of();
+    private Runnable removeInsertPulse;
 
     /**
      * Default notification log so a no-arg / FXML-loaded drawer renders
@@ -350,6 +358,53 @@ public final class InspectorDrawer extends Control {
 
     public TrackSection         getTrackSection()         { return trackSection; }
     public InsertsSection       getInsertsSection()       { return insertsSection; }
+
+    /** Binds the INSERTS surface to the selected channel's graph snapshots. */
+    public void bindInserts(java.util.function.Supplier<MixerChannel> selectedChannel,
+                            java.util.function.BiConsumer<MixerChannel, InsertSlot> openEditor,
+                            java.util.function.Consumer<MixerChannel> addInsert,
+                            FxDispatcher dispatcher) {
+        disposeInsertBinding();
+        selectedInsertChannel = Objects.requireNonNull(selectedChannel);
+        insertsSection.setOnEditRequested(index -> {
+            refreshInserts();
+            if (displayedInsertChannel != null && index >= 0 && index < displayedSlots.size()) {
+                openEditor.accept(displayedInsertChannel, displayedSlots.get(index));
+            }
+        });
+        insertsSection.getAddButton().setOnAction(_ -> addInsert.accept(selectedChannel.get()));
+        if (dispatcher != null) removeInsertPulse = dispatcher.addPulseParticipant(this::refreshInserts);
+        refreshInserts();
+    }
+
+    public void refreshInserts() {
+        if (selectedInsertChannel == null) return;
+        MixerChannel channel = selectedInsertChannel.get();
+        List<InsertSlot> slots = channel == null ? List.of() : List.copyOf(channel.getInsertSlots());
+        List<InsertsSection.Row> rows = slots.stream()
+                .map(slot -> new InsertsSection.Row(slot.getName(), !slot.isBypassed())).toList();
+        if (channel != displayedInsertChannel || !slots.equals(displayedSlots)
+                || !rows.equals(displayedRows)) {
+            displayedInsertChannel = channel;
+            displayedSlots = slots;
+            displayedRows = rows;
+            insertsSection.setInserts(rows);
+            insertsSection.showInsertParameters(-1, null);
+        }
+        insertsSection.getAddButton().setDisable(channel != null
+                && slots.size() >= MixerChannel.MAX_INSERT_SLOTS);
+    }
+
+    public void disposeInsertBinding() {
+        if (removeInsertPulse != null) removeInsertPulse.run();
+        removeInsertPulse = null;
+        selectedInsertChannel = null;
+        displayedInsertChannel = null;
+        displayedSlots = List.of();
+        displayedRows = List.of();
+        insertsSection.setOnEditRequested(null);
+        insertsSection.getAddButton().setOnAction(null);
+    }
     public SendsSection         getSendsSection()         { return sendsSection; }
     public RoutingSection       getRoutingSection()       { return routingSection; }
     public NotesSection         getNotesSection()         { return notesSection; }

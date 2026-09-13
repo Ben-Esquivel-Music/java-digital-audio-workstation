@@ -60,6 +60,7 @@ class PluginEditorSessionInsertMetersTest {
 
     private MeteringTapBus bus;
     private InsertSlot slot;
+    private MixerChannel channel;
     private FxDispatcher dispatcher;
     private MeterFeed feed;
     private PluginEditorSession session;
@@ -69,14 +70,14 @@ class PluginEditorSessionInsertMetersTest {
     void setUp() {
         bus = new MeteringTapBus();
         Mixer mixer = new Mixer();
-        MixerChannel channel = new MixerChannel("A");
+        channel = new MixerChannel("A");
         slot = new InsertSlot("Comp", new PassThrough());
         channel.addInsert(slot);
         mixer.addChannel(channel);
         bus.rebind(mixer, FORMAT, 1L);
         dispatcher = new FxDispatcher();
         feed = new MeterFeed(bus, dispatcher);
-        session = runOnFxThread(() -> PluginEditorSession.open(new DeclarativePlugin(), null, DEPS));
+        session = runOnFxThread(() -> PluginEditorSession.open(channel, slot, DEPS));
     }
 
     @AfterEach
@@ -225,6 +226,33 @@ class PluginEditorSessionInsertMetersTest {
         pulseOnFx();
         assertThat(disposed.store().meters()).as("neither fresh nor in-flight blocks publish after dispose")
                 .isSameAs(afterOneBlock);
+    }
+
+    @Test
+    void liveSlotRenderFeedsItsEditorAndClosingLeavesTheProcessorRunning() {
+        runOnFxThread(() -> {
+            session.bindInsertMeters(feed, slot.getPluginInstanceId());
+            return null;
+        });
+        showEditor();
+        float[][] input = new float[2][BLOCK];
+        Arrays.fill(input[0], 0.25f);
+        Arrays.fill(input[1], 0.25f);
+        float[][] output = new float[2][BLOCK];
+        TapSnapshot taps = bus.snapshot();
+        channel.getEffectsChain().process(input, output, BLOCK, taps);
+        bus.blockCompleted(taps);
+        pulseOnFx();
+        assertThat(session.store()).isSameAs(slot.getParameterStore());
+        assertThat(session.store().meters().inputLevelDb()).isCloseTo(db(0.25), within(1e-4));
+        assertThat(session.store().meters().outputLevelDb()).isCloseTo(db(0.25), within(1e-4));
+        runOnFxThread(() -> { session.dispose(); return null; });
+        assertThat(feed.subscriptionCount()).isZero();
+        assertThat(bus.levelSubscriptionCount()).isZero();
+        Arrays.fill(output[0], 0);
+        channel.getEffectsChain().process(input, output, BLOCK);
+        assertThat(channel.getInsertSlots()).containsExactly(slot);
+        assertThat(output[0]).containsOnly(0.25f);
     }
 
     /** Minimal story-300 contract plugin: a host-generated parameter grid, no timer. */

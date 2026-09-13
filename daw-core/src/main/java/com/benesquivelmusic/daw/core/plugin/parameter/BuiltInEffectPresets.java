@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.core.plugin.parameter;
 
+import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
+import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
+import com.benesquivelmusic.daw.core.dsp.DelayProcessor;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,6 +30,25 @@ public final class BuiltInEffectPresets {
 
     private BuiltInEffectPresets() {
         // utility class
+    }
+
+    /** Factory catalogue projected onto each live processor's parameter schema. */
+    public static List<ParameterPreset> forProcessor(AudioProcessor processor) {
+        return switch (processor) {
+            case CompressorProcessor _ -> compressorPresets();
+            case ReverbProcessor _ -> reverbPresets().stream().map(preset ->
+                    ParameterPreset.factory(preset.name(), Map.of(
+                            0, preset.values().get(0),
+                            1, preset.values().get(0),
+                            2, preset.values().get(1),
+                            3, preset.values().get(2)))).toList();
+            case DelayProcessor _ -> delayPresets().stream().map(preset ->
+                    ParameterPreset.factory(preset.name(), Map.of(
+                            0, preset.values().get(0),
+                            1, preset.values().get(1),
+                            2, preset.values().get(2)))).toList();
+            default -> List.of();
+        };
     }
 
     /**

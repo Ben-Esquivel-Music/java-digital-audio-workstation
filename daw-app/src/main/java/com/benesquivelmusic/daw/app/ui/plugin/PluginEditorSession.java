@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.plugin;
 
 import com.benesquivelmusic.daw.app.ui.NotificationLevel;
+import com.benesquivelmusic.daw.app.ui.PluginParameterEditorPanel;
 import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
@@ -8,6 +9,9 @@ import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.views.DetachPluginRequestedEvent;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.parameter.ABComparison;
+import com.benesquivelmusic.daw.core.plugin.parameter.BuiltInEffectPresets;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.plugin.parameter.ParameterPreset;
 import com.benesquivelmusic.daw.core.plugin.parameter.ParameterPresetManager;
 import com.benesquivelmusic.daw.core.plugin.parameter.PluginParameterState;
@@ -22,6 +26,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
 import javafx.animation.AnimationTimer;
+import javafx.concurrent.Task;
 import javafx.beans.InvalidationListener;
 import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.beans.value.ChangeListener;
@@ -47,6 +52,8 @@ import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.ResourceBundle;
 import java.util.UUID;
+import java.util.ArrayList;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
@@ -114,17 +121,16 @@ import java.util.logging.Logger;
  *
  * <h2>Bypass (§6.1)</h2>
  *
- * <p>The frame's bypass toggle is recorded in {@link #isBypassed()} only:
- * story 301 opens editors for <em>registered</em> plugins with no live insert
- * slot behind them, so there is no engine hookup for the bypass state yet —
- * wiring it to a live insert chain is the inserts / story-302+ domain.</p>
+ * <p>A live session controls the owning channel's insert bypass and reflects
+ * rack changes back into its frame. The slot owns its parameter store, so
+ * closing or reloading the editor leaves queued changes and processing intact.</p>
  *
  * <h2>Threading (§4.7)</h2>
  *
  * <p>{@link #open}, {@link #dispose()} and every frame callback run on the
  * JavaFX Application Thread. The session's single {@link AnimationTimer}
  * (sanctioned below) runs only while the frame is in a {@link Scene}; per
- * tick it drains the store's audio→UI ring into the grid / a canvas repaint,
+ * tick it drains the store's audio→UI changes into the controls / a canvas repaint,
  * mirrors the latest {@link PluginMeterSnapshot} into the frame's §6.4
  * meters (reference-compared — the meter channel is latest-wins), and paces
  * the opted-in canvas fps. Per-tick work is allocation-light: the drain sink
@@ -145,7 +151,7 @@ import java.util.logging.Logger;
  * @see FxCanvasSurface
  */
 @FxAnimationTimerAllowed("Per-editor drain/meter/fps loop owned by this session: "
-        + "drains the parameter store's audio-to-UI ring into the editor, mirrors "
+        + "drains the parameter store's audio-to-UI changes into the editor, mirrors "
         + "the meter snapshot and paces an opted-in canvas frame rate, running "
         + "only while the frame is in a scene (javafx-application-design §6 "
         + "control-owns-timer); not a cross-thread seam — story 289 sentinel.")
@@ -190,6 +196,8 @@ public final class PluginEditorSession {
     // ── Immutable session identity / services ────────────────────────────
 
     private final DawPlugin plugin;
+    private final MixerChannel channel;
+    private final InsertSlot slot;
     private final Deps deps;
     private final EditorFrame frame = new EditorFrame();
     private final HostEditorContext context;
@@ -214,6 +222,7 @@ public final class PluginEditorSession {
     private final ParameterPresetManager presetManager;
     /** Loaded presets by name — backs the §6.4 footer selector. */
     private final Map<String, ParameterPreset> presetsByName = new LinkedHashMap<>();
+    private CompletableFuture<Void> presetOperation = CompletableFuture.completedFuture(null);
 
     // ── Timer / render plumbing (pre-allocated — per-tick work stays light) ─
 
@@ -252,8 +261,15 @@ public final class PluginEditorSession {
             };
     /** The window whose {@code showingProperty} the session tracks. */
     private Window trackedWindow;
-    private final ChangeListener<Boolean> bypassListener =
-            (obs, was, now) -> this.bypassed = now;
+    private final ChangeListener<Boolean> bypassListener = this::onBypassChanged;
+
+    private void onBypassChanged(ObservableValue<? extends Boolean> observable, Boolean was, Boolean now) {
+        bypassed = now;
+        if (slot != null && slot.isBypassed() != now) {
+            int index = channel.getInsertSlots().indexOf(slot);
+            if (index >= 0) channel.setInsertBypassed(index, now);
+        }
+    }
 
     // ── Per-build editor state (replaced wholesale by a reload) ──────────
 
@@ -262,6 +278,8 @@ public final class PluginEditorSession {
     private ABComparison abComparison;
     /** Non-null only in Declarative mode — the echo target for drains / A/B / presets. */
     private ParameterGridPanel grid;
+    private PluginParameterEditorPanel fallbackPanel;
+    private PluginEditorFactory.Panel panelFactory;
     /** Non-null only in Canvas mode. */
     private PluginEditorFactory.Canvas canvasFactory;
     private FxCanvasSurface surface;
@@ -297,8 +315,11 @@ public final class PluginEditorSession {
                 && feeds != null ? feeds.bindUtility(analyzer, frame) : null;
     }
 
-    private PluginEditorSession(DawPlugin plugin, String insertLocation, Deps deps) {
+    private PluginEditorSession(DawPlugin plugin, String insertLocation, Deps deps,
+            MixerChannel channel, InsertSlot slot) {
         this.plugin = Objects.requireNonNull(plugin, "plugin must not be null");
+        this.channel = channel;
+        this.slot = slot;
         this.deps = Objects.requireNonNull(deps, "deps must not be null");
         this.dispatcher = FxDispatcher.getDefault();
         this.themeManager = ThemeManager.getDefault();
@@ -344,6 +365,7 @@ public final class PluginEditorSession {
         frame.editorMeterClipProperty().addListener(themeTokensListener);
         frame.sceneProperty().addListener(sceneListener);
         frame.bypassedProperty().addListener(bypassListener);
+        frame.setBypassed(slot != null && slot.isBypassed());
         bypassed = frame.isBypassed();
 
         // Frame callbacks — everything EXCEPT onCloseRequested, which the
@@ -387,7 +409,17 @@ public final class PluginEditorSession {
      */
     public static PluginEditorSession open(DawPlugin plugin, String insertLocation,
             Deps deps) {
-        return new PluginEditorSession(plugin, insertLocation, deps);
+        return new PluginEditorSession(plugin, insertLocation, deps, null, null);
+    }
+
+    /** Opens an editor over the existing slot, retaining its store for its whole graph lifetime. */
+    public static PluginEditorSession open(MixerChannel channel, InsertSlot slot, Deps deps) {
+        Objects.requireNonNull(channel, "channel must not be null");
+        Objects.requireNonNull(slot, "slot must not be null");
+        int index = channel.getInsertSlots().indexOf(slot);
+        if (index < 0) throw new IllegalArgumentException("The insert slot must belong to the channel");
+        return new PluginEditorSession(slot.getEditorPlugin(),
+                channel.getName() + " / Insert " + (index + 1), deps, channel, slot);
     }
 
     /** @return the framed editor — the node the host places in the Workshop pane. */
@@ -406,10 +438,7 @@ public final class PluginEditorSession {
     }
 
     /**
-     * @return the frame's current bypass state (§6.1). Story 301 records the
-     *         toggle only — these editors open for registered plugins with no
-     *         live insert slot, so wiring bypass into an engine chain is the
-     *         inserts / story-302+ domain.
+     * @return the frame's current bypass state, synchronized with its live insert.
      */
     public boolean isBypassed() {
         return bypassed;
@@ -429,6 +458,7 @@ public final class PluginEditorSession {
         timer.stop();
         unbindInsertMeters();
         if (analyzerBinding != null) analyzerBinding.close();
+        teardownPanel();
         teardownCanvas();
         grid = null;
         if (frame.getScene() != null) {
@@ -544,13 +574,19 @@ public final class PluginEditorSession {
         // plugin-caused, so that too degrades via the harness.
         List<PluginParameter> parameters = resolveParameters(factory);
         try {
-            store = new PluginParameterStore(parameters);
+            if (slot != null) slot.prepareEditorParameters(parameters);
+            store = slot == null ? new PluginParameterStore(parameters) : slot.getParameterStore();
+            if (slot != null) {
+                parameters = new ArrayList<>(store.parameterCount());
+                for (int index = 0; index < store.parameterCount(); index++) parameters.add(store.parameter(index));
+            }
         } catch (Throwable t) {
             faultBanner("getParameters", t);
             parameters = List.of();
             store = new PluginParameterStore(parameters);
         }
         state = new PluginParameterState(parameters);
+        refreshStateFromStore();
         abComparison = new ABComparison(state);
         frame.setAbActiveSlot(abComparison.getActiveSlot());
 
@@ -567,6 +603,7 @@ public final class PluginEditorSession {
             case PluginEditorFactory.Canvas c -> buildCanvasBody(c);
             case PluginEditorFactory.Faulted f -> buildFaultedBody(f);
         }
+        echoAllParameters();
     }
 
     /**
@@ -592,10 +629,25 @@ public final class PluginEditorSession {
     /**
      * §6.2 — the host-generated grid. The sink is the session's single-writer
      * entry: a user gesture lands in the {@link PluginParameterState} mirror
-     * (the A/B / preset snapshot source) and the store's UI→audio ring; echo
+     * (the A/B / preset snapshot source) and the store's UI→audio publication; echo
      * re-entry is already guarded inside the grid.
      */
     private void buildDeclarativeBody(List<PluginParameter> parameters) {
+        if (parameters.isEmpty()) {
+            Label label = new Label(msg("editor.frame.noParameters"));
+            label.setWrapText(true);
+            VBox placeholder = new VBox(label);
+            placeholder.setAlignment(Pos.CENTER);
+            placeholder.getStyleClass().add("editor-empty-placeholder");
+            frame.setBody(placeholder);
+            return;
+        }
+        if (slot != null && slot.getPlugin() == null && slot.getEffectType() != null) {
+            fallbackPanel = PluginParameterEditorPanel.body(parameters);
+            fallbackPanel.setOnParameterChanged(this::onGridGesture);
+            frame.setBody(fallbackPanel);
+            return;
+        }
         grid = new ParameterGridPanel(parameters, this::onGridGesture);
         frame.setBody(grid);
     }
@@ -607,6 +659,7 @@ public final class PluginEditorSession {
 
     /** §6.3 — the plugin's own region, harnessed; a {@code null} return is a fault. */
     private void buildPanelBody(PluginEditorFactory.Panel panel) {
+        panelFactory = panel;
         Region body;
         try {
             body = panel.createPanel(context);
@@ -618,6 +671,19 @@ public final class PluginEditorSession {
             return;
         }
         frame.setBody(body);
+    }
+
+    private void teardownPanel() {
+        PluginEditorFactory.Panel panel = panelFactory;
+        panelFactory = null;
+        fallbackPanel = null;
+        if (panel != null) {
+            try {
+                panel.detach();
+            } catch (Throwable failure) {
+                reportToSupervisor(failure);
+            }
+        }
     }
 
     /**
@@ -685,6 +751,7 @@ public final class PluginEditorSession {
         faultBanner(phase, t);
         frame.setBody(buildFaultPlaceholder());
         grid = null;
+        teardownPanel();
         teardownCanvas();
     }
 
@@ -735,6 +802,7 @@ public final class PluginEditorSession {
             return;
         }
         teardownCanvas();
+        teardownPanel();
         grid = null;
         frame.setFaultMessage("");
         buildEditor();
@@ -805,7 +873,7 @@ public final class PluginEditorSession {
     /**
      * Pushes every state value into the store (the audio side sees the swap /
      * preset), echoes the grid in one guarded bulk write, and schedules a
-     * canvas repaint (a UI-side value change never travels the audio→UI ring,
+     * canvas repaint (a UI-side value change never uses the audio→UI publication,
      * so the canvas must be repainted explicitly).
      */
     private void pushStateToStoreAndGrid() {
@@ -816,21 +884,44 @@ public final class PluginEditorSession {
         if (grid != null) {
             grid.setAllValues(values);
         }
+        echoAllParameters();
         scheduleRender();
+    }
+
+    private void echoAllParameters() {
+        for (int index = 0; index < store.parameterCount(); index++) onStoreIndexDrained(index);
     }
 
     // ── Presets (§6.4) ────────────────────────────────────────────────────
 
     private void loadPresetsIntoFrame() {
         presetsByName.clear();
-        try {
-            for (ParameterPreset preset : presetManager.loadAllPresets()) {
+        if (slot != null) {
+            for (ParameterPreset preset : BuiltInEffectPresets.forProcessor(slot.getProcessor())) {
                 presetsByName.put(preset.name(), preset);
             }
-        } catch (IOException e) {
-            LOG.fine(() -> "Could not load presets for " + faultReportId + ": " + e);
         }
         frame.getPresetItems().setAll(presetsByName.keySet());
+        Task<List<ParameterPreset>> task = new Task<>() {
+            @Override protected List<ParameterPreset> call() throws IOException {
+                return presetManager.loadAllPresets();
+            }
+        };
+        CompletableFuture<Void> completed = new CompletableFuture<>();
+        presetOperation = completed;
+        task.setOnSucceeded(_ -> {
+            if (!disposed) {
+                for (ParameterPreset preset : task.getValue()) presetsByName.put(preset.name(), preset);
+                frame.getPresetItems().setAll(presetsByName.keySet());
+            }
+            completed.complete(null);
+        });
+        task.setOnFailed(_ -> {
+            notifyPresetFailure(task.getException());
+            completed.completeExceptionally(task.getException());
+        });
+        // Virtual threads (JEP 444, final since Java 21) keep preset I/O off the FX thread.
+        Thread.ofVirtual().name("plugin-presets-load").start(task);
     }
 
     private void onPresetSelected(String name) {
@@ -841,6 +932,7 @@ public final class PluginEditorSession {
         if (preset == null) {
             return;
         }
+        refreshStateFromStore();
         state.loadValues(preset.values());
         pushStateToStoreAndGrid();
         frame.setSelectedPreset(name);
@@ -871,6 +963,9 @@ public final class PluginEditorSession {
 
     private void promptAndSavePresetAs() {
         TextInputDialog dialog = new TextInputDialog();
+        if (frame.getScene() != null && frame.getScene().getWindow() != null) {
+            dialog.initOwner(frame.getScene().getWindow());
+        }
         dialog.setTitle(msg("editor.frame.preset.saveAs.title"));
         dialog.setHeaderText(msg("editor.frame.preset.saveAs.header"));
         dialog.setContentText(msg("editor.frame.preset.saveAs.prompt"));
@@ -881,25 +976,43 @@ public final class PluginEditorSession {
                 .ifPresent(this::savePreset);
     }
 
-    private void savePreset(String name) {
+    void savePreset(String name) {
+        refreshStateFromStore();
         ParameterPreset preset = ParameterPreset.user(name, state.getAllValues());
-        try {
-            presetManager.savePreset(preset);
-        } catch (IOException e) {
-            LOG.log(Level.WARNING,
-                    "Failed to save preset '" + name + "' for " + faultReportId, e);
-            if (deps.showNotification() != null) {
-                deps.showNotification().accept(NotificationLevel.ERROR,
-                        String.format(Locale.ROOT,
-                                msg("editor.frame.preset.saveError"), e.getMessage()));
+        Task<Path> task = new Task<>() {
+            @Override protected Path call() throws IOException {
+                return presetManager.savePreset(preset);
             }
-            return;
+        };
+        CompletableFuture<Void> previous = presetOperation;
+        CompletableFuture<Void> completed = new CompletableFuture<>();
+        presetOperation = completed;
+        task.setOnSucceeded(_ -> {
+            if (!disposed) {
+                presetsByName.put(name, preset);
+                if (!frame.getPresetItems().contains(name)) frame.getPresetItems().add(name);
+                frame.setSelectedPreset(name);
+            }
+            completed.complete(null);
+        });
+        task.setOnFailed(_ -> {
+            notifyPresetFailure(task.getException());
+            completed.completeExceptionally(task.getException());
+        });
+        previous.handle((_, _) -> {
+            Thread.ofVirtual().name("plugin-presets-save").start(task);
+            return null;
+        });
+    }
+
+    CompletableFuture<Void> presetOperation() { return presetOperation; }
+
+    private void notifyPresetFailure(Throwable failure) {
+        LOG.log(Level.WARNING, "Could not read or save presets for " + faultReportId, failure);
+        if (!disposed && deps.showNotification() != null) {
+            deps.showNotification().accept(NotificationLevel.ERROR,
+                    String.format(Locale.ROOT, msg("editor.frame.preset.saveError"), failure.getMessage()));
         }
-        presetsByName.put(name, preset);
-        if (!frame.getPresetItems().contains(name)) {
-            frame.getPresetItems().add(name);
-        }
-        frame.setSelectedPreset(name);
     }
 
     /**
@@ -915,7 +1028,8 @@ public final class PluginEditorSession {
     }
 
     private static String sanitizeDirectoryName(String pluginId) {
-        return pluginId.replaceAll("[^a-zA-Z0-9._-]", "_");
+        String directory = pluginId.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return directory.isBlank() || directory.equals(".") || directory.equals("..") ? "plugin_" : directory;
     }
 
     // ── Host services reached through HostEditorContext ─────────────────
@@ -1058,6 +1172,10 @@ public final class PluginEditorSession {
             oldScene.windowProperty().removeListener(windowListener);
         }
         if (newScene != null) {
+            if (!newScene.getRoot().getStyleClass().contains("root-pane")) {
+                newScene.getRoot().getStyleClass().add("root-pane");
+            }
+            themeManager.applyTo(newScene);
             newScene.windowProperty().addListener(windowListener);
             trackWindow(newScene.getWindow());
             frame.applyCss();
@@ -1097,7 +1215,7 @@ public final class PluginEditorSession {
     /**
      * The session's ONE per-frame loop (class-level
      * {@code @FxAnimationTimerAllowed} sentinel): (1) drain the store's
-     * audio→UI ring — Declarative echoes into the grid, Canvas marks a
+     * audio→UI changes — Declarative and Panel echo controls, Canvas marks a
      * repaint; (2) mirror the latest meter snapshot (reference compare —
      * meters are a latest-wins channel, §6.4); (3) pace the opted-in canvas
      * fps. Allocation-light: the sink and runnable are pre-allocated fields.
@@ -1107,6 +1225,9 @@ public final class PluginEditorSession {
             return;
         }
         drainRenderNeeded = false;
+        if (slot != null && frame.isBypassed() != slot.isBypassed()) {
+            frame.setBypassed(slot.isBypassed());
+        }
         store.drainToUi(drainSink);
         if (drainRenderNeeded) {
             renderNow();
@@ -1124,8 +1245,19 @@ public final class PluginEditorSession {
 
     /** Pre-allocated drain sink — one audio-side change, by dense index. */
     private void onStoreIndexDrained(int index) {
+        int parameterId = store.parameterIdAt(index);
+        double value = store.value(index);
+        state.setValue(parameterId, value);
         if (grid != null) {
-            grid.updateValue(store.parameterIdAt(index), store.value(index));
+            grid.updateValue(parameterId, value);
+        } else if (fallbackPanel != null) {
+            fallbackPanel.updateValue(parameterId, value);
+        } else if (panelFactory != null) {
+            try {
+                panelFactory.parameterChanged(parameterId, value);
+            } catch (Throwable failure) {
+                faultAndSubstitute("parameterChanged", failure);
+            }
         } else if (canvasFactory != null) {
             drainRenderNeeded = true;
         }

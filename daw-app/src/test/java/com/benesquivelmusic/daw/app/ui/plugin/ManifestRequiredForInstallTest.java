@@ -93,6 +93,7 @@ class ManifestRequiredForInstallTest {
                 panel.primaryButtonForTest().fire();
                 return null;
             });
+            panel.installationForTest().get(15, java.util.concurrent.TimeUnit.SECONDS);
 
             assertThat(registry.getEntries())
                     .as("the declared plugin registered without class-name input")

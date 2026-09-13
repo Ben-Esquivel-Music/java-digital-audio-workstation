@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.export.SampleRateConverter;
 import com.benesquivelmusic.daw.core.plugin.editor.MatchEqEditor;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
@@ -19,6 +20,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Built-in spectrum-matched ("match EQ") effect plugin.
@@ -50,8 +54,22 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
             "eq"
     );
 
-    private MatchEqProcessor processor;
+    private static final MatchEqProcessor.FftSize[] FFT_SIZES = MatchEqProcessor.FftSize.values();
+    private static final MatchEqProcessor.Smoothing[] SMOOTHING_MODES = MatchEqProcessor.Smoothing.values();
+    private static final MatchEqProcessor.PhaseMode[] PHASE_MODES = MatchEqProcessor.PhaseMode.values();
+    private volatile MatchEqProcessor processor;
+    private final AudioProcessor signalPath = new MatchSignalPath();
+    private final AtomicLong requestedRevision = new AtomicLong();
+    private final AtomicReference<PreparedMatch> prepared = new AtomicReference<>();
+    private volatile int fftSizeIndex = MatchEqProcessor.FftSize.SIZE_2048.ordinal();
+    private volatile int smoothingIndex = MatchEqProcessor.Smoothing.THIRD_OCTAVE.ordinal();
+    private volatile double amount = 1.0;
+    private volatile int phaseIndex = MatchEqProcessor.PhaseMode.MINIMUM_PHASE.ordinal();
+    private volatile boolean preparing;
+    private Thread preparationThread;
     private boolean active;
+
+    private record PreparedMatch(long revision, MatchEqProcessor processor) { }
 
     public MatchEqPlugin() {
     }
@@ -65,6 +83,9 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
         processor = new MatchEqProcessor(context.getAudioChannels(), context.getSampleRate());
+        preparing = true;
+        // Virtual threads (JEP 444, final since Java 21) keep FFT/filter preparation off RT.
+        preparationThread = Thread.ofVirtual().name("match-eq-prepare").start(this::prepareMatches);
     }
 
     @Override
@@ -83,12 +104,15 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     @Override
     public void dispose() {
         active = false;
+        preparing = false;
+        if (preparationThread != null) preparationThread.interrupt();
+        prepared.set(null);
         processor = null;
     }
 
     @Override
     public Optional<AudioProcessor> asAudioProcessor() {
-        return Optional.ofNullable(processor);
+        return processor == null ? Optional.empty() : Optional.of(signalPath);
     }
 
     /**
@@ -118,6 +142,81 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
                 new PluginParameter(2, "Amount", 0.0, 1.0, 1.0),
                 new PluginParameter(3, "Phase Mode", 0.0, phaseMax,
                         MatchEqProcessor.PhaseMode.MINIMUM_PHASE.ordinal()));
+    }
+
+    @Override
+    @RealTimeSafe
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (!Double.isFinite(value)) return;
+        switch (parameterId) {
+            case 0 -> fftSizeIndex = (int) Math.round(Math.clamp(value, 0.0, FFT_SIZES.length - 1.0));
+            case 1 -> smoothingIndex = (int) Math.round(Math.clamp(value, 0.0, SMOOTHING_MODES.length - 1.0));
+            case 2 -> amount = Math.clamp(value, 0.0, 1.0);
+            case 3 -> phaseIndex = (int) Math.round(Math.clamp(value, 0.0, PHASE_MODES.length - 1.0));
+            default -> { return; }
+        }
+        requestedRevision.incrementAndGet();
+    }
+
+    private void prepareMatches() {
+        long completed = 0;
+        while (preparing) {
+            long revision = requestedRevision.get();
+            MatchEqProcessor current = processor;
+            if (current == null) return;
+            if (revision != completed) {
+                MatchEqProcessor next = prepareMatch(current);
+                if (preparing && revision == requestedRevision.get()) {
+                    prepared.set(new PreparedMatch(revision, next));
+                }
+                completed = revision;
+            }
+            LockSupport.parkNanos(5_000_000L);
+        }
+    }
+
+    private MatchEqProcessor prepareMatch(MatchEqProcessor current) {
+        var next = new MatchEqProcessor(current.getChannelCount(), current.getSampleRate());
+        next.setFftSize(FFT_SIZES[fftSizeIndex]);
+        next.setSmoothing(SMOOTHING_MODES[smoothingIndex]);
+        next.setAmount(amount);
+        next.setPhaseMode(PHASE_MODES[phaseIndex]);
+        next.setFirOrder(current.getFirOrder());
+        int bins = next.getFftSize().value() / 2 + 1;
+        double[] source = remapSpectrum(current.getSourceSpectrum(), bins);
+        double[] reference = remapSpectrum(current.getReferenceSpectrum(), bins);
+        if (source != null) next.setSourceSpectrum(source);
+        if (reference != null) next.setReferenceSpectrum(reference);
+        if (source != null && reference != null) next.updateMatch();
+        return next;
+    }
+
+    /** Retains captured spectra when the FFT grid changes; the sample rate stays fixed. */
+    private static double[] remapSpectrum(double[] captured, int bins) {
+        if (captured == null || captured.length == bins) return captured;
+        double[] remapped = new double[bins];
+        for (int bin = 0; bin < bins; bin++) {
+            double position = (double) bin * (captured.length - 1) / (bins - 1);
+            int lower = (int) position;
+            int upper = Math.min(lower + 1, captured.length - 1);
+            double fraction = position - lower;
+            remapped[bin] = captured[lower] + fraction * (captured[upper] - captured[lower]);
+        }
+        return remapped;
+    }
+
+    private final class MatchSignalPath implements AudioProcessor {
+        @Override @RealTimeSafe
+        public void process(float[][] input, float[][] output, int frames) {
+            PreparedMatch next = prepared.getAndSet(null);
+            if (next != null && next.revision() == requestedRevision.get()) processor = next.processor();
+            MatchEqProcessor current = processor;
+            if (current != null) current.process(input, output, frames);
+        }
+        @Override public void reset() { if (processor != null) processor.reset(); }
+        @Override public int getInputChannelCount() { return processor == null ? 0 : processor.getChannelCount(); }
+        @Override public int getOutputChannelCount() { return processor == null ? 0 : processor.getChannelCount(); }
+        @Override public int getLatencySamples() { return processor == null ? 0 : processor.getLatencySamples(); }
     }
 
     /**

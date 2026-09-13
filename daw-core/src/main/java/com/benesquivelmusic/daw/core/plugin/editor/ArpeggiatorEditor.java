@@ -60,6 +60,16 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  */
 public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
 
+    private ArpeggiatorPane content;
+
+    @Override public void parameterChanged(int id, double value) {
+        if (content != null) content.bindings.parameterChanged(id, value);
+    }
+
+    @Override public void detach() {
+        if (content != null) content.bindings.close();
+    }
+
     /** Number of step lights drawn in the indicator row. */
     static final int INDICATOR_STEPS = 16;
 
@@ -90,7 +100,8 @@ public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
     @Override
     public Region createPanel(EditorContext context) {
         Objects.requireNonNull(context, "context must not be null");
-        return new ArpeggiatorPane(plugin, context);
+        content = new ArpeggiatorPane(plugin, context);
+        return content;
     }
 
     @Override
@@ -117,6 +128,8 @@ public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
     /** The editor's root region — one instance per {@code createPanel} call. */
     private static final class ArpeggiatorPane extends VBox {
 
+        private final EditorParameterBindings bindings;
+
         private final ArpeggiatorPlugin plugin;
         private final EditorContext context;
         // Fully qualified: the inherited member type PluginEditorFactory.Canvas
@@ -130,6 +143,7 @@ public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
         ArpeggiatorPane(ArpeggiatorPlugin plugin, EditorContext context) {
             this.plugin = plugin;
             this.context = context;
+            this.bindings = new EditorParameterBindings(context.parameterStore());
 
             setSpacing(8);
             setPadding(new Insets(10));
@@ -144,23 +158,15 @@ public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
             rate.setValue(plugin.getRate());
             rate.setCellFactory(_ -> new RateCell());
             rate.setButtonCell(new RateCell());
-            rate.valueProperty().addListener((_, _, v) -> {
-                if (v != null) {
-                    plugin.setRate(v);
-                    context.parameterStore().writeFromUiById(PARAM_RATE, v.ordinal());
-                }
-            });
+            bindings.bindSelection(PARAM_RATE, rate,
+                    value -> Rate.values()[(int) Math.round(value)], Enum::ordinal);
 
             // ── Pattern dropdown ─────────────────────────────────────────────
             ComboBox<Pattern> pattern = new ComboBox<>();
             pattern.getItems().addAll(Pattern.values());
             pattern.setValue(plugin.getPattern());
-            pattern.valueProperty().addListener((_, _, v) -> {
-                if (v != null) {
-                    plugin.setPattern(v);
-                    context.parameterStore().writeFromUiById(PARAM_PATTERN, v.ordinal());
-                }
-            });
+            bindings.bindSelection(PARAM_PATTERN, pattern,
+                    value -> Pattern.values()[(int) Math.round(value)], Enum::ordinal);
 
             // ── Octave range slider (snaps to whole octaves) ─────────────────
             Slider octave = slider(ArpeggiatorPlugin.MIN_OCTAVE, ArpeggiatorPlugin.MAX_OCTAVE,
@@ -169,35 +175,22 @@ public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
             octave.setMinorTickCount(0);
             octave.setSnapToTicks(true);
             octave.setShowTickLabels(true);
-            octave.valueProperty().addListener((_, _, v) -> {
-                int range = v.intValue();
-                plugin.setOctaveRange(range);
-                context.parameterStore().writeFromUiById(PARAM_OCTAVE, range);
-            });
+            bindings.bindNumber(PARAM_OCTAVE, octave.valueProperty());
 
             // ── Gate slider (10–200%) ────────────────────────────────────────
             Slider gate = slider(ArpeggiatorPlugin.MIN_GATE, ArpeggiatorPlugin.MAX_GATE,
                     plugin.getGate());
-            gate.valueProperty().addListener((_, _, v) -> {
-                plugin.setGate(v.doubleValue());
-                context.parameterStore().writeFromUiById(PARAM_GATE, v.doubleValue());
-            });
+            bindings.bindNumber(PARAM_GATE, gate.valueProperty());
 
             // ── Swing slider (0–75%) ─────────────────────────────────────────
             Slider swing = slider(ArpeggiatorPlugin.MIN_SWING, ArpeggiatorPlugin.MAX_SWING,
                     plugin.getSwing());
-            swing.valueProperty().addListener((_, _, v) -> {
-                plugin.setSwing(v.doubleValue());
-                context.parameterStore().writeFromUiById(PARAM_SWING, v.doubleValue());
-            });
+            bindings.bindNumber(PARAM_SWING, swing.valueProperty());
 
             // ── Latch toggle ─────────────────────────────────────────────────
             ToggleButton latch = new ToggleButton("LATCH");
             latch.setSelected(plugin.isLatch());
-            latch.selectedProperty().addListener((_, _, v) -> {
-                plugin.setLatch(v);
-                context.parameterStore().writeFromUiById(PARAM_LATCH, v ? 1.0 : 0.0);
-            });
+            bindings.bindToggle(PARAM_LATCH, latch.selectedProperty());
 
             HBox controls = new HBox(10,
                     labelled("Rate",      rate),
@@ -230,15 +223,15 @@ public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
             // Showing-window-gated lifecycle (a Panel has no dispose hook):
             // poll while visibly on screen, stop when the panel leaves the
             // scene or its window hides, re-attachable both ways.
-            ShowingWindowGate.install(this,
+            bindings.onDetach(ShowingWindowGate.install(this,
                     () -> {
                         drawIndicator(lastStep);
                         timer.start();
                     },
-                    timer::stop);
+                    timer::stop));
 
             // Repaint the indicator with the new palette on theme change.
-            context.themeProperty().addListener((_, _, _) -> drawIndicator(lastStep));
+            bindings.observe(context.themeProperty(), (_, _, _) -> drawIndicator(lastStep));
 
             drawIndicator(lastStep);
         }
