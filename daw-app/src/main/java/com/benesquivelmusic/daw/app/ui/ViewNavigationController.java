@@ -458,14 +458,12 @@ final class ViewNavigationController {
      * Disposes per-view controllers held by this navigation controller —
      * called from the primary {@code Stage}'s {@code setOnHidden} hook in
      * {@code MainController} alongside the other application-lifetime
-     * disposables (review N5). At present only the Workshop selection
-     * host controller has a {@link
-     * com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController#dispose()
-     * dispose()} contract — the standard {@code Mixer}/{@code Editor}/
-     * {@code Mastering} views and {@code Performance Stage} hold no
-     * cross-lifetime listeners. Idempotent: re-calling is safe.
+     * disposables (review N5). This releases Workshop selection resources and
+     * the mixer's rack loads, editor windows, meters and model listeners.
+     * Idempotent: re-calling is safe.
      */
     void dispose() {
+        if (mixerView != null) mixerView.dispose();
         if (workshopSelectionHostController != null) {
             workshopSelectionHostController.dispose();
             workshopSelectionHostController = null;
@@ -1001,7 +999,9 @@ final class ViewNavigationController {
      * @param newMixerView the new mixer view instance
      */
     void setMixerView(MixerView newMixerView) {
-        this.mixerView = Objects.requireNonNull(newMixerView, "newMixerView must not be null");
+        Objects.requireNonNull(newMixerView, "newMixerView must not be null");
+        if (mixerView != null && mixerView != newMixerView) mixerView.dispose();
+        this.mixerView = newMixerView;
         viewCache.put(DawView.MIXER, mixerView);
     }
 

@@ -464,6 +464,22 @@ public final class RenderPipeline {
         return trackBuffers;
     }
 
+    private static boolean hasInstruments(Mixer mixer) {
+        List<MixerChannel> channels = mixer.getChannels();
+        for (int i = 0; i < channels.size(); i++) {
+            if (channels.get(i).hasInstrumentInsert()) {
+                return true;
+            }
+        }
+        List<MixerChannel> returns = mixer.getReturnBuses();
+        for (int i = 0; i < returns.size(); i++) {
+            if (returns.get(i).hasInstrumentInsert()) {
+                return true;
+            }
+        }
+        return mixer.getMasterChannel().hasInstrumentInsert();
+    }
+
     /**
      * Renders a single block of audio into {@code outputBuffer}.
      *
@@ -694,6 +710,10 @@ public final class RenderPipeline {
                 && (transport.getState() == TransportState.PLAYING
                     || transport.getState() == TransportState.RECORDING);
 
+        if (mixer != null) {
+            mixer.drainInsertParameters();
+        }
+
         if (playbackActive) {
             int trackCount = Math.min(tracks.size(), maxTracks);
 
@@ -739,11 +759,22 @@ public final class RenderPipeline {
                 // return buses which are summed into the main output.
                 mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
             }
-        } else if (inputBuffer != null) {
-            // Fallback: copy input into the mix buffer (pass-through)
+        } else if (mixer != null && tracks != null && hasInstruments(mixer)) {
+            // Instrument audition remains audible while the playhead is stopped.
+            for (int i = 0; i < trackBuffers.length; i++) {
+                for (int ch = 0; ch < trackBuffers[i].length; ch++) {
+                    Arrays.fill(trackBuffers[i][ch], 0, numFrames, 0f);
+                }
+            }
+            mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
+        }
+        if (!playbackActive && inputBuffer != null) {
+            // Preserve input monitoring alongside stopped instrument audition.
             int channels = Math.min(inputBuffer.length, mixBuffer.length);
             for (int ch = 0; ch < channels; ch++) {
-                System.arraycopy(inputBuffer[ch], 0, mixBuffer[ch], 0, numFrames);
+                for (int frame = 0; frame < numFrames; frame++) {
+                    mixBuffer[ch][frame] += inputBuffer[ch][frame];
+                }
             }
         }
 
@@ -769,8 +800,8 @@ public final class RenderPipeline {
         }
 
         // Notify recording callback with the captured input
-        if (recordingCallback != null && inputBuffer != null) {
-            recordingCallback.onAudioCaptured(inputBuffer, numFrames);
+        if (recordingCallback != null) {
+            recordingCallback.onAudioCaptured(inputBuffer != null ? inputBuffer : mixBuffer, numFrames);
         }
 
         // Process through the master effects chain
@@ -780,7 +811,7 @@ public final class RenderPipeline {
         // This runs AFTER the master chain so that its overwrite of
         // outputBuffer (channels 0..N) does not clobber direct-output data
         // on higher channels.
-        if (playbackActive) {
+        if (playbackActive || mixer != null && tracks != null && hasInstruments(mixer)) {
             mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps);
         }
 
@@ -890,7 +921,7 @@ public final class RenderPipeline {
         // If the metronome is disabled, clear any pending click-tail
         // so disabling immediately silences every destination — no
         // stray tail samples leak into subsequent blocks.
-        if (!metronome.isEnabled()) {
+        if (!metronome.isClickEnabled()) {
             clearClickTail();
             return;
         }

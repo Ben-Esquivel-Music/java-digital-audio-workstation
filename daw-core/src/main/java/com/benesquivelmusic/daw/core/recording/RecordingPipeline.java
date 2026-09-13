@@ -232,7 +232,8 @@ public final class RecordingPipeline {
             sessions.put(track, session);
 
             InputRouting routing = track.getInputRouting();
-            int routedChannels = routing.isNone() ? format.channels() : routing.channelCount();
+            int routedChannels = routing.isNone()
+                    ? format.channels() : routing.channelCount();
             routedInputBuffers.put(track, new float[routedChannels][bufferFrames]);
         }
 
@@ -770,17 +771,20 @@ public final class RecordingPipeline {
             }
 
             InputRouting routing = track.getInputRouting();
-            if (routing.isNone()) {
+            float[][] instrument = routing.isNone()
+                    ? audioEngine.graphInstrumentRecordingBuffer(track) : null;
+            if (routing.isNone() && instrument == null) {
                 continue;
             }
 
             float[][] routed = routedInputBuffers.get(track);
-            int firstCh = routing.firstChannel();
-            int chCount = routing.channelCount();
+            int firstCh = instrument == null ? routing.firstChannel() : 0;
+            int chCount = instrument == null ? routing.channelCount() : instrument.length;
+            float[][] source = instrument == null ? inputBuffer : instrument;
             for (int ch = 0; ch < chCount; ch++) {
                 int srcCh = firstCh + ch;
-                if (srcCh < inputBuffer.length && ch < routed.length) {
-                    System.arraycopy(inputBuffer[srcCh], offset, routed[ch], 0, sliceFrames);
+                if (srcCh < source.length && ch < routed.length) {
+                    System.arraycopy(source[srcCh], offset, routed[ch], 0, sliceFrames);
                 }
             }
 

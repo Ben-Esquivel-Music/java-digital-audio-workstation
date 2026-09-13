@@ -1,12 +1,16 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -141,6 +145,76 @@ class PluginInvocationSupervisorTest {
         supervisor.reenable(slot);
 
         assertThat(slot.isBypassed()).isFalse();
+    }
+
+    @Test
+    void publishedFaultAlreadyEvictedItsExactSlotAndReenableRepublishesIt() throws Exception {
+        var subscriber = new CollectingSubscriber(1);
+        supervisor.publisher().subscribe(subscriber);
+        var channel = new MixerChannel("Fault track");
+        channel.setPluginSupervisor(supervisor);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        AudioProcessor processor = new AudioProcessor() {
+            @Override public void process(float[][] input, float[][] output, int frames) {
+                calls.incrementAndGet();
+                throw new IllegalStateException("expected fault");
+            }
+            @Override public void reset() { }
+            @Override public int getInputChannelCount() { return 1; }
+            @Override public int getOutputChannelCount() { return 1; }
+        };
+        var slot = new InsertSlot("Exact slot", processor);
+        channel.addInsert(slot);
+        var chain = channel.getEffectsChain();
+        chain.process(new float[][]{{1}}, new float[1][1], 1);
+        assertThat(subscriber.latch.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(subscriber.faults.getFirst().slot()).isSameAs(slot);
+        assertThat(chain.isEmpty()).as("fault publication follows snapshot eviction").isTrue();
+        for (int i = 0; i < 8; i++) { chain.process(new float[1][1], new float[1][1], 1); }
+        assertThat(calls.get()).isEqualTo(1);
+        supervisor.reenable(slot);
+        assertThat(chain.size()).isEqualTo(1);
+        chain.process(new float[1][1], new float[1][1], 1);
+        assertThat(calls.get()).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aFaultingParameterSetterIsBypassedWithoutAbortingOtherChannelRendering(boolean alreadyBypassed) throws Exception {
+        var subscriber = new CollectingSubscriber(1);
+        supervisor.publisher().subscribe(subscriber);
+        var channel = new MixerChannel("Parameter fault");
+        channel.setPluginSupervisor(supervisor);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var bad = new DawPlugin() {
+            @Override public com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor getDescriptor() {
+                return new com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor("bad-setter", "Bad Setter", "1", "Test",
+                        com.benesquivelmusic.daw.sdk.plugin.PluginType.EFFECT);
+            }
+            @Override public void initialize(com.benesquivelmusic.daw.sdk.plugin.PluginContext context) { }
+            @Override public void activate() { }
+            @Override public void deactivate() { }
+            @Override public void dispose() { }
+            @Override public List<com.benesquivelmusic.daw.sdk.plugin.PluginParameter> getParameters() {
+                return List.of(new com.benesquivelmusic.daw.sdk.plugin.PluginParameter(0, "Gain", 0, 1, 1));
+            }
+            @Override public void setAutomatableParameter(int id, double value) {
+                calls.incrementAndGet();
+                throw new IllegalStateException("bad setter");
+            }
+        };
+        var slot = new InsertSlot("Bad Setter", new ThrowingErrorProcessor(new AssertionError("bypassed delegate ran")), null, bad);
+        channel.addInsert(slot);
+        channel.setInsertBypassed(0, alreadyBypassed);
+        slot.getParameterStore().writeFromUiById(0, 0.5);
+        channel.drainInsertParameters();
+        assertThat(subscriber.latch.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(subscriber.faults.getFirst().slot()).isSameAs(slot);
+        var output = new float[1][2];
+        channel.getEffectsChain().process(new float[][]{{0.25f, -0.5f}}, output, 2);
+        assertThat(output[0]).containsExactly(0.25f, -0.5f);
+        for (int block = 0; block < 4; block++) { channel.drainInsertParameters(); }
+        assertThat(calls.get()).isEqualTo(1);
     }
 
     @Test

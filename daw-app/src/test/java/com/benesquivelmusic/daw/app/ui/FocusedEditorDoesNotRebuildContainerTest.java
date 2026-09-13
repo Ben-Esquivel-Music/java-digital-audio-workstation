@@ -59,6 +59,7 @@ final class FocusedEditorDoesNotRebuildContainerTest {
             PluginViewContainer container = new PluginViewContainer();
             controller = new PluginViewController(deps(
                     (segments, node) -> container.setPluginView(node)));
+            PluginSignalPathActivationTest.configure(controller, new com.benesquivelmusic.daw.core.mixer.MixerChannel("Track"));
 
             FakeThirdPartyPlugin pluginA =
                     new FakeThirdPartyPlugin("a", "Fake Plugin A");
@@ -157,7 +158,6 @@ final class FocusedEditorDoesNotRebuildContainerTest {
                 () -> 512,
                 () -> null,
                 () -> { },
-                () -> { },
                 (status, icon) -> { },
                 (level, message) -> { },
                 showEditorInWorkshopPane,
@@ -170,7 +170,7 @@ final class FocusedEditorDoesNotRebuildContainerTest {
      * (§4.2 — Declarative over {@code getParameters()} for free). Each
      * instance gets its own descriptor id so A and B are distinct plugins.
      */
-    private static final class FakeThirdPartyPlugin implements DawPlugin {
+    private static final class FakeThirdPartyPlugin implements DawPlugin, com.benesquivelmusic.daw.sdk.audio.AudioProcessor {
 
         private final PluginDescriptor descriptor;
 
@@ -184,6 +184,18 @@ final class FocusedEditorDoesNotRebuildContainerTest {
         public PluginDescriptor getDescriptor() {
             return descriptor;
         }
+
+        @Override public java.util.Optional<com.benesquivelmusic.daw.sdk.audio.AudioProcessor> asAudioProcessor() {
+            return java.util.Optional.of(this);
+        }
+        @Override public void process(float[][] input, float[][] output, int frames) {
+            for (int channel = 0; channel < output.length; channel++) {
+                System.arraycopy(input[channel], 0, output[channel], 0, frames);
+            }
+        }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 2; }
+        @Override public int getOutputChannelCount() { return 2; }
 
         @Override
         public void initialize(PluginContext context) {

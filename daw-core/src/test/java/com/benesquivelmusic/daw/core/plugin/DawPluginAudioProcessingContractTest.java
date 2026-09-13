@@ -96,10 +96,10 @@ class DawPluginAudioProcessingContractTest {
     }
 
     @Test
-    void signalGeneratorPluginShouldReturnEmpty() {
+    void signalGeneratorPluginShouldJoinTheAudioGraph() {
         var plugin = new SignalGeneratorPlugin();
         plugin.initialize(stubContext());
-        assertThat(plugin.asAudioProcessor()).isEmpty();
+        assertThat(plugin.asAudioProcessor()).containsSame(plugin);
     }
 
     // ── External plugin host (mock CLAP) satisfies the contract ────────────
@@ -196,16 +196,16 @@ class DawPluginAudioProcessingContractTest {
     }
 
     @Test
-    void allNonEffectTypeBuiltInPluginsShouldReturnEmpty() {
+    void everyInstrumentProvidesAnAudioProcessor() {
         int checked = 0;
         for (BuiltInDawPlugin plugin : BuiltInDawPlugin.discoverAll()) {
-            if (plugin.getDescriptor().type() != PluginType.EFFECT && !(plugin instanceof LiveAnalyzerPlugin)) {
+            if (plugin.getDescriptor().type() == PluginType.INSTRUMENT) {
                 injectStubRendererIfNeeded(plugin);
                 plugin.initialize(stubContext());
                 assertThat(plugin.asAudioProcessor())
-                        .as("%s (non-EFFECT type) should return empty",
+                        .as("%s instrument must feed the host graph",
                                 plugin.getClass().getSimpleName())
-                        .isEmpty();
+                        .isPresent();
                 plugin.dispose();
                 checked++;
             }

@@ -1,6 +1,7 @@
 ---
 title: "One Plugin World: Editors Join the Signal Path"
 labels: ["bug", "plugins", "plugin-view", "mixer", "audio-engine", "ui"]
+status: resolved
 ---
 
 # One Plugin World: Editors Join the Signal Path
@@ -56,3 +57,53 @@ For a studio engineer this means the Plugins menu is a preview gallery masquerad
 - Files to touch: `PluginViewController` (menu path re-pointed to insert-or-focus; the switch-deletion seams from story 302 are the base), `InsertEffectRack` (double-click dispatch for all slot kinds; retire the ownerless `Stage` at `:567`), `PluginEditorSession` / `PluginParameterStore` (RT drain wiring, bypass seam, meter attach), `InsertsSection` + `InspectorDrawer` (live INSERTS section), `DawPlugin.editorFactory()` empty-list placeholder, `VirtualKeyboardPlugin` (engine-graph routing), `PluginParameterEditorPanel` (fallback-body embed; boolean echo fix), `BuiltInEffectPresets` (first production caller).
 - Audibility proofs assume Stage 1 (story 314, engine⇄project wiring) has landed; the drain and bypass wiring are testable engine-side regardless.
 - Cross-refs: `PLUGIN_VIEW_DESIGN_BOOK.md` §4 — the editor contract this story gives a live instance (store drain + `INSERT_IO` meter publication extend, not replace, that contract); stories **300–302** (landed contract + chrome + built-in migration this builds on), **303** (browser/install flow "+ Add" routes into), **318** (tap bus / `INSERT_IO`), **321** (mastering-view binding), **340** (Book 4 concurrency substrate), **101** (automation authoring unblocked), **314** (prerequisite wiring).
+
+## Resolution
+
+Resolved by joining menu activation, rack editing, and Inspector actions to the same live `InsertSlot` and slot-owned `PluginParameterStore`.
+
+- `PluginViewController` inserts onto the selected channel or asks for a channel before construction, focuses an existing matching editor, and routes mastering plugins through the same contract. Metronome activation reuses the engine singleton's canonical slot across channels. `InsertEffectRack`, `MixerView`, and `InspectorDrawer` open real slots through the themed, owned `PluginEditorSession`; Inspector rows track order and bypass, and Add opens the browser.
+- `InsertSlot`, `MixerChannel`, and `EffectsChain` drain slot stores at render boundaries. Frame bypass changes the live graph and reflects rack changes. `PluginEditorSession`, `PluginParameterEditorPanel`, and `EditorParameterBindings` share recall and echo for declarative and panel editors, including booleans. Factory presets and saved user presets target the processing instance; editor lifetime owns meter/analyzer subscriptions.
+- `BuiltInPluginGraph`, `SignalGeneratorPlugin`, and `MetronomePlugin` expose graph-backed controls. `VirtualKeyboardPlugin` uses `GraphKeyboardRenderer` through the configured engine backend. `RecordingPipeline` can record the instrument channel without requiring a physical capture stream. `TransportController` keeps audition callbacks running through Pause, Stop, and post-roll while instrument slots remain.
+- The story-340 prerequisites exercised here publish prepared immutable insert snapshots, supervise processor and parameter failures, meter sidechain inserts through the same protected chain, and retire plugin resources only after render readers leave. `PluginSlotLoader` creates independent live instances off FX; project/view replacement closes editor listeners and cancels pending rack loads. Removed slots retain resources for undo until project retirement. This evidence covers the substrate required by this story, without claiming completion of every separate story-340 goal.
+
+### Acceptance evidence
+
+| Contract | Regression evidence |
+| --- | --- |
+| Menu insertion/focus, picker, mastering route, themed external editor, failure rollback, canonical metronome | `PluginSignalPathActivationTest`, `MasteringRouteArmsDroppedTest`, `FocusedEditorDoesNotRebuildContainerTest`, `ThirdPartyPluginGetsEditorTest` |
+| Next-block store drain, bypass, generator/metronome/keyboard graph audio and instrument recording | `PluginGraphLivenessTest`, `GraphKeyboardRendererTest`, `TransportControllerTest.graphKeyboardKeepsAuditionStreamThroughPauseStopAndBypassUntilRemoved` |
+| Live editor membership, boolean A/B and panel echo, preset save/reopen, empty placeholder, owned themed frame | `PluginEditorSignalPathTest`, `PluginEditorSessionInsertMetersTest` |
+| Inspector slot order, bypass, pencil, selection and Add liveness | `InspectorInsertLivenessTest` |
+| Independent external instances, off-FX construction, view replacement and resource retirement | `PluginGraphResourceLifecycleTest`, `PluginInstallThreadingTest`, `PluginRetirementTest`, `MixerRetiredChannelLifetimeTest`, `MixerPluginLifetimeTest.replacingMixerRejectsLateRackLoadAndDisposesItWithoutOpeningEditor` |
+| Sidechain meters, fault eviction/reenable, in-flight bypass and quiesced disposal | `SidechainGraphContractTest`, `SidechainRoutingTest`, `PluginInvocationSupervisorTest` |
+| Parameter burst coalescing and expensive filter preparation | `PluginParameterStoreCoalescingTest`, `MatchEqLiveParameterTest`, `ConvolutionParameterPreparationTest` |
+
+### Validation — 2026-09-13
+
+The final standard regression result is **11,489 tests run: 11,476 passed, 13 skipped, zero failures or errors**. The module totals are SDK 1,329 (2 skipped), acoustics 106, core 6,924 (11 skipped), FX 29, and app 3,101. The separate long profile passed **7/7 selected render, export, and harness tests**, and `verify` built the application JAR and jlink runtime image. These seven long tests do not stand for optional strict core DSP coverage.
+
+Actual standard commands (the second reran the app suite after correcting the lifecycle fixture):
+
+```powershell
+mvn -B -pl daw-app -am test '-Dtest=Test*,*Test,*Tests,*TestCase,!**/ui/snapshot/*' '-Dsurefire.failIfNoSpecifiedTests=false' '-Dsnapshots.autoBaseline=false' '-DskipNativeBuild=true'
+mvn -B -pl daw-app -am test '-Dtest=**/app/**/Test*,**/app/**/*Test,**/app/**/*Tests,**/app/**/*TestCase,!**/ui/snapshot/*,!**/longtests/*' '-Dsurefire.failIfNoSpecifiedTests=false' '-Dsnapshots.autoBaseline=false' '-DskipNativeBuild=true'
+```
+
+For a fresh repeat after running the long profile, also add `!**/longtests/*` to the first command's test selection so previously compiled long-profile classes remain in their separate run.
+
+Actual final long-profile command:
+
+```powershell
+mvn -B -pl daw-app -am -Plong-tests verify '-Dtest=FullRenderLongTest,BatchExportLongTest,DdpExportLongTest,BundleExportLongTest,AdmBwfRoundTripLongTest,LongTestHarnessSelfTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-Dsnapshots.autoBaseline=false' '-Dlongtests.rebaseline=false' '-DskipNativeBuild=true'
+```
+
+Evidence logs are `target/story320-regression-final.log`, `target/story320-app-regression-final.log`, and `target/story320-long-tests-final.log`. Native rebuilding was skipped on these repeats after an earlier successful CMake build. Platform-wide screenshot goldens were excluded; the owned dark contract editor was rendered and visually reviewed at 640 by 420 with its complete header and IN/OUT footer (`daw-app/target/story320/live-compressor-editor.png`). Physical ASIO hardware and third-party native CLAP binaries were not exercised; mock backend and FFM fixtures verified the relevant routing and host boundaries.
+
+The two CSV long-test manifests initially failed solely because `core.autocrlf=true` converted their checked-out LF bytes to CRLF. Their generated SHA-256 values exactly matched the existing HEAD blobs. The scoped `.gitattributes` rule preserves LF for these manifest fixtures; their original HEAD bytes were restored, with no golden rebaseline or content change. The final seven-test verify passed with rebaselining disabled.
+
+### Keyboard capture workflow
+
+Create and select an audio track, activate **Virtual Keyboard** from Plugins, and play its keys using the configured audio interface. Arm that audio track and press Record to capture its graph output into an audio clip; a physical input device is unnecessary for an instrument-only armed audio selection. Pause and Stop leave keyboard audition available, and bypass/unbypass uses the same slot. Normal microphone capture continues through the existing duplex recording admission path.
+
+The motivation above is retained as the pre-change evidence and scope history. Mastering-view ownership, insert persistence, and the other listed non-goals remain with their referenced stories.

@@ -47,6 +47,19 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  */
 public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel {
 
+    private EditorParameterBindings bindings;
+
+    @Override public void parameterChanged(int id, double value) {
+        if (bindings != null) bindings.parameterChanged(id, value);
+        if (id == PARAM_TRIM_START) trimStartFraction = value;
+        if (id == PARAM_TRIM_END) trimEndFraction = value;
+        if (waveform != null) drawWaveform();
+    }
+
+    @Override public void detach() {
+        if (bindings != null) bindings.close();
+    }
+
     // Parameter ids as declared by ConvolutionReverbPlugin#getParameters().
     private static final int PARAM_IR = 0;
     private static final int PARAM_STRETCH = 1;
@@ -100,6 +113,7 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
 
     @Override
     public Region createPanel(EditorContext context) {
+        bindings = new EditorParameterBindings(context.parameterStore());
         this.context = Objects.requireNonNull(context, "context must not be null");
         this.store = context.parameterStore();
         ConvolutionReverbProcessor p = plugin.getProcessor();
@@ -123,16 +137,9 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
         if (idx < irCombo.getItems().size()) {
             irCombo.getSelectionModel().select(idx);
         }
-        irCombo.setOnAction(_ -> {
-            int sel = irCombo.getSelectionModel().getSelectedIndex();
-            if (sel >= 0) {
-                processor.setIrSelection(sel);
-                store.writeFromUiById(PARAM_IR, processor.getIrSelection());
-                trimStartFraction = 0.0;
-                trimEndFraction = 1.0;
-                drawWaveform();
-            }
-        });
+        bindings.bindSelection(PARAM_IR, irCombo,
+                value -> irCombo.getItems().get((int) Math.round(value)),
+                value -> irCombo.getItems().indexOf(value));
 
         statusLabel = new Label("");
         Button loadButton = new Button("Load File…");
@@ -150,15 +157,13 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
                 double accepted = dragTrimStart(raw, trimStartFraction, trimEndFraction);
                 if (accepted != trimStartFraction) {
                     trimStartFraction = accepted;
-                    processor.setTrimStart(accepted);
-                    store.writeFromUiById(PARAM_TRIM_START, processor.getTrimStart());
+                    store.writeFromUiById(PARAM_TRIM_START, accepted);
                 }
             } else if (e.getButton() == MouseButton.SECONDARY) {
                 double accepted = dragTrimEnd(raw, trimStartFraction, trimEndFraction);
                 if (accepted != trimEndFraction) {
                     trimEndFraction = accepted;
-                    processor.setTrimEnd(accepted);
-                    store.writeFromUiById(PARAM_TRIM_END, processor.getTrimEnd());
+                    store.writeFromUiById(PARAM_TRIM_END, accepted);
                 }
             }
             drawWaveform();
@@ -166,41 +171,23 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
 
         // ── Parameter sliders ─────────────────────────────────────────
         Slider stretch = slider(0.5, 2.0, processor.getStretch());
-        stretch.valueProperty().addListener((_, _, v) -> {
-            processor.setStretch(v.doubleValue());
-            store.writeFromUiById(PARAM_STRETCH, processor.getStretch());
-            drawWaveform();
-        });
+        bindings.bindNumber(PARAM_STRETCH, stretch.valueProperty());
+        stretch.valueProperty().addListener((_, _, _) -> drawWaveform());
 
         Slider predelay = slider(0.0, 200.0, processor.getPredelayMs());
-        predelay.valueProperty().addListener((_, _, v) -> {
-            processor.setPredelayMs(v.doubleValue());
-            store.writeFromUiById(PARAM_PREDELAY, processor.getPredelayMs());
-        });
+        bindings.bindNumber(PARAM_PREDELAY, predelay.valueProperty());
 
         Slider lowCut = slider(20.0, 1000.0, processor.getLowCutHz());
-        lowCut.valueProperty().addListener((_, _, v) -> {
-            processor.setLowCutHz(v.doubleValue());
-            store.writeFromUiById(PARAM_LOW_CUT, processor.getLowCutHz());
-        });
+        bindings.bindNumber(PARAM_LOW_CUT, lowCut.valueProperty());
 
         Slider highCut = slider(1000.0, 20000.0, processor.getHighCutHz());
-        highCut.valueProperty().addListener((_, _, v) -> {
-            processor.setHighCutHz(v.doubleValue());
-            store.writeFromUiById(PARAM_HIGH_CUT, processor.getHighCutHz());
-        });
+        bindings.bindNumber(PARAM_HIGH_CUT, highCut.valueProperty());
 
         Slider mix = slider(0.0, 1.0, processor.getMix());
-        mix.valueProperty().addListener((_, _, v) -> {
-            processor.setMix(v.doubleValue());
-            store.writeFromUiById(PARAM_MIX, processor.getMix());
-        });
+        bindings.bindNumber(PARAM_MIX, mix.valueProperty());
 
         Slider width = slider(0.0, 2.0, processor.getStereoWidth());
-        width.valueProperty().addListener((_, _, v) -> {
-            processor.setStereoWidth(v.doubleValue());
-            store.writeFromUiById(PARAM_WIDTH, processor.getStereoWidth());
-        });
+        bindings.bindNumber(PARAM_WIDTH, width.valueProperty());
 
         HBox sliders = new HBox(12,
                 labelled("Stretch",       stretch),
@@ -215,7 +202,7 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
         root.setPadding(new Insets(12));
         root.setAlignment(Pos.TOP_LEFT);
 
-        context.themeProperty().addListener((_, _, _) -> drawWaveform());
+        bindings.observe(context.themeProperty(), (_, _, _) -> drawWaveform());
         drawWaveform();
         return root;
     }

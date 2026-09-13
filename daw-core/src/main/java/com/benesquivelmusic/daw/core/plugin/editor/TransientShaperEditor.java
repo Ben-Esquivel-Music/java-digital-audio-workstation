@@ -52,6 +52,16 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
  */
 public final class TransientShaperEditor implements PluginEditorFactory.Panel {
 
+    private EditorParameterBindings bindings;
+
+    @Override public void parameterChanged(int id, double value) {
+        if (bindings != null) bindings.parameterChanged(id, value);
+    }
+
+    @Override public void detach() {
+        if (bindings != null) bindings.close();
+    }
+
     /** Maximum displayed level on the input/output meters, in dBFS (top of bar). */
     static final double METER_MAX_DB = 0.0;
 
@@ -85,6 +95,7 @@ public final class TransientShaperEditor implements PluginEditorFactory.Panel {
 
     @Override
     public Region createPanel(EditorContext context) {
+        bindings = new EditorParameterBindings(context.parameterStore());
         Objects.requireNonNull(context, "context must not be null");
         TransientShaperProcessor processor = Objects.requireNonNull(
                 plugin.getProcessor(),
@@ -92,42 +103,27 @@ public final class TransientShaperEditor implements PluginEditorFactory.Panel {
 
         // ── Big bipolar sliders (ATTACK and SUSTAIN, 0 detent at centre) ──
         Slider attack = bigBipolarSlider(processor.getAttackPercent());
-        attack.valueProperty().addListener((_, _, v) -> {
-            processor.setAttackPercent(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_ATTACK, v.doubleValue());
-        });
+        bindings.bindNumber(PARAM_ATTACK, attack.valueProperty());
 
         Slider sustain = bigBipolarSlider(processor.getSustainPercent());
-        sustain.valueProperty().addListener((_, _, v) -> {
-            processor.setSustainPercent(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_SUSTAIN, v.doubleValue());
-        });
+        bindings.bindNumber(PARAM_SUSTAIN, sustain.valueProperty());
 
         // ── Output trim (-12..+12 dB) ──
         Slider output = new Slider(-12.0, 12.0, processor.getOutputDb());
         output.setPrefWidth(120);
         output.setShowTickMarks(true);
-        output.valueProperty().addListener((_, _, v) -> {
-            processor.setOutputDb(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_OUTPUT, v.doubleValue());
-        });
+        bindings.bindNumber(PARAM_OUTPUT, output.valueProperty());
 
         // ── Channel link (0..1) ──
         Slider link = new Slider(0.0, 1.0, processor.getChannelLink());
         link.setPrefWidth(120);
-        link.valueProperty().addListener((_, _, v) -> {
-            processor.setChannelLink(v.doubleValue());
-            context.parameterStore().writeFromUiById(PARAM_CHANNEL_LINK, v.doubleValue());
-        });
+        bindings.bindNumber(PARAM_CHANNEL_LINK, link.valueProperty());
 
         // ── Input-monitor toggle ──
         CheckBox monitor = new CheckBox("MONITOR");
         monitor.setSelected(processor.isInputMonitor());
         monitor.setStyle("-fx-font-weight: bold;");
-        monitor.selectedProperty().addListener((_, _, v) -> {
-            processor.setInputMonitor(v);
-            context.parameterStore().writeFromUiById(PARAM_INPUT_MONITOR, v ? 1.0 : 0.0);
-        });
+        bindings.bindToggle(PARAM_INPUT_MONITOR, monitor.selectedProperty());
 
         HBox controls = new HBox(16,
                 labelled("ATTACK",  attack),
@@ -161,7 +157,7 @@ public final class TransientShaperEditor implements PluginEditorFactory.Panel {
 
         drawAll(inputMeter, outputMeter, transientMeter,
                 PluginMeterSnapshot.SILENT, context.theme());
-        context.themeProperty().addListener((_, _, theme) ->
+        bindings.observe(context.themeProperty(), (_, _, theme) ->
                 drawAll(inputMeter, outputMeter, transientMeter,
                         processor.getMeterSnapshot(), theme));
 
@@ -175,7 +171,7 @@ public final class TransientShaperEditor implements PluginEditorFactory.Panel {
                 drawAll(inputMeter, outputMeter, transientMeter, snapshot, context.theme());
             }
         };
-        ShowingWindowGate.install(root, meterTimer::start, meterTimer::stop);
+        bindings.onDetach(ShowingWindowGate.install(root, meterTimer::start, meterTimer::stop));
         return root;
     }
 

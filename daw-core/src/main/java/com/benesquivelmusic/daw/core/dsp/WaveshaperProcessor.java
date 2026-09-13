@@ -539,7 +539,20 @@ public final class WaveshaperProcessor implements AudioProcessor {
     }
 
     private void initFilterState() {
-        int numStages = oversampleFactor.getStages();
+        if (upDelayLines != null) {
+            for (int stage = 0; stage < upDelayLines.length; stage++) {
+                Arrays.fill(upWritePos[stage], 0);
+                Arrays.fill(downEvenWritePos[stage], 0);
+                Arrays.fill(downOddWritePos[stage], 0);
+                for (int ch = 0; ch < channels; ch++) {
+                    Arrays.fill(upDelayLines[stage][ch], 0);
+                    Arrays.fill(downEvenDelayLines[stage][ch], 0);
+                    Arrays.fill(downOddDelayLines[stage][ch], 0);
+                }
+            }
+            return;
+        }
+        int numStages = OversampleFactor.EIGHT_X.getStages();
 
         upDelayLines = new double[numStages][channels][NUM_EVEN_PHASE_COEFFS];
         upWritePos = new int[numStages][channels];

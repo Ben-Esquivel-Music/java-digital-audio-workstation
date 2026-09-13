@@ -328,6 +328,7 @@ class MixerChannelTest {
     @Test
     void shouldWireEffectsChainToProcessAudio() {
         MixerChannel channel = new MixerChannel("Ch");
+        channel.prepareEffectsChain(1, 1);
         channel.addInsert(new InsertSlot("Gain 0.5", new GainProcessor(0.5f)));
         channel.addInsert(new InsertSlot("Gain 0.5", new GainProcessor(0.5f)));
 

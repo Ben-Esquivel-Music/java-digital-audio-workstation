@@ -10,6 +10,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.prefs.Preferences;
 
+import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -214,6 +215,33 @@ class MetronomeControllerTest {
         controller.onToggleMetronome();
 
         assertThat(prefs.getBoolean("metronome.enabled", true)).isFalse();
+    }
+
+    @Test
+    void bypassedPluginPreservesSettingsSnapshotAndAllowsPreferenceToggles() {
+        runOnFxThread(() -> {
+            var controller = createController();
+            var owner = new Object();
+            metronome.setPluginBypassed(owner, true);
+
+            assertThat(controller.recordingSettingsAccess().current().enabled()).isTrue();
+            assertThat(metronome.isClickEnabled()).isFalse();
+
+            controller.onToggleMetronome();
+            assertThat(metronome.isEnabled()).isFalse();
+            assertThat(controller.recordingSettingsAccess().current().enabled()).isFalse();
+            assertThat(prefs.getBoolean("metronome.enabled", true)).isFalse();
+
+            controller.onToggleMetronome();
+            assertThat(metronome.isEnabled()).isTrue();
+            assertThat(controller.recordingSettingsAccess().current().enabled()).isTrue();
+            assertThat(prefs.getBoolean("metronome.enabled", false)).isTrue();
+            assertThat(metronome.isClickEnabled()).isFalse();
+
+            metronome.releasePluginBypass(owner);
+            assertThat(metronome.isClickEnabled()).isTrue();
+            return null;
+        });
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.dsp.MultibandCompressorProcessor;
 import com.benesquivelmusic.daw.core.plugin.editor.MultibandCompressorEditor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.AutomatableParameter;
@@ -67,7 +68,11 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
             "compressor"
     );
 
-    private MultibandCompressorProcessor processor;
+    private volatile MultibandCompressorProcessor processor;
+    private final MultibandCompressorProcessor[] configurations =
+            new MultibandCompressorProcessor[MAX_BAND_COUNT - MIN_BAND_COUNT + 1];
+    private final double[] bandMakeup = new double[MAX_BAND_COUNT];
+    private final boolean[] bandMuted = new boolean[MAX_BAND_COUNT];
     private final StableAudioProcessor stableProcessor = new StableAudioProcessor();
     private PluginContext context;
     private int bandCount = DEFAULT_BAND_COUNT;
@@ -85,6 +90,10 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     @Override
     public void initialize(PluginContext context) {
         this.context = Objects.requireNonNull(context, "context must not be null");
+        for (int index = 0; index < configurations.length; index++) {
+            configurations[index] = new MultibandCompressorProcessor(context.getAudioChannels(),
+                    context.getSampleRate(), DEFAULT_CROSSOVERS[index]);
+        }
         rebuildProcessor();
     }
 
@@ -105,6 +114,7 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     public void dispose() {
         active = false;
         processor = null;
+        Arrays.fill(configurations, null);
         context = null;
     }
 
@@ -308,6 +318,10 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
         if (processor == null) {
             return;
         }
+        if (parameterId == 0) {
+            setBandCount((int) Math.round(Math.clamp(value, MIN_BAND_COUNT, MAX_BAND_COUNT)));
+            return;
+        }
         if (parameterId == 1) {
             this.linearPhase = value >= 0.5;
             return;
@@ -333,9 +347,15 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
             case 1 -> comp.setRatio(value);
             case 2 -> comp.setAttackMs(value);
             case 3 -> comp.setReleaseMs(value);
-            case 4 -> processor.setBandMakeupGainDb(band, value);
-            case 5 -> { /* Bypass toggle: no processor-level per-band bypass without rebuild — skip */ }
-            case 6 -> processor.setBandMakeupGainDb(band, value >= 0.5 ? -120.0 : 0.0);
+            case 4 -> {
+                bandMakeup[band] = value;
+                processor.setBandMakeupGainDb(band, bandMuted[band] ? -120.0 : value);
+            }
+            case 5 -> processor.setBandBypassed(band, value >= 0.5);
+            case 6 -> {
+                bandMuted[band] = value >= 0.5;
+                processor.setBandMakeupGainDb(band, bandMuted[band] ? -120.0 : bandMakeup[band]);
+            }
             case 7 -> processor.setBandSoloed(band, value >= 0.5);
             default -> { /* unknown offset */ }
         }
@@ -345,11 +365,23 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
         if (context == null) {
             return;
         }
-        double[] crossovers = DEFAULT_CROSSOVERS[bandCount - MIN_BAND_COUNT];
-        processor = new MultibandCompressorProcessor(
-                context.getAudioChannels(),
-                context.getSampleRate(),
-                Arrays.copyOf(crossovers, crossovers.length));
+        MultibandCompressorProcessor previous = processor;
+        MultibandCompressorProcessor next = configurations[bandCount - MIN_BAND_COUNT];
+        if (previous != null && previous != next) {
+            for (int band = 0; band < Math.min(previous.getBandCount(), next.getBandCount()); band++) {
+                CompressorProcessor source = previous.getBandCompressor(band);
+                CompressorProcessor target = next.getBandCompressor(band);
+                target.setThresholdDb(source.getThresholdDb());
+                target.setRatio(source.getRatio());
+                target.setAttackMs(source.getAttackMs());
+                target.setReleaseMs(source.getReleaseMs());
+                next.setBandMakeupGainDb(band, previous.getBandMakeupGainDb(band));
+                next.setBandBypassed(band, previous.isBandBypassed(band));
+                next.setBandSoloed(band, previous.isBandSoloed(band));
+            }
+            next.reset();
+        }
+        processor = next;
     }
 
     /**
@@ -367,6 +399,7 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     private final class StableAudioProcessor implements AudioProcessor {
 
         @Override
+        @RealTimeSafe
         public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
             MultibandCompressorProcessor p = processor;
             if (p != null) {

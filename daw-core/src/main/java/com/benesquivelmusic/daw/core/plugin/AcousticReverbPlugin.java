@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.dsp.acoustics.AcousticReverbProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -11,6 +12,8 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Built-in reverb effect plugin backed by the {@code daw-acoustics} FDN reverb.
@@ -36,8 +39,18 @@ public final class AcousticReverbPlugin implements BuiltInDawPlugin {
             "acoustic-reverb"
     );
 
-    private AcousticReverbProcessor processor;
+    private volatile AcousticReverbProcessor processor;
+    private final AudioProcessor stableProcessor = new ReverbSignalPath();
+    private volatile long requestedRevision;
+    private final AtomicReference<PreparedReverb> prepared = new AtomicReference<>();
+    private volatile int presetIndex = 1;
+    private volatile double t60Seconds = 0.8;
+    private volatile double mix = 0.3;
+    private volatile boolean preparing;
+    private Thread preparationThread;
     private boolean active;
+
+    private record PreparedReverb(long revision, AcousticReverbProcessor processor) { }
 
     public AcousticReverbPlugin() {
     }
@@ -51,6 +64,10 @@ public final class AcousticReverbPlugin implements BuiltInDawPlugin {
         processor = new AcousticReverbProcessor(
                 context.getAudioChannels(),
                 context.getSampleRate());
+        preparing = true;
+        // Virtual threads (JEP 444, final since Java 21): room preparation never runs on RT.
+        preparationThread = Thread.ofVirtual().name("acoustic-reverb-prepare")
+                .start(() -> prepareRooms(context.getAudioChannels(), context.getSampleRate()));
     }
 
     @Override
@@ -65,12 +82,15 @@ public final class AcousticReverbPlugin implements BuiltInDawPlugin {
     @Override
     public void dispose() {
         active = false;
+        preparing = false;
+        if (preparationThread != null) preparationThread.interrupt();
+        prepared.set(null);
         processor = null;
     }
 
     @Override
     public Optional<AudioProcessor> asAudioProcessor() {
-        return Optional.ofNullable(processor);
+        return processor == null ? Optional.empty() : Optional.of(stableProcessor);
     }
 
     /**
@@ -89,5 +109,62 @@ public final class AcousticReverbPlugin implements BuiltInDawPlugin {
                 new PluginParameter(0, "Preset", 0.0, 3.0, 1.0),
                 new PluginParameter(1, "T60 (s)", 0.1, 10.0, 0.8),
                 new PluginParameter(2, "Mix",     0.0, 1.0, 0.3));
+    }
+
+    @Override
+    public void setAutomatableParameter(int parameterId, double value) {
+        switch (parameterId) {
+            case 0 -> {
+                presetIndex = (int) Math.round(Math.clamp(value, 0.0, 3.0));
+                requestedRevision++;
+            }
+            case 1 -> {
+                t60Seconds = Math.clamp(value, 0.1, 10.0);
+                requestedRevision++;
+            }
+            case 2 -> {
+                mix = Math.clamp(value, 0.0, 1.0);
+                AcousticReverbProcessor current = processor;
+                if (current != null) current.setMix(mix);
+            }
+            default -> { }
+        }
+    }
+
+    private void prepareRooms(int channels, double sampleRate) {
+        long completed = 0;
+        while (preparing) {
+            long revision = requestedRevision;
+            if (revision != completed) {
+                var preset = AcousticReverbProcessor.RoomPreset.values()[presetIndex];
+                double decay = t60Seconds;
+                var next = new AcousticReverbProcessor(channels, sampleRate, preset, mix);
+                next.setT60(decay);
+                if (preparing && revision == requestedRevision) {
+                    prepared.set(new PreparedReverb(revision, next));
+                }
+                completed = revision;
+            }
+            LockSupport.parkNanos(5_000_000L);
+        }
+    }
+
+    private final class ReverbSignalPath implements AudioProcessor {
+        private PreparedReverb consumed;
+
+        @Override @RealTimeSafe
+        public void process(float[][] input, float[][] output, int frames) {
+            PreparedReverb next = prepared.get();
+            if (next != null && next != consumed && next.revision() == requestedRevision) {
+                next.processor().setMix(mix);
+                processor = next.processor();
+            }
+            consumed = next;
+            AcousticReverbProcessor current = processor;
+            if (current != null) current.process(input, output, frames);
+        }
+        @Override public void reset() { if (processor != null) processor.reset(); }
+        @Override public int getInputChannelCount() { return processor == null ? 0 : processor.getInputChannelCount(); }
+        @Override public int getOutputChannelCount() { return processor == null ? 0 : processor.getOutputChannelCount(); }
     }
 }

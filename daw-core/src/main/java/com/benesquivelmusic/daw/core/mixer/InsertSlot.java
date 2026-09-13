@@ -4,9 +4,17 @@ import com.benesquivelmusic.daw.core.plugin.PluginCapabilities;
 import com.benesquivelmusic.daw.core.plugin.PluginCapabilityIntrospector;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.editor.PluginParameterStore;
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.List;
+import java.util.Optional;
 
 /**
  * Represents a single insert effect slot on a mixer channel strip.
@@ -28,9 +36,20 @@ public final class InsertSlot {
     private final InsertEffectType effectType;
     private final DawPlugin plugin;
     private final PluginCapabilities capabilities;
+    private final DawPlugin editorPlugin;
+    private record ParameterBinding(PluginParameterStore store, PluginParameterStore.IndexConsumer sink) { }
+    private volatile ParameterBinding parameterBinding;
+    private final ReflectiveParameterRegistry.AudioParameterSetter parameterSetter;
+    private boolean editorParametersFinalized;
+    private Runnable disposal;
+    private boolean disposed;
+    private MixerChannel owner;
+    private final boolean instrument;
+    private com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor supervisor;
+    private boolean parameterFaulted;
     private volatile boolean bypassed;
     private volatile boolean expensive;
-    private MixerChannel sidechainSource;
+    private volatile MixerChannel sidechainSource;
 
     /**
      * Creates a new insert slot with the specified name and processor.
@@ -72,8 +91,25 @@ public final class InsertSlot {
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.processor = Objects.requireNonNull(processor, "processor must not be null");
         this.effectType = effectType;
-        this.plugin = plugin;
+        this.plugin = plugin != null ? plugin : processor instanceof DawPlugin dawPlugin ? dawPlugin : null;
+        this.instrument = this.plugin != null && this.plugin.getDescriptor().type() == PluginType.INSTRUMENT;
         this.capabilities = PluginCapabilityIntrospector.capabilitiesOf(processor);
+        this.editorPlugin = this.plugin != null ? this.plugin : new ProcessorPlugin();
+        var parameterStore = new PluginParameterStore(editorPlugin.getParameters());
+        var reflected = ReflectiveParameterRegistry.getParameterValues(processor);
+        boolean pluginSetter = hasParameterSetter(this.plugin);
+        parameterSetter = pluginSetter ? this.plugin::setAutomatableParameter
+                : this.plugin instanceof com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost external
+                ? external::setParameterValue : ReflectiveParameterRegistry.createAudioParameterSetter(processor);
+        for (int i = 0; i < parameterStore.parameterCount(); i++) {
+            Double value = reflected.get(parameterStore.parameterIdAt(i));
+            if (value != null && !pluginSetter) {
+                parameterStore.writeFromAudio(i, value);
+            } else if (this.plugin instanceof com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost external) {
+                parameterStore.writeFromAudio(i, external.getParameterValue(parameterStore.parameterIdAt(i)));
+            }
+        }
+        parameterBinding = bindParameters(parameterStore);
         this.bypassed = false;
         // Story 129 (UI): mark long-tail / oversampled / convolution
         // built-in DSP "expensive" by default so the BypassExpensive
@@ -81,6 +117,154 @@ public final class InsertSlot {
         // having to flag each insert manually. Conservative dynamics
         // (compressor, gate, EQ) default to false and stay engaged.
         this.expensive = isExpensiveByDefault(effectType);
+    }
+
+    private static boolean hasParameterSetter(DawPlugin plugin) {
+        if (plugin == null) {
+            return false;
+        }
+        try {
+            return plugin.getClass().getMethod("setAutomatableParameter", int.class, double.class)
+                    .getDeclaringClass() != DawPlugin.class;
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private ParameterBinding bindParameters(PluginParameterStore store) {
+        return new ParameterBinding(store,
+                index -> parameterSetter.set(store.parameterIdAt(index), store.value(index)));
+    }
+
+    /**
+     * Finalizes metadata from an FX-thread Declarative factory before its controls bind.
+     * The first factory may refine the plugin's initial descriptors. Matching values,
+     * including pending UI changes, survive that refinement. The same finalized store
+     * then survives every close and reload; rendering captures store and sink together.
+     */
+    public synchronized void prepareEditorParameters(List<PluginParameter> parameters) {
+        Objects.requireNonNull(parameters, "parameters must not be null");
+        if (editorParametersFinalized || parameters.isEmpty()) { return; }
+        PluginParameterStore current = parameterBinding.store();
+        boolean same = current.parameterCount() == parameters.size();
+        for (int index = 0; same && index < parameters.size(); index++) {
+            same = current.parameter(index).equals(parameters.get(index));
+        }
+        if (!same) {
+            var prepared = new PluginParameterStore(parameters);
+            for (int index = 0; index < prepared.parameterCount(); index++) {
+                for (int previousIndex = 0; previousIndex < current.parameterCount(); previousIndex++) {
+                    if (current.parameterIdAt(previousIndex) == prepared.parameterIdAt(index)) {
+                        prepared.writeFromUi(index, current.value(previousIndex));
+                        break;
+                    }
+                }
+            }
+            parameterBinding = bindParameters(prepared);
+        }
+        editorParametersFinalized = true;
+    }
+
+    /** The editor always describes this slot's live processor. */
+    public DawPlugin getEditorPlugin() {
+        return editorPlugin;
+    }
+
+    /** Slot lifetime state: closing a window never drops pending parameter writes. */
+    public PluginParameterStore getParameterStore() {
+        return parameterBinding.store();
+    }
+
+    @RealTimeSafe
+    public void drainParametersToAudio() {
+        if (parameterFaulted) { return; }
+        try {
+            ParameterBinding binding = parameterBinding;
+            binding.store().drainToAudio(binding.sink());
+        } catch (RuntimeException | Error failure) {
+            parameterFaulted = true;
+            if (supervisor != null) {
+                supervisor.reportAudioFault(this, failure);
+            } else {
+                setBypassed(true);
+            }
+        }
+    }
+
+    public boolean isInstrument() {
+        return instrument;
+    }
+
+    /** Transfers resource ownership (including a plugin loader) to this graph slot. */
+    public synchronized void setDisposal(Runnable disposal) {
+        if (disposed) {
+            throw new IllegalStateException("Insert slot has been disposed");
+        }
+        this.disposal = Objects.requireNonNull(disposal);
+    }
+
+    void attachOwner(MixerChannel channel) {
+        owner = channel;
+        setBypassed(bypassed);
+    }
+
+    void attachSupervisor(com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor supervisor) {
+        this.supervisor = supervisor;
+    }
+
+    void removedFromGraph() {
+        if (plugin instanceof com.benesquivelmusic.daw.core.plugin.MetronomePlugin metronome
+                && metronome.getMetronome() != null) {
+            metronome.getMetronome().releasePluginBypass(this);
+        }
+    }
+
+    /** Off-audio-thread eviction/reenable publication for the exact owning channel. */
+    public void rebuildOwningChain() {
+        MixerChannel channel = owner;
+        if (channel != null) { channel.refreshInsertChain(); }
+    }
+
+    public boolean isInGraph() {
+        MixerChannel channel = owner;
+        return channel != null && channel.getInsertSlots().contains(this);
+    }
+
+    /** Called only after the owning channel has quiesced every old render. */
+    public synchronized void disposeAfterQuiescence() {
+        if (disposed) {
+            return;
+        }
+        disposed = true;
+        removedFromGraph();
+        if (disposal != null) {
+            disposal.run();
+        } else if (plugin != null) {
+            plugin.dispose();
+        } else if (processor instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to close insert " + name, e);
+            }
+        }
+    }
+
+    private final class ProcessorPlugin implements DawPlugin {
+        private final PluginDescriptor descriptor = new PluginDescriptor(
+                "processor." + processor.getClass().getName(), name, "1.0", "DAW", PluginType.EFFECT);
+
+        @Override public PluginDescriptor getDescriptor() { return descriptor; }
+        @Override public void initialize(PluginContext context) { }
+        @Override public void activate() { }
+        @Override public void deactivate() { }
+        @Override public void dispose() { }
+        @Override public Optional<AudioProcessor> asAudioProcessor() { return Optional.of(processor); }
+        @Override public List<PluginParameter> getParameters() {
+            return ReflectiveParameterRegistry.getParameterDescriptors(processor.getClass());
+        }
     }
 
     private static boolean isExpensiveByDefault(InsertEffectType type) {
@@ -195,6 +379,11 @@ public final class InsertSlot {
      */
     public void setBypassed(boolean bypassed) {
         this.bypassed = bypassed;
+        if (!bypassed) { parameterFaulted = false; }
+        if (plugin instanceof com.benesquivelmusic.daw.core.plugin.MetronomePlugin metronome
+                && metronome.getMetronome() != null) {
+            metronome.getMetronome().setPluginBypassed(this, bypassed);
+        }
     }
 
     /**

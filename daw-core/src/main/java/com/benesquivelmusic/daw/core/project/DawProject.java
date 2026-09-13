@@ -238,6 +238,16 @@ public final class DawProject {
         return removed;
     }
 
+    /** Releases every project-owned insert, including channels retained for undo. */
+    public java.util.concurrent.CompletableFuture<Void> disposeInsertsWhenQuiescent() {
+        var channels = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<MixerChannel, Boolean>());
+        channels.addAll(trackChannelMap.values());
+        channels.addAll(mixer.getOwnedChannels());
+        var futures = channels.stream().map(MixerChannel::disposeInsertsWhenQuiescent)
+                .toArray(java.util.concurrent.CompletableFuture[]::new);
+        return java.util.concurrent.CompletableFuture.allOf(futures);
+    }
+
     /**
      * Moves a track from one position to another in the track list and
      * reorders the corresponding mixer channel to match.

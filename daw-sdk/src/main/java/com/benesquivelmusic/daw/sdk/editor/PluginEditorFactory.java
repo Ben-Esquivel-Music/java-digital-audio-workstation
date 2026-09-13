@@ -104,6 +104,17 @@ public sealed interface PluginEditorFactory
         Region createPanel(EditorContext context);
 
         /**
+         * Echoes host recall and audio-side parameter changes on the FX thread.
+         * Update controls without writing the echoed value back to the store.
+         */
+        default void parameterChanged(int parameterId, double value) {
+        }
+
+        /** Releases listeners and timers when the host closes or reloads the panel. */
+        default void detach() {
+        }
+
+        /**
          * {@inheritDoc}
          *
          * <p>Defaults to {@link EditorHints#standard()}; override to request a

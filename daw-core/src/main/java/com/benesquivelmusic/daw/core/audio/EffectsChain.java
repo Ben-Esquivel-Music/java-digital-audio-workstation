@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 import java.util.*;
 
@@ -34,13 +35,9 @@ import java.util.*;
  * and the output frame after the call. A processor absent from the chain
  * (bypassed slot) publishes nothing.</p>
  *
- * <p>A channel whose inserts carry a sidechain source does <em>not</em> run
- * its chain here: {@code Mixer.processInsertsWithSidechain} walks the raw
- * {@code InsertSlot} list instead. That path bypasses both the plugin
- * supervisor and this tap hook, so a channel with <em>any</em> sidechained
- * insert publishes no {@code INSERT_IO} frame for <em>any</em> of its
- * inserts (pre-existing hole, flagged by story 318, not fixed — see the
- * story's known-limitations list).</p>
+ * <p>Sidechain processing uses the same captured links, supervisor wrappers
+ * and insert taps. A block-scoped resolver supplies each slot's detection
+ * input without traversing the mutable control-thread slot list.</p>
  *
  * <p>Processor and tag are published to the render thread as ONE immutable
  * array ({@code Link[]}, read once per {@code process} call), so a single
@@ -54,6 +51,11 @@ import java.util.*;
  * block — in the middle of a bypass toggle or a reorder).</p>
  */
 public final class EffectsChain {
+
+    @FunctionalInterface
+    public interface SidechainInputResolver {
+        float[][] resolve(InsertSlot slot);
+    }
 
     /** One chain position: the processor that runs and the tag it was added with. */
     private record Link(AudioProcessor processor, Object tag) {
@@ -84,24 +86,24 @@ public final class EffectsChain {
      * swap runs the old chain to completion; the next block runs the new
      * one.</p>
      */
-    private volatile Link[] links = NO_LINKS;
+    private record Snapshot(Link[] links, float[][][] floats, double[][][] doubles) { }
+    private volatile Snapshot snapshot = new Snapshot(NO_LINKS, null, null);
+    private volatile long renderStarted;
+    private volatile long renderFinished;
+    private int renderDepth;
+    private static final IllegalStateException UNPREPARED = new IllegalStateException("Prepare effects-chain buffers before rendering");
 
     /**
-     * Read on the render path beside {@link #links} and written off it, so it
+     * Read on the render path beside {@link #snapshot} and written off it, so it
      * carries the same visibility guarantee: a bypass toggle with no
      * accompanying chain mutation still reaches the audio thread.
      */
     private volatile boolean bypassed;
 
     /**
-     * Ping-pong scratch for chain positions {@code 0 .. links.length - 2}.
-     *
-     * <p>Volatile, and re-sized inside {@link #republishLinks()} <em>before</em>
-     * the {@code links} store, so a chain that GROWS never opens a window in
-     * which the render thread sees the longer chain but the shorter buffer
-     * array and falls into the allocating {@link #createTempBuffer} branch.
-     * The arrays are replaced, never mutated, so a block already in flight
-     * keeps using the array it read.</p>
+     * Control-thread scratch ownership. Every publication captures these arrays
+     * in the same immutable snapshot as its processor links. The render thread
+     * reads only the captured arrays, including when a format change replaces them.
      */
     private volatile float[][][] intermediateBuffers;
     /** The 64-bit twin of {@link #intermediateBuffers}, on the same publication rule. */
@@ -115,7 +117,7 @@ public final class EffectsChain {
     private int doubleBufferFrames;
 
     /**
-     * Republishes {@link #links} from the mutable lists, growing the
+     * Republishes {@link #snapshot} from the mutable lists, growing the
      * intermediate buffers to match FIRST so that one volatile store
      * publishes the chain and the scratch it needs together. Off the render
      * thread only.
@@ -126,14 +128,13 @@ public final class EffectsChain {
             rebuilt[i] = new Link(processors.get(i), tags.get(i));
         }
         growIntermediateBuffers(Math.max(rebuilt.length - 1, 0));
-        links = rebuilt;
+        snapshot = new Snapshot(rebuilt, intermediateBuffers, intermediateDoubleBuffers);
     }
 
     /**
      * Grows the pre-allocated scratch to {@code needed} positions, reusing
      * the dimensions of the last explicit {@code allocateIntermediate*}
-     * call. A chain that never had buffers pre-allocated stays without them
-     * (the documented {@link #createTempBuffer} hole); a chain that shrinks
+     * call. A multi-processor chain must be prepared before rendering; a chain that shrinks
      * keeps its larger arrays — the render loops index by position, so extra
      * entries are inert and re-allocating would only add garbage.
      */
@@ -254,8 +255,8 @@ public final class EffectsChain {
 
     /**
      * Visible for testing: the number of pre-allocated ping-pong scratch
-     * slots currently published. Zero means the render loop would fall back
-     * to {@link #createTempBuffer} for any chain position that needs one.
+     * slots currently published. A multi-processor chain with zero scratch
+     * must be prepared before entering the render loop.
      */
     int intermediateBufferCount() {
         float[][][] scratch = intermediateBuffers;
@@ -285,23 +286,23 @@ public final class EffectsChain {
     /**
      * Returns the number of processors in the chain.
      *
-     * <p>Reads the published {@link #links} snapshot, not the mutable list:
+     * <p>Reads the published {@link #snapshot} snapshot, not the mutable list:
      * this is a render-path query (the mixer and the {@code AudioGraphScheduler}
      * gate on {@link #isEmpty()} before entering {@code process}), so it must
      * answer for the same chain the loop will run.</p>
      */
     @RealTimeSafe
     public int size() {
-        return links.length;
+        return snapshot.links().length;
     }
 
     /**
      * Returns whether the chain is empty, from the published
-     * {@link #links} snapshot — see {@link #size()}.
+     * {@link #snapshot} snapshot — see {@link #size()}.
      */
     @RealTimeSafe
     public boolean isEmpty() {
-        return links.length == 0;
+        return snapshot.links().length == 0;
     }
 
     /** Returns whether the chain is bypassed. */
@@ -323,7 +324,7 @@ public final class EffectsChain {
      *
      * <p>The dimensions are remembered: a later chain mutation re-sizes the
      * scratch itself, inside the same publication as the new chain, so
-     * growing a live chain never falls back to {@link #createTempBuffer}.</p>
+     * growing a live chain always publishes sufficient scratch.</p>
      *
      * @param channels the number of audio channels
      * @param frames   the number of sample frames per buffer
@@ -337,8 +338,9 @@ public final class EffectsChain {
         }
         this.bufferChannels = channels;
         this.bufferFrames = frames;
-        int maxIntermediateNeeded = Math.max(links.length - 1, 0);
+        int maxIntermediateNeeded = Math.max(snapshot.links().length - 1, 0);
         intermediateBuffers = new float[maxIntermediateNeeded][channels][frames];
+        republishLinks();
     }
 
     /**
@@ -379,11 +381,22 @@ public final class EffectsChain {
     @RealTimeSafe
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
                         TapSnapshot taps) {
-        Link[] chain = links;
-        // Read AFTER the chain: republishLinks() grows the scratch BEFORE its
-        // volatile store, so a thread that saw the longer chain also sees the
-        // matching scratch.
-        float[][][] scratch = intermediateBuffers;
+        enterRender();
+        try {
+            processSnapshot(inputBuffer, outputBuffer, numFrames, taps, null);
+        } finally {
+            leaveRender();
+        }
+    }
+
+    @RealTimeSafe
+    private void processSnapshot(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
+                                 TapSnapshot taps, SidechainInputResolver sidechainResolver) {
+        Snapshot captured = snapshot;
+        Link[] chain = captured.links();
+        // Processor links and their scratch come from the same publication.
+        float[][][] scratch = captured.floats();
+        drainParameters(chain);
         if (bypassed || chain.length == 0) {
             copyBuffer(inputBuffer, outputBuffer, numFrames);
             return;
@@ -400,13 +413,25 @@ public final class EffectsChain {
                 currentOutput = scratch[i];
                 clearBuffer(currentOutput, numFrames);
             } else {
-                currentOutput = createTempBuffer(outputBuffer.length, numFrames);
+                throw UNPREPARED;
             }
             InsertTapPair pair = tapPairFor(taps, chain[i].tag());
             if (pair != null) {
                 accumulateFrame(pair.input(), currentInput, numFrames, tapEpoch, tapBlock);
             }
-            chain[i].processor().process(currentInput, currentOutput, numFrames);
+            if (chain[i].tag() instanceof InsertSlot slot && slot.isBypassed()) {
+                copyBuffer(currentInput, currentOutput, numFrames);
+            } else if (sidechainResolver != null && chain[i].tag() instanceof InsertSlot slot
+                    && chain[i].processor() instanceof SidechainAwareProcessor sidechainProcessor) {
+                float[][] sidechain = sidechainResolver.resolve(slot);
+                if (sidechain != null) {
+                    sidechainProcessor.processSidechain(currentInput, sidechain, currentOutput, numFrames);
+                } else {
+                    chain[i].processor().process(currentInput, currentOutput, numFrames);
+                }
+            } else {
+                chain[i].processor().process(currentInput, currentOutput, numFrames);
+            }
             if (pair != null) {
                 accumulateFrame(pair.output(), currentOutput, numFrames, tapEpoch, tapBlock);
                 SampleBlockRing[] rings = pair.output().rings();
@@ -415,6 +440,27 @@ public final class EffectsChain {
                 }
             }
             currentInput = currentOutput;
+        }
+    }
+
+    /** Uses the same immutable supervised links and meter hooks for sidechain routing. */
+    @RealTimeSafe
+    public void processWithSidechain(float[][] input, float[][] output, int frames,
+                                     TapSnapshot taps, SidechainInputResolver resolver) {
+        enterRender();
+        try {
+            processSnapshot(input, output, frames, taps, resolver);
+        } finally {
+            leaveRender();
+        }
+    }
+
+    @RealTimeSafe
+    private static void drainParameters(Link[] chain) {
+        for (int i = 0; i < chain.length; i++) {
+            if (chain[i].tag() instanceof InsertSlot slot) {
+                slot.drainParametersToAudio();
+            }
         }
     }
 
@@ -497,15 +543,10 @@ public final class EffectsChain {
      * their insert meters would otherwise stay dark in the default precision.
      * Carries the same allocation caveat as the untapped overload.
      *
-     * <p>Deliberately NOT annotated {@code @RealTimeSafe}, unlike
-     * {@link #process(float[][], float[][], int, TapSnapshot)}: the fallback
-     * branch allocates a {@code double[][]} when no intermediate double
-     * buffers were pre-allocated, and a processor that does not support
-     * double precision runs the allocating narrowing adapter. The
-     * {@code RealTimeSafeContractTest} render-path sentinel still walks this
-     * method (it is a {@code RENDER_PATH_ROOTS} entry) with that one
-     * pre-existing allocation allow-listed, so any NEW allocation, lock or
-     * publisher added to the tap accumulation here fails the build.</p>
+     * <p>A processor without native double support may still use the SDK's
+     * allocating narrowing adapter, so this method is not marked real-time
+     * safe. The chain itself uses only prepared snapshot scratch and never
+     * allocates a fallback buffer.</p>
      *
      * @param inputBuffer  input audio data {@code [channel][frame]}
      * @param outputBuffer output audio data {@code [channel][frame]}
@@ -514,9 +555,21 @@ public final class EffectsChain {
      */
     public void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames,
                               TapSnapshot taps) {
-        Link[] chain = links;
+        enterRender();
+        try {
+            processDoubleSnapshot(inputBuffer, outputBuffer, numFrames, taps);
+        } finally {
+            leaveRender();
+        }
+    }
+
+    private void processDoubleSnapshot(double[][] inputBuffer, double[][] outputBuffer, int numFrames,
+                                       TapSnapshot taps) {
+        Snapshot captured = snapshot;
+        Link[] chain = captured.links();
         // See process(...): the scratch is published before the chain it belongs to.
-        double[][][] scratch = intermediateDoubleBuffers;
+        double[][][] scratch = captured.doubles();
+        drainParameters(chain);
         if (bypassed || chain.length == 0) {
             copyBufferDouble(inputBuffer, outputBuffer, numFrames);
             return;
@@ -533,13 +586,17 @@ public final class EffectsChain {
                 currentOutput = scratch[i];
                 clearBufferDouble(currentOutput, numFrames);
             } else {
-                currentOutput = createTempDoubleBuffer(outputBuffer.length, numFrames);
+                throw UNPREPARED;
             }
             InsertTapPair pair = tapPairFor(taps, chain[i].tag());
             if (pair != null) {
                 accumulateFrame(pair.input(), currentInput, numFrames, tapEpoch, tapBlock);
             }
-            chain[i].processor().processDouble(currentInput, currentOutput, numFrames);
+            if (chain[i].tag() instanceof InsertSlot slot && slot.isBypassed()) {
+                copyBufferDouble(currentInput, currentOutput, numFrames);
+            } else {
+                chain[i].processor().processDouble(currentInput, currentOutput, numFrames);
+            }
             if (pair != null) {
                 accumulateFrame(pair.output(), currentOutput, numFrames, tapEpoch, tapBlock);
                 SampleBlockRing[] rings = pair.output().rings();
@@ -569,8 +626,9 @@ public final class EffectsChain {
         }
         this.doubleBufferChannels = channels;
         this.doubleBufferFrames = frames;
-        int maxIntermediateNeeded = Math.max(links.length - 1, 0);
+        int maxIntermediateNeeded = Math.max(snapshot.links().length - 1, 0);
         intermediateDoubleBuffers = new double[maxIntermediateNeeded][channels][frames];
+        republishLinks();
     }
 
     /**
@@ -581,6 +639,35 @@ public final class EffectsChain {
             processor.reset();
         }
     }
+
+    /** Removes the graph first, then closes resources after every old render has left. */
+    public java.util.concurrent.CompletableFuture<Void> retireAll(Runnable disposal) {
+        replaceAll(List.of(), List.of());
+        long retirementGeneration = renderStarted;
+        var completion = new java.util.concurrent.CompletableFuture<Void>();
+        // Virtual threads (JEP 444, final): retirement waits never occupy the audio or FX thread.
+        Thread.ofVirtual().name("insert-retirement").start(() -> {
+            while (renderFinished < retirementGeneration) {
+                java.util.concurrent.locks.LockSupport.parkNanos(100_000);
+            }
+            try {
+                disposal.run();
+                completion.complete(null);
+            } catch (Throwable failure) {
+                completion.completeExceptionally(failure);
+            }
+        });
+        return completion;
+    }
+
+    /**
+     * Covers sidechain and parameter draining in the same retirement generation.
+     * A chain has one render consumer, as required by its shared DSP/scratch state;
+     * the scheduler transfers that ownership between non-overlapping tasks.
+     * Nested calls publish completion only when the outermost consumer exits.
+     */
+    @RealTimeSafe public void enterRender() { if (renderDepth++ == 0) { renderStarted++; } }
+    @RealTimeSafe public void leaveRender() { if (--renderDepth == 0) { renderFinished = renderStarted; } }
 
     private static void copyBuffer(float[][] src, float[][] dst, int numFrames) {
         int channels = Math.min(src.length, dst.length);
@@ -595,9 +682,6 @@ public final class EffectsChain {
         }
     }
 
-    private static float[][] createTempBuffer(int channels, int frames) {
-        return new float[channels][frames];
-    }
 
     private static void copyBufferDouble(double[][] src, double[][] dst, int numFrames) {
         int channels = Math.min(src.length, dst.length);
@@ -612,17 +696,4 @@ public final class EffectsChain {
         }
     }
 
-    /**
-     * The 64-bit twin of {@link #createTempBuffer}: the fallback when no
-     * intermediate double buffers were ever pre-allocated.
-     *
-     * <p>Extracted into its own method deliberately. The render-path
-     * allocation sentinel keys its allow-list on {@code Owner#method}, so
-     * naming the fallback here holds the tapped {@code processDouble} loop
-     * body itself to zero allocations instead of blanket-allowing every
-     * {@code double[][]} the method might grow.</p>
-     */
-    private static double[][] createTempDoubleBuffer(int channels, int frames) {
-        return new double[channels][frames];
-    }
 }

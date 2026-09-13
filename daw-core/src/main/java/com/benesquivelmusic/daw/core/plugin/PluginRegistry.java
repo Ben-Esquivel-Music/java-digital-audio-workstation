@@ -40,6 +40,17 @@ public final class PluginRegistry {
             throw new PluginLoadException("Plugin entry already registered: " + entry);
         }
         ExternalPluginLoader.LoadResult result = ExternalPluginLoader.loadWithClassLoader(entry);
+        return registerLoaded(entry, result);
+    }
+
+    /** Publishes an already constructed plugin, allowing hosts to load it off their UI thread. */
+    public DawPlugin registerLoaded(ExternalPluginEntry entry, ExternalPluginLoader.LoadResult result)
+            throws PluginLoadException {
+        Objects.requireNonNull(entry, "entry must not be null");
+        Objects.requireNonNull(result, "result must not be null");
+        if (entries.contains(entry)) {
+            throw new PluginLoadException("Plugin entry already registered: " + entry);
+        }
         entries.add(entry);
         loadedPlugins.put(entry, result.plugin());
         classLoaders.put(entry, result.classLoader());

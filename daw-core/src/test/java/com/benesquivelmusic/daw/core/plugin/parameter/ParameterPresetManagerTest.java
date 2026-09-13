@@ -2,8 +2,12 @@ package com.benesquivelmusic.daw.core.plugin.parameter;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +46,47 @@ class ParameterPresetManagerTest {
 
         ParameterPreset loaded = manager.loadPreset(saved);
         assertThat(loaded.factory()).isTrue();
+    }
+
+    @Test
+    void shouldRejectNameCollisionWithoutOverwritingLegacyPreset() throws IOException {
+        var manager = new ParameterPresetManager(tempDir);
+        var original = ParameterPreset.user("Lead/Vocal", Map.of(0, 0.25));
+        Path legacyFile = tempDir.resolve("Lead_Vocal.json");
+        Files.writeString(legacyFile, ParameterPresetManager.toJson(original));
+
+        assertThatThrownBy(() -> manager.savePreset(ParameterPreset.user("Lead Vocal", Map.of(0, 0.75))))
+                .isInstanceOf(FileAlreadyExistsException.class)
+                .hasMessageContaining("Lead/Vocal");
+
+        var reopened = new ParameterPresetManager(tempDir);
+        assertThat(reopened.loadAllPresets()).containsExactly(original);
+        assertThat(reopened.deletePreset("Lead/Vocal")).isTrue();
+        assertThat(reopened.loadAllPresets()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Lead/Vocal", "Lead \"Vocal\"", "Lead\\Vocal"})
+    void shouldUpdateExistingPresetWithTheSameDisplayName(String name) throws IOException {
+        var manager = new ParameterPresetManager(tempDir);
+        Path saved = manager.savePreset(ParameterPreset.user(name, Map.of(0, 0.25)));
+        var updated = ParameterPreset.user(name, Map.of(0, 0.75));
+
+        var reopened = new ParameterPresetManager(tempDir);
+        assertThat(reopened.savePreset(updated)).isEqualTo(saved);
+        assertThat(reopened.loadAllPresets()).containsExactly(updated);
+        assertThat(reopened.deletePreset(name)).isTrue();
+        assertThat(reopened.loadAllPresets()).isEmpty();
+    }
+
+    @Test
+    void shouldNotDeleteDifferentPresetWithTheSameSanitizedFileName() throws IOException {
+        var manager = new ParameterPresetManager(tempDir);
+        var original = ParameterPreset.user("Lead/Vocal", Map.of(0, 0.25));
+        manager.savePreset(original);
+
+        assertThat(manager.deletePreset("Lead Vocal")).isFalse();
+        assertThat(manager.loadAllPresets()).containsExactly(original);
     }
 
     @Test

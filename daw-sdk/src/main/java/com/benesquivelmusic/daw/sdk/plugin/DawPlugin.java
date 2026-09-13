@@ -107,8 +107,8 @@ public interface DawPlugin {
      * <p>The default is <em>backwards-compatible</em>: a plugin that overrides
      * only {@link #getParameters()} gets a host-generated parameter-grid editor
      * ({@link PluginEditorFactory.Declarative}) for free; a plugin that overrides
-     * nothing gets an empty declarative editor (still better than the silence of
-     * the pre-{@code editorFactory} SDK). A plugin that wants a custom GUI
+     * nothing gets a declarative editor with an explicit host-rendered
+     * "exposes no parameters" placeholder. A plugin that wants a custom GUI
      * overrides this method to return a {@link PluginEditorFactory.Panel} (ship a
      * {@link javafx.scene.layout.Region}) or a {@link PluginEditorFactory.Canvas}
      * (draw into a host-owned surface).</p>

@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
 import java.lang.reflect.Method;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -30,6 +32,40 @@ import java.util.function.BiConsumer;
  * happens at most once per class, never on the real-time audio path.</p>
  */
 public final class ReflectiveParameterRegistry {
+
+    @FunctionalInterface
+    public interface AudioParameterSetter {
+        void set(int id, double value);
+    }
+
+    /** Resolves and binds setters off the audio thread; invocation never boxes. */
+    public static AudioParameterSetter createAudioParameterSetter(Object processor) {
+        var parameters = reflect(processor.getClass());
+        int[] ids = new int[parameters.size()];
+        MethodHandle[] setters = new MethodHandle[parameters.size()];
+        try {
+            for (int i = 0; i < parameters.size(); i++) {
+                ids[i] = parameters.get(i).id;
+                setters[i] = MethodHandles.lookup().unreflect(parameters.get(i).setter).bindTo(processor);
+            }
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException("Cannot bind processor parameters", e);
+        }
+        return (id, value) -> {
+            for (int i = 0; i < ids.length; i++) {
+                if (ids[i] == id) {
+                    try {
+                        setters[i].invokeExact(value);
+                    } catch (RuntimeException | Error e) {
+                        throw e;
+                    } catch (Throwable e) {
+                        throw new IllegalStateException("Processor parameter failed", e);
+                    }
+                    return;
+                }
+            }
+        };
+    }
 
     /** Per-class cache of reflected parameters. */
     private static final Map<Class<?>, List<ReflectedParam>> CACHE = new ConcurrentHashMap<>();

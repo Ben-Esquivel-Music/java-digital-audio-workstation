@@ -38,7 +38,9 @@ class AcousticReverbPluginTest {
         plugin.initialize(stubContext());
         assertThat(plugin.asAudioProcessor()).isPresent();
         assertThat(plugin.getProcessor()).isInstanceOf(AcousticReverbProcessor.class);
-        assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(plugin.getProcessor());
+        assertThat(plugin.asAudioProcessor().orElseThrow().getInputChannelCount())
+                .isEqualTo(plugin.getProcessor().getInputChannelCount());
+        plugin.dispose();
     }
 
     @Test
@@ -69,6 +71,31 @@ class AcousticReverbPluginTest {
         assertThat(params).hasSize(3);
         assertThat(params.stream().map(p -> p.name()))
                 .contains("Preset", "T60 (s)", "Mix");
+    }
+
+    @Test
+    void roomChangesPrepareOffThreadAndPublishThroughTheSameSignalPath() throws Exception {
+        var plugin = new AcousticReverbPlugin();
+        plugin.initialize(stubContext());
+        try {
+            var signalPath = plugin.asAudioProcessor().orElseThrow();
+            var previous = plugin.getProcessor();
+            plugin.setAutomatableParameter(2, 0.75);
+            assertThat(previous.getMix()).isEqualTo(0.75);
+            plugin.setAutomatableParameter(0, 3);
+            plugin.setAutomatableParameter(1, 2.0);
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            float[][] buffer = new float[2][512];
+            while (plugin.getProcessor() == previous && System.nanoTime() < deadline) {
+                signalPath.process(buffer, buffer, 512);
+                Thread.sleep(5);
+            }
+            assertThat(plugin.getProcessor()).isNotSameAs(previous);
+            assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(signalPath);
+            assertThat(plugin.getProcessor().getMix()).isEqualTo(0.75);
+        } finally {
+            plugin.dispose();
+        }
     }
 
     private static PluginContext stubContext() {

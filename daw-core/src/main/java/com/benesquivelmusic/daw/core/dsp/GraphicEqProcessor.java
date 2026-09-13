@@ -237,7 +237,18 @@ public final class GraphicEqProcessor implements AudioProcessor {
      */
     public void setBandGain(int bandIndex, double gain) {
         gainDb[bandIndex] = Math.max(-MAX_GAIN_DB, Math.min(MAX_GAIN_DB, gain));
-        rebuildFilters();
+        if (filterMode == FilterMode.MINIMUM_PHASE) {
+            updateBandCoefficients(bandIndex);
+        } else {
+            rebuildFilters();
+        }
+    }
+
+    private void updateBandCoefficients(int band) {
+        for (int ch = 0; ch < channels; ch++) {
+            filters[band][ch].recalculate(BiquadFilter.FilterType.PEAK_EQ,
+                    sampleRate, frequencies[band], q, gainDb[band]);
+        }
     }
 
     /**
@@ -285,7 +296,13 @@ public final class GraphicEqProcessor implements AudioProcessor {
             throw new IllegalArgumentException("q must be positive: " + q);
         }
         this.q = q;
-        rebuildFilters();
+        if (filterMode == FilterMode.MINIMUM_PHASE) {
+            for (int band = 0; band < frequencies.length; band++) {
+                updateBandCoefficients(band);
+            }
+        } else {
+            rebuildFilters();
+        }
     }
 
     /**

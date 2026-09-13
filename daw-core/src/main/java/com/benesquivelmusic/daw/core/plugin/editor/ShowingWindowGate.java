@@ -22,9 +22,8 @@ import java.util.Objects;
  *   <li>{@link #install(Node, Runnable, Runnable)} — the transition tracker
  *       for panel editors that start/stop an
  *       {@link javafx.animation.AnimationTimer} (or attach/release a listener)
- *       across their visible lifetime. A Panel has no dispose hook, so the
- *       gate — like the scene listeners it replaces — stays installed for the
- *       node's lifetime; {@code onHidden} is the only teardown signal.</li>
+ *       across their visible lifetime. The returned cleanup action is called
+ *       from the panel's detach hook to stop work and release listeners.</li>
  * </ul>
  */
 final class ShowingWindowGate {
@@ -70,14 +69,19 @@ final class ShowingWindowGate {
      * @param node     the editor node whose display state gates the work
      * @param onShown  work to (re)start when the node becomes visible
      * @param onHidden work to stop when the node stops being visible
+     * @return cleanup that releases the gate and stops any visible work
      */
-    static void install(Node node, Runnable onShown, Runnable onHidden) {
+    static Runnable install(Node node, Runnable onShown, Runnable onHidden) {
         Objects.requireNonNull(node, "node must not be null");
         Objects.requireNonNull(onShown, "onShown must not be null");
         Objects.requireNonNull(onHidden, "onHidden must not be null");
         ShowingWindowGate gate = new ShowingWindowGate(onShown, onHidden);
         node.sceneProperty().addListener(gate.sceneListener);
         gate.trackScene(null, node.getScene());
+        return () -> {
+            node.sceneProperty().removeListener(gate.sceneListener);
+            gate.trackScene(node.getScene(), null);
+        };
     }
 
     private void trackScene(Scene oldScene, Scene newScene) {

@@ -27,6 +27,13 @@ public record PluginFault(
         String stackTrace,
         Instant clock,
         int faultCountThisSession,
-        boolean quarantined
+        boolean quarantined,
+        com.benesquivelmusic.daw.core.mixer.InsertSlot slot
 ) {
+    public PluginFault(String pluginId, String exceptionClass, String message,
+                       String stackTrace, Instant clock, int faultCountThisSession,
+                       boolean quarantined) {
+        this(pluginId, exceptionClass, message, stackTrace, clock, faultCountThisSession,
+                quarantined, null);
+    }
 }

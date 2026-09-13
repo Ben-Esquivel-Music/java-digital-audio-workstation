@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -459,6 +461,112 @@ class SignalGeneratorPluginTest {
 
         assertThat(hasNonZeroSamples(buffer)).isTrue();
         assertThat(countDistinctValues(buffer)).isGreaterThan(100);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void noiseRenderingIsBoundedDeterministicAndRestartsAfterPanic(SignalGeneratorPlugin.WaveformType waveform) {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(waveform);
+        plugin.setAmplitudeDb(0.0);
+        float[][] input = new float[2][4096];
+        float[][] first = new float[2][4096];
+        float[][] second = new float[2][4096];
+
+        plugin.process(input, first, 4096);
+        plugin.process(input, second, 4096);
+
+        assertThat(first[0]).containsExactly(first[1]);
+        assertThat(countDistinctValues(first[0])).isGreaterThan(100);
+        assertThat(peakAmplitude(first[0])).isLessThanOrEqualTo(1.0f);
+        assertThat(java.util.Arrays.equals(first[0], second[0])).isFalse();
+
+        plugin.panic();
+        plugin.setMuted(false);
+        plugin.process(input, second, 4096);
+        assertThat(second[0]).containsExactly(first[0]);
+        assertThat(second[1]).containsExactly(first[1]);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void noiseSequenceIsIndependentOfRenderBlockPartitioning(SignalGeneratorPlugin.WaveformType waveform) {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(waveform);
+        plugin.setAmplitudeDb(0.0);
+        int frames = 65_573;
+        float[][] input = new float[2][frames];
+        float[][] continuous = new float[2][frames];
+        float[][] partitioned = new float[2][frames];
+        plugin.process(input, continuous, frames);
+
+        plugin.setWaveformType(waveform);
+        int[] blockSizes = {1, 63, 256, 317, 1024};
+        int offset = 0;
+        int blockIndex = 0;
+        while (offset < frames) {
+            int blockFrames = Math.min(blockSizes[blockIndex++ % blockSizes.length], frames - offset);
+            float[][] block = new float[2][blockFrames];
+            plugin.process(input, block, blockFrames);
+            for (int channel = 0; channel < block.length; channel++) {
+                System.arraycopy(block[channel], 0, partitioned[channel], offset, blockFrames);
+            }
+            offset += blockFrames;
+        }
+
+        assertThat(partitioned[0]).containsExactly(continuous[0]);
+        assertThat(partitioned[1]).containsExactly(continuous[1]);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void noiseSequenceContinuesBetweenGenerateAndProcess(SignalGeneratorPlugin.WaveformType waveform) {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(waveform);
+        float[] continuous = new float[1024];
+        plugin.generate(continuous);
+
+        plugin.reset();
+        float[] first = new float[317];
+        float[][] middle = new float[2][256];
+        float[] last = new float[451];
+        plugin.generate(first);
+        plugin.process(new float[2][256], middle, 256);
+        plugin.generate(last);
+
+        assertThat(first).containsExactly(java.util.Arrays.copyOfRange(continuous, 0, 317));
+        assertThat(middle[0]).containsExactly(java.util.Arrays.copyOfRange(continuous, 317, 573));
+        assertThat(middle[1]).containsExactly(middle[0]);
+        assertThat(last).containsExactly(java.util.Arrays.copyOfRange(continuous, 573, 1024));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void processorResetRestartsNoiseWithoutChangingParameters(SignalGeneratorPlugin.WaveformType waveform) {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(waveform);
+        plugin.setAmplitudeDb(-6);
+        var processor = plugin.asAudioProcessor().orElseThrow();
+        float[][] input = new float[2][4096];
+        float[][] first = new float[2][4096];
+        float[][] next = new float[2][4096];
+        processor.process(input, first, 4096);
+        processor.process(input, next, 4096);
+        assertThat(next[0]).isNotEqualTo(first[0]);
+
+        processor.reset();
+        processor.process(input, next, 4096);
+
+        assertThat(next[0]).containsExactly(first[0]);
+        assertThat(next[1]).containsExactly(first[1]);
+        assertThat(plugin.getWaveformType()).isSameAs(waveform);
+        assertThat(plugin.getAmplitudeDb()).isEqualTo(-6);
+        assertThat(plugin.isActive()).isTrue();
+        assertThat(plugin.isMuted()).isFalse();
     }
 
     @Test

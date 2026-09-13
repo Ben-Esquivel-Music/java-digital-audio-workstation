@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.audio.AudioGraphScheduler;
+import com.benesquivelmusic.daw.core.audio.EffectsChain;
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
 import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
@@ -38,12 +39,15 @@ public final class Mixer {
 
     private final List<MixerChannel> channels = new ArrayList<>();
     private final List<MixerChannel> returnBuses = new ArrayList<>();
+    private final Set<MixerChannel> ownedChannels = Collections.newSetFromMap(new IdentityHashMap<>());
     private final MixerChannel masterChannel;
     private final PluginDelayCompensation delayCompensation = new PluginDelayCompensation();
     private final ReflectiveParameterBinder reflectiveParameterBinder = new ReflectiveParameterBinder();
     private int preparedAudioChannels;
-    private float[][] scratchBufferA;
-    private float[][] scratchBufferB;
+    private int preparedBlockSize;
+    private float[][][] sidechainChannelBuffers;
+    private float[][][] sidechainReturnBuffers;
+    private final EffectsChain.SidechainInputResolver sidechainResolver = this::resolveSidechainInput;
     /**
      * Pre-allocated per-channel scratch buffers used to capture each
      * channel's <em>pre-insert</em> signal so that sends configured with
@@ -115,10 +119,12 @@ public final class Mixer {
     /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
+        ownedChannels.add(masterChannel);
         MixerChannel defaultReturn = new MixerChannel("Reverb Return");
         defaultReturn.setSoloSafe(true);
         defaultReturn.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         returnBuses.add(defaultReturn);
+        ownedChannels.add(defaultReturn);
     }
 
     /**
@@ -187,12 +193,20 @@ public final class Mixer {
      */
     public void addChannel(MixerChannel channel) {
         Objects.requireNonNull(channel, "channel must not be null");
+        prepareAddedChannel(channel);
         channel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         if (pluginSupervisor != null) {
             channel.setPluginSupervisor(pluginSupervisor);
         }
         channels.add(channel);
+        ownedChannels.add(channel);
         recalculateDelayCompensation();
+    }
+
+    private void prepareAddedChannel(MixerChannel channel) {
+        if (preparedAudioChannels > 0 && preparedBlockSize > 0) {
+            channel.prepareEffectsChain(preparedAudioChannels, preparedBlockSize);
+        }
     }
 
     /**
@@ -220,6 +234,11 @@ public final class Mixer {
         return Collections.unmodifiableList(channels);
     }
 
+    /** All channels owned by this mixer, including removed channels retained for undo and retirement. */
+    public List<MixerChannel> getOwnedChannels() {
+        return List.copyOf(ownedChannels);
+    }
+
     /**
      * Returns the master output channel.
      *
@@ -227,6 +246,18 @@ public final class Mixer {
      */
     public MixerChannel getMasterChannel() {
         return masterChannel;
+    }
+
+    /** Drains live inserts at each block boundary, including bypassed, muted and silent channels. */
+    @RealTimeSafe
+    public void drainInsertParameters() {
+        for (int index = 0; index < channels.size(); index++) {
+            channels.get(index).drainInsertParameters();
+        }
+        for (int index = 0; index < returnBuses.size(); index++) {
+            returnBuses.get(index).drainInsertParameters();
+        }
+        masterChannel.drainInsertParameters();
     }
 
     /**
@@ -262,12 +293,14 @@ public final class Mixer {
                     "cannot exceed " + MAX_RETURN_BUSES + " return buses");
         }
         MixerChannel returnBus = new MixerChannel(name);
+        prepareAddedChannel(returnBus);
         returnBus.setSoloSafe(true);
         returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         if (pluginSupervisor != null) {
             returnBus.setPluginSupervisor(pluginSupervisor);
         }
         returnBuses.add(returnBus);
+        ownedChannels.add(returnBus);
         recalculateDelayCompensation();
         return returnBus;
     }
@@ -281,11 +314,13 @@ public final class Mixer {
     public void addReturnBus(MixerChannel returnBus) {
         Objects.requireNonNull(returnBus, "returnBus must not be null");
         if (!returnBuses.contains(returnBus)) {
+            prepareAddedChannel(returnBus);
             returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
             if (pluginSupervisor != null) {
                 returnBus.setPluginSupervisor(pluginSupervisor);
             }
             returnBuses.add(returnBus);
+            ownedChannels.add(returnBus);
             recalculateDelayCompensation();
         }
     }
@@ -400,16 +435,23 @@ public final class Mixer {
      * that {@link #mixDown} remains zero-allocation on the audio thread.
      *
      * <p>Call this method when the audio engine starts or when the buffer size
-     * changes. It also stores the dimensions on each channel so that adding or
-     * removing insert effects automatically re-allocates.</p>
+     * changes. The dimensions are remembered so newly added or restored channels
+     * and return buses are prepared before joining the mixer. Each effects chain
+     * also remembers them so later insert mutations prepare their own scratch.</p>
      *
      * @param audioChannels the number of audio channels (e.g., 2 for stereo)
      * @param blockSize     the number of sample frames per processing block
+     * @throws IllegalArgumentException if either dimension is not positive
      */
     public void prepareForPlayback(int audioChannels, int blockSize) {
+        if (audioChannels <= 0) {
+            throw new IllegalArgumentException("audioChannels must be positive: " + audioChannels);
+        }
+        if (blockSize <= 0) {
+            throw new IllegalArgumentException("blockSize must be positive: " + blockSize);
+        }
         this.preparedAudioChannels = audioChannels;
-        this.scratchBufferA = new float[audioChannels][blockSize];
-        this.scratchBufferB = new float[audioChannels][blockSize];
+        this.preparedBlockSize = blockSize;
         // Lazily-grown per-channel pre-insert buffers; outer array sized in
         // mixDown when the channel count is known. Keep the placeholders
         // empty here so prepareForPlayback remains O(channels + returns).
@@ -475,7 +517,7 @@ public final class Mixer {
 
             if (!channel.getEffectsChain().isEmpty()) {
                 if (hasSidechainRouting(channel)) {
-                    processInsertsWithSidechain(channel, src, channelBuffers, null, numFrames);
+                    processInsertsWithSidechain(channel, src, channelBuffers, null, numFrames, null);
                 } else {
                     channel.getEffectsChain().process(src, src, numFrames);
                 }
@@ -719,7 +761,7 @@ public final class Mixer {
 
             if (!channel.getEffectsChain().isEmpty() && !insertsDone[i]) {
                 if (hasSidechainRouting(channel)) {
-                    processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
+                    processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames, taps);
                 } else {
                     channel.getEffectsChain().process(src, src, numFrames, taps);
                 }
@@ -759,7 +801,10 @@ public final class Mixer {
 
             // Apply return bus insert effects
             if (!returnBus.getEffectsChain().isEmpty()) {
-                if (useDouble) {
+                if (hasSidechainRouting(returnBus)) {
+                    processInsertsWithSidechain(returnBus, returnBuf, channelBuffers,
+                            returnBuffers, numFrames, taps);
+                } else if (useDouble) {
                     // Process return bus effects in double precision: widen
                     // float→double, apply effects via processDouble, and let
                     // the accumulation loop below consume the double result.
@@ -1008,7 +1053,7 @@ public final class Mixer {
 
             if (!channel.getEffectsChain().isEmpty() && !insertsDone[i]) {
                 if (hasSidechainRouting(channel)) {
-                    processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
+                    processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames, taps);
                 } else {
                     channel.getEffectsChain().process(src, src, numFrames, taps);
                 }
@@ -1052,7 +1097,10 @@ public final class Mixer {
             float[][] returnBuf = returnBuffers[r];
             LevelTapSlot returnTap = taps != null ? taps.returnSlot(r, returnBus) : null;
             if (!returnBus.getEffectsChain().isEmpty()) {
-                if (useDouble) {
+                if (hasSidechainRouting(returnBus)) {
+                    processInsertsWithSidechain(returnBus, returnBuf, channelBuffers,
+                            returnBuffers, numFrames, taps);
+                } else if (useDouble) {
                     double[][] dblBuf = ensureReturnBusScratchDouble(returnBuf.length, numFrames);
                     for (int ch = 0; ch < returnBuf.length; ch++) {
                         for (int f = 0; f < numFrames; f++) {
@@ -1779,93 +1827,26 @@ public final class Mixer {
         return false;
     }
 
-    /**
-     * Processes a channel's insert effects, routing sidechain buffers where
-     * configured. This replaces the standard {@code EffectsChain.process()}
-     * call when at least one insert slot has a sidechain source.
-     *
-     * <p>For each non-bypassed insert slot:
-     * <ul>
-     *   <li>If the slot has a sidechain source and the processor is a
-     *       {@link SidechainAwareProcessor}, look up the source channel's
-     *       buffer from {@code channelBuffers} (or {@code returnBuffers} for
-     *       return bus sources) and call {@code processSidechain()}.</li>
-     *   <li>Otherwise, call the standard {@code process()} method.</li>
-     * </ul>
-     *
-     * <p>Uses {@code src} as both the initial input and the final output
-     * destination. Two pre-allocated scratch buffers ({@link #scratchBufferA}
-     * and {@link #scratchBufferB}) are used for intermediate results,
-     * ping-ponging between them to avoid buffer aliasing when multiple
-     * non-bypassed inserts are present. The last active processor always
-     * writes directly to {@code src}.</p>
-     */
+    /** Routes detection input through the chain's supervised render snapshot and meter taps. */
     @RealTimeSafe
     private void processInsertsWithSidechain(MixerChannel channel, float[][] src,
                                              float[][][] channelBuffers,
                                              float[][][] returnBuffers,
-                                             int numFrames) {
-        List<InsertSlot> slots = channel.getInsertSlots();
-
-        // Count active (non-bypassed) slots
-        int activeCount = 0;
-        for (int s = 0; s < slots.size(); s++) {
-            if (!slots.get(s).isBypassed()) {
-                activeCount++;
-            }
+                                             int numFrames, TapSnapshot taps) {
+        sidechainChannelBuffers = channelBuffers;
+        sidechainReturnBuffers = returnBuffers;
+        try {
+            channel.getEffectsChain().processWithSidechain(src, src, numFrames, taps, sidechainResolver);
+        } finally {
+            sidechainChannelBuffers = null;
+            sidechainReturnBuffers = null;
         }
-        if (activeCount == 0) {
-            return;
-        }
+    }
 
-        // Process each active slot, ping-ponging between scratchBufferA and
-        // scratchBufferB for intermediates. The last active slot writes
-        // directly to src.
-        //
-        // For a single active slot: process(src, src) — in-place, matching
-        // the existing EffectsChain behavior for single-processor chains.
-        //
-        // For 2+ active slots, intermediates use scratch buffers so that
-        // currentInput and currentOutput are always distinct arrays:
-        //   Slot 1: read src,      write scratchA  → currentInput = scratchA
-        //   Slot 2: read scratchA, write scratchB  → currentInput = scratchB
-        //   Slot 3: read scratchB, write scratchA  → currentInput = scratchA
-        //   ...
-        //   Last:   read scratchX, write src       → no aliasing (scratchX ≠ src)
-        float[][] currentInput = src;
-        int processed = 0;
-        boolean usePingA = true;
-
-        for (int s = 0; s < slots.size(); s++) {
-            InsertSlot slot = slots.get(s);
-            if (slot.isBypassed()) {
-                continue;
-            }
-            processed++;
-            boolean isLast = (processed == activeCount);
-
-            float[][] currentOutput;
-            if (isLast) {
-                currentOutput = src;
-            } else {
-                currentOutput = usePingA ? scratchBufferA : scratchBufferB;
-                usePingA = !usePingA;
-            }
-
-            MixerChannel scSource = slot.getSidechainSource();
-            if (scSource != null && slot.getProcessor() instanceof SidechainAwareProcessor sap) {
-                float[][] scBuffer = findChannelBuffer(scSource, channelBuffers, returnBuffers);
-                if (scBuffer != null) {
-                    sap.processSidechain(currentInput, scBuffer, currentOutput, numFrames);
-                } else {
-                    slot.getProcessor().process(currentInput, currentOutput, numFrames);
-                }
-            } else {
-                slot.getProcessor().process(currentInput, currentOutput, numFrames);
-            }
-
-            currentInput = currentOutput;
-        }
+    @RealTimeSafe
+    private float[][] resolveSidechainInput(InsertSlot slot) {
+        MixerChannel source = slot.getSidechainSource();
+        return source == null ? null : findChannelBuffer(source, sidechainChannelBuffers, sidechainReturnBuffers);
     }
 
     /**

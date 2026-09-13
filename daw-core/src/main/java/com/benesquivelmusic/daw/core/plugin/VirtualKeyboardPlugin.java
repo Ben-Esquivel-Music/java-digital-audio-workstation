@@ -2,7 +2,10 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.midi.KeyboardPreset;
 import com.benesquivelmusic.daw.core.midi.KeyboardProcessor;
-import com.benesquivelmusic.daw.core.midi.javasound.JavaSoundRenderer;
+import com.benesquivelmusic.daw.core.midi.GraphKeyboardRenderer;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import java.util.Optional;
 import com.benesquivelmusic.daw.core.plugin.editor.VirtualKeyboardEditor;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
@@ -30,7 +33,7 @@ import java.util.Objects;
  * </ol>
  */
 @BuiltInPlugin(label = "Virtual Keyboard", icon = "keyboard", category = BuiltInPluginCategory.INSTRUMENT)
-public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
+public final class VirtualKeyboardPlugin implements BuiltInDawPlugin, AudioProcessor {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
     public static final String PLUGIN_ID = "com.benesquivelmusic.daw.keyboard";
@@ -48,6 +51,7 @@ public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
     private SoundFontRenderer renderer;
     private KeyboardProcessor processor;
     private boolean active;
+    private int audioChannels = 2;
 
     public VirtualKeyboardPlugin() {
     }
@@ -69,11 +73,33 @@ public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
         if (renderer == null) {
-            renderer = new JavaSoundRenderer();
+            renderer = new GraphKeyboardRenderer();
         }
         renderer.initialize(context.getSampleRate(), context.getBufferSize());
         processor = new KeyboardProcessor(renderer, KeyboardPreset.grandPiano());
+        audioChannels = context.getAudioChannels();
     }
+
+    @Override public Optional<AudioProcessor> asAudioProcessor() {
+        return processor == null ? Optional.empty() : Optional.of(this);
+    }
+
+    @Override @RealTimeSafe
+    public void process(float[][] input, float[][] output, int frames) {
+        for (int ch = 0; ch < output.length; ch++) {
+            if (ch < input.length) {
+                System.arraycopy(input[ch], 0, output[ch], 0, frames);
+            } else {
+                java.util.Arrays.fill(output[ch], 0, frames, 0f);
+            }
+        }
+        if (active) {
+            renderer.render(output, frames);
+        }
+    }
+    @Override public void reset() { if (renderer != null) { renderer.allNotesOff(); } }
+    @Override public int getInputChannelCount() { return audioChannels; }
+    @Override public int getOutputChannelCount() { return audioChannels; }
 
     @Override
     public void activate() {
