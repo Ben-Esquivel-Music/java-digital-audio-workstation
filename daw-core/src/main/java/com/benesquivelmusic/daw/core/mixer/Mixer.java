@@ -44,6 +44,7 @@ public final class Mixer {
     private final PluginDelayCompensation delayCompensation = new PluginDelayCompensation();
     private final ReflectiveParameterBinder reflectiveParameterBinder = new ReflectiveParameterBinder();
     private int preparedAudioChannels;
+    private int preparedBlockSize;
     private float[][][] sidechainChannelBuffers;
     private float[][][] sidechainReturnBuffers;
     private final EffectsChain.SidechainInputResolver sidechainResolver = this::resolveSidechainInput;
@@ -192,6 +193,7 @@ public final class Mixer {
      */
     public void addChannel(MixerChannel channel) {
         Objects.requireNonNull(channel, "channel must not be null");
+        prepareAddedChannel(channel);
         channel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         if (pluginSupervisor != null) {
             channel.setPluginSupervisor(pluginSupervisor);
@@ -199,6 +201,12 @@ public final class Mixer {
         channels.add(channel);
         ownedChannels.add(channel);
         recalculateDelayCompensation();
+    }
+
+    private void prepareAddedChannel(MixerChannel channel) {
+        if (preparedAudioChannels > 0 && preparedBlockSize > 0) {
+            channel.prepareEffectsChain(preparedAudioChannels, preparedBlockSize);
+        }
     }
 
     /**
@@ -285,6 +293,7 @@ public final class Mixer {
                     "cannot exceed " + MAX_RETURN_BUSES + " return buses");
         }
         MixerChannel returnBus = new MixerChannel(name);
+        prepareAddedChannel(returnBus);
         returnBus.setSoloSafe(true);
         returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         if (pluginSupervisor != null) {
@@ -305,6 +314,7 @@ public final class Mixer {
     public void addReturnBus(MixerChannel returnBus) {
         Objects.requireNonNull(returnBus, "returnBus must not be null");
         if (!returnBuses.contains(returnBus)) {
+            prepareAddedChannel(returnBus);
             returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
             if (pluginSupervisor != null) {
                 returnBus.setPluginSupervisor(pluginSupervisor);
@@ -425,14 +435,23 @@ public final class Mixer {
      * that {@link #mixDown} remains zero-allocation on the audio thread.
      *
      * <p>Call this method when the audio engine starts or when the buffer size
-     * changes. It also stores the dimensions on each channel so that adding or
-     * removing insert effects automatically re-allocates.</p>
+     * changes. The dimensions are remembered so newly added or restored channels
+     * and return buses are prepared before joining the mixer. Each effects chain
+     * also remembers them so later insert mutations prepare their own scratch.</p>
      *
      * @param audioChannels the number of audio channels (e.g., 2 for stereo)
      * @param blockSize     the number of sample frames per processing block
+     * @throws IllegalArgumentException if either dimension is not positive
      */
     public void prepareForPlayback(int audioChannels, int blockSize) {
+        if (audioChannels <= 0) {
+            throw new IllegalArgumentException("audioChannels must be positive: " + audioChannels);
+        }
+        if (blockSize <= 0) {
+            throw new IllegalArgumentException("blockSize must be positive: " + blockSize);
+        }
         this.preparedAudioChannels = audioChannels;
+        this.preparedBlockSize = blockSize;
         // Lazily-grown per-channel pre-insert buffers; outer array sized in
         // mixDown when the channel count is known. Keep the placeholders
         // empty here so prepareForPlayback remains O(channels + returns).

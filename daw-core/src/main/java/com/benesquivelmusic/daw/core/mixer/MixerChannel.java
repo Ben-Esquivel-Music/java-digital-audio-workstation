@@ -387,8 +387,8 @@ public final class MixerChannel {
     }
 
     /**
-     * Pre-allocates intermediate buffers for this channel's effects chain so
-     * that real-time processing remains zero-allocation.
+     * Pre-allocates float and double intermediate buffers for this channel's
+     * effects chain so its scratch is ready for either mixer precision.
      *
      * <p>Call this when the audio engine starts or when the buffer size changes.
      * The chain remembers the dimensions and re-sizes its own scratch inside
@@ -403,6 +403,7 @@ public final class MixerChannel {
     public void prepareEffectsChain(int audioChannels, int blockSize) {
         if (audioChannels > 0 && blockSize > 0) {
             effectsChain.allocateIntermediateBuffers(audioChannels, blockSize);
+            effectsChain.allocateIntermediateDoubleBuffers(audioChannels, blockSize);
         }
     }
 
