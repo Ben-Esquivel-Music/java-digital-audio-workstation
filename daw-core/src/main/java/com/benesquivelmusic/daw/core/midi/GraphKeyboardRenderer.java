@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 
 /**
  * Device-free built-in keyboard synthesis. MIDI program families select distinct
@@ -21,14 +22,19 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class GraphKeyboardRenderer implements SoundFontRenderer {
     private static final int CHANNELS = 16;
     private static final int NOTES = 128;
-    private final AtomicIntegerArray velocities = new AtomicIntegerArray(CHANNELS * NOTES);
+    private static final long VELOCITY_MASK = 0x7F;
+    private static final long KEY_DOWN = 0x80;
+    private static final long PEDAL_DOWN = 1;
+    private static final int SUSTAIN_SHIFT = 8;
+    // Low bits hold velocity/key state; higher bits identify the pedal press that latched a release.
+    private final AtomicLongArray noteStates = new AtomicLongArray(CHANNELS * NOTES);
     private final AtomicIntegerArray programs = new AtomicIntegerArray(CHANNELS);
     private final AtomicIntegerArray bends = new AtomicIntegerArray(CHANNELS);
-    private final AtomicIntegerArray sustain = new AtomicIntegerArray(CHANNELS);
+    private final AtomicLongArray sustain = new AtomicLongArray(CHANNELS);
     private final AtomicLong resetGeneration = new AtomicLong();
     private final double[] phases = new double[CHANNELS * NOTES];
     private final double[] envelopes = new double[CHANNELS * NOTES];
-    private final int[] heldVelocities = new int[CHANNELS * NOTES];
+    private final int[] voiceVelocities = new int[CHANNELS * NOTES];
     private final double[] frequencies = new double[NOTES];
     private long renderedReset;
     private double sampleRate;
@@ -62,20 +68,45 @@ public final class GraphKeyboardRenderer implements SoundFontRenderer {
     public void sendEvent(MidiEvent event) {
         int channel = event.channel();
         switch (event.type()) {
-            case NOTE_ON -> velocities.set(channel * NOTES + event.data1(), event.data2());
-            case NOTE_OFF -> velocities.set(channel * NOTES + event.data1(), 0);
+            case NOTE_ON -> {
+                if (event.data2() > 0) {
+                    noteStates.set(channel * NOTES + event.data1(), KEY_DOWN | event.data2());
+                } else {
+                    releaseNote(channel, event.data1());
+                }
+            }
+            case NOTE_OFF -> releaseNote(channel, event.data1());
             case PROGRAM_CHANGE -> programs.set(channel, event.data1());
             case PITCH_BEND -> bends.set(channel, event.data1());
             case CONTROL_CHANGE -> {
                 if (event.data1() == 64) {
-                    sustain.set(channel, event.data2() >= 64 ? 1 : 0);
+                    updateSustain(channel, event.data2());
                 } else if (event.data1() == 120 || event.data1() == 123) {
                     for (int note = 0; note < NOTES; note++) {
-                        velocities.set(channel * NOTES + note, 0);
+                        noteStates.set(channel * NOTES + note, 0);
                     }
-                    sustain.set(channel, 0);
+                    updateSustain(channel, 0);
                 }
             }
+        }
+    }
+
+    private void releaseNote(int channel, int note) {
+        noteStates.getAndUpdate(channel * NOTES + note, state -> {
+            if ((state & KEY_DOWN) == 0) {
+                return state;
+            }
+            long pedal = sustain.get(channel);
+            return (pedal & PEDAL_DOWN) == 0 ? 0 : (pedal << SUSTAIN_SHIFT) | (state & VELOCITY_MASK);
+        });
+    }
+
+    private void updateSustain(int channel, int value) {
+        if (value >= 64) {
+            sustain.getAndUpdate(channel, state -> state | PEDAL_DOWN);
+        } else {
+            // A release invalidates earlier latches even when the pedal is repressed before rendering.
+            sustain.getAndUpdate(channel, state -> (state + 2) & ~PEDAL_DOWN);
         }
     }
 
@@ -88,7 +119,7 @@ public final class GraphKeyboardRenderer implements SoundFontRenderer {
         if (reset != renderedReset) {
             Arrays.fill(phases, 0);
             Arrays.fill(envelopes, 0);
-            Arrays.fill(heldVelocities, 0);
+            Arrays.fill(voiceVelocities, 0);
             renderedReset = reset;
         }
         double attackStep = 1.0 / (0.004 * sampleRate);
@@ -96,23 +127,24 @@ public final class GraphKeyboardRenderer implements SoundFontRenderer {
         for (int channel = 0; channel < CHANNELS; channel++) {
             int program = programs.get(channel);
             double pitch = Math.pow(2, (bends.get(channel) - 8192) / 8192.0 / 6.0);
-            boolean pedal = sustain.get(channel) != 0;
+            long pedal = sustain.get(channel);
             for (int note = 0; note < NOTES; note++) {
                 int index = channel * NOTES + note;
-                int velocity = velocities.get(index);
-                boolean held = velocity > 0 || pedal && heldVelocities[index] > 0;
-                if (velocity > 0) {
-                    heldVelocities[index] = velocity;
+                long state = noteStates.get(index);
+                boolean held = (state & KEY_DOWN) != 0
+                        || (pedal & PEDAL_DOWN) != 0 && (state >>> SUSTAIN_SHIFT) == pedal;
+                if (held) {
+                    voiceVelocities[index] = (int) (state & VELOCITY_MASK);
                 }
                 double envelope = envelopes[index];
                 if (!held && envelope < 0.00001) {
-                    heldVelocities[index] = 0;
+                    voiceVelocities[index] = 0;
                     continue;
                 }
                 double phase = phases[index];
                 double frequency = frequencies[note] * pitch;
                 double increment = frequency / sampleRate;
-                double amplitude = gain * heldVelocities[index] / 127.0;
+                double amplitude = gain * voiceVelocities[index] / 127.0;
                 for (int frame = 0; frame < frames; frame++) {
                     envelope = held ? Math.min(1, envelope + attackStep) : envelope * release;
                     double sample = waveform(program, phase, frequency) * envelope * amplitude;
@@ -153,11 +185,11 @@ public final class GraphKeyboardRenderer implements SoundFontRenderer {
     }
 
     @Override public void allNotesOff() {
-        for (int i = 0; i < velocities.length(); i++) {
-            velocities.set(i, 0);
+        for (int i = 0; i < noteStates.length(); i++) {
+            noteStates.set(i, 0);
         }
         for (int i = 0; i < CHANNELS; i++) {
-            sustain.set(i, 0);
+            updateSustain(i, 0);
         }
         resetGeneration.incrementAndGet();
     }

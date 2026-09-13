@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -459,6 +461,52 @@ class SignalGeneratorPluginTest {
 
         assertThat(hasNonZeroSamples(buffer)).isTrue();
         assertThat(countDistinctValues(buffer)).isGreaterThan(100);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void noiseRenderingIsBoundedDeterministicAndRestartsAfterPanic(SignalGeneratorPlugin.WaveformType waveform) {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(waveform);
+        plugin.setAmplitudeDb(0.0);
+        float[][] input = new float[2][4096];
+        float[][] first = new float[2][4096];
+        float[][] second = new float[2][4096];
+
+        plugin.process(input, first, 4096);
+        plugin.process(input, second, 4096);
+
+        assertThat(first[0]).containsExactly(first[1]);
+        assertThat(countDistinctValues(first[0])).isGreaterThan(100);
+        assertThat(peakAmplitude(first[0])).isLessThanOrEqualTo(1.0f);
+        assertThat(java.util.Arrays.equals(first[0], second[0])).isFalse();
+
+        plugin.panic();
+        plugin.setMuted(false);
+        plugin.process(input, second, 4096);
+        assertThat(second[0]).containsExactly(first[0]);
+        assertThat(second[1]).containsExactly(first[1]);
+    }
+
+    @Test
+    void whiteNoiseSequenceContinuesAcrossRenderBlockBoundaries() {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(SignalGeneratorPlugin.WaveformType.WHITE_NOISE);
+        plugin.setAmplitudeDb(0.0);
+        float[][] input = new float[2][1024];
+        float[][] continuous = new float[2][1024];
+        float[][] first = new float[2][317];
+        float[][] second = new float[2][707];
+        plugin.process(input, continuous, 1024);
+
+        plugin.setWaveformType(SignalGeneratorPlugin.WaveformType.WHITE_NOISE);
+        plugin.process(input, first, 317);
+        plugin.process(input, second, 707);
+
+        assertThat(first[0]).containsExactly(java.util.Arrays.copyOfRange(continuous[0], 0, 317));
+        assertThat(second[0]).containsExactly(java.util.Arrays.copyOfRange(continuous[0], 317, 1024));
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
+import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
@@ -17,6 +18,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent;
+import com.benesquivelmusic.daw.sdk.audio.CaptureRequirement;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.event.BusEvent;
@@ -30,6 +32,9 @@ import javafx.scene.control.Label;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -192,6 +197,35 @@ class TransportControllerTest {
         @Override public void sink(AudioBlock block) { }
         @Override public boolean isOpen() { return false; }
         @Override public void close() { }
+    }
+
+    private static final class CaptureTrackingBackend implements AudioBackend {
+        private final MockAudioBackend delegate = new MockAudioBackend();
+        private final boolean captureCapable;
+        private CaptureRequirement requestedCapture;
+
+        private CaptureTrackingBackend(boolean captureCapable) {
+            this.captureCapable = captureCapable;
+        }
+
+        @Override public String name() { return delegate.name(); }
+        @Override public boolean isAvailable() { return true; }
+        @Override public boolean supportsStreaming() { return true; }
+        @Override public List<AudioDeviceInfo> listDevices() { return delegate.listDevices(); }
+        @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                                   int bufferFrames) {
+            delegate.open(device, format, bufferFrames);
+        }
+        @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                                   int bufferFrames, CaptureRequirement capture) {
+            requestedCapture = capture;
+            delegate.open(device, format, bufferFrames);
+        }
+        @Override public int openedInputChannels() { return captureCapable ? delegate.openedInputChannels() : 0; }
+        @Override public Flow.Publisher<AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
+        @Override public void sink(AudioBlock block) { delegate.sink(block); }
+        @Override public boolean isOpen() { return delegate.isOpen(); }
+        @Override public void close() { delegate.close(); }
     }
 
     /** Opens normally once, then refuses the subscription used by a resume. */
@@ -775,6 +809,71 @@ class TransportControllerTest {
                 .contains("refused for recording", "Broken Backend", "<default>");
         assertThat(notificationBar.getPill().getActionButton().getText())
                 .isEqualTo("Open Audio Settings");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, false", "true, false", "true, true"})
+    void instrumentRecordingRequiresCaptureOnlyWhenPhysicalInputIsAssigned(boolean physicalInput,
+                                                                           boolean captureCapable) throws Exception {
+        var project = new DawProject("Keyboard recording", new AudioFormat(48_000, 2, 16, 256));
+        var keyboard = project.createAudioTrack("Keyboard");
+        keyboard.setArmed(true);
+        keyboard.setInputRouting(physicalInput ? new InputRouting(1, 1) : InputRouting.NONE);
+        project.getMixerChannelForTrack(keyboard).addInsert(PluginSignalPathActivationTest.builtInSlot(
+                com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin.class));
+        var backend = new CaptureTrackingBackend(captureCapable);
+        var controller = newController(project, backend);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::toggleRecord);
+            assertThat(backend.requestedCapture).isEqualTo(physicalInput
+                    ? CaptureRequirement.REQUIRED : CaptureRequirement.OPTIONAL);
+            boolean started = !physicalInput || captureCapable;
+            assertThat(keyboard.isRecording()).isEqualTo(started);
+            assertThat(recIndicator.isVisible()).isEqualTo(started);
+            assertThat(project.getTransport().getState()).isEqualTo(started
+                    ? com.benesquivelmusic.daw.core.transport.TransportState.RECORDING
+                    : com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        } finally {
+            runHandler(controller::stop);
+            audioEngine.stopAudioOutput();
+            project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void mixedInstrumentAndPhysicalInputTracksRequireCaptureForTheWholeTake(boolean inputTrackHasInstrument)
+            throws Exception {
+        var project = new DawProject("Mixed recording", new AudioFormat(48_000, 2, 16, 256));
+        var keyboard = project.createAudioTrack("Keyboard");
+        keyboard.setArmed(true);
+        keyboard.setInputRouting(InputRouting.NONE);
+        project.getMixerChannelForTrack(keyboard).addInsert(PluginSignalPathActivationTest.builtInSlot(
+                com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin.class));
+        var microphone = project.createAudioTrack("Microphone");
+        microphone.setArmed(true);
+        microphone.setInputRouting(new InputRouting(1, 1));
+        if (inputTrackHasInstrument) {
+            project.getMixerChannelForTrack(microphone).addInsert(PluginSignalPathActivationTest.builtInSlot(
+                    com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin.class));
+        }
+        var backend = new CaptureTrackingBackend(false);
+        var controller = newController(project, backend);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::toggleRecord);
+            assertThat(backend.requestedCapture).isEqualTo(CaptureRequirement.REQUIRED);
+            assertThat(keyboard.isRecording()).isFalse();
+            assertThat(microphone.isRecording()).isFalse();
+            assertThat(recIndicator.isVisible()).isFalse();
+            assertThat(project.getTransport().getState())
+                    .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        } finally {
+            runHandler(controller::stop);
+            audioEngine.stopAudioOutput();
+            project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
+        }
     }
 
     @Test

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -103,6 +104,89 @@ class MatchEqPluginTest {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> plugin.loadReferenceFile(unsupported))
                 .withMessageContaining("Unsupported");
+    }
+
+    @Test
+    void renderHandoffRetainsPublicationAndEventuallyAppliesConcurrentPreparations() throws Exception {
+        var plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
+        plugin.initialize(stubContext());
+        var signalPath = plugin.asAudioProcessor().orElseThrow();
+        float[][] audio = new float[2][16];
+
+        plugin.setAutomatableParameter(2, 0.25);
+        Object firstPublication = awaitPublication(plugin, null);
+        signalPath.process(audio, audio, 16);
+        assertThat(plugin.getProcessor().getAmount()).isEqualTo(0.25);
+        assertThat(publication(plugin)).as("rendering must not erase a worker publication")
+                .isSameAs(firstPublication);
+
+        for (int request = 0; request < 100; request++) {
+            plugin.setAutomatableParameter(2, request / 100.0);
+            signalPath.process(audio, audio, 16);
+        }
+        plugin.setAutomatableParameter(2, 0.75);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (plugin.getProcessor().getAmount() != 0.75 && System.nanoTime() < deadline) {
+            signalPath.process(audio, audio, 16);
+            Thread.sleep(5);
+        }
+
+        assertThat(plugin.getProcessor().getAmount()).isEqualTo(0.75);
+        Object latestPublication = publication(plugin);
+        for (int block = 0; block < 100; block++) signalPath.process(audio, audio, 16);
+        assertThat(plugin.getProcessor().getAmount()).isEqualTo(0.75);
+        assertThat(publication(plugin)).isSameAs(latestPublication);
+    }
+
+    @Test
+    void renderRejectsPreparedResultsFromBeforeAnAutomationValueCycle() throws Exception {
+        var plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
+        plugin.initialize(stubContext());
+        var original = plugin.getProcessor();
+        var signalPath = plugin.asAudioProcessor().orElseThrow();
+        plugin.setAutomatableParameter(2, 0.25);
+        Object stalePublication = awaitPublication(plugin, null);
+
+        // Stop only the producer so the stale-result interleaving is deterministic.
+        var preparing = MatchEqPlugin.class.getDeclaredField("preparing");
+        preparing.setAccessible(true);
+        preparing.setBoolean(plugin, false);
+        var workerField = MatchEqPlugin.class.getDeclaredField("preparationThread");
+        workerField.setAccessible(true);
+        var worker = (Thread) workerField.get(plugin);
+        worker.interrupt();
+        worker.join(TimeUnit.SECONDS.toMillis(5));
+        assertThat(worker.isAlive()).isFalse();
+
+        plugin.setAutomatableParameter(2, 0.75);
+        plugin.setAutomatableParameter(2, 0.25);
+        float[][] audio = new float[2][16];
+        signalPath.process(audio, audio, 16);
+
+        assertThat(plugin.getProcessor()).as("equal values do not make an old revision current")
+                .isSameAs(original);
+        assertThat(publication(plugin)).isSameAs(stalePublication);
+    }
+
+    private static Object awaitPublication(MatchEqPlugin plugin, Object previous) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        Object published;
+        do {
+            published = publication(plugin);
+            if (published != null && published != previous) return published;
+            Thread.sleep(5);
+        } while (System.nanoTime() < deadline);
+        assertThat(published).as("the worker prepares an EQ result without rendering")
+                .isNotNull().isNotSameAs(previous);
+        return published;
+    }
+
+    private static Object publication(MatchEqPlugin plugin) throws ReflectiveOperationException {
+        var field = MatchEqPlugin.class.getDeclaredField("prepared");
+        field.setAccessible(true);
+        return field.get(plugin);
     }
 
     private static PluginContext stubContext() {

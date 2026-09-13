@@ -21,6 +21,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
@@ -156,6 +157,7 @@ class PluginGraphLivenessTest {
     @Test
     void keyboardAuditionsThroughGraphWhenStoppedAndRecordsOnItsArmedTrack() {
         var graph = graph();
+        graph.track().setInputRouting(InputRouting.NONE);
         var plugin = new VirtualKeyboardPlugin();
         var slot = new BuiltInPluginGraph(new com.benesquivelmusic.daw.core.mixer.ProcessorRegistry()).createSlot(plugin, context(), null);
         graph.channel().addInsert(slot);
@@ -175,6 +177,110 @@ class PluginGraphLivenessTest {
             assertThat(peak(clips.getFirst().getAudioData())).as("instrument audio recorded without physical input")
                     .isGreaterThan(0.01f);
             assertThat(graph.engine().hasGraphInstrument(graph.track())).isTrue();
+        } finally {
+            if (recording.isActive()) { recording.stop(); }
+            graph.engine().stop();
+            plugin.dispose();
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    void keyboardAuditionsOnReturnBusesWithoutRegularInstrumentChannels(boolean additionalReturn,
+                                                                       boolean paused) {
+        var graph = graph();
+        var channel = additionalReturn ? graph.mixer().addReturnBus("Keyboard Return")
+                : graph.mixer().getAuxBus();
+        var plugin = new VirtualKeyboardPlugin();
+        channel.addInsert(new BuiltInPluginGraph(new com.benesquivelmusic.daw.core.mixer.ProcessorRegistry())
+                .createSlot(plugin, context(), null));
+        if (paused) {
+            graph.transport().play();
+            graph.transport().pause();
+        }
+        graph.engine().start();
+        try {
+            plugin.getProcessor().noteOn(69, 100);
+            var output = new float[2][256];
+            graph.engine().processBlock(null, output, 256);
+            assertThat(peak(output)).as("return-only keyboard remains audible with an idle transport")
+                    .isGreaterThan(0.01f);
+            assertThat(graph.transport().getPositionInBeats()).isZero();
+
+            channel.setInsertBypassed(0, true);
+            graph.engine().processBlock(null, output, 256);
+            assertThat(peak(output)).isZero();
+            channel.setInsertBypassed(0, false);
+            graph.engine().processBlock(null, output, 256);
+            assertThat(peak(output)).as("unbypassing resumes audition without starting playback")
+                    .isGreaterThan(0.01f);
+        } finally {
+            graph.engine().stop();
+            plugin.dispose();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2})
+    void recordingHonorsPhysicalInputRoutingEvenWhenTheTrackHasAnInstrument(int inputChannels) {
+        var graph = graph();
+        graph.track().setInputRouting(new InputRouting(1, inputChannels));
+        var plugin = new VirtualKeyboardPlugin();
+        graph.channel().addInsert(new BuiltInPluginGraph(new com.benesquivelmusic.daw.core.mixer.ProcessorRegistry())
+                .createSlot(plugin, context(), null));
+        var recording = new RecordingPipeline(graph.engine(), graph.transport(), FORMAT,
+                directory, List.of(graph.track()));
+        try {
+            plugin.getProcessor().noteOn(69, 100);
+            recording.start();
+            var input = new float[3][256];
+            java.util.Arrays.fill(input[0], 0.7f);
+            java.util.Arrays.fill(input[1], 0.25f);
+            java.util.Arrays.fill(input[2], -0.5f);
+            var output = new float[2][256];
+            graph.engine().processBlock(input, output, 256);
+            assertThat(peak(output)).as("the hosted keyboard is producing a distinct graph signal")
+                    .isGreaterThan(0.01f);
+            var captured = recording.getSession(graph.track()).getCapturedAudio();
+            assertThat(captured[0]).containsOnly(0.25f);
+            assertThat(captured[1]).containsOnly(inputChannels == 1 ? 0f : -0.5f);
+        } finally {
+            if (recording.isActive()) { recording.stop(); }
+            graph.engine().stop();
+            plugin.dispose();
+        }
+    }
+
+    @Test
+    void mixedRecordingKeepsMicrophoneAndInstrumentSourcesOnTheirOwnTracks() {
+        var graph = graph();
+        graph.track().setInputRouting(InputRouting.NONE);
+        var plugin = new VirtualKeyboardPlugin();
+        graph.channel().addInsert(new BuiltInPluginGraph(new com.benesquivelmusic.daw.core.mixer.ProcessorRegistry())
+                .createSlot(plugin, context(), null));
+        var microphone = new Track("Microphone", TrackType.AUDIO);
+        microphone.setArmed(true);
+        microphone.setInputRouting(new InputRouting(1, 1));
+        var disconnected = new Track("Unassigned", TrackType.AUDIO);
+        disconnected.setArmed(true);
+        disconnected.setInputRouting(InputRouting.NONE);
+        var tracks = List.of(graph.track(), microphone, disconnected);
+        graph.mixer().addChannel(new MixerChannel("Microphone"));
+        graph.mixer().addChannel(new MixerChannel("Unassigned"));
+        graph.engine().setGraph(graph.transport(), graph.mixer(), tracks);
+        var recording = new RecordingPipeline(graph.engine(), graph.transport(), FORMAT, directory, tracks);
+        try {
+            plugin.getProcessor().noteOn(69, 100);
+            recording.start();
+            var input = new float[2][256];
+            java.util.Arrays.fill(input[0], -0.5f);
+            java.util.Arrays.fill(input[1], 0.25f);
+            graph.engine().processBlock(input, new float[2][256], 256);
+            var keyboardCapture = recording.getSession(graph.track()).getCapturedAudio();
+            assertThat(peak(keyboardCapture)).isGreaterThan(0.01f);
+            assertThat(keyboardCapture[0]).isNotEqualTo(input[0]);
+            assertThat(recording.getSession(microphone).getCapturedAudio()[0]).containsOnly(0.25f);
+            assertThat(recording.getSession(disconnected).getCapturedSampleCount()).isZero();
         } finally {
             if (recording.isActive()) { recording.stop(); }
             graph.engine().stop();

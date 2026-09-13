@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import java.util.Objects;
-import java.util.Random;
 import java.util.List;
 import java.util.Optional;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -74,6 +73,7 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
 
     /** Number of octave rows for Voss–McCartney pink noise generation. */
     private static final int PINK_NOISE_ROWS = 16;
+    private static final long NOISE_SEED = 0x9E3779B97F4A7C15L;
 
     private static final PluginDescriptor DESCRIPTOR = new PluginDescriptor(
             PLUGIN_ID,
@@ -132,9 +132,12 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
 
     // Generation state
     private double phase;
-    private Random noiseRandom;
-    private double[] pinkNoiseRows;
+    private long noiseState;
+    private final double[] pinkNoiseRows = new double[PINK_NOISE_ROWS];
     private double pinkNoiseRunningSum;
+    // Control calls publish a reset; only rendering mutates the PRNG/filter state.
+    private volatile Object generationReset = new Object();
+    private Object appliedGenerationReset;
 
     public SignalGeneratorPlugin() {
     }
@@ -168,6 +171,7 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
 
     @Override @RealTimeSafe
     public void process(float[][] input, float[][] output, int frames) {
+        applyGenerationReset();
         double sampleRate = context.getSampleRate();
         double amplitude = active && !muted ? dbToLinear(amplitudeDb) : 0;
         for (int frame = 0; frame < frames; frame++) {
@@ -207,8 +211,6 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
         active = false;
         muted = false;
         context = null;
-        noiseRandom = null;
-        pinkNoiseRows = null;
     }
 
     // ── Signal Parameters ──────────────────────────────────────────────
@@ -442,6 +444,7 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
             throw new IllegalStateException("Plugin has not been initialized");
         }
 
+        applyGenerationReset();
         if (muted || !active) {
             fillSilence(buffer);
             return;
@@ -519,23 +522,26 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
     }
 
     private double generateWhiteNoise() {
-        return noiseRandom.nextDouble() * 2.0 - 1.0;
+        // Render-owned xorshift64 state has a fixed cost without Random's CAS loop.
+        long next = noiseState;
+        next ^= next << 13;
+        next ^= next >>> 7;
+        next ^= next << 17;
+        noiseState = next;
+        return (next >>> 11) * 0x1.0p-52 - 1.0;
     }
 
     private double generatePinkNoise(int bufferIndex) {
-        if (pinkNoiseRows == null) {
-            return 0.0;
-        }
         int sampleIndex = bufferIndex + 1;
         int changed = sampleIndex ^ (sampleIndex - 1);
         for (int r = 0; r < PINK_NOISE_ROWS; r++) {
             if ((changed & (1 << r)) != 0) {
                 pinkNoiseRunningSum -= pinkNoiseRows[r];
-                pinkNoiseRows[r] = noiseRandom.nextDouble() * 2.0 - 1.0;
+                pinkNoiseRows[r] = generateWhiteNoise();
                 pinkNoiseRunningSum += pinkNoiseRows[r];
             }
         }
-        double whiteComponent = noiseRandom.nextDouble() * 2.0 - 1.0;
+        double whiteComponent = generateWhiteNoise();
         return (pinkNoiseRunningSum + whiteComponent) / (PINK_NOISE_ROWS + 1);
     }
 
@@ -549,14 +555,20 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
     }
 
     private void resetGenerationState() {
+        generationReset = new Object();
+    }
+
+    private void applyGenerationReset() {
+        Object requested = generationReset;
+        if (requested == appliedGenerationReset) return;
         phase = 0.0;
-        noiseRandom = new Random(0);
-        pinkNoiseRows = new double[PINK_NOISE_ROWS];
+        noiseState = NOISE_SEED;
         pinkNoiseRunningSum = 0.0;
         for (int r = 0; r < PINK_NOISE_ROWS; r++) {
-            pinkNoiseRows[r] = noiseRandom.nextDouble() * 2.0 - 1.0;
+            pinkNoiseRows[r] = generateWhiteNoise();
             pinkNoiseRunningSum += pinkNoiseRows[r];
         }
+        appliedGenerationReset = requested;
     }
 
     private static void fillSilence(float[] buffer) {

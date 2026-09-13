@@ -471,7 +471,13 @@ public final class RenderPipeline {
                 return true;
             }
         }
-        return false;
+        List<MixerChannel> returns = mixer.getReturnBuses();
+        for (int i = 0; i < returns.size(); i++) {
+            if (returns.get(i).hasInstrumentInsert()) {
+                return true;
+            }
+        }
+        return mixer.getMasterChannel().hasInstrumentInsert();
     }
 
     /**

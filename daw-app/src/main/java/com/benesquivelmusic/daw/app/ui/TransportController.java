@@ -711,7 +711,8 @@ final class TransportController implements TransportIntentHandler {
             // open and the pipeline start reach a recording callback that is
             // still null: they were never part of any take.
             try {
-                if (armedAudioTracks.stream().allMatch(audioEngine::hasGraphInstrument)) {
+                if (armedAudioTracks.stream().allMatch(track ->
+                        track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track))) {
                     audioEngine.startAudioOutput();
                 } else {
                     audioEngine.startAudioInputOutput();

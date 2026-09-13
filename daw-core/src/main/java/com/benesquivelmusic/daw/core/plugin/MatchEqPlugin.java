@@ -20,8 +20,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -59,8 +57,11 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     private static final MatchEqProcessor.PhaseMode[] PHASE_MODES = MatchEqProcessor.PhaseMode.values();
     private volatile MatchEqProcessor processor;
     private final AudioProcessor signalPath = new MatchSignalPath();
-    private final AtomicLong requestedRevision = new AtomicLong();
-    private final AtomicReference<PreparedMatch> prepared = new AtomicReference<>();
+    // Automation has one render-thread writer; the preparation worker only reads it.
+    private volatile long requestedRevision;
+    // Only the preparation worker publishes. Rendering never clears the mailbox,
+    // so accepting one result cannot erase a newer concurrent publication.
+    private volatile PreparedMatch prepared;
     private volatile int fftSizeIndex = MatchEqProcessor.FftSize.SIZE_2048.ordinal();
     private volatile int smoothingIndex = MatchEqProcessor.Smoothing.THIRD_OCTAVE.ordinal();
     private volatile double amount = 1.0;
@@ -106,7 +107,7 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
         active = false;
         preparing = false;
         if (preparationThread != null) preparationThread.interrupt();
-        prepared.set(null);
+        prepared = null;
         processor = null;
     }
 
@@ -155,19 +156,19 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
             case 3 -> phaseIndex = (int) Math.round(Math.clamp(value, 0.0, PHASE_MODES.length - 1.0));
             default -> { return; }
         }
-        requestedRevision.incrementAndGet();
+        requestedRevision++;
     }
 
     private void prepareMatches() {
         long completed = 0;
         while (preparing) {
-            long revision = requestedRevision.get();
+            long revision = requestedRevision;
             MatchEqProcessor current = processor;
             if (current == null) return;
             if (revision != completed) {
                 MatchEqProcessor next = prepareMatch(current);
-                if (preparing && revision == requestedRevision.get()) {
-                    prepared.set(new PreparedMatch(revision, next));
+                if (preparing && revision == requestedRevision) {
+                    prepared = new PreparedMatch(revision, next);
                 }
                 completed = revision;
             }
@@ -208,8 +209,10 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     private final class MatchSignalPath implements AudioProcessor {
         @Override @RealTimeSafe
         public void process(float[][] input, float[][] output, int frames) {
-            PreparedMatch next = prepared.getAndSet(null);
-            if (next != null && next.revision() == requestedRevision.get()) processor = next.processor();
+            PreparedMatch next = prepared;
+            if (next != null && next.revision() == requestedRevision && processor != next.processor()) {
+                processor = next.processor();
+            }
             MatchEqProcessor current = processor;
             if (current != null) current.process(input, output, frames);
         }
