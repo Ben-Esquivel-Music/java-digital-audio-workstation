@@ -289,6 +289,13 @@ public final class PluginEditorSession {
      * store from the metering tap bus; {@code null} while unbound.
      */
     private Runnable insertMeterDetach;
+    private com.benesquivelmusic.daw.app.ui.metering.AnalyzerBinding analyzerBinding;
+
+    public void bindAnalyzer(com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds feeds) {
+        if (analyzerBinding != null) analyzerBinding.close();
+        analyzerBinding = plugin instanceof com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin analyzer
+                && feeds != null ? feeds.bindUtility(analyzer, frame) : null;
+    }
 
     private PluginEditorSession(DawPlugin plugin, String insertLocation, Deps deps) {
         this.plugin = Objects.requireNonNull(plugin, "plugin must not be null");
@@ -421,6 +428,7 @@ public final class PluginEditorSession {
         disposed = true;
         timer.stop();
         unbindInsertMeters();
+        if (analyzerBinding != null) analyzerBinding.close();
         teardownCanvas();
         grid = null;
         if (frame.getScene() != null) {

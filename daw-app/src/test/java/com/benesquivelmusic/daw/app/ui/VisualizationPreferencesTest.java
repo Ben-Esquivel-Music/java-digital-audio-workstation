@@ -33,9 +33,9 @@ class VisualizationPreferencesTest {
     }
 
     @Test
-    void shouldDefaultAllTilesToVisible() {
+    void shouldDefaultExistingTilesVisibleAndTunerHidden() {
         for (DisplayTile tile : DisplayTile.values()) {
-            assertThat(vizPrefs.isTileVisible(tile)).isTrue();
+            assertThat(vizPrefs.isTileVisible(tile)).isEqualTo(tile != DisplayTile.TUNER);
         }
     }
 
@@ -96,8 +96,8 @@ class VisualizationPreferencesTest {
     }
 
     @Test
-    void shouldHaveFiveDisplayTiles() {
-        assertThat(DisplayTile.values()).hasSize(5);
+    void shouldHaveSixDisplayTiles() {
+        assertThat(DisplayTile.values()).hasSize(6);
     }
 
     @Test
@@ -107,7 +107,8 @@ class VisualizationPreferencesTest {
                 DisplayTile.LEVELS,
                 DisplayTile.WAVEFORM,
                 DisplayTile.LOUDNESS,
-                DisplayTile.CORRELATION
+                DisplayTile.CORRELATION,
+                DisplayTile.TUNER
         );
     }
 

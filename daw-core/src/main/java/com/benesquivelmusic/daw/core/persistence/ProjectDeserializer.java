@@ -898,18 +898,10 @@ public final class ProjectDeserializer {
     }
 
     private void parseInsertSlot(Element elem, MixerChannel channel, DawProject project) {
-        String effectTypeStr = elem.getAttribute("effect-type");
-        if (effectTypeStr.isEmpty()) {
-            return;
-        }
         try {
-            InsertEffectType effectType = InsertEffectType.valueOf(effectTypeStr);
-            if (effectType == InsertEffectType.CLAP_PLUGIN) {
-                return;
-            }
-            int channels = project.getFormat().channels();
-            double sampleRate = project.getFormat().sampleRate();
-            InsertSlot slot = InsertEffectFactory.createSlot(effectType, channels, sampleRate);
+            InsertSlot slot = createInsertSlot(elem, project);
+            if (slot == null) return;
+            InsertEffectType effectType = slot.getEffectType();
             if (parseBooleanAttr(elem, "bypassed")) {
                 slot.setBypassed(true);
             }
@@ -929,7 +921,7 @@ public final class ProjectDeserializer {
             // compatibility). Legacy projects saved before the preset system
             // use the id-keyed path.
             List<Element> paramElements = getDirectChildElements(elem, "parameter");
-            if (!paramElements.isEmpty()) {
+            if (effectType != null && !paramElements.isEmpty()) {
                 Map<String, Double> namedValues = new LinkedHashMap<>();
                 List<Element> legacyIdElements = new ArrayList<>();
                 for (Element paramElem : paramElements) {
@@ -974,6 +966,18 @@ public final class ProjectDeserializer {
         } catch (IllegalArgumentException ignored) {
             // skip unknown effect types
         }
+    }
+
+    private InsertSlot createInsertSlot(Element elem, DawProject project) {
+        if (elem.hasAttribute("analyzer-plugin-id")) {
+            return AnalyzerInsertPersistence.read(elem, project.getFormat());
+        }
+        String effectTypeStr = elem.getAttribute("effect-type");
+        if (effectTypeStr.isEmpty()) return null;
+        InsertEffectType effectType = InsertEffectType.valueOf(effectTypeStr);
+        if (effectType == InsertEffectType.CLAP_PLUGIN) return null;
+        return InsertEffectFactory.createSlot(effectType, project.getFormat().channels(),
+                project.getFormat().sampleRate());
     }
 
     private MixerChannel resolveSidechainSource(String ref, Mixer mixer) {

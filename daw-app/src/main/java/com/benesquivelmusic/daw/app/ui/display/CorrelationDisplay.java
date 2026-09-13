@@ -74,7 +74,7 @@ public final class CorrelationDisplay extends GpuCanvasView {
     /** Icon overlay label for the Side axis of the goniometer (only visible in goniometer mode). */
     private final Label sideLabel;
 
-    private double correlation = 1.0;
+    private double correlation = Double.NaN;
     private double midLevel = -120.0;
     private double sideLevel = -120.0;
     private double stereoBalance = 0.0;
@@ -92,7 +92,7 @@ public final class CorrelationDisplay extends GpuCanvasView {
         // dispose() to release the off-heap surface and stop the timer.
         setRenderer(this::renderFrame);
         correlationHistory = new double[HISTORY_SIZE];
-        java.util.Arrays.fill(correlationHistory, 1.0);
+        setAccessibleText("No signal");
 
         // Icon overlay labels — replace the single-letter "L", "R", "C", "M", "S" canvas text.
         // BACK (◄) = left channel, FORWARD (►) = right channel, PAN = centre position.
@@ -124,8 +124,18 @@ public final class CorrelationDisplay extends GpuCanvasView {
      * @param data the latest correlation measurement
      */
     public void update(CorrelationData data) {
-        if (data == null) return;
+        if (data == null) {
+            correlation = Double.NaN;
+            midLevel = sideLevel = -120;
+            stereoBalance = 0;
+            historyIndex = historyCount = 0;
+            goniometerData = null;
+            setAccessibleText("No signal");
+            gpuCanvas().requestRender();
+            return;
+        }
         correlation = data.correlation();
+        setAccessibleText(String.format(java.util.Locale.ROOT, "Correlation %.2f", correlation));
         midLevel = data.midLevel();
         sideLevel = data.sideLevel();
         stereoBalance = data.stereoBalance();
@@ -186,6 +196,16 @@ public final class CorrelationDisplay extends GpuCanvasView {
     }
 
     private void renderInto(GraphicsContext gc, double w, double h) {
+        if (!Double.isFinite(correlation)) {
+            gc.setStroke(RING_COLOR);
+            gc.setLineWidth(2);
+            gc.strokeLine(20, h / 2, Math.max(20, w - 20), h / 2);
+            gc.setFill(TEXT_COLOR.deriveColor(0, 1, 1, 0.5));
+            gc.setFont(Font.font(12));
+            gc.setTextAlign(TextAlignment.CENTER);
+            gc.fillText("No signal", w / 2, h / 2 - 12);
+            return;
+        }
         if (goniometerMode && goniometerData != null && goniometerData.pointCount() > 0) {
             renderGoniometer(gc, w, h);
         }

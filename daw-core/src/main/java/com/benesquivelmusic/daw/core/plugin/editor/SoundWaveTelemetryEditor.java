@@ -20,34 +20,15 @@ import java.util.Objects;
  * {@link SoundWaveTelemetryPlugin} (story 302, Plugin View Design Book §8.3
  * item 5).
  *
- * <p><strong>This is a status surface, not a duplicate renderer.</strong> The
- * plugin instance holds no telemetry data — the rich room-telemetry display is
- * the story-287 docked {@code TelemetryView} (daw-app), fed by the static
- * {@code SoundWaveTelemetryEngine} from the project's
- * {@code RoomConfiguration}, and it stays untouched and reachable through the
- * dock manifest. The SDK currently offers no channel that could carry
- * {@code RoomTelemetryData} into a plugin editor, so this canvas renders what
- * the plugin itself can answer — active state, armed-track provider wiring and
- * subscription — plus a gentle animated ribbon so the surface reads as alive.
- * Surfacing the room telemetry through the SDK contract is future-story
- * plumbing.</p>
+ * <p>Renders the host tap's live waveform alongside the plugin's provider
+ * status. With no analysis frames it draws a stationary centre line. Room
+ * geometry remains in the docked Telemetry panel.</p>
  *
  * <p>All colours derive from the per-frame {@link Theme} tokens (§2.5); the
  * status rows select between constant strings, so {@link #render(RenderTick)}
  * stays allocation-free.</p>
  */
 public final class SoundWaveTelemetryEditor implements PluginEditorFactory.Canvas {
-
-    /** Ribbon oscillation rate in radians per second. */
-    private static final double PHASE_RATE = 1.2;
-
-    /** Ribbon spatial frequency in radians per pixel. */
-    private static final double RIBBON_WAVELENGTH = 0.025;
-
-    /** Horizontal sampling step of the ribbon polyline, in pixels. */
-    private static final double RIBBON_STEP = 4.0;
-
-    private static final double TWO_PI = Math.PI * 2.0;
 
     private final SoundWaveTelemetryPlugin plugin;
     private CanvasSurface surface;
@@ -60,9 +41,6 @@ public final class SoundWaveTelemetryEditor implements PluginEditorFactory.Canva
     private Theme cachedTokens;
     private Color dimText;
     private Color ribbon;
-
-    /** Accumulated ribbon phase, advanced by {@link RenderTick#deltaSeconds()}. */
-    private double phase;
 
     /**
      * @param plugin the plugin whose status this editor renders; must not be
@@ -97,7 +75,6 @@ public final class SoundWaveTelemetryEditor implements PluginEditorFactory.Canva
         GraphicsContext gc = surface.graphicsContext();
         Theme tokens = tick.tokens();
         refreshPalette(tokens);
-        phase = (phase + tick.deltaSeconds() * PHASE_RATE) % TWO_PI;
 
         gc.setFill(tokens.background());
         gc.fillRect(0, 0, w, h);
@@ -109,7 +86,7 @@ public final class SoundWaveTelemetryEditor implements PluginEditorFactory.Canva
         gc.fillText("Sound Wave Telemetry", 8, 6);
 
         drawStatusRows(gc, w, h, tokens);
-        drawRibbon(gc, w, h);
+        drawWaveform(gc, w, h);
 
         gc.setFont(hintFont);
         gc.setFill(dimText);
@@ -155,18 +132,25 @@ public final class SoundWaveTelemetryEditor implements PluginEditorFactory.Canva
                 : "Not subscribed to armed-track updates", cx, y + 2 * step);
     }
 
-    private void drawRibbon(GraphicsContext gc, double w, double h) {
+    private void drawWaveform(GraphicsContext gc, double w, double h) {
         double midY = h * 0.68;
-        double amplitude = h * 0.10;
+        double amplitude = h * 0.18;
         gc.setStroke(ribbon);
         gc.setLineWidth(2.0);
+        var data = plugin.getWaveform();
+        if (data == null) {
+            gc.strokeLine(0, midY, w, midY);
+            gc.setFill(dimText);
+            gc.fillText("No signal", w / 2, midY - 12);
+            return;
+        }
         gc.beginPath();
-        boolean first = true;
-        for (double x = 0; x <= w; x += RIBBON_STEP) {
-            double y = midY + amplitude * Math.sin(phase + x * RIBBON_WAVELENGTH);
-            if (first) {
+        float[] values = data.maxValues();
+        for (int i = 0; i < values.length; i++) {
+            double x = i * w / Math.max(1, values.length - 1);
+            double y = midY - amplitude * values[i];
+            if (i == 0) {
                 gc.moveTo(x, y);
-                first = false;
             } else {
                 gc.lineTo(x, y);
             }

@@ -3,6 +3,9 @@ package com.benesquivelmusic.daw.app.ui;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.prefs.Preferences;
+import com.benesquivelmusic.daw.app.ui.dock.DockManager;
+import com.benesquivelmusic.daw.app.ui.dock.DockLayout;
+import com.benesquivelmusic.daw.app.ui.DefaultWorkspaces;
 
 /**
  * Persists visualization panel visibility state across application restarts.
@@ -19,10 +22,19 @@ public final class VisualizationPreferences {
         LEVELS,
         WAVEFORM,
         LOUDNESS,
-        CORRELATION
+        CORRELATION,
+        TUNER
     }
 
     private static final String KEY_ROW_VISIBLE = "vizRowVisible";
+    private static final String KEY_INDEPENDENT = "vizIndependentVisibility";
+    private static final Map<DisplayTile, String> PANELS = Map.of(
+            DisplayTile.SPECTRUM, DefaultWorkspaces.PANEL_SPECTRUM,
+            DisplayTile.LEVELS, DefaultWorkspaces.PANEL_LEVELS,
+            DisplayTile.WAVEFORM, DefaultWorkspaces.PANEL_WAVEFORM,
+            DisplayTile.LOUDNESS, DefaultWorkspaces.PANEL_LOUDNESS,
+            DisplayTile.CORRELATION, DefaultWorkspaces.PANEL_CORRELATION,
+            DisplayTile.TUNER, DefaultWorkspaces.PANEL_TUNER);
 
     private final Preferences prefs;
     private boolean rowVisible;
@@ -45,7 +57,7 @@ public final class VisualizationPreferences {
     private void load() {
         rowVisible = prefs.getBoolean(KEY_ROW_VISIBLE, true);
         for (DisplayTile tile : DisplayTile.values()) {
-            boolean visible = prefs.getBoolean(prefKeyFor(tile), true);
+            boolean visible = prefs.getBoolean(prefKeyFor(tile), tile != DisplayTile.TUNER);
             tileVisibility.put(tile, visible);
         }
     }
@@ -78,6 +90,27 @@ public final class VisualizationPreferences {
     public void setTileVisible(DisplayTile tile, boolean visible) {
         tileVisibility.put(tile, visible);
         prefs.putBoolean(prefKeyFor(tile), visible);
+    }
+
+    /** Restores legacy row preferences once, then independent dock visibility. */
+    public void restore(DockManager dock) {
+        boolean independent = prefs.getBoolean(KEY_INDEPENDENT, false);
+        PANELS.forEach((tile, id) -> dock.setVisible(id, (independent || rowVisible) && isTileVisible(tile)));
+    }
+
+    /** Called after single toggles and completed group/layout batches. */
+    public void saveLayout(DockLayout layout) {
+        boolean anyVisible = false;
+        for (var entry : PANELS.entrySet()) {
+            var panel = layout.entry(entry.getValue());
+            if (panel.isPresent()) {
+                boolean visible = panel.get().visible();
+                setTileVisible(entry.getKey(), visible);
+                anyVisible |= visible;
+            }
+        }
+        setRowVisible(anyVisible);
+        prefs.putBoolean(KEY_INDEPENDENT, true);
     }
 
     /**

@@ -32,8 +32,8 @@ public interface AnalysisConsumer {
 
     /**
      * Reports that the ring dropped blocks because this consumer fell behind.
-     * Called on the analysis thread after the surviving blocks are drained,
-     * with the cumulative count. Default: ignore.
+     * Called on the analysis thread before the first surviving block after a gap,
+     * and after a drain if no block survives, with the cumulative count. Default: ignore.
      *
      * @param droppedBlocks total blocks dropped since attach
      */

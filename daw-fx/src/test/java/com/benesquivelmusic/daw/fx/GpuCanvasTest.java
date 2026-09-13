@@ -19,6 +19,34 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 class GpuCanvasTest {
 
     @Test
+    void prismCanReadPixelBufferAndCompositeOverlayAcrossResize() throws InterruptedException {
+        JavaFxToolkitExtension.runAndWait(() -> {
+            GpuCanvas canvas = GpuCanvas.create().clearColor(Color.BLACK).renderer(context -> {
+                context.gc().setFill(Color.LIME);
+                context.gc().fillRect(16, 8, 32, 16);
+            }).build();
+            try {
+                var root = new javafx.scene.Group(canvas);
+                root.setAutoSizeChildren(false);
+                new javafx.scene.Scene(root, 128, 64);
+                canvas.resize(64, 32);
+                canvas.requestRender();
+                var first = canvas.snapshot(null, null);
+                assertThat(first.getPixelReader().getColor(1, 1)).isEqualTo(Color.BLACK);
+                assertThat(first.getPixelReader().getColor(32, 16)).isEqualTo(Color.LIME);
+                canvas.resize(128, 64);
+                canvas.requestRender();
+                var resized = canvas.snapshot(null, null);
+                assertThat(resized.getWidth()).isEqualTo(128);
+                assertThat(resized.getPixelReader().getColor(1, 1)).isEqualTo(Color.BLACK);
+                assertThat(resized.getPixelReader().getColor(32, 16)).isEqualTo(Color.LIME);
+            } finally {
+                canvas.dispose();
+            }
+        });
+    }
+
+    @Test
     void defaultsAreSensible() throws InterruptedException {
         JavaFxToolkitExtension.runAndWait(() -> {
             GpuCanvas canvas = new GpuCanvas();
@@ -165,27 +193,28 @@ class GpuCanvasTest {
     }
 
     @Test
-    void disposeReleasesTheArena() throws InterruptedException {
-        AtomicReference<MemorySegment> captured = new AtomicReference<>();
+    void disposeDetachesSurfaceWhileOutstandingImageRemainsReadable() throws InterruptedException {
+        AtomicReference<WritableImage> retainedImage = new AtomicReference<>();
+        AtomicReference<GpuCanvas> holder = new AtomicReference<>();
         JavaFxToolkitExtension.runAndWait(() -> {
-            GpuCanvas canvas = new GpuCanvas(ctx -> captured.set(ctx.pixels()));
+            GpuCanvas canvas = GpuCanvas.create().clearColor(Color.RED).build();
+            holder.set(canvas);
             canvas.resize(8, 8);
             canvas.requestRender();
-            MemorySegment segment = captured.get();
-            assertThat(segment).isNotNull();
-            // While alive, the segment is readable.
-            assertThat(segment.get(ValueLayout.JAVA_BYTE, 0L)).isEqualTo((byte) 0);
-
+            ImageView view = (ImageView) canvas.getChildrenUnmodifiable().getFirst();
+            retainedImage.set((WritableImage) view.getImage());
             canvas.dispose();
+            assertThat(view.getImage()).isNull();
         });
 
-        // The arena close is deferred via Platform.runLater; drain the FX
-        // event queue so the close executes before we assert.
+        // Prism can still retain an old image after the canvas detached it.
+        // Draining the FX queue must not retire that image's native storage.
         JavaFxToolkitExtension.runAndWait(() -> {
-            MemorySegment segment = captured.get();
-            // After the owning arena closes, any access throws ISE.
-            assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> segment.get(ValueLayout.JAVA_BYTE, 0L));
+            var image = new ImageView(retainedImage.get()).snapshot(null, null);
+            assertThat(image.getPixelReader().getColor(1, 1)).isEqualTo(Color.RED);
+            long frames = holder.get().getFrameCount();
+            holder.get().requestRender();
+            assertThat(holder.get().getFrameCount()).isEqualTo(frames);
         });
     }
 
@@ -408,13 +437,15 @@ class GpuCanvasTest {
     }
 
     @Test
-    void resizeReplacesTheUnderlyingSegment() throws InterruptedException {
+    void resizeReplacesSurfaceWithoutInvalidatingOutstandingImage() throws InterruptedException {
         AtomicReference<MemorySegment> captured = new AtomicReference<>();
         AtomicReference<MemorySegment> firstRef = new AtomicReference<>();
+        AtomicReference<WritableImage> firstImage = new AtomicReference<>();
         GpuCanvas[] holder = new GpuCanvas[1];
 
         JavaFxToolkitExtension.runAndWait(() -> {
-            GpuCanvas canvas = new GpuCanvas(ctx -> captured.set(ctx.pixels()));
+            GpuCanvas canvas = GpuCanvas.create()
+                    .renderer(ctx -> captured.set(ctx.pixels())).clearColor(Color.RED).build();
             holder[0] = canvas;
 
             canvas.resize(10, 10);
@@ -423,8 +454,10 @@ class GpuCanvasTest {
             assertThat(first).isNotNull();
             assertThat(first.byteSize()).isEqualTo(10L * 10 * 4);
             firstRef.set(first);
+            firstImage.set((WritableImage) ((ImageView) canvas.getChildrenUnmodifiable().getFirst()).getImage());
 
             canvas.resize(20, 15);
+            canvas.setClearColor(Color.BLUE);
             canvas.requestRender();
             MemorySegment second = captured.get();
             assertThat(second).isNotNull();
@@ -432,21 +465,21 @@ class GpuCanvasTest {
             assertThat(second).isNotSameAs(first);
         });
 
-        // The old arena's close was deferred via Platform.runLater; drain
-        // the FX event queue so the close executes before we assert.
+        // A retained upload stays readable and independent of the new frame.
         JavaFxToolkitExtension.runAndWait(() -> {
             MemorySegment first = firstRef.get();
-            // The first segment's arena was closed on the previous pulse —
-            // accessing it must now throw.
-            assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> first.get(ValueLayout.JAVA_BYTE, 0L));
+            assertThat(first.get(ValueLayout.JAVA_BYTE, 2L)).isEqualTo((byte) 0xff);
+            var oldFrame = new ImageView(firstImage.get()).snapshot(null, null);
+            assertThat(oldFrame.getPixelReader().getColor(1, 1)).isEqualTo(Color.RED);
+            var newFrame = holder[0].snapshot(null, null);
+            assertThat(newFrame.getPixelReader().getColor(1, 1)).isEqualTo(Color.BLUE);
 
             holder[0].dispose();
         });
     }
 
     @Test
-    void resizeToZeroReleasesArenaAndReallocatesOnRegrow() throws InterruptedException {
+    void resizeToZeroDetachesSurfaceAndReallocatesOnRegrow() throws InterruptedException {
         AtomicReference<MemorySegment> captured = new AtomicReference<>();
         AtomicReference<MemorySegment> aliveRef = new AtomicReference<>();
         AtomicInteger calls = new AtomicInteger();
@@ -474,18 +507,18 @@ class GpuCanvasTest {
         JavaFxToolkitExtension.runAndWait(() -> callsAfterFirstHolder.set(calls.get()));
         int callsAfterFirst = callsAfterFirstHolder.get();
 
-        // Shrink to zero — surface released (deferred), render is a no-op.
+        // Shrink to zero — the canvas releases its surface; rendering is a no-op.
         JavaFxToolkitExtension.runAndWait(() -> {
             holder[0].resize(0, 0);
             holder[0].requestRender();
             assertThat(calls.get()).isEqualTo(callsAfterFirst);
+            assertThat(((ImageView) holder[0].getChildrenUnmodifiable().getFirst()).getImage()).isNull();
         });
 
-        // Drain the deferred Platform.runLater(arena::close).
+        // Retained upload data survives queue drainage; regrowth is independent.
         JavaFxToolkitExtension.runAndWait(() -> {
             MemorySegment alive = aliveRef.get();
-            assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> alive.get(ValueLayout.JAVA_BYTE, 0L));
+            assertThat(alive.get(ValueLayout.JAVA_BYTE, 0L)).isZero();
 
             // Regrow — fresh arena and segment.
             captured.set(null);
@@ -494,6 +527,7 @@ class GpuCanvasTest {
             MemorySegment regrown = captured.get();
             assertThat(regrown).isNotNull();
             assertThat(regrown.byteSize()).isEqualTo(20L * 20 * 4);
+            assertThat(regrown).isNotSameAs(alive);
 
             holder[0].dispose();
         });

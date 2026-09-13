@@ -10,6 +10,9 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import java.util.Objects;
+import java.util.function.Consumer;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot;
 
 /**
  * Built-in spectrum analyzer plugin.
@@ -28,7 +31,7 @@ import java.util.Objects;
  * </ol>
  */
 @BuiltInPlugin(label = "Spectrum Analyzer", icon = "spectrum", category = BuiltInPluginCategory.ANALYZER)
-public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
+public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin, LiveAnalyzerPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
     public static final String PLUGIN_ID = "com.benesquivelmusic.daw.spectrum-analyzer";
@@ -52,6 +55,27 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
     private PluginContext context;
     private SpectrumAnalyzer analyzer;
     private boolean active;
+    private long analysisRevision;
+
+    @Override public long analysisRevision() { return analysisRevision; }
+    private volatile com.benesquivelmusic.daw.sdk.visualization.SpectrumData latestSpectrum;
+
+    @Override
+    public AnalyzerProcessor createAnalysisConsumer(Consumer<AnalyzerSnapshot> publish) {
+        var configured = analyzer;
+        return new AnalyzerProcessor(AnalyzerProcessor.Kind.SPECTRUM, publish, () -> 440,
+                configured == null ? DEFAULT_FFT_SIZE : configured.getFftSize(),
+                configured == null ? WindowType.HANN : configured.getWindowType());
+    }
+
+    @Override
+    public void acceptAnalysis(AnalyzerSnapshot snapshot) {
+        latestSpectrum = snapshot instanceof AnalyzerSnapshot.Spectrum spectrum ? spectrum.data() : null;
+    }
+
+    public com.benesquivelmusic.daw.sdk.visualization.SpectrumData getLatestSpectrum() {
+        return latestSpectrum;
+    }
 
     public SpectrumAnalyzerPlugin() {
     }
@@ -63,6 +87,7 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
 
     @Override
     public void initialize(PluginContext context) {
+        analysisRevision++;
         Objects.requireNonNull(context, "context must not be null");
         this.context = context;
         analyzer = new SpectrumAnalyzer(
@@ -82,7 +107,9 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
 
     @Override
     public void deactivate() {
+        analysisRevision++;
         active = false;
+        latestSpectrum = null;
         if (analyzer != null) {
             analyzer.reset();
         }
@@ -90,7 +117,9 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
 
     @Override
     public void dispose() {
+        analysisRevision++;
         active = false;
+        latestSpectrum = null;
         analyzer = null;
         context = null;
     }
@@ -98,7 +127,7 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
     /**
      * Reconfigures the analyzer with a new FFT size and/or window type.
      *
-     * <p>Because {@link SpectrumAnalyzer} is immutable, this method creates a
+     * <p>Because an analyzer's FFT/window configuration is fixed, this method creates a
      * new instance with the given parameters and the sample rate from the
      * original {@link #initialize(PluginContext)} call. Must be called after
      * {@code initialize()} and before {@code dispose()}.</p>
@@ -120,6 +149,8 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
                 true,
                 DEFAULT_PEAK_DECAY_DB
         );
+        analysisRevision++;
+        latestSpectrum = null;
     }
 
     /**
@@ -153,9 +184,8 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
      * {@link #reconfigure(int, WindowType)} remains available to automation
      * and future stories. The docked spectrum panel ({@code PANEL_SPECTRUM},
      * the app-side {@code SpectrumDisplay} fed by the app's metering pipeline)
-     * is a separate app-side surface — the editor renders this plugin's own
-     * {@link SpectrumAnalyzer}, so no renderer is duplicated across the module
-     * boundary.</p>
+     * is a separate app-side surface. The editor renders this plugin's latest
+     * host-fed spectrum snapshot; no renderer is duplicated across the module boundary.</p>
      */
     @Override
     public PluginEditorFactory editorFactory() {

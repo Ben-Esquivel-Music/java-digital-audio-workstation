@@ -123,7 +123,14 @@ public final class SpectrumDisplay extends GpuCanvasView {
      */
     public void updateSpectrum(SpectrumData newData) {
         this.data = newData;
-        if (newData == null) return;
+        if (newData == null) {
+            Arrays.fill(smoothedBins, (float) MIN_DB);
+            Arrays.fill(peakHoldBins, (float) MIN_DB);
+            Arrays.fill(averageBins, (float) MIN_DB);
+            preEqData = rightChannelData = null;
+            gpuCanvas().requestRender();
+            return;
+        }
 
         float[] magnitudes = newData.magnitudesDb();
         int binCount = magnitudes.length;
@@ -293,6 +300,12 @@ public final class SpectrumDisplay extends GpuCanvasView {
         drawGrid(gc, plotLeft, plotWidth, plotHeight, plotBottom);
         drawDbLabels(gc, plotLeft, plotHeight, plotBottom);
         drawFrequencyLabels(gc, plotLeft, plotWidth, plotBottom, h);
+
+        if (data == null) {
+            gc.setStroke(TEXT_COLOR);
+            gc.strokeLine(plotLeft, plotBottom, w, plotBottom);
+            return;
+        }
 
         if (preEqData != null) {
             drawPreEqOverlay(gc, plotLeft, plotWidth, plotHeight, plotBottom);

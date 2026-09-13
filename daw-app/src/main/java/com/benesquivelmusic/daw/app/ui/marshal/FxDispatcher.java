@@ -340,6 +340,11 @@ public final class FxDispatcher {
         keyedWork.put(key, work);
     }
 
+    /** Releases queued work when its surface is disposed or rebound. */
+    public void cancelKey(Object key) {
+        keyedWork.remove(Objects.requireNonNull(key));
+    }
+
     // ── continuous ───────────────────────────────────────────────────────────
 
     /**

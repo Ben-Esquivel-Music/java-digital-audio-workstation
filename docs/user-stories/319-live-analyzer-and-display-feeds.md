@@ -60,3 +60,50 @@ A studio engineer checking mono compatibility, loudness, tuning, or spectral bal
 - Per project convention, visualizer components stay in `daw-app` `ui/display` (daw-fx owns only the `GpuCanvas` primitive).
 - Cross-references: story **318** (prerequisite — substrate and lanes), **320** (analyzer plugins inside the one-plugin-world), **321** (mastering surfaces), **347** (render economy), existing **014** (LUFS loudness metering with platform targets). Once this lands, the `research-features` DSP/analysis catalogue (AES-driven analyzers) lands as "attach a consumer", never "invent a feed" (book stage 6 unblocks).
 - Research backing: `research-mastering` (EBU R 128 / ITU-R BS.1770 loudness cadence, correlation/phase metering practice) and `research-daw` (engine/UI separation for analysis pipelines).
+
+## Implementation and acceptance evidence
+
+Implemented on 2026-09-12 using the `research`, `research-daw`, `research-mastering`, `javafx-application-design`, and `dawg-annotations-reflection` skills. The research supports reusing the existing pure-Java transforms behind the bounded analysis lane, preserving the engine/UI separation, and treating absent measurements independently from loudness program history.
+
+- `AnalyzerProcessor` assembles whole windows from arbitrary render blocks on `daw-metering-analysis`: 4096-point spectra with 1024-frame hops, 1024-frame waveforms, correlation and pitch at approximately 15 Hz, and loudness at 10 Hz. Stereo spectra combine channel powers; monophonic waveform/pitch use the stronger channel, so right-only and inverted signals remain visible. Mono loudness uses the meter's mono path, and ordinary silent intervals preserve its integrated history.
+- `AnalyzerSnapshot` isolates array payloads from producer and consumer mutation. Each `AnalyzerBinding` owns an independent dispatcher key, a 16-block bounded ring, a generation guard, and a 500 ms no-frame expiry. Hide, editor close, source change, format change, project rebind, and disposal invalidate old work. Ring overruns remain counted and are reported before surviving samples are analyzed.
+- Dock spectrum, oscilloscope, loudness, and correlation use `MASTER_CHAIN`; the dock tuner chooses a monitored armed track, then an armed track, with no master fallback. Peak/RMS retains the story-318 `MASTER_OUT` feed and its release/peak-hold behavior.
+- Analyzer plugins now expose transparent float/double insert processors. The host feeds inserted instances from their owning channel/return/master tap and utility editors from `MASTER_CHAIN`. Rack analyzer editors inherit their owner window and styles and close when their slot or rack disappears. FFT/window changes rebuild the spectrum consumer; the editor reports the feed's actual sample rate.
+- Every display restores its declared no-signal state. The spectrum animator, its unconditional tick, and the duplicate loudness/correlation windows are deleted. Sound Wave Telemetry's synthetic ribbon is replaced with the live host waveform. All six analyzer visibility settings persist after individual and grouped toggles, including the tuner, while preserving independent floating visibility and migrating legacy row preferences.
+- Actual display snapshots exposed a pre-existing `GpuCanvas` ownership error: Prism uploads the native `PixelBuffer` on its render thread, which cannot read a confined arena. The surface now uses an automatic arena, retaining native storage as long as Prism retains the buffer, including after resize or disposal. FX-only renderer writes and the borrowed-context contract remain in force; `GpuCanvasTest` checks real composited pixels and retained images across resize/disposal. This follows the [Java 26 arena lifetime contract](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/foreign/Arena.html) and [segment-backed buffer contract](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/foreign/MemorySegment.html#asByteBuffer()).
+
+| Acceptance goal | Executable evidence |
+| --- | --- |
+| Spectrum sine and broadband feeds | `LiveAnalyzerFeedTest`: actual tap rings and named analysis thread, expected sine bin, populated broadband trace, no anti-phase cancellation |
+| Correlation truth and honest initial state | `LiveAnalyzerFeedTest`: identical, inverted, decorrelated signals; `LiveAnalyzerIdleDisplayTest`: no initial numeric claim, live-to-idle pixel restoration |
+| Tuner signal and silence | `LiveAnalyzerFeedTest`: A440, right-only A432, live reference changes, same-consumer silence; `LiveAnalyzerIntegrationTest`: actual editor A5/A4 labels and armed-source selection |
+| Loudness cadence and bounded history | `LiveAnalyzerFeedTest`: ten updates per second from the lane, mono/dual-mono calibration, silence continuity; existing `LoudnessMeter` regression tests retain the bounded-memory contract |
+| Honest stopped sweep | `LiveAnalyzerIdleDisplayTest`: all six panels render real values, restore their original no-signal pixels, and remain stationary; `AnalyzerBindingTest`: absence of frames expires and stale queued frames cannot revive a reading |
+| Synthetic feed removal | `NoSyntheticAnalyzerFeedScanTest` and existing `NoSyntheticLevelFeedScanTest` scan production sources |
+| Inserted and utility plugin feeds | `LiveAnalyzerIntegrationTest`: all three plugin types through real rack/session bindings, distinct host/master signals, actual spectrum/telemetry pixels, format/configuration refresh, close/remove lifecycle; `LiveAnalyzerSpectrumStatusTest`: rendered FFT/window/source-rate metadata follows the live format |
+| Independent coalescing and overload | `AnalyzerBindingTest`: independent keys survive a burst, visibility/epoch/format changes reject queued work; `LiveAnalyzerFeedTest` and existing `AnalysisLaneTest`: counted ring drops and report-before-survivor ordering |
+| Visibility round trip | `VisualizationVisibilityRoundTripTest`: real dock/preferences restore across startup and legacy-row migration; root-hook source guard covers individual and grouped write-back |
+| Duplicate-window retirement | `NoSyntheticAnalyzerFeedScanTest`: no production reference to either removed window |
+
+Validation uses Java 26 and Maven 3.9.14 with JavaFX 26's headless platform and software rendering. Snapshot auto-baselining is disabled so committed reference images remain unchanged.
+
+Full reactor verification completed successfully on 2026-09-12 at 17:25:10 EDT:
+
+```powershell
+mvn -o -B '-Dmaven.repo.local=C:\Users\bestq\.m2\repository' '-DskipNativeBuild=true' '-DskipNoticesGeneration=true' '-Dsnapshots.autoBaseline=false' verify
+```
+
+| Module | Tests reported | Skipped | Failures / errors |
+| --- | ---: | ---: | ---: |
+| SDK | 1,325 | 2 | 0 / 0 |
+| Acoustics | 106 | 0 | 0 / 0 |
+| Core | 6,869 | 11 | 0 / 0 |
+| FX | 29 | 0 | 0 / 0 |
+| Application | 3,080 | 3 | 0 / 0 |
+| Total | 11,409 | 16 | 0 / 0 |
+
+All 11,393 executed tests passed. The final focused acceptance run also passed all 51 selected tests, including the six-display live-to-idle pixel sweep and actual Prism rendering across resize/disposal. Local logs are `target/story319-verify.log` and `target/story319-final-acceptance.log`. Native compilation and notice generation were skipped; no reference-image baselines were regenerated.
+
+## Status
+
+- COMPLETE

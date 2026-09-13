@@ -9,6 +9,9 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import java.util.Objects;
+import java.util.function.Consumer;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot;
 
 /**
  * Built-in chromatic tuner plugin.
@@ -34,7 +37,7 @@ import java.util.Objects;
  * or A4 = 443 Hz orchestral pitch).</p>
  */
 @BuiltInPlugin(label = "Chromatic Tuner", icon = "spectrum", category = BuiltInPluginCategory.UTILITY)
-public final class TunerPlugin implements BuiltInDawPlugin {
+public final class TunerPlugin implements BuiltInDawPlugin, LiveAnalyzerPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
     public static final String PLUGIN_ID = "com.benesquivelmusic.daw.tuner";
@@ -75,6 +78,18 @@ public final class TunerPlugin implements BuiltInDawPlugin {
     private boolean active;
     private volatile double referencePitchHz = DEFAULT_REFERENCE_PITCH_HZ;
     private volatile TuningResult lastResult;
+
+    @Override
+    public AnalyzerProcessor createAnalysisConsumer(Consumer<AnalyzerSnapshot> publish) {
+        return new AnalyzerProcessor(AnalyzerProcessor.Kind.PITCH, publish,
+                this::getReferencePitchHz, AnalyzerProcessor.FFT_SIZE,
+                com.benesquivelmusic.daw.sdk.analysis.WindowType.HANN);
+    }
+
+    @Override
+    public void acceptAnalysis(AnalyzerSnapshot snapshot) {
+        lastResult = snapshot instanceof AnalyzerSnapshot.Pitch pitch ? pitch.data() : null;
+    }
 
     /**
      * Result of a tuning analysis.
@@ -193,9 +208,9 @@ public final class TunerPlugin implements BuiltInDawPlugin {
     }
 
     /**
-     * Returns the result of the most recent {@link #process(float[])} call,
+     * Returns the most recent host analysis-lane delivery or {@link #process(float[])} result,
      * or {@code null} if no pitched signal has been detected yet (or after
-     * {@link #deactivate()}).
+     * silence, feed expiry, or {@link #deactivate()}).
      *
      * @return the last tuning result, or {@code null}
      */

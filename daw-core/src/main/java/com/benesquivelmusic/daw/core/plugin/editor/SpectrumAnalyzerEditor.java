@@ -23,16 +23,9 @@ import java.util.Objects;
  * item 5) — a log-frequency spectrum plot drawn straight into the host-owned
  * surface, replacing the legacy {@code SpectrumDisplayWindow} route.
  *
- * <p><strong>Scope notes.</strong> The old window's FFT-size / window-type
- * toolbar is intentionally not part of the immersive surface (§5.D — the
- * canvas owns every pixel); {@link SpectrumAnalyzerPlugin#reconfigure}
- * remains available to automation and future stories. The docked spectrum
- * panel ({@code PANEL_SPECTRUM}, the app-side {@code SpectrumDisplay} fed by
- * the app's metering pipeline) is a separate surface of the app — this editor
- * renders <em>this plugin's own</em> {@link SpectrumAnalyzer}, so no renderer
- * is duplicated across the module boundary. No production code currently
- * feeds that analyzer audio: until a future story wires live audio the
- * surface honestly shows the grid with the trace at the floor.</p>
+ * <p>Renders the host analysis lane's latest snapshot: the inserted channel's
+ * tap, or MASTER_CHAIN for a utility editor. FFT/window reconfiguration
+ * restarts the attachment. Missing frames leave the trace at the floor.</p>
 
  * <p>All colours derive from the per-frame {@link Theme} tokens (§2.5) — the
  * derived grid/trace tints are re-computed only when the theme instance
@@ -68,10 +61,11 @@ public final class SpectrumAnalyzerEditor implements PluginEditorFactory.Canvas 
     private Color peakTrace;
     private Color statusText;
 
-    // Status line rebuilt only when the analyzer instance or active flag flips.
+    // Status line rebuilt when configuration, active state or the source sample rate changes.
     private SpectrumAnalyzer cachedAnalyzer;
     private boolean cachedActive;
     private String statusLine;
+    private double cachedSampleRate;
 
     /**
      * @param plugin the plugin whose analyzer this editor renders; must not be
@@ -148,9 +142,10 @@ public final class SpectrumAnalyzerEditor implements PluginEditorFactory.Canvas 
     }
 
     private void drawSpectrum(GraphicsContext gc, double w, double h, Theme tokens) {
-        SpectrumAnalyzer analyzer = plugin.getAnalyzer();
-        SpectrumData data = analyzer == null ? null : analyzer.getLatestData();
+        SpectrumData data = plugin.getLatestSpectrum();
         if (data == null) {
+            gc.setStroke(tokens.accent());
+            gc.strokeLine(0, h - 1, w, h - 1);
             return;
         }
         strokeTrace(gc, w, h, data, data.magnitudesDb(), tokens.accent(), 1.5);
@@ -193,24 +188,33 @@ public final class SpectrumAnalyzerEditor implements PluginEditorFactory.Canvas 
     }
 
     private void drawStatus(GraphicsContext gc, double h) {
-        SpectrumAnalyzer analyzer = plugin.getAnalyzer();
-        boolean active = plugin.isActive();
-        if (statusLine == null || analyzer != cachedAnalyzer || active != cachedActive) {
-            cachedAnalyzer = analyzer;
-            cachedActive = active;
-            if (analyzer == null) {
-                statusLine = "Analyzer not initialised";
-            } else {
-                statusLine = analyzer.getFftSize() + "-pt " + analyzer.getWindowType()
-                        + " · " + Math.round(analyzer.getSampleRate()) + " Hz"
-                        + (active ? "" : " · inactive");
-            }
-        }
         gc.setFont(statusFont);
         gc.setFill(statusText);
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setTextBaseline(VPos.BOTTOM);
-        gc.fillText(statusLine, 8, h - 6);
+        gc.fillText(statusText(), 8, h - 6);
+    }
+
+    /** The same format metadata rendered in the canvas footer. */
+    public String statusText() {
+        SpectrumAnalyzer analyzer = plugin.getAnalyzer();
+        boolean active = plugin.isActive();
+        var data = plugin.getLatestSpectrum();
+        double rate = data != null ? data.sampleRate() : cachedSampleRate > 0 ? cachedSampleRate
+                : analyzer == null ? 0 : analyzer.getSampleRate();
+        if (statusLine == null || analyzer != cachedAnalyzer || active != cachedActive || rate != cachedSampleRate) {
+            cachedAnalyzer = analyzer;
+            cachedActive = active;
+            cachedSampleRate = rate;
+            if (analyzer == null) {
+                statusLine = "Analyzer not initialised";
+            } else {
+                statusLine = analyzer.getFftSize() + "-pt " + analyzer.getWindowType()
+                        + " · " + Math.round(rate) + " Hz"
+                        + (active ? "" : " · inactive");
+            }
+        }
+        return statusLine;
     }
 
     private void refreshPalette(Theme tokens) {

@@ -190,6 +190,8 @@ public final class MainController {
      * {@code audioEngine.meteringTapBus()}; see {@link #meterFeed()}.
      */
     private MeterFeed meterFeed;
+    private VisualizationPreferences visualizationPreferences;
+    private com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds analyzerFeeds;
     private VisibleMeterBinding levelMeterBinding;
     // Story 137: registry of per-track input-level monitors used by the
     // mixer's input-meter column and the arrangement-view clip indicator.
@@ -369,13 +371,8 @@ public final class MainController {
     private ClipInteractionController clipInteractionController;
     private TimelineRuler timelineRuler;
     // ── Story 287 — dockable analyzer displays ──────────────────────────────
-    // Story 318: levelMeterDisplay is a real MASTER_OUT consumer of the
-    // engine's metering tap bus (subscribed through meterFeed in
-    // initialize()); spectrumDisplay is still the idle-demo-fed instance
-    // handed to AnimationController (story 319 wires the analysis lane) and
-    // the other four are decorative shells (Non-Goal #1). All six are wrapped
-    // in DockableVisualizationPanel adapters (keyed by panel id in
-    // vizDockables) and mounted into the bottom dock strip when visible.
+    // MASTER_CHAIN feeds spectrum, waveform, loudness and correlation; tuner follows
+    // an armed channel. Peak/RMS remains MASTER_OUT. Dock visibility owns attachments.
     private SpectrumDisplay spectrumDisplay;
     private LevelMeterDisplay levelMeterDisplay;
     private com.benesquivelmusic.daw.app.ui.display.WaveformDisplay waveformDisplay;
@@ -986,9 +983,6 @@ public final class MainController {
         // are retired). They are wrapped + registered in installDockManager().
         // Story 318: levelMeterDisplay (dock panel PANEL_LEVELS, "Peak / RMS")
         // is a real MASTER_OUT consumer of the metering tap bus below;
-        // spectrumDisplay is still the idle-demo-fed instance
-        // AnimationController ticks until story 319 wires the analysis lane;
-        // the remaining displays are decorative shells until 319/321.
         spectrumDisplay = new SpectrumDisplay();
         levelMeterDisplay = new LevelMeterDisplay();
         if (meterFeed != null) {
@@ -999,6 +993,11 @@ public final class MainController {
         loudnessDisplay = new com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay();
         correlationDisplay = new com.benesquivelmusic.daw.app.ui.display.CorrelationDisplay();
         tunerDisplay = new com.benesquivelmusic.daw.app.ui.display.TunerDisplay();
+        if (feedDispatcher != null) {
+            analyzerFeeds = new com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds(
+                    audioEngine.meteringTapBus(), feedDispatcher, () -> project);
+            bindAnalyzerDisplays();
+        }
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         initializeNotificationBar();
         createTempoEditController();
@@ -1525,7 +1524,6 @@ public final class MainController {
 
     private void createAnimationController() {
         animationController = new AnimationController(
-                spectrumDisplay,
                 playButton, recordButton,
                 new Button[]{
                         skipBackButton, playButton, stopButton, recordButton,
@@ -2019,6 +2017,7 @@ public final class MainController {
                         pluginFaultUiController.openFaultLog();
                     }
                 }));
+        pluginViewController.setAnalyzerFeeds(analyzerFeeds);
     }
 
     /**
@@ -2961,9 +2960,7 @@ public final class MainController {
         dockManager.setVisible(DefaultWorkspaces.PANEL_BROWSER,
                 browserPanelController != null && browserPanelController.isPanelVisible());
         dockManager.setVisible(DefaultWorkspaces.PANEL_SESSION_MANAGER, false);
-        // Story 287 — seed analyzer visibility from VisualizationPreferences
-        // (the read-only initial-visibility seed that replaced the row
-        // controller's live state). Telemetry / Room-3D start hidden.
+        // Restore persisted independent analyzer visibility; Telemetry / Room-3D start hidden.
         seedVisualizationVisibility();
         dockHostReconciliationSuppressed = false;
     }
@@ -3057,27 +3054,14 @@ public final class MainController {
     }
 
     /**
-     * Story 287 — seeds the five preference-backed analyzer panels'
-     * visibility from {@link VisualizationPreferences} (a read-only seed
-     * after the row controller's removal). A panel is initially visible
-     * iff the row was visible AND that tile was visible. Tuner, Room-3D,
-     * and Telemetry start hidden (they were never part of the bottom row).
+     * Restores six independently persisted analyzer panels, migrating the legacy row gate.
+     * Tuner is hidden by default; subsequent toggles restore its saved value.
      */
     private void seedVisualizationVisibility() {
         VisualizationPreferences prefs = new VisualizationPreferences(
                 Preferences.userNodeForPackage(VisualizationPreferences.class));
-        boolean row = prefs.isRowVisible();
-        dockManager.setVisible(DefaultWorkspaces.PANEL_SPECTRUM,
-                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.SPECTRUM));
-        dockManager.setVisible(DefaultWorkspaces.PANEL_LEVELS,
-                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.LEVELS));
-        dockManager.setVisible(DefaultWorkspaces.PANEL_WAVEFORM,
-                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.WAVEFORM));
-        dockManager.setVisible(DefaultWorkspaces.PANEL_LOUDNESS,
-                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.LOUDNESS));
-        dockManager.setVisible(DefaultWorkspaces.PANEL_CORRELATION,
-                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.CORRELATION));
-        dockManager.setVisible(DefaultWorkspaces.PANEL_TUNER, false);
+        prefs.restore(dockManager);
+        visualizationPreferences = prefs;
         dockManager.setVisible(DefaultWorkspaces.PANEL_ROOM_3D, false);
         dockManager.setVisible(DefaultWorkspaces.PANEL_TELEMETRY, false);
     }
@@ -3088,6 +3072,7 @@ public final class MainController {
      * is idempotent, so a display also disposed elsewhere is safe.
      */
     private void disposeVisualizationDisplays() {
+        if (analyzerFeeds != null) analyzerFeeds.close();
         if (levelMeterBinding != null) levelMeterBinding.close();
         if (spectrumDisplay != null) spectrumDisplay.dispose();
         if (levelMeterDisplay != null) levelMeterDisplay.dispose();
@@ -3096,6 +3081,24 @@ public final class MainController {
         if (correlationDisplay != null) correlationDisplay.dispose();
         if (tunerDisplay != null) tunerDisplay.dispose();
         if (telemetryView != null) telemetryView.dispose();
+    }
+
+    private void bindAnalyzerDisplays() {
+        analyzerFeeds.bindDisplay(spectrumDisplay, com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor.Kind.SPECTRUM,
+                snapshot -> spectrumDisplay.updateSpectrum(snapshot instanceof
+                        com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot.Spectrum value ? value.data() : null));
+        analyzerFeeds.bindDisplay(waveformDisplay, com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor.Kind.WAVEFORM,
+                snapshot -> waveformDisplay.setWaveformData(snapshot instanceof
+                        com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot.Waveform value ? value.data() : null));
+        analyzerFeeds.bindDisplay(correlationDisplay, com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor.Kind.CORRELATION,
+                snapshot -> correlationDisplay.update(snapshot instanceof
+                        com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot.Correlation value ? value.data() : null));
+        analyzerFeeds.bindDisplay(loudnessDisplay, com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor.Kind.LOUDNESS,
+                snapshot -> loudnessDisplay.update(snapshot instanceof
+                        com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot.Loudness value ? value.data() : null));
+        analyzerFeeds.bindDisplay(tunerDisplay, com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor.Kind.PITCH,
+                snapshot -> tunerDisplay.update(snapshot instanceof
+                        com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot.Pitch value ? value.data() : null));
     }
 
     // ── Story 287 — bottom-analyzer group toggle (replaces the retired
@@ -3159,6 +3162,7 @@ public final class MainController {
             if (isVizPanelFloating(id)) continue;
             mountBottomVizPanel(id, visible);
         }
+        if (visualizationPreferences != null) visualizationPreferences.saveLayout(dockManager.layout());
     }
 
     /** Toggles the BOTTOM analyzer group: any visible → hide all; else show all. */
@@ -3606,6 +3610,7 @@ public final class MainController {
 
         @Override public void onLayoutChanged(DockLayout newLayout) {
             if (dockHostReconciliationSuppressed) return;
+            if (visualizationPreferences != null) visualizationPreferences.saveLayout(newLayout);
             for (DockEntry entry : newLayout.entries().values()) {
                 reconcile(entry);
             }
