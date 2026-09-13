@@ -34,10 +34,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 import javax.imageio.ImageIO;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -287,6 +289,56 @@ class PluginEditorSignalPathTest {
                 } finally { reopened.dispose(); }
                 return null;
             });
+        } finally { System.setProperty("user.home", previousHome); }
+    }
+
+    @Test
+    void collidingPresetNameReportsFailureAndPreservesTheSavedPresetOnReopen() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        try {
+            var channel = new MixerChannel("Vocals");
+            var slot = InsertEffectFactory.createSlot(InsertEffectType.COMPRESSOR, 2, 48_000);
+            channel.addInsert(slot);
+            var notifications = new java.util.ArrayList<String>();
+            var deps = new PluginEditorSession.Deps(() -> 48_000, null, null,
+                    (_, message) -> notifications.add(message));
+            var session = runOnFxThread(() -> PluginEditorSession.open(channel, slot, deps));
+            try {
+                session.presetOperation().get(10, TimeUnit.SECONDS);
+                runOnFxThread(() -> {
+                    session.store().writeFromUiById(0, -33);
+                    session.savePreset("Lead/Vocal");
+                    return null;
+                });
+                session.presetOperation().get(10, TimeUnit.SECONDS);
+                runOnFxThread(() -> {
+                    session.store().writeFromUiById(0, -12);
+                    session.savePreset("Lead Vocal");
+                    return null;
+                });
+                assertThatThrownBy(() -> session.presetOperation().get(10, TimeUnit.SECONDS))
+                        .isInstanceOf(ExecutionException.class)
+                        .hasCauseInstanceOf(FileAlreadyExistsException.class);
+                runOnFxThread(() -> {
+                    assertThat(notifications).singleElement().asString().contains("Lead/Vocal");
+                    assertThat(session.frame().getPresetItems()).contains("Lead/Vocal").doesNotContain("Lead Vocal");
+                    assertThat(session.frame().getSelectedPreset()).isEqualTo("Lead/Vocal");
+                    return null;
+                });
+            } finally { runOnFxThread(() -> { session.dispose(); return null; }); }
+
+            var reopened = runOnFxThread(() -> PluginEditorSession.open(channel, slot, DEPS));
+            try {
+                reopened.presetOperation().get(10, TimeUnit.SECONDS);
+                runOnFxThread(() -> {
+                    assertThat(reopened.frame().getPresetItems()).contains("Lead/Vocal").doesNotContain("Lead Vocal");
+                    reopened.frame().getOnPresetSelected().accept("Lead/Vocal");
+                    return null;
+                });
+                render(channel);
+                assertThat(((CompressorProcessor) slot.getProcessor()).getThresholdDb()).isEqualTo(-33);
+            } finally { runOnFxThread(() -> { reopened.dispose(); return null; }); }
         } finally { System.setProperty("user.home", previousHome); }
     }
 

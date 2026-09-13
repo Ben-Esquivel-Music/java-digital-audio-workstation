@@ -705,10 +705,7 @@ public final class RenderPipeline {
                     || transport.getState() == TransportState.RECORDING);
 
         if (mixer != null) {
-            List<MixerChannel> channels = mixer.getChannels();
-            for (int i = 0; i < channels.size(); i++) {
-                channels.get(i).drainInsertParameters();
-            }
+            mixer.drainInsertParameters();
         }
 
         if (playbackActive) {

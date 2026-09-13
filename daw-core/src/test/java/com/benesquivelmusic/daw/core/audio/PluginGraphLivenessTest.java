@@ -20,6 +20,8 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -92,6 +94,38 @@ class PluginGraphLivenessTest {
         slot.drainParametersToAudio();
         assertThat(plugin.getProcessor().getThresholdDb()).isEqualTo(-37);
         assertThat(slot.getEditorPlugin()).isSameAs(plugin);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void bypassedInsertsOnMutedReturnsAndMasterReceiveWritesAtEveryEngineBlock(boolean playing) {
+        var graph = graph();
+        var channels = List.of(graph.channel(), graph.mixer().getAuxBus(),
+                graph.mixer().addReturnBus("Delay Return"), graph.mixer().getMasterChannel());
+        for (MixerChannel channel : channels) {
+            channel.addInsert(new InsertSlot("Gain", new GainProcessor()));
+            channel.setInsertBypassed(0, true);
+            channel.setMuted(true);
+        }
+        graph.engine().start();
+        if (playing) { graph.transport().play(); }
+        try {
+            var output = new float[2][256];
+            for (double gain : new double[] {0.25, 0.75}) {
+                for (MixerChannel channel : channels) {
+                    channel.getInsertSlots().getFirst().getParameterStore().writeFromUiById(7, gain);
+                }
+                graph.engine().processBlock(null, output, 256);
+                for (MixerChannel channel : channels) {
+                    var slot = channel.getInsertSlots().getFirst();
+                    assertThat(((GainProcessor) slot.getProcessor()).getGain())
+                            .as("queued gain on %s with playing=%s", channel.getName(), playing)
+                            .isEqualTo(gain);
+                    assertThat(slot.isBypassed()).isTrue();
+                }
+                assertThat(peak(output)).isZero();
+            }
+        } finally { graph.engine().stop(); }
     }
 
     @Test
@@ -167,10 +201,10 @@ class PluginGraphLivenessTest {
         track.setArmed(true);
         mixer.addChannel(channel);
         engine.setGraph(transport, mixer, List.of(track));
-        return new Graph(engine, transport, channel, track);
+        return new Graph(engine, transport, mixer, channel, track);
     }
 
-    private record Graph(AudioEngine engine, Transport transport, MixerChannel channel, Track track) { }
+    private record Graph(AudioEngine engine, Transport transport, Mixer mixer, MixerChannel channel, Track track) { }
 
     private static PluginContext context() {
         return new PluginContext() {

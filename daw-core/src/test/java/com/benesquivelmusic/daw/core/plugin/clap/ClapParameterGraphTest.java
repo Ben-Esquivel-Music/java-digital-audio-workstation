@@ -20,6 +20,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /** Exercises the real CLAP event ABI with an in-process FFM fixture, without an installed plugin. */
 class ClapParameterGraphTest {
+    private static final int SETTER_ITERATIONS = 20_000;
+    private static final int WARMUP_BATCHES = 20;
+
     @Test
     void liveSlotWriteBecomesOneNativeParameterEventInTheNextBlock() throws Exception {
         try (var fixture = new Fixture()) {
@@ -47,12 +50,31 @@ class ClapParameterGraphTest {
         assumeTrue(bean.isThreadAllocatedMemorySupported());
         bean.setThreadAllocatedMemoryEnabled(true);
         try (var fixture = new Fixture()) {
-            for (int iteration = 0; iteration < 20_000; iteration++) fixture.host.setAutomatableParameter(7, iteration);
-            long thread = Thread.currentThread().threadId();
-            long before = bean.getThreadAllocatedBytes(thread);
-            for (int iteration = 0; iteration < 20_000; iteration++) fixture.host.setAutomatableParameter(7, iteration);
-            assertThat(bean.getThreadAllocatedBytes(thread) - before).isZero();
+            var input = new float[1][32];
+            var output = new float[1][32];
+            // Warm the exact measured loop and counter calls, not a separate cold measurement loop.
+            for (int batch = 0; batch < WARMUP_BATCHES; batch++) {
+                measureParameterSetterAllocations(fixture.host, bean);
+            }
+            fixture.host.process(input, output, 32);
+            long allocated = measureParameterSetterAllocations(fixture.host, bean);
+            assertThat(allocated).isZero();
+
+            fixture.host.process(input, output, 32);
+            assertThat(fixture.eventCount).isOne();
+            assertThat(fixture.parameterId).isEqualTo(7);
+            assertThat(output[0]).containsOnly(0.75f);
         }
+    }
+
+    private static long measureParameterSetterAllocations(ClapPluginHost host,
+            com.sun.management.ThreadMXBean bean) {
+        long thread = Thread.currentThread().threadId();
+        long before = bean.getThreadAllocatedBytes(thread);
+        for (int iteration = 0; iteration < SETTER_ITERATIONS; iteration++) {
+            host.setAutomatableParameter(7, (iteration & 1) == 0 ? 0.25 : 0.75);
+        }
+        return bean.getThreadAllocatedBytes(thread) - before;
     }
 
     private static final class Fixture implements AutoCloseable {

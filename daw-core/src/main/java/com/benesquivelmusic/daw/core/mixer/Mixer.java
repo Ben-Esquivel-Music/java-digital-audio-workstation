@@ -240,6 +240,18 @@ public final class Mixer {
         return masterChannel;
     }
 
+    /** Drains live inserts at each block boundary, including bypassed, muted and silent channels. */
+    @RealTimeSafe
+    public void drainInsertParameters() {
+        for (int index = 0; index < channels.size(); index++) {
+            channels.get(index).drainInsertParameters();
+        }
+        for (int index = 0; index < returnBuses.size(); index++) {
+            returnBuses.get(index).drainInsertParameters();
+        }
+        masterChannel.drainInsertParameters();
+    }
+
     /**
      * Returns the shared auxiliary/return bus used for send effects (e.g., reverb).
      * This is the first return bus created by default.
