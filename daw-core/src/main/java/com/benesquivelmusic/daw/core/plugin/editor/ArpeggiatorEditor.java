@@ -52,11 +52,9 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  *
  * <p>Unlike the other built-in MIDI editors, the arpeggiator publishes its six
  * parameters through {@link ArpeggiatorPlugin#getParameters()}, so every
- * control writes <em>both</em> the plugin's typed setter (the audio-side
- * authority the processor reads) <em>and</em> the host's
- * {@code EditorContext#parameterStore()} via {@code writeFromUiById}, keeping
- * the store's mirror — and anything the host hangs off it — in sync
- * (§2.6).</p>
+ * control writes the host's {@code EditorContext#parameterStore()}. The host
+ * drains those writes through {@link ArpeggiatorPlugin#setAutomatableParameter}
+ * on the processing thread; editor echoes only refresh the controls (§2.6).</p>
  */
 public final class ArpeggiatorEditor implements PluginEditorFactory.Panel {
 

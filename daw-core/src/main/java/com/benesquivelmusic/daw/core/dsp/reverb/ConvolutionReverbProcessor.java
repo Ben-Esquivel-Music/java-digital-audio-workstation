@@ -67,6 +67,17 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
 
     private final int channels;
     private final double sampleRate;
+    private final KernelBuilder kernelBuilder;
+
+    @FunctionalInterface
+    interface KernelBuilder {
+        Kernel build(float[][] ir, int channels, double sampleRate);
+    }
+
+    private record IrParameters(double stretch, double trimStart, double trimEnd) { }
+
+    private record PreparedImpulseResponse(Kernel kernel, float[][] pristineIr,
+                                           Path pristinePath, int irIndex) { }
 
     // ── Parameters (all guarded by per-set range checks) ────────────────
     private volatile double irSelection;     // index into ImpulseResponseLibrary.ENTRIES
@@ -79,6 +90,7 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
     private volatile double trimStart = 0.0;
     private volatile double trimEnd = 1.0;
     private volatile long parameterRevision;
+    private volatile long irSelectionRevision;
     private final Runnable prepareParameterTask = this::prepareParameterChanges;
     private volatile long preparedParameterRevision;
     private volatile boolean closed;
@@ -115,6 +127,10 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
      * @param sampleRate sample rate in Hz
      */
     public ConvolutionReverbProcessor(int channels, double sampleRate) {
+        this(channels, sampleRate, Kernel::build);
+    }
+
+    ConvolutionReverbProcessor(int channels, double sampleRate, KernelBuilder kernelBuilder) {
         if (channels <= 0 || channels > 2) {
             throw new IllegalArgumentException("channels must be 1 or 2: " + channels);
         }
@@ -123,6 +139,7 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
         }
         this.channels = channels;
         this.sampleRate = sampleRate;
+        this.kernelBuilder = Objects.requireNonNull(kernelBuilder);
 
         this.maxPredelaySamples = (int) Math.ceil(0.2 * sampleRate) + 1;
         this.predelayBuffer = new float[channels][maxPredelaySamples];
@@ -146,7 +163,7 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
         this.prevBlocks = new float[channels][PARTITION_SIZE];
 
         // Load default IR synchronously so the processor is immediately useful
-        loadBundled(0);
+        installImpulseResponse(loadBundled(0, currentIrParameters()));
         var weakProcessor = new WeakReference<>(this);
         // JEP 444 (final since Java 21): a weak watcher schedules work off RT and
         // does not keep an abandoned processor alive when a host omits close().
@@ -160,14 +177,13 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
      * Loads the bundled IR at the given index. Called synchronously — only
      * use from constructor or worker threads.
      */
-    private void loadBundled(int index) {
+    private PreparedImpulseResponse loadBundled(int index, IrParameters parameters) {
         index = Math.max(0, Math.min(ImpulseResponseLibrary.ENTRIES.size() - 1, index));
         ImpulseResponseLibrary.Entry e = ImpulseResponseLibrary.ENTRIES.get(index);
         float[][] ir = ImpulseResponseLibrary.load(e.id(), sampleRate);
         // Keep a pristine copy so trim/stretch can always re-prepare from source.
-        this.pristineIr = deepCopy(ir);
-        applyImpulseResponse(ir, e.id());
-        this.preparedIrIndex = index;
+        return new PreparedImpulseResponse(prepareImpulseResponse(ir, e.id(), parameters),
+                deepCopy(ir), null, index);
     }
 
     /** Pristine (post-load, pre-trim/stretch) IR retained so reloadCurrentIr() can re-prepare. */
@@ -223,17 +239,30 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
         }
     }
 
-    private void prepareParameterChanges() {
+    private synchronized void prepareParameterChanges() {
         long revision = parameterRevision;
         if (closed || revision == preparedParameterRevision) return;
         int index = (int) Math.round(irSelection);
-        if (index != preparedIrIndex) {
-            pristinePath = null;
-            loadBundled(index);
-        } else {
-            reloadCurrentIr();
+        IrParameters parameters = currentIrParameters();
+        PreparedImpulseResponse candidate = index != preparedIrIndex
+                ? loadBundled(index, parameters) : reloadCurrentIr(index, parameters);
+        // A newer request keeps the previous kernel and its source metadata live
+        // until preparation of that request succeeds.
+        if (!closed && revision == parameterRevision) {
+            installImpulseResponse(candidate);
+            preparedParameterRevision = revision;
         }
-        preparedParameterRevision = revision;
+    }
+
+    private IrParameters currentIrParameters() {
+        return new IrParameters(stretch, trimStart, trimEnd);
+    }
+
+    private void installImpulseResponse(PreparedImpulseResponse prepared) {
+        pristineIr = prepared.pristineIr();
+        pristinePath = prepared.pristinePath();
+        preparedIrIndex = prepared.irIndex();
+        kernel.set(prepared.kernel());
     }
 
     /** Stops parameter preparation after the host has removed this processor from the graph. */
@@ -252,9 +281,29 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
      */
     public void setImpulseResponse(float[][] ir) {
         validateIrShape(ir);
-        this.pristineIr = deepCopy(ir);
-        this.pristinePath = null;
-        applyImpulseResponse(ir, null);
+        prepareAndInstallImpulseResponse(ir, null, irSelectionRevision);
+    }
+
+    private synchronized void prepareAndInstallImpulseResponse(float[][] ir, Path path,
+                                                               long requestedSelectionRevision) {
+        float[][] pristine = deepCopy(ir);
+        while (!closed) {
+            long revision = parameterRevision;
+            int index = (int) Math.round(irSelection);
+            IrParameters parameters = currentIrParameters();
+            // Trim/stretch edits retain the requested source; a later bundled
+            // selection supersedes it even while file decoding or FFTs run.
+            PreparedImpulseResponse candidate = requestedSelectionRevision != irSelectionRevision
+                    ? loadBundled(index, parameters)
+                    : new PreparedImpulseResponse(
+                            prepareImpulseResponse(pristine, path == null ? null : path.toString(), parameters),
+                            pristine, path, index);
+            if (!closed && revision == parameterRevision) {
+                installImpulseResponse(candidate);
+                preparedParameterRevision = revision;
+                return;
+            }
+        }
     }
 
     /**
@@ -268,11 +317,9 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
      */
     public CompletableFuture<Void> setImpulseResponseAsync(float[][] ir) {
         validateIrShape(ir);
-        return CompletableFuture.runAsync(() -> {
-            this.pristineIr = deepCopy(ir);
-            this.pristinePath = null;
-            applyImpulseResponse(ir, null);
-        }, IR_PREP_EXECUTOR);
+        long selectionRevision = irSelectionRevision;
+        return CompletableFuture.runAsync(
+                () -> prepareAndInstallImpulseResponse(ir, null, selectionRevision), IR_PREP_EXECUTOR);
     }
 
     /**
@@ -283,12 +330,11 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
      */
     public CompletableFuture<Void> loadImpulseResponseFromFileAsync(Path path) {
         Objects.requireNonNull(path, "path");
+        long selectionRevision = irSelectionRevision;
         return CompletableFuture.runAsync(() -> {
             try {
                 float[][] ir = ImpulseResponseLibrary.loadFromFile(path, sampleRate);
-                this.pristineIr = deepCopy(ir);
-                this.pristinePath = path;
-                applyImpulseResponse(ir, path.toString());
+                prepareAndInstallImpulseResponse(ir, path, selectionRevision);
             } catch (Exception ex) {
                 throw new RuntimeException("Failed to load IR: " + path, ex);
             }
@@ -297,7 +343,7 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
 
     /**
      * Validates that the IR has a usable shape. {@code null} or empty is
-     * treated as "clear the IR" by {@link #applyImpulseResponse}, but a
+     * treated as "clear the IR" by {@link #setImpulseResponse}, but a
      * non-empty IR with mismatched / null channel rows is rejected.
      */
     private static void validateIrShape(float[][] ir) {
@@ -317,10 +363,9 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
         }
     }
 
-    private void applyImpulseResponse(float[][] ir, String sourceId) {
+    private Kernel prepareImpulseResponse(float[][] ir, String sourceId, IrParameters parameters) {
         if (ir == null || ir.length == 0 || ir[0] == null || ir[0].length == 0) {
-            kernel.set(Kernel.EMPTY);
-            return;
+            return Kernel.EMPTY;
         }
         // Defensive validation: every channel must be non-null and the same length.
         int n = ir[0].length;
@@ -332,20 +377,19 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
             }
         }
         // Apply trim and stretch off the audio thread (allocations OK here)
-        float[][] processed = applyTrimAndStretch(ir);
-        Kernel k = Kernel.build(processed, channels, sampleRate);
-        k = new Kernel(k.partitions, k.numPartitions, k.lengthSamples, sourceId);
-        kernel.set(k);
+        float[][] processed = applyTrimAndStretch(ir, parameters);
+        Kernel k = kernelBuilder.build(processed, channels, sampleRate);
+        return new Kernel(k.partitions, k.numPartitions, k.lengthSamples, sourceId);
     }
 
-    private float[][] applyTrimAndStretch(float[][] ir) {
+    private float[][] applyTrimAndStretch(float[][] ir, IrParameters parameters) {
         int chs = ir.length;
         int n = ir[0].length;
-        int start = (int) Math.max(0, Math.min(n - 1, Math.round(trimStart * n)));
-        int end = (int) Math.max(start + 1, Math.min(n, Math.round(trimEnd * n)));
+        int start = (int) Math.max(0, Math.min(n - 1, Math.round(parameters.trimStart() * n)));
+        int end = (int) Math.max(start + 1, Math.min(n, Math.round(parameters.trimEnd() * n)));
         int trimmedLen = end - start;
         // Stretch by linear resampling
-        int outLen = (int) Math.max(1, Math.round(trimmedLen * stretch));
+        int outLen = (int) Math.max(1, Math.round(trimmedLen * parameters.stretch()));
         // Cap at MAX_IR_LENGTH_SECONDS so the FDL never overflows
         int cap = (int) (MAX_IR_LENGTH_SECONDS * sampleRate);
         if (outLen > cap) {
@@ -616,6 +660,7 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
             return;
         }
         this.irSelection = idx;
+        irSelectionRevision++;
         parameterRevision++;
     }
 
@@ -704,42 +749,15 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
         parameterRevision++;
     }
 
-    private void reloadCurrentIr() {
+    private PreparedImpulseResponse reloadCurrentIr(int index, IrParameters parameters) {
         // Re-prepare from the pristine cached IR if available — this works for
         // bundled, programmatically-set, and file-loaded IRs alike.
         if (pristineIr != null) {
-            applyImpulseResponse(pristineIr,
-                    pristinePath != null ? pristinePath.toString() : currentBundledId());
-            return;
+            return new PreparedImpulseResponse(
+                    prepareImpulseResponse(pristineIr, kernel.get().sourceId(), parameters),
+                    pristineIr, pristinePath, preparedIrIndex);
         }
-        // Fallback: empty kernel + a fresh bundled load.
-        Kernel k = kernel.get();
-        if (k == null || k == Kernel.EMPTY) {
-            int idx = (int) Math.round(irSelection);
-            idx = Math.max(0, Math.min(ImpulseResponseLibrary.ENTRIES.size() - 1, idx));
-            ImpulseResponseLibrary.Entry e = ImpulseResponseLibrary.ENTRIES.get(idx);
-            float[][] ir = ImpulseResponseLibrary.load(e.id(), sampleRate);
-            this.pristineIr = deepCopy(ir);
-            applyImpulseResponse(ir, e.id());
-            return;
-        }
-        // For bundled IRs we can recover by id; for path-backed IRs we re-read.
-        if (k.sourceId != null) {
-            ImpulseResponseLibrary.Entry e = ImpulseResponseLibrary.findById(k.sourceId);
-            if (e != null) {
-                float[][] ir = ImpulseResponseLibrary.load(e.id(), sampleRate);
-                this.pristineIr = deepCopy(ir);
-                applyImpulseResponse(ir, e.id());
-            }
-        }
-    }
-
-    private String currentBundledId() {
-        int idx = (int) Math.round(irSelection);
-        if (idx >= 0 && idx < ImpulseResponseLibrary.ENTRIES.size()) {
-            return ImpulseResponseLibrary.ENTRIES.get(idx).id();
-        }
-        return null;
+        return loadBundled(index, parameters);
     }
 
     // ── Kernel ─────────────────────────────────────────────────────────

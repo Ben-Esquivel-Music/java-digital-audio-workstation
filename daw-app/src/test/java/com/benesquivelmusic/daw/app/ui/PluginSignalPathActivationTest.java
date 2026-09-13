@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.plugin.EditorFrame;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.*;
+import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.*;
@@ -187,6 +188,44 @@ final class PluginSignalPathActivationTest {
                 assertThat(channel.getInsertSlots()).singleElement()
                         .satisfies(slot -> assertThat(slot.getPlugin()).isSameAs(healthy));
                 assertThat(controller.activeEditorSessionForTest()).isNotNull();
+            } finally { controller.dispose(); }
+            return null;
+        });
+    }
+
+    @Test
+    void midiEffectActivationReportsUnsupportedInsertionWithoutChangingTheGraphOrEditor() {
+        runOnFxThread(() -> {
+            var channel = new MixerChannel("MIDI track");
+            var notifications = new ArrayList<String>();
+            var dirtyCalls = new AtomicInteger();
+            var graphChanges = new AtomicInteger();
+            var controller = new PluginViewController(new PluginViewController.Deps(() -> 48_000, () -> 512,
+                    () -> null, dirtyCalls::incrementAndGet, (message, icon) -> { },
+                    (level, message) -> notifications.add(message), (segments, node) -> { },
+                    () -> null, () -> { }));
+            controller.setRouting(new PluginViewController.Routing(() -> channel, () -> null,
+                    PluginSignalPathActivationTest::builtInSlot, ignored -> graphChanges.incrementAndGet()), null);
+            try {
+                controller.onActivateBuiltInPlugin(ArpeggiatorPlugin.class);
+                assertThat(channel.getInsertSlots()).isEmpty();
+                assertThat(controller.activeEditorSessionForTest()).isNull();
+                controller.onActivateBuiltInPlugin(ArpeggiatorPlugin.class);
+                assertThat(notifications).hasSize(2).allSatisfy(message ->
+                        assertThat(message).contains("MIDI effects are not supported in audio insert slots"));
+                assertThat(dirtyCalls).hasValue(0);
+                assertThat(graphChanges).hasValue(0);
+
+                controller.onActivateBuiltInPlugin(CompressorPlugin.class);
+                var slot = channel.getInsertSlots().getFirst();
+                var session = controller.activeEditorSessionForTest();
+                dirtyCalls.set(0);
+                graphChanges.set(0);
+                controller.onActivateBuiltInPlugin(ArpeggiatorPlugin.class);
+                assertThat(channel.getInsertSlots()).containsExactly(slot);
+                assertThat(controller.activeEditorSessionForTest()).isSameAs(session);
+                assertThat(dirtyCalls).hasValue(0);
+                assertThat(graphChanges).hasValue(0);
             } finally { controller.dispose(); }
             return null;
         });

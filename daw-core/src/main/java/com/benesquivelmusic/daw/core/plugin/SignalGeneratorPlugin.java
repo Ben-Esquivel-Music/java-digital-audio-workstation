@@ -183,7 +183,7 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
         advancePhase(frames, sampleRate);
     }
 
-    @Override public void reset() { phase = 0; }
+    @Override public void reset() { resetGenerationState(); }
     @Override public int getInputChannelCount() { return context == null ? 2 : context.getAudioChannels(); }
     @Override public int getOutputChannelCount() { return getInputChannelCount(); }
 

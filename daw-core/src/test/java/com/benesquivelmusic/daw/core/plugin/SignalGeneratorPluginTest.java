@@ -509,6 +509,32 @@ class SignalGeneratorPluginTest {
         assertThat(second[0]).containsExactly(java.util.Arrays.copyOfRange(continuous[0], 317, 1024));
     }
 
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void processorResetRestartsNoiseWithoutChangingParameters(SignalGeneratorPlugin.WaveformType waveform) {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(waveform);
+        plugin.setAmplitudeDb(-6);
+        var processor = plugin.asAudioProcessor().orElseThrow();
+        float[][] input = new float[2][4096];
+        float[][] first = new float[2][4096];
+        float[][] next = new float[2][4096];
+        processor.process(input, first, 4096);
+        processor.process(input, next, 4096);
+        assertThat(next[0]).isNotEqualTo(first[0]);
+
+        processor.reset();
+        processor.process(input, next, 4096);
+
+        assertThat(next[0]).containsExactly(first[0]);
+        assertThat(next[1]).containsExactly(first[1]);
+        assertThat(plugin.getWaveformType()).isSameAs(waveform);
+        assertThat(plugin.getAmplitudeDb()).isEqualTo(-6);
+        assertThat(plugin.isActive()).isTrue();
+        assertThat(plugin.isMuted()).isFalse();
+    }
+
     @Test
     void generateShouldRespectAmplitude() {
         plugin.initialize(stubContext());

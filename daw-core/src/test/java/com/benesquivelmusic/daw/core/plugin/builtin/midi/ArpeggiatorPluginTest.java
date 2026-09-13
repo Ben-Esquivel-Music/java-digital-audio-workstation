@@ -2,7 +2,10 @@ package com.benesquivelmusic.daw.core.plugin.builtin.midi;
 
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin.Pattern;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin.Rate;
+import com.benesquivelmusic.daw.sdk.editor.PluginParameterStore;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -28,6 +31,49 @@ class ArpeggiatorPluginTest {
     private static final double SAMPLE_RATE = 48_000.0;
     private static final double BPM = 120.0;
     private static final double SAMPLES_PER_BEAT = SAMPLE_RATE * 60.0 / BPM;
+
+    @Test
+    void storeWritesApplyEveryParameterWhenDrainedAndReseedFromLiveValues() {
+        var arp = new ArpeggiatorPlugin();
+        var store = new PluginParameterStore(arp.getParameters());
+        double[] values = {Rate.EIGHTH.ordinal(), Pattern.DOWN.ordinal(), 3, 75, 30, 1};
+        for (int id = 0; id < values.length; id++) {
+            store.writeFromUiById(id, values[id]);
+        }
+        assertThat(arp.getRate()).isEqualTo(Rate.SIXTEENTH);
+
+        assertThat(store.drainToAudio(index -> arp.setAutomatableParameter(
+                store.parameterIdAt(index), store.value(index)))).isEqualTo(6);
+
+        assertThat(arp.getRate()).isEqualTo(Rate.EIGHTH);
+        assertThat(arp.getPattern()).isEqualTo(Pattern.DOWN);
+        assertThat(arp.getOctaveRange()).isEqualTo(3);
+        assertThat(arp.getGate()).isEqualTo(75);
+        assertThat(arp.getSwing()).isEqualTo(30);
+        assertThat(arp.isLatch()).isTrue();
+        var reopened = new PluginParameterStore(arp.getParameters());
+        for (int id = 0; id < values.length; id++) {
+            assertThat(reopened.valueById(id)).as("reopened parameter %d", id).isEqualTo(values[id]);
+        }
+        arp.setAutomatableParameter(5, 0);
+        assertThat(arp.isLatch()).isFalse();
+    }
+
+    @ParameterizedTest
+    @EnumSource(Rate.class)
+    void automationSupportsEveryRate(Rate rate) {
+        var arp = new ArpeggiatorPlugin();
+        arp.setAutomatableParameter(0, rate.ordinal());
+        assertThat(arp.getRate()).isSameAs(rate);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Pattern.class)
+    void automationSupportsEveryPattern(Pattern pattern) {
+        var arp = new ArpeggiatorPlugin();
+        arp.setAutomatableParameter(1, pattern.ordinal());
+        assertThat(arp.getPattern()).isSameAs(pattern);
+    }
 
     /**
      * Drives the plugin in fixed-size blocks for {@code totalFrames} frames,

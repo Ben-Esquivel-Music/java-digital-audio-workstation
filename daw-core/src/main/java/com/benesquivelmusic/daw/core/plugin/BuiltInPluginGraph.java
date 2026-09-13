@@ -24,6 +24,10 @@ public final class BuiltInPluginGraph {
             metronome.bindMetronome(Objects.requireNonNull(engineMetronome, "engine metronome"));
         }
         try {
+            if (plugin instanceof MidiEffectPlugin) {
+                throw new IllegalArgumentException(
+                        "MIDI effects are not supported in audio insert slots: " + plugin.getDescriptor().name());
+            }
             plugin.initialize(context);
             plugin.activate();
             AudioProcessor processor = plugin.asAudioProcessor()
