@@ -103,7 +103,7 @@ public final class Metronome {
         }
 
         int totalBeats = mode.getTotalBeats(beatsPerBar);
-        if (totalBeats == 0 || !isEnabled()) {
+        if (totalBeats == 0 || !isClickEnabled()) {
             return new float[channels][0];
         }
 
@@ -187,18 +187,30 @@ public final class Metronome {
     }
 
     /**
-     * Returns whether the metronome is enabled.
+     * Returns the user's enabled preference, independently of host insert bypass.
      *
      * @return {@code true} if the metronome is enabled
      */
     public boolean isEnabled() {
+        return enabled;
+    }
+
+    /**
+     * Returns whether count-in generation and click routing are enabled after
+     * applying the host insert bypass gate. Volume and output routing settings
+     * are applied separately.
+     *
+     * @return {@code true} if the click is enabled and its insert is not bypassed
+     */
+    public boolean isClickEnabled() {
         return enabled && !pluginBypassed;
     }
 
     /**
      * Enables or disables the metronome.
      *
-     * <p>When disabled, all generation methods return empty buffers.</p>
+     * <p>When disabled, count-in generation returns an empty buffer and click
+     * routing is silenced.</p>
      *
      * @param enabled {@code true} to enable, {@code false} to disable
      */

@@ -135,6 +135,7 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
     private long noiseState;
     private final double[] pinkNoiseRows = new double[PINK_NOISE_ROWS];
     private double pinkNoiseRunningSum;
+    private long pinkNoiseSampleIndex;
     // Control calls publish a reset; only rendering mutates the PRNG/filter state.
     private volatile Object generationReset = new Object();
     private Object appliedGenerationReset;
@@ -470,7 +471,7 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
             case TRIANGLE -> generateTriangle(sampleRate, bufferIndex, bufferLength);
             case SAWTOOTH -> generateSawtooth(sampleRate, bufferIndex, bufferLength);
             case WHITE_NOISE -> generateWhiteNoise();
-            case PINK_NOISE -> generatePinkNoise(bufferIndex);
+            case PINK_NOISE -> generatePinkNoise();
         };
     }
 
@@ -531,9 +532,9 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
         return (next >>> 11) * 0x1.0p-52 - 1.0;
     }
 
-    private double generatePinkNoise(int bufferIndex) {
-        int sampleIndex = bufferIndex + 1;
-        int changed = sampleIndex ^ (sampleIndex - 1);
+    private double generatePinkNoise() {
+        long sampleIndex = ++pinkNoiseSampleIndex;
+        long changed = sampleIndex ^ (sampleIndex - 1);
         for (int r = 0; r < PINK_NOISE_ROWS; r++) {
             if ((changed & (1 << r)) != 0) {
                 pinkNoiseRunningSum -= pinkNoiseRows[r];
@@ -564,6 +565,7 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin, AudioProce
         phase = 0.0;
         noiseState = NOISE_SEED;
         pinkNoiseRunningSum = 0.0;
+        pinkNoiseSampleIndex = 0;
         for (int r = 0; r < PINK_NOISE_ROWS; r++) {
             pinkNoiseRows[r] = generateWhiteNoise();
             pinkNoiseRunningSum += pinkNoiseRows[r];

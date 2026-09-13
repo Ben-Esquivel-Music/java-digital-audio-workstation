@@ -767,11 +767,14 @@ public final class RenderPipeline {
                 }
             }
             mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
-        } else if (inputBuffer != null) {
-            // Fallback: copy input into the mix buffer (pass-through)
+        }
+        if (!playbackActive && inputBuffer != null) {
+            // Preserve input monitoring alongside stopped instrument audition.
             int channels = Math.min(inputBuffer.length, mixBuffer.length);
             for (int ch = 0; ch < channels; ch++) {
-                System.arraycopy(inputBuffer[ch], 0, mixBuffer[ch], 0, numFrames);
+                for (int frame = 0; frame < numFrames; frame++) {
+                    mixBuffer[ch][frame] += inputBuffer[ch][frame];
+                }
             }
         }
 
@@ -918,7 +921,7 @@ public final class RenderPipeline {
         // If the metronome is disabled, clear any pending click-tail
         // so disabling immediately silences every destination — no
         // stray tail samples leak into subsequent blocks.
-        if (!metronome.isEnabled()) {
+        if (!metronome.isClickEnabled()) {
             clearClickTail();
             return;
         }

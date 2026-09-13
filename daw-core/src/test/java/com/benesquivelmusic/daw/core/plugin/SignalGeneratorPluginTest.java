@@ -489,24 +489,58 @@ class SignalGeneratorPluginTest {
         assertThat(second[1]).containsExactly(first[1]);
     }
 
-    @Test
-    void whiteNoiseSequenceContinuesAcrossRenderBlockBoundaries() {
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void noiseSequenceIsIndependentOfRenderBlockPartitioning(SignalGeneratorPlugin.WaveformType waveform) {
         plugin.initialize(stubContext());
         plugin.activate();
-        plugin.setWaveformType(SignalGeneratorPlugin.WaveformType.WHITE_NOISE);
+        plugin.setWaveformType(waveform);
         plugin.setAmplitudeDb(0.0);
-        float[][] input = new float[2][1024];
-        float[][] continuous = new float[2][1024];
-        float[][] first = new float[2][317];
-        float[][] second = new float[2][707];
-        plugin.process(input, continuous, 1024);
+        int frames = 65_573;
+        float[][] input = new float[2][frames];
+        float[][] continuous = new float[2][frames];
+        float[][] partitioned = new float[2][frames];
+        plugin.process(input, continuous, frames);
 
-        plugin.setWaveformType(SignalGeneratorPlugin.WaveformType.WHITE_NOISE);
-        plugin.process(input, first, 317);
-        plugin.process(input, second, 707);
+        plugin.setWaveformType(waveform);
+        int[] blockSizes = {1, 63, 256, 317, 1024};
+        int offset = 0;
+        int blockIndex = 0;
+        while (offset < frames) {
+            int blockFrames = Math.min(blockSizes[blockIndex++ % blockSizes.length], frames - offset);
+            float[][] block = new float[2][blockFrames];
+            plugin.process(input, block, blockFrames);
+            for (int channel = 0; channel < block.length; channel++) {
+                System.arraycopy(block[channel], 0, partitioned[channel], offset, blockFrames);
+            }
+            offset += blockFrames;
+        }
 
-        assertThat(first[0]).containsExactly(java.util.Arrays.copyOfRange(continuous[0], 0, 317));
-        assertThat(second[0]).containsExactly(java.util.Arrays.copyOfRange(continuous[0], 317, 1024));
+        assertThat(partitioned[0]).containsExactly(continuous[0]);
+        assertThat(partitioned[1]).containsExactly(continuous[1]);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SignalGeneratorPlugin.WaveformType.class, names = {"WHITE_NOISE", "PINK_NOISE"})
+    void noiseSequenceContinuesBetweenGenerateAndProcess(SignalGeneratorPlugin.WaveformType waveform) {
+        plugin.initialize(stubContext());
+        plugin.activate();
+        plugin.setWaveformType(waveform);
+        float[] continuous = new float[1024];
+        plugin.generate(continuous);
+
+        plugin.reset();
+        float[] first = new float[317];
+        float[][] middle = new float[2][256];
+        float[] last = new float[451];
+        plugin.generate(first);
+        plugin.process(new float[2][256], middle, 256);
+        plugin.generate(last);
+
+        assertThat(first).containsExactly(java.util.Arrays.copyOfRange(continuous, 0, 317));
+        assertThat(middle[0]).containsExactly(java.util.Arrays.copyOfRange(continuous, 317, 573));
+        assertThat(middle[1]).containsExactly(middle[0]);
+        assertThat(last).containsExactly(java.util.Arrays.copyOfRange(continuous, 573, 1024));
     }
 
     @ParameterizedTest

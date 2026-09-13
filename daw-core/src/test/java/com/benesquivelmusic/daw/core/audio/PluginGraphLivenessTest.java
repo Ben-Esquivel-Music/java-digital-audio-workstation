@@ -144,14 +144,73 @@ class PluginGraphLivenessTest {
             assertThat(plugin.getMetronome()).isSameAs(graph.engine().getMetronome());
             assertThat(metronome.getVolume()).isEqualTo(0.23f);
             graph.channel().setInsertBypassed(0, true);
-            assertThat(metronome.isEnabled()).isFalse();
-            graph.channel().removeInsert(slot);
-            assertThat(metronome.isEnabled()).as("removing the configuration slot releases its bypass gate").isTrue();
-            graph.channel().addInsert(slot);
-            assertThat(metronome.isEnabled()).as("undo restores the slot's bypass state").isFalse();
-            graph.channel().setInsertBypassed(0, false);
             assertThat(metronome.isEnabled()).isTrue();
+            assertThat(plugin.isEnabled()).isTrue();
+            assertThat(metronome.isClickEnabled()).isFalse();
+            graph.channel().removeInsert(slot);
+            assertThat(metronome.isClickEnabled()).as("removing the configuration slot releases its bypass gate").isTrue();
+            graph.channel().addInsert(slot);
+            assertThat(metronome.isEnabled()).isTrue();
+            assertThat(metronome.isClickEnabled()).as("undo restores the slot's bypass state").isFalse();
+            graph.channel().setInsertBypassed(0, false);
+            assertThat(metronome.isClickEnabled()).isTrue();
         } finally { graph.engine().stop(); }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, false, 1", "false, true, 2", "true, false, 3", "true, true, 2"})
+    void idleInstrumentAuditionPreservesInputMonitoringThroughMasterEffects(boolean returnInstrument,
+                                                                          boolean paused,
+                                                                          int inputChannels) {
+        var graph = graph();
+        var channel = returnInstrument ? graph.mixer().addReturnBus("Generator Return") : graph.channel();
+        var plugin = new SignalGeneratorPlugin();
+        channel.addInsert(new BuiltInPluginGraph(new com.benesquivelmusic.daw.core.mixer.ProcessorRegistry())
+                .createSlot(plugin, context(), null));
+        var masterGain = new GainProcessor();
+        masterGain.setGain(0.5);
+        graph.engine().getMasterChain().addProcessor(masterGain);
+        graph.mixer().getMasterChannel().setVolume(0.25);
+        if (paused) {
+            graph.transport().play();
+            graph.transport().pause();
+        }
+        int frames = 173;
+        var input = new float[inputChannels][256];
+        for (int inputChannel = 0; inputChannel < inputChannels; inputChannel++) {
+            java.util.Arrays.fill(input[inputChannel], 0.25f * (inputChannel + 1));
+        }
+        graph.engine().start();
+        try {
+            var audition = new float[2][256];
+            graph.engine().processBlock(null, audition, frames);
+            assertThat(peak(audition)).isGreaterThan(0);
+
+            plugin.reset();
+            var combined = new float[2][256];
+            graph.engine().processBlock(input, combined, frames);
+            for (int outputChannel = 0; outputChannel < combined.length; outputChannel++) {
+                float monitoredInput = outputChannel < inputChannels ? input[outputChannel][0] * 0.5f : 0;
+                for (int frame = 0; frame < frames; frame++) {
+                    assertThat(combined[outputChannel][frame]).isCloseTo(audition[outputChannel][frame] + monitoredInput,
+                            org.assertj.core.api.Assertions.within(1e-6f));
+                }
+            }
+
+            channel.setInsertBypassed(0, true);
+            graph.engine().processBlock(input, combined, frames);
+            for (int outputChannel = 0; outputChannel < combined.length; outputChannel++) {
+                float monitoredInput = outputChannel < inputChannels ? input[outputChannel][0] * 0.5f : 0;
+                assertThat(java.util.Arrays.copyOf(combined[outputChannel], frames)).containsOnly(monitoredInput);
+            }
+            for (int inputChannel = 0; inputChannel < inputChannels; inputChannel++) {
+                assertThat(input[inputChannel]).containsOnly(0.25f * (inputChannel + 1));
+            }
+            assertThat(graph.transport().getPositionInBeats()).isZero();
+        } finally {
+            graph.engine().stop();
+            plugin.dispose();
+        }
     }
 
     @Test
