@@ -135,8 +135,13 @@ public final class ExciterProcessor implements AudioProcessor {
 
     private void rebuildFilters() {
         for (int ch = 0; ch < channels; ch++) {
-            highPass[ch] = BiquadFilter.create(BiquadFilter.FilterType.HIGH_PASS,
-                    sampleRate, frequencyHz, HIGHPASS_Q, 0.0);
+            if (highPass[ch] == null) {
+                highPass[ch] = BiquadFilter.create(BiquadFilter.FilterType.HIGH_PASS,
+                        sampleRate, frequencyHz, HIGHPASS_Q, 0.0);
+            } else {
+                highPass[ch].recalculate(BiquadFilter.FilterType.HIGH_PASS,
+                        sampleRate, frequencyHz, HIGHPASS_Q, 0.0);
+            }
         }
     }
 

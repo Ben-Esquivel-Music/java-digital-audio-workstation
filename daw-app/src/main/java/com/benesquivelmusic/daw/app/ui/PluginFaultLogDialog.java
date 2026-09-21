@@ -153,10 +153,16 @@ public final class PluginFaultLogDialog {
             TitledPane details = new TitledPane("Stack trace", stack);
             details.setExpanded(false);
 
-            Button reenable = new Button(
-                    f.quarantined() ? "Clear quarantine" : "Clear quarantine");
+            Button reenable = new Button("Re-enable plugin");
+            reenable.setDisable(f.slot() == null || !f.slot().isInGraph());
             reenable.setOnAction(_ -> {
-                supervisor.reenable(f.pluginId());
+                if (!f.slot().isInGraph()) {
+                    reenable.setText("Plugin removed");
+                    reenable.setDisable(true);
+                    return;
+                }
+                supervisor.reenable(f.slot());
+                reenable.setText("Re-enabled");
                 reenable.setDisable(true);
             });
 

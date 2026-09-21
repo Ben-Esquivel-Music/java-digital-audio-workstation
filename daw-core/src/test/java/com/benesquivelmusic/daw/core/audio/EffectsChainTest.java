@@ -1,16 +1,210 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
+import com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.lang.management.ManagementFactory;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class EffectsChainTest {
+
+    @Test
+    void offlineRenderPreparesPendingParametersOnceAndDefersLaterEditorWrites() {
+        var processor = new OfflinePreparedGain();
+        var slot = new InsertSlot("Prepared gain", processor);
+        var chain = new EffectsChain();
+        chain.addProcessor(processor, slot);
+        chain.allocateIntermediateBuffers(1, 32);
+        slot.getParameterStore().writeFromUiById(1, 0.25);
+        processor.onFirstBlock = () -> slot.getParameterStore().writeFromUiById(1, 0.75);
+        var input = new float[1][1031];
+        var output = new float[1][1031];
+        Arrays.fill(input[0], 1f);
+
+        chain.processOffline(input, output, 1031);
+
+        assertThat(output[0]).containsOnly(0.25f);
+        assertThat(processor.preparations).isEqualTo(1);
+        assertThat(processor.getGain()).isEqualTo(0.25);
+        assertThat(slot.getParameterStore().valueById(1)).isEqualTo(0.75);
+        chain.process(new float[1][32], new float[1][32], 32);
+        assertThat(processor.getGain()).isEqualTo(0.75);
+        assertThat(processor.preparations).isEqualTo(1);
+    }
+
+    @Test
+    void offlineRenderingUsesBoundedPrivateScratchAndPreservesTheLivePreparation() {
+        var chain = new EffectsChain();
+        chain.addProcessor(new BoundedGainProcessor(0.5f, 32));
+        chain.addProcessor(new GainProcessor(0.5f));
+        chain.allocateIntermediateBuffers(1, 32);
+        var input = new float[1][1031];
+        var output = new float[1][1031];
+        Arrays.fill(input[0], 1f);
+
+        chain.processOffline(input, output, 1031);
+
+        assertThat(output[0]).containsOnly(0.25f);
+        assertThat(chain.intermediateBufferCount()).isEqualTo(1);
+        var liveInput = new float[1][32];
+        var liveOutput = new float[1][32];
+        Arrays.fill(liveInput[0], 0.5f);
+        chain.process(liveInput, liveOutput, 32);
+        assertThat(liveOutput[0]).containsOnly(0.125f);
+    }
+
+    @Test
+    void offlineSnapshotStaysAliveUntilTheLastBlockCompletes() throws Exception {
+        var chain = new EffectsChain();
+        var disposed = new java.util.concurrent.atomic.AtomicBoolean();
+        var retirement = new AtomicReference<java.util.concurrent.CompletableFuture<Void>>();
+        var processedFrames = new java.util.concurrent.atomic.AtomicInteger();
+        chain.addProcessor(new AudioProcessor() {
+            @Override public void process(float[][] input, float[][] output, int frames) {
+                if (retirement.get() == null) {
+                    retirement.set(chain.retireAll(() -> disposed.set(true)));
+                }
+                assertThat(disposed.get()).isFalse();
+                processedFrames.addAndGet(frames);
+                for (int channel = 0; channel < input.length; channel++) {
+                    System.arraycopy(input[channel], 0, output[channel], 0, frames);
+                }
+            }
+            @Override public void reset() { }
+            @Override public int getInputChannelCount() { return 1; }
+            @Override public int getOutputChannelCount() { return 1; }
+        });
+        chain.addProcessor(new GainProcessor(0.5f));
+        var input = new float[1][1031];
+        var output = new float[1][1031];
+        Arrays.fill(input[0], 1f);
+
+        chain.processOffline(input, output, 1031);
+
+        retirement.get().get(5, TimeUnit.SECONDS);
+        assertThat(disposed.get()).isTrue();
+        assertThat(processedFrames.get()).isEqualTo(1031);
+        assertThat(output[0]).containsOnly(0.5f);
+        assertThat(chain.isEmpty()).isTrue();
+    }
+
+    @Test
+    void preparedRenderAllocatesNothingDuringAddRemoveReorderAndBypass() throws Exception {
+        var bean = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        assumeTrue(bean.isThreadAllocatedMemorySupported());
+        bean.setThreadAllocatedMemoryEnabled(true);
+        var channel = new MixerChannel("Concurrent inserts");
+        channel.prepareEffectsChain(1, 32);
+        var first = new InsertSlot("First", new GainProcessor(0.5f));
+        var second = new InsertSlot("Second", new GainProcessor(0.5f));
+        var third = new InsertSlot("Third", new GainProcessor(0.5f));
+        channel.addInsert(first);
+        channel.addInsert(second);
+        var ready = new CountDownLatch(1);
+        var start = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        long[] allocation = {-1};
+        var input = new float[1][32];
+        var output = new float[1][32];
+        Arrays.fill(input[0], 1f);
+        var renderer = Thread.ofPlatform().start(() -> {
+            try {
+                renderAndVerifyBlocks(channel.getEffectsChain(), input, output, 20_000);
+                // Warm each branch that concurrent edits can expose, including dry-stage copies.
+                for (int edit = 0; edit < 1000; edit++) {
+                    channel.addInsert(third);
+                    channel.moveInsert(2, 0);
+                    renderAndVerifyBlocks(channel.getEffectsChain(), input, output, 10);
+                    channel.setInsertBypassed(0, true);
+                    renderAndVerifyBlocks(channel.getEffectsChain(), input, output, 10);
+                    channel.setInsertBypassed(0, false);
+                    channel.removeInsert(third);
+                    renderAndVerifyBlocks(channel.getEffectsChain(), input, output, 10);
+                }
+                long thread = Thread.currentThread().threadId();
+                bean.getThreadAllocatedBytes(thread);
+                ready.countDown();
+                start.await();
+                long before = bean.getThreadAllocatedBytes(thread);
+                renderAndVerifyBlocks(channel.getEffectsChain(), input, output, 50_000);
+                allocation[0] = bean.getThreadAllocatedBytes(thread) - before;
+            } catch (Throwable throwable) {
+                failure.set(throwable);
+                ready.countDown();
+            }
+        });
+        assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+        start.countDown();
+        for (int edit = 0; edit < 1000; edit++) {
+            channel.addInsert(third);
+            channel.moveInsert(2, 0);
+            channel.setInsertBypassed(0, true);
+            channel.setInsertBypassed(0, false);
+            channel.removeInsert(third);
+        }
+        renderer.join(10_000);
+        assertThat(renderer.isAlive()).isFalse();
+        assertThat(failure.get()).isNull();
+        assertThat(allocation[0]).isZero();
+    }
+
+    private static void renderAndVerifyBlocks(EffectsChain chain, float[][] input, float[][] output, int blocks) {
+        for (int block = 0; block < blocks; block++) {
+            chain.process(input, output, 32);
+            float value = output[0][0];
+            if (value != 0.125f && value != 0.25f && value != 0.5f) {
+                throw new AssertionError("Incomplete insert publication");
+            }
+            for (float sample : output[0]) {
+                if (sample != value) throw new AssertionError("Partial block processing");
+            }
+        }
+    }
+
+    @Test
+    void concurrentWholeChainEditsPublishOnlyCompletePreparedSnapshots() throws Exception {
+        var chain = new EffectsChain();
+        chain.allocateIntermediateBuffers(1, 32);
+        var pair = List.<AudioProcessor>of(new GainProcessor(0.5f), new GainProcessor(0.5f));
+        var triple = List.<AudioProcessor>of(new GainProcessor(0.5f), new GainProcessor(0.5f), new GainProcessor(0.5f));
+        chain.replaceAll(pair, Arrays.asList(null, null));
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var ready = new java.util.concurrent.CountDownLatch(1);
+        var renderer = Thread.ofPlatform().start(() -> {
+            var input = new float[1][32];
+            var output = new float[1][32];
+            Arrays.fill(input[0], 1f);
+            ready.countDown();
+            try {
+                for (int block = 0; block < 10_000; block++) {
+                    chain.process(input, output, 32);
+                    assertThat(output[0][0]).isIn(0.25f, 0.125f);
+                    for (float sample : output[0]) { assertThat(sample).isEqualTo(output[0][0]); }
+                }
+            } catch (Throwable e) { failure.set(e); }
+        });
+        assertThat(ready.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        for (int edit = 0; edit < 1000; edit++) {
+            chain.replaceAll(triple, Arrays.asList(null, null, null));
+            chain.replaceAll(pair, Arrays.asList(null, null));
+        }
+        renderer.join(5000);
+        assertThat(renderer.isAlive()).isFalse();
+        assertThat(failure.get()).isNull();
+    }
 
     @Test
     void shouldStartEmpty() {
@@ -215,6 +409,7 @@ class EffectsChainTest {
     @Test
     void shouldProcessThroughChainedProcessors() {
         EffectsChain chain = new EffectsChain();
+        chain.allocateIntermediateBuffers(1, 1);
         chain.addProcessor(new GainProcessor(0.5f));
         chain.addProcessor(new GainProcessor(0.5f));
 
@@ -347,6 +542,50 @@ class EffectsChainTest {
         public int getOutputChannelCount() {
             return 1;
         }
+    }
+
+    public static final class OfflinePreparedGain implements AudioProcessor, PreparedParameterProcessor {
+        private double requestedGain = 1.0;
+        private double preparedGain = 1.0;
+        private int preparations;
+        private Runnable onFirstBlock;
+
+        @ProcessorParam(id = 1, name = "Gain", min = 0, max = 1, defaultValue = 1)
+        public double getGain() { return requestedGain; }
+        public void setGain(double gain) { requestedGain = gain; }
+        @Override public void awaitParameterPreparation() {
+            preparedGain = requestedGain;
+            preparations++;
+        }
+        @Override public void enableRealtimeParameterPreparation() { }
+        @Override public void applyPreparedParameters() { }
+        @Override public void closeParameterPreparation() { }
+        @Override public void process(float[][] input, float[][] output, int frames) {
+            if (onFirstBlock != null) {
+                onFirstBlock.run();
+                onFirstBlock = null;
+            }
+            for (int frame = 0; frame < frames; frame++) {
+                output[0][frame] = (float) (input[0][frame] * preparedGain);
+            }
+        }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
+    }
+
+    private record BoundedGainProcessor(float gain, int maxFrames) implements AudioProcessor {
+        @Override public void process(float[][] input, float[][] output, int frames) {
+            assertThat(frames).isBetween(1, maxFrames);
+            for (int channel = 0; channel < input.length; channel++) {
+                for (int frame = 0; frame < frames; frame++) {
+                    output[channel][frame] = input[channel][frame] * gain;
+                }
+            }
+        }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
     }
 
     private record GainProcessor(float gain) implements AudioProcessor {

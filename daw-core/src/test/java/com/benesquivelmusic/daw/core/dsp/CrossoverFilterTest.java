@@ -11,6 +11,22 @@ class CrossoverFilterTest {
     private static final double SAMPLE_RATE = 44100.0;
 
     @Test
+    void retuningPreservesTheImpulseTailAndChangesTheSubsequentResponse() {
+        var retuned = new CrossoverFilter(SAMPLE_RATE, 1000);
+        var unchanged = new CrossoverFilter(SAMPLE_RATE, 1000);
+        var retunedOutput = new float[2];
+        var unchangedOutput = new float[2];
+        retuned.processSample(1, retunedOutput);
+        unchanged.processSample(1, unchangedOutput);
+        retuned.setFrequency(2000);
+        retuned.processSample(0, retunedOutput);
+        unchanged.processSample(0, unchangedOutput);
+        assertThat(retunedOutput[0]).isNotZero();
+        assertThat(retunedOutput[1]).isNotZero();
+        assertThat(retunedOutput).isNotEqualTo(unchangedOutput);
+    }
+
+    @Test
     void shouldSplitAndSumToOriginalSignal() {
         // The defining property of a Linkwitz-Riley crossover: low + high ≈ original
         // (small deviations are expected in the digital domain due to bilinear warping)

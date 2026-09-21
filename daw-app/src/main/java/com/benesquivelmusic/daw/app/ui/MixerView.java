@@ -118,6 +118,9 @@ public final class MixerView extends VBox implements Dockable {
     private final HBox vcaStrips;
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
+    private java.util.function.BiConsumer<MixerChannel, InsertSlot> onOpenInsertEditor;
+    private java.util.function.Consumer<MixerChannel> onChannelSelected;
+    private boolean disposed;
     private final List<InputMeterStrip> activeInputMeterStrips = new ArrayList<>();
     /**
      * Story 318 — the output meter of every track / return strip built by the
@@ -197,7 +200,7 @@ public final class MixerView extends VBox implements Dockable {
      * triggers a {@link #refresh()} whenever a link is added, removed, or
      * replaced — keeps the chain glyphs, connector lines, and L/R badges
      * in sync with the model. Held as a field so we can deregister if the
-     * view is ever disposed (defensive — there is no current dispose path).
+     * view is replaced or disposed.
      */
     private final Runnable channelLinkListener;
     /**
@@ -379,6 +382,7 @@ public final class MixerView extends VBox implements Dockable {
         // ViewNavigationController.setMixerView) does not stay strongly
         // referenced by ChannelLinkManager or UndoManager (memory-leak fix).
         sceneProperty().addListener((_, _, newScene) -> {
+            if (disposed) return;
             if (newScene == null) {
                 releaseModelListeners();
                 // Story 318 — a detached MixerView keeps no meter subscription
@@ -836,6 +840,7 @@ public final class MixerView extends VBox implements Dockable {
      */
     public void setMeterFeed(MeterFeed feed) {
         this.meterFeed = feed;
+        activeInsertRacks.forEach(rack -> rack.setMeterFeed(feed));
         resubscribeAllMeters();
     }
 
@@ -861,6 +866,41 @@ public final class MixerView extends VBox implements Dockable {
         for (Map.Entry<LevelMeterDisplay, MeterTapPoint> entry : stripMeterPoints.entrySet()) {
             stripMeterBindings.add(bindMeter(entry.getKey(), entry.getValue()));
         }
+    }
+
+    public void setOnOpenInsertEditor(java.util.function.BiConsumer<MixerChannel, InsertSlot> handler) {
+        onOpenInsertEditor = handler;
+        activeInsertRacks.forEach(rack -> rack.setOnOpenEditor(handler));
+    }
+
+    public void setOnChannelSelected(java.util.function.Consumer<MixerChannel> handler) {
+        onChannelSelected = handler;
+    }
+
+    public void showInsertPicker(MixerChannel channel) {
+        if (disposed) return;
+        activeInsertRacks.stream().filter(rack -> rack.getChannel() == channel).findFirst()
+                .ifPresent(rack -> rack.showEffectPicker(channel.getInsertCount()));
+    }
+
+    /** Retires this project view, including pending rack loads and editor windows. */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        releaseModelListeners();
+        disposeAllMeterSubscriptions();
+        activeInsertRacks.forEach(InsertEffectRack::dispose);
+        activeInsertRacks.clear();
+        activeInputMeterStrips.forEach(InputMeterStrip::stop);
+        activeInputMeterStrips.clear();
+        onOpenInsertEditor = null;
+        onChannelSelected = null;
+        meterFeed = null;
+    }
+
+    public void refreshInsertRack(MixerChannel channel) {
+        activeInsertRacks.stream().filter(rack -> rack.getChannel() == channel)
+                .forEach(InsertEffectRack::rebuildSlots);
     }
 
     /** Returns the currently bound {@link MeterFeed}, or {@code null}. Visible for testing. */
@@ -1023,6 +1063,7 @@ public final class MixerView extends VBox implements Dockable {
      * keep the mixer view synchronized with the project model.</p>
      */
     public void refresh() {
+        if (disposed) return;
         // Drop any stale selections referencing tracks that no longer exist
         // so right-click "Create VCA from selection" can't pick up phantoms
         // after a track removal.
@@ -1259,6 +1300,9 @@ public final class MixerView extends VBox implements Dockable {
                 } else {
                     selectedChannelIds.clear();
                     selectedChannelIds.add(channelId);
+                }
+                if (onChannelSelected != null) {
+                    onChannelSelected.accept(project.getMixerChannelForTrack(track));
                 }
                 // Cheap restyle of every visible channel strip — no full refresh.
                 for (Node n : channelStrips.getChildren()) {
@@ -1728,6 +1772,8 @@ public final class MixerView extends VBox implements Dockable {
         InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager, fxDispatcher);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
+        insertRack.setOnOpenEditor(onOpenInsertEditor);
+        insertRack.setMeterFeed(meterFeed);
         insertRack.setDragVisualAdvisor(dragVisualAdvisor);
         activeInsertRacks.add(insertRack);
 
@@ -1862,6 +1908,11 @@ public final class MixerView extends VBox implements Dockable {
 
     private VBox buildReturnBusStrip(MixerChannel returnBus) {
         VBox strip = new VBox(4);
+        strip.setOnMouseClicked(event -> {
+            if (event.getButton() == javafx.scene.input.MouseButton.PRIMARY && onChannelSelected != null) {
+                onChannelSelected.accept(returnBus);
+            }
+        });
         strip.getStyleClass().add("mixer-channel");
         strip.setAlignment(Pos.TOP_CENTER);
         strip.setPrefWidth(CHANNEL_WIDTH);
@@ -1967,6 +2018,8 @@ public final class MixerView extends VBox implements Dockable {
         InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager, fxDispatcher);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
+        insertRack.setOnOpenEditor(onOpenInsertEditor);
+        insertRack.setMeterFeed(meterFeed);
         insertRack.setDragVisualAdvisor(dragVisualAdvisor);
         activeInsertRacks.add(insertRack);
 

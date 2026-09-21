@@ -4456,6 +4456,22 @@ public final class AudioEngine {
         return recordingCallback;
     }
 
+    /** Whether the track can record a hosted instrument without an input device. */
+    public boolean hasGraphInstrument(Track track) {
+        EngineGraph current = graph;
+        if (current.mixer() == null || current.tracks() == null) {
+            return false;
+        }
+        int index = current.tracks().indexOf(track);
+        return index >= 0 && index < current.mixer().getChannels().size()
+                && current.mixer().getChannels().get(index).hasInstrumentInsert();
+    }
+
+    /** Current post-insert track buffer; consumed only during the recording callback. */
+    public float[][] graphInstrumentRecordingBuffer(Track track) {
+        return renderPipeline.graphInstrumentRecordingBuffer(track);
+    }
+
     /**
      * Sets the performance monitor used to track CPU load and buffer underruns.
      *

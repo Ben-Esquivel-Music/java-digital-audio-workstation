@@ -412,6 +412,20 @@ public final class BandwidthExtender implements AudioProcessor {
         // perceptual roll-off applies smoothly above the cutoff.
         double shelfFreq = Math.min((safeCutoff + safeTarget) * 0.5, nyquist * 0.98);
 
+        if (sourceLp != null) {
+            for (int ch = 0; ch < channels; ch++) {
+                sourceLp[ch].recalculate(BiquadFilter.FilterType.LOW_PASS,
+                        sampleRate, safeCutoff, BUTTERWORTH_Q, 0);
+                postHp[ch].recalculate(BiquadFilter.FilterType.HIGH_PASS,
+                        sampleRate, safeCutoff, BUTTERWORTH_Q, 0);
+                postLp[ch].recalculate(BiquadFilter.FilterType.LOW_PASS,
+                        sampleRate, safeTarget, BUTTERWORTH_Q, 0);
+                perceptualShelf[ch].recalculate(BiquadFilter.FilterType.HIGH_SHELF,
+                        sampleRate, shelfFreq, BUTTERWORTH_Q, PERCEPTUAL_SHELF_GAIN_DB);
+            }
+            return;
+        }
+
         BiquadFilter[] newSourceLp = new BiquadFilter[channels];
         BiquadFilter[] newPostHp = new BiquadFilter[channels];
         BiquadFilter[] newPostLp = new BiquadFilter[channels];

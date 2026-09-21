@@ -52,7 +52,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
 @InsertEffect(type = "CHIRP_PEAK_REDUCER", displayName = "Chirp Peak Reducer", category = PluginCategory.DYNAMICS)
-public final class ChirpPeakReducer implements AudioProcessor {
+public final class ChirpPeakReducer implements AudioProcessor, PreparedParameterProcessor {
 
     /** Minimum allowed threshold in dB. */
     public static final double MIN_THRESHOLD_DB = -60.0;
@@ -76,8 +76,8 @@ public final class ChirpPeakReducer implements AudioProcessor {
     private final double sampleRate;
 
     private double thresholdDb;
-    private double chirpDurationMs;
-    private double chirpBandwidthHz;
+    private volatile double chirpDurationMs;
+    private volatile double chirpBandwidthHz;
     private double mix;
 
     // Precomputed chirp kernel (normalized to unit energy)
@@ -86,6 +86,8 @@ public final class ChirpPeakReducer implements AudioProcessor {
 
     // Per-channel convolution overlap-add buffers
     private volatile float[][] overlapBuffers;
+    private int overlapPosition;
+    private DeferredDspUpdate parameterPreparation;
 
     // Per-channel envelope state for attack/release peak detection
     private volatile double[] envelopeState;
@@ -127,6 +129,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
     @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        applyPreparedParameters();
         int activeCh = Math.min(channels, Math.min(inputBuffer.length, outputBuffer.length));
 
         if (mix == 0.0) {
@@ -146,20 +149,6 @@ public final class ChirpPeakReducer implements AudioProcessor {
 
         double attackCoeff = envelopeAttackCoeff;
         double releaseCoeff = envelopeReleaseCoeff;
-
-        // Ensure overlap buffers are large enough for the current block size.
-        // If the host passes a numFrames larger than what was allocated, grow
-        // the buffers dynamically so we never index out of bounds.
-        int requiredOverlapLen = numFrames + kernelLen;
-        if (overlap[0].length < requiredOverlapLen) {
-            float[][] grown = new float[channels][];
-            for (int ch = 0; ch < channels; ch++) {
-                grown[ch] = new float[requiredOverlapLen];
-                System.arraycopy(overlap[ch], 0, grown[ch], 0, overlap[ch].length);
-            }
-            overlap = grown;
-            overlapBuffers = grown;
-        }
 
         for (int frame = 0; frame < numFrames; frame++) {
             for (int ch = 0; ch < activeCh; ch++) {
@@ -190,34 +179,22 @@ public final class ChirpPeakReducer implements AudioProcessor {
                     // Convolve peak component with chirp kernel using overlap-add.
                     // Each peak sample contributes kernel[k] * peakComponent at offset k.
                     for (int k = 0; k < kernelLen; k++) {
-                        overlap[ch][frame + k] += (float) (peakComponent * kernel[k]);
+                        overlap[ch][(overlapPosition + k) % kernelLen] += (float) (peakComponent * kernel[k]);
                     }
 
                     // Output = base component + spread peak from overlap buffer
-                    float processed = baseComponent + overlap[ch][frame];
+                    float processed = baseComponent + overlap[ch][overlapPosition];
                     outputBuffer[ch][frame] = (float) (sample * (1.0 - mix) + processed * mix);
                 } else {
                     // Below threshold — add any remaining overlap contribution
-                    float processed = sample + overlap[ch][frame];
+                    float processed = sample + overlap[ch][overlapPosition];
                     outputBuffer[ch][frame] = (float) (sample * (1.0 - mix) + processed * mix);
                 }
 
                 // Clear the consumed overlap position
-                overlap[ch][frame] = 0.0f;
+                overlap[ch][overlapPosition] = 0.0f;
             }
-        }
-
-        // Shift unconsumed overlap data forward for the next process() call.
-        // Data at indices [numFrames .. numFrames+kernelLen-1] wraps to [0 .. kernelLen-1].
-        for (int ch = 0; ch < activeCh; ch++) {
-            int overlapLen = overlap[ch].length;
-            int remaining = overlapLen - numFrames;
-            if (remaining > 0) {
-                System.arraycopy(overlap[ch], numFrames, overlap[ch], 0, remaining);
-                Arrays.fill(overlap[ch], remaining, overlapLen, 0.0f);
-            } else {
-                Arrays.fill(overlap[ch], 0.0f);
-            }
+            overlapPosition = (overlapPosition + 1) % kernelLen;
         }
     }
 
@@ -334,6 +311,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
             Arrays.fill(buf, 0.0f);
         }
         Arrays.fill(envelopeState, 0.0);
+        overlapPosition = 0;
     }
 
     @Override
@@ -356,14 +334,22 @@ public final class ChirpPeakReducer implements AudioProcessor {
      * preserved during convolution.</p>
      */
     private void rebuildKernel() {
+        if (parameterPreparation != null) {
+            parameterPreparation.request();
+        } else {
+            prepareKernel().run();
+        }
+    }
+
+    private Runnable prepareKernel() {
         int kernelLen = Math.max(2, (int) (chirpDurationMs * 0.001 * sampleRate));
-        chirpKernelLength = kernelLen;
+        double bandwidth = chirpBandwidthHz;
 
         // Generate a linear chirp: frequency sweeps from f0 to f0 + bandwidth
         // over the kernel duration. The start frequency is set at half the
         // bandwidth to center the sweep in a useful range.
-        double f0 = chirpBandwidthHz * 0.5;
-        double f1 = f0 + chirpBandwidthHz;
+        double f0 = bandwidth * 0.5;
+        double f1 = f0 + bandwidth;
         double durationSec = kernelLen / sampleRate;
 
         double[] kernel = new double[kernelLen];
@@ -391,14 +377,42 @@ public final class ChirpPeakReducer implements AudioProcessor {
             }
         }
 
-        this.chirpKernel = kernel;
+        float[][] newOverlap = new float[channels][kernelLen];
+        double[] newEnvelope = new double[channels];
+        return () -> {
+            chirpKernel = kernel;
+            chirpKernelLength = kernelLen;
+            overlapBuffers = newOverlap;
+            envelopeState = newEnvelope;
+            overlapPosition = 0;
+        };
+    }
 
-        // Overlap-add buffer must accommodate the kernel tail beyond the block.
-        // Initial size handles typical block sizes; process() grows dynamically
-        // if a larger numFrames is encountered at runtime.
-        int overlapSize = kernelLen + 8192;
-        float[][] newOverlap = new float[channels][overlapSize];
-        this.overlapBuffers = newOverlap;
-        this.envelopeState = new double[channels];
+    @Override
+    public void enableRealtimeParameterPreparation() {
+        if (parameterPreparation == null) {
+            parameterPreparation = new DeferredDspUpdate(this::prepareKernel);
+        }
+    }
+
+    @Override
+    public void applyPreparedParameters() {
+        if (parameterPreparation != null) {
+            parameterPreparation.apply();
+        }
+    }
+
+    @Override
+    public void closeParameterPreparation() {
+        if (parameterPreparation != null) {
+            parameterPreparation.close();
+        }
+    }
+
+    @Override
+    public void awaitParameterPreparation() {
+        if (parameterPreparation != null) {
+            parameterPreparation.await();
+        }
     }
 }

@@ -8,6 +8,8 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import java.util.List;
 
 import java.util.Objects;
 
@@ -81,7 +83,29 @@ public final class MetronomePlugin implements BuiltInDawPlugin {
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
         this.context = context;
-        metronome = new Metronome(context.getSampleRate(), DEFAULT_CHANNELS);
+        if (metronome == null) {
+            metronome = new Metronome(context.getSampleRate(), context.getAudioChannels());
+        }
+    }
+
+    /** Binds the engine singleton before initialization; this plugin does not render another click. */
+    public void bindMetronome(Metronome metronome) {
+        this.metronome = Objects.requireNonNull(metronome);
+    }
+
+    @Override
+    public List<PluginParameter> getParameters() {
+        return List.of(new PluginParameter(0, "Enabled", 0, 1, isEnabled() ? 1 : 0),
+                new PluginParameter(1, "Volume", 0, 1, getVolume()));
+    }
+
+    @Override
+    public void setAutomatableParameter(int id, double value) {
+        switch (id) {
+            case 0 -> setEnabled(value >= 0.5);
+            case 1 -> setVolume((float) value);
+            default -> { }
+        }
     }
 
     @Override

@@ -152,6 +152,26 @@ class MetronomeSideOutputRouterEngineTest {
         }
     }
 
+    @Test
+    void pluginBypassClearsClickTailAndSuppressesLaterBeatsUntilReleased() {
+        try (Fixture fx = new Fixture()) {
+            var owner = new Object();
+            fx.runForFrames(BUFFER_FRAMES);
+            assertThat(fx.maxAbs(fx.allOutput)).isGreaterThan(0);
+
+            fx.metronome.setPluginBypassed(owner, true);
+            fx.runForFrames(SAMPLES_PER_BEAT * 2);
+            assertThat(fx.metronome.isEnabled()).isTrue();
+            assertThat(fx.maxAbs(fx.allOutput)).isZero();
+
+            fx.metronome.releasePluginBypass(owner);
+            fx.runForFrames(BUFFER_FRAMES);
+            assertThat(fx.maxAbs(fx.allOutput)).as("discarded click tails do not resume after bypass").isZero();
+            fx.runForFrames(SAMPLES_PER_BEAT);
+            assertThat(fx.maxAbs(fx.allOutput)).as("the next beat sounds after bypass is released").isGreaterThan(0);
+        }
+    }
+
     /** Boilerplate: a minimal engine + transport + metronome + router setup. */
     private static final class Fixture implements AutoCloseable {
         final AudioFormat format = new AudioFormat(SAMPLE_RATE, 2, 16, BUFFER_FRAMES);

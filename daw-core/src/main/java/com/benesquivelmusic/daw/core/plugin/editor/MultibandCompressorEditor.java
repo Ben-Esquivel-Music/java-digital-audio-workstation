@@ -58,6 +58,16 @@ import com.benesquivelmusic.daw.sdk.visualization.MultibandCompressorData;
  */
 public final class MultibandCompressorEditor implements PluginEditorFactory.Panel {
 
+    private Content content;
+
+    @Override public void parameterChanged(int id, double value) {
+        if (content != null) content.bindings.parameterChanged(id, value);
+    }
+
+    @Override public void detach() {
+        if (content != null) content.bindings.close();
+    }
+
     /** Maximum gain-reduction shown on the per-band meters, in dB. */
     static final double METER_MAX_DB = 24.0;
 
@@ -108,7 +118,8 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(plugin.getProcessor(),
                 "plugin must be initialized before opening the editor");
-        return new Content(plugin, context);
+        content = new Content(plugin, context);
+        return content;
     }
 
     /**
@@ -131,6 +142,8 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
      */
     private static final class Content extends VBox {
 
+        private final EditorParameterBindings bindings;
+
         private final MultibandCompressorPlugin plugin;
         private final EditorContext context;
         // The enclosing editor implements PluginEditorFactory.Panel, which
@@ -144,6 +157,7 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
         Content(MultibandCompressorPlugin plugin, EditorContext context) {
             this.plugin = plugin;
             this.context = context;
+            this.bindings = new EditorParameterBindings(context.parameterStore());
 
             setSpacing(10);
             setPadding(new Insets(12));
@@ -156,21 +170,15 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
                 bandCount.getItems().add(n);
             }
             bandCount.setValue(plugin.getBandCount());
-            bandCount.valueProperty().addListener((_, _, v) -> {
-                if (v != null && v != plugin.getBandCount()) {
-                    plugin.setBandCount(v);
-                    context.parameterStore().writeFromUiById(PARAM_BAND_COUNT, v);
-                    rebuildBandRow();
-                    drawSpectrum();
-                }
-            });
+            bindings.bindSelection(PARAM_BAND_COUNT, bandCount,
+                    value -> (int) Math.round(value), Integer::doubleValue);
 
             CheckBox linearPhase = new CheckBox("Linear Phase");
+            linearPhase.setDisable(true);
+            linearPhase.setTooltip(new javafx.scene.control.Tooltip(
+                    "Linear phase crossover processing is not available yet."));
             linearPhase.setSelected(plugin.isLinearPhase());
-            linearPhase.selectedProperty().addListener((_, _, v) -> {
-                plugin.setLinearPhase(v);
-                context.parameterStore().writeFromUiById(PARAM_LINEAR_PHASE, v ? 1.0 : 0.0);
-            });
+            bindings.bindToggle(PARAM_LINEAR_PHASE, linearPhase.selectedProperty());
 
             HBox topControls = new HBox(12, labelled("Bands", bandCount), linearPhase);
             topControls.setAlignment(Pos.CENTER_LEFT);
@@ -181,12 +189,13 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
             // ── Per-band knob/meter cluster ───────────────────────────────
             bandRow = new VBox(8);
             bandRow.setAlignment(Pos.CENTER_LEFT);
+            bandCount.valueProperty().addListener((_, _, _) -> rebuildBandRow());
             rebuildBandRow();
 
             getChildren().addAll(topControls, spectrumCanvas, bandRow);
             drawSpectrum();
 
-            context.themeProperty().addListener((_, _, _) -> {
+            bindings.observe(context.themeProperty(), (_, _, _) -> {
                 drawSpectrum();
                 repaintBandMeters();
             });
@@ -200,7 +209,7 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
                     repaintBandMeters();
                 }
             };
-            ShowingWindowGate.install(this, meterTimer::start, meterTimer::stop);
+            bindings.onDetach(ShowingWindowGate.install(this, meterTimer::start, meterTimer::stop));
         }
 
         private void repaintBandMeters() {
@@ -223,7 +232,7 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
             MultibandCompressorProcessor proc = plugin.getProcessor();
             HBox bands = new HBox(10);
             bands.setAlignment(Pos.TOP_LEFT);
-            for (int i = 0; i < proc.getBandCount(); i++) {
+            for (int i = 0; i < (int) Math.round(context.parameterStore().valueById(PARAM_BAND_COUNT)); i++) {
                 bands.getChildren().add(buildBandPanel(i));
             }
             bandRow.getChildren().add(bands);
@@ -231,83 +240,35 @@ public final class MultibandCompressorEditor implements PluginEditorFactory.Pane
 
         private VBox buildBandPanel(int bandIndex) {
             MultibandCompressorProcessor proc = plugin.getProcessor();
-            CompressorProcessor band = proc.getBandCompressor(bandIndex);
+            CompressorProcessor band = proc.getBandCompressor(Math.min(bandIndex, proc.getBandCount() - 1));
 
             Label title = new Label("Band " + (bandIndex + 1));
             title.setStyle("-fx-font-weight: bold;");
 
             Slider threshold = slider(-60.0, 0.0, band.getThresholdDb());
-            threshold.valueProperty().addListener((_, _, v) -> {
-                band.setThresholdDb(v.doubleValue());
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_THRESHOLD), v.doubleValue());
-            });
+            bindings.bindNumber(bandParamId(bandIndex, OFFSET_THRESHOLD), threshold.valueProperty());
 
             Slider ratio = slider(1.0, 20.0, band.getRatio());
-            ratio.valueProperty().addListener((_, _, v) -> {
-                band.setRatio(v.doubleValue());
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_RATIO), v.doubleValue());
-            });
+            bindings.bindNumber(bandParamId(bandIndex, OFFSET_RATIO), ratio.valueProperty());
 
             Slider attack = slider(0.01, 100.0, band.getAttackMs());
-            attack.valueProperty().addListener((_, _, v) -> {
-                band.setAttackMs(v.doubleValue());
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_ATTACK), v.doubleValue());
-            });
+            bindings.bindNumber(bandParamId(bandIndex, OFFSET_ATTACK), attack.valueProperty());
 
             Slider release = slider(10.0, 1000.0, band.getReleaseMs());
-            release.valueProperty().addListener((_, _, v) -> {
-                band.setReleaseMs(v.doubleValue());
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_RELEASE), v.doubleValue());
-            });
+            bindings.bindNumber(bandParamId(bandIndex, OFFSET_RELEASE), release.valueProperty());
 
-            Slider makeup = slider(0.0, 30.0, proc.getBandMakeupGainDb(bandIndex));
-            makeup.valueProperty().addListener((_, _, v) -> {
-                proc.setBandMakeupGainDb(bandIndex, v.doubleValue());
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_MAKEUP), v.doubleValue());
-            });
+            Slider makeup = slider(0.0, 30.0, context.parameterStore().valueById(bandParamId(bandIndex, OFFSET_MAKEUP)));
+            bindings.bindNumber(bandParamId(bandIndex, OFFSET_MAKEUP), makeup.valueProperty());
 
-            CheckBox bypass = toggle("Bypass", proc.isBandBypassed(bandIndex));
-            bypass.selectedProperty().addListener((_, _, v) -> {
-                proc.setBandBypassed(bandIndex, v);
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_BYPASS), v ? 1.0 : 0.0);
-            });
+            CheckBox bypass = toggle("Bypass", context.parameterStore().valueById(bandParamId(bandIndex, OFFSET_BYPASS)) >= 0.5);
+            bindings.bindToggle(bandParamId(bandIndex, OFFSET_BYPASS), bypass.selectedProperty());
 
-            CheckBox solo = toggle("Solo", proc.isBandSoloed(bandIndex));
-            solo.selectedProperty().addListener((_, _, v) -> {
-                proc.setBandSoloed(bandIndex, v);
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_SOLO), v ? 1.0 : 0.0);
-            });
+            CheckBox solo = toggle("Solo", context.parameterStore().valueById(bandParamId(bandIndex, OFFSET_SOLO)) >= 0.5);
+            bindings.bindToggle(bandParamId(bandIndex, OFFSET_SOLO), solo.selectedProperty());
 
-            // Mute is implemented as a forced-zero makeup (behaviour preserved
-            // from the retired view): when muting, the current makeup value is
-            // saved and a -120 dB makeup is applied so the band contributes
-            // nothing to the sum, and the makeup slider is disabled; unmuting
-            // restores the saved value and re-enables the slider. This keeps
-            // mute local to the editor without requiring a new processor API.
-            // The forced -120 dB is deliberately NOT mirrored into the store's
-            // Makeup parameter (declared range 0..30 dB would clamp it); the
-            // store carries the Mute Toggle fact instead.
             CheckBox mute = toggle("Mute", false);
-            final double[] savedMakeup = { proc.getBandMakeupGainDb(bandIndex) };
-            mute.selectedProperty().addListener((_, _, v) -> {
-                if (v) {
-                    savedMakeup[0] = makeup.getValue();
-                    proc.setBandMakeupGainDb(bandIndex, -120.0);
-                    makeup.setDisable(true);
-                } else {
-                    proc.setBandMakeupGainDb(bandIndex, savedMakeup[0]);
-                    makeup.setDisable(false);
-                }
-                context.parameterStore().writeFromUiById(
-                        bandParamId(bandIndex, OFFSET_MUTE), v ? 1.0 : 0.0);
-            });
+            bindings.bindToggle(bandParamId(bandIndex, OFFSET_MUTE), mute.selectedProperty());
+            makeup.disableProperty().bind(mute.selectedProperty());
 
             var meter = new javafx.scene.canvas.Canvas(20, 120);
             bandMeters.add(meter);

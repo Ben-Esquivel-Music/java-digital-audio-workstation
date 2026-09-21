@@ -126,7 +126,7 @@ public final class MetronomeSideOutputRouter {
      * Routes a click sample to every destination defined by the metronome's
      * current {@link ClickOutput} configuration and per-cue-bus levels.
      *
-     * <p>The metronome's {@link Metronome#isEnabled()} flag is the master
+     * <p>The metronome's {@link Metronome#isClickEnabled()} flag is the master
      * gate: a disabled metronome produces silence on <em>every</em>
      * destination, honouring count-in and pre-roll expectations because the
      * same gate is read here.</p>
@@ -151,7 +151,7 @@ public final class MetronomeSideOutputRouter {
         Objects.requireNonNull(metronome, "metronome must not be null");
         Objects.requireNonNull(click, "click must not be null");
 
-        if (!metronome.isEnabled()) {
+        if (!metronome.isClickEnabled()) {
             return RoutedClick.SILENT;
         }
         ClickOutput cfg = metronome.getClickOutput();

@@ -107,6 +107,10 @@ public final class ClapPluginHost implements ExternalPluginHost {
     // Pre-allocated native event segments (one per slot) — populated and passed to the
     // plugin's clap_input_events_t during each process() call.
     private MemorySegment[] preallocEventSegments;
+    private int[] audioParameterIds = new int[0];
+    private double[] audioParameterValues = new double[0];
+    private boolean[] audioParameterDirty = new boolean[0];
+    private final int[] processEventCount = new int[1];
 
     /**
      * Creates a CLAP plugin host for the plugin at the given index within
@@ -187,7 +191,8 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
         this.sampleRate = context.getSampleRate();
         this.bufferSize = context.getBufferSize();
-        this.arena = Arena.ofConfined();
+        // FFM (JEP 454, final): FX setup and the engine render thread share this lifetime.
+        this.arena = Arena.ofShared();
 
         // Load the native library
         bindings = new ClapBindings(libraryPath);
@@ -204,6 +209,19 @@ public final class ClapPluginHost implements ExternalPluginHost {
             queryExtensions();
             allocateProcessBuffers();
             initialized = true;
+            List<PluginParameter> parameters = getParameters();
+            audioParameterIds = new int[parameters.size()];
+            audioParameterValues = new double[parameters.size()];
+            audioParameterDirty = new boolean[parameters.size()];
+            for (int i = 0; i < parameters.size(); i++) {
+                audioParameterIds[i] = parameters.get(i).id();
+            }
+            if (parameters.size() > preallocEventSegments.length) {
+                preallocEventSegments = new MemorySegment[parameters.size()];
+                for (int i = 0; i < preallocEventSegments.length; i++) {
+                    preallocEventSegments[i] = arena.allocate(ClapBindings.CLAP_EVENT_PARAM_VALUE_LAYOUT);
+                }
+            }
             context.log("CLAP plugin initialized: " + descriptor.name());
         } catch (Throwable e) {
             dispose();
@@ -299,7 +317,13 @@ public final class ClapPluginHost implements ExternalPluginHost {
         // them via the ThreadLocal so the static input-events callbacks can deliver them.
         int activeEventCount = 0;
         if (preallocEventSegments != null) {
-            while (activeEventCount < MAX_PARAM_EVENTS) {
+            for (int i = 0; i < audioParameterDirty.length; i++) {
+                if (audioParameterDirty[i]) {
+                    fillParamValueEvent(preallocEventSegments[activeEventCount++], audioParameterIds[i], audioParameterValues[i]);
+                    audioParameterDirty[i] = false;
+                }
+            }
+            while (activeEventCount < preallocEventSegments.length) {
                 long[] change = pendingParamChanges.read();
                 if (change == null) {
                     break;
@@ -310,7 +334,8 @@ public final class ClapPluginHost implements ExternalPluginHost {
             }
         }
         CURRENT_EVENT_SEGMENTS.set(preallocEventSegments);
-        CURRENT_EVENT_COUNT.set(new int[]{activeEventCount});
+        processEventCount[0] = activeEventCount;
+        CURRENT_EVENT_COUNT.set(processEventCount);
 
         try {
             writeInputToNative(inputBuffer, numFrames);
@@ -327,8 +352,8 @@ public final class ClapPluginHost implements ExternalPluginHost {
             // On error, pass through
             copyBuffer(inputBuffer, outputBuffer, numFrames);
         } finally {
-            CURRENT_EVENT_SEGMENTS.remove();
-            CURRENT_EVENT_COUNT.remove();
+            CURRENT_EVENT_SEGMENTS.set(null);
+            CURRENT_EVENT_COUNT.set(null);
         }
     }
 
@@ -435,6 +460,18 @@ public final class ClapPluginHost implements ExternalPluginHost {
         // The long[] is allocated on the control thread (not the audio thread), so
         // GC pressure here does not affect real-time processing safety.
         pendingParamChanges.write(new long[]{parameterId, Double.doubleToRawLongBits(value)});
+    }
+
+    /** Store/automation delivery on the audio thread, before this block's native process call. */
+    @Override
+    public void setAutomatableParameter(int id, double value) {
+        for (int i = 0; i < audioParameterIds.length; i++) {
+            if (audioParameterIds[i] == id) {
+                audioParameterValues[i] = value;
+                audioParameterDirty[i] = true;
+                return;
+            }
+        }
     }
 
     @Override

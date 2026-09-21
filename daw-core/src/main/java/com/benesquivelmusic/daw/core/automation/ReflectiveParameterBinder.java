@@ -146,6 +146,17 @@ public final class ReflectiveParameterBinder {
      */
     @RealTimeSafe
     public void apply(MixerChannel channel, AutomationData automation, double timeInBeats) {
+        var chain = channel.getEffectsChain();
+        chain.enterRender();
+        try {
+            if (!chain.isRetired()) applyBindings(channel, automation, timeInBeats);
+        } finally {
+            chain.leaveRender();
+        }
+    }
+
+    @RealTimeSafe
+    private void applyBindings(MixerChannel channel, AutomationData automation, double timeInBeats) {
         ChannelBindings bindings = byChannel.get(channel);
         if (bindings == null) {
             return;

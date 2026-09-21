@@ -112,6 +112,8 @@ public final class ArpeggiatorPlugin implements MidiEffectPlugin {
     public static final double MAX_GATE = 200.0;
     public static final double MIN_SWING = 0.0;
     public static final double MAX_SWING = 75.0;
+    private static final Rate[] RATES = Rate.values();
+    private static final Pattern[] PATTERNS = Pattern.values();
 
     // ── Parameters ────────────────────────────────────────────────────────────
 
@@ -184,13 +186,26 @@ public final class ArpeggiatorPlugin implements MidiEffectPlugin {
     public List<PluginParameter> getParameters() {
         // ids: 0 rate (Rate ordinal), 1 pattern (Pattern ordinal), 2 octave, 3 gate, 4 swing, 5 latch
         return List.of(
-                new PluginParameter(0, "Rate",        0.0, Rate.values().length - 1.0,    Rate.SIXTEENTH.ordinal()),
-                new PluginParameter(1, "Pattern",     0.0, Pattern.values().length - 1.0, Pattern.UP.ordinal()),
-                new PluginParameter(2, "Octave Range", MIN_OCTAVE, MAX_OCTAVE, 1.0),
-                new PluginParameter(3, "Gate (%)",    MIN_GATE, MAX_GATE, 50.0),
-                new PluginParameter(4, "Swing (%)",   MIN_SWING, MAX_SWING, 0.0),
-                new PluginParameter(5, "Latch",       0.0, 1.0, 0.0)
+                new PluginParameter(0, "Rate",        0.0, RATES.length - 1.0, rate.ordinal()),
+                new PluginParameter(1, "Pattern",     0.0, PATTERNS.length - 1.0, pattern.ordinal()),
+                new PluginParameter(2, "Octave Range", MIN_OCTAVE, MAX_OCTAVE, octaveRange),
+                new PluginParameter(3, "Gate (%)",    MIN_GATE, MAX_GATE, gate),
+                new PluginParameter(4, "Swing (%)",   MIN_SWING, MAX_SWING, swing),
+                new PluginParameter(5, "Latch",       0.0, 1.0, latch ? 1.0 : 0.0)
         );
+    }
+
+    @Override
+    public void setAutomatableParameter(int id, double value) {
+        switch (id) {
+            case 0 -> setRate(RATES[(int) Math.round(Math.clamp(value, 0, RATES.length - 1))]);
+            case 1 -> setPattern(PATTERNS[(int) Math.round(Math.clamp(value, 0, PATTERNS.length - 1))]);
+            case 2 -> setOctaveRange((int) Math.round(Math.clamp(value, MIN_OCTAVE, MAX_OCTAVE)));
+            case 3 -> setGate(value);
+            case 4 -> setSwing(value);
+            case 5 -> setLatch(value >= 0.5);
+            default -> { }
+        }
     }
 
     // ── Parameter getters / setters (target of the reflective parameter binder) ──

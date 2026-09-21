@@ -2,11 +2,14 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.audioimport.AudioReadResult;
 import com.benesquivelmusic.daw.core.audioimport.ReferenceFileLoader;
+import com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor;
 import com.benesquivelmusic.daw.core.dsp.eq.MatchEqProcessor;
+import com.benesquivelmusic.daw.sdk.audio.DynamicLatencyProcessor;
 import com.benesquivelmusic.daw.core.export.SampleRateConverter;
 import com.benesquivelmusic.daw.core.plugin.editor.MatchEqEditor;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginEditorFactory;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
@@ -50,7 +53,16 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
             "eq"
     );
 
-    private MatchEqProcessor processor;
+    private static final MatchEqProcessor.FftSize[] FFT_SIZES = MatchEqProcessor.FftSize.values();
+    private static final MatchEqProcessor.Smoothing[] SMOOTHING_MODES = MatchEqProcessor.Smoothing.values();
+    private static final MatchEqProcessor.PhaseMode[] PHASE_MODES = MatchEqProcessor.PhaseMode.values();
+    private volatile MatchEqProcessor processor;
+    private final AudioProcessor signalPath = new MatchSignalPath();
+    private ProgressiveDspPreparation<MatchEqProcessor> preparation;
+    private volatile int fftSizeIndex = MatchEqProcessor.FftSize.SIZE_2048.ordinal();
+    private volatile int smoothingIndex = MatchEqProcessor.Smoothing.THIRD_OCTAVE.ordinal();
+    private volatile double amount = 1.0;
+    private volatile int phaseIndex = MatchEqProcessor.PhaseMode.MINIMUM_PHASE.ordinal();
     private boolean active;
 
     public MatchEqPlugin() {
@@ -65,6 +77,8 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
         processor = new MatchEqProcessor(context.getAudioChannels(), context.getSampleRate());
+        preparation = new ProgressiveDspPreparation<>(
+                () -> prepareMatch(processor), next -> processor = next);
     }
 
     @Override
@@ -83,12 +97,13 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     @Override
     public void dispose() {
         active = false;
+        if (preparation != null) preparation.close();
         processor = null;
     }
 
     @Override
     public Optional<AudioProcessor> asAudioProcessor() {
-        return Optional.ofNullable(processor);
+        return processor == null ? Optional.empty() : Optional.of(signalPath);
     }
 
     /**
@@ -118,6 +133,92 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
                 new PluginParameter(2, "Amount", 0.0, 1.0, 1.0),
                 new PluginParameter(3, "Phase Mode", 0.0, phaseMax,
                         MatchEqProcessor.PhaseMode.MINIMUM_PHASE.ordinal()));
+    }
+
+    @Override
+    @RealTimeSafe
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (!Double.isFinite(value)) return;
+        switch (parameterId) {
+            case 0 -> {
+                int next = (int) Math.round(Math.clamp(value, 0.0, FFT_SIZES.length - 1.0));
+                if (fftSizeIndex == next) return;
+                fftSizeIndex = next;
+            }
+            case 1 -> {
+                int next = (int) Math.round(Math.clamp(value, 0.0, SMOOTHING_MODES.length - 1.0));
+                if (smoothingIndex == next) return;
+                smoothingIndex = next;
+            }
+            case 2 -> {
+                double next = Math.clamp(value, 0.0, 1.0);
+                if (amount == next) return;
+                amount = next;
+            }
+            case 3 -> {
+                int next = (int) Math.round(Math.clamp(value, 0.0, PHASE_MODES.length - 1.0));
+                if (phaseIndex == next) return;
+                phaseIndex = next;
+            }
+            default -> { return; }
+        }
+        if (preparation != null) preparation.request();
+    }
+
+    private MatchEqProcessor prepareMatch(MatchEqProcessor current) {
+        var fftSize = FFT_SIZES[fftSizeIndex];
+        var smoothing = SMOOTHING_MODES[smoothingIndex];
+        double matchAmount = amount;
+        var phase = PHASE_MODES[phaseIndex];
+        var next = new MatchEqProcessor(current.getChannelCount(), current.getSampleRate());
+        next.setFftSize(fftSize);
+        next.setSmoothing(smoothing);
+        next.setAmount(matchAmount);
+        next.setPhaseMode(phase);
+        next.setFirOrder(current.getFirOrder());
+        int bins = next.getFftSize().value() / 2 + 1;
+        double[] source = remapSpectrum(current.getSourceSpectrum(), bins);
+        double[] reference = remapSpectrum(current.getReferenceSpectrum(), bins);
+        if (source != null) next.setSourceSpectrum(source);
+        if (reference != null) next.setReferenceSpectrum(reference);
+        if (source != null && reference != null) next.updateMatch();
+        return next;
+    }
+
+    /** Retains captured spectra when the FFT grid changes; the sample rate stays fixed. */
+    private static double[] remapSpectrum(double[] captured, int bins) {
+        if (captured == null || captured.length == bins) return captured;
+        double[] remapped = new double[bins];
+        for (int bin = 0; bin < bins; bin++) {
+            double position = (double) bin * (captured.length - 1) / (bins - 1);
+            int lower = (int) position;
+            int upper = Math.min(lower + 1, captured.length - 1);
+            double fraction = position - lower;
+            remapped[bin] = captured[lower] + fraction * (captured[upper] - captured[lower]);
+        }
+        return remapped;
+    }
+
+    private final class MatchSignalPath implements AudioProcessor, PreparedParameterProcessor, DynamicLatencyProcessor {
+        private boolean hostPreparesParameters;
+
+        @Override public void enableRealtimeParameterPreparation() { hostPreparesParameters = true; }
+        @Override @RealTimeSafe public void applyPreparedParameters() { if (preparation != null) preparation.apply(); }
+        @Override public void awaitParameterPreparation() { if (preparation != null) preparation.await(); }
+        @Override public void closeParameterPreparation() { if (preparation != null) preparation.close(); }
+        @Override @RealTimeSafe
+        public void process(float[][] input, float[][] output, int frames) {
+            if (!hostPreparesParameters) applyPreparedParameters();
+            MatchEqProcessor current = processor;
+            if (current != null) current.process(input, output, frames);
+        }
+        @Override public void reset() { if (processor != null) processor.reset(); }
+        @Override public int getInputChannelCount() { return processor == null ? 0 : processor.getChannelCount(); }
+        @Override public int getOutputChannelCount() { return processor == null ? 0 : processor.getChannelCount(); }
+        @Override public int getLatencySamples() {
+            MatchEqProcessor current = processor;
+            return current == null ? 0 : current.getLatencySamples();
+        }
     }
 
     /**

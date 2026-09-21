@@ -91,12 +91,17 @@ public final class RenderPipeline {
 
     /** Audio format describing channel count and sample rate. */
     private final AudioFormat format;
+    private boolean offlineAutomationPrepared;
 
     // Pre-allocated mix buffer. [channel][frame]
     private final float[][] mixBuffer;
 
     // Pre-allocated per-track buffers: [track][channel][frame]
     private final float[][][] trackBuffers;
+
+    // Render-thread-owned identity mapping for this block's recording sources.
+    private final Track[] instrumentRecordingTracks;
+    private boolean recordingCaptureActive;
 
     // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
     private final float[][][] returnBuffers;
@@ -369,6 +374,7 @@ public final class RenderPipeline {
         int channels = format.channels();
         this.mixBuffer = new float[channels][blockSize];
         this.trackBuffers = new float[maxTracks][channels][blockSize];
+        this.instrumentRecordingTracks = new Track[maxTracks];
         this.returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][blockSize];
         this.gainScratch = new float[blockSize];
         // Story 136 — pre-allocated tail for clicks that overflow the
@@ -462,6 +468,51 @@ public final class RenderPipeline {
      */
     float[][][] getTrackBuffers() {
         return trackBuffers;
+    }
+
+    /** Looks up only buffers rendered for the callback currently in progress. */
+    @RealTimeSafe
+    float[][] graphInstrumentRecordingBuffer(Track track) {
+        if (!recordingCaptureActive || track == null) {
+            return null;
+        }
+        for (int index = 0; index < instrumentRecordingTracks.length; index++) {
+            if (instrumentRecordingTracks[index] == track) {
+                return trackBuffers[index];
+            }
+        }
+        return null;
+    }
+
+    @RealTimeSafe
+    private void captureInstrumentRecordingTracks(List<Track> tracks, Mixer mixer) {
+        Arrays.fill(instrumentRecordingTracks, null);
+        if (tracks == null || mixer == null) {
+            return;
+        }
+        List<MixerChannel> channels = mixer.getChannels();
+        int count = Math.min(Math.min(tracks.size(), channels.size()), maxTracks);
+        for (int index = 0; index < count; index++) {
+            if (channels.get(index).hasInstrumentInsert()) {
+                instrumentRecordingTracks[index] = tracks.get(index);
+            }
+        }
+    }
+
+    private static boolean hasInstruments(Mixer mixer) {
+        List<MixerChannel> channels = mixer.getChannels();
+        for (int i = 0; i < channels.size(); i++) {
+            if (channels.get(i).hasInstrumentInsert()) {
+                return true;
+            }
+        }
+        List<MixerChannel> returns = mixer.getReturnBuses();
+        for (int i = 0; i < returns.size(); i++) {
+            if (returns.get(i).hasInstrumentInsert()) {
+                return true;
+            }
+        }
+        return mixer.getMasterChannel().hasInstrumentInsert();
     }
 
     /**
@@ -694,6 +745,16 @@ public final class RenderPipeline {
                 && (transport.getState() == TransportState.PLAYING
                     || transport.getState() == TransportState.RECORDING);
 
+        if (mixer != null) {
+            mixer.drainInsertParameters();
+        }
+
+        boolean mixerActive = playbackActive
+                || mixer != null && tracks != null && hasInstruments(mixer);
+        if (recordingCallback != null) {
+            captureInstrumentRecordingTracks(mixerActive ? tracks : null, mixer);
+        }
+
         if (playbackActive) {
             int trackCount = Math.min(tracks.size(), maxTracks);
 
@@ -713,7 +774,9 @@ public final class RenderPipeline {
 
             // Apply automation lane values to mixer channel parameters
             List<MixerChannel> mixerChannels = mixer.getChannels();
-            applyAutomation(tracks, trackCount, mixerChannels, transport, mixer);
+            if (!offlineAutomationPrepared) {
+                applyAutomation(tracks, trackCount, mixerChannels, transport, mixer);
+            }
 
             // Warn once if the mixer has more return buses than pre-allocated
             if (!returnBusCapWarningLogged
@@ -739,11 +802,22 @@ public final class RenderPipeline {
                 // return buses which are summed into the main output.
                 mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
             }
-        } else if (inputBuffer != null) {
-            // Fallback: copy input into the mix buffer (pass-through)
+        } else if (mixerActive) {
+            // Instrument audition remains audible while the playhead is stopped.
+            for (int i = 0; i < trackBuffers.length; i++) {
+                for (int ch = 0; ch < trackBuffers[i].length; ch++) {
+                    Arrays.fill(trackBuffers[i][ch], 0, numFrames, 0f);
+                }
+            }
+            mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
+        }
+        if (!playbackActive && inputBuffer != null) {
+            // Preserve input monitoring alongside stopped instrument audition.
             int channels = Math.min(inputBuffer.length, mixBuffer.length);
             for (int ch = 0; ch < channels; ch++) {
-                System.arraycopy(inputBuffer[ch], 0, mixBuffer[ch], 0, numFrames);
+                for (int frame = 0; frame < numFrames; frame++) {
+                    mixBuffer[ch][frame] += inputBuffer[ch][frame];
+                }
             }
         }
 
@@ -769,8 +843,14 @@ public final class RenderPipeline {
         }
 
         // Notify recording callback with the captured input
-        if (recordingCallback != null && inputBuffer != null) {
-            recordingCallback.onAudioCaptured(inputBuffer, numFrames);
+        if (recordingCallback != null) {
+            recordingCaptureActive = true;
+            try {
+                recordingCallback.onAudioCaptured(inputBuffer != null ? inputBuffer : mixBuffer, numFrames);
+            } finally {
+                recordingCaptureActive = false;
+                Arrays.fill(instrumentRecordingTracks, null);
+            }
         }
 
         // Process through the master effects chain
@@ -780,7 +860,7 @@ public final class RenderPipeline {
         // This runs AFTER the master chain so that its overwrite of
         // outputBuffer (channels 0..N) does not clobber direct-output data
         // on higher channels.
-        if (playbackActive) {
+        if (mixerActive) {
             mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps);
         }
 
@@ -890,7 +970,7 @@ public final class RenderPipeline {
         // If the metronome is disabled, clear any pending click-tail
         // so disabling immediately silences every destination — no
         // stray tail samples leak into subsequent blocks.
-        if (!metronome.isEnabled()) {
+        if (!metronome.isClickEnabled()) {
             clearClickTail();
             return;
         }
@@ -1602,14 +1682,37 @@ public final class RenderPipeline {
         while (framesRendered < totalFrames) {
             int framesThisBlock = Math.min(blockSize, totalFrames - framesRendered);
 
+            // Offline rendering can outrun the live latency watcher. Resolve
+            // this block's controls before computing its PDC render offset.
+            mixer.drainInsertParameters();
+            if (transport.getState() == TransportState.PLAYING
+                    || transport.getState() == TransportState.RECORDING) {
+                applyAutomation(tracks, Math.min(tracks.size(), maxTracks),
+                        mixer.getChannels(), transport, mixer);
+            }
+            for (MixerChannel channel : mixer.getChannels()) {
+                channel.prepareInsertParametersForOfflineRendering();
+            }
+            for (MixerChannel channel : mixer.getReturnBuses()) {
+                channel.prepareInsertParametersForOfflineRendering();
+            }
+            mixer.getMasterChannel().prepareInsertParametersForOfflineRendering();
+            masterChain.prepareParametersForOfflineRendering();
+            mixer.getDelayCompensation().refreshLatencies();
+
             // Clear blockOut so master chain writes land on a zero scratch
             for (int ch = 0; ch < channels; ch++) {
                 Arrays.fill(blockOut[ch], 0, framesThisBlock, 0.0f);
             }
 
-            renderBlock(null, blockOut, framesThisBlock,
-                    transport, mixer, tracks, midiRenderer, masterChain,
-                    null, null);
+            offlineAutomationPrepared = true;
+            try {
+                renderBlock(null, blockOut, framesThisBlock,
+                        transport, mixer, tracks, midiRenderer, masterChain,
+                        null, null);
+            } finally {
+                offlineAutomationPrepared = false;
+            }
 
             for (int ch = 0; ch < channels; ch++) {
                 System.arraycopy(blockOut[ch], 0,
@@ -2323,6 +2426,19 @@ public final class RenderPipeline {
     private void applyPluginParameterAutomation(AutomationData automation,
                                                 MixerChannel channel,
                                                 double currentBeat) {
+        EffectsChain chain = channel.getEffectsChain();
+        chain.enterRender();
+        try {
+            if (!chain.isRetired()) applyActivePluginParameterAutomation(automation, channel, currentBeat);
+        } finally {
+            chain.leaveRender();
+        }
+    }
+
+    @RealTimeSafe
+    private void applyActivePluginParameterAutomation(AutomationData automation,
+                                                      MixerChannel channel,
+                                                      double currentBeat) {
         Map<PluginParameterTarget, ?> pluginLanes = automation.getPluginLanes();
         if (pluginLanes.isEmpty()) {
             return;

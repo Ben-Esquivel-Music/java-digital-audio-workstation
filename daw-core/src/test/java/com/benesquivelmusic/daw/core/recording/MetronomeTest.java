@@ -231,6 +231,26 @@ class MetronomeTest {
         assertThat(audio[1]).isEmpty();
     }
 
+    @Test
+    void pluginBypassSuppressesCountInWithoutChangingEnabledPreference() {
+        var metronome = new Metronome(44100.0, 2);
+        var owner = new Object();
+        metronome.setPluginBypassed(owner, true);
+
+        assertThat(metronome.isEnabled()).isTrue();
+        assertThat(metronome.isClickEnabled()).isFalse();
+        assertThat(metronome.generateCountIn(CountInMode.ONE_BAR, 120, 4)[0]).isEmpty();
+
+        metronome.setEnabled(false);
+        metronome.releasePluginBypass(owner);
+        assertThat(metronome.isEnabled()).isFalse();
+        assertThat(metronome.isClickEnabled()).isFalse();
+
+        metronome.setEnabled(true);
+        assertThat(metronome.isClickEnabled()).isTrue();
+        assertThat(metronome.generateCountIn(CountInMode.ONE_BAR, 120, 4)[0]).isNotEmpty();
+    }
+
     // ── Volume tests ────────────────────────────────────────────────────
 
     @Test

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+
 /**
  * Linkwitz-Riley 4th-order (LR4) crossover filter for band splitting.
  *
@@ -24,6 +26,7 @@ public final class CrossoverFilter {
     private final BiquadFilter lowPass2;
     private final BiquadFilter highPass1;
     private final BiquadFilter highPass2;
+    private final double sampleRate;
 
     /**
      * Creates a Linkwitz-Riley 4th-order crossover at the given frequency.
@@ -46,6 +49,7 @@ public final class CrossoverFilter {
                     "crossoverFrequency must be below Nyquist (" + sampleRate / 2.0
                             + " Hz): " + crossoverFrequency);
         }
+        this.sampleRate = sampleRate;
 
         // Q = 0.7071 (1/√2) for Butterworth alignment — cascading two of these
         // produces a Linkwitz-Riley 4th-order response.
@@ -59,6 +63,25 @@ public final class CrossoverFilter {
                 BiquadFilter.FilterType.HIGH_PASS, sampleRate, crossoverFrequency, q, 0.0);
         highPass2 = BiquadFilter.create(
                 BiquadFilter.FilterType.HIGH_PASS, sampleRate, crossoverFrequency, q, 0.0);
+    }
+
+    /**
+     * Updates the four preallocated stages without resetting their delay lines.
+     * Call only on the audio thread between blocks, or while processing is stopped.
+     * The frequency must be finite, positive, and below Nyquist.
+     *
+     * @param frequency the new crossover frequency in Hz
+     */
+    @RealTimeSafe
+    public void setFrequency(double frequency) {
+        if (!Double.isFinite(frequency) || frequency <= 0.0 || frequency >= sampleRate / 2.0) {
+            throw new IllegalArgumentException("crossover frequency must be positive and below Nyquist");
+        }
+        double q = Math.sqrt(2.0) / 2.0;
+        lowPass1.recalculate(BiquadFilter.FilterType.LOW_PASS, sampleRate, frequency, q, 0.0);
+        lowPass2.recalculate(BiquadFilter.FilterType.LOW_PASS, sampleRate, frequency, q, 0.0);
+        highPass1.recalculate(BiquadFilter.FilterType.HIGH_PASS, sampleRate, frequency, q, 0.0);
+        highPass2.recalculate(BiquadFilter.FilterType.HIGH_PASS, sampleRate, frequency, q, 0.0);
     }
 
     /**

@@ -54,6 +54,14 @@ public final class PluginParameterEditorPanel extends VBox {
     private final ToggleButton abToggleButton;
     private final List<ParameterPreset> presets = new ArrayList<>();
     private BiConsumer<Integer, Double> onParameterChanged;
+    private boolean echoing;
+
+    /** Creates only the parameter body; the contract frame supplies A/B and preset chrome. */
+    public static PluginParameterEditorPanel body(List<PluginParameter> parameters) {
+        var panel = new PluginParameterEditorPanel(parameters);
+        panel.getChildren().removeFirst();
+        return panel;
+    }
 
     /**
      * Creates a new plugin parameter editor panel.
@@ -74,7 +82,7 @@ public final class PluginParameterEditorPanel extends VBox {
         presetComboBox = new ComboBox<>();
         presetComboBox.setPromptText("Presets…");
         presetComboBox.setPrefWidth(180);
-        presetComboBox.setOnAction(e -> loadSelectedPreset());
+        presetComboBox.valueProperty().addListener((_, _, name) -> loadSelectedPreset(name));
 
         abToggleButton = new ToggleButton("A");
         abToggleButton.setTooltip(new Tooltip("Toggle A/B comparison"));
@@ -168,6 +176,8 @@ public final class PluginParameterEditorPanel extends VBox {
      * Refreshes all controls to reflect the current parameter state values.
      */
     public void refreshControls() {
+        echoing = true;
+        try {
         for (PluginParameter param : state.getParameters()) {
             double value = state.getValue(param.id());
             Slider slider = sliderMap.get(param.id());
@@ -177,12 +187,22 @@ public final class PluginParameterEditorPanel extends VBox {
             ToggleButton toggle = toggleMap.get(param.id());
             if (toggle != null) {
                 toggle.setSelected(value >= 0.5);
+                toggle.setText(value >= 0.5 ? "ON" : "OFF");
             }
             Label valueLabel = valueLabelMap.get(param.id());
             if (valueLabel != null) {
                 valueLabel.setText(formatValue(value, param));
             }
         }
+        } finally {
+            echoing = false;
+        }
+    }
+
+    /** Host echo; does not create a second audio-side write. */
+    public void updateValue(int parameterId, double value) {
+        state.setValue(parameterId, value);
+        refreshControls();
     }
 
     private VBox createParameterControl(PluginParameter param) {
@@ -233,6 +253,7 @@ public final class PluginParameterEditorPanel extends VBox {
             slider.setTooltip(new Tooltip("Double-click to reset to default"));
 
             slider.valueProperty().addListener((obs, oldVal, newVal) -> {
+                if (echoing) return;
                 double newValue = newVal.doubleValue();
                 state.setValue(param.id(), newValue);
                 valueLabel.setText(formatValue(newValue, param));
@@ -254,12 +275,13 @@ public final class PluginParameterEditorPanel extends VBox {
         return controlBox;
     }
 
-    private void loadSelectedPreset() {
-        int index = presetComboBox.getSelectionModel().getSelectedIndex();
-        if (index >= 0 && index < presets.size()) {
-            ParameterPreset preset = presets.get(index);
+    private void loadSelectedPreset(String name) {
+        for (ParameterPreset preset : presets) {
+            if (!preset.name().equals(name)) continue;
             state.loadValues(preset.values());
             refreshControls();
+            publishState();
+            return;
         }
     }
 
@@ -268,6 +290,11 @@ public final class PluginParameterEditorPanel extends VBox {
         ABComparison.Slot active = abComparison.getActiveSlot();
         abToggleButton.setText(active == ABComparison.Slot.A ? "A" : "B");
         refreshControls();
+        publishState();
+    }
+
+    private void publishState() {
+        state.getAllValues().forEach(this::fireParameterChanged);
     }
 
     private void fireParameterChanged(int parameterId, double value) {

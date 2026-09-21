@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 import javafx.application.Platform;
+import javafx.animation.AnimationTimer;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.canvas.GraphicsContext;
@@ -42,10 +43,25 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  * {@link EditorContext#themeProperty()} changes, parameter gestures write the
  * processor <em>and</em> mirror into the host's {@link PluginParameterStore},
  * and the async IR file load marshals its completion back to the FX thread
- * with {@link Platform#runLater(Runnable)} (§4.7) — no animation timer, the
- * waveform repaints only on events.
+ * with {@link Platform#runLater(Runnable)} (§4.7). A showing-window-gated
+ * timer observes completed IR installations; unchanged waveforms are not repainted.
  */
 public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel {
+
+    private EditorParameterBindings bindings;
+
+    @Override public void parameterChanged(int id, double value) {
+        if (detached) return;
+        if (bindings != null) bindings.parameterChanged(id, value);
+        if (id == PARAM_TRIM_START) trimStartFraction = value;
+        if (id == PARAM_TRIM_END) trimEndFraction = value;
+        if (waveform != null) drawWaveform();
+    }
+
+    @Override public void detach() {
+        detached = true;
+        if (bindings != null) bindings.close();
+    }
 
     // Parameter ids as declared by ConvolutionReverbPlugin#getParameters().
     private static final int PARAM_IR = 0;
@@ -75,6 +91,7 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
     // member type PluginEditorFactory.Canvas, which shadows the import.
     private javafx.scene.canvas.Canvas waveform;
     private Label statusLabel;
+    private boolean detached;
 
     private double trimStartFraction;
     private double trimEndFraction;
@@ -82,8 +99,7 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
     /** Cached downsampled (min, max) pairs per pixel column, recomputed only when the IR changes. */
     private float[] cachedMinPerColumn;
     private float[] cachedMaxPerColumn;
-    private int cachedIrLength = -1;
-    private String cachedIrSourceId;
+    private long cachedIrRevision = -1;
 
     /**
      * Creates the editor factory for the given plugin instance. The plugin —
@@ -100,6 +116,7 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
 
     @Override
     public Region createPanel(EditorContext context) {
+        bindings = new EditorParameterBindings(context.parameterStore());
         this.context = Objects.requireNonNull(context, "context must not be null");
         this.store = context.parameterStore();
         ConvolutionReverbProcessor p = plugin.getProcessor();
@@ -123,16 +140,9 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
         if (idx < irCombo.getItems().size()) {
             irCombo.getSelectionModel().select(idx);
         }
-        irCombo.setOnAction(_ -> {
-            int sel = irCombo.getSelectionModel().getSelectedIndex();
-            if (sel >= 0) {
-                processor.setIrSelection(sel);
-                store.writeFromUiById(PARAM_IR, processor.getIrSelection());
-                trimStartFraction = 0.0;
-                trimEndFraction = 1.0;
-                drawWaveform();
-            }
-        });
+        bindings.bindSelection(PARAM_IR, irCombo,
+                value -> irCombo.getItems().get((int) Math.round(value)),
+                value -> irCombo.getItems().indexOf(value));
 
         statusLabel = new Label("");
         Button loadButton = new Button("Load File…");
@@ -150,15 +160,13 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
                 double accepted = dragTrimStart(raw, trimStartFraction, trimEndFraction);
                 if (accepted != trimStartFraction) {
                     trimStartFraction = accepted;
-                    processor.setTrimStart(accepted);
-                    store.writeFromUiById(PARAM_TRIM_START, processor.getTrimStart());
+                    store.writeFromUiById(PARAM_TRIM_START, accepted);
                 }
             } else if (e.getButton() == MouseButton.SECONDARY) {
                 double accepted = dragTrimEnd(raw, trimStartFraction, trimEndFraction);
                 if (accepted != trimEndFraction) {
                     trimEndFraction = accepted;
-                    processor.setTrimEnd(accepted);
-                    store.writeFromUiById(PARAM_TRIM_END, processor.getTrimEnd());
+                    store.writeFromUiById(PARAM_TRIM_END, accepted);
                 }
             }
             drawWaveform();
@@ -166,41 +174,23 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
 
         // ── Parameter sliders ─────────────────────────────────────────
         Slider stretch = slider(0.5, 2.0, processor.getStretch());
-        stretch.valueProperty().addListener((_, _, v) -> {
-            processor.setStretch(v.doubleValue());
-            store.writeFromUiById(PARAM_STRETCH, processor.getStretch());
-            drawWaveform();
-        });
+        bindings.bindNumber(PARAM_STRETCH, stretch.valueProperty());
+        stretch.valueProperty().addListener((_, _, _) -> drawWaveform());
 
         Slider predelay = slider(0.0, 200.0, processor.getPredelayMs());
-        predelay.valueProperty().addListener((_, _, v) -> {
-            processor.setPredelayMs(v.doubleValue());
-            store.writeFromUiById(PARAM_PREDELAY, processor.getPredelayMs());
-        });
+        bindings.bindNumber(PARAM_PREDELAY, predelay.valueProperty());
 
         Slider lowCut = slider(20.0, 1000.0, processor.getLowCutHz());
-        lowCut.valueProperty().addListener((_, _, v) -> {
-            processor.setLowCutHz(v.doubleValue());
-            store.writeFromUiById(PARAM_LOW_CUT, processor.getLowCutHz());
-        });
+        bindings.bindNumber(PARAM_LOW_CUT, lowCut.valueProperty());
 
         Slider highCut = slider(1000.0, 20000.0, processor.getHighCutHz());
-        highCut.valueProperty().addListener((_, _, v) -> {
-            processor.setHighCutHz(v.doubleValue());
-            store.writeFromUiById(PARAM_HIGH_CUT, processor.getHighCutHz());
-        });
+        bindings.bindNumber(PARAM_HIGH_CUT, highCut.valueProperty());
 
         Slider mix = slider(0.0, 1.0, processor.getMix());
-        mix.valueProperty().addListener((_, _, v) -> {
-            processor.setMix(v.doubleValue());
-            store.writeFromUiById(PARAM_MIX, processor.getMix());
-        });
+        bindings.bindNumber(PARAM_MIX, mix.valueProperty());
 
         Slider width = slider(0.0, 2.0, processor.getStereoWidth());
-        width.valueProperty().addListener((_, _, v) -> {
-            processor.setStereoWidth(v.doubleValue());
-            store.writeFromUiById(PARAM_WIDTH, processor.getStereoWidth());
-        });
+        bindings.bindNumber(PARAM_WIDTH, width.valueProperty());
 
         HBox sliders = new HBox(12,
                 labelled("Stretch",       stretch),
@@ -215,8 +205,17 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
         root.setPadding(new Insets(12));
         root.setAlignment(Pos.TOP_LEFT);
 
-        context.themeProperty().addListener((_, _, _) -> drawWaveform());
+        bindings.observe(context.themeProperty(), (_, _, _) -> drawWaveform());
         drawWaveform();
+        AnimationTimer installationTimer = new AnimationTimer() {
+            @Override public void handle(long now) {
+                refreshInstalledImpulseResponse();
+            }
+        };
+        bindings.onDetach(ShowingWindowGate.install(root, () -> {
+            refreshInstalledImpulseResponse();
+            installationTimer.start();
+        }, installationTimer::stop));
         return root;
     }
 
@@ -248,6 +247,7 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
             statusLabel.setText("Loading…");
             processor.loadImpulseResponseFromFileAsync(Path.of(f.getAbsolutePath()))
                     .whenComplete((_, ex) -> Platform.runLater(() -> {
+                        if (detached) return;
                         if (ex != null) {
                             statusLabel.setText("Failed: " + ex.getMessage());
                         } else {
@@ -301,12 +301,18 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
 
     // ── Waveform painting ────────────────────────────────────────────────
 
+    private void refreshInstalledImpulseResponse() {
+        if (!detached && processor.getImpulseResponseRevision() != cachedIrRevision) {
+            drawWaveform();
+        }
+    }
+
     /**
      * Renders the current IR's waveform onto the canvas with the trim markers
      * overlaid as draggable vertical lines, painted with the resolved
      * {@link Theme} tokens (§2.5). Reuses a cached min/max-per-pixel-column
-     * buffer; only refreshes the cache when the IR itself changes (length or
-     * source id), not on every drag / slider move.
+     * buffer; only refreshes the cache after an IR installation, not on every
+     * drag / slider move. The revision also distinguishes same-size file reloads.
      */
     private void drawWaveform() {
         GraphicsContext g = waveform.getGraphicsContext2D();
@@ -319,14 +325,16 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
         g.setStroke(theme.foreground().deriveColor(0.0, 1.0, 1.0, FRAME_OPACITY));
         g.strokeRect(0.5, 0.5, w - 1, h - 1);
 
-        int len = processor.getImpulseResponseLength();
-        String sourceId = processor.getImpulseResponseSourceId();
+        long revision = processor.getImpulseResponseRevision();
         int pixels = (int) w;
         boolean cacheValid = cachedMinPerColumn != null
                 && cachedMinPerColumn.length == pixels
-                && cachedIrLength == len
-                && Objects.equals(cachedIrSourceId, sourceId);
-        if (!cacheValid && len > 0) {
+                && cachedIrRevision == revision;
+        if (!cacheValid) {
+            cachedMinPerColumn = null;
+            cachedMaxPerColumn = null;
+        }
+        if (!cacheValid) {
             float[][] ir = processor.getImpulseResponseSnapshot();
             if (ir.length > 0 && ir[0].length > 0) {
                 float[] ch = ir[0];
@@ -345,10 +353,9 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
                     cachedMinPerColumn[x] = min;
                     cachedMaxPerColumn[x] = max;
                 }
-                cachedIrLength = len;
-                cachedIrSourceId = sourceId;
             }
         }
+        cachedIrRevision = revision;
 
         if (cachedMaxPerColumn != null && cachedMaxPerColumn.length == pixels) {
             float peak = 1f;

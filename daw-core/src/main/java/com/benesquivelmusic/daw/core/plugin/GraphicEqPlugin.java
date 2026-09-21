@@ -127,6 +127,13 @@ public final class GraphicEqPlugin implements BuiltInDawPlugin {
         return List.copyOf(params);
     }
 
+    @Override
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (processor != null && parameterId >= 0 && parameterId < processor.getBandCount()) {
+            processor.setBandGain(parameterId, value);
+        }
+    }
+
     private static String formatBandName(int bandIndex, double frequencyHz) {
         String label;
         if (frequencyHz >= 1000.0) {

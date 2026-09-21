@@ -93,6 +93,11 @@ public final class BinauralMonitorPlugin implements BuiltInDawPlugin {
                 new PluginParameter(0, "Wet Level", 0.0, 1.0, 0.5));
     }
 
+    @Override
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (parameterId == 0 && processor != null) processor.setWetLevel(Math.clamp(value, 0.0, 1.0));
+    }
+
     /**
      * {@inheritDoc}
      *

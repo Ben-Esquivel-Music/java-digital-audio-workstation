@@ -246,7 +246,7 @@ public final class TimeStretchProcessor implements AudioProcessor {
                     "stretchRatio must be in [0.25, 4.0]: " + stretchRatio);
         }
         this.stretchRatio = stretchRatio;
-        initializeBuffers();
+        hopSynthesis = Math.max(1, (int) Math.round(hopAnalysis * stretchRatio));
     }
 
     /** Returns the current quality setting. */

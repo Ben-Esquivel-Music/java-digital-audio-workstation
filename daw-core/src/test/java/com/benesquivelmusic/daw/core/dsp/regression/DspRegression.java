@@ -58,6 +58,13 @@ public @interface DspRegression {
     String goldenFile() default "";
 
     /**
+     * Whether the golden omits the processor's leading latency samples.
+     * Set false for existing raw-output fixtures whose initial delay is part
+     * of the expected signal; latency reporting must then be tested separately.
+     */
+    boolean alignLatency() default true;
+
+    /**
      * Per-sample peak tolerance in dB. Default {@code -80 dB} is the
      * threshold typically used for numerical-noise-only changes (well
      * below the ~ -60 dB threshold of audibility for transient differences).

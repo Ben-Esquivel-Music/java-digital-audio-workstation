@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 
@@ -14,6 +16,23 @@ class TrackFreezeServiceTest {
     private static final int SAMPLE_RATE = 44100;
     private static final double TEMPO = 120.0;
     private static final int CHANNELS = 2;
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void freezesAnEntireTrackThroughMultipleInsertsRegardlessOfLivePreparation(boolean prepared) {
+        Track track = createTrackWithAudio();
+        MixerChannel channel = new MixerChannel("Multiple inserts");
+        channel.getEffectsChain().addProcessor(new DoubleGainProcessor());
+        channel.getEffectsChain().addProcessor(new DoubleGainProcessor());
+        if (prepared) {
+            channel.prepareEffectsChain(CHANNELS, 64);
+        }
+
+        TrackFreezeService.freeze(track, channel, SAMPLE_RATE, TEMPO, CHANNELS);
+
+        assertThat(track.getFrozenAudioData()[0]).hasSize(beatsToFrames(1.0)).containsOnly(1.0f);
+        assertThat(track.getFrozenAudioData()[1]).containsOnly(1.0f);
+    }
 
     @Test
     void shouldFreezeTrack() {

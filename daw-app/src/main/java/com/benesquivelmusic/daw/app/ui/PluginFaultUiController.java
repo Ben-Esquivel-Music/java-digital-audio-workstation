@@ -95,7 +95,8 @@ public final class PluginFaultUiController {
         @Override
         public void onNext(PluginFault item) {
             postFx(() -> {
-                String msg = "Plugin " + item.pluginId() + " was bypassed due to an error — "
+                String msg = "Plugin " + item.pluginId()
+                        + (item.slot() == null ? " editor failed — " : " was bypassed due to an error — ")
                         + "open Plugin Fault Log for details"
                         + (item.quarantined() ? " (quarantined)" : "");
                 notificationBar.show(NotificationLevel.ERROR, msg);

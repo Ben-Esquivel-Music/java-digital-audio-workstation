@@ -226,17 +226,22 @@ public final class ReverbProcessor implements AudioProcessor {
                 int length = (int) ((COMB_DELAYS[c] + spread) * scaleRatio * sizeScale);
                 length = Math.max(length, 1);
                 combLengths[ch][c] = length;
-                combBuffers[ch][c] = new float[length];
-                combPositions[ch][c] = 0;
-                combFilterStore[ch][c] = 0.0f;
+                if (combBuffers[ch][c] == null) {
+                    int capacity = Math.max(1, (int) ((COMB_DELAYS[c] + spread) * scaleRatio * 1.5));
+                    combBuffers[ch][c] = new float[capacity];
+                }
+                combPositions[ch][c] %= length;
             }
             for (int a = 0; a < NUM_ALLPASSES; a++) {
                 int spread = ch * 11;
                 int length = (int) ((ALLPASS_DELAYS[a] + spread) * scaleRatio * sizeScale);
                 length = Math.max(length, 1);
                 allpassLengths[ch][a] = length;
-                allpassBuffers[ch][a] = new float[length];
-                allpassPositions[ch][a] = 0;
+                if (allpassBuffers[ch][a] == null) {
+                    int capacity = Math.max(1, (int) ((ALLPASS_DELAYS[a] + spread) * scaleRatio * 1.5));
+                    allpassBuffers[ch][a] = new float[capacity];
+                }
+                allpassPositions[ch][a] %= length;
             }
         }
     }

@@ -64,6 +64,7 @@ class ManifestDrivenInstallTest {
                 panel.primaryButtonForTest().fire();
                 return null;
             });
+            panel.installationForTest().get(15, java.util.concurrent.TimeUnit.SECONDS);
 
             assertThat(registry.getEntries())
                     .as("firing install registered BOTH declared plugins, class-name-free")

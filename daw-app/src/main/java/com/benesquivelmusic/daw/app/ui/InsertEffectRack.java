@@ -4,16 +4,14 @@ import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
-import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
-import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
-import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
-import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
@@ -27,7 +25,6 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
-import java.net.URLClassLoader;
 import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.logging.Logger;
@@ -71,6 +68,11 @@ public final class InsertEffectRack extends VBox {
     private PluginRegistry pluginRegistry;
     private Mixer mixer;
     private Runnable onSlotsChanged;
+    private BiConsumer<MixerChannel, InsertSlot> onOpenEditor;
+    private MeterFeed meterFeed;
+    private Runnable removeSlotPulse;
+    private List<InsertSlot> renderedSlots = List.of();
+    private List<Boolean> renderedBypass = List.of();
     /**
      * Shared {@link DragVisualAdvisor} consulted during plugin
      * reorder-drag gestures (story 197). Optional — when {@code null}
@@ -78,16 +80,9 @@ public final class InsertEffectRack extends VBox {
      */
     private DragVisualAdvisor dragVisualAdvisor;
 
-    /**
-     * Resources associated with an externally-loaded plugin that must be
-     * released when the rack is disposed.
-     */
-    private record ExternalPluginResources(DawPlugin plugin, URLClassLoader classLoader) {}
-
-    /** Tracks external-plugin resources keyed by the InsertSlot they belong to. */
-    private final Map<InsertSlot, ExternalPluginResources> externalResources = new HashMap<>();
-    private final Map<InsertSlot, Stage> analyzerEditors = new HashMap<>();
-    private Runnable removeAnalyzerEditorPulse;
+    private boolean disposed;
+    private final Map<InsertSlot, Stage> slotEditors = new HashMap<>();
+    private Runnable removeEditorPulse;
 
     /**
      * Creates a new insert-effects rack for the given mixer channel.
@@ -139,6 +134,9 @@ public final class InsertEffectRack extends VBox {
         getChildren().add(header);
 
         rebuildSlots();
+        if (fxDispatcher != null) {
+            removeSlotPulse = fxDispatcher.addPulseParticipant(this::refreshIfChanged);
+        }
 
         // Register listener to rebuild slots after undo/redo operations
         if (undoManager != null) {
@@ -175,20 +173,9 @@ public final class InsertEffectRack extends VBox {
         }
 
         List<InsertSlot> slots = channel.getInsertSlots();
-        closeRemovedAnalyzerEditors();
-
-        // Reconcile external-plugin resources: dispose any entries whose
-        // InsertSlot is no longer present on the channel (removed via
-        // undo/redo, reorder, or direct removal).
-        var iter = externalResources.entrySet().iterator();
-        while (iter.hasNext()) {
-            var mapEntry = iter.next();
-            if (!slots.contains(mapEntry.getKey())) {
-                disposeExternalResources(mapEntry.getValue().plugin(),
-                        mapEntry.getValue().classLoader());
-                iter.remove();
-            }
-        }
+        renderedSlots = List.copyOf(slots);
+        renderedBypass = slots.stream().map(InsertSlot::isBypassed).toList();
+        closeRemovedEditors();
 
         for (int i = 0; i < slots.size(); i++) {
             getChildren().add(buildPopulatedSlot(i, slots.get(i)));
@@ -235,19 +222,19 @@ public final class InsertEffectRack extends VBox {
      * is rebuilt) to prevent stale listeners from accumulating.
      */
     public void dispose() {
-        for (Stage editor : List.copyOf(analyzerEditors.values())) editor.close();
-        if (removeAnalyzerEditorPulse != null) {
-            removeAnalyzerEditorPulse.run();
-            removeAnalyzerEditorPulse = null;
+        if (disposed) return;
+        disposed = true;
+        if (removeSlotPulse != null) removeSlotPulse.run();
+        removeSlotPulse = null;
+        for (Stage editor : List.copyOf(slotEditors.values())) editor.close();
+        if (removeEditorPulse != null) {
+            removeEditorPulse.run();
+            removeEditorPulse = null;
         }
         if (undoManager != null && historyListener != null) {
             undoManager.removeHistoryListener(historyListener);
         }
-        // Dispose all tracked external-plugin resources
-        for (ExternalPluginResources res : externalResources.values()) {
-            disposeExternalResources(res.plugin(), res.classLoader());
-        }
-        externalResources.clear();
+
     }
 
     /**
@@ -442,7 +429,9 @@ public final class InsertEffectRack extends VBox {
      * itself applies the Stereo-Imager stereo rule and the EFFECT-type filter,
      * and offers the drag-a-JAR install flow (story 303).
      */
-    private void showEffectPicker(int slotIndex) {
+    public void showEffectPicker(int slotIndex) {
+        if (disposed) return;
+        if (channel.getInsertCount() >= MixerChannel.MAX_INSERT_SLOTS) return;
         String channelName = channel.getName();
         String targetLabel = (channelName == null || channelName.isBlank())
                 ? "Insert " + (slotIndex + 1)
@@ -468,41 +457,41 @@ public final class InsertEffectRack extends VBox {
      * initializes it, and inserts it via the unified
      * {@link DawPlugin#asAudioProcessor()} contract.
      *
-     * <p>Uses {@link ExternalPluginLoader#loadWithClassLoader(ExternalPluginEntry)}
-     * to keep the classloader open for the lifetime of the plugin (lazy class
-     * loading remains available). The classloader is closed if insertion fails.</p>
+     * <p>The loaded resources belong to the slot and retire only after the owning
+     * channel has quiesced its render snapshots.</p>
      */
     private void loadAndInsertExternalPlugin(int slotIndex, ExternalPluginEntry entry) {
-        ExternalPluginLoader.LoadResult result;
-        try {
-            result = ExternalPluginLoader.loadWithClassLoader(entry);
-        } catch (PluginLoadException e) {
-            showPickerError("Failed to load plugin: " + e.getMessage());
+        setDisable(true);
+        var format = new com.benesquivelmusic.daw.core.audio.AudioFormat(sampleRate, audioChannels, 24, bufferSize);
+        // Virtual threads (JEP 444, final since Java 21) keep third-party construction off FX.
+        Thread.ofVirtual().name("insert-plugin-load").start(() -> {
+            try {
+                InsertSlot slot = com.benesquivelmusic.daw.app.ui.plugin.PluginSlotLoader.load(entry, format);
+                postFx(() -> completeExternalInsert(slotIndex, slot));
+            } catch (RuntimeException | Error failure) {
+                postFx(() -> {
+                    setDisable(false);
+                    if (!disposed) showPickerError("Could not load plugin: " + failure.getMessage());
+                });
+            }
+        });
+    }
+
+    /** Applies a worker result on FX only while this rack still belongs to a live view. */
+    void completeExternalInsert(int slotIndex, InsertSlot slot) {
+        setDisable(false);
+        if (disposed) {
+            Thread.ofVirtual().name("cancelled-plugin-dispose").start(slot::disposeAfterQuiescence);
             return;
         }
-
-        DawPlugin freshPlugin = result.plugin();
-        URLClassLoader classLoader = result.classLoader();
-
         try {
-            freshPlugin.initialize(new PluginContext() {
-                @Override public double getSampleRate() { return sampleRate; }
-                @Override public int getBufferSize() { return bufferSize; }
-                @Override public void log(String message) { LOG.info(message); }
-            });
-            Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(freshPlugin);
-            if (optSlot.isEmpty()) {
-                disposeExternalResources(freshPlugin, classLoader);
-                showPickerError("Plugin \"" + freshPlugin.getDescriptor().name()
-                        + "\" does not support audio processing.");
-                return;
-            }
-            InsertSlot slot = optSlot.get();
-            externalResources.put(slot, new ExternalPluginResources(freshPlugin, classLoader));
             addEffect(slotIndex, slot);
-        } catch (Exception e) {
-            disposeExternalResources(freshPlugin, classLoader);
-            showPickerError("Failed to initialize plugin: " + e.getMessage());
+            openParameterEditor(slot);
+        } catch (RuntimeException | Error failure) {
+            if (!channel.getInsertSlots().contains(slot)) {
+                Thread.ofVirtual().name("failed-plugin-dispose").start(slot::disposeAfterQuiescence);
+            }
+            showPickerError("Could not insert plugin: " + failure.getMessage());
         }
     }
 
@@ -546,79 +535,67 @@ public final class InsertEffectRack extends VBox {
 
     // ── Parameter editor ────────────────────────────────────────────────────
 
+    /** Opens every slot kind through the graph-bound contract editor. */
     void openParameterEditor(InsertSlot slot) {
-        if (slot.getPlugin() instanceof com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin) {
-            Stage existing = analyzerEditors.get(slot);
-            if (existing != null) {
-                existing.toFront();
-                existing.requestFocus();
-                return;
-            }
-            var session = com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.open(
-                    slot.getPlugin(), channel.getName(),
-                    new com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.Deps(
-                            () -> sampleRate, null, null, null));
-            Stage stage = new Stage();
-            if (getScene() != null) stage.initOwner(getScene().getWindow());
-            stage.setTitle(slot.getName());
-            stage.setScene(new Scene(session.frame(), 640, 420));
-            if (getScene() != null) stage.getScene().getStylesheets().setAll(getScene().getStylesheets());
-            analyzerEditors.put(slot, stage);
-            if (removeAnalyzerEditorPulse == null && fxDispatcher != null) {
-                removeAnalyzerEditorPulse = fxDispatcher.addPulseParticipant(this::closeRemovedAnalyzerEditors);
-            }
-            stage.setOnHidden(_ -> {
-                session.dispose();
-                analyzerEditors.remove(slot);
-                if (analyzerEditors.isEmpty() && removeAnalyzerEditorPulse != null) {
-                    removeAnalyzerEditorPulse.run();
-                    removeAnalyzerEditorPulse = null;
-                }
-            });
-            session.frame().setOnCloseRequested(stage::close);
-            stage.show();
+        if (!channel.getInsertSlots().contains(slot)) return;
+        if (onOpenEditor != null) {
+            onOpenEditor.accept(channel, slot);
             return;
         }
-        InsertEffectType type = slot.getEffectType();
-        if (type == null) {
+        Stage existing = slotEditors.get(slot);
+        if (existing != null) {
+            existing.toFront();
+            existing.requestFocus();
             return;
         }
-
-        List<PluginParameter> params = InsertEffectFactory.getParameterDescriptors(type);
-        if (params.isEmpty()) {
-            return;
+        if (getScene() == null || getScene().getWindow() == null) {
+            throw new IllegalStateException("Attach the insert rack to a window before opening its editor");
         }
-
-        PluginParameterEditorPanel editor = new PluginParameterEditorPanel(params);
-
-        // Initialize editor controls with the processor's current parameter values
-        // BEFORE installing the publishing handler, so refreshControls() does not
-        // emit spurious PluginEvent.ParameterChanged events for every slider.
-        Map<Integer, Double> currentValues =
-                InsertEffectFactory.getParameterValues(type, slot.getProcessor());
-        if (!currentValues.isEmpty()) {
-            editor.getState().loadValues(currentValues);
-            editor.refreshControls();
-        }
-
-        BiConsumer<Integer, Double> handler =
-                InsertEffectFactory.createPublishingParameterHandler(slot, type);
-        editor.setOnParameterChanged(handler);
-
+        var session = com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.open(
+                channel, slot, new com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.Deps(
+                        () -> sampleRate, null, null, null));
+        if (meterFeed != null) session.bindInsertMeters(meterFeed, slot.getPluginInstanceId());
         Stage stage = new Stage();
-        stage.setTitle(slot.getName() + " — Parameters");
-        stage.setScene(new Scene(editor, 420, 320));
+        stage.initOwner(getScene().getWindow());
+        stage.setTitle(slot.getName());
+        stage.setScene(new Scene(session.frame(), 640, 420));
+        ThemeManager.getDefault().applyTo(stage.getScene());
+        slotEditors.put(slot, stage);
+        if (removeEditorPulse == null && fxDispatcher != null) {
+            removeEditorPulse = fxDispatcher.addPulseParticipant(this::closeRemovedEditors);
+        }
+        stage.setOnHidden(_ -> {
+            session.dispose();
+            slotEditors.remove(slot);
+            if (slotEditors.isEmpty() && removeEditorPulse != null) {
+                removeEditorPulse.run();
+                removeEditorPulse = null;
+            }
+        });
+        session.frame().setOnCloseRequested(stage::close);
         stage.show();
     }
 
-    private void closeRemovedAnalyzerEditors() {
+    public void setOnOpenEditor(BiConsumer<MixerChannel, InsertSlot> handler) {
+        onOpenEditor = handler;
+    }
+
+    public void setMeterFeed(MeterFeed feed) { meterFeed = feed; }
+
+    private void refreshIfChanged() {
         var slots = channel.getInsertSlots();
-        for (var entry : List.copyOf(analyzerEditors.entrySet())) {
-            if (!slots.contains(entry.getKey())) entry.getValue().close();
+        if (!renderedSlots.equals(slots)
+                || !renderedBypass.equals(slots.stream().map(InsertSlot::isBypassed).toList())) {
+            rebuildSlots();
         }
     }
 
-    // ── Sidechain selector ───────────────────────────────────────────────────
+    private void closeRemovedEditors() {
+        var slots = channel.getInsertSlots();
+        for (var entry : List.copyOf(slotEditors.entrySet())) {
+            if (!slots.contains(entry.getKey())) entry.getValue().close();
+        }
+    }
 
     /**
      * Builds a small ComboBox that lets the user select which mixer channel
@@ -732,18 +709,6 @@ public final class InsertEffectRack extends VBox {
             }
         } catch (RuntimeException ignored) {
             // Advisor must never break the underlying JavaFX drag.
-        }
-    }
-
-    /**
-     * Best-effort disposal of an external plugin and its classloader.
-     * The classloader is always closed even if {@code plugin.dispose()} throws.
-     */
-    private static void disposeExternalResources(DawPlugin plugin, URLClassLoader classLoader) {
-        try {
-            plugin.dispose();
-        } finally {
-            ExternalPluginLoader.closeQuietly(classLoader);
         }
     }
 

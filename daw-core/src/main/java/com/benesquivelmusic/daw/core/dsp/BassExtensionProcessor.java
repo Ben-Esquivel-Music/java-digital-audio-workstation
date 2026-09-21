@@ -280,6 +280,18 @@ public final class BassExtensionProcessor implements AudioProcessor {
      * order settings.
      */
     private void rebuildFilters() {
+        if (bassIsolationLp != null) {
+            double highCutoff = Math.min(harmonicOrder * crossoverHz, sampleRate * 0.45);
+            for (int ch = 0; ch < channels; ch++) {
+                bassIsolationLp[ch].recalculate(BiquadFilter.FilterType.LOW_PASS,
+                        sampleRate, crossoverHz, BUTTERWORTH_Q, 0);
+                harmonicBpLow[ch].recalculate(BiquadFilter.FilterType.HIGH_PASS,
+                        sampleRate, crossoverHz, BUTTERWORTH_Q, 0);
+                harmonicBpHigh[ch].recalculate(BiquadFilter.FilterType.LOW_PASS,
+                        sampleRate, highCutoff, BUTTERWORTH_Q, 0);
+            }
+            return;
+        }
         // Build fully-populated local arrays before assigning to instance fields
         // so that process() on the audio thread never observes partially-initialized arrays.
         BiquadFilter[] newBassIsolationLp = new BiquadFilter[channels];

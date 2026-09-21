@@ -128,7 +128,7 @@ public final class TrackFreezeService {
             if (!chain.isEmpty() && !chain.isBypassed()) {
                 int numFrames = rawAudio[0].length;
                 frozenAudio = new float[channels][numFrames];
-                chain.process(rawAudio, frozenAudio, numFrames);
+                chain.processOffline(rawAudio, frozenAudio, numFrames);
             } else {
                 frozenAudio = rawAudio;
             }

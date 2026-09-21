@@ -105,6 +105,29 @@ class MetronomeSideOutputRouterTest {
     }
 
     @Test
+    void pluginBypassSilencesMainSideAndCueOutputsWithoutDisablingPreference() {
+        var owner = new Object();
+        var cueBusManager = new CueBusManager();
+        var cueBus = cueBusManager.createCueBus("Drummer", 1);
+        router.setCueBusLevel(cueBus.id(), 0.75);
+        metronome.setClickOutput(new ClickOutput(4, 1.0, true, true));
+        float[][] click = metronome.generateClick(true);
+        metronome.setPluginBypassed(owner, true);
+
+        var bypassed = router.route(metronome, click, backend, cueBusManager);
+        assertThat(metronome.isEnabled()).isTrue();
+        assertThat(bypassed.hasMainMix()).isFalse();
+        assertThat(bypassed.hasSideOutput()).isFalse();
+        assertThat(bypassed.cueBusBuffers()).isEmpty();
+
+        metronome.releasePluginBypass(owner);
+        var restored = router.route(metronome, click, backend, cueBusManager);
+        assertThat(restored.mainMixBuffer()).isSameAs(click);
+        assertThat(restored.hasSideOutput()).isTrue();
+        assertThat(restored.cueBusBuffers()).containsKey(cueBus.id());
+    }
+
+    @Test
     void sideOutputShouldStayQuietWhenSideOutputDisabled() {
         metronome.setClickOutput(new ClickOutput(5, 1.0, true, false));
         float[][] click = metronome.generateClick(true);

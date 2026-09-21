@@ -32,6 +32,7 @@ public final class InsertsSection extends InspectorSection {
     private final VBox rows = new VBox();
     private final VBox subPaneHost = new VBox();
     private final Button addButton;
+    private java.util.function.IntConsumer onEditRequested;
     private final IntegerProperty selectedIndex =
             new SimpleIntegerProperty(this, "selectedIndex", -1);
 
@@ -91,7 +92,11 @@ public final class InsertsSection extends InspectorSection {
         Button edit = new Button("\u270E"); // ✎
         edit.getStyleClass().add("inspector-row-edit");
         edit.setFocusTraversable(true);
-        edit.setOnAction(e -> selectedIndex.set(index));
+        edit.setAccessibleText("Edit " + r.name());
+        edit.setOnAction(e -> {
+            selectedIndex.set(index);
+            if (onEditRequested != null) onEditRequested.accept(index);
+        });
 
         HBox row = new HBox(4, dot, name, edit);
         row.setAlignment(Pos.CENTER_LEFT);
@@ -103,6 +108,10 @@ public final class InsertsSection extends InspectorSection {
     public VBox getRowsContainer()       { return rows; }
     public Region getSubPaneHost()       { return subPaneHost; }
     public IntegerProperty selectedIndexProperty() { return selectedIndex; }
+
+    public void setOnEditRequested(java.util.function.IntConsumer handler) {
+        onEditRequested = handler;
+    }
 
     /** Minimal row contract; the inspector drawer fills these from the domain. */
     public record Row(String name, boolean active) {}

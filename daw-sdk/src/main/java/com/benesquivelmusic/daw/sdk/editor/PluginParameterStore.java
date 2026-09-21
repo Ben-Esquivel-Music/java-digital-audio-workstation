@@ -4,7 +4,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -31,11 +30,11 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
  *       returns a coherent, allocation-free snapshot from either thread.</li>
  *   <li>{@link #writeFromUi(int, double)} runs on the FX thread: it clamps and
  *       publishes the new value, then posts the parameter's index onto a
- *       single-producer / single-consumer ring the audio thread drains in
+ *       coalescing pending set the audio thread drains in
  *       {@code process(...)} via {@link #drainToAudio(IndexConsumer)}.</li>
  *   <li>{@link #writeFromAudio(int, double)} runs on the audio thread and is
  *       {@link RealTimeSafe}: it clamps and publishes, then posts onto a
- *       <em>separate</em> ring the FX thread drains via
+ *       <em>separate</em> pending set the FX thread drains via
  *       {@link #drainToUi(IndexConsumer)} for display update.</li>
  *   <li>The audio-side meter snapshot (§6.4) is a single
  *       {@link AtomicReference} the audio thread {@linkplain
@@ -45,13 +44,12 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
  *       no information.</li>
  * </ul>
  *
- * <p>The rings carry only the changed parameter <em>index</em>; the value is
- * read back from the coherent atomic array by the draining side. Both rings are
- * fixed-capacity and non-blocking: if a producer outruns its consumer the
- * incoming notification is dropped, never blocked — the atomic array still
- * holds the latest value, so a dropped notification only delays a downstream
- * apply / repaint until the next change. This keeps the audio-thread
- * path free of allocation, locking and unbounded work.</p>
+ * <p>Each direction has a single producer and consumer, with one published
+ * generation per parameter and thread-owned sequence arrays. Repeated writes
+ * coalesce, so even a burst larger than a render block cannot lose the final
+ * value of a parameter. A drain makes one bounded pass over the generations and reads
+ * values from the coherent array. This keeps the audio-thread path free of
+ * allocation, locking and unbounded work.</p>
  *
  * <p>Indices are dense ({@code 0 .. parameterCount()-1}) in the order the store
  * was constructed. {@link #indexOf(int)} maps a {@link PluginParameter#id()} to
@@ -61,7 +59,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 public final class PluginParameterStore {
 
     /**
-     * Allocation-free callback for draining a change ring. Receives the dense
+     * Allocation-free callback for draining parameter changes. Receives the dense
      * index of a parameter whose value changed; read the new value with
      * {@link PluginParameterStore#value(int)}.
      */
@@ -74,8 +72,13 @@ public final class PluginParameterStore {
     private final int[] parameterIds;
     private final Map<Integer, Integer> idToIndex;
     private final AtomicLongArray values;
-    private final IntRing uiToAudio;
-    private final IntRing audioToUi;
+    private final AtomicLongArray uiToAudio;
+    private final AtomicLongArray audioToUi;
+    private final AtomicLongArray audioApplied;
+    private final long[] uiGeneration;
+    private final long[] audioGeneration;
+    private final long[] audioSeen;
+    private final long[] uiSeen;
     private final AtomicReference<PluginMeterSnapshot> meterSnapshot =
             new AtomicReference<>(PluginMeterSnapshot.SILENT);
 
@@ -103,9 +106,13 @@ public final class PluginParameterStore {
             }
             values.set(i, Double.doubleToRawLongBits(p.defaultValue()));
         }
-        int capacity = ringCapacity(n);
-        this.uiToAudio = new IntRing(capacity);
-        this.audioToUi = new IntRing(capacity);
+        this.uiToAudio = new AtomicLongArray(n);
+        this.audioToUi = new AtomicLongArray(n);
+        this.audioApplied = new AtomicLongArray(n);
+        this.uiGeneration = new long[n];
+        this.audioGeneration = new long[n];
+        this.audioSeen = new long[n];
+        this.uiSeen = new long[n];
     }
 
     /**
@@ -191,7 +198,7 @@ public final class PluginParameterStore {
      */
     public void writeFromUi(int index, double value) {
         values.set(index, Double.doubleToRawLongBits(clamp(index, value)));
-        uiToAudio.offer(index);
+        uiToAudio.set(index, ++uiGeneration[index]);
     }
 
     /**
@@ -219,7 +226,7 @@ public final class PluginParameterStore {
     @RealTimeSafe
     public void writeFromAudio(int index, double value) {
         values.set(index, Double.doubleToRawLongBits(clamp(index, value)));
-        audioToUi.offer(index);
+        audioToUi.set(index, ++audioGeneration[index]);
     }
 
     /**
@@ -233,7 +240,34 @@ public final class PluginParameterStore {
      */
     @RealTimeSafe
     public int drainToAudio(IndexConsumer sink) {
-        return uiToAudio.drain(sink);
+        int count = 0;
+        for (int index = 0; index < audioSeen.length; index++) {
+            long generation = uiToAudio.get(index);
+            if (generation != audioSeen[index]) {
+                audioSeen[index] = generation;
+                sink.accept(index);
+                audioApplied.set(index, generation);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Captures editor values whose setters have not completed, without consuming
+     * them. Persistence callers capture this before reading processor getters,
+     * then overlay it on that snapshot. Values already applied remain owned by
+     * the processor, preserving automation and legacy direct-setter callers.
+     * This allocating method is for the control thread, never the audio thread.
+     */
+    public Map<Integer, Double> snapshotPendingUiValues() {
+        Map<Integer, Double> pending = new HashMap<>();
+        for (int index = 0; index < parameters.length; index++) {
+            if (uiToAudio.get(index) != audioApplied.get(index)) {
+                pending.put(parameterIds[index], value(index));
+            }
+        }
+        return pending;
     }
 
     /**
@@ -246,7 +280,7 @@ public final class PluginParameterStore {
      * @return the number of changes drained
      */
     public int drainToUi(IndexConsumer sink) {
-        return audioToUi.drain(sink);
+        return drain(audioToUi, uiSeen, sink);
     }
 
     /**
@@ -292,55 +326,18 @@ public final class PluginParameterStore {
         return value;
     }
 
-    /** Smallest power of two that comfortably buffers {@code n} parameters. */
-    private static int ringCapacity(int n) {
-        int wanted = Math.max(64, n * 4);
-        int cap = 1;
-        while (cap < wanted) {
-            cap <<= 1;
-        }
-        return cap;
-    }
-
-    /**
-     * A single-producer / single-consumer, lock-free, fixed-capacity ring of
-     * {@code int} values. The producer ({@link #offer(int)}) and consumer
-     * ({@link #drain(IndexConsumer)}) each run on exactly one thread. Neither
-     * allocates; a full ring drops the incoming value rather than blocking.
-     */
-    private static final class IntRing {
-        private final int[] buffer;
-        private final int mask;
-        private final AtomicLong head = new AtomicLong(); // consumer position
-        private final AtomicLong tail = new AtomicLong(); // producer position
-
-        IntRing(int capacityPowerOfTwo) {
-            this.buffer = new int[capacityPowerOfTwo];
-            this.mask = capacityPowerOfTwo - 1;
-        }
-
-        @RealTimeSafe
-        void offer(int value) {
-            long t = tail.get();
-            if (t - head.get() >= buffer.length) {
-                return; // full — drop; the coherent atomic value still holds truth
-            }
-            buffer[(int) (t & mask)] = value;
-            tail.set(t + 1); // release: publishes the buffer write to the consumer
-        }
-
-        @RealTimeSafe
-        int drain(IndexConsumer sink) {
-            long h = head.get();
-            long t = tail.get(); // acquire: sees buffer writes up to t
-            int count = 0;
-            while (h < t) {
-                sink.accept(buffer[(int) (h & mask)]);
-                h++;
+    /** One bounded pass coalesces each changed parameter without losing burst writes. */
+    @RealTimeSafe
+    private static int drain(AtomicLongArray published, long[] seen, IndexConsumer sink) {
+        int count = 0;
+        for (int index = 0; index < seen.length; index++) {
+            long generation = published.get(index);
+            if (generation != seen[index]) {
+                seen[index] = generation;
+                sink.accept(index);
                 count++;
             }
-            head.set(h);
-            return count;
         }
+        return count;
     }
 }

@@ -3,7 +3,9 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
+import java.lang.ref.WeakReference;
 import java.util.List;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Manages plugin delay compensation (PDC) for a set of mixer channels and
@@ -21,14 +23,23 @@ import java.util.List;
  * equals the difference between the maximum and the channel's own latency,
  * aligning all channels at the summing bus.</p>
  *
- * <p>All delay buffers are pre-allocated during {@link #recalculate} (called
- * from the UI thread), so that {@link #applyToChannel} and
+ * <p>Delay buffers are prepared by {@link #recalculate} on the control thread
+ * or by a monitor of explicitly thread-safe dynamic latency sources, so that {@link #applyToChannel} and
  * {@link #applyToReturnBus} perform zero heap allocations on the audio
- * thread.</p>
+ * thread. The monitor starts only for dynamic sources and stops when they
+ * leave the graph or {@link #close()} retires the project. Static/native
+ * processor latency is queried only during control-thread recalculation.</p>
  */
-public final class PluginDelayCompensation {
+public final class PluginDelayCompensation implements AutoCloseable {
 
     private volatile CompensationState state = CompensationState.EMPTY;
+    private List<MixerChannel> channels = List.of();
+    private List<MixerChannel> returnBuses = List.of();
+    private List<EffectsChain.LatencySnapshot> channelSources = List.of();
+    private List<EffectsChain.LatencySnapshot> returnBusSources = List.of();
+    private int audioChannels;
+    private Thread latencyWatcher;
+    private boolean closed;
 
     /**
      * Immutable snapshot of all compensation data. Published atomically
@@ -39,14 +50,17 @@ public final class PluginDelayCompensation {
             CompensationDelay[] returnBusDelays,
             int maxLatencySamples,
             int[] channelLatencies,
-            int[] returnBusLatencies
+            int[] returnBusLatencies,
+            List<MixerChannel> channels,
+            List<MixerChannel> returnBuses,
+            int audioChannels
     ) {
         static final CompensationState EMPTY = new CompensationState(
                 new CompensationDelay[0],
                 new CompensationDelay[0],
                 0,
                 new int[0],
-                new int[0]
+                new int[0], List.of(), List.of(), 0
         );
     }
 
@@ -62,9 +76,51 @@ public final class PluginDelayCompensation {
      * @param returnBuses   the return buses
      * @param audioChannels the number of audio channels (e.g., 2 for stereo)
      */
-    public void recalculate(List<MixerChannel> channels,
+    public synchronized void recalculate(List<MixerChannel> channels,
                             List<MixerChannel> returnBuses,
                             int audioChannels) {
+        if (closed) return;
+        this.channels = List.copyOf(channels);
+        this.returnBuses = List.copyOf(returnBuses);
+        this.audioChannels = audioChannels;
+        channelSources = channels.stream().map(channel -> channel.getEffectsChain().captureLatency()).toList();
+        returnBusSources = returnBuses.stream().map(channel -> channel.getEffectsChain().captureLatency()).toList();
+        rebuildCompensation(false);
+        boolean hasDynamicLatency = channelSources.stream().anyMatch(source -> !source.dynamic().isEmpty())
+                || returnBusSources.stream().anyMatch(source -> !source.dynamic().isEmpty());
+        if (hasDynamicLatency && latencyWatcher == null) {
+            var reference = new WeakReference<>(this);
+            // JEP 444 (final since Java 21): polling and buffer allocation stay off RT.
+            latencyWatcher = Thread.ofVirtual().name("plugin-latency-refresh")
+                    .unstarted(() -> watchLatencies(reference));
+            latencyWatcher.start();
+        } else if (!hasDynamicLatency) {
+            stopLatencyWatcher();
+        }
+    }
+
+    private static void watchLatencies(WeakReference<PluginDelayCompensation> reference) {
+        while (!Thread.currentThread().isInterrupted()) {
+            PluginDelayCompensation compensation = reference.get();
+            if (compensation == null || !compensation.refreshFromWatcher()) return;
+            compensation = null;
+            LockSupport.parkNanos(5_000_000L);
+        }
+    }
+
+    private synchronized boolean refreshFromWatcher() {
+        if (closed || latencyWatcher != Thread.currentThread()) return false;
+        rebuildCompensation(true);
+        return true;
+    }
+
+    /** Refreshes live latency synchronously before a non-real-time render starts. */
+    public synchronized void refreshLatencies() {
+        if (!closed) rebuildCompensation(true);
+    }
+
+    private void rebuildCompensation(boolean onlyIfChanged) {
+        if (onlyIfChanged && !latenciesChanged()) return;
         int channelCount = channels.size();
         int returnBusCount = returnBuses.size();
 
@@ -74,14 +130,14 @@ public final class PluginDelayCompensation {
         // Calculate per-channel latency
         int maxLatency = 0;
         for (int i = 0; i < channelCount; i++) {
-            int latency = channels.get(i).getEffectsChain().getTotalLatencySamples();
+            int latency = channelSources.get(i).samples();
             channelLatencies[i] = latency;
             maxLatency = Math.max(maxLatency, latency);
         }
 
         // Include return bus latencies in the max calculation
         for (int i = 0; i < returnBusCount; i++) {
-            int latency = returnBuses.get(i).getEffectsChain().getTotalLatencySamples();
+            int latency = returnBusSources.get(i).samples();
             returnBusLatencies[i] = latency;
             maxLatency = Math.max(maxLatency, latency);
         }
@@ -90,13 +146,17 @@ public final class PluginDelayCompensation {
         CompensationDelay[] channelDelays = new CompensationDelay[channelCount];
         for (int i = 0; i < channelCount; i++) {
             int compensationNeeded = maxLatency - channelLatencies[i];
-            channelDelays[i] = new CompensationDelay(audioChannels, compensationNeeded);
+            channelDelays[i] = onlyIfChanged
+                    ? reuseDelay(channels.get(i), compensationNeeded, state.channels, state.channelDelays)
+                    : new CompensationDelay(audioChannels, compensationNeeded);
         }
 
         CompensationDelay[] returnBusDelays = new CompensationDelay[returnBusCount];
         for (int i = 0; i < returnBusCount; i++) {
             int compensationNeeded = maxLatency - returnBusLatencies[i];
-            returnBusDelays[i] = new CompensationDelay(audioChannels, compensationNeeded);
+            returnBusDelays[i] = onlyIfChanged
+                    ? reuseDelay(returnBuses.get(i), compensationNeeded, state.returnBuses, state.returnBusDelays)
+                    : new CompensationDelay(audioChannels, compensationNeeded);
         }
 
         // Publish atomically
@@ -105,8 +165,52 @@ public final class PluginDelayCompensation {
                 returnBusDelays,
                 maxLatency,
                 channelLatencies,
-                returnBusLatencies
+                returnBusLatencies, channels, returnBuses, audioChannels
         );
+    }
+
+    private boolean latenciesChanged() {
+        for (int i = 0; i < channels.size(); i++) {
+            if (channelSources.get(i).samples() != state.channelLatencies[i]) {
+                return true;
+            }
+        }
+        for (int i = 0; i < returnBuses.size(); i++) {
+            if (returnBusSources.get(i).samples() != state.returnBusLatencies[i]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private CompensationDelay reuseDelay(MixerChannel channel, int samples,
+                                          List<MixerChannel> previousChannels, CompensationDelay[] previousDelays) {
+        if (audioChannels == state.audioChannels) {
+            for (int index = 0; index < previousChannels.size(); index++) {
+                if (previousChannels.get(index) == channel && previousDelays[index].getDelaySamples() == samples) {
+                    return previousDelays[index];
+                }
+            }
+        }
+        return new CompensationDelay(audioChannels, samples);
+    }
+
+    private void stopLatencyWatcher() {
+        if (latencyWatcher != null) {
+            latencyWatcher.interrupt();
+            latencyWatcher = null;
+        }
+    }
+
+    /** Releases the monitor before the project's processors are retired. */
+    @Override
+    public synchronized void close() {
+        closed = true;
+        stopLatencyWatcher();
+        channels = List.of();
+        returnBuses = List.of();
+        channelSources = List.of();
+        returnBusSources = List.of();
     }
 
     /**

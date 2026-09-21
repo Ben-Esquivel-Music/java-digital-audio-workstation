@@ -103,6 +103,7 @@ public final class RecordingPipeline {
      * is applied to recorded clip start positions.
      */
     private long resolvedCompensationFrames;
+    private final Map<Track, Long> trackCompensationFrames = new LinkedHashMap<>();
 
     /**
      * Creates a new recording pipeline with default settings (no count-in,
@@ -173,6 +174,7 @@ public final class RecordingPipeline {
         }
 
         takeGroups.clear();
+        trackCompensationFrames.clear();
         previousBeatPosition = -1.0;
 
         // Capture the recording start position before any transport changes.
@@ -227,12 +229,19 @@ public final class RecordingPipeline {
         for (Track track : armedTracks) {
             Path trackDir = outputDirectory.resolve(track.getId());
             RecordingSession session = new RecordingSession(format, trackDir);
-            session.setCompensationFrames(resolvedCompensationFrames);
+            // Graph instruments are captured at their internal render timestamp,
+            // before hardware output. Neither input nor output-cue latency has
+            // elapsed in these buffers; physical capture retains round-trip alignment.
+            long compensation = track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track)
+                    ? 0L : resolvedCompensationFrames;
+            trackCompensationFrames.put(track, compensation);
+            session.setCompensationFrames(compensation);
             session.start();
             sessions.put(track, session);
 
             InputRouting routing = track.getInputRouting();
-            int routedChannels = routing.isNone() ? format.channels() : routing.channelCount();
+            int routedChannels = routing.isNone()
+                    ? format.channels() : routing.channelCount();
             routedInputBuffers.put(track, new float[routedChannels][bufferFrames]);
         }
 
@@ -310,7 +319,7 @@ public final class RecordingPipeline {
 
                 AudioClip clip = new AudioClip(
                         "Recording — " + track.getName(),
-                        compensatedStartBeat(),
+                        compensatedStartBeat(track),
                         durationBeats,
                         segmentPath);
 
@@ -770,17 +779,20 @@ public final class RecordingPipeline {
             }
 
             InputRouting routing = track.getInputRouting();
-            if (routing.isNone()) {
+            float[][] instrument = routing.isNone()
+                    ? audioEngine.graphInstrumentRecordingBuffer(track) : null;
+            if (routing.isNone() && instrument == null) {
                 continue;
             }
 
             float[][] routed = routedInputBuffers.get(track);
-            int firstCh = routing.firstChannel();
-            int chCount = routing.channelCount();
+            int firstCh = instrument == null ? routing.firstChannel() : 0;
+            int chCount = instrument == null ? routing.channelCount() : instrument.length;
+            float[][] source = instrument == null ? inputBuffer : instrument;
             for (int ch = 0; ch < chCount; ch++) {
                 int srcCh = firstCh + ch;
-                if (srcCh < inputBuffer.length && ch < routed.length) {
-                    System.arraycopy(inputBuffer[srcCh], offset, routed[ch], 0, sliceFrames);
+                if (srcCh < source.length && ch < routed.length) {
+                    System.arraycopy(source[srcCh], offset, routed[ch], 0, sliceFrames);
                 }
             }
 
@@ -831,18 +843,19 @@ public final class RecordingPipeline {
     /**
      * Returns the clip start beat after applying driver-round-trip
      * compensation. The take is shifted *earlier* on the timeline by
-     * {@link #resolvedCompensationFrames} sample frames so the recorded
+     * the source-specific compensation captured at session start so the recorded
      * wave aligns with the bar where the user played, not the (later)
      * sample position the DAW wrote it to. Negative results are clamped
      * to zero so {@link AudioClip} validation does not reject the clip
      * for early takes near the start of the timeline.
      */
-    private double compensatedStartBeat() {
-        if (resolvedCompensationFrames <= 0) {
+    private double compensatedStartBeat(Track track) {
+        long compensationFrames = trackCompensationFrames.getOrDefault(track, 0L);
+        if (compensationFrames <= 0) {
             return recordingStartBeat;
         }
         double bpm = transport.getTempo();
-        double compensationSeconds = resolvedCompensationFrames / format.sampleRate();
+        double compensationSeconds = compensationFrames / format.sampleRate();
         double compensationBeats = compensationSeconds * (bpm / 60.0);
         return Math.max(0.0, recordingStartBeat - compensationBeats);
     }
@@ -907,6 +920,7 @@ public final class RecordingPipeline {
             // intentionally cheap — just allocating a new session object.
             Path trackDir = outputDirectory.resolve(track.getId());
             RecordingSession next = new RecordingSession(format, trackDir);
+            next.setCompensationFrames(trackCompensationFrames.getOrDefault(track, 0L));
             next.start();
             sessions.put(track, next);
 
@@ -934,7 +948,7 @@ public final class RecordingPipeline {
             // immediately so playback can happen without waiting on I/O.
             AudioClip clip = new AudioClip(
                     "Take — " + track.getName(),
-                    compensatedStartBeat(),
+                    compensatedStartBeat(track),
                     durationBeats,
                     segmentPath);
             if (capturedAudio != null) {

@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 
@@ -17,6 +19,25 @@ class RenderInPlaceServiceTest {
     private static final int SAMPLE_RATE = 44100;
     private static final double TEMPO = 120.0;
     private static final int CHANNELS = 2;
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rendersAnEntireTrackThroughMultipleInsertsRegardlessOfLivePreparation(boolean prepared) {
+        Track track = audioTrackWithConstant(0.1f);
+        MixerChannel channel = new MixerChannel("Multiple inserts");
+        channel.getEffectsChain().addProcessor(new GainProcessor(2.0f));
+        channel.getEffectsChain().addProcessor(new GainProcessor(3.0f));
+        if (prepared) {
+            channel.prepareEffectsChain(CHANNELS, 64);
+        }
+
+        var result = RenderInPlaceService.render(track, channel, SAMPLE_RATE, TEMPO, CHANNELS,
+                RenderInPlaceOptions.defaults());
+
+        float[][] data = result.renderedClip().getAudioData();
+        assertThat(data[0]).hasSize(SAMPLE_RATE / 2).containsOnly(0.6f);
+        assertThat(data[1]).containsOnly(0.6f);
+    }
 
     @Test
     void shouldRenderAudioTrackAndReplaceClips() {

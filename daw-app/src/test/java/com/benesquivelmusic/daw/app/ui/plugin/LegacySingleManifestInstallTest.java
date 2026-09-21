@@ -67,6 +67,7 @@ class LegacySingleManifestInstallTest {
                 panel.primaryButtonForTest().fire();
                 return null;
             });
+            panel.installationForTest().get(15, java.util.concurrent.TimeUnit.SECONDS);
 
             assertThat(registry.getEntries())
                     .as("the single declared plugin registered without class-name input")

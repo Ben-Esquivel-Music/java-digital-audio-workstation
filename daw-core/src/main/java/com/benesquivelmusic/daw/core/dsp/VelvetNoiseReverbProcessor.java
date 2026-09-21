@@ -41,7 +41,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
 @InsertEffect(type = "VELVET_NOISE_REVERB", displayName = "Velvet Noise Reverb", category = PluginCategory.REVERB_AND_DELAY)
-public final class VelvetNoiseReverbProcessor implements AudioProcessor {
+public final class VelvetNoiseReverbProcessor implements AudioProcessor, PreparedParameterProcessor {
 
     private static final double MIN_DECAY_SECONDS = 0.1;
     private static final double MAX_DECAY_SECONDS = 3.0;
@@ -57,8 +57,9 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
     private final double sampleRate;
 
     // Parameters (all normalized to [0, 1])
-    private double decayTime;
-    private double density;
+    private volatile double decayTime;
+    private volatile double density;
+    private DeferredDspUpdate parameterPreparation;
     private double earlyLateMix;
     private double damping;
     private double mix;
@@ -121,6 +122,7 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
     @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        applyPreparedParameters();
         int activeCh = Math.min(channels, inputBuffer.length);
         double dampCoeff = damping;
         double earlyWeight = 1.0 - earlyLateMix;
@@ -333,6 +335,10 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
      * different random sequences for stereo decorrelation.</p>
      */
     private void generateVelvetNoiseSequence() {
+        if (parameterPreparation != null) {
+            parameterPreparation.request();
+            return;
+        }
         double reverbSeconds = MIN_DECAY_SECONDS
                 + decayTime * (MAX_DECAY_SECONDS - MIN_DECAY_SECONDS);
         double pulsesPerSecond = MIN_DENSITY_PPS
@@ -431,6 +437,57 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
         // Ensure work buffers match segment count
         if (segmentWorkBuffers.length < lateSegmentCount) {
             segmentWorkBuffers = new float[lateSegmentCount][workBufferSize];
+        }
+    }
+
+    private Runnable prepareSequence() {
+        double requestedDecay = decayTime;
+        double requestedDensity = density;
+        var prepared = new VelvetNoiseReverbProcessor(channels, sampleRate);
+        prepared.decayTime = requestedDecay;
+        prepared.density = requestedDensity;
+        prepared.generateVelvetNoiseSequence();
+        return () -> {
+            ringBuffer = prepared.ringBuffer;
+            writePos = prepared.writePos;
+            ringLength = prepared.ringLength;
+            earlyDelays = prepared.earlyDelays;
+            earlyPolarities = prepared.earlyPolarities;
+            earlyGains = prepared.earlyGains;
+            earlyPulseCount = prepared.earlyPulseCount;
+            lateDelays = prepared.lateDelays;
+            latePolarities = prepared.latePolarities;
+            lateSegmentGains = prepared.lateSegmentGains;
+            latePulseCounts = prepared.latePulseCounts;
+            lateSegmentCount = prepared.lateSegmentCount;
+        };
+    }
+
+    @Override
+    public void enableRealtimeParameterPreparation() {
+        if (parameterPreparation == null) {
+            parameterPreparation = new DeferredDspUpdate(this::prepareSequence);
+        }
+    }
+
+    @Override
+    public void applyPreparedParameters() {
+        if (parameterPreparation != null) {
+            parameterPreparation.apply();
+        }
+    }
+
+    @Override
+    public void closeParameterPreparation() {
+        if (parameterPreparation != null) {
+            parameterPreparation.close();
+        }
+    }
+
+    @Override
+    public void awaitParameterPreparation() {
+        if (parameterPreparation != null) {
+            parameterPreparation.await();
         }
     }
 }

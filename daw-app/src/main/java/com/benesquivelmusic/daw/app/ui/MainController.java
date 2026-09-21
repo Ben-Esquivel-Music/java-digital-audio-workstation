@@ -46,6 +46,10 @@ import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.BuiltInPluginGraph;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.app.ui.inspector.InspectorSelection;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -89,6 +93,7 @@ import javafx.util.Duration;
 import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -241,6 +246,8 @@ public final class MainController {
     private AnimationController animationController;
     private DawMenuBarController menuBarController;
     private PluginViewController pluginViewController;
+    private final BuiltInPluginGraph builtInPluginGraph = new BuiltInPluginGraph(
+            new com.benesquivelmusic.daw.core.mixer.ProcessorRegistry());
     private ClipEditController clipEditController;
     private RippleModeController rippleModeController;
     private TrackCreationController trackCreationController;
@@ -1060,6 +1067,7 @@ public final class MainController {
         // it built the view; re-applying is idempotent and keeps the wiring
         // visible beside the other post-construction mixer wiring.
         viewNavigationController.getMixerView().setMeterFeed(meterFeed());
+        wirePluginRackEditors(viewNavigationController.getMixerView());
         // Story 215: wire driver-reported input/output channel-info
         // suppliers into the mixer so per-track routing dropdowns render
         // "Mic/Line 1" / "S/PDIF L" / "Phones 1 L" rather than the
@@ -1161,6 +1169,8 @@ public final class MainController {
                     }, this::disposeRenderQueue, () -> {
                         if (pluginViewController != null) {
                             pluginViewController.dispose();
+                            if (inspectorDrawer != null) inspectorDrawer.disposeInsertBinding();
+                            retirePluginProject(project);
                         }
                     }, () -> {
                         if (pluginFaultUiController != null) {
@@ -1545,7 +1555,7 @@ public final class MainController {
                 // through the project supplier (§1.2 "one dirty bit").
                 new ProjectLifecycleController.Deps(
                         () -> project,
-                        p -> project = p,
+                        this::replacePluginProject,
                         () -> undoManager,
                         um -> undoManager = um,
                         () -> trackCreationController.resetCounters(),
@@ -1699,6 +1709,8 @@ public final class MainController {
 
     private void handleProjectRebuild(MixerView newMixerView) {
         newMixerView.setPluginRegistry(pluginRegistry);
+        wirePluginRackEditors(newMixerView);
+        if (pluginViewController != null) pluginViewController.reconcileGraph();
         // Story 100: re-attach the templates controller so the freshly
         // built MixerView's per-channel right-click menu still exposes
         // "Save channel strip\u2026" and "Apply channel strip\u2026".
@@ -1838,7 +1850,7 @@ public final class MainController {
      */
     private void applySnapshotRestoredProject(DawProject restored, String label) {
         if (restored == null) return;
-        this.project = restored;
+        replacePluginProject(restored);
         this.undoManager = new UndoManager();
         if (historyPanelController != null) historyPanelController.rebuild();
         if (trackCreationController != null) trackCreationController.resetCounters();
@@ -2007,7 +2019,6 @@ public final class MainController {
                 () -> project.getFormat().bufferSize(),
                 () -> project,
                 () -> project.markDirty(),
-                () -> viewNavigationController.switchView(DawView.MASTERING),
                 this::status,
                 (level, message) -> notificationBar.show(level, message),
                 (segments, node) -> viewNavigationController.showEditorInWorkshopPane(segments, node),
@@ -2018,6 +2029,148 @@ public final class MainController {
                     }
                 }));
         pluginViewController.setAnalyzerFeeds(analyzerFeeds);
+        pluginViewController.setMeterFeed(meterFeed);
+        // Virtual threads (JEP 444, final since Java 21) isolate plugin loading from FX.
+        pluginViewController.setActivationWorker(work -> Thread.ofVirtual().name("plugin-activate").start(work));
+        pluginViewController.setExternalSlotLoader(this::prepareExternalPluginLoad);
+        pluginViewController.setRouting(new PluginViewController.Routing(
+                this::selectedPluginChannel, this::choosePluginChannel,
+                this::createBuiltInPluginSlot, this::pluginGraphChanged), dispatcher());
+        if (inspectorDrawer != null) {
+            inspectorDrawer.bindInserts(this::selectedPluginChannel,
+                    pluginViewController::openSlotEditor, this::showInspectorInsertPicker, dispatcher());
+        }
+    }
+
+    private void replacePluginProject(DawProject next) {
+        DawProject previous = project;
+        project = next;
+        if (pluginViewController != null) pluginViewController.reconcileGraph();
+        if (inspectorDrawer != null) inspectorDrawer.refreshInserts();
+        if (previous != null && previous != next) retirePluginProject(previous);
+    }
+
+    private void retirePluginProject(DawProject previous) {
+        if (previous == null) return;
+        previous.disposeInsertsWhenQuiescent().exceptionally(failure -> {
+            LOG.log(Level.WARNING, "Could not dispose retired plugin resources", failure);
+            return null;
+        });
+    }
+
+    private java.util.function.Supplier<InsertSlot> prepareExternalPluginLoad(
+            com.benesquivelmusic.daw.sdk.plugin.DawPlugin template) {
+        var entry = pluginRegistry.getLoadedPlugins().entrySet().stream()
+                .filter(candidate -> candidate.getValue() == template)
+                .map(java.util.Map.Entry::getKey).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("The plugin is no longer installed"));
+        var format = project.getFormat();
+        return () -> com.benesquivelmusic.daw.app.ui.plugin.PluginSlotLoader.load(entry, format);
+    }
+
+    private void wirePluginRackEditors(MixerView mixerView) {
+        if (pluginViewController == null || mixerView == null) return;
+        mixerView.setOnOpenInsertEditor(pluginViewController::openSlotEditor);
+        mixerView.setOnChannelSelected(this::selectPluginChannel);
+    }
+
+    private List<MixerChannel> pluginChannels() {
+        var channels = new ArrayList<>(project.getMixer().getChannels());
+        channels.addAll(project.getMixer().getReturnBuses());
+        return channels;
+    }
+
+    private MixerChannel selectedPluginChannel() {
+        if (inspectorDrawer == null) return null;
+        InspectorSelection selection = inspectorDrawer.getSelectionModel().getSelection();
+        // Pattern matching for switch (JEP 441, final since Java 21).
+        java.util.UUID id = switch (selection) {
+            case InspectorSelection.TrackSelection track -> track.trackId();
+            case InspectorSelection.InsertSelection insert -> insert.trackId();
+            case InspectorSelection.SendSelection send -> send.trackId();
+            case InspectorSelection.BusSelection bus -> bus.busId();
+            case InspectorSelection.ClipSelection clip -> project.getTracks().stream()
+                    .filter(track -> track.getClips().stream()
+                            .anyMatch(audioClip -> audioClip.getId().equals(clip.clipId().toString())))
+                    .map(track -> java.util.UUID.fromString(track.getId())).findFirst().orElse(null);
+            case InspectorSelection.Empty ignored -> null;
+        };
+        return pluginChannels().stream().filter(channel -> channel.getId().equals(id)).findFirst().orElse(null);
+    }
+
+    private void selectPluginChannel(MixerChannel channel) {
+        if (inspectorDrawer == null || channel == null) return;
+        InspectorSelection selection = project.getMixer().getReturnBuses().contains(channel)
+                ? new InspectorSelection.BusSelection(channel.getId())
+                : new InspectorSelection.TrackSelection(channel.getId());
+        inspectorDrawer.selectFromExternal(selection);
+        inspectorDrawer.setHeaderText(channel.getName());
+        inspectorDrawer.refreshInserts();
+    }
+
+    private record PluginChannelChoice(MixerChannel channel) {
+        @Override public String toString() { return channel.getName(); }
+    }
+
+    private MixerChannel choosePluginChannel() {
+        var choices = pluginChannels().stream().map(PluginChannelChoice::new).toList();
+        if (choices.isEmpty()) {
+            notificationBar.show(NotificationLevel.INFO, "Create a track before inserting a plugin.");
+            return null;
+        }
+        var dialog = new javafx.scene.control.ChoiceDialog<>(choices.getFirst(), choices);
+        dialog.setTitle("Insert plugin");
+        dialog.setHeaderText("Choose a channel for this plugin");
+        dialog.setContentText("Channel");
+        if (rootPane != null && rootPane.getScene() != null) dialog.initOwner(rootPane.getScene().getWindow());
+        ThemeManager.getDefault().applyTo(dialog.getDialogPane());
+        MixerChannel selected = dialog.showAndWait().map(PluginChannelChoice::channel).orElse(null);
+        selectPluginChannel(selected);
+        return selected;
+    }
+
+    private InsertSlot createBuiltInPluginSlot(Class<? extends BuiltInDawPlugin> type) {
+        BuiltInDawPlugin plugin;
+        try {
+            plugin = type.getConstructor().newInstance();
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("Cannot create " + type.getSimpleName(), failure);
+        }
+        try {
+            return builtInPluginGraph.createSlot(plugin, new com.benesquivelmusic.daw.sdk.plugin.PluginContext() {
+                @Override public double getSampleRate() { return project.getFormat().sampleRate(); }
+                @Override public int getBufferSize() { return project.getFormat().bufferSize(); }
+                @Override public int getAudioChannels() { return project.getFormat().channels(); }
+                @Override public void log(String message) { LOG.info(message); }
+            }, audioEngine.getMetronome());
+        } catch (RuntimeException failure) {
+            throw failure;
+        }
+    }
+
+    private void pluginGraphChanged(MixerChannel channel) {
+        MixerView mixerView = viewNavigationController.getMixerView();
+        if (mixerView != null) mixerView.refreshInsertRack(channel);
+        if (inspectorDrawer != null) inspectorDrawer.refreshInserts();
+        if (channel.getInsertSlots().stream().anyMatch(InsertSlot::isInstrument)) {
+            // Virtual threads (JEP 444, final since Java 21) keep device I/O off FX.
+            Thread.ofVirtual().name("plugin-audio-output").start(() -> {
+                try {
+                    audioEngine.startAudioOutput();
+                } catch (RuntimeException failure) {
+                    LOG.log(Level.WARNING, "Could not start plugin audio output", failure);
+                    FxDispatcher.runOnFx(dispatcher(), () -> notificationBar.show(NotificationLevel.ERROR,
+                            "Plugin audio output could not start: " + failure.getMessage()));
+                }
+            });
+        }
+    }
+
+    private void showInspectorInsertPicker(MixerChannel selected) {
+        MixerChannel channel = selected == null ? choosePluginChannel() : selected;
+        if (channel == null) return;
+        MixerView mixerView = viewNavigationController.getMixerView();
+        if (mixerView != null) mixerView.showInsertPicker(channel);
     }
 
     /**

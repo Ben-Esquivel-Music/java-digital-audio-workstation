@@ -86,7 +86,7 @@ public final class DspRegressionHarness {
         // processor-reported latency (linear-phase EQ, lookahead dynamics,
         // convolution reverb, etc.).
         int outChannels = processor.getOutputChannelCount();
-        int latency = Math.max(0, processor.getLatencySamples());
+        int latency = spec.alignLatency() ? Math.max(0, processor.getLatencySamples()) : 0;
         float[][] output = processWithLatencyAlignment(
                 processor, inputBlock, outChannels, latency);
 

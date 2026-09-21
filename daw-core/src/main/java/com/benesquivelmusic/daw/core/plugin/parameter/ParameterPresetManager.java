@@ -3,9 +3,14 @@ package com.benesquivelmusic.daw.core.plugin.parameter;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+
+import static java.nio.file.StandardOpenOption.CREATE_NEW;
+import static java.nio.file.StandardOpenOption.TRUNCATE_EXISTING;
+import static java.nio.file.StandardOpenOption.WRITE;
 
 /**
  * Manages loading and saving of {@link ParameterPreset} instances as JSON files.
@@ -53,10 +58,13 @@ public final class ParameterPresetManager {
      * Saves a preset to a JSON file.
      *
      * <p>The file name is derived from the preset name with non-alphanumeric
-     * characters replaced by underscores.</p>
+     * characters replaced by underscores. An existing preset is updated only
+     * when its stored display name matches; a different name resolving to the
+     * same file is rejected without overwriting the saved preset.</p>
      *
      * @param preset the preset to save
      * @return the path to the saved file
+     * @throws FileAlreadyExistsException if another preset name uses the same file
      * @throws IOException if the file cannot be written
      */
     public Path savePreset(ParameterPreset preset) throws IOException {
@@ -64,10 +72,23 @@ public final class ParameterPresetManager {
         Files.createDirectories(presetsDirectory);
         String fileName = sanitizeFileName(preset.name()) + ".json";
         Path filePath = presetsDirectory.resolve(fileName);
-        try (Writer writer = Files.newBufferedWriter(filePath)) {
+        try (Writer writer = openPresetWriter(preset, filePath)) {
             writer.write(toJson(preset));
         }
         return filePath;
+    }
+
+    private Writer openPresetWriter(ParameterPreset preset, Path filePath) throws IOException {
+        try {
+            return Files.newBufferedWriter(filePath, CREATE_NEW, WRITE);
+        } catch (FileAlreadyExistsException _) {
+            ParameterPreset existing = loadPreset(filePath);
+            if (!existing.name().equals(preset.name())) {
+                throw new FileAlreadyExistsException(filePath.toString(), null,
+                        "Preset \"" + existing.name() + "\" already uses this file name. Choose a different preset name.");
+            }
+            return Files.newBufferedWriter(filePath, TRUNCATE_EXISTING, WRITE);
+        }
     }
 
     /**
@@ -126,6 +147,9 @@ public final class ParameterPresetManager {
         Objects.requireNonNull(presetName, "presetName must not be null");
         String fileName = sanitizeFileName(presetName) + ".json";
         Path filePath = presetsDirectory.resolve(fileName);
+        if (!Files.exists(filePath) || !loadPreset(filePath).name().equals(presetName)) {
+            return false;
+        }
         return Files.deleteIfExists(filePath);
     }
 
@@ -174,8 +198,36 @@ public final class ParameterPresetManager {
         }
         int colonIndex = json.indexOf(':', fieldIndex + pattern.length());
         int quoteStart = json.indexOf('"', colonIndex + 1);
-        int quoteEnd = json.indexOf('"', quoteStart + 1);
-        return json.substring(quoteStart + 1, quoteEnd);
+        if (colonIndex < 0 || quoteStart < 0) {
+            throw new IllegalArgumentException("Missing string value: " + field);
+        }
+        StringBuilder value = new StringBuilder();
+        for (int index = quoteStart + 1; index < json.length(); index++) {
+            char character = json.charAt(index);
+            if (character == '"') {
+                return value.toString();
+            }
+            if (character != '\\') {
+                value.append(character);
+                continue;
+            }
+            char escaped = json.charAt(++index);
+            if (escaped == 'u') {
+                value.append((char) Integer.parseInt(json.substring(index + 1, index + 5), 16));
+                index += 4;
+            } else {
+                value.append(switch (escaped) {
+                    case '"', '\\', '/' -> escaped;
+                    case 'b' -> '\b';
+                    case 'f' -> '\f';
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    case 't' -> '\t';
+                    default -> throw new IllegalArgumentException("Invalid JSON escape: " + escaped);
+                });
+            }
+        }
+        throw new IllegalArgumentException("Unterminated string value: " + field);
     }
 
     private static boolean extractBooleanField(String json, String field) {

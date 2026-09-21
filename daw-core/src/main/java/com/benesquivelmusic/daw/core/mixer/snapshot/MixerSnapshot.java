@@ -151,7 +151,7 @@ public record MixerSnapshot(String name,
             params = Map.of();
             type = null;
         } else {
-            params = InsertEffectFactory.getParameterValues(type, slot.getProcessor());
+            params = slot.snapshotParameterValues();
         }
         return new InsertSnapshot(type, slot.isBypassed(), params);
     }

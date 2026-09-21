@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -21,10 +22,17 @@ class MatchEqPluginTest {
 
     @TempDir
     Path tempDir;
+    private MatchEqPlugin initializedPlugin;
+
+    @org.junit.jupiter.api.AfterEach
+    void disposePlugin() {
+        if (initializedPlugin != null) initializedPlugin.dispose();
+    }
 
     @Test
     void shouldLoadReferenceFileAndPopulateReferenceSpectrum() throws IOException {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         plugin.initialize(stubContext());
 
         // Generate a short 440 Hz sine tone and write it as a 16-bit WAV file.
@@ -50,6 +58,7 @@ class MatchEqPluginTest {
     @Test
     void shouldResampleReferenceFileWhenSampleRatesDiffer() throws IOException {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         plugin.initialize(stubContext()); // processor sample rate = 48 000
 
         // Reference file at 44.1 kHz — must be resampled to 48 kHz to keep
@@ -79,6 +88,7 @@ class MatchEqPluginTest {
     @Test
     void shouldFailWhenPluginNotInitialized() {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         assertThatThrownBy(() -> plugin.loadReferenceFile(tempDir.resolve("x.wav")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not been initialized");
@@ -87,12 +97,37 @@ class MatchEqPluginTest {
     @Test
     void shouldRejectUnsupportedFileExtension() throws IOException {
         MatchEqPlugin plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
         plugin.initialize(stubContext());
         Path unsupported = tempDir.resolve("ref.xyz");
         java.nio.file.Files.writeString(unsupported, "not audio");
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> plugin.loadReferenceFile(unsupported))
                 .withMessageContaining("Unsupported");
+    }
+
+    @Test
+    void repeatedAutomationValuesStillBecomeAudibleAndLaterValuesDoNotRevert() throws Exception {
+        var plugin = new MatchEqPlugin();
+        initializedPlugin = plugin;
+        plugin.initialize(stubContext());
+        var signalPath = plugin.asAudioProcessor().orElseThrow();
+        float[][] audio = new float[2][16];
+        for (double amount : new double[] {0.25, 0.75, 0.25}) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            do {
+                plugin.setAutomatableParameter(2, amount);
+                signalPath.process(audio, audio, 16);
+                if (plugin.getProcessor().getAmount() == amount) break;
+                Thread.sleep(5);
+            } while (System.nanoTime() < deadline);
+            assertThat(plugin.getProcessor().getAmount()).isEqualTo(amount);
+            for (int block = 0; block < 100; block++) {
+                plugin.setAutomatableParameter(2, amount);
+                signalPath.process(audio, audio, 16);
+                assertThat(plugin.getProcessor().getAmount()).isEqualTo(amount);
+            }
+        }
     }
 
     private static PluginContext stubContext() {

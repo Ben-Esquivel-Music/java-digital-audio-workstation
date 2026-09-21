@@ -24,9 +24,11 @@ class TruePeakLimiterProcessorRegressionTest {
     }
 
     @Test
-    @DspRegression(testSignal = "sine-sweep", preset = DspRegressionPreset.DEFAULT)
-    @DspRegression(testSignal = "sine-sweep", preset = DspRegressionPreset.AGGRESSIVE)
-    @DspRegression(testSignal = "sine-sweep", preset = DspRegressionPreset.SUBTLE)
+    // These existing goldens include the leading lookahead delay. Keep testing
+    // the same raw DSP samples; LivePluginDelayCompensationTest checks alignment.
+    @DspRegression(testSignal = "sine-sweep", preset = DspRegressionPreset.DEFAULT, alignLatency = false)
+    @DspRegression(testSignal = "sine-sweep", preset = DspRegressionPreset.AGGRESSIVE, alignLatency = false)
+    @DspRegression(testSignal = "sine-sweep", preset = DspRegressionPreset.SUBTLE, alignLatency = false)
     void truePeakLimiter_sineSweep_allPresets() throws Exception {
         for (DspRegression spec : getClass()
                 .getDeclaredMethod("truePeakLimiter_sineSweep_allPresets")
