@@ -11,6 +11,8 @@ import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.plugin.TransientShaperPlugin;
 import com.benesquivelmusic.daw.core.plugin.ExciterPlugin;
+import com.benesquivelmusic.daw.core.plugin.ConvolutionReverbPlugin;
+import com.benesquivelmusic.daw.core.dsp.reverb.ImpulseResponseLibrary;
 import com.benesquivelmusic.daw.core.dsp.saturation.ExciterProcessor;
 import com.benesquivelmusic.daw.core.plugin.parameter.ParameterPreset;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
@@ -44,6 +46,7 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -171,6 +174,100 @@ class PluginEditorSignalPathTest {
         image.getPixelReader().getPixels(0, 0, width, height,
                 PixelFormat.getIntArgbInstance(), pixels, 0, width);
         return pixels;
+    }
+
+    @Test
+    void bundledIrSelectionRepaintsAfterInstallationWithoutAnotherGesture() throws Exception {
+        var plugin = new ConvolutionReverbPlugin();
+        plugin.initialize(context());
+        var channel = new MixerChannel("Reverb");
+        var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        channel.addInsert(slot);
+        var session = runOnFxThread(() -> PluginEditorSession.open(channel, slot, DEPS));
+        var stage = runOnFxThread(() -> {
+            var window = new Stage();
+            window.setScene(new Scene(new StackPane(session.frame()), 760, 440));
+            window.show();
+            return window;
+        });
+        try {
+            var canvas = runOnFxThread(() -> nodes(session.frame().getBody()).filter(Canvas.class::isInstance)
+                    .map(Canvas.class::cast).findFirst().orElseThrow());
+            var before = runOnFxThread(() -> {
+                int[] pixels = canvasPixels(canvas);
+                var selector = nodes(session.frame().getBody()).filter(ComboBox.class::isInstance)
+                        .map(ComboBox.class::cast).findFirst().orElseThrow();
+                selector.getSelectionModel().select(1);
+                assertThat(canvasPixels(canvas)).containsExactly(pixels);
+                assertThat(plugin.getProcessor().getIrSelection()).isZero();
+                return pixels;
+            });
+            slot.drainParametersToAudio();
+            plugin.getProcessor().awaitIrPreparation();
+            assertThat(plugin.getProcessor().getImpulseResponseSourceId())
+                    .isEqualTo(ImpulseResponseLibrary.ENTRIES.get(1).id());
+            awaitCanvasChange(canvas, before);
+        } finally {
+            runOnFxThread(() -> { session.dispose(); stage.close(); return null; });
+            plugin.dispose();
+        }
+    }
+
+    @Test
+    void irCacheTracksSameSizeReplacementsHiddenWindowsClearingAndDetach() throws Exception {
+        var plugin = new ConvolutionReverbPlugin();
+        plugin.initialize(context());
+        float[][] initial = {new float[520]};
+        initial[0][40] = 1;
+        plugin.getProcessor().setImpulseResponse(initial);
+        var channel = new MixerChannel("Reverb");
+        var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        channel.addInsert(slot);
+        var session = runOnFxThread(() -> PluginEditorSession.open(channel, slot, DEPS));
+        var stage = runOnFxThread(() -> {
+            var window = new Stage();
+            window.setScene(new Scene(new StackPane(session.frame()), 760, 440));
+            window.show();
+            return window;
+        });
+        try {
+            var canvas = runOnFxThread(() -> nodes(session.frame().getBody()).filter(Canvas.class::isInstance)
+                    .map(Canvas.class::cast).findFirst().orElseThrow());
+            int[] before = runOnFxThread(() -> canvasPixels(canvas));
+            float[][] replacement = {new float[520]};
+            replacement[0][400] = 1;
+            plugin.getProcessor().setImpulseResponse(replacement);
+            awaitCanvasChange(canvas, before);
+            int[] replaced = runOnFxThread(() -> { stage.hide(); return canvasPixels(canvas); });
+            plugin.getProcessor().setImpulseResponse(initial);
+            Thread.sleep(80);
+            runOnFxThread(() -> {
+                assertThat(canvasPixels(canvas)).containsExactly(replaced);
+                stage.show();
+                assertThat(canvasPixels(canvas)).containsExactly(before);
+                return null;
+            });
+            plugin.getProcessor().setImpulseResponse(null);
+            awaitCanvasChange(canvas, before);
+            int[] cleared = runOnFxThread(() -> { session.dispose(); return canvasPixels(canvas); });
+            plugin.getProcessor().setImpulseResponse(replacement);
+            Thread.sleep(80);
+            runOnFxThread(() -> {
+                assertThat(canvasPixels(canvas)).containsExactly(cleared);
+                return null;
+            });
+        } finally {
+            runOnFxThread(() -> { session.dispose(); stage.close(); return null; });
+            plugin.dispose();
+        }
+    }
+
+    private static void awaitCanvasChange(Canvas canvas, int[] previous) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (runOnFxThread(() -> Arrays.equals(canvasPixels(canvas), previous)) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(runOnFxThread(() -> canvasPixels(canvas))).isNotEqualTo(previous);
     }
 
     @Test

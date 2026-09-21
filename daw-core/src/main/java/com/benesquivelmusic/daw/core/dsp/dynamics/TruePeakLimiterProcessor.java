@@ -3,7 +3,7 @@ package com.benesquivelmusic.daw.core.dsp.dynamics;
 import com.benesquivelmusic.daw.core.dsp.GainReductionProvider;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
-import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.DynamicLatencyProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
 
 /**
@@ -54,7 +54,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
  * are best-effort and become visible to the audio thread eventually rather
  * than being guaranteed on the next buffer.</p>
  */
-public final class TruePeakLimiterProcessor implements AudioProcessor, GainReductionProvider {
+public final class TruePeakLimiterProcessor implements DynamicLatencyProcessor, GainReductionProvider {
 
     /** Allowed oversampling factors for true-peak detection. */
     public static final int[] OVERSAMPLE_STEPS = {2, 4, 8};
@@ -89,7 +89,7 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
     private double lookaheadMs   = 5.0;
     private int    isr           = 4;
     private double channelLink   = 1.0; // 0..1 (1 = fully linked)
-    private boolean bypass       = false;
+    private volatile boolean bypass = false;
 
     // ── Derived envelope coefficients ───────────────────────────────────────
     private double releaseCoeff;
@@ -98,7 +98,7 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
     private final float[][] delayLine;
     private final double[]  detectionLine; // max-true-peak per input frame
     private int writeIndex;
-    private int lookaheadSamples;
+    private volatile int lookaheadSamples;
 
     // ── Polyphase FIR detection state (per channel) ────────────────────────
     /** Polyphase coefficients laid out as {@code [phase][tap]}. */
@@ -488,6 +488,11 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
     /** Returns the lookahead (and PDC) reported in samples. */
     public int getLookaheadSamples() {
         return lookaheadSamples;
+    }
+
+    @Override
+    public int getLatencySamples() {
+        return bypass ? 0 : lookaheadSamples;
     }
 
     @ProcessorParam(id = 3, name = "ISR", min = 2.0, max = 8.0, defaultValue = 4.0)

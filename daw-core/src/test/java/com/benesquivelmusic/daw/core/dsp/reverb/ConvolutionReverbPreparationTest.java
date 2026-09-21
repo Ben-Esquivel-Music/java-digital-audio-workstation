@@ -28,6 +28,7 @@ class ConvolutionReverbPreparationTest {
         Path path = writeImpulseFile();
         try (var reverb = new ConvolutionReverbProcessor(1, 48_000, builder)) {
             reverb.setImpulseResponse(impulse(1_000));
+            long installedRevision = reverb.getImpulseResponseRevision();
             try (var stale = builder.blockNextBuild()) {
                 CompletableFuture<Void> loading = switch (mode) {
                     case "synchronous" -> CompletableFuture.runAsync(() -> reverb.setImpulseResponse(impulse(2_000)));
@@ -41,11 +42,13 @@ class ConvolutionReverbPreparationTest {
                     stale.close();
                     latest.awaitReady();
                     assertThat(reverb.getImpulseResponseLength()).isEqualTo(1_000);
+                    assertThat(reverb.getImpulseResponseRevision()).isEqualTo(installedRevision);
                     assertThat(reverb.getImpulseResponseSourceId()).isNull();
                     latest.close();
                     loading.get(10, TimeUnit.SECONDS);
                     reverb.awaitIrPreparation();
                     assertThat(reverb.getImpulseResponseLength()).isEqualTo(4_000);
+                    assertThat(reverb.getImpulseResponseRevision()).isGreaterThan(installedRevision);
                     assertThat(reverb.getImpulseResponseSourceId())
                             .isEqualTo(mode.equals("file") ? path.toString() : null);
                 }

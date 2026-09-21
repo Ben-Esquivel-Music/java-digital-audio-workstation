@@ -91,6 +91,7 @@ public final class RenderPipeline {
 
     /** Audio format describing channel count and sample rate. */
     private final AudioFormat format;
+    private boolean offlineAutomationPrepared;
 
     // Pre-allocated mix buffer. [channel][frame]
     private final float[][] mixBuffer;
@@ -773,7 +774,9 @@ public final class RenderPipeline {
 
             // Apply automation lane values to mixer channel parameters
             List<MixerChannel> mixerChannels = mixer.getChannels();
-            applyAutomation(tracks, trackCount, mixerChannels, transport, mixer);
+            if (!offlineAutomationPrepared) {
+                applyAutomation(tracks, trackCount, mixerChannels, transport, mixer);
+            }
 
             // Warn once if the mixer has more return buses than pre-allocated
             if (!returnBusCapWarningLogged
@@ -1679,14 +1682,29 @@ public final class RenderPipeline {
         while (framesRendered < totalFrames) {
             int framesThisBlock = Math.min(blockSize, totalFrames - framesRendered);
 
+            // Offline rendering can outrun the live latency watcher. Resolve
+            // this block's controls before computing its PDC render offset.
+            mixer.drainInsertParameters();
+            if (transport.getState() == TransportState.PLAYING
+                    || transport.getState() == TransportState.RECORDING) {
+                applyAutomation(tracks, Math.min(tracks.size(), maxTracks),
+                        mixer.getChannels(), transport, mixer);
+            }
+            mixer.getDelayCompensation().refreshLatencies();
+
             // Clear blockOut so master chain writes land on a zero scratch
             for (int ch = 0; ch < channels; ch++) {
                 Arrays.fill(blockOut[ch], 0, framesThisBlock, 0.0f);
             }
 
-            renderBlock(null, blockOut, framesThisBlock,
-                    transport, mixer, tracks, midiRenderer, masterChain,
-                    null, null);
+            offlineAutomationPrepared = true;
+            try {
+                renderBlock(null, blockOut, framesThisBlock,
+                        transport, mixer, tracks, midiRenderer, masterChain,
+                        null, null);
+            } finally {
+                offlineAutomationPrepared = false;
+            }
 
             for (int ch = 0; ch < channels; ch++) {
                 System.arraycopy(blockOut[ch], 0,

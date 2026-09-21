@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.DynamicLatencyProcessor;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 import java.util.*;
@@ -570,14 +571,38 @@ public final class EffectsChain {
      * @return total latency in sample frames, always &ge; 0
      */
     public int getTotalLatencySamples() {
-        if (bypassed || processors.isEmpty()) {
+        if (bypassed) {
             return 0;
         }
         int total = 0;
-        for (AudioProcessor processor : processors) {
-            total += processor.getLatencySamples();
+        for (Link link : snapshot.links()) {
+            total += link.processor().getLatencySamples();
         }
         return total;
+    }
+
+    /** Captures native/static latency on the control thread, never in the monitor. */
+    LatencySnapshot captureLatency() {
+        int fixed = 0;
+        var dynamic = new ArrayList<DynamicLatencyProcessor>();
+        for (Link link : snapshot.links()) {
+            AudioProcessor source = link.tag() instanceof InsertSlot slot ? slot.getProcessor() : link.processor();
+            if (source instanceof DynamicLatencyProcessor live) {
+                dynamic.add(live);
+            } else {
+                fixed += link.processor().getLatencySamples();
+            }
+        }
+        return new LatencySnapshot(this, fixed, List.copyOf(dynamic));
+    }
+
+    record LatencySnapshot(EffectsChain chain, int fixed, List<DynamicLatencyProcessor> dynamic) {
+        int samples() {
+            if (chain.isBypassed()) return 0;
+            int total = fixed;
+            for (DynamicLatencyProcessor processor : dynamic) total += processor.getLatencySamples();
+            return total;
+        }
     }
 
     /**

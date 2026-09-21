@@ -240,6 +240,7 @@ public final class DawProject {
 
     /** Releases every project-owned insert, including channels retained for undo. */
     public java.util.concurrent.CompletableFuture<Void> disposeInsertsWhenQuiescent() {
+        mixer.getDelayCompensation().close();
         var channels = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<MixerChannel, Boolean>());
         channels.addAll(trackChannelMap.values());
         channels.addAll(mixer.getOwnedChannels());

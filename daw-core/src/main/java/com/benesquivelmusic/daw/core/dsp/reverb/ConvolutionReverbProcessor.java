@@ -93,6 +93,7 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
     private volatile long irSelectionRevision;
     private final Runnable prepareParameterTask = this::prepareParameterChanges;
     private volatile long preparedParameterRevision;
+    private volatile long impulseResponseRevision;
     private volatile boolean closed;
     private int preparedIrIndex;
     private final Thread preparationWatcher;
@@ -263,6 +264,12 @@ public final class ConvolutionReverbProcessor implements AudioProcessor, AutoClo
         pristinePath = prepared.pristinePath();
         preparedIrIndex = prepared.irIndex();
         kernel.set(prepared.kernel());
+        impulseResponseRevision++;
+    }
+
+    /** Changes only after a prepared impulse response has actually been installed. */
+    public long getImpulseResponseRevision() {
+        return impulseResponseRevision;
     }
 
     /** Stops parameter preparation after the host has removed this processor from the graph. */

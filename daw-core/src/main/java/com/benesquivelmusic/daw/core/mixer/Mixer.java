@@ -420,6 +420,7 @@ public final class Mixer {
         }
         MixerChannel channel = channels.remove(fromIndex);
         channels.add(toIndex, channel);
+        recalculateDelayCompensation();
     }
 
     /**
