@@ -34,8 +34,8 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  * {@code Panel} contract: standard controls are themed by the host
  * stylesheet, canvas painting reads the resolved {@link Theme} tokens and
  * repaints on {@link EditorContext#themeProperty()} changes, and parameter
- * gestures write the processor <em>and</em> mirror into the host's
- * {@link PluginParameterStore}.
+ * gestures update the host's {@link PluginParameterStore}. The audio thread
+ * applies those writes to the processor at the next block boundary.
  */
 public final class ExciterEditor implements PluginEditorFactory.Panel {
 
@@ -192,8 +192,9 @@ public final class ExciterEditor implements PluginEditorFactory.Panel {
         g.strokeRect(0.5, 0.5, w - 1, h - 1);
 
         // Frequency axis label: 1×, 2×, ..., FFT_DISPLAY_HARMONICS×.
-        double[] mags = harmonicMagnitudes(processor.getMode());
-        double scale = (processor.getDrivePercent() / 100.0) * (processor.getMixPercent() / 100.0);
+        var mode = ExciterProcessor.Mode.values()[(int) Math.round(store.valueById(PARAM_MODE))];
+        double[] mags = harmonicMagnitudes(mode);
+        double scale = (store.valueById(PARAM_DRIVE) / 100.0) * (store.valueById(PARAM_MIX) / 100.0);
 
         double margin = 8.0;
         double barAreaW = w - 2 * margin;

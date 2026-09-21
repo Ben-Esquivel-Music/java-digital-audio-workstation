@@ -195,7 +195,7 @@ public final class PluginInstallPanel extends VBox {
                 ExternalPluginEntry entry = new ExternalPluginEntry(jar, manifest.pluginClass());
                 try {
                     prepared.add(new PreparedInstall(entry, ExternalPluginLoader.loadWithClassLoader(entry)));
-                } catch (PluginLoadException | RuntimeException | LinkageError failure) {
+                } catch (PluginLoadException | RuntimeException | Error failure) {
                     failures.add(manifest.pluginClass() + " — " + failure.getMessage());
                 }
             }

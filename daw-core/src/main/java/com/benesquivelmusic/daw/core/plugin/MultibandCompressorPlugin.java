@@ -51,12 +51,8 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     /** Minimum number of bands (per spec the multiband plugin supports 3–5 bands). */
     public static final int MIN_BAND_COUNT = 3;
 
-    /** Default crossover frequencies for each supported band count, in Hz. */
-    private static final double[][] DEFAULT_CROSSOVERS = {
-            /* 3 bands */ {250.0, 4000.0},
-            /* 4 bands */ {200.0, 2000.0, 8000.0},
-            /* 5 bands */ {120.0, 500.0, 2500.0, 8000.0}
-    };
+    /** Stable crossover controls; each band configuration uses the active prefix. */
+    private static final double[] DEFAULT_CROSSOVERS = {200.0, 2000.0, 8000.0, 16000.0};
 
     private static final PluginDescriptor DESCRIPTOR = new PluginDescriptor(
             PLUGIN_ID,
@@ -73,6 +69,7 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
             new MultibandCompressorProcessor[MAX_BAND_COUNT - MIN_BAND_COUNT + 1];
     private final double[] bandMakeup = new double[MAX_BAND_COUNT];
     private final boolean[] bandMuted = new boolean[MAX_BAND_COUNT];
+    private final double[] requestedCrossovers = new double[MAX_BAND_COUNT - 1];
     private final StableAudioProcessor stableProcessor = new StableAudioProcessor();
     private PluginContext context;
     private int bandCount = DEFAULT_BAND_COUNT;
@@ -90,9 +87,12 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     @Override
     public void initialize(PluginContext context) {
         this.context = Objects.requireNonNull(context, "context must not be null");
+        for (int index = 0; index < requestedCrossovers.length; index++) {
+            requestedCrossovers[index] = Math.min(DEFAULT_CROSSOVERS[index], maximumCrossoverFrequency());
+        }
         for (int index = 0; index < configurations.length; index++) {
             configurations[index] = new MultibandCompressorProcessor(context.getAudioChannels(),
-                    context.getSampleRate(), DEFAULT_CROSSOVERS[index]);
+                    context.getSampleRate(), Arrays.copyOf(requestedCrossovers, index + MIN_BAND_COUNT - 1));
         }
         rebuildProcessor();
     }
@@ -146,9 +146,10 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     }
 
     /**
-     * Sets the band count and rebuilds the underlying processor with the
-     * default crossover layout for that band count.  Per-band parameters are
-     * reset to their defaults.
+     * Selects a preallocated band configuration. Crossover controls and shared
+     * per-band parameters survive the change. The configuration uses the active
+     * prefix of the four crossover controls. Call between audio blocks or
+     * while processing is stopped.
      *
      * @param bandCount the desired band count, must be {@value #MIN_BAND_COUNT}
      *                  to {@value #MAX_BAND_COUNT}
@@ -227,23 +228,11 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
                 MIN_BAND_COUNT, MAX_BAND_COUNT, DEFAULT_BAND_COUNT));
         params.add(new PluginParameter(1, "Linear Phase Toggle", 0.0, 1.0, 0.0));
 
-        // Defaults align with the processor's actual initial state
-        // (DEFAULT_BAND_COUNT crossovers); slots beyond DEFAULT_BAND_COUNT - 1
-        // fall back to high-frequency placeholders so the schema is still
-        // valid for users who later up-shift the band count.
-        double[] defaultCrossovers = DEFAULT_CROSSOVERS[DEFAULT_BAND_COUNT - MIN_BAND_COUNT];
-        double[] fallbackCrossovers = DEFAULT_CROSSOVERS[MAX_BAND_COUNT - MIN_BAND_COUNT];
+        double maximum = maximumCrossoverFrequency();
         for (int i = 0; i < 4; i++) {
-            double def;
-            if (i < defaultCrossovers.length) {
-                def = defaultCrossovers[i];
-            } else if (i < fallbackCrossovers.length) {
-                def = fallbackCrossovers[i];
-            } else {
-                def = 16000.0;
-            }
             params.add(new PluginParameter(2 + i,
-                    "Crossover " + (i + 1) + " (Hz)", 20.0, 20000.0, def));
+                    "Crossover " + (i + 1) + " (Hz)", 20.0, maximum,
+                    Math.min(DEFAULT_CROSSOVERS[i], maximum)));
         }
 
         int base = 6;
@@ -277,9 +266,8 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     /**
      * Returns the automatable parameter subset.
      *
-     * <p>{@code Band Count} (id {@code 0}) is intentionally excluded: changing
-     * it rebuilds the underlying processor (an allocating, non-RT-safe
-     * operation) and is therefore not safe to drive from an automation lane.
+     * <p>{@code Band Count} (id {@code 0}) is a structural editor control and
+     * is intentionally excluded from automation lanes.
      * All other parameters — linear-phase preference, crossover frequencies
      * and per-band threshold / ratio / attack / release / makeup / bypass /
      * mute / solo — are RT-safe numeric setters and are exposed for
@@ -305,7 +293,10 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
      * underlying processor.
      *
      * <p>Implementation is real-time safe: each branch performs only a
-     * numeric setter call on already-allocated state.  Out-of-range band
+     * numeric setter call on already-allocated state. Crossovers recalculate
+     * their preallocated biquad coefficients and preserve filter history. Call
+     * on the audio thread between blocks, or while processing is stopped.
+     * Out-of-range band
      * indices (which can occur when automation lanes were authored against
      * a higher band count than the current configuration) are silently
      * ignored.</p>
@@ -314,6 +305,7 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
      * @param value       the new parameter value (already inside the declared range)
      */
     @Override
+    @RealTimeSafe
     public void setAutomatableParameter(int parameterId, double value) {
         if (processor == null) {
             return;
@@ -327,9 +319,14 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
             return;
         }
         if (parameterId >= 2 && parameterId <= 5) {
-            // Crossover frequencies are configured at construction time on
-            // the current processor; live crossover automation is out of
-            // scope (would require a processor-level setter).  No-op.
+            if (!Double.isFinite(value)) {
+                return;
+            }
+            int index = parameterId - 2;
+            requestedCrossovers[index] = Math.clamp(value, 20.0, maximumCrossoverFrequency());
+            if (index < processor.getBandCount() - 1) {
+                processor.setCrossoverFrequency(index, requestedCrossovers[index]);
+            }
             return;
         }
         int local = parameterId - 6;
@@ -361,12 +358,20 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
         }
     }
 
+    private double maximumCrossoverFrequency() {
+        // Leave a finite Nyquist margin so rounded coefficients do not place poles on the unit circle.
+        return context == null ? 20000.0 : Math.min(20000.0, context.getSampleRate() * 0.499);
+    }
+
     private void rebuildProcessor() {
         if (context == null) {
             return;
         }
         MultibandCompressorProcessor previous = processor;
         MultibandCompressorProcessor next = configurations[bandCount - MIN_BAND_COUNT];
+        for (int index = 0; index < next.getBandCount() - 1; index++) {
+            next.setCrossoverFrequency(index, requestedCrossovers[index]);
+        }
         if (previous != null && previous != next) {
             for (int band = 0; band < Math.min(previous.getBandCount(), next.getBandCount()); band++) {
                 CompressorProcessor source = previous.getBandCompressor(band);

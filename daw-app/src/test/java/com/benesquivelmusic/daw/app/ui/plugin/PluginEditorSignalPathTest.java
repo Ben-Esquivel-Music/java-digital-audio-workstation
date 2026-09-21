@@ -10,6 +10,8 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.plugin.TransientShaperPlugin;
+import com.benesquivelmusic.daw.core.plugin.ExciterPlugin;
+import com.benesquivelmusic.daw.core.dsp.saturation.ExciterProcessor;
 import com.benesquivelmusic.daw.core.plugin.parameter.ParameterPreset;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.editor.EditorHints;
@@ -24,7 +26,11 @@ import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.Slider;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.image.PixelFormat;
 import javafx.scene.control.ToggleButton;
 import javafx.scene.image.WritableImage;
 import javafx.scene.layout.StackPane;
@@ -110,6 +116,61 @@ class PluginEditorSignalPathTest {
             }
             return null;
         });
+    }
+
+    @Test
+    void exciterHarmonicsRedrawImmediatelyFromGesturesAndAbRecallBeforeAudioDrain() {
+        var plugin = new ExciterPlugin();
+        plugin.initialize(context());
+        var channel = new MixerChannel("Exciter");
+        var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        channel.addInsert(slot);
+        runOnFxThread(() -> {
+            var session = PluginEditorSession.open(channel, slot, DEPS);
+            try {
+                var sliders = nodes(session.frame().getBody()).filter(Slider.class::isInstance)
+                        .map(Slider.class::cast).toList();
+                var mode = nodes(session.frame().getBody()).filter(ComboBox.class::isInstance)
+                        .map(ComboBox.class::cast).findFirst().orElseThrow();
+                var canvas = nodes(session.frame().getBody()).filter(Canvas.class::isInstance)
+                        .map(Canvas.class::cast).findFirst().orElseThrow();
+                int[] initial = canvasPixels(canvas);
+                sliders.get(1).setValue(100);
+                int[] driven = canvasPixels(canvas);
+                assertThat(driven).isNotEqualTo(initial);
+                sliders.get(2).setValue(100);
+                int[] mixed = canvasPixels(canvas);
+                assertThat(mixed).isNotEqualTo(driven);
+                mode.getSelectionModel().select(ExciterProcessor.Mode.TRANSFORMER.ordinal());
+                int[] transformer = canvasPixels(canvas);
+                assertThat(transformer).isNotEqualTo(mixed);
+                assertThat(session.store().valueById(1)).isEqualTo(100);
+                assertThat(session.store().valueById(2)).isEqualTo(100);
+                assertThat(session.store().valueById(4)).isEqualTo(ExciterProcessor.Mode.TRANSFORMER.ordinal());
+                assertThat(plugin.getProcessor().getDrivePercent()).isEqualTo(25);
+                assertThat(plugin.getProcessor().getMixPercent()).isEqualTo(25);
+                assertThat(plugin.getProcessor().getMode()).isEqualTo(ExciterProcessor.Mode.CLASS_A_TUBE);
+
+                session.frame().getOnAbToggleRequested().run();
+                assertThat(canvasPixels(canvas)).containsExactly(initial);
+                session.frame().getOnAbToggleRequested().run();
+                assertThat(canvasPixels(canvas)).containsExactly(transformer);
+            } finally {
+                session.dispose();
+                plugin.dispose();
+            }
+            return null;
+        });
+    }
+
+    private static int[] canvasPixels(Canvas canvas) {
+        var image = canvas.snapshot(null, null);
+        int width = (int) image.getWidth();
+        int height = (int) image.getHeight();
+        int[] pixels = new int[width * height];
+        image.getPixelReader().getPixels(0, 0, width, height,
+                PixelFormat.getIntArgbInstance(), pixels, 0, width);
+        return pixels;
     }
 
     @Test

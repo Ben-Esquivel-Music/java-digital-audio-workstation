@@ -258,15 +258,22 @@ final class PluginSignalPathActivationTest {
 
     @Test
     void editorProductionEntryPointsAreSlotBoundAndRawLegacyChromeIsGone() throws Exception {
-        Path source = Path.of("src/main/java/com/benesquivelmusic/daw/app/ui");
-        String controllerSource = Files.readString(source.resolve("PluginViewController.java"));
-        String rackSource = Files.readString(source.resolve("InsertEffectRack.java"));
+        Path source = SourceScanSupport.locateDawAppModule()
+                .resolve("src/main/java/com/benesquivelmusic/daw/app/ui");
+        assertThat(source).isDirectory();
+        String controllerSource = productionSource(source.resolve("PluginViewController.java"));
+        String rackSource = productionSource(source.resolve("InsertEffectRack.java"));
         assertThat(controllerSource).doesNotContain("builtInPluginCache", "initializedExternalPlugins",
                 "routesToMasteringView", "openEditor(DawPlugin");
         assertThat(controllerSource).contains("PluginEditorSession.open(channel, slot,");
         assertThat(rackSource).doesNotContain("new PluginParameterEditorPanel", "new Scene(editor,");
         assertThat(rackSource).contains("channel, slot, new", "stage.initOwner(",
                 "ThemeManager.getDefault().applyTo(stage.getScene())");
+    }
+
+    private static String productionSource(Path source) throws java.io.IOException {
+        return SourceScanSupport.stripStringLiterals(
+                SourceScanSupport.stripComments(Files.readString(source)));
     }
 
     static final class ExternalFixture implements DawPlugin, AudioProcessor {

@@ -1,13 +1,18 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.dsp.MultibandCompressorProcessor;
+import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import org.junit.jupiter.api.Test;
 
+import java.lang.management.ManagementFactory;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class MultibandCompressorPluginTest {
 
@@ -247,9 +252,168 @@ class MultibandCompressorPluginTest {
         }
     }
 
+    @Test
+    void queuedCrossoverRecallReachesLiveFiltersWithoutLosingOtherBandState() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+        try {
+            var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+            var store = slot.getParameterStore();
+            var processor = plugin.getProcessor();
+            var compressor = processor.getBandCompressor(0);
+            plugin.setAutomatableParameter(6, -33);
+            plugin.setAutomatableParameter(10, 6);
+            plugin.setAutomatableParameter(11, 1);
+            plugin.setAutomatableParameter(13, 1);
+            // The low cutoff crosses the previous middle cutoff during this recall.
+            store.writeFromUiById(2, 2200);
+            store.writeFromUiById(2, 3000);
+            store.writeFromUiById(3, 6000);
+            store.writeFromUiById(4, 12000);
+            store.writeFromUiById(5, 16000);
+            assertThat(processor.getCrossoverFrequencies()).containsExactly(200, 2000, 8000);
+            slot.drainParametersToAudio();
+            assertThat(processor.getCrossoverFrequencies()).containsExactly(3000, 6000, 12000);
+            assertThat(processor.getBandCompressor(0)).isSameAs(compressor);
+            assertThat(compressor.getThresholdDb()).isEqualTo(-33);
+            assertThat(processor.getBandMakeupGainDb(0)).isEqualTo(6);
+            assertThat(processor.isBandBypassed(0)).isTrue();
+            assertThat(processor.isBandSoloed(0)).isTrue();
+            store.writeFromUiById(0, 3);
+            slot.drainParametersToAudio();
+            store.writeFromUiById(0, 5);
+            slot.drainParametersToAudio();
+            assertThat(plugin.getProcessor().getCrossoverFrequencies()).containsExactly(3000, 6000, 12000, 16000);
+            assertThat(slot.isBypassed()).isFalse();
+        } finally {
+            plugin.dispose();
+        }
+    }
+
+    @Test
+    void bandCountOnlyEditSurvivesFullPresetRecallWithoutChangingCrossovers() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+        try {
+            var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+            var store = slot.getParameterStore();
+            store.writeFromUiById(0, 5);
+            slot.drainParametersToAudio();
+            double[] before = plugin.getProcessor().getCrossoverFrequencies();
+            for (int index = 0; index < store.parameterCount(); index++) {
+                store.writeFromUi(index, store.value(index));
+            }
+            slot.drainParametersToAudio();
+            assertThat(plugin.getProcessor().getCrossoverFrequencies())
+                    .containsExactly(before).containsExactly(200, 2000, 8000, 16000);
+        } finally {
+            plugin.dispose();
+        }
+    }
+
+    @Test
+    void slotCrossoverEditChangesTheActualSoloedBandResponse() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+        try {
+            var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+            var store = slot.getParameterStore();
+            store.writeFromUiById(11, 1);
+            store.writeFromUiById(13, 1);
+            slot.drainParametersToAudio();
+            double before = steadyToneRms(slot, 44100, 1000);
+            store.writeFromUiById(2, 1500);
+            slot.drainParametersToAudio();
+            double after = steadyToneRms(slot, 44100, 1000);
+            assertThat(after).isGreaterThan(before * 100);
+            assertThat(plugin.getProcessor().getMeteringData().crossoverFrequencies()).startsWith(1500);
+        } finally {
+            plugin.dispose();
+        }
+    }
+
+    @Test
+    void crossoverRangeStaysBelowNyquistAndMatchesTheStoreAtLowerSampleRates() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(context(32000));
+        try {
+            var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+            slot.getParameterStore().writeFromUiById(4, 20000);
+            slot.drainParametersToAudio();
+            double frequency = plugin.getProcessor().getCrossoverFrequencies()[2];
+            assertThat(frequency).isEqualTo(slot.getParameterStore().valueById(4)).isLessThan(16000);
+            assertThat(steadyToneRms(slot, 32000, 15000)).isFinite().isLessThan(1);
+        } finally {
+            plugin.dispose();
+        }
+    }
+
+    @Test
+    void crossoverWritesAndStoreDrainAllocateNothingAfterWarmup() {
+        var bean = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        assumeTrue(bean.isThreadAllocatedMemorySupported());
+        bean.setThreadAllocatedMemoryEnabled(true);
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+        plugin.setBandCount(5);
+        try {
+            var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+            // Warm the counter calls and exact measured loop as well as the parameter setters.
+            for (int batch = 0; batch < 5; batch++) {
+                measureCrossoverAllocations(slot, bean);
+            }
+            long allocated = measureCrossoverAllocations(slot, bean);
+            assertThat(allocated).isZero();
+        } finally {
+            plugin.dispose();
+        }
+    }
+
+    private static long measureCrossoverAllocations(InsertSlot slot, com.sun.management.ThreadMXBean bean) {
+        long thread = Thread.currentThread().threadId();
+        long before = bean.getThreadAllocatedBytes(thread);
+        updateCrossovers(slot, 10000);
+        return bean.getThreadAllocatedBytes(thread) - before;
+    }
+
+    private static void updateCrossovers(InsertSlot slot, int iterations) {
+        var store = slot.getParameterStore();
+        for (int iteration = 0; iteration < iterations; iteration++) {
+            for (int index = 2; index <= 5; index++) {
+                store.writeFromUi(index, index * 2000.0 + iteration % 100);
+            }
+            slot.drainParametersToAudio();
+        }
+    }
+
+    private static double steadyToneRms(InsertSlot slot, double sampleRate, double frequency) {
+        int frames = 512;
+        var input = new float[2][frames];
+        var output = new float[2][frames];
+        double sum = 0;
+        for (int block = 0; block < 32; block++) {
+            for (int frame = 0; frame < frames; frame++) {
+                float value = (float) (0.5 * Math.sin(2 * Math.PI * frequency * (block * frames + frame) / sampleRate));
+                input[0][frame] = value;
+                input[1][frame] = value;
+            }
+            slot.getProcessor().process(input, output, frames);
+            if (block == 31) {
+                for (float sample : output[0]) {
+                    sum += sample * sample;
+                }
+            }
+        }
+        return Math.sqrt(sum / frames);
+    }
+
     private static PluginContext stubContext() {
+        return context(44100);
+    }
+
+    private static PluginContext context(double sampleRate) {
         return new PluginContext() {
-            @Override public double getSampleRate() { return 44100; }
+            @Override public double getSampleRate() { return sampleRate; }
             @Override public int getBufferSize() { return 512; }
             @Override public void log(String message) {}
         };

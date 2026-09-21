@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.visualization.MultibandCompressorData;
 
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLongArray;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
@@ -45,7 +46,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
     private final int channels;
     private final double sampleRate;
     private final int bandCount;
-    private final double[] crossoverFrequencies;
+    private final AtomicLongArray crossoverFrequencies;
 
     // Per-channel crossover filters: [crossoverIndex][channelIndex]
     private final CrossoverFilter[][] crossovers;
@@ -110,7 +111,10 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
 
         this.channels = channels;
         this.sampleRate = sampleRate;
-        this.crossoverFrequencies = crossoverFrequencies.clone();
+        this.crossoverFrequencies = new AtomicLongArray(crossoverFrequencies.length);
+        for (int index = 0; index < crossoverFrequencies.length; index++) {
+            this.crossoverFrequencies.set(index, Double.doubleToRawLongBits(crossoverFrequencies[index]));
+        }
         this.bandCount = crossoverFrequencies.length + 1;
 
         // Create crossover filters: one per crossover point per channel
@@ -204,7 +208,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
      * high band.</p>
      */
     private void splitBands(float[][] inputBuffer, int numFrames) {
-        int numCrossovers = crossoverFrequencies.length;
+        int numCrossovers = crossoverFrequencies.length();
 
         if (numCrossovers == 1) {
             // 2-band: single split
@@ -277,7 +281,32 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
      * @return crossover frequencies in Hz
      */
     public double[] getCrossoverFrequencies() {
-        return crossoverFrequencies.clone();
+        double[] frequencies = new double[crossoverFrequencies.length()];
+        for (int index = 0; index < frequencies.length; index++) {
+            frequencies[index] = Double.longBitsToDouble(crossoverFrequencies.get(index));
+        }
+        return frequencies;
+    }
+
+    /**
+     * Retunes one crossover without allocating filters or resetting dynamics or
+     * filter history. Call on the audio thread between blocks, or when stopped.
+     * Unlike the initial layout, automated cutoffs can cross: each still splits
+     * the preceding crossover's high-frequency residual. Keeping the requested
+     * cutoff independent of its neighbors makes preset recall order-independent.
+     *
+     * @param index the crossover index, from zero to {@code getBandCount() - 2}
+     * @param frequency the finite, positive cutoff below Nyquist, in Hz
+     */
+    @RealTimeSafe
+    public void setCrossoverFrequency(int index, double frequency) {
+        if (Double.longBitsToDouble(crossoverFrequencies.get(index)) == frequency) {
+            return;
+        }
+        for (int channel = 0; channel < channels; channel++) {
+            crossovers[index][channel].setFrequency(frequency);
+        }
+        crossoverFrequencies.set(index, Double.doubleToRawLongBits(frequency));
     }
 
     /**
@@ -388,7 +417,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
         for (int band = 0; band < bandCount; band++) {
             gainReductions[band] = bandCompressors[band].getGainReductionDb();
         }
-        return new MultibandCompressorData(gainReductions, crossoverFrequencies.clone(), bandCount);
+        return new MultibandCompressorData(gainReductions, getCrossoverFrequencies(), bandCount);
     }
 
     // --- AudioProcessor ---
