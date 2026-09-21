@@ -94,6 +94,7 @@ public final class EffectsChain {
     private volatile Snapshot snapshot = new Snapshot(NO_LINKS, null, null);
     private volatile long renderStarted;
     private volatile long renderFinished;
+    private volatile boolean retired;
     private int renderDepth;
     private static final IllegalStateException UNPREPARED = new IllegalStateException("Prepare effects-chain buffers before rendering");
 
@@ -387,6 +388,10 @@ public final class EffectsChain {
                         TapSnapshot taps) {
         enterRender();
         try {
+            if (retired) {
+                copyBuffer(inputBuffer, outputBuffer, numFrames);
+                return;
+            }
             Snapshot captured = snapshot;
             drainParameters(captured.links());
             processSnapshot(captured, inputBuffer, outputBuffer, numFrames, taps, null);
@@ -419,6 +424,10 @@ public final class EffectsChain {
         }
         enterRender();
         try {
+            if (retired) {
+                copyBuffer(inputBuffer, outputBuffer, numFrames);
+                return;
+            }
             Snapshot captured = snapshot;
             prepareOfflineParameters(captured.links());
             int blockFrames = Math.min(numFrames,
@@ -503,6 +512,10 @@ public final class EffectsChain {
                                      TapSnapshot taps, SidechainInputResolver resolver) {
         enterRender();
         try {
+            if (retired) {
+                copyBuffer(input, output, frames);
+                return;
+            }
             Snapshot captured = snapshot;
             drainParameters(captured.links());
             processSnapshot(captured, input, output, frames, taps, resolver);
@@ -527,6 +540,16 @@ public final class EffectsChain {
             } else if (link.processor() instanceof PreparedParameterProcessor prepared) {
                 prepared.awaitParameterPreparation();
             }
+        }
+    }
+
+    /** Resolves pending DSP before offline latency calculation and rendering. */
+    public void prepareParametersForOfflineRendering() {
+        enterRender();
+        try {
+            if (!retired) prepareOfflineParameters(snapshot.links());
+        } finally {
+            leaveRender();
         }
     }
 
@@ -647,6 +670,10 @@ public final class EffectsChain {
                               TapSnapshot taps) {
         enterRender();
         try {
+            if (retired) {
+                copyBufferDouble(inputBuffer, outputBuffer, numFrames);
+                return;
+            }
             processDoubleSnapshot(inputBuffer, outputBuffer, numFrames, taps);
         } finally {
             leaveRender();
@@ -732,6 +759,9 @@ public final class EffectsChain {
 
     /** Removes the graph first, then closes resources after every old render has left. */
     public java.util.concurrent.CompletableFuture<Void> retireAll(Runnable disposal) {
+        // Publish before reading the generation: later consumers must not use
+        // cached processor bindings, even if they retained the old channel.
+        retired = true;
         replaceAll(List.of(), List.of());
         long retirementGeneration = renderStarted;
         var completion = new java.util.concurrent.CompletableFuture<Void>();
@@ -758,6 +788,9 @@ public final class EffectsChain {
      */
     @RealTimeSafe public void enterRender() { if (renderDepth++ == 0) { renderStarted++; } }
     @RealTimeSafe public void leaveRender() { if (--renderDepth == 0) { renderFinished = renderStarted; } }
+
+    /** Check only after entering the render guard when accessing cached processors. */
+    @RealTimeSafe public boolean isRetired() { return retired; }
 
     private static void copyBuffer(float[][] src, float[][] dst, int numFrames) {
         int channels = Math.min(src.length, dst.length);

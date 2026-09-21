@@ -178,6 +178,16 @@ public final class InsertSlot {
         return parameterBinding.store();
     }
 
+    /** Captures persistent id-keyed state, including editor changes awaiting a render callback. */
+    public java.util.Map<Integer, Double> snapshotParameterValues() {
+        var pending = getParameterStore().snapshotPendingUiValues();
+        var values = new java.util.LinkedHashMap<>(
+                effectType == null ? ReflectiveParameterRegistry.getParameterValues(processor)
+                        : InsertEffectFactory.getParameterValues(effectType, processor));
+        values.putAll(pending);
+        return values;
+    }
+
     @RealTimeSafe
     public void drainParametersToAudio() {
         if (parameterFaulted) { return; }

@@ -74,6 +74,7 @@ public final class PluginParameterStore {
     private final AtomicLongArray values;
     private final AtomicLongArray uiToAudio;
     private final AtomicLongArray audioToUi;
+    private final AtomicLongArray audioApplied;
     private final long[] uiGeneration;
     private final long[] audioGeneration;
     private final long[] audioSeen;
@@ -107,6 +108,7 @@ public final class PluginParameterStore {
         }
         this.uiToAudio = new AtomicLongArray(n);
         this.audioToUi = new AtomicLongArray(n);
+        this.audioApplied = new AtomicLongArray(n);
         this.uiGeneration = new long[n];
         this.audioGeneration = new long[n];
         this.audioSeen = new long[n];
@@ -238,7 +240,34 @@ public final class PluginParameterStore {
      */
     @RealTimeSafe
     public int drainToAudio(IndexConsumer sink) {
-        return drain(uiToAudio, audioSeen, sink);
+        int count = 0;
+        for (int index = 0; index < audioSeen.length; index++) {
+            long generation = uiToAudio.get(index);
+            if (generation != audioSeen[index]) {
+                audioSeen[index] = generation;
+                sink.accept(index);
+                audioApplied.set(index, generation);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Captures editor values whose setters have not completed, without consuming
+     * them. Persistence callers capture this before reading processor getters,
+     * then overlay it on that snapshot. Values already applied remain owned by
+     * the processor, preserving automation and legacy direct-setter callers.
+     * This allocating method is for the control thread, never the audio thread.
+     */
+    public Map<Integer, Double> snapshotPendingUiValues() {
+        Map<Integer, Double> pending = new HashMap<>();
+        for (int index = 0; index < parameters.length; index++) {
+            if (uiToAudio.get(index) != audioApplied.get(index)) {
+                pending.put(parameterIds[index], value(index));
+            }
+        }
+        return pending;
     }
 
     /**

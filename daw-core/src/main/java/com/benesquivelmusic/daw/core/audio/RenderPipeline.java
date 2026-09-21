@@ -1690,6 +1690,14 @@ public final class RenderPipeline {
                 applyAutomation(tracks, Math.min(tracks.size(), maxTracks),
                         mixer.getChannels(), transport, mixer);
             }
+            for (MixerChannel channel : mixer.getChannels()) {
+                channel.prepareInsertParametersForOfflineRendering();
+            }
+            for (MixerChannel channel : mixer.getReturnBuses()) {
+                channel.prepareInsertParametersForOfflineRendering();
+            }
+            mixer.getMasterChannel().prepareInsertParametersForOfflineRendering();
+            masterChain.prepareParametersForOfflineRendering();
             mixer.getDelayCompensation().refreshLatencies();
 
             // Clear blockOut so master chain writes land on a zero scratch
@@ -2418,6 +2426,19 @@ public final class RenderPipeline {
     private void applyPluginParameterAutomation(AutomationData automation,
                                                 MixerChannel channel,
                                                 double currentBeat) {
+        EffectsChain chain = channel.getEffectsChain();
+        chain.enterRender();
+        try {
+            if (!chain.isRetired()) applyActivePluginParameterAutomation(automation, channel, currentBeat);
+        } finally {
+            chain.leaveRender();
+        }
+    }
+
+    @RealTimeSafe
+    private void applyActivePluginParameterAutomation(AutomationData automation,
+                                                      MixerChannel channel,
+                                                      double currentBeat) {
         Map<PluginParameterTarget, ?> pluginLanes = automation.getPluginLanes();
         if (pluginLanes.isEmpty()) {
             return;

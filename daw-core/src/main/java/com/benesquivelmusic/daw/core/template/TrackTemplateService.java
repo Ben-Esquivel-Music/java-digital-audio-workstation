@@ -124,7 +124,7 @@ public final class TrackTemplateService {
             if (type == null || type == InsertEffectType.CLAP_PLUGIN) {
                 continue; // unsupported for templates/presets
             }
-            Map<Integer, Double> params = InsertEffectFactory.getParameterValues(type, slot.getProcessor());
+            Map<Integer, Double> params = slot.snapshotParameterValues();
             insertSpecs.add(new InsertEffectSpec(type, params, slot.isBypassed()));
         }
 

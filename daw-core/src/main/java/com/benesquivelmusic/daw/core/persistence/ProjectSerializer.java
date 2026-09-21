@@ -517,7 +517,8 @@ public final class ProjectSerializer {
                         // renumbering and keeps save/load working automatically
                         // when new @ProcessorParam fields are added.
                         Map<String, Double> named =
-                                ReflectivePresetSerializer.snapshot(slot.getProcessor());
+                                ReflectivePresetSerializer.snapshot(slot.getProcessor(),
+                                        slot.getParameterStore().snapshotPendingUiValues());
                         for (Map.Entry<String, Double> entry : named.entrySet()) {
                             Element paramElem = document.createElement("parameter");
                             paramElem.setAttribute("name", entry.getKey());
@@ -529,7 +530,7 @@ public final class ProjectSerializer {
                         // @ProcessorParam annotations: preserve the legacy
                         // id-keyed serialization.
                         Map<Integer, Double> paramValues =
-                                InsertEffectFactory.getParameterValues(effectType, slot.getProcessor());
+                                slot.snapshotParameterValues();
                         for (Map.Entry<Integer, Double> entry : paramValues.entrySet()) {
                             Element paramElem = document.createElement("parameter");
                             paramElem.setAttribute("id", String.valueOf(entry.getKey()));

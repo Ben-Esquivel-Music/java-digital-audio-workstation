@@ -14,6 +14,31 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class PluginParameterStoreCoalescingTest {
     @Test
+    void persistenceRetainsWritesUntilTheProcessorSetterHasCompleted() throws Exception {
+        var store = new PluginParameterStore(java.util.List.of(new PluginParameter(7, "Gain", 0, 1, 1)));
+        store.writeFromUi(0, 0.25);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var draining = java.util.concurrent.CompletableFuture.runAsync(() -> store.drainToAudio(index -> {
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("setter timed out");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        }));
+        try {
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(store.snapshotPendingUiValues()).containsEntry(7, 0.25);
+        } finally {
+            release.countDown();
+            draining.get(5, TimeUnit.SECONDS);
+        }
+        assertThat(store.snapshotPendingUiValues()).isEmpty();
+    }
+
+    @Test
     void burstWritesRetainEveryFinalParameterWithoutOverflow() {
         var parameters = IntStream.range(0, 300)
                 .mapToObj(id -> new PluginParameter(id, "Parameter " + id, 0, 100_000, 0)).toList();

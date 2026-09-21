@@ -57,6 +57,11 @@ public final class ReflectivePresetSerializer {
      * @throws NullPointerException if {@code processor} is {@code null}
      */
     public static Map<String, Double> snapshot(AudioProcessor processor) {
+        return snapshot(processor, Map.of());
+    }
+
+    /** Snapshots name-keyed state with previously captured, unapplied editor values. */
+    public static Map<String, Double> snapshot(AudioProcessor processor, Map<Integer, Double> pendingValues) {
         if (processor == null) {
             throw new NullPointerException("processor must not be null");
         }
@@ -64,7 +69,8 @@ public final class ReflectivePresetSerializer {
         Map<String, Double> values = new LinkedHashMap<>(params.size() * 2);
         for (PresetParam p : params) {
             try {
-                double v = (double) p.getter.invoke(processor);
+                Double pending = pendingValues.get(p.id);
+                double v = pending != null ? pending : (double) p.getter.invoke(processor);
                 values.put(p.name, v);
             } catch (Throwable t) {
                 throw new IllegalStateException(
@@ -241,7 +247,7 @@ public final class ReflectivePresetSerializer {
                         "Cannot access accessor methods for @ProcessorParam on "
                                 + processorClass.getSimpleName(), e);
             }
-            params.add(new PresetParam(ann.name(), ann.min(), ann.max(),
+            params.add(new PresetParam(ann.id(), ann.name(), ann.min(), ann.max(),
                     getterHandle, setterHandle));
         }
         params.sort(Comparator.comparing(p -> p.name));
@@ -307,14 +313,16 @@ public final class ReflectivePresetSerializer {
      * pre-bound {@link MethodHandle}s to the getter and setter.
      */
     private static final class PresetParam {
+        final int id;
         final String name;
         final double min;
         final double max;
         final MethodHandle getter;
         final MethodHandle setter;
 
-        PresetParam(String name, double min, double max,
+        PresetParam(int id, String name, double min, double max,
                     MethodHandle getter, MethodHandle setter) {
+            this.id = id;
             this.name = name;
             this.min = min;
             this.max = max;

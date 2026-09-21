@@ -559,9 +559,23 @@ public final class MixerChannel {
     public void drainInsertParameters() {
         effectsChain.enterRender();
         try {
+            if (effectsChain.isRetired()) return;
             List<InsertSlot> slots = insertSnapshot;
             for (int i = 0; i < slots.size(); i++) {
                 slots.get(i).drainParametersToAudio();
+            }
+        } finally {
+            effectsChain.leaveRender();
+        }
+    }
+
+    /** Called by the offline renderer before it captures delay compensation. */
+    public void prepareInsertParametersForOfflineRendering() {
+        effectsChain.enterRender();
+        try {
+            if (effectsChain.isRetired()) return;
+            for (InsertSlot slot : insertSnapshot) {
+                slot.prepareParametersForOfflineRendering();
             }
         } finally {
             effectsChain.leaveRender();

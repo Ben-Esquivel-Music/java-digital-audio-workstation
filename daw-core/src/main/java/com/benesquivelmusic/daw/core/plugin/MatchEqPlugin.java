@@ -2,7 +2,9 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.core.audioimport.AudioReadResult;
 import com.benesquivelmusic.daw.core.audioimport.ReferenceFileLoader;
+import com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor;
 import com.benesquivelmusic.daw.core.dsp.eq.MatchEqProcessor;
+import com.benesquivelmusic.daw.sdk.audio.DynamicLatencyProcessor;
 import com.benesquivelmusic.daw.core.export.SampleRateConverter;
 import com.benesquivelmusic.daw.core.plugin.editor.MatchEqEditor;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
@@ -20,7 +22,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.locks.LockSupport;
 
 /**
  * Built-in spectrum-matched ("match EQ") effect plugin.
@@ -57,20 +58,12 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     private static final MatchEqProcessor.PhaseMode[] PHASE_MODES = MatchEqProcessor.PhaseMode.values();
     private volatile MatchEqProcessor processor;
     private final AudioProcessor signalPath = new MatchSignalPath();
-    // Automation has one render-thread writer; the preparation worker only reads it.
-    private volatile long requestedRevision;
-    // Only the preparation worker publishes. Rendering never clears the mailbox,
-    // so accepting one result cannot erase a newer concurrent publication.
-    private volatile PreparedMatch prepared;
+    private ProgressiveDspPreparation<MatchEqProcessor> preparation;
     private volatile int fftSizeIndex = MatchEqProcessor.FftSize.SIZE_2048.ordinal();
     private volatile int smoothingIndex = MatchEqProcessor.Smoothing.THIRD_OCTAVE.ordinal();
     private volatile double amount = 1.0;
     private volatile int phaseIndex = MatchEqProcessor.PhaseMode.MINIMUM_PHASE.ordinal();
-    private volatile boolean preparing;
-    private Thread preparationThread;
     private boolean active;
-
-    private record PreparedMatch(long revision, MatchEqProcessor processor) { }
 
     public MatchEqPlugin() {
     }
@@ -84,9 +77,8 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
         processor = new MatchEqProcessor(context.getAudioChannels(), context.getSampleRate());
-        preparing = true;
-        // Virtual threads (JEP 444, final since Java 21) keep FFT/filter preparation off RT.
-        preparationThread = Thread.ofVirtual().name("match-eq-prepare").start(this::prepareMatches);
+        preparation = new ProgressiveDspPreparation<>(
+                () -> prepareMatch(processor), next -> processor = next);
     }
 
     @Override
@@ -105,9 +97,7 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     @Override
     public void dispose() {
         active = false;
-        preparing = false;
-        if (preparationThread != null) preparationThread.interrupt();
-        prepared = null;
+        if (preparation != null) preparation.close();
         processor = null;
     }
 
@@ -150,38 +140,41 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     public void setAutomatableParameter(int parameterId, double value) {
         if (!Double.isFinite(value)) return;
         switch (parameterId) {
-            case 0 -> fftSizeIndex = (int) Math.round(Math.clamp(value, 0.0, FFT_SIZES.length - 1.0));
-            case 1 -> smoothingIndex = (int) Math.round(Math.clamp(value, 0.0, SMOOTHING_MODES.length - 1.0));
-            case 2 -> amount = Math.clamp(value, 0.0, 1.0);
-            case 3 -> phaseIndex = (int) Math.round(Math.clamp(value, 0.0, PHASE_MODES.length - 1.0));
+            case 0 -> {
+                int next = (int) Math.round(Math.clamp(value, 0.0, FFT_SIZES.length - 1.0));
+                if (fftSizeIndex == next) return;
+                fftSizeIndex = next;
+            }
+            case 1 -> {
+                int next = (int) Math.round(Math.clamp(value, 0.0, SMOOTHING_MODES.length - 1.0));
+                if (smoothingIndex == next) return;
+                smoothingIndex = next;
+            }
+            case 2 -> {
+                double next = Math.clamp(value, 0.0, 1.0);
+                if (amount == next) return;
+                amount = next;
+            }
+            case 3 -> {
+                int next = (int) Math.round(Math.clamp(value, 0.0, PHASE_MODES.length - 1.0));
+                if (phaseIndex == next) return;
+                phaseIndex = next;
+            }
             default -> { return; }
         }
-        requestedRevision++;
-    }
-
-    private void prepareMatches() {
-        long completed = 0;
-        while (preparing) {
-            long revision = requestedRevision;
-            MatchEqProcessor current = processor;
-            if (current == null) return;
-            if (revision != completed) {
-                MatchEqProcessor next = prepareMatch(current);
-                if (preparing && revision == requestedRevision) {
-                    prepared = new PreparedMatch(revision, next);
-                }
-                completed = revision;
-            }
-            LockSupport.parkNanos(5_000_000L);
-        }
+        if (preparation != null) preparation.request();
     }
 
     private MatchEqProcessor prepareMatch(MatchEqProcessor current) {
+        var fftSize = FFT_SIZES[fftSizeIndex];
+        var smoothing = SMOOTHING_MODES[smoothingIndex];
+        double matchAmount = amount;
+        var phase = PHASE_MODES[phaseIndex];
         var next = new MatchEqProcessor(current.getChannelCount(), current.getSampleRate());
-        next.setFftSize(FFT_SIZES[fftSizeIndex]);
-        next.setSmoothing(SMOOTHING_MODES[smoothingIndex]);
-        next.setAmount(amount);
-        next.setPhaseMode(PHASE_MODES[phaseIndex]);
+        next.setFftSize(fftSize);
+        next.setSmoothing(smoothing);
+        next.setAmount(matchAmount);
+        next.setPhaseMode(phase);
         next.setFirOrder(current.getFirOrder());
         int bins = next.getFftSize().value() / 2 + 1;
         double[] source = remapSpectrum(current.getSourceSpectrum(), bins);
@@ -206,20 +199,26 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
         return remapped;
     }
 
-    private final class MatchSignalPath implements AudioProcessor {
+    private final class MatchSignalPath implements AudioProcessor, PreparedParameterProcessor, DynamicLatencyProcessor {
+        private boolean hostPreparesParameters;
+
+        @Override public void enableRealtimeParameterPreparation() { hostPreparesParameters = true; }
+        @Override @RealTimeSafe public void applyPreparedParameters() { if (preparation != null) preparation.apply(); }
+        @Override public void awaitParameterPreparation() { if (preparation != null) preparation.await(); }
+        @Override public void closeParameterPreparation() { if (preparation != null) preparation.close(); }
         @Override @RealTimeSafe
         public void process(float[][] input, float[][] output, int frames) {
-            PreparedMatch next = prepared;
-            if (next != null && next.revision() == requestedRevision && processor != next.processor()) {
-                processor = next.processor();
-            }
+            if (!hostPreparesParameters) applyPreparedParameters();
             MatchEqProcessor current = processor;
             if (current != null) current.process(input, output, frames);
         }
         @Override public void reset() { if (processor != null) processor.reset(); }
         @Override public int getInputChannelCount() { return processor == null ? 0 : processor.getChannelCount(); }
         @Override public int getOutputChannelCount() { return processor == null ? 0 : processor.getChannelCount(); }
-        @Override public int getLatencySamples() { return processor == null ? 0 : processor.getLatencySamples(); }
+        @Override public int getLatencySamples() {
+            MatchEqProcessor current = processor;
+            return current == null ? 0 : current.getLatencySamples();
+        }
     }
 
     /**
