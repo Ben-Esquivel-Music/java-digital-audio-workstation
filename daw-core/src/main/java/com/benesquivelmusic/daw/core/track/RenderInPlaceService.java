@@ -141,7 +141,7 @@ public final class RenderInPlaceService {
             EffectsChain chain = channel.getEffectsChain();
             if (chain != null && !chain.isEmpty() && !chain.isBypassed()) {
                 float[][] out = new float[channels][numFrames];
-                chain.process(rawAudio, out, numFrames);
+                chain.processOffline(rawAudio, out, numFrames);
                 processed = out;
             }
         }

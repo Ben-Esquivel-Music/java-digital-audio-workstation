@@ -80,6 +80,118 @@ final class PluginSignalPathActivationTest {
     }
 
     @Test
+    void builtInActivationFindsAnExistingSlotAfterSwitchingAndClosingEditorsInAFullRack() {
+        runOnFxThread(() -> {
+            var channel = new MixerChannel("Voice");
+            var controller = controller();
+            configure(controller, channel);
+            try {
+                controller.onActivateBuiltInPlugin(CompressorPlugin.class);
+                var compressor = channel.getInsertSlots().getFirst();
+                controller.onActivateBuiltInPlugin(ReverbPlugin.class);
+                while (channel.getInsertCount() < MixerChannel.MAX_INSERT_SLOTS) {
+                    channel.addInsert(InsertEffectFactory.createSlot(InsertEffectType.DELAY, 2, 48_000));
+                }
+                controller.onActivateBuiltInPlugin(CompressorPlugin.class);
+                assertThat(controller.activeEditorSessionForTest().store()).isSameAs(compressor.getParameterStore());
+                controller.activeEditorSessionForTest().frame().getOnCloseRequested().run();
+                assertThat(controller.activeEditorSessionForTest()).isNull();
+                controller.onActivateBuiltInPlugin(CompressorPlugin.class);
+                assertThat(controller.activeEditorSessionForTest().store()).isSameAs(compressor.getParameterStore());
+                assertThat(channel.getInsertCount()).isEqualTo(MixerChannel.MAX_INSERT_SLOTS);
+            } finally {
+                controller.dispose();
+                channel.disposeInsertsWhenQuiescent();
+            }
+            return null;
+        });
+    }
+
+    @Test
+    void externalActivationFindsAnExistingSlotAfterSwitchingAndClosingEditors() {
+        runOnFxThread(() -> {
+            var channel = new MixerChannel("External");
+            var controller = controller();
+            configure(controller, channel);
+            var plugin = new ExternalFixture();
+            var loads = new AtomicInteger();
+            controller.setExternalSlotLoader(requested -> () -> {
+                loads.incrementAndGet();
+                return InsertEffectFactory.createSlotFromPlugin(requested).orElseThrow();
+            });
+            try {
+                controller.onActivateExternalPlugin(plugin);
+                var slot = channel.getInsertSlots().getFirst();
+                controller.onActivateBuiltInPlugin(CompressorPlugin.class);
+                controller.onActivateExternalPlugin(new ExternalFixture());
+                assertThat(controller.activeEditorSessionForTest().store()).isSameAs(slot.getParameterStore());
+                controller.activeEditorSessionForTest().frame().getOnCloseRequested().run();
+                controller.onActivateExternalPlugin(new ExternalFixture());
+                assertThat(controller.activeEditorSessionForTest().store()).isSameAs(slot.getParameterStore());
+                assertThat(channel.getInsertCount()).isEqualTo(2);
+                assertThat(loads).hasValue(1);
+            } finally {
+                controller.dispose();
+                channel.disposeInsertsWhenQuiescent();
+            }
+            return null;
+        });
+    }
+
+    @Test
+    void builtInActivationMatchesRawEffectTypesWithoutMistakingExternalPluginsForThem() {
+        runOnFxThread(() -> {
+            var channel = new MixerChannel("Voice");
+            var controller = controller();
+            configure(controller, channel);
+            var external = new InsertSlot("Compressor",
+                    InsertEffectFactory.createProcessor(InsertEffectType.COMPRESSOR, 2, 48_000),
+                    InsertEffectType.COMPRESSOR, new ExternalFixture());
+            var raw = new InsertSlot("Renamed compressor",
+                    InsertEffectFactory.createProcessor(InsertEffectType.COMPRESSOR, 2, 48_000),
+                    InsertEffectType.COMPRESSOR);
+            channel.addInsert(external);
+            channel.addInsert(raw);
+            try {
+                controller.onActivateBuiltInPlugin(CompressorPlugin.class);
+                assertThat(channel.getInsertSlots()).containsExactly(external, raw);
+                assertThat(controller.activeEditorSessionForTest().store()).isSameAs(raw.getParameterStore());
+            } finally {
+                controller.dispose();
+                channel.disposeInsertsWhenQuiescent();
+            }
+            return null;
+        });
+    }
+
+    @Test
+    void aMatchingSlotInsertedDuringLoadingIsFocusedAndThePreparedDuplicateIsDisposed() {
+        runOnFxThread(() -> {
+            var channel = new MixerChannel("External");
+            var controller = controller();
+            configure(controller, channel);
+            var queued = new ArrayList<Runnable>();
+            controller.setActivationWorker(queued::add);
+            var preparedPlugin = new ExternalFixture();
+            var existing = InsertEffectFactory.createSlotFromPlugin(new ExternalFixture()).orElseThrow();
+            try {
+                controller.onActivateExternalPlugin(preparedPlugin);
+                channel.addInsert(existing);
+                queued.removeFirst().run();
+                assertThat(channel.getInsertSlots()).containsExactly(existing);
+                assertThat(controller.activeEditorSessionForTest().store()).isSameAs(existing.getParameterStore());
+                queued.removeFirst().run();
+                assertThat(preparedPlugin.disposed).isTrue();
+                assertThat(queued).isEmpty();
+            } finally {
+                controller.dispose();
+                channel.disposeInsertsWhenQuiescent();
+            }
+            return null;
+        });
+    }
+
+    @Test
     void theEngineMetronomeHasOneSlotAcrossChannelsAndPendingActivations() {
         runOnFxThread(() -> {
             var project = new com.benesquivelmusic.daw.core.project.DawProject("Metronome",

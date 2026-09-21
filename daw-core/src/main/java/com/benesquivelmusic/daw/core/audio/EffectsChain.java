@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor;
 import com.benesquivelmusic.daw.core.metering.InsertTapPair;
 import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
 import com.benesquivelmusic.daw.core.metering.SampleBlockRing;
@@ -51,6 +52,8 @@ import java.util.*;
  * block — in the middle of a bypass toggle or a reorder).</p>
  */
 public final class EffectsChain {
+
+    private static final int DEFAULT_OFFLINE_BLOCK_FRAMES = 256;
 
     @FunctionalInterface
     public interface SidechainInputResolver {
@@ -383,20 +386,70 @@ public final class EffectsChain {
                         TapSnapshot taps) {
         enterRender();
         try {
-            processSnapshot(inputBuffer, outputBuffer, numFrames, taps, null);
+            Snapshot captured = snapshot;
+            drainParameters(captured.links());
+            processSnapshot(captured, inputBuffer, outputBuffer, numFrames, taps, null);
+        } finally {
+            leaveRender();
+        }
+    }
+
+    /**
+     * Processes a complete offline render in bounded blocks using private scratch.
+     * Works before playback preparation and for renders larger than the live block
+     * size, without replacing the buffers published to the real-time renderer.
+     * Pending editor values are applied and their DSP preparation is awaited once
+     * before the first block; later editor writes remain queued for the next render.
+     * The caller must own the processors exclusively for the duration of this call,
+     * just as with {@link #process(float[][], float[][], int)}.
+     *
+     * @param inputBuffer input audio data {@code [channel][frame]}
+     * @param outputBuffer output audio data {@code [channel][frame]}
+     * @param numFrames number of frames in the offline render
+     */
+    public void processOffline(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        Objects.requireNonNull(inputBuffer, "inputBuffer must not be null");
+        Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
+        if (numFrames < 0) {
+            throw new IllegalArgumentException("numFrames must not be negative");
+        }
+        if (numFrames == 0) {
+            return;
+        }
+        enterRender();
+        try {
+            Snapshot captured = snapshot;
+            prepareOfflineParameters(captured.links());
+            int blockFrames = Math.min(numFrames,
+                    bufferFrames > 0 ? bufferFrames : DEFAULT_OFFLINE_BLOCK_FRAMES);
+            float[][] blockInput = new float[inputBuffer.length][blockFrames];
+            float[][] blockOutput = new float[outputBuffer.length][blockFrames];
+            float[][][] scratch = new float[Math.max(captured.links().length - 1, 0)]
+                    [outputBuffer.length][blockFrames];
+            Snapshot offline = new Snapshot(captured.links(), scratch, null);
+            for (int offset = 0; offset < numFrames;) {
+                int frames = Math.min(blockFrames, numFrames - offset);
+                for (int channel = 0; channel < inputBuffer.length; channel++) {
+                    System.arraycopy(inputBuffer[channel], offset, blockInput[channel], 0, frames);
+                }
+                clearBuffer(blockOutput, frames);
+                processSnapshot(offline, blockInput, blockOutput, frames, null, null);
+                for (int channel = 0; channel < outputBuffer.length; channel++) {
+                    System.arraycopy(blockOutput[channel], 0, outputBuffer[channel], offset, frames);
+                }
+                offset += frames;
+            }
         } finally {
             leaveRender();
         }
     }
 
     @RealTimeSafe
-    private void processSnapshot(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
+    private void processSnapshot(Snapshot captured, float[][] inputBuffer, float[][] outputBuffer, int numFrames,
                                  TapSnapshot taps, SidechainInputResolver sidechainResolver) {
-        Snapshot captured = snapshot;
         Link[] chain = captured.links();
         // Processor links and their scratch come from the same publication.
         float[][][] scratch = captured.floats();
-        drainParameters(chain);
         if (bypassed || chain.length == 0) {
             copyBuffer(inputBuffer, outputBuffer, numFrames);
             return;
@@ -449,7 +502,9 @@ public final class EffectsChain {
                                      TapSnapshot taps, SidechainInputResolver resolver) {
         enterRender();
         try {
-            processSnapshot(input, output, frames, taps, resolver);
+            Snapshot captured = snapshot;
+            drainParameters(captured.links());
+            processSnapshot(captured, input, output, frames, taps, resolver);
         } finally {
             leaveRender();
         }
@@ -460,6 +515,16 @@ public final class EffectsChain {
         for (int i = 0; i < chain.length; i++) {
             if (chain[i].tag() instanceof InsertSlot slot) {
                 slot.drainParametersToAudio();
+            }
+        }
+    }
+
+    private static void prepareOfflineParameters(Link[] chain) {
+        for (Link link : chain) {
+            if (link.tag() instanceof InsertSlot slot) {
+                slot.prepareParametersForOfflineRendering();
+            } else if (link.processor() instanceof PreparedParameterProcessor prepared) {
+                prepared.awaitParameterPreparation();
             }
         }
     }

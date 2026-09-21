@@ -53,6 +53,7 @@ public final class WaveshaperPlugin implements BuiltInDawPlugin {
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
         processor = new WaveshaperProcessor(context.getAudioChannels(), context.getSampleRate());
+        processor.enableFixedLatency();
     }
 
     @Override

@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
+import com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 
@@ -18,6 +20,86 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class EffectsChainTest {
+
+    @Test
+    void offlineRenderPreparesPendingParametersOnceAndDefersLaterEditorWrites() {
+        var processor = new OfflinePreparedGain();
+        var slot = new InsertSlot("Prepared gain", processor);
+        var chain = new EffectsChain();
+        chain.addProcessor(processor, slot);
+        chain.allocateIntermediateBuffers(1, 32);
+        slot.getParameterStore().writeFromUiById(1, 0.25);
+        processor.onFirstBlock = () -> slot.getParameterStore().writeFromUiById(1, 0.75);
+        var input = new float[1][1031];
+        var output = new float[1][1031];
+        Arrays.fill(input[0], 1f);
+
+        chain.processOffline(input, output, 1031);
+
+        assertThat(output[0]).containsOnly(0.25f);
+        assertThat(processor.preparations).isEqualTo(1);
+        assertThat(processor.getGain()).isEqualTo(0.25);
+        assertThat(slot.getParameterStore().valueById(1)).isEqualTo(0.75);
+        chain.process(new float[1][32], new float[1][32], 32);
+        assertThat(processor.getGain()).isEqualTo(0.75);
+        assertThat(processor.preparations).isEqualTo(1);
+    }
+
+    @Test
+    void offlineRenderingUsesBoundedPrivateScratchAndPreservesTheLivePreparation() {
+        var chain = new EffectsChain();
+        chain.addProcessor(new BoundedGainProcessor(0.5f, 32));
+        chain.addProcessor(new GainProcessor(0.5f));
+        chain.allocateIntermediateBuffers(1, 32);
+        var input = new float[1][1031];
+        var output = new float[1][1031];
+        Arrays.fill(input[0], 1f);
+
+        chain.processOffline(input, output, 1031);
+
+        assertThat(output[0]).containsOnly(0.25f);
+        assertThat(chain.intermediateBufferCount()).isEqualTo(1);
+        var liveInput = new float[1][32];
+        var liveOutput = new float[1][32];
+        Arrays.fill(liveInput[0], 0.5f);
+        chain.process(liveInput, liveOutput, 32);
+        assertThat(liveOutput[0]).containsOnly(0.125f);
+    }
+
+    @Test
+    void offlineSnapshotStaysAliveUntilTheLastBlockCompletes() throws Exception {
+        var chain = new EffectsChain();
+        var disposed = new java.util.concurrent.atomic.AtomicBoolean();
+        var retirement = new AtomicReference<java.util.concurrent.CompletableFuture<Void>>();
+        var processedFrames = new java.util.concurrent.atomic.AtomicInteger();
+        chain.addProcessor(new AudioProcessor() {
+            @Override public void process(float[][] input, float[][] output, int frames) {
+                if (retirement.get() == null) {
+                    retirement.set(chain.retireAll(() -> disposed.set(true)));
+                }
+                assertThat(disposed.get()).isFalse();
+                processedFrames.addAndGet(frames);
+                for (int channel = 0; channel < input.length; channel++) {
+                    System.arraycopy(input[channel], 0, output[channel], 0, frames);
+                }
+            }
+            @Override public void reset() { }
+            @Override public int getInputChannelCount() { return 1; }
+            @Override public int getOutputChannelCount() { return 1; }
+        });
+        chain.addProcessor(new GainProcessor(0.5f));
+        var input = new float[1][1031];
+        var output = new float[1][1031];
+        Arrays.fill(input[0], 1f);
+
+        chain.processOffline(input, output, 1031);
+
+        retirement.get().get(5, TimeUnit.SECONDS);
+        assertThat(disposed.get()).isTrue();
+        assertThat(processedFrames.get()).isEqualTo(1031);
+        assertThat(output[0]).containsOnly(0.5f);
+        assertThat(chain.isEmpty()).isTrue();
+    }
 
     @Test
     void preparedRenderAllocatesNothingDuringAddRemoveReorderAndBypass() throws Exception {
@@ -460,6 +542,50 @@ class EffectsChainTest {
         public int getOutputChannelCount() {
             return 1;
         }
+    }
+
+    public static final class OfflinePreparedGain implements AudioProcessor, PreparedParameterProcessor {
+        private double requestedGain = 1.0;
+        private double preparedGain = 1.0;
+        private int preparations;
+        private Runnable onFirstBlock;
+
+        @ProcessorParam(id = 1, name = "Gain", min = 0, max = 1, defaultValue = 1)
+        public double getGain() { return requestedGain; }
+        public void setGain(double gain) { requestedGain = gain; }
+        @Override public void awaitParameterPreparation() {
+            preparedGain = requestedGain;
+            preparations++;
+        }
+        @Override public void enableRealtimeParameterPreparation() { }
+        @Override public void applyPreparedParameters() { }
+        @Override public void closeParameterPreparation() { }
+        @Override public void process(float[][] input, float[][] output, int frames) {
+            if (onFirstBlock != null) {
+                onFirstBlock.run();
+                onFirstBlock = null;
+            }
+            for (int frame = 0; frame < frames; frame++) {
+                output[0][frame] = (float) (input[0][frame] * preparedGain);
+            }
+        }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
+    }
+
+    private record BoundedGainProcessor(float gain, int maxFrames) implements AudioProcessor {
+        @Override public void process(float[][] input, float[][] output, int frames) {
+            assertThat(frames).isBetween(1, maxFrames);
+            for (int channel = 0; channel < input.length; channel++) {
+                for (int frame = 0; frame < frames; frame++) {
+                    output[channel][frame] = input[channel][frame] * gain;
+                }
+            }
+        }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
     }
 
     private record GainProcessor(float gain) implements AudioProcessor {

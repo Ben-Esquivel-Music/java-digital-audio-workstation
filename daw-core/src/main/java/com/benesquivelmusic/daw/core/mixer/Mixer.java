@@ -38,6 +38,7 @@ public final class Mixer {
     public static final int MAX_RETURN_BUSES = 16;
 
     private final List<MixerChannel> channels = new ArrayList<>();
+    private final List<MixerChannel> channelView = Collections.unmodifiableList(channels);
     private final List<MixerChannel> returnBuses = new ArrayList<>();
     private final Set<MixerChannel> ownedChannels = Collections.newSetFromMap(new IdentityHashMap<>());
     private final MixerChannel masterChannel;
@@ -231,7 +232,7 @@ public final class Mixer {
      * @return the list of channels
      */
     public List<MixerChannel> getChannels() {
-        return Collections.unmodifiableList(channels);
+        return channelView;
     }
 
     /** All channels owned by this mixer, including removed channels retained for undo and retirement. */

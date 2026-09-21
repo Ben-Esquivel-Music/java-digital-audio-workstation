@@ -4469,13 +4469,7 @@ public final class AudioEngine {
 
     /** Current post-insert track buffer; consumed only during the recording callback. */
     public float[][] graphInstrumentRecordingBuffer(Track track) {
-        EngineGraph current = graph;
-        if (current.tracks() == null || !hasGraphInstrument(track)) {
-            return null;
-        }
-        int index = current.tracks().indexOf(track);
-        float[][][] buffers = renderPipeline.getTrackBuffers();
-        return index < buffers.length ? buffers[index] : null;
+        return renderPipeline.graphInstrumentRecordingBuffer(track);
     }
 
     /**

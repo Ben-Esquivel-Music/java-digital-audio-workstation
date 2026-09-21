@@ -104,14 +104,10 @@ final class PluginViewController {
                     }
                 }
             }
-            if (activeChannel == channel && activeSlot != null
-                    && matchesBuiltIn(pluginClass, activeSlot)
-                    && channel.getInsertSlots().contains(activeSlot)) {
-                focusActiveEditor();
-                return;
-            }
+            var activation = new PendingActivation(channel, pluginClass);
+            if (focusExistingSlot(activation)) return;
             requireFreeSlot(channel);
-            loadForInsertion(new PendingActivation(channel, pluginClass), pluginClass.getSimpleName(),
+            loadForInsertion(activation, pluginClass.getSimpleName(),
                     () -> routing.createBuiltInSlot().apply(pluginClass));
         } catch (RuntimeException | Error failure) {
             activationFailed(pluginClass.getSimpleName(), failure);
@@ -123,14 +119,10 @@ final class PluginViewController {
         try {
             MixerChannel channel = targetChannel();
             if (channel == null) return;
-            if (activeChannel == channel && activeSlot != null && activeSlot.getPlugin() != null
-                    && activeSlot.getPlugin().getDescriptor().id().equals(plugin.getDescriptor().id())
-                    && channel.getInsertSlots().contains(activeSlot)) {
-                focusActiveEditor();
-                return;
-            }
+            var activation = new PendingActivation(channel, plugin.getDescriptor().id());
+            if (focusExistingSlot(activation)) return;
             requireFreeSlot(channel);
-            loadForInsertion(new PendingActivation(channel, plugin.getDescriptor().id()),
+            loadForInsertion(activation,
                     plugin.getDescriptor().name(), externalSlotLoader.apply(plugin));
         } catch (RuntimeException | Error failure) {
             activationFailed(plugin.getDescriptor().name(), failure);
@@ -165,6 +157,10 @@ final class PluginViewController {
                         return;
                     }
                     try {
+                        if (focusExistingSlot(activation)) {
+                            activationWorker.execute(slot::disposeAfterQuiescence);
+                            return;
+                        }
                         requireFreeSlot(activation.channel());
                         insertAndOpen(activation.channel(), slot);
                     } catch (RuntimeException | Error failure) {
@@ -188,11 +184,25 @@ final class PluginViewController {
         else FxDispatcher.runOnFx(work);
     }
 
-    private static boolean matchesBuiltIn(Class<? extends BuiltInDawPlugin> type, InsertSlot slot) {
+    private boolean focusExistingSlot(PendingActivation activation) {
+        for (InsertSlot slot : activation.channel().getInsertSlots()) {
+            boolean matches = activation.pluginKey() instanceof Class<?> type
+                    ? matchesBuiltIn(type, slot)
+                    : slot.getPlugin() != null
+                            && slot.getPlugin().getDescriptor().id().equals(activation.pluginKey());
+            if (matches) {
+                openSlotEditor(activation.channel(), slot);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesBuiltIn(Class<?> type, InsertSlot slot) {
         if (type.isInstance(slot.getPlugin())) return true;
         BuiltInPlugin metadata = type.getAnnotation(BuiltInPlugin.class);
-        return slot.getEffectType() != null && metadata != null
-                && metadata.label().equals(slot.getName());
+        return slot.getPlugin() == null && slot.getEffectType() != null && metadata != null
+                && metadata.label().equals(slot.getEffectType().getDisplayName());
     }
 
     private MixerChannel targetChannel() {

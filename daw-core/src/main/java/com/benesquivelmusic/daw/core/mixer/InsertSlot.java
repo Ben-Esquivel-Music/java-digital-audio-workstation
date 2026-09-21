@@ -90,6 +90,9 @@ public final class InsertSlot {
                       InsertEffectType effectType, DawPlugin plugin) {
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.processor = Objects.requireNonNull(processor, "processor must not be null");
+        if (processor instanceof com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor prepared) {
+            prepared.enableRealtimeParameterPreparation();
+        }
         this.effectType = effectType;
         this.plugin = plugin != null ? plugin : processor instanceof DawPlugin dawPlugin ? dawPlugin : null;
         this.instrument = this.plugin != null && this.plugin.getDescriptor().type() == PluginType.INSTRUMENT;
@@ -181,6 +184,9 @@ public final class InsertSlot {
         try {
             ParameterBinding binding = parameterBinding;
             binding.store().drainToAudio(binding.sink());
+            if (processor instanceof com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor prepared) {
+                prepared.applyPreparedParameters();
+            }
         } catch (RuntimeException | Error failure) {
             parameterFaulted = true;
             if (supervisor != null) {
@@ -193,6 +199,14 @@ public final class InsertSlot {
 
     public boolean isInstrument() {
         return instrument;
+    }
+
+    /** Resolves pending controls and expensive DSP state before offline rendering begins. */
+    public void prepareParametersForOfflineRendering() {
+        drainParametersToAudio();
+        if (processor instanceof com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor prepared) {
+            prepared.awaitParameterPreparation();
+        }
     }
 
     /** Transfers resource ownership (including a plugin loader) to this graph slot. */
@@ -237,6 +251,9 @@ public final class InsertSlot {
         }
         disposed = true;
         removedFromGraph();
+        if (processor instanceof com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor prepared) {
+            prepared.closeParameterPreparation();
+        }
         if (disposal != null) {
             disposal.run();
         } else if (plugin != null) {

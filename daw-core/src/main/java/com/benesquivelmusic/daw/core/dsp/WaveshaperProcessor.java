@@ -101,6 +101,7 @@ public final class WaveshaperProcessor implements AudioProcessor {
     private static final int PASSTHROUGH_DELAY = (NUM_EVEN_PHASE_COEFFS - 1) / 2; // 7
     private static final int ODD_DELAY_SIZE = PASSTHROUGH_DELAY + 1; // 8
     private static final int MAX_OVERSAMPLED = 8; // max factor
+    private static final int FIXED_LATENCY_SAMPLES = 26;
 
     // Even-phase polyphase coefficients (precomputed once)
     private static final double[] EVEN_PHASE_COEFFS;
@@ -120,6 +121,12 @@ public final class WaveshaperProcessor implements AudioProcessor {
     private double driveDb;
     private double mix;
     private double outputGainDb;
+    private boolean fixedLatency;
+    private final float[][] dryDelay;
+    private final float[][] wetDelay;
+    private final int[] delayPositions;
+    private final double[] fractionalPreviousInput;
+    private final double[] fractionalPreviousOutput;
 
     // CUSTOM transfer function: strictly-monotonic x control points with paired y values.
     // Defaults to the identity curve (x -> x) within [-1, 1].
@@ -163,6 +170,11 @@ public final class WaveshaperProcessor implements AudioProcessor {
         this.driveDb = 0.0;
         this.mix = 1.0;
         this.outputGainDb = 0.0;
+        dryDelay = new float[channels][FIXED_LATENCY_SAMPLES + 1];
+        wetDelay = new float[channels][FIXED_LATENCY_SAMPLES + 1];
+        delayPositions = new int[channels];
+        fractionalPreviousInput = new double[channels];
+        fractionalPreviousOutput = new double[channels];
 
         initFilterState();
     }
@@ -173,6 +185,7 @@ public final class WaveshaperProcessor implements AudioProcessor {
         double driveLinear = Math.pow(10.0, driveDb / 20.0);
         double outputGainLinear = Math.pow(10.0, outputGainDb / 20.0);
         int numStages = oversampleFactor.getStages();
+        double wetPadding = fixedLatency ? FIXED_LATENCY_SAMPLES - exactOversamplingLatency() : 0;
 
         // 1× oversampling fast path: shape directly at the native sample rate.
         if (numStages == 0) {
@@ -181,7 +194,7 @@ public final class WaveshaperProcessor implements AudioProcessor {
                     float dry = inputBuffer[ch][frame];
                     float wet = (float) (applyTransferFunction((float) (dry * driveLinear))
                             * outputGainLinear);
-                    outputBuffer[ch][frame] = (float) (dry * (1.0 - mix) + wet * mix);
+                    outputBuffer[ch][frame] = mixOutput(dry, wet, ch, wetPadding);
                 }
             }
             return;
@@ -227,12 +240,43 @@ public final class WaveshaperProcessor implements AudioProcessor {
 
                 // Mix wet/dry and apply output gain
                 float wet = (float) (src[0] * outputGainLinear);
-                outputBuffer[ch][frame] = (float) (dry * (1.0 - mix) + wet * mix);
+                outputBuffer[ch][frame] = mixOutput(dry, wet, ch, wetPadding);
             }
         }
     }
 
     // --- Polyphase half-band upsampling/downsampling ---
+
+    private float mixOutput(float dry, float wet, int channel, double wetPadding) {
+        if (fixedLatency) {
+            int position = delayPositions[channel];
+            int capacity = dryDelay[channel].length;
+            dryDelay[channel][position] = dry;
+            wetDelay[channel][position] = wet;
+            dry = dryDelay[channel][(position + capacity - FIXED_LATENCY_SAMPLES) % capacity];
+            int wholeDelay = (int) wetPadding;
+            double fraction = wetPadding - wholeDelay;
+            int recent = (position + capacity - wholeDelay) % capacity;
+            wet = wetDelay[channel][recent];
+            if (fraction != 0) {
+                // First-order Thiran all-pass: fractional delay without attenuating high frequencies.
+                double coefficient = (1.0 - fraction) / (1.0 + fraction);
+                double delayed = coefficient * (wet - fractionalPreviousOutput[channel])
+                        + fractionalPreviousInput[channel];
+                fractionalPreviousInput[channel] = wet;
+                fractionalPreviousOutput[channel] = delayed;
+                wet = (float) delayed;
+            }
+            delayPositions[channel] = (position + 1) % capacity;
+        }
+        return (float) (dry * (1.0 - mix) + wet * mix);
+    }
+
+    /** Enables stable plugin latency, including matching delay on the dry path. Call before insertion. */
+    public void enableFixedLatency() {
+        fixedLatency = true;
+        reset();
+    }
 
     /**
      * Upsamples a single input sample to two output samples using the polyphase
@@ -506,6 +550,13 @@ public final class WaveshaperProcessor implements AudioProcessor {
      * Returns the processing latency introduced by the oversampling
      * upsample/downsample filter chain, in input-rate samples.
      *
+     * <p>When {@link #enableFixedLatency()} is enabled by the plugin host, this
+     * is always 26 samples. The dry signal is delayed by that amount and the
+     * wet signal is padded with an integer delay and a magnitude-preserving
+     * fractional all-pass, keeping its low-frequency group delay at 26 samples
+     * as oversampling changes. The values below describe the default standalone
+     * processor mode.</p>
+     *
      * <p>Each cascaded 2× polyphase half-band stage adds a group delay of
      * {@code 2 × PASSTHROUGH_DELAY = 14} samples at that stage's input rate.
      * For stage {@code k} (0-indexed, where {@code k = 0} is the outermost
@@ -527,6 +578,10 @@ public final class WaveshaperProcessor implements AudioProcessor {
      */
     @Override
     public int getLatencySamples() {
+        return fixedLatency ? FIXED_LATENCY_SAMPLES : oversamplingLatency();
+    }
+
+    private int oversamplingLatency() {
         int stages = oversampleFactor.getStages();
         if (stages == 0) {
             return 0;
@@ -538,7 +593,23 @@ public final class WaveshaperProcessor implements AudioProcessor {
         return (int) Math.round(total);
     }
 
+    private double exactOversamplingLatency() {
+        double total = 0;
+        // The odd polyphase branch contributes a half-sample in addition to the paired delay.
+        for (int stage = 0; stage < oversampleFactor.getStages(); stage++) {
+            total += (2.0 * PASSTHROUGH_DELAY + 0.5) / (1 << stage);
+        }
+        return total;
+    }
+
     private void initFilterState() {
+        for (int ch = 0; ch < channels; ch++) {
+            Arrays.fill(dryDelay[ch], 0);
+            Arrays.fill(wetDelay[ch], 0);
+            delayPositions[ch] = 0;
+            fractionalPreviousInput[ch] = 0;
+            fractionalPreviousOutput[ch] = 0;
+        }
         if (upDelayLines != null) {
             for (int stage = 0; stage < upDelayLines.length; stage++) {
                 Arrays.fill(upWritePos[stage], 0);

@@ -230,7 +230,6 @@ public final class PitchShiftProcessor implements AudioProcessor {
                     "pitchShiftSemitones must be in [-24, 24]: " + pitchShiftSemitones);
         }
         this.pitchShiftSemitones = pitchShiftSemitones;
-        initializeBuffers();
     }
 
     /** Returns the current quality setting. */

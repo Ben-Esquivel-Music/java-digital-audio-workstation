@@ -315,8 +315,12 @@ public final class SpringReverbProcessor implements AudioProcessor {
                         * scaleRatio * tensionScale * helixScale);
                 length = Math.max(length, 1);
                 allpassLengths[ch][s] = length;
-                allpassBuffers[ch][s] = new float[length];
-                allpassPositions[ch][s] = 0;
+                if (allpassBuffers[ch][s] == null) {
+                    int capacity = Math.max(1, (int) ((ALLPASS_BASE_DELAYS[s] + spread)
+                            * scaleRatio * 1.5 * 1.5));
+                    allpassBuffers[ch][s] = new float[capacity];
+                }
+                allpassPositions[ch][s] %= length;
             }
         }
 

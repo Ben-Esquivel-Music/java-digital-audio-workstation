@@ -389,6 +389,13 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
      */
     private void updateToneFilters() {
         double gainDb = tone * 6.0;
+        if (toneFilters != null) {
+            for (int ch = 0; ch < channels; ch++) {
+                toneFilters[ch].recalculate(BiquadFilter.FilterType.HIGH_SHELF,
+                        sampleRate, 800.0, 0.707, gainDb);
+            }
+            return;
+        }
         BiquadFilter[] newFilters = new BiquadFilter[channels];
         for (int ch = 0; ch < channels; ch++) {
             newFilters[ch] = BiquadFilter.create(

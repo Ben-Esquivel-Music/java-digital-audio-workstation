@@ -51,7 +51,7 @@ import java.util.Objects;
  */
 @RealTimeSafe
 @InsertEffect(type = "GRAPHIC_EQ", displayName = "Graphic EQ", category = PluginCategory.EQ_AND_FILTER)
-public final class GraphicEqProcessor implements AudioProcessor {
+public final class GraphicEqProcessor implements AudioProcessor, PreparedParameterProcessor {
 
     /** Maximum gain magnitude allowed per band (±12 dB). */
     public static final double MAX_GAIN_DB = 12.0;
@@ -92,7 +92,8 @@ public final class GraphicEqProcessor implements AudioProcessor {
 
     private double[] frequencies;
     private double[] gainDb;
-    private double q;
+    private volatile double q;
+    private DeferredDspUpdate parameterPreparation;
 
     // Minimum-phase filters: [band][channel]
     private BiquadFilter[][] filters;
@@ -240,7 +241,7 @@ public final class GraphicEqProcessor implements AudioProcessor {
         if (filterMode == FilterMode.MINIMUM_PHASE) {
             updateBandCoefficients(bandIndex);
         } else {
-            rebuildFilters();
+            requestFilterRebuild();
         }
     }
 
@@ -301,7 +302,7 @@ public final class GraphicEqProcessor implements AudioProcessor {
                 updateBandCoefficients(band);
             }
         } else {
-            rebuildFilters();
+            requestFilterRebuild();
         }
     }
 
@@ -327,6 +328,7 @@ public final class GraphicEqProcessor implements AudioProcessor {
 
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        applyPreparedParameters();
         // Copy input to output
         for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
             System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
@@ -436,6 +438,9 @@ public final class GraphicEqProcessor implements AudioProcessor {
     }
 
     private void rebuildFilters() {
+        if (parameterPreparation != null) {
+            parameterPreparation.cancel();
+        }
         // Always build minimum-phase biquad filters
         filters = new BiquadFilter[frequencies.length][channels];
         for (int band = 0; band < frequencies.length; band++) {
@@ -481,6 +486,61 @@ public final class GraphicEqProcessor implements AudioProcessor {
         // Standard Q for constant-bandwidth graphic EQ:
         // Octave bandwidth → Q ≈ 1.414, Third-octave bandwidth → Q ≈ 4.318
         return (type == BandType.OCTAVE) ? 1.414 : 4.318;
+    }
+
+    private void requestFilterRebuild() {
+        if (parameterPreparation != null) {
+            parameterPreparation.request();
+        } else {
+            rebuildFilters();
+        }
+    }
+
+    private Runnable prepareFilters() {
+        double requestedQ = q;
+        double[] requestedFrequencies = frequencies.clone();
+        double[] requestedGains = gainDb.clone();
+        FilterMode requestedMode = filterMode;
+        int requestedOrder = firOrder;
+        var prepared = new GraphicEqProcessor(channels, sampleRate);
+        prepared.frequencies = requestedFrequencies;
+        prepared.gainDb = requestedGains;
+        prepared.q = requestedQ;
+        prepared.filterMode = requestedMode;
+        prepared.firOrder = requestedOrder;
+        prepared.rebuildFilters();
+        return () -> {
+            filters = prepared.filters;
+            linearFilters = prepared.linearFilters;
+        };
+    }
+
+    @Override
+    public void enableRealtimeParameterPreparation() {
+        if (parameterPreparation == null) {
+            parameterPreparation = new DeferredDspUpdate(this::prepareFilters);
+        }
+    }
+
+    @Override
+    public void applyPreparedParameters() {
+        if (parameterPreparation != null) {
+            parameterPreparation.apply();
+        }
+    }
+
+    @Override
+    public void closeParameterPreparation() {
+        if (parameterPreparation != null) {
+            parameterPreparation.close();
+        }
+    }
+
+    @Override
+    public void awaitParameterPreparation() {
+        if (parameterPreparation != null) {
+            parameterPreparation.await();
+        }
     }
 
     private float[][] ensureFloatScratch(int channels, int frames) {

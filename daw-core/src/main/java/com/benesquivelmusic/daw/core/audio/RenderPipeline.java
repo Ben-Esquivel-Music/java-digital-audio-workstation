@@ -98,6 +98,10 @@ public final class RenderPipeline {
     // Pre-allocated per-track buffers: [track][channel][frame]
     private final float[][][] trackBuffers;
 
+    // Render-thread-owned identity mapping for this block's recording sources.
+    private final Track[] instrumentRecordingTracks;
+    private boolean recordingCaptureActive;
+
     // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
     private final float[][][] returnBuffers;
 
@@ -369,6 +373,7 @@ public final class RenderPipeline {
         int channels = format.channels();
         this.mixBuffer = new float[channels][blockSize];
         this.trackBuffers = new float[maxTracks][channels][blockSize];
+        this.instrumentRecordingTracks = new Track[maxTracks];
         this.returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][blockSize];
         this.gainScratch = new float[blockSize];
         // Story 136 — pre-allocated tail for clicks that overflow the
@@ -462,6 +467,35 @@ public final class RenderPipeline {
      */
     float[][][] getTrackBuffers() {
         return trackBuffers;
+    }
+
+    /** Looks up only buffers rendered for the callback currently in progress. */
+    @RealTimeSafe
+    float[][] graphInstrumentRecordingBuffer(Track track) {
+        if (!recordingCaptureActive || track == null) {
+            return null;
+        }
+        for (int index = 0; index < instrumentRecordingTracks.length; index++) {
+            if (instrumentRecordingTracks[index] == track) {
+                return trackBuffers[index];
+            }
+        }
+        return null;
+    }
+
+    @RealTimeSafe
+    private void captureInstrumentRecordingTracks(List<Track> tracks, Mixer mixer) {
+        Arrays.fill(instrumentRecordingTracks, null);
+        if (tracks == null || mixer == null) {
+            return;
+        }
+        List<MixerChannel> channels = mixer.getChannels();
+        int count = Math.min(Math.min(tracks.size(), channels.size()), maxTracks);
+        for (int index = 0; index < count; index++) {
+            if (channels.get(index).hasInstrumentInsert()) {
+                instrumentRecordingTracks[index] = tracks.get(index);
+            }
+        }
     }
 
     private static boolean hasInstruments(Mixer mixer) {
@@ -714,6 +748,12 @@ public final class RenderPipeline {
             mixer.drainInsertParameters();
         }
 
+        boolean mixerActive = playbackActive
+                || mixer != null && tracks != null && hasInstruments(mixer);
+        if (recordingCallback != null) {
+            captureInstrumentRecordingTracks(mixerActive ? tracks : null, mixer);
+        }
+
         if (playbackActive) {
             int trackCount = Math.min(tracks.size(), maxTracks);
 
@@ -759,7 +799,7 @@ public final class RenderPipeline {
                 // return buses which are summed into the main output.
                 mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
             }
-        } else if (mixer != null && tracks != null && hasInstruments(mixer)) {
+        } else if (mixerActive) {
             // Instrument audition remains audible while the playhead is stopped.
             for (int i = 0; i < trackBuffers.length; i++) {
                 for (int ch = 0; ch < trackBuffers[i].length; ch++) {
@@ -801,7 +841,13 @@ public final class RenderPipeline {
 
         // Notify recording callback with the captured input
         if (recordingCallback != null) {
-            recordingCallback.onAudioCaptured(inputBuffer != null ? inputBuffer : mixBuffer, numFrames);
+            recordingCaptureActive = true;
+            try {
+                recordingCallback.onAudioCaptured(inputBuffer != null ? inputBuffer : mixBuffer, numFrames);
+            } finally {
+                recordingCaptureActive = false;
+                Arrays.fill(instrumentRecordingTracks, null);
+            }
         }
 
         // Process through the master effects chain
@@ -811,7 +857,7 @@ public final class RenderPipeline {
         // This runs AFTER the master chain so that its overwrite of
         // outputBuffer (channels 0..N) does not clobber direct-output data
         // on higher channels.
-        if (playbackActive || mixer != null && tracks != null && hasInstruments(mixer)) {
+        if (mixerActive) {
             mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps);
         }
 
