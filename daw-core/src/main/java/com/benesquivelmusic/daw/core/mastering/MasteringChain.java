@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.dsp.GainReductionProvider;
 import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
 import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.DynamicLatencyProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
@@ -29,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLongArray;
  *   <li>Preset save/load — capture and restore full chain configuration</li>
  * </ul>
  */
-public final class MasteringChain implements AudioProcessor {
+public final class MasteringChain implements DynamicLatencyProcessor {
 
     /** Default number of channels for stereo mastering. */
     private static final int DEFAULT_CHANNELS = 2;
@@ -41,7 +42,13 @@ public final class MasteringChain implements AudioProcessor {
 
         private final MasteringStageType type;
         private final String name;
-        private volatile AudioProcessor processor;
+        private record ProcessorState(AudioProcessor processor, int fixedLatency) {
+            int latencySamples() {
+                return processor instanceof DynamicLatencyProcessor dynamic
+                        ? dynamic.getLatencySamples() : fixedLatency;
+            }
+        }
+        private volatile ProcessorState processorState;
         private final boolean terminal;
         private volatile boolean bypassed;
         private volatile boolean solo;
@@ -53,7 +60,7 @@ public final class MasteringChain implements AudioProcessor {
         public Stage(MasteringStageType type, String name, AudioProcessor processor, boolean terminal) {
             this.type = Objects.requireNonNull(type, "type must not be null");
             this.name = Objects.requireNonNull(name, "name must not be null");
-            this.processor = Objects.requireNonNull(processor, "processor must not be null");
+            setProcessor(processor);
             this.terminal = terminal;
         }
 
@@ -64,11 +71,14 @@ public final class MasteringChain implements AudioProcessor {
         public String getName() { return name; }
 
         /** Returns the audio processor for this stage. */
-        public AudioProcessor getProcessor() { return processor; }
+        public AudioProcessor getProcessor() { return processorState.processor(); }
 
         /** Installs a fully configured processor prepared on the control thread. */
         public void setProcessor(AudioProcessor processor) {
-            this.processor = Objects.requireNonNull(processor, "processor must not be null");
+            Objects.requireNonNull(processor, "processor must not be null");
+            // Capture thread-confined/static getters only on the configuring thread.
+            processorState = new ProcessorState(processor, processor instanceof DynamicLatencyProcessor
+                    ? 0 : processor.getLatencySamples());
         }
 
         /**
@@ -170,7 +180,8 @@ public final class MasteringChain implements AudioProcessor {
         return true;
     }
 
-    private void drainParameterUpdates() {
+    /** Applies pending controls before the host samples this block's latency. */
+    public void drainParameterUpdates() {
         for (ParameterControl control : parameterControls) control.applyPending();
         long end = parameterWrite;
         while (parameterRead < end) {
@@ -520,6 +531,22 @@ public final class MasteringChain implements AudioProcessor {
     @Override
     public int getOutputChannelCount() {
         return channels;
+    }
+
+    /** Serial latency of the stages that processing will actually run, including solo precedence. */
+    @Override
+    public int getLatencySamples() {
+        if (chainBypassed) return 0;
+        Stage[] current = renderState.stages();
+        boolean hasSolo = false;
+        for (Stage stage : current) hasSolo |= stage.isSolo();
+        int latency = 0;
+        for (Stage stage : current) {
+            if (hasSolo ? stage.isSolo() : !stage.isBypassed()) {
+                latency += stage.processorState.latencySamples();
+            }
+        }
+        return latency;
     }
 
     // --- Metering accessors (read from UI thread) ---

@@ -4385,6 +4385,7 @@ public final class AudioEngine {
      * callbacks.</p>
      */
     private void handOffMixer(Mixer previousMixer, Mixer incomingMixer) {
+        if (incomingMixer != null) incomingMixer.setMasteringChain(masteringChain);
         if (previousMixer != null && graphScheduler != null
                 && previousMixer.getGraphScheduler() == graphScheduler) {
             previousMixer.setGraphScheduler(null);
@@ -4402,15 +4403,16 @@ public final class AudioEngine {
      * compensation, in samples.
      *
      * <p>This is the maximum insert-chain latency across all mixer channels
-     * and return buses. The transport can use this value to offset the
+     * and return buses, plus serial master inserts and active mastering stages.
+     * The transport can use this value to offset the
      * playback start position so that the first audible sample aligns
      * with beat 1.</p>
      *
-     * @return the system latency in sample frames, or 0 if no mixer is configured
+     * @return the system latency in sample frames
      */
     public int getSystemLatencySamples() {
         Mixer currentMixer = this.graph.mixer();
-        return currentMixer != null ? currentMixer.getSystemLatencySamples() : 0;
+        return currentMixer != null ? currentMixer.getSystemLatencySamples() : masteringChain.getLatencySamples();
     }
 
     /**

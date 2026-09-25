@@ -752,6 +752,7 @@ public final class RenderPipeline {
         if (mixer != null) {
             mixer.drainInsertParameters();
         }
+        masteringChain.drainParameterUpdates();
 
         boolean mixerActive = playbackActive
                 || mixer != null && tracks != null && hasInstruments(mixer);
@@ -1709,6 +1710,20 @@ public final class RenderPipeline {
         float[][] blockOut = new float[channels][blockSize];
 
         masteringChain.allocateIntermediateBuffers(masteringChain.getInputChannelCount(), blockSize);
+        MasteringChain previousMasteringChain = mixer.getMasteringChain();
+        try {
+            if (applyMasterProcessing) mixer.setMasteringChain(masteringChain);
+            renderOfflineBlocks(transport, mixer, tracks, midiRenderer, masteringChain,
+                    outputBuffer, totalFrames, blockSize, applyMasterProcessing, blockOut);
+        } finally {
+            if (applyMasterProcessing) mixer.setMasteringChain(previousMasteringChain);
+        }
+    }
+
+    private void renderOfflineBlocks(Transport transport, Mixer mixer, List<Track> tracks,
+                                     MidiTrackRenderer midiRenderer, MasteringChain masteringChain,
+                                     float[][] outputBuffer, int totalFrames, int blockSize,
+                                     boolean applyMasterProcessing, float[][] blockOut) {
         int framesRendered = 0;
         while (framesRendered < totalFrames) {
             int framesThisBlock = Math.min(blockSize, totalFrames - framesRendered);
@@ -1716,6 +1731,7 @@ public final class RenderPipeline {
             // Offline rendering can outrun the live latency watcher. Resolve
             // this block's controls before computing its PDC render offset.
             mixer.drainInsertParameters();
+            masteringChain.drainParameterUpdates();
             if (transport.getState() == TransportState.PLAYING
                     || transport.getState() == TransportState.RECORDING) {
                 applyAutomation(tracks, Math.min(tracks.size(), maxTracks),
@@ -1731,7 +1747,7 @@ public final class RenderPipeline {
             mixer.getDelayCompensation().refreshLatencies();
 
             // Clear blockOut so master chain writes land on a zero scratch
-            for (int ch = 0; ch < channels; ch++) {
+            for (int ch = 0; ch < format.channels(); ch++) {
                 Arrays.fill(blockOut[ch], 0, framesThisBlock, 0.0f);
             }
 
@@ -1746,7 +1762,7 @@ public final class RenderPipeline {
                 bypassMasterProcessing = false;
             }
 
-            for (int ch = 0; ch < channels; ch++) {
+            for (int ch = 0; ch < format.channels(); ch++) {
                 System.arraycopy(blockOut[ch], 0,
                         outputBuffer[ch], framesRendered, framesThisBlock);
             }

@@ -44,6 +44,7 @@ public final class Mixer {
     private final Set<MixerChannel> ownedChannels = Collections.newSetFromMap(new IdentityHashMap<>());
     private final MixerChannel masterChannel;
     private final PluginDelayCompensation delayCompensation = new PluginDelayCompensation();
+    private volatile MasteringChain masteringChain;
     private final ReflectiveParameterBinder reflectiveParameterBinder = new ReflectiveParameterBinder();
     private int preparedAudioChannels;
     private int preparedBlockSize;
@@ -1951,9 +1952,22 @@ public final class Mixer {
         return delayCompensation;
     }
 
+    /** Returns the mastering chain registered for latency compensation, or {@code null}. */
+    public MasteringChain getMasteringChain() {
+        return masteringChain;
+    }
+
+    /** Registers the serial mastering path on the control thread before rendering starts. */
+    public void setMasteringChain(MasteringChain masteringChain) {
+        if (this.masteringChain == masteringChain) return;
+        this.masteringChain = masteringChain;
+        recalculateDelayCompensation();
+    }
+
     /**
      * Returns the total system latency in samples — the maximum insert chain
-     * latency across all channels and return buses.
+     * latency across all channels and return buses, plus serial master inserts
+     * and active mastering stages.
      *
      * <p>The transport can use this value to offset the playback start position
      * so that the first audible sample aligns with beat 1.</p>
@@ -1977,7 +1991,7 @@ public final class Mixer {
             // Not yet prepared — use a safe default for latency calculation only
             audioChannels = 2;
         }
-        delayCompensation.recalculate(channels, returnBuses, masterChannel, audioChannels);
+        delayCompensation.recalculate(channels, returnBuses, masterChannel, masteringChain, audioChannels);
         // Insert-chain mutations invalidate every channel's reflective parameter
         // bindings. Rebinding here keeps the real-time apply() path allocation-free
         // without forcing every call site that mutates inserts to remember.
