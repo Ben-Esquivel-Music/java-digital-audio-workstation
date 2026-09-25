@@ -58,7 +58,7 @@ class GripHandlePresentOnAllPanelsTest {
 
     @Test
     void masteringViewHasGripHandle() throws Exception {
-        Region view = createOnFxThread(MasteringView::new);
+        Region view = createOnFxThread(() -> new MasteringView(new com.benesquivelmusic.daw.core.mastering.MasteringChain()));
         assertHasGrip(view);
     }
 

@@ -20,6 +20,29 @@ class MeterFrameTest {
         assertThat(frame.isSilent()).isTrue();
         assertThat(frame.maxPeak()).isZero();
         assertThat(frame.maxRms()).isZero();
+        assertThat(frame.inputPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(frame.gainReductionDb()).isNaN();
+    }
+
+    @Test
+    void clearAndStaleSilenceDiscardMasteringReadings() {
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(0));
+        slot.beginBlock(1L, 2L, 1);
+        slot.setMasteringLevels(-3.0, 4.0);
+        slot.publish(1);
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+
+        frame.clear();
+
+        assertThat(frame.inputPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(frame.gainReductionDb()).isNaN();
+        assertThat(slot.readInto(frame)).isTrue();
+
+        frame.markSilent(1L, 3L, 1);
+
+        assertThat(frame.inputPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(frame.gainReductionDb()).isNaN();
     }
 
     @Test

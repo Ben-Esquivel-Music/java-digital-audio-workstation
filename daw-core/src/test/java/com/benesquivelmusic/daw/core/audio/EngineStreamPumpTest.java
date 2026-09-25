@@ -311,7 +311,9 @@ class EngineStreamPumpTest {
     void aFaultAfterAudibleOutputWritesSilenceInsteadOfReplayingThePreviousInterleavedBlock() {
         var backend = new RecordingBackend();
         engine = new AudioEngine(FORMAT);
-        engine.getMasterChain().addProcessor(new AudioProcessor() {
+        var mixer = new com.benesquivelmusic.daw.core.mixer.Mixer();
+        engine.setGraph(new com.benesquivelmusic.daw.core.transport.Transport(), mixer, java.util.List.of());
+        mixer.getMasterChannel().getEffectsChain().addProcessor(new AudioProcessor() {
             private int blocks;
 
             @Override

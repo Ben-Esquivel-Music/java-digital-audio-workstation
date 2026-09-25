@@ -1,7 +1,7 @@
 package com.benesquivelmusic.daw.core.export;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.core.audio.EffectsChain;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
@@ -42,7 +42,7 @@ final class OfflineStemRenderer implements AutoCloseable {
     private final Mixer mixer;
     private final List<Track> allTracks;
     private final RenderPipeline pipeline;
-    private final EffectsChain emptyMaster;
+    private final MasteringChain emptyMastering;
     private final List<MixerChannel> mixerChannels;
     private final List<MixerChannel> returnBuses;
     private final boolean[] originalMutes;
@@ -97,8 +97,8 @@ final class OfflineStemRenderer implements AutoCloseable {
         this.pipeline = new RenderPipeline(format,
                 Math.max(1, allTracks.size()), blockSize);
 
-        this.emptyMaster = new EffectsChain();
-        emptyMaster.allocateIntermediateBuffers(audioChannels, blockSize);
+        this.emptyMastering = new MasteringChain();
+        emptyMastering.allocateIntermediateBuffers(emptyMastering.getInputChannelCount(), blockSize);
 
         // NOTE: MidiTrackRenderer is package-private in
         // com.benesquivelmusic.daw.core.audio and cannot be instantiated
@@ -178,7 +178,7 @@ final class OfflineStemRenderer implements AutoCloseable {
         float[][] stemBuffer = new float[audioChannels][totalFrames];
         if (totalFrames > 0) {
             pipeline.renderOffline(transport, mixer, allTracks, null,
-                    emptyMaster, stemBuffer, totalFrames, blockSize);
+                    emptyMastering, stemBuffer, totalFrames, blockSize, false);
         }
         return stemBuffer;
     }

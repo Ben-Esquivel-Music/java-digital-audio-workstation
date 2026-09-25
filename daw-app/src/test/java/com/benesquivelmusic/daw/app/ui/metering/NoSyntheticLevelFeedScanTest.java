@@ -49,19 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 final class NoSyntheticLevelFeedScanTest {
 
-    /**
-     * Files outside {@code ui/metering} that may still push a {@code LevelData}
-     * into a {@code LevelMeterDisplay}, with the reason each is exempt.
-     *
-     * <p>{@code MasteringView} polls {@code MasteringChain.getStageOutputPeakDb}
-     * on its own timer for the per-stage cards. Those meters have <em>no</em>
-     * tap-bus subscription — the mastering chain is not yet engine-owned and
-     * has no {@code MeterTapPoint} — so this is not a synthetic feed beside a
-     * real one; it is the only feed those meters have. Story 321 (master
-     * insert rack + engine-owned mastering chain) replaces it with real taps
-     * and this entry goes away with it.</p>
-     */
-    private static final List<String> ALLOWLIST = List.of("MasteringView.java");
+    /** Every production level display is now fed by the registry (stories 318/321). */
+    private static final List<String> ALLOWLIST = List.of();
 
     /** Files that must not even name the level-meter types (fact 1). */
     private static final List<String> IDLE_FEED_FILES =
@@ -154,10 +143,7 @@ final class NoSyntheticLevelFeedScanTest {
                 .as("the tap-bus-driven LevelMeterDisplay.update(...) site in "
                         + "ui/metering/ must be found — if it is not, this scan proves nothing")
                 .isNotEmpty();
-        assertThat(allowlistedSites)
-                .as("the allowlisted MasteringView site must be found — if it is not, "
-                        + "either the allowlist is stale (delete the entry) or the scan is broken")
-                .isNotEmpty();
+        assertThat(allowlistedSites).isEmpty();
 
         assertThat(idleOffenders)
                 .as("Story 318 — the idle animator's synthetic level feed is gone: "

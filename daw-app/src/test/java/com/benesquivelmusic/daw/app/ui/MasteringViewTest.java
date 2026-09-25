@@ -23,7 +23,7 @@ class MasteringViewTest {
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
-                ref.set(new MasteringView());
+                ref.set(new MasteringView(new MasteringChain()));
             } finally {
                 latch.countDown();
             }
@@ -197,7 +197,7 @@ class MasteringViewTest {
     }
 
     @Test
-    void defaultConstructorShouldCreateEmptyChain() throws Exception {
+    void injectedEmptyChainRemainsEmpty() throws Exception {
         MasteringView view = createOnFxThread();
 
         assertThat(view.getMasteringChain()).isNotNull();

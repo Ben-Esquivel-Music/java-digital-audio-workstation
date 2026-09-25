@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.mixer.CueBus;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -60,13 +61,13 @@ import java.util.logging.Logger;
  * <p>Two entry points are provided:</p>
  * <ul>
  *   <li>{@link #renderBlock(float[][], float[][], int, Transport, Mixer,
- *       List, MidiTrackRenderer, EffectsChain, AudioEngine.RecordingCallback,
+ *       List, MidiTrackRenderer, MasteringChain, AudioEngine.RecordingCallback,
  *       PerformanceMonitor)} — invoked from the audio callback on the live
  *       path. It is {@link RealTimeSafe}: all scratch buffers are
  *       pre-allocated by the constructor, no locks are acquired, and no
  *       heap allocations occur.</li>
  *   <li>{@link #renderOffline(Transport, Mixer, List, MidiTrackRenderer,
- *       EffectsChain, float[][], int, int)} — wraps {@code renderBlock} in a
+ *       MasteringChain, float[][], int, int)} — wraps {@code renderBlock} in a
  *       loop to render {@code totalFrames} of audio into a caller-supplied
  *       output buffer. This is the entry point for offline export code
  *       paths such as stem export, track bouncing, and master rendering.</li>
@@ -95,6 +96,8 @@ public final class RenderPipeline {
 
     // Pre-allocated mix buffer. [channel][frame]
     private final float[][] mixBuffer;
+    private final float[][] masterInputBuffer;
+    private boolean bypassMasterProcessing;
 
     // Pre-allocated per-track buffers: [track][channel][frame]
     private final float[][][] trackBuffers;
@@ -373,6 +376,7 @@ public final class RenderPipeline {
         this.maxTracks = maxTracks;
         int channels = format.channels();
         this.mixBuffer = new float[channels][blockSize];
+        this.masterInputBuffer = new float[channels][blockSize];
         this.trackBuffers = new float[maxTracks][channels][blockSize];
         this.instrumentRecordingTracks = new Track[maxTracks];
         this.returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][blockSize];
@@ -537,7 +541,7 @@ public final class RenderPipeline {
      * @param mixer             the mixer, or {@code null} for pass-through
      * @param tracks            the tracks, or {@code null} for pass-through
      * @param midiRenderer      the MIDI track renderer, or {@code null}
-     * @param masterChain       the master effects chain applied after mixdown
+     * @param masteringChain       the master effects chain applied after mixdown
      * @param recordingCallback optional recording callback invoked with the
      *                          captured {@code inputBuffer} (may be {@code null})
      * @param performanceMonitor optional performance monitor (may be {@code null})
@@ -550,11 +554,11 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer,
-                tracks, midiRenderer, masterChain, recordingCallback,
+                tracks, midiRenderer, masteringChain, recordingCallback,
                 performanceMonitor, null);
     }
 
@@ -584,7 +588,7 @@ public final class RenderPipeline {
      * @param mixer              the mixer, or {@code null} for pass-through
      * @param tracks             the tracks, or {@code null} for pass-through
      * @param midiRenderer       the MIDI track renderer, or {@code null}
-     * @param masterChain        the master effects chain applied after mixdown
+     * @param masteringChain        the master effects chain applied after mixdown
      * @param recordingCallback  optional recording callback (may be {@code null})
      * @param performanceMonitor optional performance monitor (may be {@code null})
      * @param cpuBudgetEnforcer  optional per-track CPU budget enforcer
@@ -599,12 +603,12 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
-                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                midiRenderer, masteringChain, recordingCallback, performanceMonitor,
                 cpuBudgetEnforcer, null, null, null, null);
     }
 
@@ -652,7 +656,7 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer,
@@ -661,7 +665,7 @@ public final class RenderPipeline {
                             CueBusManager cueBusManager,
                             AudioBackend backend) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
-                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                midiRenderer, masteringChain, recordingCallback, performanceMonitor,
                 cpuBudgetEnforcer, metronome, router, cueBusManager, backend, null);
     }
 
@@ -688,7 +692,7 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer,
@@ -698,7 +702,7 @@ public final class RenderPipeline {
                             AudioBackend backend,
                             TapSnapshot taps) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
-                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                midiRenderer, masteringChain, recordingCallback, performanceMonitor,
                 cpuBudgetEnforcer, metronome, router, cueBusManager, backend, taps, null);
     }
 
@@ -719,7 +723,7 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer,
@@ -730,7 +734,7 @@ public final class RenderPipeline {
                             TapSnapshot taps,
                             float[] interleavedOutput) {
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
-        Objects.requireNonNull(masterChain, "masterChain must not be null");
+        Objects.requireNonNull(masteringChain, "masteringChain must not be null");
 
         long startNanos = (performanceMonitor != null) ? System.nanoTime() : 0L;
 
@@ -755,6 +759,41 @@ public final class RenderPipeline {
             captureInstrumentRecordingTracks(mixerActive ? tracks : null, mixer);
         }
 
+        if (!playbackActive && inputBuffer != null) {
+            // Preserve input monitoring alongside stopped instrument audition.
+            int channels = Math.min(inputBuffer.length, mixBuffer.length);
+            for (int ch = 0; ch < channels; ch++) {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    mixBuffer[ch][frame] += inputBuffer[ch][frame];
+                }
+            }
+        }
+
+        // Story 136 — schedule per-beat (and per-subdivision) metronome
+        // clicks that fall inside this block, route them through the
+        // side-output router, and sum the returned main-mix contribution
+        // into the mix buffer at the sample-accurate offset. The router
+        // also writes the side output and we write each cue-bus
+        // contribution to the bus's hardware output stereo pair so the
+        // drummer's cue mix is audibly fed the click. This must run
+        // before the master chain (so the click flows through master
+        // inserts) and BEFORE the transport position is advanced
+        // further down (so beat scheduling sees the start-of-block
+        // position).
+        if (playbackActive && metronome != null && router != null) {
+            mixMetronomeClicks(transport, metronome, router,
+                    cueBusManager, backend, numFrames);
+        } else {
+            // Clear any pending click-tail so stray clicks do not leak
+            // into the first block when playback resumes or when the
+            // metronome/router is disconnected.
+            clearClickTail();
+        }
+
+        for (int ch = 0; ch < mixBuffer.length; ch++) {
+            System.arraycopy(mixBuffer[ch], 0, masterInputBuffer[ch], 0, numFrames);
+        }
+
         if (playbackActive) {
             int trackCount = Math.min(tracks.size(), maxTracks);
 
@@ -763,7 +802,8 @@ public final class RenderPipeline {
             // ahead of the transport cursor; the compensation delays then
             // push the audio back, so beat-1 arrives at the output exactly
             // on time.
-            int systemLatency = mixer.getSystemLatencySamples();
+            int systemLatency = bypassMasterProcessing ? mixer.getDelayCompensation().getMaxLatencySamples()
+                    : mixer.getSystemLatencySamples();
             double samplesPerBeatForOffset =
                     format.sampleRate() * 60.0 / transport.getTempo();
             double renderOffsetBeats = systemLatency / samplesPerBeatForOffset;
@@ -796,11 +836,12 @@ public final class RenderPipeline {
             // no instrumentation overhead.
             if (cpuBudgetEnforcer != null) {
                 mixer.mixDownInstrumented(trackBuffers, mixBuffer, returnBuffers,
-                        numFrames, tracks, cpuBudgetEnforcer, taps);
+                        numFrames, tracks, cpuBudgetEnforcer, taps, masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
             } else {
                 // Mix through the mixer into the mix buffer, routing sends to
                 // return buses which are summed into the main output.
-                mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
+                mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps,
+                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
             }
         } else if (mixerActive) {
             // Instrument audition remains audible while the playhead is stopped.
@@ -809,37 +850,15 @@ public final class RenderPipeline {
                     Arrays.fill(trackBuffers[i][ch], 0, numFrames, 0f);
                 }
             }
-            mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
+            mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps,
+                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
         }
-        if (!playbackActive && inputBuffer != null) {
-            // Preserve input monitoring alongside stopped instrument audition.
-            int channels = Math.min(inputBuffer.length, mixBuffer.length);
-            for (int ch = 0; ch < channels; ch++) {
-                for (int frame = 0; frame < numFrames; frame++) {
-                    mixBuffer[ch][frame] += inputBuffer[ch][frame];
-                }
+        if (!mixerActive) {
+            if (mixer != null && !bypassMasterProcessing) {
+                mixer.processMaster(mixBuffer, numFrames, masteringChain, taps);
+            } else if (!bypassMasterProcessing) {
+                masteringChain.process(mixBuffer, mixBuffer, numFrames, taps, playbackActive);
             }
-        }
-
-        // Story 136 — schedule per-beat (and per-subdivision) metronome
-        // clicks that fall inside this block, route them through the
-        // side-output router, and sum the returned main-mix contribution
-        // into the mix buffer at the sample-accurate offset. The router
-        // also writes the side output and we write each cue-bus
-        // contribution to the bus's hardware output stereo pair so the
-        // drummer's cue mix is audibly fed the click. This must run
-        // before the master chain (so the click flows through master
-        // inserts) and BEFORE the transport position is advanced
-        // further down (so beat scheduling sees the start-of-block
-        // position).
-        if (playbackActive && metronome != null && router != null) {
-            mixMetronomeClicks(transport, metronome, router,
-                    cueBusManager, backend, numFrames);
-        } else {
-            // Clear any pending click-tail so stray clicks do not leak
-            // into the first block when playback resumes or when the
-            // metronome/router is disconnected.
-            clearClickTail();
         }
 
         // Notify recording callback with the captured input
@@ -853,15 +872,17 @@ public final class RenderPipeline {
             }
         }
 
-        // Process through the master effects chain
-        masterChain.process(mixBuffer, outputBuffer, numFrames);
+        // The mixer has applied inserts, mastering and monitor gain exactly once.
+        for (int ch = 0; ch < Math.min(mixBuffer.length, outputBuffer.length); ch++) {
+            System.arraycopy(mixBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+        }
 
         // Write non-master channels to their direct hardware outputs.
         // This runs AFTER the master chain so that its overwrite of
         // outputBuffer (channels 0..N) does not clobber direct-output data
         // on higher channels.
         if (mixerActive) {
-            mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps);
+            mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps, !bypassMasterProcessing);
         }
 
         if (interleavedOutput != null) {
@@ -1628,7 +1649,7 @@ public final class RenderPipeline {
      * @param mixer         the mixer (non-null)
      * @param tracks        the tracks to render (non-null)
      * @param midiRenderer  the MIDI track renderer, or {@code null}
-     * @param masterChain   the master effects chain (non-null)
+     * @param masteringChain   the master effects chain (non-null)
      * @param outputBuffer  the destination buffer
      *                      {@code [channels][totalFrames]}
      * @param totalFrames   the number of frames to render
@@ -1645,14 +1666,23 @@ public final class RenderPipeline {
                               Mixer mixer,
                               List<Track> tracks,
                               MidiTrackRenderer midiRenderer,
-                              EffectsChain masterChain,
+                              MasteringChain masteringChain,
                               float[][] outputBuffer,
                               int totalFrames,
                               int blockSize) {
+        renderOffline(transport, mixer, tracks, midiRenderer, masteringChain,
+                outputBuffer, totalFrames, blockSize, true);
+    }
+
+    /** Offline stems omit the entire master stage without editing its graph. */
+    public void renderOffline(Transport transport, Mixer mixer, List<Track> tracks,
+                              MidiTrackRenderer midiRenderer, MasteringChain masteringChain,
+                              float[][] outputBuffer, int totalFrames, int blockSize,
+                              boolean applyMasterProcessing) {
         Objects.requireNonNull(transport, "transport must not be null");
         Objects.requireNonNull(mixer, "mixer must not be null");
         Objects.requireNonNull(tracks, "tracks must not be null");
-        Objects.requireNonNull(masterChain, "masterChain must not be null");
+        Objects.requireNonNull(masteringChain, "masteringChain must not be null");
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
         if (totalFrames <= 0) {
             throw new IllegalArgumentException(
@@ -1678,6 +1708,7 @@ public final class RenderPipeline {
         // each block into the correct offset of the caller's buffer.
         float[][] blockOut = new float[channels][blockSize];
 
+        masteringChain.allocateIntermediateBuffers(masteringChain.getInputChannelCount(), blockSize);
         int framesRendered = 0;
         while (framesRendered < totalFrames) {
             int framesThisBlock = Math.min(blockSize, totalFrames - framesRendered);
@@ -1697,7 +1728,6 @@ public final class RenderPipeline {
                 channel.prepareInsertParametersForOfflineRendering();
             }
             mixer.getMasterChannel().prepareInsertParametersForOfflineRendering();
-            masterChain.prepareParametersForOfflineRendering();
             mixer.getDelayCompensation().refreshLatencies();
 
             // Clear blockOut so master chain writes land on a zero scratch
@@ -1706,12 +1736,14 @@ public final class RenderPipeline {
             }
 
             offlineAutomationPrepared = true;
+            bypassMasterProcessing = !applyMasterProcessing;
             try {
                 renderBlock(null, blockOut, framesThisBlock,
-                        transport, mixer, tracks, midiRenderer, masterChain,
+                        transport, mixer, tracks, midiRenderer, masteringChain,
                         null, null);
             } finally {
                 offlineAutomationPrepared = false;
+                bypassMasterProcessing = false;
             }
 
             for (int ch = 0; ch < channels; ch++) {

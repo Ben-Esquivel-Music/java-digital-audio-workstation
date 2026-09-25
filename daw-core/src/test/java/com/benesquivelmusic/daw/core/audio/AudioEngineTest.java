@@ -47,10 +47,10 @@ class AudioEngineTest {
     }
 
     @Test
-    void shouldExposeMasterChain() {
+    void shouldExposeMasteringChain() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        assertThat(engine.getMasterChain()).isNotNull();
-        assertThat(engine.getMasterChain().isEmpty()).isTrue();
+        assertThat(engine.getMasteringChain()).isNotNull();
+        assertThat(engine.getMasteringChain().isEmpty()).isTrue();
     }
 
     @Test
@@ -80,7 +80,9 @@ class AudioEngineTest {
     void shouldProcessBlockThroughMasterChain() {
         AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
         AudioEngine engine = new AudioEngine(format);
-        engine.getMasterChain().addProcessor(new HalfGainProcessor());
+        var mixer = new Mixer();
+        engine.setGraph(new Transport(), mixer, List.of());
+        mixer.getMasterChannel().addInsert(new InsertSlot("Half gain", new HalfGainProcessor()));
         engine.start();
 
         float[][] input = {{1.0f, -1.0f, 0.5f, -0.5f}};

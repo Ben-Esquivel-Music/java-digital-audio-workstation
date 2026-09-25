@@ -27,7 +27,8 @@ class MasteringViewSnapshotTest extends FxSnapshotTest {
     @ParameterizedTest(name = "[{index}] theme={0}")
     @MethodSource("bundledThemes")
     void defaultMasteringChain(String themeId) {
-        MasteringView view = runOnFxThread(MasteringView::new);
+        MasteringView view = runOnFxThread(() -> new MasteringView(
+                new com.benesquivelmusic.daw.core.mastering.MasteringChain()));
         assertMatchesSnapshot(view, "defaultMasteringChain", themeId);
     }
 }

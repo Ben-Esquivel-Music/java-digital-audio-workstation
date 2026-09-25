@@ -66,6 +66,7 @@ public final class MeteringTapBus {
     private final Object registryLock = new Object();
     private LevelTapSlot masterChainSlot;
     private LevelTapSlot masterOutSlot;
+    private LevelTapSlot[] masteringStageSlots = new LevelTapSlot[MeterTapPoint.MAX_MASTERING_STAGES];
 
     private volatile TapSnapshot snapshot = TapSnapshot.empty(this, 0L);
     private volatile long epoch;
@@ -120,6 +121,7 @@ public final class MeteringTapBus {
                 pairsByInsert.clear();
                 masterChainSlot = null;
                 masterOutSlot = null;
+                masteringStageSlots = new LevelTapSlot[MeterTapPoint.MAX_MASTERING_STAGES];
             }
             this.mixer = mixer;
             this.format = format;
@@ -438,6 +440,7 @@ public final class MeteringTapBus {
             pairsByInsert.clear();
             masterChainSlot = null;
             masterOutSlot = null;
+            masteringStageSlots = new LevelTapSlot[MeterTapPoint.MAX_MASTERING_STAGES];
             lanes = laneArray;
             snapshot = TapSnapshot.empty(this, epoch);
             return;
@@ -511,11 +514,20 @@ public final class MeteringTapBus {
 
         masterChainSlot = demandedSlot(MeterTapPoint.MASTER_CHAIN, masterChainSlot, laneArray);
         masterOutSlot = demandedSlot(MeterTapPoint.MASTER_OUT, masterOutSlot, laneArray);
+        LevelTapSlot[] nextMasteringSlots = new LevelTapSlot[MeterTapPoint.MAX_MASTERING_STAGES];
+        for (TapSubscription subscription : subscriptions) {
+            if (subscription.point() instanceof MeterTapPoint.MasteringStage stage
+                    && nextMasteringSlots[stage.stageIndex()] == null) {
+                nextMasteringSlots[stage.stageIndex()] = demandedSlot(stage,
+                        masteringStageSlots[stage.stageIndex()], laneArray);
+            }
+        }
+        masteringStageSlots = nextMasteringSlots;
 
         lanes = laneArray;
         snapshot = new TapSnapshot(this, bound, epoch, format,
                 channelSubjects, channelSlots, returnSubjects, returnSlots,
-                masterChainSlot, masterOutSlot,
+                masterChainSlot, masterOutSlot, masteringStageSlots,
                 insertSubjects.toArray(new InsertSlot[0]),
                 insertOwners.toArray(new MixerChannel[0]),
                 insertPairs.toArray(new InsertTapPair[0]));

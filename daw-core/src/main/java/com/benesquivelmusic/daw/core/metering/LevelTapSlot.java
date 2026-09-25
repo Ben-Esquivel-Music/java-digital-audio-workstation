@@ -37,8 +37,9 @@ import java.util.Objects;
  *   <li>an {@code INSERT_IO} pair publishes only in the blocks in which its
  *       processor actually runs: a bypassed insert is absent from its
  *       {@code EffectsChain} and publishes nothing, an empty or bypassed chain
- *       publishes nothing, and the master channel's own insert slots are never
- *       walked by the mixer at all.</li>
+ *       publishes nothing;</li>
+ *   <li>{@code MASTERING_STAGE} publishes output levels, input peak and gain
+ *       reduction when its stage runs, or silence when bypassed.</li>
  * </ul>
  * <p>A reader therefore cannot treat "block index did not advance" as
  * "silence": a non-advancing block index means <em>stale</em>. The
@@ -109,6 +110,8 @@ public final class LevelTapSlot {
     private int accumulatedChannels;
     private long accumulatedEpoch;
     private long accumulatedBlockIndex;
+    private double accumulatedInputPeakDb = Double.NEGATIVE_INFINITY;
+    private double accumulatedGainReductionDb = Double.NaN;
 
     // Published state — guarded by the seqlock below.
     @SuppressWarnings("unused") // accessed through SEQUENCE only
@@ -119,6 +122,8 @@ public final class LevelTapSlot {
     private boolean publishedClipped;
     private long publishedEpoch;
     private long publishedBlockIndex;
+    private double publishedInputPeakDb = Double.NEGATIVE_INFINITY;
+    private double publishedGainReductionDb = Double.NaN;
     // Render-thread owned: keep the seqlock odd until the entire render succeeds.
     private boolean publicationDeferred;
     private boolean publicationPending;
@@ -159,6 +164,8 @@ public final class LevelTapSlot {
             replacement.publishedClipped = frame.clipped();
             replacement.publishedEpoch = frame.epoch();
             replacement.publishedBlockIndex = frame.blockIndex();
+            replacement.publishedInputPeakDb = frame.inputPeakDb();
+            replacement.publishedGainReductionDb = frame.gainReductionDb();
             SEQUENCE.setRelease(replacement, 2L);
         }
         return replacement;
@@ -180,10 +187,23 @@ public final class LevelTapSlot {
         accumulatedChannels = lanes;
         accumulatedEpoch = epoch;
         accumulatedBlockIndex = blockIndex;
+        accumulatedInputPeakDb = Double.NEGATIVE_INFINITY;
+        accumulatedGainReductionDb = Double.NaN;
         for (int ch = 0; ch < lanes; ch++) {
             accumulatedPeak[ch] = 0f;
             accumulatedSumSquares[ch] = 0.0;
         }
+    }
+
+    /**
+     * Supplies the current mastering stage's scalar readings after
+     * {@link #beginBlock(long, long, int)} and before {@link #publish(int)}.
+     * They share the output levels' seqlock publication and block stamp.
+     */
+    @RealTimeSafe
+    public void setMasteringLevels(double inputPeakDb, double gainReductionDb) {
+        accumulatedInputPeakDb = inputPeakDb;
+        accumulatedGainReductionDb = gainReductionDb;
     }
 
     /**
@@ -296,6 +316,8 @@ public final class LevelTapSlot {
         publishedClipped = clipped;
         publishedEpoch = accumulatedEpoch;
         publishedBlockIndex = accumulatedBlockIndex;
+        publishedInputPeakDb = accumulatedInputPeakDb;
+        publishedGainReductionDb = accumulatedGainReductionDb;
         finishPublication();
     }
 
@@ -316,6 +338,8 @@ public final class LevelTapSlot {
         publishedClipped = false;
         publishedEpoch = epoch;
         publishedBlockIndex = blockIndex;
+        publishedInputPeakDb = Double.NEGATIVE_INFINITY;
+        publishedGainReductionDb = Double.NaN;
         finishPublication();
     }
 
@@ -409,10 +433,13 @@ public final class LevelTapSlot {
             boolean clipped = publishedClipped;
             long epoch = publishedEpoch;
             long blockIndex = publishedBlockIndex;
+            double inputPeakDb = publishedInputPeakDb;
+            double gainReductionDb = publishedGainReductionDb;
             VarHandle.loadLoadFence();
             long after = (long) SEQUENCE.getAcquire(this);
             if (before == after) {
-                frame.commitStaged(channels, clipped, epoch, blockIndex, clipHistory.lastBlockIndex);
+                frame.commitStaged(channels, clipped, epoch, blockIndex,
+                        clipHistory.lastBlockIndex, inputPeakDb, gainReductionDb);
                 return true;
             }
             Thread.onSpinWait();

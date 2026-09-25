@@ -1,9 +1,15 @@
 ---
 title: "Mastering Chain Live Audio Processing and Gain Reduction Metering"
 labels: ["enhancement", "ui", "mastering", "dsp", "metering"]
+status: subsumed
+subsumed_by: 321-master-bus-inserts-and-live-mastering-chain.md
 ---
 
 # Mastering Chain Live Audio Processing and Gain Reduction Metering
+
+## Resolution
+
+Subsumed by [story 321 — Master-Bus Inserts and the Live Mastering Chain](321-master-bus-inserts-and-live-mastering-chain.md). The engine owns the processing chain, the view controls that same instance, and stage IN/OUT, gain reduction, and loudness readouts consume the engine's metering lanes with honest stopped states. Master inserts live on the mixer's master channel; the obsolete engine-level insert chain is retired. Story 321 defines A/B as processed-versus-dry bypass and records the acceptance evidence. The historical motivation and goals below are retained for context.
 
 ## Motivation
 

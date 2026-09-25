@@ -298,6 +298,68 @@ class LevelTapSlotTest {
         assertThat(slot.rings()).isEmpty();
     }
 
+    @Test
+    void masteringScalarsArePublishedAndPreservedAcrossRingReplacement() {
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(0));
+        slot.beginBlock(2L, 8L, 2);
+        slot.accumulate(0, 0.25f);
+        slot.accumulate(1, 0.5f);
+        slot.setMasteringLevels(-1.25, 5.5);
+        slot.publish(1);
+        var replacement = slot.withRings(new SampleBlockRing[] {new SampleBlockRing(2, 16)});
+
+        var frame = new MeterFrame();
+        assertThat(replacement.readInto(frame)).isTrue();
+        assertThat(frame.epoch()).isEqualTo(2L);
+        assertThat(frame.blockIndex()).isEqualTo(8L);
+        assertThat(frame.maxPeak()).isEqualTo(0.5f);
+        assertThat(frame.maxRms()).isEqualTo(0.5f);
+        assertThat(frame.inputPeakDb()).isEqualTo(-1.25);
+        assertThat(frame.gainReductionDb()).isEqualTo(5.5);
+    }
+
+    @Test
+    void everyBlockClearsAbsentMasteringReadings() {
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(0));
+        slot.beginBlock(1L, 0L, 1);
+        slot.setMasteringLevels(-2.0, 3.0);
+        slot.publish(1);
+
+        slot.beginBlock(1L, 1L, 1);
+        slot.accumulate(0, 0.5f);
+        slot.publish(1);
+
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.maxPeak()).isEqualTo(0.5f);
+        assertThat(frame.inputPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(frame.gainReductionDb()).isNaN();
+    }
+
+    @Test
+    void abortDoesNotPublishTentativeMasteringReadings() {
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(0));
+        slot.beginBlock(1L, 0L, 1);
+        slot.setMasteringLevels(-1.0, 2.0);
+        slot.publish(1);
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+
+        slot.deferPublication();
+        slot.beginBlock(1L, 1L, 1);
+        slot.setMasteringLevels(-3.0, 4.0);
+        slot.publish(1);
+        assertThat(slot.readInto(frame)).isFalse();
+        assertThat(frame.inputPeakDb()).isEqualTo(-1.0);
+        assertThat(frame.gainReductionDb()).isEqualTo(2.0);
+        slot.abortBlock(1L, 1L, 1, 1);
+        slot.completePublication();
+
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.inputPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(frame.gainReductionDb()).isNaN();
+    }
+
     /**
      * Story acceptance "latest-wins publication": a writer publishing a
      * million frames whose every field is derived from the block number can
@@ -316,6 +378,7 @@ class LevelTapSlotTest {
                     slot.beginBlock(i, i, 2);
                     slot.accumulate(0, value);
                     slot.accumulate(1, -value);
+                    slot.setMasteringLevels(-i, i * 0.5);
                     slot.publish(1);
                 }
             } catch (Throwable t) {
@@ -384,6 +447,8 @@ class LevelTapSlotTest {
                 && Math.abs(frame.peak(1) - expected) <= EPSILON
                 && Math.abs(frame.rms(0) - expected) <= EPSILON
                 && Math.abs(frame.rms(1) - expected) <= EPSILON
+                && frame.inputPeakDb() == -frame.blockIndex()
+                && frame.gainReductionDb() == frame.blockIndex() * 0.5
                 && !frame.clipped();
     }
 }

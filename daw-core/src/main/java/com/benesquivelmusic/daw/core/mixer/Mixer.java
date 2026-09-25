@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioGraphScheduler;
 import com.benesquivelmusic.daw.core.audio.EffectsChain;
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
 import com.benesquivelmusic.daw.core.metering.SampleBlockRing;
 import com.benesquivelmusic.daw.core.metering.TapSnapshot;
@@ -121,6 +122,7 @@ public final class Mixer {
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
         ownedChannels.add(masterChannel);
+        masterChannel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         MixerChannel defaultReturn = new MixerChannel("Reverb Return");
         defaultReturn.setSoloSafe(true);
         defaultReturn.setOnEffectsChainChanged(this::recalculateDelayCompensation);
@@ -544,24 +546,9 @@ public final class Mixer {
             }
         }
 
-        // Apply master volume
-        float masterVolume = (float) masterChannel.getVolume();
-        if (useDouble) {
-            finalizeAccumulator(acc, outputBuffer, numFrames,
-                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume());
-            return;
-        }
-        if (!masterChannel.isMuted()) {
-            for (float[] ch : outputBuffer) {
-                for (int f = 0; f < numFrames; f++) {
-                    ch[f] *= masterVolume;
-                }
-            }
-        } else {
-            for (float[] ch : outputBuffer) {
-                Arrays.fill(ch, 0, numFrames, 0.0f);
-            }
-        }
+        sidechainChannelBuffers = channelBuffers;
+        sidechainReturnBuffers = null;
+        finishMasterMix(acc, outputBuffer, numFrames, null, null, null, false, true);
     }
 
     /**
@@ -683,8 +670,7 @@ public final class Mixer {
      *       by {@link #renderDirectOutputs(float[][][], float[][], int, TapSnapshot)};</li>
      *   <li>{@code RETURN_POST}: the post-fader value written back into
      *       {@code returnBuffers}; muted returns publish silence;</li>
-     *   <li>{@code MASTER_CHAIN}: the pre-master-fader sum (story 321
-     *       re-positions it post-mastering-chain), also while the master is
+     *   <li>{@code MASTER_CHAIN}: the post-mastering, pre-master-fader sum, also while the master is
      *       muted;</li>
      *   <li>{@code INSERT_IO}: through each channel's tapped
      *       {@code EffectsChain.process} — and only for the inserts that
@@ -699,6 +685,15 @@ public final class Mixer {
     @RealTimeSafe
     public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
                         float[][][] returnBuffers, int numFrames, TapSnapshot taps) {
+        mixDown(channelBuffers, outputBuffer, returnBuffers, numFrames, taps, null, null, false, true);
+    }
+
+    /** Engine render entry: extra monitor/click audio joins the sum before the master stages. */
+    @RealTimeSafe
+    public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
+                        float[][][] returnBuffers, int numFrames, TapSnapshot taps,
+                        MasteringChain masteringChain, float[][] masterInput, boolean bypassMaster,
+                        boolean stageMetersActive) {
         boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
         double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
         long tapEpoch = taps != null ? taps.epoch() : 0L;
@@ -875,17 +870,65 @@ public final class Mixer {
             }
         }
 
-        // Apply master volume (MASTER_CHAIN taps the pre-fader sum here)
-        float masterVolume = (float) masterChannel.getVolume();
-        LevelTapSlot masterTap = taps != null ? taps.masterChain() : null;
-        if (useDouble) {
-            finalizeAccumulator(acc, outputBuffer, numFrames,
-                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume(),
-                    masterTap, tapEpoch, tapBlock);
-            return;
+        sidechainChannelBuffers = channelBuffers;
+        sidechainReturnBuffers = returnBuffers;
+        finishMasterMix(acc, outputBuffer, numFrames, taps, masteringChain, masterInput, bypassMaster, stageMetersActive);
+    }
+
+    /** Processes monitored input when the channel graph is idle. */
+    @RealTimeSafe
+    public void processMaster(float[][] buffer, int numFrames, MasteringChain masteringChain,
+                              TapSnapshot taps) {
+        sidechainChannelBuffers = null;
+        sidechainReturnBuffers = null;
+        finishMasterMix(null, buffer, numFrames, taps, masteringChain, null, false, false);
+    }
+
+    private void finishMasterMix(double[][] accumulator, float[][] output, int frames,
+                                 TapSnapshot taps, MasteringChain masteringChain,
+                                 float[][] extra, boolean bypassMaster, boolean stageMetersActive) {
+        try {
+            if (extra != null) {
+                for (int ch = 0; ch < Math.min(extra.length, output.length); ch++) {
+                    for (int f = 0; f < frames; f++) {
+                        if (accumulator != null) accumulator[ch][f] += extra[ch][f];
+                        else output[ch][f] += extra[ch][f];
+                    }
+                }
+            }
+            if (bypassMaster) {
+                if (accumulator != null) finalizeAccumulator(accumulator, output, frames, 1.0);
+                return;
+            }
+            EffectsChain inserts = masterChannel.getEffectsChain();
+            boolean sidechain = !inserts.isEmpty() && hasSidechainRouting(masterChannel);
+            if (accumulator != null && sidechain) {
+                finalizeAccumulator(accumulator, output, frames, 1.0);
+                accumulator = null;
+            }
+            if (accumulator != null) {
+                if (!inserts.isEmpty()) inserts.processDouble(accumulator, accumulator, frames, taps);
+                // Keep the full double sum until the fader when no float mastering stage is active.
+                if (masteringChain == null || masteringChain.isEmpty() && !masteringChain.isChainBypassed()) {
+                    finalizeAccumulator(accumulator, output, frames,
+                            masterChannel.isMuted() ? 0.0 : masterChannel.getVolume(),
+                            taps != null ? taps.masterChain() : null,
+                            taps != null ? taps.epoch() : 0L, taps != null ? taps.blockIndex() : 0L);
+                    return;
+                }
+                finalizeAccumulator(accumulator, output, frames, 1.0);
+            } else if (!inserts.isEmpty()) {
+                if (sidechain) inserts.processWithSidechain(output, output, frames, taps, sidechainResolver);
+                else inserts.process(output, output, frames, taps);
+            }
+            if (masteringChain != null) masteringChain.process(output, output, frames, taps, stageMetersActive);
+            applyMasterFader(output, frames, (float) masterChannel.getVolume(), masterChannel.isMuted(),
+                    taps != null ? taps.masterChain() : null,
+                    taps != null ? taps.epoch() : 0L, taps != null ? taps.blockIndex() : 0L);
+        } finally {
+            sidechainChannelBuffers = null;
+            sidechainReturnBuffers = null;
         }
-        applyMasterFader(outputBuffer, numFrames, masterVolume, masterChannel.isMuted(),
-                masterTap, tapEpoch, tapBlock);
     }
 
     /**
@@ -985,6 +1028,18 @@ public final class Mixer {
                                     java.util.List<com.benesquivelmusic.daw.core.track.Track> tracks,
                                     com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer enforcer,
                                     TapSnapshot taps) {
+        mixDownInstrumented(channelBuffers, outputBuffer, returnBuffers, numFrames, tracks,
+                enforcer, taps, null, null, false, true);
+    }
+
+    /** Instrumented engine render with the same master stage as ordinary mixdown. */
+    @RealTimeSafe
+    public void mixDownInstrumented(float[][][] channelBuffers, float[][] outputBuffer,
+                                    float[][][] returnBuffers, int numFrames,
+                                    java.util.List<com.benesquivelmusic.daw.core.track.Track> tracks,
+                                    com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer enforcer,
+                                    TapSnapshot taps, MasteringChain masteringChain,
+                                    float[][] masterInput, boolean bypassMaster, boolean stageMetersActive) {
         boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
         double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
         long tapEpoch = taps != null ? taps.epoch() : 0L;
@@ -1159,16 +1214,9 @@ public final class Mixer {
             }
         }
 
-        float masterVolume = (float) masterChannel.getVolume();
-        LevelTapSlot masterTap = taps != null ? taps.masterChain() : null;
-        if (useDouble) {
-            finalizeAccumulator(acc, outputBuffer, numFrames,
-                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume(),
-                    masterTap, tapEpoch, tapBlock);
-            return;
-        }
-        applyMasterFader(outputBuffer, numFrames, masterVolume, masterChannel.isMuted(),
-                masterTap, tapEpoch, tapBlock);
+        sidechainChannelBuffers = channelBuffers;
+        sidechainReturnBuffers = returnBuffers;
+        finishMasterMix(acc, outputBuffer, numFrames, taps, masteringChain, masterInput, bypassMaster, stageMetersActive);
     }
 
     // ── Channel → output summing ─────────────────────────────────────────
@@ -1727,6 +1775,13 @@ public final class Mixer {
     @RealTimeSafe
     public void renderDirectOutputs(float[][][] channelBuffers, float[][] hwOutputBuffer,
                                     int numFrames, TapSnapshot taps) {
+        renderDirectOutputs(channelBuffers, hwOutputBuffer, numFrames, taps, true);
+    }
+
+    /** Dry stems omit the serial master alignment delay together with master processing. */
+    @RealTimeSafe
+    public void renderDirectOutputs(float[][][] channelBuffers, float[][] hwOutputBuffer,
+                                    int numFrames, TapSnapshot taps, boolean alignToMaster) {
         boolean anySolo = isAnySolo();
         long tapEpoch = taps != null ? taps.epoch() : 0L;
         long tapBlock = taps != null ? taps.blockIndex() : 0L;
@@ -1751,6 +1806,7 @@ public final class Mixer {
             }
 
             float[][] src = channelBuffers[i];
+            if (alignToMaster) delayCompensation.applyToDirectOutput(i, src, numFrames);
             float volume = (float) channel.getVolume();
             int firstOut = routing.firstChannel();
             int outChannels = routing.channelCount();
@@ -1819,7 +1875,9 @@ public final class Mixer {
      * worker threads.</p>
      */
     static boolean hasSidechainRouting(MixerChannel channel) {
-        for (InsertSlot slot : channel.getInsertSlots()) {
+        List<InsertSlot> slots = channel.getInsertSlots();
+        for (int i = 0; i < slots.size(); i++) {
+            InsertSlot slot = slots.get(i);
             if (!slot.isBypassed()
                     && slot.getSidechainSource() != null
                     && slot.getProcessor() instanceof SidechainAwareProcessor) {
@@ -1864,7 +1922,7 @@ public final class Mixer {
     @RealTimeSafe
     private float[][] findChannelBuffer(MixerChannel target, float[][][] channelBuffers,
                                         float[][][] returnBuffers) {
-        int count = Math.min(channels.size(), channelBuffers.length);
+        int count = channelBuffers == null ? 0 : Math.min(channels.size(), channelBuffers.length);
         for (int i = 0; i < count; i++) {
             if (channels.get(i) == target) {
                 return channelBuffers[i];
@@ -1903,7 +1961,7 @@ public final class Mixer {
      * @return the system latency in sample frames
      */
     public int getSystemLatencySamples() {
-        return delayCompensation.getMaxLatencySamples();
+        return delayCompensation.getMaxLatencySamples() + delayCompensation.getMasterLatencySamples();
     }
 
     /**
@@ -1919,7 +1977,7 @@ public final class Mixer {
             // Not yet prepared — use a safe default for latency calculation only
             audioChannels = 2;
         }
-        delayCompensation.recalculate(channels, returnBuses, audioChannels);
+        delayCompensation.recalculate(channels, returnBuses, masterChannel, audioChannels);
         // Insert-chain mutations invalidate every channel's reflective parameter
         // bindings. Rebinding here keeps the real-time apply() path allocation-free
         // without forcing every call site that mutates inserts to remember.

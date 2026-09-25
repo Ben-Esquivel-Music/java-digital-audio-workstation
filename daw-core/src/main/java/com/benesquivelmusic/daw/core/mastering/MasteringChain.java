@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.mastering;
 
 import com.benesquivelmusic.daw.core.dsp.GainReductionProvider;
+import com.benesquivelmusic.daw.core.metering.LevelTapSlot;
+import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
@@ -8,7 +10,6 @@ import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLongArray;
-import java.util.logging.Logger;
 
 /**
  * An ordered mastering signal chain with preset management, per-stage
@@ -30,8 +31,6 @@ import java.util.logging.Logger;
  */
 public final class MasteringChain implements AudioProcessor {
 
-    private static final Logger LOG = Logger.getLogger(MasteringChain.class.getName());
-
     /** Default number of channels for stereo mastering. */
     private static final int DEFAULT_CHANNELS = 2;
 
@@ -42,16 +41,16 @@ public final class MasteringChain implements AudioProcessor {
 
         private final MasteringStageType type;
         private final String name;
-        private final AudioProcessor processor;
+        private volatile AudioProcessor processor;
         private final boolean terminal;
-        private boolean bypassed;
-        private boolean solo;
+        private volatile boolean bypassed;
+        private volatile boolean solo;
 
-        Stage(MasteringStageType type, String name, AudioProcessor processor) {
+        public Stage(MasteringStageType type, String name, AudioProcessor processor) {
             this(type, name, processor, type == MasteringStageType.DITHERING);
         }
 
-        Stage(MasteringStageType type, String name, AudioProcessor processor, boolean terminal) {
+        public Stage(MasteringStageType type, String name, AudioProcessor processor, boolean terminal) {
             this.type = Objects.requireNonNull(type, "type must not be null");
             this.name = Objects.requireNonNull(name, "name must not be null");
             this.processor = Objects.requireNonNull(processor, "processor must not be null");
@@ -66,6 +65,11 @@ public final class MasteringChain implements AudioProcessor {
 
         /** Returns the audio processor for this stage. */
         public AudioProcessor getProcessor() { return processor; }
+
+        /** Installs a fully configured processor prepared on the control thread. */
+        public void setProcessor(AudioProcessor processor) {
+            this.processor = Objects.requireNonNull(processor, "processor must not be null");
+        }
 
         /**
          * Returns whether this stage is <em>terminal</em> — must always be the
@@ -90,18 +94,93 @@ public final class MasteringChain implements AudioProcessor {
 
     private final List<Stage> stages = new ArrayList<>();
     private final int channels;
-    private boolean chainBypassed;
-    private double referenceGainDb;
-    private float[][][] intermediateBuffers;
+    private volatile boolean chainBypassed;
+    private volatile double referenceGainDb;
     private int allocatedFrameSize;
-    private volatile boolean intermediateBufferWarningLogged;
+    private record RenderState(Stage[] stages, float[][][] buffers,
+                               AtomicLongArray inputPeaks, AtomicLongArray outputPeaks,
+                               AtomicLongArray gainReductions, float[][] inputScratch, float[][] outputScratch, int[] activeFlags) {}
+    private volatile RenderState renderState = new RenderState(new Stage[0], null,
+            new AtomicLongArray(0), new AtomicLongArray(0), new AtomicLongArray(0), null, null, new int[0]);
+    private static final int PARAMETER_CAPACITY = 256;
+    private final Runnable[] parameterUpdates = new Runnable[PARAMETER_CAPACITY];
+    private volatile long parameterWrite;
+    private volatile long parameterRead;
+    private volatile ParameterControl[] parameterControls = new ParameterControl[0];
 
-    // Per-stage metering data: snapshot-publish pattern with per-element atomicity.
-    // Audio thread writes via AtomicLongArray (doubleToRawLongBits); UI thread reads
-    // via longBitsToDouble. Each mutator (add/insert/remove) publishes new arrays.
-    private volatile AtomicLongArray stageInputPeakDb;
-    private volatile AtomicLongArray stageOutputPeakDb;
-    private volatile AtomicLongArray stageGainReductionDb;
+    /** One latest-wins control slot; UI publishes, the render thread applies each value once. */
+    public final class ParameterControl implements AutoCloseable {
+        private volatile Runnable requested;
+        private volatile Runnable applied;
+        private volatile boolean closed;
+
+        private ParameterControl() { }
+
+        /** The supplied setter must be allocation-free and nonblocking. */
+        public void submit(Runnable update) {
+            Objects.requireNonNull(update, "update must not be null");
+            if (closed) throw new IllegalStateException("Parameter control is closed");
+            requested = update;
+        }
+
+        private void applyPending() {
+            Runnable next = requested;
+            if (next != null && next != applied) {
+                next.run();
+                applied = next;
+            }
+        }
+
+        @Override public void close() {
+            removeParameterControl(this);
+        }
+    }
+
+    /** Registers a bounded control slot off the audio thread. */
+    public synchronized ParameterControl createParameterControl() {
+        compactParameterControls();
+        ParameterControl[] current = parameterControls;
+        if (current.length >= 1024) throw new IllegalStateException("Too many mastering parameter controls");
+        var control = new ParameterControl();
+        ParameterControl[] replacement = Arrays.copyOf(current, current.length + 1);
+        replacement[current.length] = control;
+        parameterControls = replacement;
+        return control;
+    }
+
+    private synchronized void removeParameterControl(ParameterControl control) {
+        if (control.closed) return;
+        control.closed = true;
+        compactParameterControls();
+    }
+
+    private void compactParameterControls() {
+        // A closed control's last accepted edit still reaches the next block.
+        parameterControls = Arrays.stream(parameterControls)
+                .filter(control -> !control.closed || control.requested != control.applied)
+                .toArray(ParameterControl[]::new);
+    }
+
+    /** Queues an allocation-free, nonblocking setter for the next block; false on saturation. */
+    public synchronized boolean enqueueParameterUpdate(Runnable update) {
+        Objects.requireNonNull(update, "update must not be null");
+        if (parameterWrite - parameterRead >= PARAMETER_CAPACITY) return false;
+        parameterUpdates[(int) (parameterWrite % PARAMETER_CAPACITY)] = update;
+        parameterWrite++;
+        return true;
+    }
+
+    private void drainParameterUpdates() {
+        for (ParameterControl control : parameterControls) control.applyPending();
+        long end = parameterWrite;
+        while (parameterRead < end) {
+            int index = (int) (parameterRead % PARAMETER_CAPACITY);
+            Runnable update = parameterUpdates[index];
+            parameterUpdates[index] = null;
+            parameterRead++;
+            update.run();
+        }
+    }
 
     /**
      * Creates a mastering chain with the default stereo channel count (2).
@@ -131,7 +210,7 @@ public final class MasteringChain implements AudioProcessor {
      * @param name      the display name
      * @param processor the audio processor
      */
-    public void addStage(MasteringStageType type, String name, AudioProcessor processor) {
+    public synchronized void addStage(MasteringStageType type, String name, AudioProcessor processor) {
         addStage(type, name, processor, type == MasteringStageType.DITHERING);
     }
 
@@ -153,12 +232,12 @@ public final class MasteringChain implements AudioProcessor {
      *                               stage after an existing terminal stage,
      *                               or if a second terminal stage is added
      */
-    public void addStage(MasteringStageType type, String name,
+    public synchronized void addStage(MasteringStageType type, String name,
                          AudioProcessor processor, boolean terminal) {
+        checkStageCount(stages.size() + 1);
         ensureCanAppend(terminal);
         stages.add(new Stage(type, name, processor, terminal));
-        reallocateMeteringArrays();
-        resizeIntermediateBuffers();
+        publishRenderState();
     }
 
     /**
@@ -171,7 +250,7 @@ public final class MasteringChain implements AudioProcessor {
      * @param name      the display name
      * @param processor the audio processor
      */
-    public void insertStage(int index, MasteringStageType type, String name,
+    public synchronized void insertStage(int index, MasteringStageType type, String name,
                             AudioProcessor processor) {
         insertStage(index, type, name, processor, type == MasteringStageType.DITHERING);
     }
@@ -189,12 +268,12 @@ public final class MasteringChain implements AudioProcessor {
      *                               stage at or after the terminal index, or
      *                               inserting a second terminal stage
      */
-    public void insertStage(int index, MasteringStageType type, String name,
+    public synchronized void insertStage(int index, MasteringStageType type, String name,
                             AudioProcessor processor, boolean terminal) {
+        checkStageCount(stages.size() + 1);
         ensureCanInsert(index, terminal);
         stages.add(index, new Stage(type, name, processor, terminal));
-        reallocateMeteringArrays();
-        resizeIntermediateBuffers();
+        publishRenderState();
     }
 
     /**
@@ -205,10 +284,9 @@ public final class MasteringChain implements AudioProcessor {
      * @param index the index of the stage to remove
      * @return the removed stage
      */
-    public Stage removeStage(int index) {
+    public synchronized Stage removeStage(int index) {
         Stage removed = stages.remove(index);
-        reallocateMeteringArrays();
-        resizeIntermediateBuffers();
+        publishRenderState();
         return removed;
     }
 
@@ -217,18 +295,18 @@ public final class MasteringChain implements AudioProcessor {
      *
      * @return the list of stages
      */
-    public List<Stage> getStages() {
-        return Collections.unmodifiableList(stages);
+    public synchronized List<Stage> getStages() {
+        return List.copyOf(stages);
     }
 
     /** Returns the number of stages. */
     public int size() {
-        return stages.size();
+        return renderState.stages().length;
     }
 
     /** Returns whether the chain has no stages. */
     public boolean isEmpty() {
-        return stages.isEmpty();
+        return renderState.stages().length == 0;
     }
 
     /**
@@ -281,32 +359,36 @@ public final class MasteringChain implements AudioProcessor {
      * @param frames   the number of sample frames per buffer
      * @throws IllegalArgumentException if channels does not match the chain's channel count
      */
-    public void allocateIntermediateBuffers(int channels, int frames) {
-        if (channels != this.channels) {
-            throw new IllegalArgumentException(
-                    "channels (" + channels + ") must match chain channel count (" + this.channels + ")");
-        }
-        if (frames <= 0) {
-            throw new IllegalArgumentException("frames must be positive: " + frames);
-        }
+    public synchronized void allocateIntermediateBuffers(int channels, int frames) {
+        if (channels != this.channels) throw new IllegalArgumentException("channels must match chain channel count");
+        if (frames <= 0) throw new IllegalArgumentException("frames must be positive: " + frames);
         allocatedFrameSize = frames;
-        int maxNeeded = Math.max(stages.size() - 1, 0);
-        intermediateBuffers = new float[maxNeeded][channels][frames];
+        publishRenderState();
     }
 
-    /**
-     * Resizes intermediate buffers to match the current stage count, if they
-     * have been previously allocated via {@link #allocateIntermediateBuffers(int, int)}.
-     *
-     * <p>Called from stage mutation methods (add/insert/remove) to keep the
-     * intermediate buffer array in sync with the stage count. If buffers have
-     * not yet been allocated, this is a no-op.</p>
-     */
-    private void resizeIntermediateBuffers() {
-        if (allocatedFrameSize > 0) {
-            int maxNeeded = Math.max(stages.size() - 1, 0);
-            intermediateBuffers = new float[maxNeeded][channels][allocatedFrameSize];
+    /** Publishes a complete preset in one control-thread operation. */
+    public synchronized void replaceStages(List<Stage> replacement) {
+        var copy = List.copyOf(replacement);
+        checkStageCount(copy.size());
+        for (int i = 0; i < copy.size() - 1; i++) {
+            if (copy.get(i).isTerminal()) throw new IllegalStateException("A terminal stage must be last");
         }
+        stages.clear();
+        stages.addAll(copy);
+        publishRenderState();
+    }
+
+    private static void checkStageCount(int count) {
+        if (count > com.benesquivelmusic.daw.core.metering.MeterTapPoint.MAX_MASTERING_STAGES) {
+            throw new IllegalArgumentException("Too many mastering stages: " + count);
+        }
+    }
+
+    /** Moves a stage while preserving terminal ordering and atomic render publication. */
+    public synchronized void moveStage(int from, int to) {
+        var replacement = new ArrayList<>(stages);
+        replacement.add(to, replacement.remove(from));
+        replaceStages(replacement);
     }
 
     /**
@@ -326,83 +408,95 @@ public final class MasteringChain implements AudioProcessor {
      */
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-        if (chainBypassed || stages.isEmpty()) {
-            copyWithGain(inputBuffer, outputBuffer, numFrames, referenceGainDb);
-            return;
-        }
+        process(inputBuffer, outputBuffer, numFrames, null);
+    }
 
-        // Detect solo with allocation-free indexed loop
-        boolean hasSolo = false;
-        for (int i = 0; i < stages.size(); i++) {
-            if (stages.get(i).isSolo()) {
-                hasSolo = true;
-                break;
+    /** Processes one immutable stage/buffer snapshot and publishes demanded meter lanes. */
+    public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames, TapSnapshot taps) {
+        process(inputBuffer, outputBuffer, numFrames, taps, true);
+    }
+
+    /** Stopped monitoring still processes audio, while stage readouts publish honest idle. */
+    public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames, TapSnapshot taps,
+                        boolean stageMetersActive) {
+        if (!stageMetersActive && taps != null) {
+            for (int i = 0; i < com.benesquivelmusic.daw.core.metering.MeterTapPoint.MAX_MASTERING_STAGES; i++) {
+                LevelTapSlot slot = taps.masteringStage(i);
+                if (slot != null) slot.publishSilence(taps.epoch(), taps.blockIndex(), channels);
             }
         }
-
-        // Pre-compute the last active stage index (O(n) once, not per-stage)
-        int lastActiveIndex = -1;
-        for (int i = stages.size() - 1; i >= 0; i--) {
-            Stage s = stages.get(i);
-            if (hasSolo ? s.isSolo() : !s.isBypassed()) {
-                lastActiveIndex = i;
-                break;
-            }
-        }
-
-        if (lastActiveIndex < 0) {
+        TapSnapshot stageTaps = stageMetersActive ? taps : null;
+        drainParameterUpdates();
+        RenderState captured = renderState;
+        if ((inputBuffer.length != channels || outputBuffer.length != channels)
+                && captured.inputScratch() != null) {
+            // Mastering remains stereo on devices exposing additional direct-output lanes.
+            // A mono device is duplicated into the stereo processor input and receives left output.
             copyBuffer(inputBuffer, outputBuffer, numFrames);
+            for (int ch = 0; ch < channels; ch++) {
+                float[] source = inputBuffer[Math.min(ch, inputBuffer.length - 1)];
+                System.arraycopy(source, 0, captured.inputScratch()[ch], 0, numFrames);
+            }
+            processPrepared(captured.inputScratch(), captured.outputScratch(), numFrames, stageTaps, captured);
+            copyBuffer(captured.outputScratch(), outputBuffer, numFrames);
             return;
         }
+        processPrepared(inputBuffer, outputBuffer, numFrames, stageTaps, captured);
+    }
 
-        // Snapshot metering arrays (volatile read once)
-        AtomicLongArray inputPeaks = stageInputPeakDb;
-        AtomicLongArray outputPeaks = stageOutputPeakDb;
-        AtomicLongArray gainReductions = stageGainReductionDb;
-
+    private void processPrepared(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
+                                 TapSnapshot taps, RenderState captured) {
+        Stage[] blockStages = captured.stages();
+        boolean bypassed = chainBypassed;
+        boolean hasSolo = false;
+        int[] flags = captured.activeFlags();
+        for (int i = 0; i < blockStages.length; i++) {
+            Stage stage = blockStages[i];
+            boolean solo = stage.isSolo();
+            flags[i] = solo ? 2 : stage.isBypassed() ? 0 : 1;
+            hasSolo |= solo;
+        }
+        int lastActive = -1;
+        for (int i = 0; i < blockStages.length; i++) {
+            flags[i] = !bypassed && (hasSolo ? flags[i] == 2 : flags[i] != 0) ? 1 : 0;
+            if (flags[i] == 1) lastActive = i;
+        }
+        if (lastActive < 0) copyWithGain(inputBuffer, outputBuffer, numFrames, bypassed ? referenceGainDb : 0.0);
         float[][] currentInput = inputBuffer;
         int activeIndex = 0;
-        for (int stageIndex = 0; stageIndex < stages.size(); stageIndex++) {
-            Stage stage = stages.get(stageIndex);
-
-            // Skip inactive stages
-            if (hasSolo) {
-                if (!stage.isSolo()) continue;
-            } else if (stage.isBypassed()) {
+        for (int i = 0; i < blockStages.length; i++) {
+            Stage stage = blockStages[i];
+            LevelTapSlot slot = taps != null ? taps.masteringStage(i) : null;
+            boolean active = flags[i] == 1;
+            if (!active) {
+                captured.inputPeaks().set(i, Double.doubleToRawLongBits(-120.0));
+                captured.outputPeaks().set(i, Double.doubleToRawLongBits(-120.0));
+                captured.gainReductions().set(i, 0L);
+                if (slot != null) slot.publishSilence(taps.epoch(), taps.blockIndex(), outputBuffer.length);
                 continue;
             }
-
             float[][] currentOutput;
-            if (stageIndex == lastActiveIndex) {
-                currentOutput = outputBuffer;
-            } else if (intermediateBuffers != null && activeIndex < intermediateBuffers.length) {
-                currentOutput = intermediateBuffers[activeIndex];
+            if (i == lastActive) currentOutput = outputBuffer;
+            else if (captured.buffers() != null && activeIndex < captured.buffers().length) {
+                currentOutput = captured.buffers()[activeIndex];
                 clearBuffer(currentOutput, numFrames);
             } else {
-                // Intermediate buffers not available for non-final stage.
-                // Degrade gracefully: log once and bypass remaining stages.
-                if (!intermediateBufferWarningLogged) {
-                    intermediateBufferWarningLogged = true;
-                    LOG.warning("Intermediate buffers not pre-allocated for MasteringChain; "
-                            + "call allocateIntermediateBuffers() before processing. "
-                            + "Bypassing remaining stages.");
-                }
-                // Copy what we have so far to the output and stop processing
                 copyBuffer(currentInput, outputBuffer, numFrames);
                 return;
             }
-
-            // Measure input peak level
-            updatePeak(inputPeaks, stageIndex, currentInput, numFrames);
-
-            stage.getProcessor().process(currentInput, currentOutput, numFrames);
-
-            // Measure output peak level
-            updatePeak(outputPeaks, stageIndex, currentOutput, numFrames);
-
-            // Read gain reduction from dynamics processors
-            updateGainReduction(gainReductions, stageIndex, stage.getProcessor());
-
+            double inputPeak = measurePeakDb(currentInput, numFrames);
+            AudioProcessor processor = stage.getProcessor();
+            processor.process(currentInput, currentOutput, numFrames);
+            captured.inputPeaks().set(i, Double.doubleToRawLongBits(inputPeak));
+            updatePeak(captured.outputPeaks(), i, currentOutput, numFrames);
+            updateGainReduction(captured.gainReductions(), i, processor);
+            if (slot != null) {
+                slot.beginBlock(taps.epoch(), taps.blockIndex(), currentOutput.length);
+                for (int ch = 0; ch < currentOutput.length; ch++) slot.accumulate(ch, currentOutput[ch], numFrames);
+                slot.setMasteringLevels(inputPeak, Double.longBitsToDouble(captured.gainReductions().get(i)));
+                for (var ring : slot.rings()) ring.write(currentOutput, currentOutput.length, numFrames);
+                slot.publish(numFrames);
+            }
             currentInput = currentOutput;
             activeIndex++;
         }
@@ -413,7 +507,7 @@ public final class MasteringChain implements AudioProcessor {
      */
     @Override
     public void reset() {
-        for (Stage stage : stages) {
+        for (Stage stage : renderState.stages()) {
             stage.getProcessor().reset();
         }
     }
@@ -437,7 +531,7 @@ public final class MasteringChain implements AudioProcessor {
      * @return the input peak level in dB, or {@code -120.0} if not available
      */
     public double getStageInputPeakDb(int stageIndex) {
-        AtomicLongArray peaks = stageInputPeakDb;
+        AtomicLongArray peaks = renderState.inputPeaks();
         return (peaks != null && stageIndex >= 0 && stageIndex < peaks.length())
                 ? Double.longBitsToDouble(peaks.get(stageIndex)) : -120.0;
     }
@@ -449,7 +543,7 @@ public final class MasteringChain implements AudioProcessor {
      * @return the output peak level in dB, or {@code -120.0} if not available
      */
     public double getStageOutputPeakDb(int stageIndex) {
-        AtomicLongArray peaks = stageOutputPeakDb;
+        AtomicLongArray peaks = renderState.outputPeaks();
         return (peaks != null && stageIndex >= 0 && stageIndex < peaks.length())
                 ? Double.longBitsToDouble(peaks.get(stageIndex)) : -120.0;
     }
@@ -463,7 +557,7 @@ public final class MasteringChain implements AudioProcessor {
      * @return the gain reduction in dB (≤ 0), or {@code 0.0} if not applicable
      */
     public double getStageGainReductionDb(int stageIndex) {
-        AtomicLongArray gr = stageGainReductionDb;
+        AtomicLongArray gr = renderState.gainReductions();
         return (gr != null && stageIndex >= 0 && stageIndex < gr.length())
                 ? Double.longBitsToDouble(gr.get(stageIndex)) : 0.0;
     }
@@ -483,7 +577,7 @@ public final class MasteringChain implements AudioProcessor {
     public MasteringChainPreset savePreset(String presetName, String genre,
                                            ParameterExtractor extractor) {
         List<MasteringStageConfig> configs = new ArrayList<>();
-        for (Stage stage : stages) {
+        for (Stage stage : getStages()) {
             Map<String, Double> params = (extractor != null)
                     ? extractor.extractParameters(stage.getProcessor())
                     : Map.of();
@@ -621,7 +715,7 @@ public final class MasteringChain implements AudioProcessor {
      * Called from add/insert/remove stage — never from the audio thread.
      * Publishes via volatile reference for lock-free cross-thread reads.
      */
-    private void reallocateMeteringArrays() {
+    private void publishRenderState() {
         int n = stages.size();
         long defaultPeak = Double.doubleToRawLongBits(-120.0);
         AtomicLongArray newInput = new AtomicLongArray(n);
@@ -633,10 +727,11 @@ public final class MasteringChain implements AudioProcessor {
             // GR defaults to 0.0 (AtomicLongArray zero-initializes, and
             // Double.doubleToRawLongBits(0.0) == 0L)
         }
-        // Publish all three via volatile writes
-        stageInputPeakDb = newInput;
-        stageOutputPeakDb = newOutput;
-        stageGainReductionDb = newGr;
+        float[][][] buffers = allocatedFrameSize > 0
+                ? new float[Math.max(n - 1, 0)][channels][allocatedFrameSize] : null;
+        renderState = new RenderState(stages.toArray(Stage[]::new), buffers, newInput, newOutput, newGr,
+                allocatedFrameSize > 0 ? new float[channels][allocatedFrameSize] : null,
+                allocatedFrameSize > 0 ? new float[channels][allocatedFrameSize] : null, new int[n]);
     }
 
     private static void updatePeak(AtomicLongArray peaks, int stageIndex,

@@ -7,7 +7,7 @@ import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.core.audio.EffectsChain;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.audio.EngineBinder;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
 import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
@@ -89,7 +89,7 @@ class MixerViewMeterFeedTest {
     private EngineBinder binder;
     private MeteringTapBus bus;
     private RenderPipeline pipeline;
-    private EffectsChain masterChain;
+    private MasteringChain masterChain;
     private float[][] output;
     private final float[] interleaved = new float[CHANNELS * BLOCK];
     private FxDispatcher dispatcher;
@@ -143,12 +143,11 @@ class MixerViewMeterFeedTest {
 
         project.getTransport().setTempo(TEMPO);
         project.getMixer().prepareForPlayback(CHANNELS, BLOCK);
-        masterChain = new EffectsChain();
-        masterChain.allocateIntermediateBuffers(CHANNELS, BLOCK);
         pipeline = new RenderPipeline(FORMAT, 8, BLOCK);
         output = new float[CHANNELS][BLOCK];
 
         engine = new AudioEngine(FORMAT);
+        masterChain = engine.getMasteringChain();
         binder = new EngineBinder(engine);
         binder.bind(project);
         bus = engine.meteringTapBus();

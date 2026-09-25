@@ -14,17 +14,22 @@ import java.util.UUID;
  * <ul>
  *   <li>{@link ChannelPost} &mdash; per-channel post-insert, post-fader.</li>
  *   <li>{@link ReturnPost} &mdash; per-return-bus post-chain, post-volume.</li>
- *   <li>{@link MasterChain} &mdash; the master sum before the master fader
- *       (what an export measures; story 321 moves it post-mastering-chain).</li>
+ *   <li>{@link MasterChain} &mdash; post-mastering-chain, before the master
+ *       fader (what an export of the same chain measures).</li>
  *   <li>{@link MasterOut} &mdash; the final output, post master fader/mute
  *       (what the interface receives).</li>
  *   <li>{@link InsertIo} &mdash; a focused insert's input/output pair, keyed
  *       by the slot's stable {@code pluginInstanceId}.</li>
+ *   <li>{@link MasteringStage} &mdash; a mastering stage's output levels,
+ *       input peak and gain reduction.</li>
  * </ul>
  */
 public sealed interface MeterTapPoint
         permits MeterTapPoint.ChannelPost, MeterTapPoint.ReturnPost, MeterTapPoint.MasterChain,
-                MeterTapPoint.MasterOut, MeterTapPoint.InsertIo {
+                MeterTapPoint.MasterOut, MeterTapPoint.InsertIo, MeterTapPoint.MasteringStage {
+
+    /** Bound on the indexed mastering-stage slots in a render snapshot. */
+    int MAX_MASTERING_STAGES = 64;
 
     /** The single master-chain tap point (pre master fader). */
     MasterChain MASTER_CHAIN = new MasterChain();
@@ -61,6 +66,21 @@ public sealed interface MeterTapPoint
 
     /** The final output after the master fader and mute. Use {@link #MASTER_OUT}. */
     record MasterOut() implements MeterTapPoint {
+    }
+
+    /**
+     * One stage of the engine-owned mastering chain, addressed by its current
+     * position. A stage with no processor publishes silence.
+     *
+     * @param stageIndex zero-based position, less than {@link #MAX_MASTERING_STAGES}
+     */
+    record MasteringStage(int stageIndex) implements MeterTapPoint {
+        public MasteringStage {
+            if (stageIndex < 0 || stageIndex >= MAX_MASTERING_STAGES) {
+                throw new IllegalArgumentException(
+                        "stageIndex must be in [0, " + MAX_MASTERING_STAGES + "): " + stageIndex);
+            }
+        }
     }
 
     /**

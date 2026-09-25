@@ -60,6 +60,7 @@ class MeterTapPointTest {
         assertThat(describe(new MeterTapPoint.ReturnPost(id))).isEqualTo("return:" + id);
         assertThat(describe(MeterTapPoint.MASTER_CHAIN)).isEqualTo("master-chain");
         assertThat(describe(MeterTapPoint.MASTER_OUT)).isEqualTo("master-out");
+        assertThat(describe(new MeterTapPoint.MasteringStage(2))).isEqualTo("mastering-stage:2");
         assertThat(describe(new MeterTapPoint.InsertIo(id))).isEqualTo("insert:" + id);
     }
 
@@ -69,6 +70,7 @@ class MeterTapPointTest {
             case MeterTapPoint.ReturnPost(UUID busId) -> "return:" + busId;
             case MeterTapPoint.MasterChain() -> "master-chain";
             case MeterTapPoint.MasterOut() -> "master-out";
+            case MeterTapPoint.MasteringStage(int stageIndex) -> "mastering-stage:" + stageIndex;
             case MeterTapPoint.InsertIo(UUID pluginInstanceId) -> "insert:" + pluginInstanceId;
         };
     }
