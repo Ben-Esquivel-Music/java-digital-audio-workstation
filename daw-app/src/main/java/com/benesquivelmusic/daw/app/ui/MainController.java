@@ -1958,6 +1958,15 @@ public final class MainController {
                     // Story 318 — the app-scoped FX-pulse meter drain the
                     // MixerView and Performance Stage subscribe through.
                     @Override public MeterFeed meterFeed() { return MainController.this.meterFeed(); }
+                    @Override public com.benesquivelmusic.daw.core.mastering.MasteringChain masteringChain() {
+                        return audioEngine.getMasteringChain();
+                    }
+                    @Override public AudioFormat engineFormat() {
+                        return audioEngine.getFormat();
+                    }
+                    @Override public com.benesquivelmusic.daw.core.metering.MeteringTapBus meteringTapBus() {
+                        return audioEngine.meteringTapBus();
+                    }
                     // ── Performance Stage (story 280) ─────────────────────────
                     // Story 315 — stage transport gestures ride the SAME
                     // command path as the toolbar and keyboard (§2.8).

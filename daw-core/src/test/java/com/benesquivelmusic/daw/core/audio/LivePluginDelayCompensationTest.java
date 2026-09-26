@@ -199,7 +199,7 @@ public class LivePluginDelayCompensationTest {
             var transport = new Transport();
             transport.play();
             var pipeline = new RenderPipeline(new AudioFormat(48_000, 1, 16, 64), 1, 64);
-            var master = new EffectsChain();
+            var master = new com.benesquivelmusic.daw.core.mastering.MasteringChain(1);
             master.allocateIntermediateBuffers(1, 64);
             pipeline.renderOffline(transport, mixer, List.of(track), null, master, new float[1][128], 128, 64);
             assertThat(processor.setterCalls).isEqualTo(2);

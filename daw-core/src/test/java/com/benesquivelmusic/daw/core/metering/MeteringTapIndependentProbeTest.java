@@ -2,7 +2,7 @@ package com.benesquivelmusic.daw.core.metering;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.core.audio.EffectsChain;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
@@ -176,7 +176,7 @@ class MeteringTapIndependentProbeTest {
         final MixerChannel channel = new MixerChannel("Probe");
         final MixerChannel returnBus;
         final List<Track> tracks;
-        final EffectsChain engineMasterChain = new EffectsChain();
+        final MasteringChain engineMasteringChain = new MasteringChain();
         final RenderPipeline pipeline = new RenderPipeline(FORMAT, 4, BLOCK);
         final MeteringTapBus bus = new MeteringTapBus();
         final float[][] output = new float[CHANNELS][BLOCK];
@@ -210,7 +210,7 @@ class MeteringTapIndependentProbeTest {
 
             tracks = List.of(track);
             mixer.prepareForPlayback(CHANNELS, BLOCK);
-            engineMasterChain.allocateIntermediateBuffers(CHANNELS, BLOCK);
+            engineMasteringChain.allocateIntermediateBuffers(CHANNELS, BLOCK);
 
             bus.rebind(mixer, FORMAT, PROBE_EPOCH);
             subscribeAll();
@@ -232,7 +232,7 @@ class MeteringTapIndependentProbeTest {
                 Arrays.fill(lane, 0f);
             }
             pipeline.renderBlock(null, output, BLOCK, transport, mixer, tracks, null,
-                    engineMasterChain, null, null, null, null, null, null, null, taps, interleaved);
+                    engineMasteringChain, null, null, null, null, null, null, null, taps, interleaved);
             bus.blockCompleted(taps);
             return stamp;
         }

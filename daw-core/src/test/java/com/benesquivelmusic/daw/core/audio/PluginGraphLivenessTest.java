@@ -169,7 +169,7 @@ class PluginGraphLivenessTest {
                 .createSlot(plugin, context(), null));
         var masterGain = new GainProcessor();
         masterGain.setGain(0.5);
-        graph.engine().getMasterChain().addProcessor(masterGain);
+        graph.mixer().getMasterChannel().addInsert(new com.benesquivelmusic.daw.core.mixer.InsertSlot("Master gain", masterGain));
         graph.mixer().getMasterChannel().setVolume(0.25);
         if (paused) {
             graph.transport().play();
@@ -190,7 +190,8 @@ class PluginGraphLivenessTest {
             var combined = new float[2][256];
             graph.engine().processBlock(input, combined, frames);
             for (int outputChannel = 0; outputChannel < combined.length; outputChannel++) {
-                float monitoredInput = outputChannel < inputChannels ? input[outputChannel][0] * 0.5f : 0;
+                // Monitor input joins the master inserts before the same 0.25 master fader.
+                float monitoredInput = outputChannel < inputChannels ? input[outputChannel][0] * 0.5f * 0.25f : 0;
                 for (int frame = 0; frame < frames; frame++) {
                     assertThat(combined[outputChannel][frame]).isCloseTo(audition[outputChannel][frame] + monitoredInput,
                             org.assertj.core.api.Assertions.within(1e-6f));
@@ -200,7 +201,8 @@ class PluginGraphLivenessTest {
             channel.setInsertBypassed(0, true);
             graph.engine().processBlock(input, combined, frames);
             for (int outputChannel = 0; outputChannel < combined.length; outputChannel++) {
-                float monitoredInput = outputChannel < inputChannels ? input[outputChannel][0] * 0.5f : 0;
+                // Monitor input joins the master inserts before the same 0.25 master fader.
+                float monitoredInput = outputChannel < inputChannels ? input[outputChannel][0] * 0.5f * 0.25f : 0;
                 assertThat(java.util.Arrays.copyOf(combined[outputChannel], frames)).containsOnly(monitoredInput);
             }
             for (int inputChannel = 0; inputChannel < inputChannels; inputChannel++) {

@@ -57,8 +57,8 @@ final class EngineBinderConformanceTest {
     /** Non-engine receivers of {@code .setTracks(} pinned exactly (sorted). */
     private static final List<String> ALLOWED_SET_TRACKS_RECEIVERS = List.of("arrangementCanvas");
 
-    /** Non-engine receivers of {@code .setMixer(} pinned exactly (sorted). */
-    private static final List<String> ALLOWED_SET_MIXER_RECEIVERS = List.of("insertRack");
+    /** Non-engine rack receivers; the story-321 master rack also has a typed/file-scoped check below. */
+    private static final List<String> ALLOWED_SET_MIXER_RECEIVERS = List.of("insertRack", "masterInsertRack");
 
     /** {@code .setTransport(} has no legitimate non-binder receiver at all. */
     private static final List<String> ALLOWED_SET_TRANSPORT_RECEIVERS = List.of();
@@ -234,7 +234,15 @@ final class EngineBinderConformanceTest {
         while (matcher.find()) {
             receiverMatches++;
             String receiver = matcher.group(1);
-            if (scan.allowedReceivers().contains(receiver)) {
+            // Story 321 wires the master rack's sidechain/editor context through
+            // InsertEffectRack.setMixer, exactly like each track rack. This is
+            // not AudioEngine graph binding: pin both the owning source and
+            // field type rather than granting the identifier a global exemption.
+            boolean typedMasterRack = !receiver.equals("masterInsertRack")
+                    || (relPath.equals("ui/MixerView.java")
+                        && Pattern.compile("\\bprivate\\s+InsertEffectRack\\s+masterInsertRack\\s*;")
+                                .matcher(code).find());
+            if (scan.allowedReceivers().contains(receiver) && typedMasterRack) {
                 receiversBySetter.computeIfAbsent(setter, _ -> new TreeSet<>()).add(receiver);
             } else {
                 offenders.add(relPath + "  — `" + receiver + "." + setter

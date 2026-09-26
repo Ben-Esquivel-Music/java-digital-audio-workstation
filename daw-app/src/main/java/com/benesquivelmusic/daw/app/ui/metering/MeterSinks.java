@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui.metering;
 
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.core.metering.MeterFrame;
+import javafx.scene.control.Label;
 
 import java.util.Objects;
 
@@ -15,6 +16,20 @@ import java.util.Objects;
 public final class MeterSinks {
 
     private MeterSinks() {
+    }
+
+    /** Stage output and dynamics reduction from the same coherent engine block. */
+    public static MeterSink masteringStage(LevelMeterDisplay display, Label gainReduction, Label stageLevels) {
+        var levels = levelMeterDisplay(display);
+        return frame -> {
+            levels.accept(frame);
+            double reduction = frame.gainReductionDb();
+            gainReduction.setText(Double.isFinite(reduction)
+                    ? String.format(java.util.Locale.ROOT, "GR: %.1f dB", reduction) : "GR: ---");
+            stageLevels.setText(Double.isFinite(reduction)
+                    ? String.format(java.util.Locale.ROOT, "IN: %.1f  OUT: %.1f",
+                            frame.inputPeakDb(), MeterFrame.toDb(frame.maxPeak())) : "IN: ---  OUT: ---");
+        };
     }
 
     /**

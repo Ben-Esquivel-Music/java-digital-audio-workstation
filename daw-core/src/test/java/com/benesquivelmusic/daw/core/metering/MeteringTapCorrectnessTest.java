@@ -2,7 +2,7 @@ package com.benesquivelmusic.daw.core.metering;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.core.audio.EffectsChain;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -81,7 +81,7 @@ class MeteringTapCorrectnessTest {
         final MixerChannel channelB;
         final MixerChannel returnBus;
         final List<Track> tracks;
-        final EffectsChain masterChain = new EffectsChain();
+        final MasteringChain masteringChain = new MasteringChain();
         final RenderPipeline pipeline = new RenderPipeline(FORMAT, 8, BLOCK);
         final MeteringTapBus bus = new MeteringTapBus();
         final float[][] output;
@@ -139,7 +139,7 @@ class MeteringTapCorrectnessTest {
 
             tracks = List.of(trackA, trackB);
             mixer.prepareForPlayback(CHANNELS, BLOCK);
-            masterChain.allocateIntermediateBuffers(CHANNELS, BLOCK);
+            masteringChain.allocateIntermediateBuffers(CHANNELS, BLOCK);
             output = new float[outputLanes][BLOCK];
 
             bus.rebind(mixer, FORMAT, 1L);
@@ -159,7 +159,7 @@ class MeteringTapCorrectnessTest {
                 Arrays.fill(lane, 0f);
             }
             pipeline.renderBlock(null, output, BLOCK, transport, mixer, tracks, null,
-                    masterChain, null, null, enforcer, null, null, null, null, taps, interleaved);
+                    masteringChain, null, null, enforcer, null, null, null, null, taps, interleaved);
             bus.blockCompleted(taps);
             return stamp;
         }

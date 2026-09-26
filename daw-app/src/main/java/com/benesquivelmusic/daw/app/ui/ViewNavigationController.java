@@ -67,6 +67,12 @@ final class ViewNavigationController {
          */
         MeterFeed meterFeed();
 
+        com.benesquivelmusic.daw.core.mastering.MasteringChain masteringChain();
+
+        default com.benesquivelmusic.daw.core.audio.AudioFormat engineFormat() { return project().getFormat(); }
+
+        default com.benesquivelmusic.daw.core.metering.MeteringTapBus meteringTapBus() { return null; }
+
         // ── Performance Stage (story 280) ─────────────────────────────────
         /**
          * @return the {@code Messages} resource bundle for Performance
@@ -267,7 +273,12 @@ final class ViewNavigationController {
         viewCache.put(DawView.EDITOR, editorView);
 
         // Mastering view — mastering chain with presets and A/B comparison
-        masteringView = new MasteringView();
+        masteringView = new MasteringView(host.masteringChain(), host::engineFormat);
+        masteringView.bindMeters(host.meterFeed(), host.meteringTapBus(), fxDispatcher, () -> {
+            var state = host.project().getTransport().getState();
+            return state == com.benesquivelmusic.daw.core.transport.TransportState.PLAYING
+                    || state == com.benesquivelmusic.daw.core.transport.TransportState.RECORDING;
+        });
         viewCache.put(DawView.MASTERING, masteringView);
 
         // Restore persisted active view (activeView was set in the constructor)
@@ -464,6 +475,7 @@ final class ViewNavigationController {
      */
     void dispose() {
         if (mixerView != null) mixerView.dispose();
+        if (masteringView != null) masteringView.dispose();
         if (workshopSelectionHostController != null) {
             workshopSelectionHostController.dispose();
             workshopSelectionHostController = null;

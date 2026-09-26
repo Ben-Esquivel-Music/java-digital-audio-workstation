@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
+
 import com.benesquivelmusic.daw.core.metering.MeterFrame;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
@@ -47,8 +49,8 @@ class RenderPipelineOutputMeteringTest {
         var transport = new Transport();
         transport.play();
         var tracks = List.of(constantTrack("Positive", 0.75f), constantTrack("Negative", -0.75f));
-        var chain = new EffectsChain();
-        chain.addProcessor(new InterfaceSignal());
+        var chain = new MasteringChain();
+        mixer.getMasterChannel().addInsert(new com.benesquivelmusic.daw.core.mixer.InsertSlot("Master signal", new InterfaceSignal()));
         chain.allocateIntermediateBuffers(2, BLOCK);
         var pipeline = new RenderPipeline(FORMAT, 4, BLOCK);
         var output = new float[4][BLOCK];
@@ -97,7 +99,7 @@ class RenderPipelineOutputMeteringTest {
     void interfaceWriterMetersPassthroughAndIdleSilenceWithNoUntappedAudioDifference(int channels) {
         var format = new AudioFormat(48_000, channels, 24, BLOCK);
         var pipeline = new RenderPipeline(format, 4, BLOCK);
-        var chain = new EffectsChain();
+        var chain = new MasteringChain();
         var input = new float[channels][BLOCK];
         var output = new float[channels + 2][BLOCK];
         var interleaved = new float[channels * BLOCK];
@@ -142,7 +144,7 @@ class RenderPipelineOutputMeteringTest {
             var level = bus.attachLevel(MeterTapPoint.MASTER_OUT);
             var output = new float[2][BLOCK];
             pipeline.renderBlock(null, output, BLOCK, null, null, null, null,
-                    new EffectsChain(), null, null, null, null, null, null, null, bus.snapshot());
+                    new MasteringChain(), null, null, null, null, null, null, null, bus.snapshot());
             assertThat(level.readInto(new MeterFrame())).isFalse();
         } finally {
             bus.close();

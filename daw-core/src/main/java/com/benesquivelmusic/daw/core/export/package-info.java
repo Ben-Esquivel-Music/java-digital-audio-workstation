@@ -10,7 +10,7 @@
  * com.benesquivelmusic.daw.core.transport.Transport,
  * com.benesquivelmusic.daw.core.mixer.Mixer, java.util.List,
  * com.benesquivelmusic.daw.core.audio.MidiTrackRenderer,
- * com.benesquivelmusic.daw.core.audio.EffectsChain,
+ * com.benesquivelmusic.daw.core.mastering.MasteringChain,
  * float[][], int, int) RenderPipeline.renderOffline}, the same pipeline
  * driving live audio playback through
  * {@link com.benesquivelmusic.daw.core.audio.AudioEngine#processBlock

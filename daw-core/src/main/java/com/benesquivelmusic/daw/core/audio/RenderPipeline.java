@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.mixer.CueBus;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -60,13 +61,13 @@ import java.util.logging.Logger;
  * <p>Two entry points are provided:</p>
  * <ul>
  *   <li>{@link #renderBlock(float[][], float[][], int, Transport, Mixer,
- *       List, MidiTrackRenderer, EffectsChain, AudioEngine.RecordingCallback,
+ *       List, MidiTrackRenderer, MasteringChain, AudioEngine.RecordingCallback,
  *       PerformanceMonitor)} — invoked from the audio callback on the live
  *       path. It is {@link RealTimeSafe}: all scratch buffers are
  *       pre-allocated by the constructor, no locks are acquired, and no
  *       heap allocations occur.</li>
  *   <li>{@link #renderOffline(Transport, Mixer, List, MidiTrackRenderer,
- *       EffectsChain, float[][], int, int)} — wraps {@code renderBlock} in a
+ *       MasteringChain, float[][], int, int)} — wraps {@code renderBlock} in a
  *       loop to render {@code totalFrames} of audio into a caller-supplied
  *       output buffer. This is the entry point for offline export code
  *       paths such as stem export, track bouncing, and master rendering.</li>
@@ -95,6 +96,8 @@ public final class RenderPipeline {
 
     // Pre-allocated mix buffer. [channel][frame]
     private final float[][] mixBuffer;
+    private final float[][] masterInputBuffer;
+    private boolean bypassMasterProcessing;
 
     // Pre-allocated per-track buffers: [track][channel][frame]
     private final float[][][] trackBuffers;
@@ -120,105 +123,34 @@ public final class RenderPipeline {
     private final float[][] clickTail;
     private int clickTailFrames;
 
-    /**
-     * Story 315 review — set when an in-block loop wrap leaves the CLICK
-     * walk's cursor on a lap whose first frame has not been scheduled yet;
-     * consumed by the next segment, which may live in the NEXT block because
-     * a quantized wrap can land exactly on the block boundary. The positional
-     * residue test alone cannot carry that fact across the boundary: for a
-     * frame that HAS already been scheduled, beatsIntoLoop * samplesPerBeat
-     * evaluates to 0.99999999999988990 rather than 1.0, and the lap's
-     * loop-start click then fires a second time one frame later. (That
-     * reading, the genuine residue it overlaps with, and the provenance of
-     * both are recorded on the widening in {@code mixMetronomeClicks}.)
-     *
-     * <p><b>Staleness is bounded positionally, NOT by lifecycle clears, and
-     * this flag is deliberately never cleared on stop or pause.</b> A stale
-     * flag — one set before a seek that landed elsewhere inside the loop —
-     * can only widen the window while the residue test also passes, i.e.
-     * while the cursor is already within one frame past the loop start, where
-     * emitting the loop-start event is the correct thing to do anyway. (A
-     * seek landing three frames past the loop START produces no widening at
-     * all: the residue test reads 3.0, not < 1.0. A seek past the loop END
-     * cannot illustrate staleness at all — it trips the block-entry mapping
-     * above {@code mixMetronomeClicks}'s split loop, which clears this flag
-     * outright.) A lifecycle clear, by contrast, destroys real information:
-     * {@code AudioEngine.processBlock} hands EVERY backend callback to
-     * {@link #renderBlock} regardless of transport state, so a clear on the
-     * not-playing path runs on every paused callback while the position sits
-     * parked inside the sub-frame residue, and the loop-start event owed to
-     * the paused lap is lost on resume. Do not re-add it.</p>
-     *
-     * <p><b>Provenance of the pause/resume evidence: it is a CONTENT-walk
-     * measurement, carried over to this walk by symmetry rather than
-     * measured here.</b> The number quoted for that argument — 4 loop-start
-     * events with the not-playing clear, 5 without it, on the pause/resume
-     * fixture in {@code AudioEngineMidiPlaybackTest} (48 kHz, 120 BPM,
-     * 64-frame blocks, loop [0.0, 0.328125) beats = 7875 frames, 16 frames of
-     * insert latency, 615 playing + 20 paused + 20 resumed blocks) — is a
-     * {@link #trackLoopWrapPending} result: that fixture never installs a
-     * metronome, so {@code mixMetronomeClicks} never runs during it and THIS
-     * flag is never touched by it. No pause/resume fixture exercises the
-     * click walk directly. The argument transfers because both walks park
-     * their cursor inside the same kind of sub-frame wrap residue across a
-     * pause and both consume the flag through the same shape of widening —
-     * but it is reasoning by symmetry, not a click-walk measurement.</p>
-     */
-    private boolean clickLoopWrapPending;
+    // Main clicks traverse serial master effects; hardware clicks bypass them.
+    // Each timeline needs its own loop-wrap and half-frame carry state.
+    private final ClickSchedule mainClickSchedule = new ClickSchedule();
+    private final ClickSchedule hardwareClickSchedule = new ClickSchedule();
 
     /**
-     * The grid-window END of the previously scheduled click segment, or
-     * {@link Double#NaN} if this walk has not scheduled one yet. RT-thread
-     * confined, exactly like {@link #clickLoopWrapPending}.
-     *
-     * <p>The click walk's half of the frame-ownership partition; the full
-     * argument is on {@link #trackPreviousWindowEndBeat}, and the two walks
-     * are deliberately written to read identically. In brief: a segment's
-     * grid window ends half a frame before its own exclusive end, because a
-     * grid position in that last half frame rounds to a frame the segment
-     * cannot address, so the NEXT segment reaches back to
-     * {@code clickPreviousWindowEndBeat} and sounds it at its own frame 0 —
-     * the frame nearest-frame rounding always said it belonged on. Carrying
-     * the remembered bound itself, rather than recomputing
-     * {@code cursor − half a frame}, is what makes the two windows abut with
-     * no gap and no overlap.</p>
-     *
-     * <p>Lap edges are exempt and stay beat-exact at the loop end, so the
-     * pre-wrap segment still releases its final grid position on the last
-     * frame it owns. NaN is the "nothing scheduled yet" sentinel, and the
-     * field is deliberately NOT cleared on stop or pause for the reasons
-     * recorded on {@link #clickLoopWrapPending}.</p>
+     * Render-thread state for one click timeline. A pending wrap admits the
+     * loop-start grid point exactly once through a sub-frame wrap residue;
+     * ordinary segments carry their half-frame ownership bound forward only
+     * while the cursor remains continuous. NaN marks the initial hard edge.
+     * Keep this state across stop/pause: clearing it discards a lap-start click
+     * still owed when playback resumes at the same cursor. Residue and
+     * continuity checks bound stale state after a seek.
      */
-    private double clickPreviousWindowEndBeat = Double.NaN;
-
-    /**
-     * The previous scheduled click segment's own END cursor — its raw
-     * {@code segEndBeat}, NOT its grid-window end — or {@link Double#NaN} if
-     * this walk has not scheduled one yet. RT-thread confined.
-     *
-     * <p>The continuity reference that decides whether the next segment may
-     * carry at all; see {@link #trackPreviousSegmentEndBeat} for the full
-     * argument, including why half a frame is the right tolerance and not an
-     * arbitrary epsilon. The drift it absorbs arises on THIS walk too, from a
-     * different source: the transport wraps its position in one closed-form
-     * step per block while this walk accumulates {@code segStartBeat +
-     * segFrames / samplesPerBeat} across the block's loop-split segments, so
-     * the next block's entry cursor and this walk's accumulated cursor are
-     * the same quantity computed two ways. (Without a loop split the two
-     * expressions are bit-identical — the click walk carries no PDC offset —
-     * which is why an ordinary linear render continues exactly.)</p>
-     */
-    private double clickPreviousSegmentEndBeat = Double.NaN;
+    private static final class ClickSchedule {
+        private boolean loopWrapPending;
+        private double previousWindowEndBeat = Double.NaN;
+        private double previousSegmentEndBeat = Double.NaN;
+    }
 
     /**
      * Same fact for the content/MIDI walk. A separate flag because that walk
      * runs on the PDC-shifted cursor and therefore wraps at a different frame
      * than the click walk within the same block. The staleness argument on
-     * {@link #clickLoopWrapPending} applies verbatim: bounded by the
+     * {@link ClickSchedule} applies verbatim: bounded by the
      * positional residue test, never cleared on stop or pause.
      *
-     * <p>This is the flag the pause/resume measurement quoted there was
-     * actually taken on — see
+     * <p>The content-walk pause/resume behavior is covered by
      * {@code AudioEngineMidiPlaybackTest.loopStartNoteSurvivesAPauseOnTheWrapBoundary}.</p>
      */
     private boolean trackLoopWrapPending;
@@ -263,8 +195,7 @@ public final class RenderPipeline {
      * comparison into a NaN-unsafe form. The field is deliberately NOT reset
      * on stop, on pause, or when looping is off: the continuity test already
      * bounds a stale value, and a defensive clear here would destroy work the
-     * walk still owes — the same mistake the not-playing clear on
-     * {@link #clickLoopWrapPending} documents.</p>
+     * walk still owes, as described on {@link ClickSchedule}.</p>
      */
     private double trackPreviousWindowEndBeat = Double.NaN;
 
@@ -373,6 +304,7 @@ public final class RenderPipeline {
         this.maxTracks = maxTracks;
         int channels = format.channels();
         this.mixBuffer = new float[channels][blockSize];
+        this.masterInputBuffer = new float[channels][blockSize];
         this.trackBuffers = new float[maxTracks][channels][blockSize];
         this.instrumentRecordingTracks = new Track[maxTracks];
         this.returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][blockSize];
@@ -537,7 +469,7 @@ public final class RenderPipeline {
      * @param mixer             the mixer, or {@code null} for pass-through
      * @param tracks            the tracks, or {@code null} for pass-through
      * @param midiRenderer      the MIDI track renderer, or {@code null}
-     * @param masterChain       the master effects chain applied after mixdown
+     * @param masteringChain       the master effects chain applied after mixdown
      * @param recordingCallback optional recording callback invoked with the
      *                          captured {@code inputBuffer} (may be {@code null})
      * @param performanceMonitor optional performance monitor (may be {@code null})
@@ -550,11 +482,11 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer,
-                tracks, midiRenderer, masterChain, recordingCallback,
+                tracks, midiRenderer, masteringChain, recordingCallback,
                 performanceMonitor, null);
     }
 
@@ -584,7 +516,7 @@ public final class RenderPipeline {
      * @param mixer              the mixer, or {@code null} for pass-through
      * @param tracks             the tracks, or {@code null} for pass-through
      * @param midiRenderer       the MIDI track renderer, or {@code null}
-     * @param masterChain        the master effects chain applied after mixdown
+     * @param masteringChain        the master effects chain applied after mixdown
      * @param recordingCallback  optional recording callback (may be {@code null})
      * @param performanceMonitor optional performance monitor (may be {@code null})
      * @param cpuBudgetEnforcer  optional per-track CPU budget enforcer
@@ -599,12 +531,12 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
-                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                midiRenderer, masteringChain, recordingCallback, performanceMonitor,
                 cpuBudgetEnforcer, null, null, null, null);
     }
 
@@ -652,7 +584,7 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer,
@@ -661,7 +593,7 @@ public final class RenderPipeline {
                             CueBusManager cueBusManager,
                             AudioBackend backend) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
-                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                midiRenderer, masteringChain, recordingCallback, performanceMonitor,
                 cpuBudgetEnforcer, metronome, router, cueBusManager, backend, null);
     }
 
@@ -688,7 +620,7 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer,
@@ -698,7 +630,7 @@ public final class RenderPipeline {
                             AudioBackend backend,
                             TapSnapshot taps) {
         renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
-                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                midiRenderer, masteringChain, recordingCallback, performanceMonitor,
                 cpuBudgetEnforcer, metronome, router, cueBusManager, backend, taps, null);
     }
 
@@ -719,7 +651,7 @@ public final class RenderPipeline {
                             Mixer mixer,
                             List<Track> tracks,
                             MidiTrackRenderer midiRenderer,
-                            EffectsChain masterChain,
+                            MasteringChain masteringChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer,
@@ -730,7 +662,7 @@ public final class RenderPipeline {
                             TapSnapshot taps,
                             float[] interleavedOutput) {
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
-        Objects.requireNonNull(masterChain, "masterChain must not be null");
+        Objects.requireNonNull(masteringChain, "masteringChain must not be null");
 
         long startNanos = (performanceMonitor != null) ? System.nanoTime() : 0L;
 
@@ -748,11 +680,49 @@ public final class RenderPipeline {
         if (mixer != null) {
             mixer.drainInsertParameters();
         }
+        masteringChain.drainParameterUpdates();
 
         boolean mixerActive = playbackActive
                 || mixer != null && tracks != null && hasInstruments(mixer);
         if (recordingCallback != null) {
             captureInstrumentRecordingTracks(mixerActive ? tracks : null, mixer);
+        }
+
+        if (!playbackActive && inputBuffer != null) {
+            // Preserve input monitoring alongside stopped instrument audition.
+            int channels = Math.min(inputBuffer.length, mixBuffer.length);
+            for (int ch = 0; ch < channels; ch++) {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    mixBuffer[ch][frame] += inputBuffer[ch][frame];
+                }
+            }
+        }
+
+        // Story 136 — schedule per-beat (and per-subdivision) metronome
+        // clicks that fall inside this block, route them through the
+        // side-output router, and sum the returned main-mix contribution
+        // into the mix buffer at the sample-accurate offset. The router
+        // also writes the side output and we write each cue-bus
+        // contribution to the bus's hardware output stereo pair so the
+        // drummer's cue mix is audibly fed the click. This must run
+        // before the master chain (so the click flows through master
+        // inserts) and BEFORE the transport position is advanced
+        // further down (so beat scheduling sees the start-of-block
+        // position).
+        if (playbackActive && metronome != null && router != null) {
+            int masterLatency = bypassMasterProcessing ? 0
+                    : mixer.getDelayCompensation().getMasterLatencySamples();
+            mixMetronomeClicks(transport, metronome, router,
+                    cueBusManager, backend, numFrames, masterLatency);
+        } else {
+            // Clear any pending click-tail so stray clicks do not leak
+            // into the first block when playback resumes or when the
+            // metronome/router is disconnected.
+            clearClickTail();
+        }
+
+        for (int ch = 0; ch < mixBuffer.length; ch++) {
+            System.arraycopy(mixBuffer[ch], 0, masterInputBuffer[ch], 0, numFrames);
         }
 
         if (playbackActive) {
@@ -763,7 +733,8 @@ public final class RenderPipeline {
             // ahead of the transport cursor; the compensation delays then
             // push the audio back, so beat-1 arrives at the output exactly
             // on time.
-            int systemLatency = mixer.getSystemLatencySamples();
+            int systemLatency = bypassMasterProcessing ? mixer.getDelayCompensation().getMaxLatencySamples()
+                    : mixer.getSystemLatencySamples();
             double samplesPerBeatForOffset =
                     format.sampleRate() * 60.0 / transport.getTempo();
             double renderOffsetBeats = systemLatency / samplesPerBeatForOffset;
@@ -796,11 +767,12 @@ public final class RenderPipeline {
             // no instrumentation overhead.
             if (cpuBudgetEnforcer != null) {
                 mixer.mixDownInstrumented(trackBuffers, mixBuffer, returnBuffers,
-                        numFrames, tracks, cpuBudgetEnforcer, taps);
+                        numFrames, tracks, cpuBudgetEnforcer, taps, masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
             } else {
                 // Mix through the mixer into the mix buffer, routing sends to
                 // return buses which are summed into the main output.
-                mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
+                mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps,
+                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
             }
         } else if (mixerActive) {
             // Instrument audition remains audible while the playhead is stopped.
@@ -809,37 +781,15 @@ public final class RenderPipeline {
                     Arrays.fill(trackBuffers[i][ch], 0, numFrames, 0f);
                 }
             }
-            mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps);
+            mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps,
+                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
         }
-        if (!playbackActive && inputBuffer != null) {
-            // Preserve input monitoring alongside stopped instrument audition.
-            int channels = Math.min(inputBuffer.length, mixBuffer.length);
-            for (int ch = 0; ch < channels; ch++) {
-                for (int frame = 0; frame < numFrames; frame++) {
-                    mixBuffer[ch][frame] += inputBuffer[ch][frame];
-                }
+        if (!mixerActive) {
+            if (mixer != null && !bypassMasterProcessing) {
+                mixer.processMaster(mixBuffer, numFrames, masteringChain, taps);
+            } else if (!bypassMasterProcessing) {
+                masteringChain.process(mixBuffer, mixBuffer, numFrames, taps, playbackActive);
             }
-        }
-
-        // Story 136 — schedule per-beat (and per-subdivision) metronome
-        // clicks that fall inside this block, route them through the
-        // side-output router, and sum the returned main-mix contribution
-        // into the mix buffer at the sample-accurate offset. The router
-        // also writes the side output and we write each cue-bus
-        // contribution to the bus's hardware output stereo pair so the
-        // drummer's cue mix is audibly fed the click. This must run
-        // before the master chain (so the click flows through master
-        // inserts) and BEFORE the transport position is advanced
-        // further down (so beat scheduling sees the start-of-block
-        // position).
-        if (playbackActive && metronome != null && router != null) {
-            mixMetronomeClicks(transport, metronome, router,
-                    cueBusManager, backend, numFrames);
-        } else {
-            // Clear any pending click-tail so stray clicks do not leak
-            // into the first block when playback resumes or when the
-            // metronome/router is disconnected.
-            clearClickTail();
         }
 
         // Notify recording callback with the captured input
@@ -853,15 +803,17 @@ public final class RenderPipeline {
             }
         }
 
-        // Process through the master effects chain
-        masterChain.process(mixBuffer, outputBuffer, numFrames);
+        // The mixer has applied inserts, mastering and monitor gain exactly once.
+        for (int ch = 0; ch < Math.min(mixBuffer.length, outputBuffer.length); ch++) {
+            System.arraycopy(mixBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+        }
 
         // Write non-master channels to their direct hardware outputs.
         // This runs AFTER the master chain so that its overwrite of
         // outputBuffer (channels 0..N) does not clobber direct-output data
         // on higher channels.
         if (mixerActive) {
-            mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps);
+            mixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames, taps, !bypassMasterProcessing);
         }
 
         if (interleavedOutput != null) {
@@ -949,15 +901,17 @@ public final class RenderPipeline {
      * leading-zero alignment so every destination is sample-accurate
      * within the block.
      *
-     * <p>All three destinations share the same source buffer, so
-     * timing across them is inherently sample-accurate.</p>
+     * <p>Main clicks are scheduled ahead by serial master latency. Side and
+     * cue clicks use the audible transport cursor because they bypass those
+     * effects. Separate scheduling state preserves each timeline's loop edges.</p>
      *
      * <h4>Allocation note</h4>
      * <p>Each invocation of {@link Metronome#generateClick(boolean)}
      * and {@link MetronomeSideOutputRouter#route} allocates the click
      * buffer and per-bus mono buffer respectively. These allocations
      * are short-lived and bounded (one per scheduled subdivision per
-     * block — typically 0–2 per block at musical tempos). This method
+     * destination timeline — typically 0–2 per block at musical tempos).
+     * Main-only scheduling omits hardware routing allocations. This method
      * is therefore <em>not</em> allocation-free, unlike the rest of
      * the render pipeline's live path.</p>
      */
@@ -966,7 +920,8 @@ public final class RenderPipeline {
                                     MetronomeSideOutputRouter router,
                                     CueBusManager cueBusManager,
                                     AudioBackend backend,
-                                    int numFrames) {
+                                    int numFrames,
+                                    int masterLatency) {
         // If the metronome is disabled, clear any pending click-tail
         // so disabling immediately silences every destination — no
         // stray tail samples leak into subsequent blocks.
@@ -995,6 +950,20 @@ public final class RenderPipeline {
             clickTailFrames = remaining;
         }
 
+        double samplesPerBeat = format.sampleRate() * 60.0 / transport.getTempo();
+        double mainStartBeat = transport.getPositionInBeats() + masterLatency / samplesPerBeat;
+        scheduleMetronomeClicks(transport, metronome, router, null, null, numFrames,
+                mainStartBeat, mainClickSchedule, masterLatency == 0);
+        if (backend != null) {
+            scheduleMetronomeClicks(transport, metronome, router, cueBusManager, backend, numFrames,
+                    transport.getPositionInBeats(), hardwareClickSchedule, true);
+        }
+    }
+
+    private void scheduleMetronomeClicks(Transport transport, Metronome metronome,
+                                         MetronomeSideOutputRouter router, CueBusManager cueBusManager,
+                                         AudioBackend backend, int numFrames, double startBeat,
+                                         ClickSchedule schedule, boolean usesTransportCursor) {
         double samplesPerBeat = format.sampleRate() * 60.0 / transport.getTempo();
         if (samplesPerBeat <= 0.0) {
             return;
@@ -1025,38 +994,8 @@ public final class RenderPipeline {
         // across the wrap boundary within the block/tail — that is the click's
         // natural ring-out, not timeline content bleeding past the loop end.)
         //
-        // Known divergence: clicks are scheduled against the raw transport
-        // cursor (getPositionInBeats()), while renderTracks renders
-        // PDC-shifted content from getPositionInBeats() + renderOffsetBeats.
-        // The two intra-block split frames therefore differ by the render
-        // offset whenever plugin latency is non-zero — making the click grid
-        // follow the PDC-compensated cursor would change audible click
-        // timing and is deliberately not done here. Both cursors are,
-        // however, loop-mapped before use (below and in renderTracks), so
-        // neither path ever schedules a click grid position or a MIDI note-on
-        // from at/beyond the loop end. There are exactly TWO deliberate
-        // exceptions, both of them events AT the loop end rather than beyond
-        // it:
-        //  • audio-clip RANGES — renderSegment's own endBeat local is
-        //    deliberately NOT capped at the loop end, so a clip's raw range
-        //    runs up to one frame past it and the frame straddling the
-        //    boundary is fully written (see its javadoc);
-        //  • note-OFFS sitting exactly at loopEnd, which are scheduled on
-        //    every lap. MidiTrackRenderer admits a note end with
-        //    "noteEndBeat > windowStartBeat && noteEndBeat <= windowEndBeat"
-        //    — inclusive on the right — and the value it receives as
-        //    windowEndBeat is eventWindowEndBeat, which renderTracks pins to
-        //    loopEnd on the segment that reaches it (the segmentEndsLap
-        //    branch) and passes into renderSegment. (It is NOT
-        //    renderSegment's own endBeat local, which is the uncapped
-        //    audio-clip range of the first bullet.) So the final pre-wrap
-        //    segment releases a note that ends exactly as the lap ends. That
-        //    is intended: the note must be released, and the post-wrap window
-        //    cannot admit it a second time (its endBeat is a few frames into
-        //    the new lap, four beats short of the note end). Pinned by
-        //    AudioEngineMidiPlaybackTest#noteEndingExactlyOnTheLoopEndIsReleasedOncePerLapWhileLooping.
-        // Note-ONS at loopEnd are NOT an exception — they are excluded, and
-        // that exclusion is pinned by noteExactlyAtTheLoopEndNeverFiresWhileLooping.
+        // Main and hardware walks differ only in their starting cursor:
+        // main advances by serial master latency, never by track insert PDC.
         Transport.LoopWindow loop = transport.getLoopWindow();
         boolean loopActive = loop.enabled() && loop.endInBeats() > loop.startInBeats();
         double loopLength = loop.endInBeats() - loop.startInBeats(); // > 0 whenever loopActive
@@ -1068,7 +1007,7 @@ public final class RenderPipeline {
         // Why it is redundant. Nothing returns between here and the segment
         // loop (every early return above is before the LoopWindow read), the
         // loop runs at least once for any numFrames >= 1, and its body ends
-        // with an UNCONDITIONAL "clickLoopWrapPending = false" after
+        // with an UNCONDITIONAL "schedule.loopWrapPending = false" after
         // scheduleSegmentClicks — so the flag is false at method exit with or
         // without this line. Meanwhile the only read of the flag inside the
         // block is the widening, whose condition is conjoined with
@@ -1078,43 +1017,19 @@ public final class RenderPipeline {
         // callback, where the segment loop never runs — not a case any
         // backend produces.
         if (!loopActive) {
-            clickLoopWrapPending = false;
+            schedule.loopWrapPending = false;
         }
-        double segStartBeat = transport.getPositionInBeats();
-        // Story 315 review — same loop-mapping as renderTracks, applied to
-        // the raw cursor: setPositionInBeats permits a target at/past the
-        // loop end while looping, and advancePosition wraps only at the NEXT
-        // block boundary, so an unmapped start would schedule a full block
-        // of out-of-loop clicks. Mirrors advancePosition's closed-form wrap.
+        double segStartBeat = startBeat;
+        // Map both lookahead and explicit seeks into the loop before the
+        // first segment, using the transport's closed-form modulo wrap.
         if (loopActive && segStartBeat >= loop.endInBeats()) {
             segStartBeat = loop.startInBeats() + ((segStartBeat - loop.endInBeats()) % loopLength);
-            // This mapping lands the cursor on a genuine fractional position
-            // that no lap owes a widened window for, so clear the flag. It
-            // fires for two reasons, and neither is a quantization residue:
-            // a seek past the loop end, or the FX thread shrinking loopEnd
-            // below the current position (no seek involved). Either way the
-            // cursor's offset into the lap is arbitrary, not the sub-frame
-            // overshoot of a whole-frame split.
-            //
-            // The asymmetry with renderTracks is deliberate and must stay:
-            // this walk reads the RAW cursor, which the transport itself
-            // already wraps, so the only ways for it to arrive at/past the
-            // loop end are the two above. renderTracks walks the PDC-shifted
-            // cursor, and its mapping ALSO fires as the continuation of a
-            // quantized wrap — the shifted cursor crosses the loop end while
-            // the raw one is still inside — so it deliberately does NOT clear
-            // there, and "restoring symmetry" by adding the clear back drops
-            // the loop-start event on every block-boundary-aligned wrap.
-            //
-            // Pinned by MetronomeLoopSchedulingEngineTest#
-            // seekPastTheLoopEndAfterABlockBoundaryWrapAbandonsTheOwedLoopStartClick,
-            // which is the only fixture that can see this line: the others
-            // either never seek, or seek in block 0 where the flag is still
-            // false, and deleting the clear leaves their rendered output
-            // byte-identical. Delete it and a click reappears at the seek
-            // landing — the abandoned lap's loop-start click, recovered one
-            // frame into a lap the seek walked away from.
-            clickLoopWrapPending = false;
+            // The raw cursor maps only on a seek or loop edit. The advanced
+            // main cursor also maps during normal playback, so retain its
+            // pending wrap just as the PDC-shifted content walk does.
+            if (usesTransportCursor) {
+                schedule.loopWrapPending = false;
+            }
         }
         int framesProcessed = 0;
 
@@ -1122,63 +1037,26 @@ public final class RenderPipeline {
             int segFrames = numFrames - framesProcessed;
             if (loopActive && segStartBeat < loop.endInBeats()) {
                 double beatsUntilLoopEnd = loop.endInBeats() - segStartBeat;
-                // Story 315 review — shave an epsilon off the ceil and floor
-                // the result at one frame. Same arithmetic as renderTracks;
-                // the reasoning is recorded in full there, and the figures
-                // below were measured on THIS walk.
-                //
-                // THE EPSILON. A product that ought to be a whole number of
-                // frames comes out a hair ABOVE it, so ceil returns k + 1 and
-                // the segment overshoots the loop end by a frame. Simulated
-                // on the fixture this floor is pinned on
-                // (MetronomeLoopSchedulingEngineTest#
-                // loopStartClickFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed
-                // — 48 kHz, 120 BPM, samplesPerBeat 24000, loop
-                // [0.0, 0.328125), 64-frame blocks, 2708 blocks), 1385 of the
-                // products this walk computes land within 1e-6 above a
-                // positive integer; the largest such excess is (exact double,
-                // printed in full)
-                //   5333.0000000000072759576141834259033203125
-                // i.e. k + 7.2759576141834259e-12.
-                // The often-quoted 5.56e-13 is NOT a product error — it is
-                // the excess of a resulting RESIDUE, and it was measured on
-                // the identical arithmetic at 44.1 kHz / 72 BPM with loop
-                // [0.0, 0.25) and 1024-frame blocks, where the wrap after the
-                // over-ceiled product leaves the cursor
-                //   1.0000000000005559996907322783954441547393798828125
-                // frames into the lap — just OUTSIDE the "< 1.0" widening
-                // below, so that lap's loop-start click is dropped. Product
-                // excess and residue excess are different quantities; do not
-                // read either figure as the other.
-                //
-                // THE FLOOR is load-bearing, not cosmetic, and this fixture
-                // exercises it directly: with the epsilon applied, the raw
-                // ceil evaluates to 0 exactly 17 times across those 2708
-                // blocks. The old "> 0" guard skipped the clamp on each of
-                // them, so the segment ran to the end of its block from a
-                // cursor a fraction of a frame short of the loop end and
-                // overshot the loop end by the whole remainder of the block.
-                //
-                // The FIGURE "286 of 300 laps wrong in a sweep" was measured
-                // offline by simulation and is NOT reproducible from any test
-                // in this repo — that disclaimer applies to the figure only.
-                // The MECHANISM is pinned right here: putting the old "> 0"
-                // guard back in place of this floor fails
-                // loopStartClickFiresOnlyOncePerLapWhenTheWrapResidueIsAlreadyConsumed,
-                // whose onset list drops from 23 lap-start clicks to 6 — 17
-                // laps lose their click, the same count as the 17 zero
-                // ceils measured above (both figures observed on JDK 26; the
-                // one-to-one correspondence between them is inferred from the
-                // mechanism, not checked lap by lap). Dropping the epsilon
-                // instead (keeping the
-                // floor) fails that same test plus
-                // AudioEngineMidiPlaybackTest#
-                // noteAtTheLoopStartFiresOnEveryLapWhenTheWrapResidueRoundsUp.
+                // Round up to a whole-frame split without allowing floating-
+                // point residue above an integer to add a sample. Keep at
+                // least one frame so very short loops always make progress.
+                // MetronomeMasterLatencyTest covers shifted integral and
+                // fractional boundaries; MetronomeLoopSchedulingEngineTest
+                // also checks sub-frame loops and duplicate lap starts.
                 int framesUntilLoopEnd =
                         Math.max(1, (int) Math.ceil(beatsUntilLoopEnd * samplesPerBeat - 1e-9));
                 segFrames = Math.min(segFrames, framesUntilLoopEnd);
             }
             double segEndBeat = segStartBeat + segFrames / samplesPerBeat;
+            // Use the split's sample-domain tolerance at its right edge too.
+            // A shifted cursor can finish an integral-frame lap an ulp below
+            // loopEnd; treating that as another segment consumes the next
+            // lap's first frame and drops its click. Preserve real fractional
+            // overshoot, which the modulo wrap carries into the next lap.
+            if (loopActive && segEndBeat < loop.endInBeats()
+                    && (loop.endInBeats() - segEndBeat) * samplesPerBeat < 1e-9) {
+                segEndBeat = loop.endInBeats();
+            }
             // Subdivision indices [firstIdx, lastIdxExclusive) whose
             // beat-positions land inside this segment. Inclusive on the left
             // so a segment that begins exactly on a beat fires its click at
@@ -1337,7 +1215,7 @@ public final class RenderPipeline {
             // end — the wrap that set the flag. A lap start is a HARD left
             // edge: nothing below the loop start may leak in, so nothing is
             // carried into it and its window is not shifted back.
-            boolean segmentBeginsLap = clickLoopWrapPending && loopActive;
+            boolean segmentBeginsLap = schedule.loopWrapPending && loopActive;
             double gridStartBeat = segStartBeat;
             if (segmentBeginsLap && loopLength * samplesPerBeat >= 1.0) {
                 double beatsIntoLoop = segStartBeat - loop.startInBeats();
@@ -1356,7 +1234,7 @@ public final class RenderPipeline {
             // segment's own end cursor, at the resolution the carry operates
             // at: half a frame. It is not an arbitrary epsilon and it is not
             // the equality-in-disguise a positional bound on
-            // clickPreviousWindowEndBeat would be — see
+            // schedule.previousWindowEndBeat would be — see
             // trackPreviousSegmentEndBeat for the full argument. On this walk
             // the drift it absorbs comes from the transport wrapping in one
             // closed-form step per block while this loop accumulates
@@ -1370,9 +1248,9 @@ public final class RenderPipeline {
             // first segment of a fresh render is a hard edge with no separate
             // flag. Do not rewrite this into a NaN-unsafe form.
             boolean continuesPreviousSegment =
-                    Math.abs(segStartBeat - clickPreviousSegmentEndBeat) * samplesPerBeat < 0.5;
+                    Math.abs(segStartBeat - schedule.previousSegmentEndBeat) * samplesPerBeat < 0.5;
             if (!segmentBeginsLap && continuesPreviousSegment) {
-                gridStartBeat = clickPreviousWindowEndBeat;
+                gridStartBeat = schedule.previousWindowEndBeat;
             }
             long firstIdx = (long) Math.ceil(gridStartBeat * clicksPerBeat - 1e-9);
             long lastIdxExclusive = (long) Math.ceil(schedulingEndBeat * clicksPerBeat - 1e-9);
@@ -1383,7 +1261,7 @@ public final class RenderPipeline {
             // This segment owns its lap's first frame now, whether or not the
             // widening actually fired (a frame-aligned wrap leaves no residue
             // and needs none), so no later segment may widen for the same lap.
-            clickLoopWrapPending = false;
+            schedule.loopWrapPending = false;
             // Hand this segment's right edge to the next one as its carry-in
             // bound, so the two ownership intervals abut exactly, and its raw
             // end cursor as the continuity reference that decides whether the
@@ -1391,8 +1269,8 @@ public final class RenderPipeline {
             // BEFORE the modulo wrap below, so they describe this segment's
             // own timeline position; a segment that follows a wrap sets
             // segmentBeginsLap and takes the hard edge regardless.
-            clickPreviousWindowEndBeat = schedulingEndBeat;
-            clickPreviousSegmentEndBeat = segEndBeat;
+            schedule.previousWindowEndBeat = schedulingEndBeat;
+            schedule.previousSegmentEndBeat = segEndBeat;
 
             framesProcessed += segFrames;
             segStartBeat = segEndBeat;
@@ -1406,7 +1284,7 @@ public final class RenderPipeline {
             // any overshoot and composes with advancePosition's closed form.
             if (loopActive && segStartBeat >= loop.endInBeats()) {
                 segStartBeat = loop.startInBeats() + ((segStartBeat - loop.endInBeats()) % loopLength);
-                clickLoopWrapPending = true;
+                schedule.loopWrapPending = true;
             }
         }
     }
@@ -1515,7 +1393,7 @@ public final class RenderPipeline {
             // not fit in this block into clickTail so the next block
             // can drain it (story 136: clicks > buffer size still play
             // continuously at typical 256/512-frame low-latency sizes).
-            if (routed.hasMainMix()) {
+            if (backend == null && routed.hasMainMix()) {
                 float[][] main = routed.mainMixBuffer();
                 if (main.length > 0) {
                     int clickLen = main[0].length;
@@ -1628,7 +1506,7 @@ public final class RenderPipeline {
      * @param mixer         the mixer (non-null)
      * @param tracks        the tracks to render (non-null)
      * @param midiRenderer  the MIDI track renderer, or {@code null}
-     * @param masterChain   the master effects chain (non-null)
+     * @param masteringChain   the master effects chain (non-null)
      * @param outputBuffer  the destination buffer
      *                      {@code [channels][totalFrames]}
      * @param totalFrames   the number of frames to render
@@ -1645,14 +1523,23 @@ public final class RenderPipeline {
                               Mixer mixer,
                               List<Track> tracks,
                               MidiTrackRenderer midiRenderer,
-                              EffectsChain masterChain,
+                              MasteringChain masteringChain,
                               float[][] outputBuffer,
                               int totalFrames,
                               int blockSize) {
+        renderOffline(transport, mixer, tracks, midiRenderer, masteringChain,
+                outputBuffer, totalFrames, blockSize, true);
+    }
+
+    /** Offline stems omit the entire master stage without editing its graph. */
+    public void renderOffline(Transport transport, Mixer mixer, List<Track> tracks,
+                              MidiTrackRenderer midiRenderer, MasteringChain masteringChain,
+                              float[][] outputBuffer, int totalFrames, int blockSize,
+                              boolean applyMasterProcessing) {
         Objects.requireNonNull(transport, "transport must not be null");
         Objects.requireNonNull(mixer, "mixer must not be null");
         Objects.requireNonNull(tracks, "tracks must not be null");
-        Objects.requireNonNull(masterChain, "masterChain must not be null");
+        Objects.requireNonNull(masteringChain, "masteringChain must not be null");
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
         if (totalFrames <= 0) {
             throw new IllegalArgumentException(
@@ -1678,6 +1565,21 @@ public final class RenderPipeline {
         // each block into the correct offset of the caller's buffer.
         float[][] blockOut = new float[channels][blockSize];
 
+        masteringChain.allocateIntermediateBuffers(masteringChain.getInputChannelCount(), blockSize);
+        MasteringChain previousMasteringChain = mixer.getMasteringChain();
+        try {
+            if (applyMasterProcessing) mixer.setMasteringChain(masteringChain);
+            renderOfflineBlocks(transport, mixer, tracks, midiRenderer, masteringChain,
+                    outputBuffer, totalFrames, blockSize, applyMasterProcessing, blockOut);
+        } finally {
+            if (applyMasterProcessing) mixer.setMasteringChain(previousMasteringChain);
+        }
+    }
+
+    private void renderOfflineBlocks(Transport transport, Mixer mixer, List<Track> tracks,
+                                     MidiTrackRenderer midiRenderer, MasteringChain masteringChain,
+                                     float[][] outputBuffer, int totalFrames, int blockSize,
+                                     boolean applyMasterProcessing, float[][] blockOut) {
         int framesRendered = 0;
         while (framesRendered < totalFrames) {
             int framesThisBlock = Math.min(blockSize, totalFrames - framesRendered);
@@ -1685,6 +1587,7 @@ public final class RenderPipeline {
             // Offline rendering can outrun the live latency watcher. Resolve
             // this block's controls before computing its PDC render offset.
             mixer.drainInsertParameters();
+            masteringChain.drainParameterUpdates();
             if (transport.getState() == TransportState.PLAYING
                     || transport.getState() == TransportState.RECORDING) {
                 applyAutomation(tracks, Math.min(tracks.size(), maxTracks),
@@ -1697,24 +1600,25 @@ public final class RenderPipeline {
                 channel.prepareInsertParametersForOfflineRendering();
             }
             mixer.getMasterChannel().prepareInsertParametersForOfflineRendering();
-            masterChain.prepareParametersForOfflineRendering();
             mixer.getDelayCompensation().refreshLatencies();
 
             // Clear blockOut so master chain writes land on a zero scratch
-            for (int ch = 0; ch < channels; ch++) {
+            for (int ch = 0; ch < format.channels(); ch++) {
                 Arrays.fill(blockOut[ch], 0, framesThisBlock, 0.0f);
             }
 
             offlineAutomationPrepared = true;
+            bypassMasterProcessing = !applyMasterProcessing;
             try {
                 renderBlock(null, blockOut, framesThisBlock,
-                        transport, mixer, tracks, midiRenderer, masterChain,
+                        transport, mixer, tracks, midiRenderer, masteringChain,
                         null, null);
             } finally {
                 offlineAutomationPrepared = false;
+                bypassMasterProcessing = false;
             }
 
-            for (int ch = 0; ch < channels; ch++) {
+            for (int ch = 0; ch < format.channels(); ch++) {
                 System.arraycopy(blockOut[ch], 0,
                         outputBuffer[ch], framesRendered, framesThisBlock);
             }
@@ -1794,8 +1698,8 @@ public final class RenderPipeline {
         // transport's own wrap one boundary later.
         if (loopActive && currentBeat >= loopEnd) {
             currentBeat = loopStart + ((currentBeat - loopEnd) % loopLength);
-            // The content walk must NOT clear the wrap flag here. Unlike the
-            // click walk, this mapping also fires for reason (a) above — the
+            // The content walk must NOT clear the wrap flag here. Like the
+            // advanced main-click walk, this mapping fires for reason (a) — the
             // PDC-shifted cursor crosses the loop end while the raw cursor is
             // still inside — which is the exact continuation of a whole-frame
             // quantization residue, not a seek. Clearing here wiped a flag

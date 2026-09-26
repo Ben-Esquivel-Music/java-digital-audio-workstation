@@ -51,7 +51,7 @@ class RealPanelDockManagerRegistrationTest {
         MixerView mixer = createOnFxThread(() -> new MixerView(project));
         BrowserPanel browser = createOnFxThread(BrowserPanel::new);
         EditorView editor = createOnFxThread(EditorView::new);
-        MasteringView mastering = createOnFxThread(MasteringView::new);
+        MasteringView mastering = createOnFxThread(() -> new MasteringView(new com.benesquivelmusic.daw.core.mastering.MasteringChain()));
 
         CaptureHost host = new CaptureHost();
         DockManager dm = new DockManager(host, new FloatingWindowStore(tmp.resolve("f.json")));

@@ -789,19 +789,15 @@ class MetronomeLoopSchedulingEngineTest {
         float[][] expectedClick = metronome.generateClick(true);
         int clickLength = expectedClick[0].length;
 
-        // The COMPLETE onset list, in order, with nothing else anywhere in
-        // the render — see the javadoc for how it is derived and for what a
-        // count-only or window-only assertion would let through.
+        // This loop is exactly 7875 samples long. Tiny rounding residue at
+        // its right edge must not delay any lap by an extra sample.
         List<Integer> onsets = clickOnsets(rendered, totalFrames, expectedClick);
         assertThat(onsets)
                 .as("every frame a click was scheduled on, across all 23 laps — "
                         + "a missing, extra, or one-frame-displaced click changes "
                         + "this list")
-                .containsExactly(
-                        0, 7875, 15_751, 23_626, 31_501, 39_376, 47_251, 55_126,
-                        63_001, 70_876, 78_751, 86_626, 94_501, 102_376, 110_251,
-                        118_126, 126_001, 133_876, 141_751, 149_625, 157_500,
-                        165_375, 173_250);
+                .containsExactlyElementsOf(java.util.stream.IntStream.range(0, 23)
+                        .map(lap -> lap * 7875).boxed().toList());
         assertThat(onsets)
                 .as("one click per lap start and no other: 2708 × 64 = 173312 frames "
                         + "spans 22 wraps, hence 23 lap starts")

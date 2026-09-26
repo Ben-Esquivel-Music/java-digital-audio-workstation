@@ -599,7 +599,9 @@ public final class EffectsChain {
         }
         int total = 0;
         for (Link link : snapshot.links()) {
-            total += link.processor().getLatencySamples();
+            if (!(link.tag() instanceof InsertSlot slot) || !slot.isBypassed()) {
+                total += link.processor().getLatencySamples();
+            }
         }
         return total;
     }
@@ -607,23 +609,41 @@ public final class EffectsChain {
     /** Captures native/static latency on the control thread, never in the monitor. */
     LatencySnapshot captureLatency() {
         int fixed = 0;
-        var dynamic = new ArrayList<DynamicLatencyProcessor>();
+        var liveSources = new ArrayList<LiveLatency>();
         for (Link link : snapshot.links()) {
-            AudioProcessor source = link.tag() instanceof InsertSlot slot ? slot.getProcessor() : link.processor();
-            if (source instanceof DynamicLatencyProcessor live) {
-                dynamic.add(live);
+            InsertSlot slot = link.tag() instanceof InsertSlot insert ? insert : null;
+            AudioProcessor source = slot != null ? slot.getProcessor() : link.processor();
+            if (source instanceof DynamicLatencyProcessor dynamic) {
+                liveSources.add(new LiveLatency(slot, 0, dynamic));
             } else {
-                fixed += link.processor().getLatencySamples();
+                int samples = source.getLatencySamples();
+                if (slot != null && samples != 0) {
+                    liveSources.add(new LiveLatency(slot, samples, null));
+                } else {
+                    fixed += samples;
+                }
             }
         }
-        return new LatencySnapshot(this, fixed, List.copyOf(dynamic));
+        return new LatencySnapshot(this, fixed, List.copyOf(liveSources));
     }
 
-    record LatencySnapshot(EffectsChain chain, int fixed, List<DynamicLatencyProcessor> dynamic) {
+    /** A supervised fault can bypass a slot before its owning chain is rebuilt. */
+    private record LiveLatency(InsertSlot slot, int fixed, DynamicLatencyProcessor dynamic) {
+        int samples() {
+            if (slot != null && slot.isBypassed()) return 0;
+            return dynamic != null ? dynamic.getLatencySamples() : fixed;
+        }
+    }
+
+    record LatencySnapshot(EffectsChain chain, int fixed, List<LiveLatency> liveSources) {
+        boolean hasLiveLatency() {
+            return !liveSources.isEmpty();
+        }
+
         int samples() {
             if (chain.isBypassed()) return 0;
             int total = fixed;
-            for (DynamicLatencyProcessor processor : dynamic) total += processor.getLatencySamples();
+            for (LiveLatency source : liveSources) total += source.samples();
             return total;
         }
     }

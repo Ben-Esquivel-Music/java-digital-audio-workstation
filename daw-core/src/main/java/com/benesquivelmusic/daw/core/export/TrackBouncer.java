@@ -26,7 +26,7 @@ import java.util.Objects;
  * com.benesquivelmusic.daw.core.transport.Transport,
  * com.benesquivelmusic.daw.core.mixer.Mixer, java.util.List,
  * com.benesquivelmusic.daw.core.audio.MidiTrackRenderer,
- * com.benesquivelmusic.daw.core.audio.EffectsChain,
+ * com.benesquivelmusic.daw.core.mastering.MasteringChain,
  * float[][], int, int) RenderPipeline.renderOffline}. As of story 102,
  * {@link StemExporter} delegates per-track rendering to that pipeline
  * (via {@link OfflineStemRenderer}) — so the production stem-export and

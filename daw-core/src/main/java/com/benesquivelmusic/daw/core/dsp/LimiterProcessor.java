@@ -3,7 +3,7 @@ package com.benesquivelmusic.daw.core.dsp;
 import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
-import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.DynamicLatencyProcessor;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.mastering.TruePeakCeilingPreset;
 
@@ -29,7 +29,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
 @InsertEffect(type = "LIMITER", displayName = "Limiter", category = PluginCategory.DYNAMICS)
-public final class LimiterProcessor implements AudioProcessor, GainReductionProvider {
+public final class LimiterProcessor implements DynamicLatencyProcessor, GainReductionProvider {
 
     private static final double MIN_LOOK_AHEAD_MS = 1.0;
     private static final double MAX_LOOK_AHEAD_MS = 5.0;
@@ -45,7 +45,7 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
     private double ceilingDb;
     private double attackMs;
     private double releaseMs;
-    private int lookAheadSamples;
+    private volatile int lookAheadSamples;
     private boolean autoRelease;
 
     // Look-ahead delay buffers

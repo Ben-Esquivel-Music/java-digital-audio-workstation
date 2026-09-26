@@ -97,7 +97,7 @@ class StemExporterParityTest {
     }
 
     @Test
-    void stemExporterAndLivePlaybackProduceBitIdenticalMaster(@TempDir Path tempDir)
+    void dryStemsMatchLiveDryMixAndPreserveMasterInserts(@TempDir Path tempDir)
             throws IOException {
         int totalFrames = BUFFER_SIZE * 100;
         double totalBeats = totalFrames / SAMPLES_PER_BEAT;
@@ -134,6 +134,12 @@ class StemExporterParityTest {
         // Use a fresh project so live render's transport advance is not
         // shared with the export run.
         DawProject offlineProject = buildProject(totalFrames);
+        var master = offlineProject.getMixer().getMasterChannel();
+        var masterInsert = new com.benesquivelmusic.daw.core.mixer.InsertSlot("Master attenuation",
+                new com.benesquivelmusic.daw.core.dsp.GainStagingProcessor(2, -12.0));
+        master.addInsert(masterInsert);
+        master.setMuted(true);
+        master.setVolume(0.3);
         CapturingExporter capturing = new CapturingExporter();
         StemExporter stemExporter = new StemExporter(capturing);
 
@@ -146,10 +152,14 @@ class StemExporterParityTest {
                 ExportProgressListener.NONE);
 
         assertThat(capturing.captured).isNotNull();
+        assertThat(master.getInsertSlots()).containsExactly(masterInsert);
+        assertThat(masterInsert.isBypassed()).isFalse();
+        assertThat(master.isMuted()).isTrue();
+        assertThat(master.getVolume()).isEqualTo(0.3);
         float[][] stemOut = capturing.captured;
 
         // ── Bit-identical parity for the master ──────────────────────────
-        // Single-track project + empty master chain ⇒ stem == live master.
+        // Dry stems omit the master stage without changing its insert membership.
         for (int ch = 0; ch < CHANNELS; ch++) {
             for (int i = 0; i < totalFrames; i++) {
                 assertThat(stemOut[ch][i])

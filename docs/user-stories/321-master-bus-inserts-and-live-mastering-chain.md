@@ -1,6 +1,7 @@
 ---
 title: "Master-Bus Inserts and the Live Mastering Chain"
 labels: ["bug", "audio-engine", "mixer", "mastering", "ui"]
+status: resolved
 ---
 
 # Master-Bus Inserts and the Live Mastering Chain
@@ -47,3 +48,42 @@ The Mastering view is a polished surface wired to nothing: `ViewNavigationContro
 - Binding decision carried from the book (binding): the single master insert chain lives on the **mixer's master channel**; the engine-level chain is retired — do not keep both. The two-tap split (`MASTER_CHAIN` pre-fader / `MASTER_OUT` post-fader) is likewise binding language from §3.3/§4.5.
 - Depends on story **314** (engine⇄project wiring — nothing is audible without it) and story **318** (tap bus + RT-safe loudness). Cross-refs: **073** (subsumed — mark it accordingly when this lands), **320** (editors for master-rack inserts), **322** (master pan), Book 3 (persisting what this makes real), Book 5 story **345** (export reachability).
 - Research backing: `research-mastering` (EBU R 128 / ITU-R BS.1770 loudness practice) for the LUFS parity test method and measurement placement.
+
+## Resolution
+
+The mixer's master channel now owns the only master insert rack. Every mixer render path processes that channel's inserts, the engine-owned mastering chain, and then the monitor fader/mute. Master inserts use the existing slot parameter, supervision, sidechain, snapshot, and latency machinery. `AudioEngine.getMasterChain()` has been removed and its callers and tests migrated.
+
+`MixerView` exposes the master channel through the same `InsertEffectRack` and editor callback as track and return channels. The rack survives strip refreshes and participates in view disposal. `ViewNavigationController` injects `AudioEngine.getMasteringChain()` into `MasteringView`; the detached no-argument constructor is gone. Opening the view preserves existing stages and settings.
+
+Mastering presets replace stages atomically, preserve configured bypass states, and keep terminal dithering last. Controls alter the live processors: scalar parameter gestures use bounded engine control slots with latest-value publication, while EQ replacements are prepared on the UI thread. Controls retain their identity through reorder/refresh so a pending edit cannot revert its displayed value. Preset creation reads the current engine sample rate and the mastering chain's stereo channel count, including on mono and multichannel devices.
+
+Stage IN/OUT levels and gain reduction arrive through `MasteringStage` level lanes and `MeterFeed`; the old private meter timer and source-scan exemption are removed. Loudness uses the existing off-thread analyzer binding on `MASTER_CHAIN`. That tap is after mastering and before monitor gain, while `MASTER_OUT` remains after the fader. Stopped mastering readouts show `---`/floor, including when device callbacks continue with monitored input; hiding or disposing the view releases its meter demand. Stage controls remain accessible through vertical and horizontal scrolling at smaller window sizes.
+
+This completes the remaining live-processing scope of [story 073](073-mastering-chain-live-processing.md), under this story's processed/dry A/B and single-master-chain contract. Persistence and export-surface reachability remain with the explicitly listed non-goals.
+
+### Acceptance evidence
+
+| Contract | Regression evidence |
+| --- | --- |
+| Master rack insertion/removal changes engine output; rack refresh and editor routing stay live | `LiveMasteringViewTest.masterRackIsLiveSurvivesRefreshAndUsesTheSharedEditorCallback`, `LiveMasterBusTest`, `MasterBusContractTest` |
+| Exactly one master insert seam; inserts → mastering → monitor gain/mute | `LiveMasterBusTest.secondMasterInsertSeamHasBeenRemoved`, `LiveMasterBusTest.insertsThenMasteringThenMonitorGainAndMuteWithAudibleAb` |
+| Production navigation binds the engine chain; gain controls and A/B alter rendered output | `LiveMasteringViewTest.productionNavigationBindsToTheEngineChain`, `LiveMasteringViewTest.gainKnobAndAbChangeTheEngineOutputWithoutReplacingTheExistingChain` |
+| Genuine GR, stage levels, idle, visibility, and coherent lane publication | `LiveMasteringViewTest.gainReductionAndStageLevelArriveThroughRegistryAndBecomeIdleAtStop`, `MasteringChainLiveTest`, `MasteringStageTapTest`, `NoSyntheticLevelFeedScanTest` |
+| Live LUFS receives analysis, stops honestly, and matches offline measurement independently of monitor gain | `LiveMasteringViewTest.loudnessReceivesRealAnalysisAndClearsAfterStop`, `LiveMasterBusTest.livePreFaderLoudnessMatchesOfflineProgrammeDespiteMovingMonitorGain` |
+| Serial master latency, direct-output alignment, dynamic latency/bypass, sidechains, snapshots, and fault supervision | `MasterBusContractTest` |
+| Atomic preset edits, bounded parameter publication, retained control intent, and mono/multichannel format handling | `MasteringChainLiveTest`, `LiveMasteringViewTest.rapidGesturesCoalesceIndependentlyOfTheOneShotCommandQueue`, `LiveMasteringViewTest.presetProcessorsFollowStereoMasteringAcrossMonoAndMultichannelDevices` |
+| Scrollable controls at 800×600 and 1280×900 without rewriting screenshot goldens | `LiveMasteringViewTest.presetAndEqControlsUseLiveStagesAndRemainScrollableAtSmallSizes`; previews in `daw-app/target/story321/` |
+
+### Measurement method
+
+The LUFS parity test measures the same four-second 48 kHz programme through equivalent insert/mastering stages in the live tap lane and offline render. It requires zero dropped analysis blocks, compares integrated and momentary loudness within 0.01 LU, and varies the live master fader between silence, 0.1, and 0.7 while checking `MASTER_OUT` against the unchanged pre-fader measurement. This follows the measurement-before-monitor-gain placement in §4.5 and the project's mastering loudness research.
+
+### Validation — 2026-09-21
+
+The full reactor passed on **Java 26 and Maven 3.9.14**: **11,741 tests reported, 11,725 passed, 16 skipped, zero failures or errors**. Module totals were SDK 1,330 (2 skipped), acoustics 106, core 7,123 (11 skipped), FX 29, and app 3,153 (3 skipped).
+
+```powershell
+mvn -o -B -fae '-Dmaven.repo.local=C:/Users/bestq/.m2/repository' '-DskipNativeBuild=true' '-DskipNoticesGeneration=true' '-Dsnapshots.autoBaseline=false' test
+```
+
+The evidence log is `target/story321-reactor-test.log`; the successful run finished at `2026-09-21T20:20:47-04:00`. Native compilation and notices generation were omitted. Both layout artifacts, `daw-app/target/story321/mastering-800x600.png` and `daw-app/target/story321/mastering-1280x900.png`, were visually inspected; the small-window viewport assertions passed. Screenshot goldens were not regenerated.

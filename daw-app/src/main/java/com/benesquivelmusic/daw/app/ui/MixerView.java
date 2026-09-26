@@ -118,6 +118,7 @@ public final class MixerView extends VBox implements Dockable {
     private final HBox vcaStrips;
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
+    private InsertEffectRack masterInsertRack;
     private java.util.function.BiConsumer<MixerChannel, InsertSlot> onOpenInsertEditor;
     private java.util.function.Consumer<MixerChannel> onChannelSelected;
     private boolean disposed;
@@ -1082,9 +1083,10 @@ public final class MixerView extends VBox implements Dockable {
         soloSafeSyncCallbacks.clear();
         // Dispose existing InsertEffectRack instances to prevent listener leaks
         for (InsertEffectRack rack : activeInsertRacks) {
-            rack.dispose();
+            if (rack != masterInsertRack) rack.dispose();
         }
         activeInsertRacks.clear();
+        if (masterInsertRack != null) activeInsertRacks.add(masterInsertRack);
         // Stop redraw timers on previously-constructed input-meter strips
         // so they don't keep firing (and holding references to discarded
         // JavaFX nodes) after a refresh.
@@ -2600,9 +2602,19 @@ public final class MixerView extends VBox implements Dockable {
 
         Node masterIcon = IconNode.of(DawIcon.SPEAKER, CONTROL_ICON_SIZE);
 
+        var format = project.getFormat();
+        masterInsertRack = new InsertEffectRack(master, format.channels(), format.sampleRate(),
+                format.bufferSize(), undoManager, fxDispatcher);
+        masterInsertRack.setPluginRegistry(pluginRegistry);
+        masterInsertRack.setMixer(project.getMixer());
+        masterInsertRack.setOnOpenEditor(onOpenInsertEditor);
+        masterInsertRack.setMeterFeed(meterFeed);
+        masterInsertRack.setDragVisualAdvisor(dragVisualAdvisor);
+        activeInsertRacks.add(masterInsertRack);
+
         strip.getChildren().addAll(
                 nameLabel, masterIcon, levelMeter, volumeFader,
-                panLabel, panSlider, buttonRow, spacer);
+                panLabel, panSlider, buttonRow, spacer, masterInsertRack);
 
         return strip;
     }

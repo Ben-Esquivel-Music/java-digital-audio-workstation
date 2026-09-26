@@ -27,7 +27,7 @@ import java.util.Objects;
  * field reads, bounds checks and reference compares. {@link #resolve} /
  * {@link #resolveInsert} are the off-RT map lookups behind the subscription
  * tokens. {@link #blockIndex()} reads the bus's single-writer block counter
- * so all four tap kinds of one block carry the same stamp.</p>
+ * so all tap kinds of one block carry the same stamp.</p>
  */
 public final class TapSnapshot {
 
@@ -46,12 +46,14 @@ public final class TapSnapshot {
     private final LevelTapSlot[] returnSlots;
     private final LevelTapSlot masterChain;
     private final LevelTapSlot masterOut;
+    private final LevelTapSlot[] masteringStages;
     private final InsertSlot[] insertSubjects;
     private final MixerChannel[] insertOwners;
     private final InsertTapPair[] insertPairs;
     private final boolean hasAnalysisRings;
     private final int channelSlotCount;
     private final int returnSlotCount;
+    private final int masteringStageSlotCount;
     private final Map<MeterTapPoint, LevelTapSlot> slotsByPoint;
     private final Map<MeterTapPoint, InsertTapPair> pairsByPoint;
     private final LevelTapSlot[] publicationSlots;
@@ -59,7 +61,7 @@ public final class TapSnapshot {
     /** An unbound snapshot: nothing is tapped. */
     static TapSnapshot empty(MeteringTapBus bus, long epoch) {
         return new TapSnapshot(bus, null, epoch, null, NO_CHANNELS, NO_SLOTS, NO_CHANNELS, NO_SLOTS,
-                null, null, NO_INSERTS, NO_CHANNELS, NO_PAIRS);
+                null, null, NO_SLOTS, NO_INSERTS, NO_CHANNELS, NO_PAIRS);
     }
 
     /**
@@ -69,7 +71,7 @@ public final class TapSnapshot {
     TapSnapshot(MeteringTapBus bus, Mixer mixer, long epoch, AudioFormat format,
                 MixerChannel[] channelSubjects, LevelTapSlot[] channelSlots,
                 MixerChannel[] returnSubjects, LevelTapSlot[] returnSlots,
-                LevelTapSlot masterChain, LevelTapSlot masterOut,
+                LevelTapSlot masterChain, LevelTapSlot masterOut, LevelTapSlot[] masteringStages,
                 InsertSlot[] insertSubjects, MixerChannel[] insertOwners,
                 InsertTapPair[] insertPairs) {
         this.bus = Objects.requireNonNull(bus, "bus must not be null");
@@ -82,6 +84,7 @@ public final class TapSnapshot {
         this.returnSlots = Objects.requireNonNull(returnSlots);
         this.masterChain = masterChain;
         this.masterOut = masterOut;
+        this.masteringStages = Objects.requireNonNull(masteringStages);
         this.insertSubjects = Objects.requireNonNull(insertSubjects);
         this.insertOwners = Objects.requireNonNull(insertOwners);
         this.insertPairs = Objects.requireNonNull(insertPairs);
@@ -119,6 +122,15 @@ public final class TapSnapshot {
             byPoint.put(masterOut.point(), masterOut);
             rings |= masterOut.rings().length > 0;
         }
+        int masteringCount = 0;
+        for (LevelTapSlot slot : masteringStages) {
+            if (slot == null) {
+                continue;
+            }
+            masteringCount++;
+            byPoint.put(slot.point(), slot);
+            rings |= slot.rings().length > 0;
+        }
         Map<MeterTapPoint, InsertTapPair> pairs = new HashMap<>();
         for (InsertTapPair pair : insertPairs) {
             MeterTapPoint point = pair.output().point();
@@ -136,6 +148,7 @@ public final class TapSnapshot {
         this.hasAnalysisRings = rings;
         this.channelSlotCount = channelCount;
         this.returnSlotCount = returnCount;
+        this.masteringStageSlotCount = masteringCount;
     }
 
     /** The binding epoch this snapshot was built under. */
@@ -202,7 +215,8 @@ public final class TapSnapshot {
     @RealTimeSafe
     public boolean isEmpty() {
         return channelSlotCount == 0 && returnSlotCount == 0
-                && masterChain == null && masterOut == null && insertPairs.length == 0;
+                && masterChain == null && masterOut == null && insertPairs.length == 0
+                && masteringStageSlotCount == 0;
     }
 
     /**
@@ -237,6 +251,28 @@ public final class TapSnapshot {
     @RealTimeSafe
     public LevelTapSlot masterOut() {
         return masterOut;
+    }
+
+    /** The indexed mastering-stage slot, or {@code null} when unbound or unobserved. */
+    @RealTimeSafe
+    public LevelTapSlot masteringStage(int stageIndex) {
+        if (stageIndex < 0 || stageIndex >= masteringStages.length) {
+            return null;
+        }
+        return masteringStages[stageIndex];
+    }
+
+    /** Publishes one silent level/analysis block for every demanded stage at or beyond {@code firstStage}. */
+    @RealTimeSafe
+    public void publishSilentMasteringStages(int firstStage, int channelCount, int numFrames) {
+        long stamp = blockIndex();
+        for (int i = firstStage; i < masteringStages.length; i++) {
+            LevelTapSlot slot = masteringStages[i];
+            if (slot != null) {
+                slot.publishSilence(epoch, stamp, channelCount);
+                for (SampleBlockRing ring : slot.rings()) ring.writeSilence(channelCount, numFrames);
+            }
+        }
     }
 
     /** The {@code INSERT_IO} pair for {@code slot} (identity scan), or {@code null} when untapped. */
@@ -298,6 +334,7 @@ public final class TapSnapshot {
     public String toString() {
         return "TapSnapshot[epoch=" + epoch + ", channels=" + channelSlotCount
                 + ", returns=" + returnSlotCount + ", master=" + (masterChain != null)
+                + ", masteringStages=" + masteringStageSlotCount
                 + ", inserts=" + insertPairs.length + ", rings=" + hasAnalysisRings + "]";
     }
 }

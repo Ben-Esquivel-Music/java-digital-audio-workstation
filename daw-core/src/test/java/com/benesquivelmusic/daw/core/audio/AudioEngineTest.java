@@ -47,10 +47,10 @@ class AudioEngineTest {
     }
 
     @Test
-    void shouldExposeMasterChain() {
+    void shouldExposeMasteringChain() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        assertThat(engine.getMasterChain()).isNotNull();
-        assertThat(engine.getMasterChain().isEmpty()).isTrue();
+        assertThat(engine.getMasteringChain()).isNotNull();
+        assertThat(engine.getMasteringChain().isEmpty()).isTrue();
     }
 
     @Test
@@ -80,7 +80,9 @@ class AudioEngineTest {
     void shouldProcessBlockThroughMasterChain() {
         AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
         AudioEngine engine = new AudioEngine(format);
-        engine.getMasterChain().addProcessor(new HalfGainProcessor());
+        var mixer = new Mixer();
+        engine.setGraph(new Transport(), mixer, List.of());
+        mixer.getMasterChannel().addInsert(new InsertSlot("Half gain", new HalfGainProcessor()));
         engine.start();
 
         float[][] input = {{1.0f, -1.0f, 0.5f, -0.5f}};
@@ -254,6 +256,36 @@ class AudioEngineTest {
         mixer.addChannel(channel);
         engine.setGraph(new Transport(), mixer, List.of());
         return fail;
+    }
+
+    @Test
+    void failedMixerHandoffPreservesActiveMasteringCompensation() {
+        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        var currentMixer = new Mixer();
+        var incomingMixer = new Mixer();
+        try (var currentCompensation = currentMixer.getDelayCompensation();
+             var incomingCompensation = incomingMixer.getDelayCompensation()) {
+            engine.getMasteringChain().addStage(
+                    com.benesquivelmusic.daw.sdk.mastering.MasteringStageType.LIMITING,
+                    "Mastering latency", new LatencyProcessor(220));
+            engine.setGraph(new Transport(), currentMixer, List.of());
+            engine.start();
+            var fail = new AtomicBoolean();
+            var channel = new MixerChannel("Incoming");
+            channel.addInsert(new InsertSlot("Preparation failure", new ArmablePreparationFailureProcessor(fail)));
+            incomingMixer.addChannel(channel);
+            fail.set(true);
+
+            assertThatThrownBy(() -> engine.setGraph(new Transport(), incomingMixer, List.of()))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("mixer preparation failed");
+
+            assertThat(engine.getMixer()).isSameAs(currentMixer);
+            assertThat(currentMixer.getMasteringChain()).isSameAs(engine.getMasteringChain());
+            assertThat(engine.getSystemLatencySamples()).isEqualTo(220);
+        } finally {
+            engine.shutdown();
+        }
     }
 
     @Test

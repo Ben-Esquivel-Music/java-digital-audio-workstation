@@ -62,7 +62,7 @@ class DockableImplementationTest {
 
     @Test
     void masteringViewImplementsDockable() throws Exception {
-        MasteringView view = createOnFxThread(MasteringView::new);
+        MasteringView view = createOnFxThread(() -> new MasteringView(new com.benesquivelmusic.daw.core.mastering.MasteringChain()));
         assertThat(view).isInstanceOf(Dockable.class);
         Dockable d = view;
         assertThat(d.dockId()).isEqualTo(DefaultWorkspaces.PANEL_MASTERING);

@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
 import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
@@ -88,7 +89,7 @@ public final class AudioEngine {
     /** Terminal lifecycle state, guarded by lifecycleLock. */
     private boolean shutdown;
 
-    private final EffectsChain masterChain;
+    private final MasteringChain masteringChain;
     private AudioBufferPool bufferPool;
 
     /**
@@ -499,6 +500,11 @@ public final class AudioEngine {
      *       name that lock, and show that nothing holding it ever waits for
      *       this one). Absence from this catalogue is not a verdict of
      *       safety:
+     *       <p>The engine-owned {@link MasteringChain} preparation in
+     *       {@link #startLocked()} is inward: {@code getInputChannelCount}
+     *       reads a final field and {@code allocateIntermediateBuffers}
+     *       sizes and publishes arrays under the chain's control monitor.
+     *       Neither invokes processors, parameter commands or listeners.</p>
      *       <ol>
      *         <li>The RT-clock CLAIM ({@code setRealTimeClockActive(true)})
      *             is a bare volatile store that drains nothing and notifies
@@ -929,7 +935,7 @@ public final class AudioEngine {
      */
     public AudioEngine(AudioFormat format) {
         this.format = Objects.requireNonNull(format, "format must not be null");
-        this.masterChain = new EffectsChain();
+        this.masteringChain = new MasteringChain();
     }
 
     /**
@@ -945,7 +951,7 @@ public final class AudioEngine {
      */
     public AudioEngine(AudioFormat format, AudioEngineSettings engineSettings) {
         this.format = Objects.requireNonNull(format, "format must not be null");
-        this.masterChain = new EffectsChain();
+        this.masteringChain = new MasteringChain();
         this.engineSettings = Objects.requireNonNull(
                 engineSettings, "engineSettings must not be null");
     }
@@ -1020,8 +1026,8 @@ public final class AudioEngine {
         // Pre-allocate the buffer pool (8 buffers for intermediate processing)
         bufferPool = new AudioBufferPool(8, channels, frames);
 
-        // Pre-allocate intermediate buffers in the master effects chain
-        masterChain.allocateIntermediateBuffers(channels, frames);
+        // Prepare stereo mastering scratch, including mono/wide device adaptation.
+        masteringChain.allocateIntermediateBuffers(masteringChain.getInputChannelCount(), frames);
 
         // Pre-allocate intermediate buffers for mixer channel insert effects
         Mixer currentMixer = this.graph.mixer();
@@ -1310,12 +1316,12 @@ public final class AudioEngine {
     }
 
     /**
-     * Returns the master effects chain applied to the final mix output.
+     * Returns the engine-owned mastering stages, after mixer master inserts and before monitor gain.
      *
-     * @return the master effects chain
+     * @return the live mastering chain
      */
-    public EffectsChain getMasterChain() {
-        return masterChain;
+    public MasteringChain getMasteringChain() {
+        return masteringChain;
     }
 
     /**
@@ -4379,6 +4385,7 @@ public final class AudioEngine {
      * callbacks.</p>
      */
     private void handOffMixer(Mixer previousMixer, Mixer incomingMixer) {
+        if (incomingMixer != null) incomingMixer.setMasteringChain(masteringChain);
         if (previousMixer != null && graphScheduler != null
                 && previousMixer.getGraphScheduler() == graphScheduler) {
             previousMixer.setGraphScheduler(null);
@@ -4396,15 +4403,16 @@ public final class AudioEngine {
      * compensation, in samples.
      *
      * <p>This is the maximum insert-chain latency across all mixer channels
-     * and return buses. The transport can use this value to offset the
+     * and return buses, plus serial master inserts and active mastering stages.
+     * The transport can use this value to offset the
      * playback start position so that the first audible sample aligns
      * with beat 1.</p>
      *
-     * @return the system latency in sample frames, or 0 if no mixer is configured
+     * @return the system latency in sample frames
      */
     public int getSystemLatencySamples() {
         Mixer currentMixer = this.graph.mixer();
-        return currentMixer != null ? currentMixer.getSystemLatencySamples() : 0;
+        return currentMixer != null ? currentMixer.getSystemLatencySamples() : masteringChain.getLatencySamples();
     }
 
     /**
@@ -4773,7 +4781,7 @@ public final class AudioEngine {
 
             renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
                     currentTransport, currentMixer, currentTracks,
-                    currentMidiRenderer, masterChain, cb, monitor,
+                    currentMidiRenderer, masteringChain, cb, monitor,
                     enforcer,
                     currentMetronome, currentRouter,
                     currentCueBusManager, currentBackend, taps, interleavedOutput);

@@ -35,6 +35,8 @@ public final class MeterFrame {
     private long epoch;
     private long blockIndex;
     private long lastClippedBlockIndex = -1L;
+    private double inputPeakDb = Double.NEGATIVE_INFINITY;
+    private double gainReductionDb = Double.NaN;
 
     /** Creates an empty (silent, zero-channel, epoch 0, block 0) frame. */
     public MeterFrame() {
@@ -124,6 +126,16 @@ public final class MeterFrame {
         return blockIndex;
     }
 
+    /** Mastering-stage input peak in dBFS; negative infinity when idle or unavailable. */
+    public double inputPeakDb() {
+        return inputPeakDb;
+    }
+
+    /** Mastering-stage gain reduction in dB; {@code NaN} when idle or unavailable. */
+    public double gainReductionDb() {
+        return gainReductionDb;
+    }
+
     /** {@code true} when every lane is at zero and nothing clipped. */
     public boolean isSilent() {
         return !clipped && maxPeak() == 0f && maxRms() == 0f;
@@ -138,6 +150,8 @@ public final class MeterFrame {
         epoch = 0L;
         blockIndex = 0L;
         lastClippedBlockIndex = -1L;
+        inputPeakDb = Double.NEGATIVE_INFINITY;
+        gainReductionDb = Double.NaN;
     }
 
     /**
@@ -159,6 +173,8 @@ public final class MeterFrame {
         this.epoch = epoch;
         this.blockIndex = blockIndex;
         this.lastClippedBlockIndex = -1L;
+        this.inputPeakDb = Double.NEGATIVE_INFINITY;
+        this.gainReductionDb = Double.NaN;
     }
 
     /**
@@ -189,7 +205,7 @@ public final class MeterFrame {
 
     /** Commits a stable staged read into the live fields. */
     void commitStaged(int channelCount, boolean clipped, long epoch, long blockIndex,
-                      long lastClippedBlockIndex) {
+                      long lastClippedBlockIndex, double inputPeakDb, double gainReductionDb) {
         System.arraycopy(stagePeak, 0, peakLinear, 0, MAX_CHANNELS);
         System.arraycopy(stageRms, 0, rmsLinear, 0, MAX_CHANNELS);
         this.channelCount = channelCount;
@@ -197,6 +213,8 @@ public final class MeterFrame {
         this.epoch = epoch;
         this.blockIndex = blockIndex;
         this.lastClippedBlockIndex = lastClippedBlockIndex;
+        this.inputPeakDb = inputPeakDb;
+        this.gainReductionDb = gainReductionDb;
     }
 
     @Override

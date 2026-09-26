@@ -124,6 +124,9 @@ final class PerformanceStageDeactivationTest {
         }
 
         @Override public DawProject project() { return project; }
+        @Override public com.benesquivelmusic.daw.core.mastering.MasteringChain masteringChain() {
+            return new com.benesquivelmusic.daw.core.mastering.MasteringChain();
+        }
         @Override public UndoManager undoManager() { return new UndoManager(); }
         @Override public void onEditorTrim() { }
         @Override public void onEditorFadeIn() { }

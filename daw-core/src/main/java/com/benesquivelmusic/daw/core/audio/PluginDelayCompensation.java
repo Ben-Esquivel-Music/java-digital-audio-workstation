@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 import java.lang.ref.WeakReference;
@@ -24,9 +25,10 @@ import java.util.concurrent.locks.LockSupport;
  * aligning all channels at the summing bus.</p>
  *
  * <p>Delay buffers are prepared by {@link #recalculate} on the control thread
- * or by a monitor of explicitly thread-safe dynamic latency sources, so that {@link #applyToChannel} and
+ * or by a monitor of live slot bypass flags and explicitly thread-safe dynamic
+ * latency sources, so that {@link #applyToChannel} and
  * {@link #applyToReturnBus} perform zero heap allocations on the audio
- * thread. The monitor starts only for dynamic sources and stops when they
+ * thread. The monitor starts only for live sources and stops when they
  * leave the graph or {@link #close()} retires the project. Static/native
  * processor latency is queried only during control-thread recalculation.</p>
  */
@@ -37,9 +39,17 @@ public final class PluginDelayCompensation implements AutoCloseable {
     private List<MixerChannel> returnBuses = List.of();
     private List<EffectsChain.LatencySnapshot> channelSources = List.of();
     private List<EffectsChain.LatencySnapshot> returnBusSources = List.of();
+    private EffectsChain.LatencySnapshot masterSource;
+    private MasteringChain masteringChain;
     private int audioChannels;
     private Thread latencyWatcher;
     private boolean closed;
+
+    /** Combined serial master-insert and mastering latency, never a parallel compensation delay. */
+    @RealTimeSafe
+    public int getMasterLatencySamples() {
+        return state.masterLatencySamples;
+    }
 
     /**
      * Immutable snapshot of all compensation data. Published atomically
@@ -48,6 +58,8 @@ public final class PluginDelayCompensation implements AutoCloseable {
     private record CompensationState(
             CompensationDelay[] channelDelays,
             CompensationDelay[] returnBusDelays,
+            CompensationDelay[] directOutputDelays,
+            int masterLatencySamples,
             int maxLatencySamples,
             int[] channelLatencies,
             int[] returnBusLatencies,
@@ -58,7 +70,8 @@ public final class PluginDelayCompensation implements AutoCloseable {
         static final CompensationState EMPTY = new CompensationState(
                 new CompensationDelay[0],
                 new CompensationDelay[0],
-                0,
+                new CompensationDelay[0],
+                0, 0,
                 new int[0],
                 new int[0], List.of(), List.of(), 0
         );
@@ -79,22 +92,40 @@ public final class PluginDelayCompensation implements AutoCloseable {
     public synchronized void recalculate(List<MixerChannel> channels,
                             List<MixerChannel> returnBuses,
                             int audioChannels) {
+        recalculate(channels, returnBuses, null, audioChannels);
+    }
+
+    /** Master insert latency is serial after the aligned channel/return sum. */
+    public synchronized void recalculate(List<MixerChannel> channels,
+                            List<MixerChannel> returnBuses, MixerChannel master,
+                            int audioChannels) {
+        recalculate(channels, returnBuses, master, null, audioChannels);
+    }
+
+    /** Includes the live mastering stages after the serial master inserts. */
+    public synchronized void recalculate(List<MixerChannel> channels,
+                            List<MixerChannel> returnBuses, MixerChannel master,
+                            MasteringChain masteringChain, int audioChannels) {
         if (closed) return;
         this.channels = List.copyOf(channels);
         this.returnBuses = List.copyOf(returnBuses);
         this.audioChannels = audioChannels;
+        this.masteringChain = masteringChain;
+        masterSource = master != null ? master.getEffectsChain().captureLatency() : null;
         channelSources = channels.stream().map(channel -> channel.getEffectsChain().captureLatency()).toList();
         returnBusSources = returnBuses.stream().map(channel -> channel.getEffectsChain().captureLatency()).toList();
         rebuildCompensation(false);
-        boolean hasDynamicLatency = channelSources.stream().anyMatch(source -> !source.dynamic().isEmpty())
-                || returnBusSources.stream().anyMatch(source -> !source.dynamic().isEmpty());
-        if (hasDynamicLatency && latencyWatcher == null) {
+        boolean hasLiveLatency = channelSources.stream().anyMatch(EffectsChain.LatencySnapshot::hasLiveLatency)
+                || returnBusSources.stream().anyMatch(EffectsChain.LatencySnapshot::hasLiveLatency)
+                || masterSource != null && masterSource.hasLiveLatency()
+                || masteringChain != null;
+        if (hasLiveLatency && latencyWatcher == null) {
             var reference = new WeakReference<>(this);
             // JEP 444 (final since Java 21): polling and buffer allocation stay off RT.
             latencyWatcher = Thread.ofVirtual().name("plugin-latency-refresh")
                     .unstarted(() -> watchLatencies(reference));
             latencyWatcher.start();
-        } else if (!hasDynamicLatency) {
+        } else if (!hasLiveLatency) {
             stopLatencyWatcher();
         }
     }
@@ -120,7 +151,9 @@ public final class PluginDelayCompensation implements AutoCloseable {
     }
 
     private void rebuildCompensation(boolean onlyIfChanged) {
-        if (onlyIfChanged && !latenciesChanged()) return;
+        int masterLatencySamples = masterSource != null ? masterSource.samples() : 0;
+        if (masteringChain != null) masterLatencySamples += masteringChain.getLatencySamples();
+        if (onlyIfChanged && masterLatencySamples == state.masterLatencySamples && !latenciesChanged()) return;
         int channelCount = channels.size();
         int returnBusCount = returnBuses.size();
 
@@ -159,10 +192,19 @@ public final class PluginDelayCompensation implements AutoCloseable {
                     : new CompensationDelay(audioChannels, compensationNeeded);
         }
 
+        CompensationDelay[] directOutputDelays = new CompensationDelay[channelCount];
+        for (int i = 0; i < channelCount; i++) {
+            directOutputDelays[i] = onlyIfChanged
+                    ? reuseDelay(channels.get(i), masterLatencySamples, state.channels, state.directOutputDelays)
+                    : new CompensationDelay(audioChannels, masterLatencySamples);
+        }
+
         // Publish atomically
         state = new CompensationState(
                 channelDelays,
                 returnBusDelays,
+                directOutputDelays,
+                masterLatencySamples,
                 maxLatency,
                 channelLatencies,
                 returnBusLatencies, channels, returnBuses, audioChannels
@@ -211,6 +253,8 @@ public final class PluginDelayCompensation implements AutoCloseable {
         returnBuses = List.of();
         channelSources = List.of();
         returnBusSources = List.of();
+        masterSource = null;
+        masteringChain = null;
     }
 
     /**
@@ -228,6 +272,15 @@ public final class PluginDelayCompensation implements AutoCloseable {
         CompensationState s = state;
         if (channelIndex >= 0 && channelIndex < s.channelDelays.length) {
             s.channelDelays[channelIndex].process(buffer, numFrames);
+        }
+    }
+
+    /** Matches master inserts and mastering on channels routed directly to hardware outputs. */
+    @RealTimeSafe
+    public void applyToDirectOutput(int channelIndex, float[][] buffer, int numFrames) {
+        CompensationState captured = state;
+        if (channelIndex >= 0 && channelIndex < captured.directOutputDelays.length) {
+            captured.directOutputDelays[channelIndex].process(buffer, numFrames);
         }
     }
 
@@ -309,6 +362,9 @@ public final class PluginDelayCompensation implements AutoCloseable {
             delay.reset();
         }
         for (CompensationDelay delay : s.returnBusDelays) {
+            delay.reset();
+        }
+        for (CompensationDelay delay : s.directOutputDelays) {
             delay.reset();
         }
     }

@@ -202,6 +202,11 @@ class AudioEngineLifecycleLockContractTest {
      * under "What must NOT happen while it is held".
      */
     private static final Set<CallSite> EXCEPTIONS = Set.of(
+            // Engine-owned mastering preparation only sizes/publishes arrays; no processor calls.
+            new CallSite("startLocked", "com/benesquivelmusic/daw/core/mastering/MasteringChain",
+                    "allocateIntermediateBuffers"),
+            new CallSite("startLocked", "com/benesquivelmusic/daw/core/mastering/MasteringChain",
+                    "getInputChannelCount"),
             // The RT-clock CLAIM. setRealTimeClockActive(true) is a bare
             // volatile store: it drains nothing and notifies nobody, so no
             // application code runs on this thread. The false branch — which

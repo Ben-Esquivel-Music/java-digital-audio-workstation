@@ -7,16 +7,23 @@ import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
-import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.metering.AnalyzerBinding;
+import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.metering.MeterSinks;
+import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerProcessor;
+import com.benesquivelmusic.daw.core.analysis.AnalyzerSnapshot;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mastering.MasteringChainPresets;
 import com.benesquivelmusic.daw.core.mastering.MasteringProcessorFactory;
+import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
+import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
-import com.benesquivelmusic.daw.sdk.visualization.LevelData;
-import javafx.animation.AnimationTimer;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -41,7 +48,7 @@ import java.util.Objects;
  *   <li>Preset selector to load genre-specific mastering chain presets</li>
  *   <li>Per-stage bypass toggles for A/B comparison of individual stages</li>
  *   <li>A global A/B toggle to compare processed vs. dry master bus audio</li>
- *   <li>Per-stage gain reduction and level metering placeholders</li>
+ *   <li>Live per-stage gain reduction, level and loudness metering</li>
  *   <li>Drag-to-reorder stage support via move-up/move-down buttons</li>
  *   <li>Integrated loudness metering display</li>
  * </ul>
@@ -49,9 +56,6 @@ import java.util.Objects;
  * <p>Uses existing CSS classes: {@code .content-area}, {@code .panel-header},
  * {@code .mixer-channel}.</p>
  */
-@FxAnimationTimerAllowed("Per-frame loudness/level meter timer owned by this view "
-        + "(javafx-application-design §6 control-owns-timer); not a cross-thread "
-        + "seam — story 289 sentinel.")
 public final class MasteringView extends VBox implements Dockable {
 
     private static final double STAGE_CARD_WIDTH = 140;
@@ -60,7 +64,6 @@ public final class MasteringView extends VBox implements Dockable {
     private static final double CONTROL_ICON_SIZE = 14;
     private static final double DEFAULT_SAMPLE_RATE = 44100.0;
     private static final int DEFAULT_CHANNELS = 2;
-    private static final long METER_UPDATE_INTERVAL_NS = 33_333_333L; // ~30 Hz
 
     private static final String ACTIVE_BYPASS_STYLE =
             "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;";
@@ -72,24 +75,18 @@ public final class MasteringView extends VBox implements Dockable {
     private final LoudnessDisplay loudnessDisplay;
     private final Label statusLabel;
     private final List<MasteringChainPreset> availablePresets;
-    private final double sampleRate;
-    private final int channels;
+    private final java.util.function.Supplier<AudioFormat> audioFormat;
 
     // Per-stage meter references for real-time updates
     private final List<Label> grLabels = new ArrayList<>();
+    private final List<Label> stageLevelLabels = new ArrayList<>();
     private final List<LevelMeterDisplay> levelMeters = new ArrayList<>();
-    private AnimationTimer meterTimer;
-
-    /**
-     * Creates a new mastering view with an empty mastering chain.
-     *
-     * <p><strong>Note:</strong> Uses default sample rate (44100 Hz) and channels (2).
-     * Prefer {@link #MasteringView(MasteringChain, double, int)} with the engine's
-     * actual audio format for correct processor configuration.</p>
-     */
-    public MasteringView() {
-        this(new MasteringChain(), DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS);
-    }
+    private final List<VisibleMeterBinding> meterBindings = new ArrayList<>();
+    private final java.util.Map<MasteringChain.Stage, MasteringStageControls> stageControls =
+            new java.util.IdentityHashMap<>();
+    private MeterFeed meterFeed;
+    private AnalyzerBinding loudnessBinding;
+    private boolean disposed;
 
     /**
      * Creates a new mastering view bound to the given mastering chain.
@@ -113,9 +110,13 @@ public final class MasteringView extends VBox implements Dockable {
      * @param channels       the number of audio channels
      */
     public MasteringView(MasteringChain masteringChain, double sampleRate, int channels) {
+        this(masteringChain, () -> new AudioFormat(sampleRate, channels, 32, 512));
+    }
+
+    /** Uses the engine's current format when creating preset processors. */
+    public MasteringView(MasteringChain masteringChain, java.util.function.Supplier<AudioFormat> audioFormat) {
         this.masteringChain = Objects.requireNonNull(masteringChain, "masteringChain must not be null");
-        this.sampleRate = sampleRate;
-        this.channels = channels;
+        this.audioFormat = Objects.requireNonNull(audioFormat, "audioFormat must not be null");
         getStyleClass().add("content-area");
         setSpacing(0);
 
@@ -131,7 +132,8 @@ public final class MasteringView extends VBox implements Dockable {
         HBox.setHgrow(headerSpacer, Priority.ALWAYS);
 
         // ── Status bar (initialized early — referenced by event handlers) ───
-        statusLabel = new Label("Load a preset to begin mastering");
+        statusLabel = new Label(masteringChain.isEmpty()
+                ? "Load a preset to begin mastering" : "Live mastering chain");
         statusLabel.setStyle("-fx-text-fill: #aaaaaa; -fx-font-size: 11px;");
         statusLabel.setPadding(new Insets(4, 10, 6, 10));
 
@@ -170,9 +172,9 @@ public final class MasteringView extends VBox implements Dockable {
         stageContainer.setPadding(new Insets(10));
 
         ScrollPane stageScroll = new ScrollPane(stageContainer);
-        stageScroll.setFitToHeight(true);
+        stageScroll.setFitToHeight(false);
         stageScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
-        stageScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        stageScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         stageScroll.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
         VBox.setVgrow(stageScroll, Priority.ALWAYS);
 
@@ -191,14 +193,7 @@ public final class MasteringView extends VBox implements Dockable {
 
         getChildren().addAll(headerBar, new Separator(), stageScroll, meterSection, statusLabel);
 
-        // Keep the meter timer lifecycle symmetric with scene attachment
-        sceneProperty().addListener((obs, oldScene, newScene) -> {
-            if (newScene == null) {
-                stopMeterTimer();
-            } else if (!masteringChain.getStages().isEmpty()) {
-                startMeterTimer();
-            }
-        });
+        refresh();
     }
 
     // ── Dockable contract (story 285) ────────────────────────────────────────
@@ -214,10 +209,19 @@ public final class MasteringView extends VBox implements Dockable {
      * synchronized with the model.</p>
      */
     public void refresh() {
+        if (disposed) return;
+        closeStageMeters();
+        levelMeters.forEach(LevelMeterDisplay::dispose);
         stageContainer.getChildren().clear();
         grLabels.clear();
+        stageLevelLabels.clear();
         levelMeters.clear();
         List<MasteringChain.Stage> stages = masteringChain.getStages();
+        stageControls.entrySet().removeIf(entry -> {
+            if (stages.contains(entry.getKey())) return false;
+            entry.getValue().close();
+            return true;
+        });
         for (int i = 0; i < stages.size(); i++) {
             MasteringChain.Stage stage = stages.get(i);
             stageContainer.getChildren().add(buildStageCard(stage, i, stages.size()));
@@ -225,7 +229,9 @@ public final class MasteringView extends VBox implements Dockable {
                 stageContainer.getChildren().add(buildChainArrow());
             }
         }
-        startMeterTimer();
+        abToggle.setSelected(masteringChain.isChainBypassed());
+        abToggle.setStyle(abToggle.isSelected() ? ACTIVE_BYPASS_STYLE : "");
+        bindStageMeters();
     }
 
     /**
@@ -307,17 +313,17 @@ public final class MasteringView extends VBox implements Dockable {
      *
      * @param preset the preset to load
      */
-    private void loadPreset(MasteringChainPreset preset) {
-        // Clear existing stages
-        while (!masteringChain.isEmpty()) {
-            masteringChain.removeStage(0);
-        }
-        // Add stages from preset with real DSP processors
+    void loadPreset(MasteringChainPreset preset) {
+        var format = audioFormat.get();
+        List<MasteringChain.Stage> stages = new ArrayList<>();
         for (MasteringStageConfig config : preset.stages()) {
             AudioProcessor processor = MasteringProcessorFactory.createProcessor(
-                    config, channels, sampleRate);
-            masteringChain.addStage(config.stageType(), config.name(), processor);
+                    config, masteringChain.getInputChannelCount(), format.sampleRate());
+            var stage = new MasteringChain.Stage(config.stageType(), config.name(), processor);
+            stage.setBypassed(config.bypassed());
+            stages.add(stage);
         }
+        masteringChain.replaceStages(stages);
         refresh();
         statusLabel.setText("Loaded preset: " + preset.name() + " (" + preset.genre() + ")");
     }
@@ -351,8 +357,8 @@ public final class MasteringView extends VBox implements Dockable {
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
 
-        // Gain reduction label (updated in real time by meter timer)
-        Label grLabel = new Label("GR: 0.0 dB");
+        // Gain reduction arrives with the stage's coherent tap-bus frame.
+        Label grLabel = new Label("GR: ---");
         // Story 266 / §3.2 — gain-reduction readouts update in real time;
         // tabular figures via family-only .numeric-mono so the 10 px inline
         // size below doesn't fight .numeric-caption's 11 px.
@@ -360,6 +366,10 @@ public final class MasteringView extends VBox implements Dockable {
         grLabel.setStyle("-fx-text-fill: #00e676; -fx-font-size: 10px;");
         grLabels.add(grLabel);
         levelMeters.add(levelMeter);
+        var stageLevels = new Label("IN: ---  OUT: ---");
+        stageLevels.getStyleClass().add("numeric-mono");
+        stageLevels.setStyle("-fx-font-size: 9px;");
+        stageLevelLabels.add(stageLevels);
 
         // Bypass button
         Button bypassBtn = new Button("Bypass");
@@ -378,14 +388,14 @@ public final class MasteringView extends VBox implements Dockable {
         // Move buttons for reordering
         HBox moveRow = new HBox(2);
         moveRow.setAlignment(Pos.CENTER);
-        if (index > 0) {
+        if (index > 0 && !stage.isTerminal()) {
             Button moveLeft = new Button("\u25C0");
             moveLeft.setTooltip(new Tooltip("Move left"));
             moveLeft.setStyle("-fx-font-size: 9px; -fx-padding: 2 4 2 4;");
             moveLeft.setOnAction(event -> moveStage(index, index - 1));
             moveRow.getChildren().add(moveLeft);
         }
-        if (index < totalStages - 1) {
+        if (index < totalStages - 1 && !masteringChain.getStages().get(index + 1).isTerminal()) {
             Button moveRight = new Button("\u25B6");
             moveRight.setTooltip(new Tooltip("Move right"));
             moveRight.setStyle("-fx-font-size: 9px; -fx-padding: 2 4 2 4;");
@@ -393,15 +403,17 @@ public final class MasteringView extends VBox implements Dockable {
             moveRow.getChildren().add(moveRight);
         }
 
-        card.getChildren().addAll(typeLabel, nameLabel, stageIcon, levelMeter, grLabel, bypassBtn, moveRow);
+        var controls = stageControls.computeIfAbsent(stage,
+                current -> MasteringStageControls.create(masteringChain, current, audioFormat.get().sampleRate()));
+        if (controls.getParent() instanceof VBox oldCard) oldCard.getChildren().remove(controls);
+        card.getChildren().addAll(typeLabel, nameLabel, stageIcon, levelMeter, stageLevels, grLabel,
+                controls, bypassBtn, moveRow);
         return card;
     }
 
     private void moveStage(int fromIndex, int toIndex) {
-        MasteringChain.Stage stage = masteringChain.removeStage(fromIndex);
-        masteringChain.insertStage(toIndex, stage.getType(), stage.getName(), stage.getProcessor());
-        // Preserve bypass state
-        masteringChain.getStages().get(toIndex).setBypassed(stage.isBypassed());
+        MasteringChain.Stage stage = masteringChain.getStages().get(fromIndex);
+        masteringChain.moveStage(fromIndex, toIndex);
         refresh();
         statusLabel.setText("Moved " + stage.getName() + " to position " + (toIndex + 1));
     }
@@ -425,65 +437,52 @@ public final class MasteringView extends VBox implements Dockable {
         };
     }
 
-    /**
-     * Starts the meter polling timer that updates GR labels and level meters
-     * at approximately 30 Hz. Stops any previously running timer.
-     */
-    private void startMeterTimer() {
-        stopMeterTimer();
-        if (masteringChain.isEmpty()) {
-            return;
-        }
-        meterTimer = new AnimationTimer() {
-            private long lastUpdate;
-
-            @Override
-            public void handle(long now) {
-                if (lastUpdate == 0L) {
-                    lastUpdate = now;
-                    return;
-                }
-                long elapsed = now - lastUpdate;
-                if (elapsed < METER_UPDATE_INTERVAL_NS) {
-                    return;
-                }
-                lastUpdate = now;
-                updateMeters();
-            }
-        };
-        meterTimer.start();
+    /** Connects stage levels and GR, and pre-monitor-gain loudness, to the engine tap bus. */
+    public void bindMeters(MeterFeed feed, MeteringTapBus bus, FxDispatcher dispatcher) {
+        bindMeters(feed, bus, dispatcher, () -> true);
     }
 
-    /**
-     * Stops the meter polling timer.
-     */
-    private void stopMeterTimer() {
-        if (meterTimer != null) {
-            meterTimer.stop();
-            meterTimer = null;
+    /** Stopped audition may feed other analyzers; mastering readouts follow programme playback. */
+    public void bindMeters(MeterFeed feed, MeteringTapBus bus, FxDispatcher dispatcher,
+            java.util.function.BooleanSupplier transportActive) {
+        closeStageMeters();
+        if (loudnessBinding != null) loudnessBinding.close();
+        loudnessBinding = null;
+        meterFeed = feed;
+        if (disposed) return;
+        bindStageMeters();
+        if (bus != null && dispatcher != null) {
+            loudnessBinding = new AnalyzerBinding(bus, dispatcher, () -> MeterTapPoint.MASTER_CHAIN,
+                    () -> transportActive.getAsBoolean() && AnalyzerBinding.isShowing(this),
+                    publish -> new AnalyzerProcessor(AnalyzerProcessor.Kind.LOUDNESS, publish),
+                    snapshot -> loudnessDisplay.update(snapshot instanceof AnalyzerSnapshot.Loudness loudness
+                            ? loudness.data() : null));
         }
     }
 
-    /**
-     * Reads metering data from the mastering chain and updates UI labels
-     * and meters. Called from the JavaFX application thread by the
-     * animation timer. Each {@link LevelMeterDisplay} is now backed by a
-     * {@link com.benesquivelmusic.daw.fx.GpuCanvas} that drives ballistics
-     * from its own per-frame {@code deltaSeconds()}, so we no longer need
-     * to compute or pass an elapsed delta here.
-     */
-    private void updateMeters() {
-        int stageCount = masteringChain.size();
-        for (int i = 0; i < Math.min(stageCount, grLabels.size()); i++) {
-            double gr = masteringChain.getStageGainReductionDb(i);
-            grLabels.get(i).setText(String.format("GR: %.1f dB", gr));
-
-            double outputDb = masteringChain.getStageOutputPeakDb(i);
-            double linear = (outputDb > -60.0)
-                    ? Math.pow(10.0, outputDb / 20.0)
-                    : 0.0;
-            LevelData levelData = new LevelData(linear, linear, outputDb, outputDb, outputDb > 0.0);
-            levelMeters.get(i).update(levelData);
+    private void bindStageMeters() {
+        if (meterFeed == null || meterFeed.isDisposed()) return;
+        for (int index = 0; index < levelMeters.size(); index++) {
+            var display = levelMeters.get(index);
+            meterBindings.add(new VisibleMeterBinding(meterFeed, new MeterTapPoint.MasteringStage(index),
+                    display, MeterSinks.masteringStage(display, grLabels.get(index), stageLevelLabels.get(index))));
         }
+    }
+
+    private void closeStageMeters() {
+        meterBindings.forEach(VisibleMeterBinding::close);
+        meterBindings.clear();
+    }
+
+    /** Releases all view-owned subscriptions and graphics resources. The engine keeps its chain. */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        closeStageMeters();
+        stageControls.values().forEach(MasteringStageControls::close);
+        stageControls.clear();
+        if (loudnessBinding != null) loudnessBinding.close();
+        levelMeters.forEach(LevelMeterDisplay::dispose);
+        loudnessDisplay.dispose();
     }
 }

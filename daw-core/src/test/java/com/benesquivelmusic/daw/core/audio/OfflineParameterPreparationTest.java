@@ -35,8 +35,8 @@ public class OfflineParameterPreparationTest {
                 owners.get(index).addInsert(slot);
                 slot.getParameterStore().writeFromUiById(0, 0.25);
             }
-            var outputChain = new EffectsChain();
-            outputChain.addProcessor(outputProcessor);
+            var outputChain = new com.benesquivelmusic.daw.core.mastering.MasteringChain(1);
+            mixer.getMasterChannel().addInsert(new InsertSlot("Output gain", outputProcessor));
             outputProcessor.setGain(0.25);
             outputChain.allocateIntermediateBuffers(1, 64);
             mixer.prepareForPlayback(1, 64);
