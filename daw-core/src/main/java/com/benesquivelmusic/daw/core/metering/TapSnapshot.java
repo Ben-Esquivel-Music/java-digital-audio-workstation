@@ -262,6 +262,19 @@ public final class TapSnapshot {
         return masteringStages[stageIndex];
     }
 
+    /** Publishes one silent level/analysis block for every demanded stage at or beyond {@code firstStage}. */
+    @RealTimeSafe
+    public void publishSilentMasteringStages(int firstStage, int channelCount, int numFrames) {
+        long stamp = blockIndex();
+        for (int i = firstStage; i < masteringStages.length; i++) {
+            LevelTapSlot slot = masteringStages[i];
+            if (slot != null) {
+                slot.publishSilence(epoch, stamp, channelCount);
+                for (SampleBlockRing ring : slot.rings()) ring.writeSilence(channelCount, numFrames);
+            }
+        }
+    }
+
     /** The {@code INSERT_IO} pair for {@code slot} (identity scan), or {@code null} when untapped. */
     @RealTimeSafe
     public InsertTapPair insertTapFor(InsertSlot slot) {

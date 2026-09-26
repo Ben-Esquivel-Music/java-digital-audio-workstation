@@ -7,22 +7,27 @@ import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.OutputRouting;
+import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
+import com.benesquivelmusic.daw.sdk.audio.DynamicLatencyProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
@@ -212,6 +217,57 @@ class MasteringLatencyCompensationTest {
         }
     }
 
+    @ParameterizedTest
+    @MethodSource("mixPaths")
+    void faultedMasterInsertRefreshesLatencyBeforeItsOwningChainCanRebuild(
+            MixPrecision precision, boolean dynamic, @TempDir Path tempDir) throws Exception {
+        var mixer = new Mixer();
+        var channel = new MixerChannel("Master source");
+        channel.setPan(-1);
+        channel.addInsert(new InsertSlot("Channel latency", new DelayProcessor(3)));
+        var direct = new MixerChannel("Direct source");
+        direct.setPan(-1);
+        direct.setOutputRouting(new OutputRouting(2, 2));
+        mixer.addChannel(channel);
+        mixer.addChannel(direct);
+        var processor = dynamic ? new DynamicFaultingDelayProcessor() : new FaultingDelayProcessor();
+        var slot = new InsertSlot("Faulting master delay", processor);
+        var master = mixer.getMasterChannel();
+        var supervisor = new PluginInvocationSupervisor(tempDir.resolve("faults.log"));
+        try (var compensation = mixer.getDelayCompensation();
+             var enforcer = new TrackCpuBudgetEnforcer(48_000, FRAMES)) {
+            mixer.setPluginSupervisor(supervisor);
+            master.addInsert(slot);
+            master.addInsert(new InsertSlot("Retained master delay", new DelayProcessor(2)));
+            mixer.setMixPrecision(precision);
+            mixer.prepareForPlayback(4, FRAMES);
+            assertAlignedImpulse(mixer, null, enforcer, false, 10);
+            int capturedReads = processor.latencyReads.get();
+
+            // The fault drain must wait for this control-thread monitor; rendering and
+            // compensation refresh must continue without rebuilding the owning channel.
+            synchronized (master) {
+                processor.failNext.set(true);
+                var failedOutput = renderImpulse(mixer, null, enforcer, false);
+                assertThat(failedOutput[0]).containsOnly(0f);
+                assertThat(slot.isBypassed()).isTrue();
+                assertThat(master.getEffectsChain().size()).isEqualTo(2);
+                await(() -> mixer.getSystemLatencySamples() == 5);
+                assertThat(compensation.getMasterLatencySamples()).isEqualTo(2);
+                assertAlignedImpulse(mixer, null, enforcer, false, 5);
+                if (!dynamic) {
+                    assertThat(processor.latencyReads).as("static latency is captured only off RT")
+                            .hasValue(capturedReads);
+                }
+            }
+
+            supervisor.reenable(slot);
+            assertThat(slot.isBypassed()).isFalse();
+            assertAlignedImpulse(mixer, null, enforcer, false, 10);
+        } finally {
+            supervisor.close();
+        }
+    }
     private static Mixer mixer(MixPrecision precision) {
         var mixer = new Mixer();
         var channel = new MixerChannel("Programme");
@@ -242,6 +298,17 @@ class MasteringLatencyCompensationTest {
     private static void assertAlignedImpulse(Mixer mixer, MasteringChain chain,
                                              TrackCpuBudgetEnforcer enforcer, boolean instrumented,
                                              int expectedFrame) {
+        var output = renderImpulse(mixer, chain, enforcer, instrumented);
+        assertThat(mixer.getSystemLatencySamples()).isEqualTo(expectedFrame);
+        for (int frame = 0; frame < FRAMES; frame++) {
+            float expected = frame == expectedFrame ? 0.25f : 0f;
+            assertThat(output[0][frame]).as("master sample %d", frame).isCloseTo(expected, within(1e-6f));
+            assertThat(output[2][frame]).as("direct sample %d", frame).isCloseTo(expected, within(1e-6f));
+        }
+    }
+
+    private static float[][] renderImpulse(Mixer mixer, MasteringChain chain,
+                                           TrackCpuBudgetEnforcer enforcer, boolean instrumented) {
         var sources = new float[2][2][FRAMES];
         sources[0][0][0] = 0.25f;
         sources[1][0][0] = 0.25f;
@@ -254,12 +321,7 @@ class MasteringLatencyCompensationTest {
             mixer.mixDown(sources, output, returns, FRAMES, null, chain, null, false, true);
         }
         mixer.renderDirectOutputs(sources, output, FRAMES);
-        assertThat(mixer.getSystemLatencySamples()).isEqualTo(expectedFrame);
-        for (int frame = 0; frame < FRAMES; frame++) {
-            float expected = frame == expectedFrame ? 0.25f : 0f;
-            assertThat(output[0][frame]).as("master sample %d", frame).isCloseTo(expected, within(1e-6f));
-            assertThat(output[2][frame]).as("direct sample %d", frame).isCloseTo(expected, within(1e-6f));
-        }
+        return output;
     }
 
     private static void await(BooleanSupplier condition) throws InterruptedException {
@@ -267,6 +329,23 @@ class MasteringLatencyCompensationTest {
         while (!condition.getAsBoolean() && System.nanoTime() < deadline) TimeUnit.MILLISECONDS.sleep(5);
         assertThat(condition.getAsBoolean()).isTrue();
     }
+
+    private static class FaultingDelayProcessor implements AudioProcessor {
+        private final DelayProcessor delegate = new DelayProcessor(5);
+        final AtomicBoolean failNext = new AtomicBoolean();
+        final AtomicInteger latencyReads = new AtomicInteger();
+        @Override public int getLatencySamples() { latencyReads.incrementAndGet(); return 5; }
+        @Override public void process(float[][] input, float[][] output, int frames) {
+            if (failNext.getAndSet(false)) throw new IllegalStateException("master insert fault");
+            delegate.process(input, output, frames);
+        }
+        @Override public void reset() { delegate.reset(); }
+        @Override public int getInputChannelCount() { return 2; }
+        @Override public int getOutputChannelCount() { return 2; }
+    }
+
+    private static final class DynamicFaultingDelayProcessor extends FaultingDelayProcessor
+            implements DynamicLatencyProcessor { }
 
     private static final class DelayProcessor implements AudioProcessor {
         private final CompensationDelay delay;

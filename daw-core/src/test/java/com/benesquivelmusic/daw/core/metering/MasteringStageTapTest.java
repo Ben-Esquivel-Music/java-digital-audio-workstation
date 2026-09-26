@@ -6,12 +6,17 @@ import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -179,5 +184,111 @@ class MasteringStageTapTest {
         assertThat(frame.isSilent()).isTrue();
         assertThat(frame.blockIndex()).isEqualTo(1L);
         assertThat(output[0]).as("monitoring audio remains audible").containsExactly(input[0]);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"remove", "replace", "remove while stopped"})
+    void shrinkingChainClearsTheRemovedStageLevelAndAnalysis(String mutation) {
+        var chain = new MasteringChain();
+        chain.addStage(MasteringStageType.GAIN_STAGING, "First", new GainStagingProcessor(2, 0));
+        chain.addStage(MasteringStageType.EQ_TONAL, "Removed", new GainStagingProcessor(2, 0));
+        chain.allocateIntermediateBuffers(2, 4);
+        var ring = new SampleBlockRing(4, 4);
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(1), new SampleBlockRing[] {ring});
+        var taps = tapsFor(slot, 1);
+        float[][] input = {{0.5f, 0.25f, -0.5f, -0.25f}, {0.5f, 0.25f, -0.5f, -0.25f}};
+        var output = new float[2][4];
+        var analysis = new float[2][4];
+        taps.beginPublication();
+        chain.process(input, output, 4, taps);
+        bus.blockCompleted(taps);
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.maxPeak()).isEqualTo(0.5f);
+        assertThat(ring.readInto(analysis)).isEqualTo(4);
+        assertThat(analysis[0]).containsExactly(input[0]);
+
+        if (mutation.equals("replace")) chain.replaceStages(List.of(chain.getStages().getFirst()));
+        else chain.removeStage(1);
+        taps.beginPublication();
+        chain.process(input, output, 3, taps, !mutation.equals("remove while stopped"));
+        assertThat(ring.readInto(analysis)).isEqualTo(-1);
+        bus.blockCompleted(taps);
+
+        assertSilentStage(slot, ring, 1L, 3);
+        assertThat(output[0]).containsExactly(input[0]);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 4})
+    void emptyChainPublishesTheHighestDemandedStageAcrossDeviceChannelLayouts(int deviceChannels) {
+        var chain = new MasteringChain();
+        chain.allocateIntermediateBuffers(2, 4);
+        int index = MeterTapPoint.MAX_MASTERING_STAGES - 1;
+        var ring = new SampleBlockRing(4, 4);
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(index), new SampleBlockRing[] {ring});
+        var taps = tapsFor(slot, index);
+
+        taps.beginPublication();
+        chain.process(new float[deviceChannels][4], new float[deviceChannels][4], 3, taps);
+        bus.blockCompleted(taps);
+
+        assertSilentStage(slot, ring, 0L, 3);
+    }
+
+    @ParameterizedTest
+    @EnumSource(MixPrecision.class)
+    void removingTheLastStagePublishesSilenceThroughTheMixer(MixPrecision precision) {
+        var chain = new MasteringChain();
+        chain.addStage(MasteringStageType.GAIN_STAGING, "Removed", new GainStagingProcessor(2, 0));
+        chain.allocateIntermediateBuffers(2, 4);
+        var channel = new MixerChannel("Programme");
+        channel.setPan(-1);
+        mixer.addChannel(channel);
+        mixer.setMixPrecision(precision);
+        mixer.prepareForPlayback(2, 4);
+        var ring = new SampleBlockRing(4, 4);
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(0), new SampleBlockRing[] {ring});
+        var taps = tapsFor(slot, 0);
+        float[][][] input = {{{0.5f, 0.25f, -0.5f, -0.25f}, {0f, 0f, 0f, 0f}}};
+        var output = new float[2][4];
+        var returns = new float[Mixer.MAX_RETURN_BUSES][2][4];
+        taps.beginPublication();
+        mixer.mixDown(input, output, returns, 4, taps, chain, null, false, true);
+        bus.blockCompleted(taps);
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.maxPeak()).isEqualTo(0.5f);
+        assertThat(ring.readInto(new float[2][4])).isEqualTo(4);
+
+        chain.removeStage(0);
+        taps.beginPublication();
+        mixer.mixDown(input, output, returns, 3, taps, chain, null, false, true);
+        bus.blockCompleted(taps);
+
+        assertSilentStage(slot, ring, 1L, 3);
+        assertThat(Arrays.copyOf(output[0], 3)).containsExactly(0.5f, 0.25f, -0.5f);
+    }
+
+    private TapSnapshot tapsFor(LevelTapSlot slot, int index) {
+        var stages = new LevelTapSlot[index + 1];
+        stages[index] = slot;
+        return new TapSnapshot(bus, mixer, 1L, FORMAT,
+                new MixerChannel[0], new LevelTapSlot[0], new MixerChannel[0], new LevelTapSlot[0],
+                null, null, stages, new InsertSlot[0], new MixerChannel[0], new InsertTapPair[0]);
+    }
+
+    private static void assertSilentStage(LevelTapSlot slot, SampleBlockRing ring, long block, int frames) {
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.isSilent()).isTrue();
+        assertThat(frame.inputPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(frame.gainReductionDb()).isNaN();
+        assertThat(frame.blockIndex()).isEqualTo(block);
+        var analysis = new float[2][4];
+        assertThat(ring.readInto(analysis)).isEqualTo(frames);
+        assertThat(ring.lastChannelCount()).isEqualTo(2);
+        for (float[] lane : analysis) assertThat(Arrays.copyOf(lane, frames)).containsOnly(0f);
+        assertThat(ring.readInto(analysis)).as("one publication per block").isEqualTo(-1);
     }
 }

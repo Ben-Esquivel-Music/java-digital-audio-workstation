@@ -430,15 +430,12 @@ public final class MasteringChain implements DynamicLatencyProcessor {
     /** Stopped monitoring still processes audio, while stage readouts publish honest idle. */
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames, TapSnapshot taps,
                         boolean stageMetersActive) {
-        if (!stageMetersActive && taps != null) {
-            for (int i = 0; i < com.benesquivelmusic.daw.core.metering.MeterTapPoint.MAX_MASTERING_STAGES; i++) {
-                LevelTapSlot slot = taps.masteringStage(i);
-                if (slot != null) publishSilence(slot, taps, channels, numFrames);
-            }
-        }
-        TapSnapshot stageTaps = stageMetersActive ? taps : null;
         drainParameterUpdates();
         RenderState captured = renderState;
+        if (taps != null) {
+            taps.publishSilentMasteringStages(stageMetersActive ? captured.stages().length : 0, channels, numFrames);
+        }
+        TapSnapshot stageTaps = stageMetersActive ? taps : null;
         if ((inputBuffer.length != channels || outputBuffer.length != channels)
                 && captured.inputScratch() != null) {
             // Mastering remains stereo on devices exposing additional direct-output lanes.

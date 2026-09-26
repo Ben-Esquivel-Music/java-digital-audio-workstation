@@ -889,6 +889,10 @@ public final class Mixer {
                                  TapSnapshot taps, MasteringChain masteringChain,
                                  float[][] extra, boolean bypassMaster, boolean stageMetersActive) {
         try {
+            if (taps != null && (bypassMaster || masteringChain == null)) {
+                int channels = masteringChain != null ? masteringChain.getOutputChannelCount() : output.length;
+                taps.publishSilentMasteringStages(0, channels, frames);
+            }
             if (extra != null) {
                 for (int ch = 0; ch < Math.min(extra.length, output.length); ch++) {
                     for (int f = 0; f < frames; f++) {
@@ -911,6 +915,9 @@ public final class Mixer {
                 if (!inserts.isEmpty()) inserts.processDouble(accumulator, accumulator, frames, taps);
                 // Keep the full double sum until the fader when no float mastering stage is active.
                 if (masteringChain == null || masteringChain.isEmpty() && !masteringChain.isChainBypassed()) {
+                    if (taps != null && masteringChain != null) {
+                        taps.publishSilentMasteringStages(0, masteringChain.getOutputChannelCount(), frames);
+                    }
                     finalizeAccumulator(accumulator, output, frames,
                             masterChannel.isMuted() ? 0.0 : masterChannel.getVolume(),
                             taps != null ? taps.masterChain() : null,

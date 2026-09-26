@@ -25,9 +25,10 @@ import java.util.concurrent.locks.LockSupport;
  * aligning all channels at the summing bus.</p>
  *
  * <p>Delay buffers are prepared by {@link #recalculate} on the control thread
- * or by a monitor of explicitly thread-safe dynamic latency sources, so that {@link #applyToChannel} and
+ * or by a monitor of live slot bypass flags and explicitly thread-safe dynamic
+ * latency sources, so that {@link #applyToChannel} and
  * {@link #applyToReturnBus} perform zero heap allocations on the audio
- * thread. The monitor starts only for dynamic sources and stops when they
+ * thread. The monitor starts only for live sources and stops when they
  * leave the graph or {@link #close()} retires the project. Static/native
  * processor latency is queried only during control-thread recalculation.</p>
  */
@@ -114,17 +115,17 @@ public final class PluginDelayCompensation implements AutoCloseable {
         channelSources = channels.stream().map(channel -> channel.getEffectsChain().captureLatency()).toList();
         returnBusSources = returnBuses.stream().map(channel -> channel.getEffectsChain().captureLatency()).toList();
         rebuildCompensation(false);
-        boolean hasDynamicLatency = channelSources.stream().anyMatch(source -> !source.dynamic().isEmpty())
-                || returnBusSources.stream().anyMatch(source -> !source.dynamic().isEmpty())
-                || masterSource != null && !masterSource.dynamic().isEmpty()
+        boolean hasLiveLatency = channelSources.stream().anyMatch(EffectsChain.LatencySnapshot::hasLiveLatency)
+                || returnBusSources.stream().anyMatch(EffectsChain.LatencySnapshot::hasLiveLatency)
+                || masterSource != null && masterSource.hasLiveLatency()
                 || masteringChain != null;
-        if (hasDynamicLatency && latencyWatcher == null) {
+        if (hasLiveLatency && latencyWatcher == null) {
             var reference = new WeakReference<>(this);
             // JEP 444 (final since Java 21): polling and buffer allocation stay off RT.
             latencyWatcher = Thread.ofVirtual().name("plugin-latency-refresh")
                     .unstarted(() -> watchLatencies(reference));
             latencyWatcher.start();
-        } else if (!hasDynamicLatency) {
+        } else if (!hasLiveLatency) {
             stopLatencyWatcher();
         }
     }
