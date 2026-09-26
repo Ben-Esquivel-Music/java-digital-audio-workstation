@@ -549,7 +549,7 @@ public final class Mixer {
 
         sidechainChannelBuffers = channelBuffers;
         sidechainReturnBuffers = null;
-        finishMasterMix(acc, outputBuffer, numFrames, null, null, null, false, true);
+        finishMasterMix(acc, outputBuffer, numFrames, null, masteringChain, null, false, true);
     }
 
     /**
@@ -686,7 +686,7 @@ public final class Mixer {
     @RealTimeSafe
     public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
                         float[][][] returnBuffers, int numFrames, TapSnapshot taps) {
-        mixDown(channelBuffers, outputBuffer, returnBuffers, numFrames, taps, null, null, false, true);
+        mixDown(channelBuffers, outputBuffer, returnBuffers, numFrames, taps, masteringChain, null, false, true);
     }
 
     /** Engine render entry: extra monitor/click audio joins the sum before the master stages. */
@@ -1030,7 +1030,7 @@ public final class Mixer {
                                     com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer enforcer,
                                     TapSnapshot taps) {
         mixDownInstrumented(channelBuffers, outputBuffer, returnBuffers, numFrames, tracks,
-                enforcer, taps, null, null, false, true);
+                enforcer, taps, masteringChain, null, false, true);
     }
 
     /** Instrumented engine render with the same master stage as ordinary mixdown. */

@@ -433,7 +433,7 @@ public final class MasteringChain implements DynamicLatencyProcessor {
         if (!stageMetersActive && taps != null) {
             for (int i = 0; i < com.benesquivelmusic.daw.core.metering.MeterTapPoint.MAX_MASTERING_STAGES; i++) {
                 LevelTapSlot slot = taps.masteringStage(i);
-                if (slot != null) slot.publishSilence(taps.epoch(), taps.blockIndex(), channels);
+                if (slot != null) publishSilence(slot, taps, channels, numFrames);
             }
         }
         TapSnapshot stageTaps = stageMetersActive ? taps : null;
@@ -483,7 +483,7 @@ public final class MasteringChain implements DynamicLatencyProcessor {
                 captured.inputPeaks().set(i, Double.doubleToRawLongBits(-120.0));
                 captured.outputPeaks().set(i, Double.doubleToRawLongBits(-120.0));
                 captured.gainReductions().set(i, 0L);
-                if (slot != null) slot.publishSilence(taps.epoch(), taps.blockIndex(), outputBuffer.length);
+                if (slot != null) publishSilence(slot, taps, outputBuffer.length, numFrames);
                 continue;
             }
             float[][] currentOutput;
@@ -511,6 +511,11 @@ public final class MasteringChain implements DynamicLatencyProcessor {
             currentInput = currentOutput;
             activeIndex++;
         }
+    }
+
+    private static void publishSilence(LevelTapSlot slot, TapSnapshot taps, int channels, int numFrames) {
+        slot.publishSilence(taps.epoch(), taps.blockIndex(), channels);
+        for (var ring : slot.rings()) ring.writeSilence(channels, numFrames);
     }
 
     /**

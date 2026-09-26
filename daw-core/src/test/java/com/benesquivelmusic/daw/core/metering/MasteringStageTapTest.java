@@ -1,10 +1,17 @@
 package com.benesquivelmusic.daw.core.metering;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.dsp.GainStagingProcessor;
+import com.benesquivelmusic.daw.core.mastering.MasteringChain;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -127,5 +134,50 @@ class MasteringStageTapTest {
         assertThat(bus.snapshot().hasAnalysisRings()).isFalse();
         assertThat(subscription.readInto(frame)).isTrue();
         assertThat(frame.gainReductionDb()).isEqualTo(4.0);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"stopped", "stage bypass", "chain bypass", "solo exclusion"})
+    void idleStagePublishesOneSilentAnalysisBlockAlongsideItsLevels(String idleMode) {
+        var chain = new MasteringChain();
+        chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainStagingProcessor(2, 0));
+        chain.addStage(MasteringStageType.EQ_TONAL, "Other", new GainStagingProcessor(2, 0));
+        chain.allocateIntermediateBuffers(2, 4);
+        var ring = new SampleBlockRing(4, 4);
+        var slot = new LevelTapSlot(new MeterTapPoint.MasteringStage(0), new SampleBlockRing[] {ring});
+        var taps = new TapSnapshot(bus, mixer, 1L, FORMAT,
+                new MixerChannel[0], new LevelTapSlot[0], new MixerChannel[0], new LevelTapSlot[0],
+                null, null, new LevelTapSlot[] {slot}, new InsertSlot[0], new MixerChannel[0],
+                new InsertTapPair[0]);
+        float[][] input = {{0.25f, 0.5f, -0.5f, -0.25f}, {0.25f, 0.5f, -0.5f, -0.25f}};
+        var output = new float[2][4];
+        var analysis = new float[2][4];
+        taps.beginPublication();
+        chain.process(input, output, 4, taps);
+        bus.blockCompleted(taps);
+        assertThat(ring.readInto(analysis)).isEqualTo(4);
+        assertThat(analysis[0]).containsExactly(input[0]);
+
+        switch (idleMode) {
+            case "stage bypass" -> chain.getStages().getFirst().setBypassed(true);
+            case "chain bypass" -> chain.setChainBypassed(true);
+            case "solo exclusion" -> chain.getStages().getLast().setSolo(true);
+            default -> { }
+        }
+        taps.beginPublication();
+        chain.process(input, output, 3, taps, !idleMode.equals("stopped"));
+        assertThat(ring.readInto(analysis)).as("no tentative audio escapes before block completion").isEqualTo(-1);
+        bus.blockCompleted(taps);
+
+        assertThat(ring.readInto(analysis)).isEqualTo(3);
+        assertThat(ring.lastChannelCount()).isEqualTo(2);
+        assertThat(java.util.Arrays.copyOf(analysis[0], 3)).containsOnly(0f);
+        assertThat(java.util.Arrays.copyOf(analysis[1], 3)).containsOnly(0f);
+        assertThat(ring.readInto(analysis)).as("one publication per block").isEqualTo(-1);
+        var frame = new MeterFrame();
+        assertThat(slot.readInto(frame)).isTrue();
+        assertThat(frame.isSilent()).isTrue();
+        assertThat(frame.blockIndex()).isEqualTo(1L);
+        assertThat(output[0]).as("monitoring audio remains audible").containsExactly(input[0]);
     }
 }
