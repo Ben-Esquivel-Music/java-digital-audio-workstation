@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip;
+import com.benesquivelmusic.daw.app.ui.controls.skin.MixerChannelStripSkin;
 import com.benesquivelmusic.daw.app.ui.display.InputMeterStrip;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
@@ -12,6 +14,18 @@ import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.metering.MeterSinks;
 import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.vm.ChannelControlBinder;
+import com.benesquivelmusic.daw.app.ui.vm.ChannelVM;
+import com.benesquivelmusic.daw.app.ui.vm.TrackChannelRegistry;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlBinder;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
+import com.benesquivelmusic.daw.app.ui.vm.TrackVM;
+import com.benesquivelmusic.daw.app.ui.vm.command.RenameTrackCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleChannelMuteCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleChannelSoloCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleMuteCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleSoloCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TrackCommand;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
@@ -20,6 +34,7 @@ import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.RecallSnapshotAction;
+import com.benesquivelmusic.daw.core.undo.CompoundUndoableAction;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -31,6 +46,9 @@ import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
 import com.benesquivelmusic.daw.sdk.audio.ChannelGrouping;
 import com.benesquivelmusic.daw.sdk.audio.ChannelKind;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.value.ChangeListener;
+import javafx.css.PseudoClass;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
@@ -48,12 +66,16 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -62,17 +84,19 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 /**
  * A mixer view that displays all project tracks as vertical channel strips.
  *
- * <p>Each channel strip contains (from top to bottom):
+ * <p>Each track's column contains (from top to bottom):
  * <ul>
- *   <li>Channel name label</li>
- *   <li>Insert effects rack ({@link InsertEffectRack})</li>
- *   <li>Level meter (vertical bar via {@link LevelMeterDisplay}), showing the
- *       channel's post-fader level from the engine's metering tap bus once
- *       {@link #setMeterFeed(MeterFeed)} has been called (story 318)</li>
- *   <li>Volume fader (vertical {@link Slider})</li>
- *   <li>Pan control (horizontal {@link Slider})</li>
- *   <li>Mute / Solo / Arm buttons</li>
- *   <li>Send level controls (one per return bus)</li>
+ *   <li>VCA member badges, L/R stereo-pair badge, frozen and CPU-degraded
+ *       badges (host extras)</li>
+ *   <li>Track type icon, input / output routing selectors</li>
+ *   <li>Insert effects rack ({@link InsertEffectRack}) — the editing surface —
+ *       and the PDC latency label</li>
+ *   <li>The story-271 {@link MixerChannelStrip}: I/O captions, the channel's
+ *       real insert list (click → Inspector selection), pan knob, fader with
+ *       integrated meter, M/S/R toggles and the channel name — beside the
+ *       story-137 input meter while the track is armed</li>
+ *   <li>The 3D panner button (hidden until a spatial node exists)</li>
+ *   <li>Send level controls (one per return bus) and the cue sends</li>
  * </ul>
  *
  * <p>Return buses are displayed as distinct channel strips between the track
@@ -81,8 +105,32 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * <p>The master channel strip is always displayed on the far right,
  * separated from the return bus channels by a vertical separator.</p>
  *
- * <p>Uses existing CSS classes: {@code .mixer-panel}, {@code .mixer-channel},
- * {@code .mixer-channel-name}, {@code .mixer-fader}.</p>
+ * <p>Story 322 (Audio Engine Wiring Design Book §2.10 / §5.6): every strip's
+ * fader / pan / mute / solo / arm is a <em>subscriber</em> of the
+ * {@link TrackControlWiring}'s view-models and raises its gesture as a
+ * {@code TrackCommand} into the wiring's one command sink — the same intent
+ * path the arrangement strips drive — so this view writes no
+ * {@code MixerChannel} / {@code Track} control state itself. Stereo-link
+ * mirroring of those four is the sink's; only the per-return send rows keep
+ * a view-side "Link Sends" mirror. Snapshot recall re-seeds the strips
+ * structurally, mute / solo / arm styles are seeded from the VM at bind
+ * time, and the 3D button is gated on {@code ChannelVM.spatialNodePresent}.</p>
+ *
+ * <h2>The story-271 skin swap (story 322, slice 5)</h2>
+ *
+ * <p>The track strips are {@link MixerChannelStrip}s bound through
+ * {@link TrackControlBinder#bindStrip}: the strip's name, insert list, pan,
+ * dB fader, M/S/R and integrated meter are all VM subscriptions, and its
+ * meter is a {@link ChannelVM#bindMeter(Node) ChannelVM-owned} tap-bus
+ * subscription rather than a {@link LevelMeterDisplay} registered by this
+ * view. The track strips therefore no longer use the legacy
+ * {@code .mixer-channel} alias or {@code .mixer-fader} bridge in
+ * {@code styles.css}; the return-bus, master and VCA strips (and the
+ * hand-built send rows) still do — the remaining story-271 debt.</p>
+ *
+ * <p>Uses existing CSS classes: {@code .mixer-panel}, {@code .mixer-channel}
+ * (return / master / VCA strips), {@code .mixer-channel-name},
+ * {@code .mixer-fader} (return / master / VCA / send sliders).</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class MixerView extends VBox implements Dockable {
@@ -109,6 +157,23 @@ public final class MixerView extends VBox implements Dockable {
     private static final double INPUT_METER_WIDTH = 10;
     private static final double CONTROL_ICON_SIZE = 14;
     private static final double SEND_SLIDER_WIDTH = 60;
+    /**
+     * Story 322 — the solo-safe ring pseudo-class on a strip's solo button
+     * (styles.css {@code .track-solo-button:solo-safe}). Package-visible for tests.
+     */
+    static final PseudoClass SOLO_SAFE = PseudoClass.getPseudoClass("solo-safe");
+    /** Node-properties key under which a return / master strip carries its {@link MixerStripControls}. */
+    private static final Object STRIP_CONTROLS_KEY = new Object();
+    /** Node-properties key under which a track strip's host column carries its {@link TrackStripHandles}. */
+    private static final Object TRACK_STRIP_KEY = new Object();
+    /**
+     * Style class of a track strip's host column (the {@link VBox} holding the
+     * {@link MixerChannelStrip} and the host extras). A lookup hook for tests
+     * and a future CSS anchor; it carries no rule today. The legacy
+     * {@code .mixer-channel} alias is deliberately NOT applied to it (story
+     * 322 skin swap).
+     */
+    static final String TRACK_STRIP_HOST_STYLE_CLASS = "mixer-track-strip";
 
     private final DawProject project;
     private final UndoManager undoManager;
@@ -136,6 +201,25 @@ public final class MixerView extends VBox implements Dockable {
     /** Visibility-owned meter bindings for {@link #stripMeterPoints}; closed by {@link #refresh()}. */
     private final List<VisibleMeterBinding> stripMeterBindings = new ArrayList<>();
     /**
+     * Story 322 — a track strip whose integrated meter is fed by its
+     * {@link ChannelVM}: {@link TrackControlBinder#bindStrip} subscribed the
+     * channel's {@code CHANNEL_POST} tap through {@link ChannelVM#bindMeter(Node)}
+     * with the strip as the visibility-owning surface. Recorded so the view can
+     * route that VM-owned subscription through the same scene lifecycle as its
+     * own {@link LevelMeterDisplay} bindings ({@link #resubscribeAllMeters()} /
+     * {@link #disposeStripMeterSubscriptions()}).
+     */
+    private record TrackStripMeter(ChannelVM channelVm, MixerChannelStrip strip) {
+
+        TrackStripMeter {
+            Objects.requireNonNull(channelVm, "channelVm must not be null");
+            Objects.requireNonNull(strip, "strip must not be null");
+        }
+    }
+
+    /** The track strips of the last {@link #refresh()} whose ChannelVM has a live meter feed. */
+    private final List<TrackStripMeter> trackStripMeters = new ArrayList<>();
+    /**
      * Channel UUIDs (track ids) currently selected via Ctrl/Shift-click on a
      * channel strip. Used to seed the "Create VCA from selection" right-click
      * menu so the engineer can create a VCA over several drum channels in one
@@ -144,7 +228,6 @@ public final class MixerView extends VBox implements Dockable {
      */
     private final Set<UUID> selectedChannelIds = new HashSet<>();
     /**
-     * Per-channel-id slider/button references the {@link ChannelLinkManager}
      * Story 135 — pre-mute gain per cue bus. When a cue bus is muted the
      * master gain is set to 0.0 and the previous value is stashed here so
      * unmute restores it correctly even after a {@link #refresh()} rebuilds
@@ -176,26 +259,37 @@ public final class MixerView extends VBox implements Dockable {
      */
     private NotificationManager notificationManager;
     /**
-     * propagation path uses to mirror UI state across a stereo pair without
-     * a full strip rebuild. The {@code LinkedHashMap} preserves insertion
-     * order to make iteration in tests deterministic. Cleared and
-     * repopulated by {@link #refresh()} on every rebuild — the lookup
-     * tables are owned by this {@code MixerView} and are not exposed
-     * outside the package.
+     * Story 322 — the live {@link MixerChannel} behind each track strip built
+     * by the last {@link #refresh()}, keyed by channel id (= the track's
+     * UUID). The "Link Sends" mirror resolves a stereo partner through it.
+     * Fader / pan / mute / solo mirroring across a linked pair is no longer a
+     * widget-map concern of this view: the wiring's
+     * {@code LinkedTrackCommandDispatcher} writes the partner's model and the
+     * partner's controls follow as VM subscribers.
      */
-    private final Map<UUID, Slider> volumeFaderByChannelId = new LinkedHashMap<>();
-    private final Map<UUID, Slider> panSliderByChannelId   = new LinkedHashMap<>();
-    private final Map<UUID, Button> muteBtnByChannelId     = new LinkedHashMap<>();
-    private final Map<UUID, Button> soloBtnByChannelId     = new LinkedHashMap<>();
     private final Map<UUID, MixerChannel> channelByChannelId = new LinkedHashMap<>();
-    private final Map<UUID, Track>        trackByChannelId   = new LinkedHashMap<>();
     /**
-     * Channel ids currently receiving a propagated edit from a partner.
-     * Used as a re-entry guard so mirroring a fader/pan/mute/solo change
-     * onto the partner does not in turn re-fire the propagation path back
-     * onto the source — guarantees a single round-trip per user gesture.
+     * Story 322 — every per-return send row of the last {@link #refresh()},
+     * keyed by channel id then by target return bus (identity), so a send edit
+     * on one member of a stereo pair can reflect the mirrored <em>model</em>
+     * send on the partner's row (slider + tap glyph) without a strip rebuild.
      */
-    private final Set<UUID> propagationSuppressed = new HashSet<>();
+    private final Map<UUID, Map<MixerChannel, SendRow>> sendRowsByChannelId = new LinkedHashMap<>();
+    /**
+     * Story 322 — the disposers of every VM binding of the last
+     * {@link #refresh()}: one {@link TrackControlBinder} per track strip, one
+     * {@link ChannelControlBinder} per return strip and one for the master,
+     * plus the per-strip listeners (3D-button gating, the story-137 arm
+     * refresh). Run at the top of {@link #refresh()} and in {@link #dispose()}
+     * so no listener outlives its strip ({@code javafx-application-design}
+     * §4 / §15).
+     */
+    private final List<Runnable> stripBindingDisposers = new ArrayList<>();
+    /**
+     * The master strip's controls — built once in the constructor, re-bound
+     * against the current wiring generation on every {@link #refresh()}.
+     */
+    private MixerStripControls masterStripControls;
     /**
      * Listener registered on the project's {@link ChannelLinkManager} that
      * triggers a {@link #refresh()} whenever a link is added, removed, or
@@ -249,6 +343,32 @@ public final class MixerView extends VBox implements Dockable {
      * as they did before the tap bus existed.
      */
     private MeterFeed meterFeed;
+    /**
+     * Story 322 — the host's live per-project-generation control wiring
+     * (VM registry + command sink), handed in by the four-argument constructor
+     * at both production sites (so the constructor's own first
+     * {@link #refresh()} already binds through it) or injected later via
+     * {@link #setTrackControlWiring(Supplier)}. {@code null} in every
+     * pure-unit context.
+     */
+    private Supplier<TrackControlWiring> trackControlWiringSupplier;
+    /**
+     * Story 322 — the wiring this view lazily builds and owns when no host
+     * wiring was injected (or the supplier yields {@code null}), so the
+     * {@code new MixerView(project)} tests bind exactly like production.
+     * Disposed in {@link #dispose()} and when a host wiring arrives.
+     */
+    private TrackControlWiring standaloneTrackControlWiring;
+    /**
+     * How many standalone wirings this view has built for itself — the probe
+     * behind {@link #standaloneTrackControlWiringBuilds()}: a hosted view
+     * (four-argument constructor) must never build one (story 322 fix round,
+     * N1 — each build is a full registry, its VMs and three continuous
+     * channels per channel, then a second strip build to replace it).
+     */
+    private int standaloneTrackControlWiringBuilds;
+    /** The dispatcher {@link #standaloneTrackControlWiring} was built over when none was reachable. */
+    private FxDispatcher standaloneDispatcher;
     /** The master strip's output meter — built once in the constructor, never rebuilt. */
     private LevelMeterDisplay masterMeterDisplay;
     /** The master strip's {@code MASTER_OUT} binding; survives strip refreshes. */
@@ -332,7 +452,9 @@ public final class MixerView extends VBox implements Dockable {
 
     /**
      * Creates a new mixer view bound to the given project, with undo support
-     * and an explicit FX-thread marshalling seam (story 289).
+     * and an explicit FX-thread marshalling seam (story 289). The view binds
+     * its strips through a standalone wiring it builds for itself (the
+     * pure-unit fallback) until {@link #setTrackControlWiring(Supplier)}.
      *
      * @param project      the DAW project to visualize
      * @param undoManager  the undo manager for insert effect operations (may be {@code null})
@@ -340,11 +462,44 @@ public final class MixerView extends VBox implements Dockable {
      *                     the {@link FxDispatcher#getDefault() app-scoped default}
      */
     public MixerView(DawProject project, UndoManager undoManager, FxDispatcher fxDispatcher) {
+        this(project, undoManager, fxDispatcher, null);
+    }
+
+    /**
+     * Creates a new mixer view bound to the given project, with undo support,
+     * an explicit FX-thread marshalling seam (story 289) and the host's live
+     * {@link TrackControlWiring} supplier (story 322, Audio Engine Wiring
+     * Design Book §2.10 / §5.6), so the constructor's own first
+     * {@link #refresh()} already binds every strip through the host's
+     * per-project generation and a hosted view never builds a standalone
+     * wiring for itself. (Story 322 fix round, N1: construct-then-
+     * {@code setTrackControlWiring} built a full registry, its VMs and their
+     * continuous channels, disposed them and rebuilt every strip — twice per
+     * project load.) Both production sites use this constructor; the shorter
+     * ones keep the lazy standalone fallback for tests. The host must have
+     * built the generation for {@code project} before calling this: the
+     * supplier is resolved during construction.
+     *
+     * @param project            the DAW project to visualize
+     * @param undoManager        the undo manager for insert effect operations (may be {@code null})
+     * @param fxDispatcher       the FX-thread marshalling seam, or {@code null} to use
+     *                           the {@link FxDispatcher#getDefault() app-scoped default}
+     * @param trackControlWiring the host's live wiring supplier, resolved on every
+     *                           use and never captured (the host swaps the wiring
+     *                           per project load); {@code null} — or a supplier that
+     *                           yields {@code null} — leaves the view to its own
+     *                           standalone wiring
+     */
+    public MixerView(DawProject project, UndoManager undoManager, FxDispatcher fxDispatcher,
+                     Supplier<TrackControlWiring> trackControlWiring) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = undoManager;
         // May be null in a pure-unit context; postFx() / InsertEffectRack fall
         // back to the static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
+        // Set BEFORE the refresh() at the end of this constructor, which is
+        // what binds the strips through it.
+        this.trackControlWiringSupplier = trackControlWiring;
         getStyleClass().add("mixer-panel");
 
         // Refresh solo-safe button rings and "Solo safe" checkmarks after
@@ -354,9 +509,9 @@ public final class MixerView extends VBox implements Dockable {
         // hop to the FX application thread to mutate widgets safely.
         this.undoHistoryListener = _ -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
-                runSoloSafeSyncCallbacks();
+                onUndoHistoryChanged();
             } else {
-                postFx(this::runSoloSafeSyncCallbacks);
+                postFx(this::onUndoHistoryChanged);
             }
         };
         if (this.undoManager != null) {
@@ -401,7 +556,22 @@ public final class MixerView extends VBox implements Dockable {
                 // session: the meters would stay dark, undo/redo would stop
                 // refreshing the solo-safe rings, and a channel-link edit would
                 // stop re-rendering the strips.
+                // Story 322 fix round 1 (S3): catch up on whatever the history
+                // did while this view was off-screen. The listeners were
+                // released on detach, so an undo / redo made from another view
+                // of a channel-only action (a raw snapshot recall, a solo-safe
+                // edit, a send action) moved the channels without healing the
+                // Track mirrors or re-seeding the solo-safe rings and send
+                // rows. Same work as one history event; when nothing changed
+                // every command is a VALIDATE no-op. Only after a real detach:
+                // a view constructed attached and mounted for the first time
+                // has missed nothing (and a test sink recording its commands
+                // must not see a phantom heal).
+                boolean missedHistory = !modelListenersAttached;
                 acquireModelListeners();
+                if (missedHistory) {
+                    onUndoHistoryChanged();
+                }
                 meterSceneDetached = false;
                 resubscribeAllMeters();
             }
@@ -420,7 +590,12 @@ public final class MixerView extends VBox implements Dockable {
         // loaded project's snapshots appear automatically.
         this.snapshotsPanel = new MixerSnapshotsPanel(
                 project.getMixerSnapshotManager(), project.getMixer(), undoManager);
-        this.snapshotsPanel.setOnChange(this::syncSlotButtons);
+        // Story 322 — the panel's own recall writes channels only; heal the
+        // Track mirrors after it exactly as the A/B recall does.
+        this.snapshotsPanel.setOnChange(() -> {
+            syncSlotButtons();
+            healTrackMirrorsFromChannels();
+        });
 
         this.snapshotsToggleButton = new ToggleButton("Snapshots");
         this.snapshotsToggleButton.setTooltip(new Tooltip(
@@ -614,9 +789,11 @@ public final class MixerView extends VBox implements Dockable {
             @Override public void execute() {
                 manager.setActiveSlot(slot);
                 recallAction.execute();
+                healTrackMirrorsFromChannels();
             }
             @Override public void undo() {
                 recallAction.undo();
+                healTrackMirrorsFromChannels();
                 manager.setActiveSlot(previousSlot);
             }
         };
@@ -648,9 +825,11 @@ public final class MixerView extends VBox implements Dockable {
                 @Override public void execute() {
                     manager.setActiveSlot(next);
                     recallAction.execute();
+                    healTrackMirrorsFromChannels();
                 }
                 @Override public void undo() {
                     recallAction.undo();
+                    healTrackMirrorsFromChannels();
                     manager.setActiveSlot(previous);
                 }
             };
@@ -837,11 +1016,24 @@ public final class MixerView extends VBox implements Dockable {
      * decay through their own ballistics — an unsubscribed meter is not
      * reset, it simply stops being told anything.</p>
      *
+     * <p>Story 322 — the track strips meter through their {@link ChannelVM},
+     * whose feed is fixed at the VM's construction. The host's wiring is built
+     * over the same app-scoped feed this method receives; a standalone wiring
+     * this view built for itself before the feed arrived is disposed and the
+     * strips rebuilt over one that carries it.</p>
+     *
      * @param feed the FX-pulse meter drain, or {@code null} to unsubscribe
      */
     public void setMeterFeed(MeterFeed feed) {
         this.meterFeed = feed;
         activeInsertRacks.forEach(rack -> rack.setMeterFeed(feed));
+        if (standaloneTrackControlWiring != null && !disposed) {
+            // The strip binders go first — they subscribe the VMs the
+            // standalone wiring owns (the dispose() order).
+            disposeStripBindings();
+            disposeStandaloneTrackControlWiring();
+            refresh();
+        }
         resubscribeAllMeters();
     }
 
@@ -866,6 +1058,14 @@ public final class MixerView extends VBox implements Dockable {
         }
         for (Map.Entry<LevelMeterDisplay, MeterTapPoint> entry : stripMeterPoints.entrySet()) {
             stripMeterBindings.add(bindMeter(entry.getKey(), entry.getValue()));
+        }
+        // Story 322 — the track strips' VM-owned subscriptions re-acquire on the
+        // same gate. A VM whose feed has since been disposed leaves its strip
+        // at the floor, exactly like a LevelMeterDisplay without a usable feed.
+        for (TrackStripMeter meter : trackStripMeters) {
+            if (meter.channelVm().hasMeterFeed()) {
+                meter.channelVm().bindMeter(meter.strip());
+            }
         }
     }
 
@@ -894,6 +1094,12 @@ public final class MixerView extends VBox implements Dockable {
         activeInsertRacks.clear();
         activeInputMeterStrips.forEach(InputMeterStrip::stop);
         activeInputMeterStrips.clear();
+        // Story 322 — the strip binders go first (they subscribe the VMs the
+        // standalone wiring below would dispose); only a wiring this view
+        // built for itself is its to dispose — the host's generation outlives
+        // the view.
+        disposeStripBindings();
+        disposeStandaloneTrackControlWiring();
         onOpenInsertEditor = null;
         onChannelSelected = null;
         meterFeed = null;
@@ -907,6 +1113,99 @@ public final class MixerView extends VBox implements Dockable {
     /** Returns the currently bound {@link MeterFeed}, or {@code null}. Visible for testing. */
     MeterFeed getMeterFeed() {
         return meterFeed;
+    }
+
+    /**
+     * Story 322 — injects the host's live {@link TrackControlWiring} supplier
+     * (Audio Engine Wiring Design Book §2.10 / §5.6 "one intent path, both
+     * surfaces") into a view built without one; the production sites hand it
+     * to the four-argument constructor instead. The supplier is resolved on
+     * every use, never captured, because
+     * {@code MainController.rebuildTrackControlWiring()} swaps the wiring per
+     * project load. A standalone wiring this view had already built for itself
+     * is disposed and the strips rebuilt against the host's.
+     *
+     * @param supplier the live wiring supplier; must not be {@code null} (it may
+     *                 <em>yield</em> {@code null}, in which case the view falls
+     *                 back to its own standalone wiring)
+     */
+    public void setTrackControlWiring(Supplier<TrackControlWiring> supplier) {
+        this.trackControlWiringSupplier = Objects.requireNonNull(supplier, "supplier must not be null");
+        if (standaloneTrackControlWiring != null) {
+            // The strip binders go first — they subscribe the VMs the
+            // standalone wiring owns (the dispose() order).
+            disposeStripBindings();
+            disposeStandaloneTrackControlWiring();
+            refresh();
+        }
+    }
+
+    /**
+     * How many standalone wirings this view has built for itself so far —
+     * zero for a view constructed with the host's supplier. Package-visible
+     * for tests (story 322 fix round, N1).
+     *
+     * @return the standalone-wiring build count
+     */
+    int standaloneTrackControlWiringBuilds() {
+        return standaloneTrackControlWiringBuilds;
+    }
+
+    /**
+     * The wiring this view binds its strips through: the host's current
+     * generation when injected, else a standalone one built lazily over this
+     * view's project (and owned by it). Package-visible for tests.
+     *
+     * @return the wiring; never {@code null}
+     */
+    TrackControlWiring getTrackControlWiring() {
+        TrackControlWiring hosted = hostedTrackControlWiring();
+        if (hosted != null) {
+            return hosted;
+        }
+        if (standaloneTrackControlWiring == null) {
+            FxDispatcher dispatcher = fxDispatcher != null ? fxDispatcher : FxDispatcher.getDefault();
+            if (dispatcher == null) {
+                // Pure-unit context with no seam installed anywhere: own one.
+                standaloneDispatcher = new FxDispatcher();
+                dispatcher = standaloneDispatcher;
+            }
+            standaloneTrackControlWiring = TrackControlWiring.standalone(project, dispatcher, meterFeed);
+            standaloneTrackControlWiringBuilds++;
+        }
+        return standaloneTrackControlWiring;
+    }
+
+    private TrackControlWiring hostedTrackControlWiring() {
+        return trackControlWiringSupplier != null ? trackControlWiringSupplier.get() : null;
+    }
+
+    /**
+     * Story 322 — brings the registry up to date with the project before the
+     * strips are rebuilt: return-bus add/remove has no core signal, so
+     * {@link #refresh()} is the one place it is guaranteed to be noticed. Only
+     * an <em>existing</em> wiring is reconciled; a wiring built later derives
+     * its VM set from the live project at construction.
+     */
+    private void reconcileTrackControlWiring() {
+        TrackControlWiring wiring = hostedTrackControlWiring();
+        if (wiring == null) {
+            wiring = standaloneTrackControlWiring;
+        }
+        if (wiring != null) {
+            wiring.registry().reconcile();
+        }
+    }
+
+    private void disposeStandaloneTrackControlWiring() {
+        if (standaloneTrackControlWiring != null) {
+            standaloneTrackControlWiring.dispose();
+            standaloneTrackControlWiring = null;
+        }
+        if (standaloneDispatcher != null) {
+            standaloneDispatcher.dispose();
+            standaloneDispatcher = null;
+        }
     }
 
     /**
@@ -982,6 +1281,15 @@ public final class MixerView extends VBox implements Dockable {
             binding.close();
         }
         stripMeterBindings.clear();
+        // Story 322 — release the track strips' ChannelVM-owned subscriptions
+        // too (the binder's and any re-attach rebind: unbindMeter drops every
+        // surface binding of the VM — the mixer strip is the only surface that
+        // binds a channel meter today). trackStripMeters is kept for the same
+        // reason stripMeterPoints is: a re-attach re-subscribes without a
+        // rebuild; only refresh() discards the strips and clears it.
+        for (TrackStripMeter meter : trackStripMeters) {
+            meter.channelVm().unbindMeter();
+        }
     }
 
     /** Disposes every meter subscription this view owns, master included. */
@@ -993,12 +1301,16 @@ public final class MixerView extends VBox implements Dockable {
         }
     }
 
-    /** The track / return strip meters built by the last refresh. Visible for testing. */
+    /**
+     * The return strip meters built by the last refresh (since story 322 the
+     * track strips meter through their {@link ChannelVM} — see
+     * {@link #getTrackStrips()}). Visible for testing.
+     */
     List<LevelMeterDisplay> getStripMeterDisplays() {
         return List.copyOf(stripMeterPoints.keySet());
     }
 
-    /** The strip meter bindings, in strip order. Visible for testing. */
+    /** The return strip meter bindings, in strip order. Visible for testing. */
     List<VisibleMeterBinding> getStripMeterBindings() {
         return List.copyOf(stripMeterBindings);
     }
@@ -1065,6 +1377,9 @@ public final class MixerView extends VBox implements Dockable {
      */
     public void refresh() {
         if (disposed) return;
+        // Story 322 — the VM registry must know every track / return bus /
+        // the master BEFORE a strip binds through it.
+        reconcileTrackControlWiring();
         // Drop any stale selections referencing tracks that no longer exist
         // so right-click "Create VCA from selection" can't pick up phantoms
         // after a track removal.
@@ -1100,16 +1415,15 @@ public final class MixerView extends VBox implements Dockable {
         // strip is not rebuilt, so its MASTER_OUT subscription survives.
         disposeStripMeterSubscriptions();
         stripMeterPoints.clear();
+        trackStripMeters.clear();
 
-        // Channel-link lookup tables are rebuilt with the strips below so
-        // the propagation paths reference the live JavaFX widgets.
-        volumeFaderByChannelId.clear();
-        panSliderByChannelId.clear();
-        muteBtnByChannelId.clear();
-        soloBtnByChannelId.clear();
+        // Story 322 — every strip control is a VM subscriber bound through
+        // the wiring; the previous build's binders and listeners go with
+        // their strips, and the send-row / channel lookups are rebuilt.
+        disposeStripBindings();
         channelByChannelId.clear();
-        trackByChannelId.clear();
-        propagationSuppressed.clear();
+        sendRowsByChannelId.clear();
+        TrackControlWiring wiring = getTrackControlWiring();
 
         channelStrips.getChildren().clear();
         // First pass: build each track's channel strip and remember its
@@ -1120,27 +1434,27 @@ public final class MixerView extends VBox implements Dockable {
         for (Track track : project.getTracks()) {
             MixerChannel mixerChannel = project.getMixerChannelForTrack(track);
             if (mixerChannel != null) {
-                channelStrips.getChildren().add(buildChannelStrip(track, mixerChannel));
+                channelStrips.getChildren().add(buildChannelStrip(track, mixerChannel, wiring));
                 UUID id = parseChannelId(track);
                 stripIdsInOrder.add(id);
                 if (id != null) {
                     channelByChannelId.put(id, mixerChannel);
-                    trackByChannelId.put(id, track);
                 }
             }
         }
         // Second pass: insert a small chain-glyph link toggle between every
         // adjacent pair of channel strips. The toggle pairs / unpairs the
         // two adjacent channels and (right-click) opens the link-detail
-        // popover. Done after strips are built so lookup tables (volume
-        // fader / pan slider / mute / solo) are populated and the
-        // propagation path can mirror immediately on first use.
+        // popover.
         installLinkToggles(stripIdsInOrder);
 
         returnBusStrips.getChildren().clear();
         for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
-            returnBusStrips.getChildren().add(buildReturnBusStrip(returnBus));
+            returnBusStrips.getChildren().add(buildReturnBusStrip(returnBus, wiring));
         }
+        // Story 322 — the master strip is built once (constructor); re-bind
+        // it against this generation's master ChannelVM.
+        bindStandaloneStrip(project.getMixer().getMasterChannel(), masterStripControls, wiring);
         // "Add Return Bus" button at the end
         Button addReturnBusBtn = new Button("+");
         addReturnBusBtn.getStyleClass().add("track-arm-button");
@@ -1196,21 +1510,33 @@ public final class MixerView extends VBox implements Dockable {
         // ── VCA strips (right of master, story 153) ──────────────────────
         vcaStrips.getChildren().clear();
         VcaGroupManager vcaManager = project.getVcaGroupManager();
-        // Precompute a UUID→MixerChannel map with safe parsing so VCA strips
-        // can resolve member channels without crashing on non-UUID track ids.
-        java.util.Map<UUID, MixerChannel> channelMap = new java.util.HashMap<>();
-        for (Track t : project.getTracks()) {
-            try {
-                channelMap.put(UUID.fromString(t.getId()),
-                        project.getMixerChannelForTrack(t));
-            } catch (IllegalArgumentException ignored) {
-                // non-UUID track id — skip
-            }
+        // A UUID→MixerChannel map over every live mixer channel and return
+        // bus (a track channel's id is its track's UUID) so VCA strips can
+        // resolve member channels — including members that have no track.
+        Map<UUID, MixerChannel> channelMap = new java.util.HashMap<>();
+        for (MixerChannel ch : project.getMixer().getChannels()) {
+            channelMap.put(ch.getId(), ch);
+        }
+        for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
+            channelMap.put(returnBus.getId(), returnBus);
         }
         java.util.function.Function<UUID, MixerChannel> channelLookup = channelMap::get;
+        // Story 322 — VCA mute / solo travel the one intent path: a member
+        // with a track raises the track-targeted command (dual-write Track +
+        // MixerChannel, so the arrangement lane follows), a track-less member
+        // the channel-targeted one (§5.6 "VCA mute/solo").
+        BiConsumer<MixerChannel, Boolean> vcaMuteIntent = (ch, muted) -> dispatchIntent(
+                project.getTrackForChannel(ch)
+                        .<TrackCommand>map(t -> new ToggleMuteCommand(t, muted))
+                        .orElseGet(() -> new ToggleChannelMuteCommand(ch, muted)));
+        BiConsumer<MixerChannel, Boolean> vcaSoloIntent = (ch, soloed) -> dispatchIntent(
+                project.getTrackForChannel(ch)
+                        .<TrackCommand>map(t -> new ToggleSoloCommand(t, soloed))
+                        .orElseGet(() -> new ToggleChannelSoloCommand(ch, soloed)));
         for (VcaGroup vca : vcaManager.getVcaGroups()) {
             vcaStrips.getChildren().add(new VcaStrip(
-                    vca, vcaManager, undoManager, channelLookup, this::refresh));
+                    vca, vcaManager, undoManager, channelLookup,
+                    vcaMuteIntent, vcaSoloIntent, this::refresh));
         }
     }
 
@@ -1244,9 +1570,16 @@ public final class MixerView extends VBox implements Dockable {
         return masterStrip;
     }
 
-    private VBox buildChannelStrip(Track track, MixerChannel mixerChannel) {
+    /**
+     * Builds one track's column: the host extras around a
+     * {@link MixerChannelStrip} bound through the wiring (story 322 — the
+     * story-271 skin swap). The column carries {@link #TRACK_STRIP_HOST_STYLE_CLASS},
+     * not the legacy {@code .mixer-channel} alias: the strip paints its own
+     * §5.4 surface and the column stays on the panel background.
+     */
+    private VBox buildChannelStrip(Track track, MixerChannel mixerChannel, TrackControlWiring wiring) {
         VBox strip = new VBox(4);
-        strip.getStyleClass().add("mixer-channel");
+        strip.getStyleClass().add(TRACK_STRIP_HOST_STYLE_CLASS);
         strip.setAlignment(Pos.TOP_CENTER);
         strip.setPrefWidth(CHANNEL_WIDTH);
         strip.setMinWidth(CHANNEL_WIDTH);
@@ -1268,9 +1601,11 @@ public final class MixerView extends VBox implements Dockable {
         }
 
         // ── Member-VCA badge(s) at the top of the strip ───────────────────
-        // Story 153: a small "VCA: <name>" label per group the channel is
-        // currently a member of. Background uses the VCA's color so the user
-        // can see at a glance which VCA(s) are riding this channel.
+        // Story 153: a small "VCA: <name> (<gain> dB)" label per group the
+        // channel is currently a member of; story 322 adds the composite
+        // readout from VcaGroupManager.effectiveGainDb (rebuilt on refresh).
+        // Background uses the VCA's color so the user can see at a glance
+        // which VCA(s) are riding this channel.
         VcaGroupManager vcaMgr = project.getVcaGroupManager();
         if (channelId != null) {
             List<VcaGroup> memberOf = vcaMgr.getGroupsForChannel(channelId);
@@ -1278,7 +1613,8 @@ public final class MixerView extends VBox implements Dockable {
                 VBox badges = new VBox(1);
                 badges.setAlignment(Pos.CENTER);
                 for (VcaGroup g : memberOf) {
-                    Label badge = new Label("VCA: " + g.label());
+                    Label badge = new Label(vcaBadgeText(vcaMgr, g, channelId));
+                    badge.getStyleClass().add("mixer-vca-badge");
                     badge.getStyleClass().add("mixer-channel-name");
                     String hex = g.color() != null ? g.color().getHexColor() : "#9c27b0";
                     badge.setStyle("-fx-background-color: " + hex + ";"
@@ -1396,16 +1732,16 @@ public final class MixerView extends VBox implements Dockable {
                     stripMenu.show(strip, e.getScreenX(), e.getScreenY()));
         }
 
-        // Channel name
-        Label nameLabel = new Label(track.getName());
-        nameLabel.getStyleClass().add("mixer-channel-name");
-        nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        // The channel name is rendered by the MixerChannelStrip itself (at
+        // its foot, UI Design Book §5.4) and follows TrackVM.name through the
+        // binder — no host name label since story 322. The status badges
+        // that used to sit under that label now lead the column.
 
         // ── ❄ Snowflake "frozen" status indicator (Story 035) ──────────────
-        // A small snowflake badge is mounted just under the channel
-        // name on every frozen track, but only when the freeze
-        // controller is wired. When null, the badge is suppressed so
-        // the API contract of setTrackFreezeController is honoured.
+        // A small snowflake badge is mounted at the top of the column on
+        // every frozen track, but only when the freeze controller is
+        // wired. When null, the badge is suppressed so the API contract of
+        // setTrackFreezeController is honoured.
         Label freezeBadge = null;
         if (track.isFrozen() && trackFreezeController != null) {
             freezeBadge = new Label("\u2744");
@@ -1437,27 +1773,40 @@ public final class MixerView extends VBox implements Dockable {
             }
         }
 
-        // Level meter — story 318: the post-fader CHANNEL_POST tap of this
-        // strip's channel, drained on the FX pulse. A non-UUID track id
-        // (forged test fixture) has no mixer-channel identity to tap, so that
-        // strip keeps an unsubscribed meter at floor, exactly like the VCA
-        // wiring above.
-        LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
-        levelMeter.setPrefWidth(METER_WIDTH);
-        levelMeter.setMinWidth(METER_WIDTH);
-        levelMeter.setMaxWidth(METER_WIDTH);
-        levelMeter.setPrefHeight(METER_HEIGHT);
-        levelMeter.setMinHeight(METER_HEIGHT);
-        if (channelId != null) {
-            registerStripMeter(levelMeter, new MeterTapPoint.ChannelPost(channelId));
-        }
+        // ── Routing selectors — built before the strip so its I/O captions
+        // can mirror the current selection (UI Design Book §5.4 "I In / O Out").
+        ComboBox<IoOption> inputRoutingCombo = buildInputRoutingSelector(track);
+        ComboBox<IoOption> outputRoutingCombo = buildOutputRoutingSelector(mixerChannel);
 
-        // ── Input meter (second column, armed tracks only) ──────────────
+        // ── The story-271 MixerChannelStrip (story 322: a pure skin swap) ──
+        // Name, insert list, pan, dB fader with its integrated meter and the
+        // M/S/R toggles are all VM subscriptions bound in bindTrackStrip
+        // (TrackControlBinder.bindStrip); the strip writes no model itself
+        // (Audio Engine Wiring Design Book §2.10). Its meter is the
+        // channel's post-fader CHANNEL_POST tap, subscribed by the ChannelVM
+        // with the strip as the visibility-owning surface — no
+        // LevelMeterDisplay is registered for a track strip any more. The
+        // send list stays EMPTY: the skin's send fader has no write-back, so
+        // a fed row would be a dead control; the per-return send rows below
+        // are the one send surface.
+        MixerChannelStrip channelStrip = new MixerChannelStrip();
+        channelStrip.setChannelId(channelId);
+        channelStrip.setChannelName(track.getName());
+        channelStrip.setChannelType(stripTypeFor(track.getType()));
+        mirrorIoCaptions(channelStrip, inputRoutingCombo, outputRoutingCombo);
+        // Solo safe (solo-in-place defeat): the :solo-safe ring on the strip
+        // and the right-click "Solo safe" menu on its S toggle, both a
+        // function of the model — never of a click.
+        applySoloSafeRing(channelStrip, mixerChannel);
+        installSoloSafeContextMenu(channelStrip, mixerChannel);
+
+        // ── Input meter (armed tracks only) beside the strip ───────────
         // Story 137: when a track is armed, show a dedicated input-signal
-        // meter column ahead of the output meter with a latching clip LED.
-        // Clicking the clip LED resets that track; Alt+click resets all.
-        HBox meterRow = new HBox(2);
-        meterRow.setAlignment(Pos.CENTER);
+        // meter column ahead of the strip (whose integrated meter is the
+        // post-fader output) with a latching clip LED. Clicking the clip
+        // LED resets that track; Alt+click resets all.
+        HBox stripRow = new HBox(2);
+        stripRow.setAlignment(Pos.TOP_CENTER);
         if (track.isArmed() && inputLevelMonitorRegistry != null) {
             InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
             InputMeterStrip inputStrip = new InputMeterStrip(monitor, inputLevelMonitorRegistry);
@@ -1470,120 +1819,27 @@ public final class MixerView extends VBox implements Dockable {
                     new Tooltip("Input meter (pre-processing). "
                             + "Click clip LED to reset; Alt+click resets all."));
             activeInputMeterStrips.add(inputStrip);
-            meterRow.getChildren().add(inputStrip);
+            stripRow.getChildren().add(inputStrip);
         }
-        meterRow.getChildren().add(levelMeter);
+        stripRow.getChildren().add(channelStrip);
 
-        // Volume fader (vertical slider)
-        Slider volumeFader = new Slider(0.0, 1.0, mixerChannel.getVolume());
-        volumeFader.setOrientation(Orientation.VERTICAL);
-        volumeFader.setPrefHeight(FADER_HEIGHT);
-        volumeFader.getStyleClass().add("mixer-fader");
-        volumeFader.setTooltip(new Tooltip("Volume"));
-        volumeFader.valueProperty().addListener((_, oldVal, newVal) -> {
-            double value = newVal.doubleValue();
-            mixerChannel.setVolume(value);
-            track.setVolume(value);
-            if (channelId != null) {
-                propagateVolumeChange(channelId, oldVal.doubleValue(), value);
-            }
-        });
-        if (channelId != null) {
-            volumeFaderByChannelId.put(channelId, volumeFader);
-        }
-
-        // Pan control (horizontal slider)
-        Slider panSlider = new Slider(-1.0, 1.0, mixerChannel.getPan());
-        panSlider.setPrefWidth(CHANNEL_WIDTH - 12);
-        panSlider.getStyleClass().add("mixer-fader");
-        panSlider.setTooltip(new Tooltip("Pan (L/R)"));
-        panSlider.valueProperty().addListener((_, _, newVal) -> {
-            double value = newVal.doubleValue();
-            mixerChannel.setPan(value);
-            track.setPan(value);
-            if (channelId != null) {
-                propagatePanChange(channelId, value);
-            }
-        });
-        if (channelId != null) {
-            panSliderByChannelId.put(channelId, panSlider);
-        }
-        Label panLabel = new Label("PAN");
-        panLabel.getStyleClass().add("mixer-channel-name");
-
-        // Mute button
-        Button muteBtn = new Button("M");
-        muteBtn.getStyleClass().add("track-mute-button");
-        muteBtn.setTooltip(new Tooltip("Mute"));
-        muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, CONTROL_ICON_SIZE));
-        muteBtn.setOnAction(_ -> {
-            boolean muted = !mixerChannel.isMuted();
-            mixerChannel.setMuted(muted);
-            track.setMuted(muted);
-            muteBtn.setStyle(muted
-                    ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
-            if (channelId != null) {
-                propagateMuteChange(channelId, muted);
-            }
-        });
-        if (channelId != null) {
-            muteBtnByChannelId.put(channelId, muteBtn);
-        }
-
-        // Solo button — right-click to toggle "solo safe" (solo-in-place
-        // defeat). When solo-safe is on, a yellow ring highlights the button
-        // so the engineer can see at a glance which channels stay audible
-        // during a solo (typically reverb/group returns).
-        Button soloBtn = new Button("S");
-        soloBtn.getStyleClass().add("track-solo-button");
-        soloBtn.setTooltip(new Tooltip("Solo (right-click for Solo Safe)"));
-        soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, CONTROL_ICON_SIZE));
-        applySoloButtonStyle(soloBtn, mixerChannel);
-        soloBtn.setOnAction(_ -> {
-            boolean solo = !mixerChannel.isSolo();
-            mixerChannel.setSolo(solo);
-            track.setSolo(solo);
-            applySoloButtonStyle(soloBtn, mixerChannel);
-            if (channelId != null) {
-                propagateSoloChange(channelId, solo);
-            }
-        });
-        installSoloSafeContextMenu(soloBtn, mixerChannel);
-        if (channelId != null) {
-            soloBtnByChannelId.put(channelId, soloBtn);
-        }
-
-        // Arm button
-        Button armBtn = new Button("R");
-        armBtn.getStyleClass().add("track-arm-button");
-        armBtn.setTooltip(new Tooltip("Arm for Recording"));
-        armBtn.setGraphic(IconNode.of(DawIcon.ARM_TRACK, CONTROL_ICON_SIZE));
-        armBtn.setOnAction(_ -> {
-            boolean armed = !track.isArmed();
-            track.setArmed(armed);
-            armBtn.setStyle(armed
-                    ? "-fx-background-color: #ff1744; -fx-text-fill: #ffffff;" : "");
-            // Story 137: refresh so the input-meter column appears (on arm)
-            // or disappears (on disarm) immediately.
-            if (inputLevelMonitorRegistry != null) {
-                refresh();
-            }
-        });
-
-        HBox buttonRow = new HBox(2, muteBtn, soloBtn, armBtn);
-        buttonRow.setAlignment(Pos.CENTER);
-
-        // 3D Panner button
+        // 3D Panner button — story 322: visible (and laid out) only while the
+        // channel's insert chain holds a spatial node (§5.6 "3D panner
+        // button"); bound to ChannelVM.spatialNodePresent in bindTrackStrip.
         Button pannerBtn = new Button("3D");
         pannerBtn.getStyleClass().add("track-arm-button");
         pannerBtn.setTooltip(new Tooltip("Open 3D Spatial Panner"));
         pannerBtn.setGraphic(IconNode.of(DawIcon.SURROUND, CONTROL_ICON_SIZE));
-        pannerBtn.setOnAction(actionEvent -> {
+        pannerBtn.setOnAction(_ -> {
             SpatialPannerController controller = new SpatialPannerController(
                     SpatialPannerController.createDefaultPanner(SpeakerLayout.LAYOUT_7_1_4),
                     track.getName());
             controller.openWindow();
         });
+
+        TrackStripHandles handles = new TrackStripHandles(channelStrip, pannerBtn);
+        strip.getProperties().put(TRACK_STRIP_KEY, handles);
+        bindTrackStrip(track, mixerChannel, channelId, handles, wiring);
 
         // Send controls — one slider per return bus with active-routing indicator
         VBox sendBox = new VBox(2);
@@ -1619,52 +1875,87 @@ public final class MixerView extends VBox implements Dockable {
 
             MixerChannel targetBus = returnBus;
             // Capture the send state before a drag starts so that undo restores
-            // to the pre-drag state (the slider listener modifies the model live)
-            double[] dragStartLevel = {initialLevel};
-            boolean[] hadSendAtDragStart = {existingSend != null};
+            // to the pre-drag state (the slider listener modifies the model
+            // live) — the source's and, when the pair is linked with "Link
+            // Sends", the partner's: the per-tick mirror rewrites the
+            // partner's send too, so its undo record needs the same
+            // pre-gesture baseline (story 322 fix round 1, S6). The partner
+            // is resolved at press time so release restores exactly the send
+            // the mirror moved.
+            SendState[] dragStart = {SendState.of(existingSend)};
+            MixerChannel[] partnerAtDragStart = {null};
+            SendState[] partnerDragStart = {SendState.ABSENT};
 
             sendSlider.setOnMousePressed(_ -> {
-                Send send = mixerChannel.getSendForTarget(targetBus);
-                hadSendAtDragStart[0] = send != null;
-                dragStartLevel[0] = send != null ? send.getLevel() : 0.0;
+                dragStart[0] = SendState.of(mixerChannel.getSendForTarget(targetBus));
+                MixerChannel partner = linkedSendPartner(channelId).orElse(null);
+                partnerAtDragStart[0] = partner;
+                partnerDragStart[0] = partner == null
+                        ? SendState.ABSENT : SendState.of(partner.getSendForTarget(targetBus));
             });
 
             sendSlider.valueProperty().addListener((_, _, newVal) -> {
                 double value = newVal.doubleValue();
+                sendIndicator.setFill(value > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
                 Send send = mixerChannel.getSendForTarget(targetBus);
                 if (send != null) {
+                    if (send.getLevel() == value) {
+                        return; // echo of a model-driven reflection (link mirror), not a gesture
+                    }
                     send.setLevel(value);
                 } else if (value > 0.0) {
-                    mixerChannel.addSend(new Send(targetBus, value, SendTap.POST_FADER));
+                    send = new Send(targetBus, value, SendTap.POST_FADER);
+                    mixerChannel.addSend(send);
+                } else {
+                    return;
                 }
-                sendIndicator.setFill(value > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
+                // Story 322 — "Link Sends": the stereo partner follows the model write.
+                mirrorSendToPartner(channelId, targetBus, value, send.getTap());
             });
 
-            // Commit undoable action when the user finishes dragging the slider.
-            // Restore the pre-drag model state so that execute() captures the
-            // correct previousLevel/hadSendBefore for undo, then re-applies
-            // the final value.
+            // Commit ONE undoable action when the user finishes dragging the
+            // slider. The pre-drag model state is restored first so that
+            // execute() captures the correct previousLevel / hadSendBefore
+            // for undo, then the final value is re-applied — for the source
+            // and, when the pair is linked with "Link Sends", for the partner
+            // the per-tick mirror moved. A linked drag is a single compound
+            // entry, so Ctrl+Z restores both sends and redo re-applies both
+            // (§5.6 "Stereo link"); the rows re-seed from the model on the
+            // history event (reseedSendRows). A release whose live send
+            // state — the source's and the captured partner's — still equals
+            // the pre-drag capture (a click without a move, a drag back to
+            // its start) returns before any restore, step or entry (fix
+            // round 2): the tick listener creates nothing for such a
+            // gesture, and SetSendRoutingAction would otherwise create a 0.0
+            // send on both members of a linked pair — a model write no
+            // gesture asked for, which a SEND_LEVEL lane would then drive
+            // (§5.6: nothing dead, nothing silent). SendState is a record,
+            // so the compare is structural (existence, level, tap); the
+            // level is the double the tick wrote, so equality is exact.
             sendSlider.setOnMouseReleased(_ -> {
-                if (undoManager != null) {
-                    double finalValue = sendSlider.getValue();
-                    Send send = mixerChannel.getSendForTarget(targetBus);
-                    SendMode mode = send != null ? send.getMode() : SendMode.POST_FADER;
-
-                    // Restore pre-drag state so execute() records the right previous
-                    if (!hadSendAtDragStart[0]) {
-                        // No send existed before drag — remove the one created
-                        // by the value listener so execute() records hadSendBefore=false
-                        if (send != null) {
-                            mixerChannel.removeSend(send);
-                        }
-                    } else if (send != null) {
-                        send.setLevel(dragStartLevel[0]);
-                    }
-
-                    SetSendRoutingAction action = new SetSendRoutingAction(
-                            mixerChannel, targetBus, finalValue, mode);
-                    undoManager.execute(action);
+                if (undoManager == null) {
+                    return;
                 }
+                Send send = mixerChannel.getSendForTarget(targetBus);
+                MixerChannel partner = partnerAtDragStart[0];
+                boolean sourceMoved = !SendState.of(send).equals(dragStart[0]);
+                boolean partnerMoved = partner != null
+                        && !SendState.of(partner.getSendForTarget(targetBus)).equals(partnerDragStart[0]);
+                if (!sourceMoved && !partnerMoved) {
+                    return;
+                }
+                double finalValue = sendSlider.getValue();
+                SendMode mode = send != null ? send.getMode() : SendMode.POST_FADER;
+                SendTap tap = send != null ? send.getTap() : SendTap.POST_FADER;
+
+                dragStart[0].restore(mixerChannel, targetBus);
+                List<UndoableAction> steps = new ArrayList<>();
+                steps.add(new SetSendRoutingAction(mixerChannel, targetBus, finalValue, mode));
+                if (partner != null) {
+                    partnerDragStart[0].restore(partner, targetBus);
+                    steps.addAll(partnerSendSteps(partner, targetBus, finalValue, mode, tap));
+                }
+                undoManager.execute(asOneAction("Set Send Routing", steps));
             });
 
             // Right-click context menu and tap-cycler button to choose the
@@ -1681,17 +1972,32 @@ public final class MixerView extends VBox implements Dockable {
             };
             refreshTapButton.run();
 
-            java.util.function.Consumer<SendTap> applyTap = newTap -> {
+            Consumer<SendTap> applyTap = newTap -> {
                 Send s = mixerChannel.getSendForTarget(targetBus);
                 if (s == null) {
                     return; // nothing to update until the send exists
                 }
+                // Story 322 — "Link Sends": the tap point mirrors to the
+                // partner too. With an undo manager the pair's edit is ONE
+                // compound entry (fix round 1, S6) whose partner steps do
+                // exactly what the live mirror does; without one the live
+                // mirror runs as before.
+                MixerChannel partner = linkedSendPartner(channelId).orElse(null);
                 if (undoManager != null) {
-                    undoManager.execute(new SetSendTapAction(mixerChannel, targetBus, newTap));
+                    List<UndoableAction> steps = new ArrayList<>();
+                    steps.add(new SetSendTapAction(mixerChannel, targetBus, newTap));
+                    if (partner != null) {
+                        steps.addAll(partnerSendSteps(partner, targetBus, s.getLevel(), s.getMode(), newTap));
+                    }
+                    undoManager.execute(asOneAction("Set Send Tap", steps));
                 } else {
                     s.setTap(newTap);
+                    mirrorSendToPartner(channelId, targetBus, s.getLevel(), s.getTap());
                 }
                 refreshTapButton.run();
+                if (partner != null) {
+                    reflectSendRow(partner, targetBus);
+                }
             };
 
             tapButton.setOnAction(_ -> {
@@ -1723,6 +2029,11 @@ public final class MixerView extends VBox implements Dockable {
             HBox sliderRow = new HBox(2, sendSlider, tapButton);
             sliderRow.setAlignment(Pos.CENTER_LEFT);
             sendBox.getChildren().addAll(sendLabel, sliderRow);
+            if (channelId != null) {
+                sendRowsByChannelId
+                        .computeIfAbsent(channelId, _ -> new LinkedHashMap<>())
+                        .put(targetBus, new SendRow(sendSlider, tapButton, refreshTapButton));
+            }
         }
 
         // ── Cue sends (Story 135) ──────────────────────────────────────────
@@ -1748,26 +2059,16 @@ public final class MixerView extends VBox implements Dockable {
             sendBox.getChildren().add(cueSendsBox);
         }
 
-        // Legacy send level control (for backward compatibility)
-        Label sendLabel = new Label("SEND");
-        sendLabel.getStyleClass().add("mixer-channel-name");
-        Slider sendSlider = new Slider(0.0, 1.0, mixerChannel.getSendLevel());
-        sendSlider.setPrefWidth(SEND_SLIDER_WIDTH);
-        sendSlider.getStyleClass().add("mixer-fader");
-        sendSlider.setTooltip(new Tooltip("Send Level"));
-        sendSlider.valueProperty().addListener((_, _, newVal) ->
-                mixerChannel.setSendLevel(newVal.doubleValue()));
+        // Story 322 — the legacy "SEND" slider (a dead sink into the removed
+        // MixerChannel.sendLevel) is gone; the per-return send rows above
+        // are the one send model.
 
         // Track type icon
         Node typeIcon = trackTypeIcon(track.getType());
 
-        // Input routing selector
-        ComboBox<IoOption> inputRoutingCombo = buildInputRoutingSelector(track);
-
-        // Output routing selector
-        ComboBox<IoOption> outputRoutingCombo = buildOutputRoutingSelector(mixerChannel);
-
-        // Insert effects rack
+        // Insert effects rack — still the editing surface (story 320); the
+        // strip's insert rows above are the §5.4 indicator list whose click
+        // selects the insert in the Inspector.
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         int bs = project.getFormat().bufferSize();
@@ -1794,46 +2095,81 @@ public final class MixerView extends VBox implements Dockable {
         // Update the latency label whenever inserts are added/removed/reordered/bypassed
         insertRack.setOnSlotsChanged(() -> updateLatencyLabel(latencyLabel, mixerChannel, sr));
 
-        strip.getChildren().addAll(
-                nameLabel, typeIcon,
-                inputRoutingCombo, outputRoutingCombo,
-                insertRack, latencyLabel, meterRow, volumeFader,
-                panLabel, panSlider, buttonRow, pannerBtn,
-                sendBox, sendLabel, sendSlider);
-        // L/R badge is inserted after nameLabel so it renders *under* the
-        // channel name rather than above it (Story 159).
-        if (lrBadge != null) {
-            strip.getChildren().add(
-                    strip.getChildren().indexOf(nameLabel) + 1, lrBadge);
-        }
-        // ❄ Snowflake "frozen" badge (Story 035) — inserted right after
-        // nameLabel (and after the L/R badge if any) so it renders
-        // immediately beneath the channel name on frozen tracks.
-        if (freezeBadge != null) {
-            int insertAt = strip.getChildren().indexOf(nameLabel) + 1;
-            if (lrBadge != null) insertAt += 1;
-            strip.getChildren().add(insertAt, freezeBadge);
-        }
-
-        // Story 129 (UI) — "⚠" CPU-degraded badge. Rendered right
-        // under the channel name (after the L/R + freeze badges) when
-        // the per-track CPU budget enforcer reports the channel as
-        // degraded. Cleared on the next refresh once the binding sees
-        // a TrackRestored event.
+        // Story 129 (UI) — "⚠" CPU-degraded badge. Rendered at the top of
+        // the column (after the L/R + freeze badges) when the per-track CPU
+        // budget enforcer reports the channel as degraded. Cleared on the
+        // next refresh once the binding sees a TrackRestored event.
+        Label degradedBadge = null;
         if (degradedTrackPredicate.test(track.getId())) {
-            Label degradedBadge = new Label("\u26A0");
+            degradedBadge = new Label("\u26A0");
             degradedBadge.getStyleClass().add("mixer-channel-degraded-badge");
             degradedBadge.setStyle("-fx-text-fill: #ff9100; -fx-font-size: 12px;"
                     + " -fx-padding: 0 2 0 2;");
             Tooltip.install(degradedBadge,
                     new Tooltip("Track exceeded CPU budget; degradation policy active"));
-            int insertAt = strip.getChildren().indexOf(nameLabel) + 1;
-            if (lrBadge != null) insertAt += 1;
-            if (freezeBadge != null) insertAt += 1;
-            strip.getChildren().add(insertAt, degradedBadge);
         }
 
+        // Column order: the status badges (L/R, frozen, degraded) lead - they
+        // used to sit under the host name label, which the strip now renders
+        // itself at its foot - then the type icon, routing selectors, rack +
+        // latency, the strip row (input meter beside the strip while armed),
+        // the gated 3D button and the send rows. VCA badges were added first.
+        if (lrBadge != null) {
+            strip.getChildren().add(lrBadge);
+        }
+        if (freezeBadge != null) {
+            strip.getChildren().add(freezeBadge);
+        }
+        if (degradedBadge != null) {
+            strip.getChildren().add(degradedBadge);
+        }
+        strip.getChildren().addAll(
+                typeIcon,
+                inputRoutingCombo, outputRoutingCombo,
+                insertRack, latencyLabel,
+                stripRow, pannerBtn,
+                sendBox);
+
         return strip;
+    }
+
+    /**
+     * The {@link MixerChannelStrip.ChannelType} a track's strip renders as.
+     * {@code TrackType.MASTER} maps to {@code BUS}, not {@code MASTER}: the
+     * strip type {@code MASTER} removes the M/S/R row (UI Design Book §5.4 —
+     * that is the master <em>bus</em> strip, which this view builds
+     * separately), whereas a {@code MASTER} <em>track</em> (session-interchange
+     * import) is an ordinary track with a mixer channel that must stay mutable
+     * and soloable. Bus-like track types hide the input caption; the
+     * audio-bearing ones keep the full I/O + M/S/R surface.
+     */
+    private static MixerChannelStrip.ChannelType stripTypeFor(TrackType type) {
+        return switch (type) {
+            case AUDIO, BED_CHANNEL, AUDIO_OBJECT, REFERENCE -> MixerChannelStrip.ChannelType.AUDIO;
+            case MIDI -> MixerChannelStrip.ChannelType.MIDI;
+            case AUX, FOLDER, MASTER -> MixerChannelStrip.ChannelType.BUS;
+        };
+    }
+
+    /**
+     * Seeds the strip's I/O captions from the routing selectors' current
+     * selection and keeps them following it. The listeners reference only the
+     * strip and the combos, which live and die with the column, so no disposer
+     * is needed.
+     */
+    private static void mirrorIoCaptions(MixerChannelStrip strip,
+                                         ComboBox<IoOption> inputRoutingCombo,
+                                         ComboBox<IoOption> outputRoutingCombo) {
+        strip.setInputLabel(captionOf(inputRoutingCombo.getSelectionModel().getSelectedItem()));
+        inputRoutingCombo.getSelectionModel().selectedItemProperty().addListener(
+                (_, _, now) -> strip.setInputLabel(captionOf(now)));
+        strip.setOutputLabel(captionOf(outputRoutingCombo.getSelectionModel().getSelectedItem()));
+        outputRoutingCombo.getSelectionModel().selectedItemProperty().addListener(
+                (_, _, now) -> strip.setOutputLabel(captionOf(now)));
+    }
+
+    private static String captionOf(IoOption option) {
+        return option == null ? "" : option.displayName();
     }
 
     /**
@@ -1908,7 +2244,7 @@ public final class MixerView extends VBox implements Dockable {
         return row;
     }
 
-    private VBox buildReturnBusStrip(MixerChannel returnBus) {
+    private VBox buildReturnBusStrip(MixerChannel returnBus, TrackControlWiring wiring) {
         VBox strip = new VBox(4);
         strip.setOnMouseClicked(event -> {
             if (event.getButton() == javafx.scene.input.MouseButton.PRIMARY && onChannelSelected != null) {
@@ -1935,20 +2271,19 @@ public final class MixerView extends VBox implements Dockable {
         levelMeter.setMinHeight(METER_HEIGHT);
         registerStripMeter(levelMeter, new MeterTapPoint.ReturnPost(returnBus.getId()));
 
+        // Story 322 — fader / pan / mute / solo are VM subscribers bound
+        // through a ChannelControlBinder (bindStandaloneStrip); the return
+        // pan is live in the engine since the bus pan law landed.
         Slider volumeFader = new Slider(0.0, 1.0, returnBus.getVolume());
         volumeFader.setOrientation(Orientation.VERTICAL);
         volumeFader.setPrefHeight(FADER_HEIGHT);
         volumeFader.getStyleClass().add("mixer-fader");
         volumeFader.setTooltip(new Tooltip("Return Bus Volume"));
-        volumeFader.valueProperty().addListener((_, _, newVal) ->
-                returnBus.setVolume(newVal.doubleValue()));
 
         Slider panSlider = new Slider(-1.0, 1.0, returnBus.getPan());
         panSlider.setPrefWidth(CHANNEL_WIDTH - 12);
         panSlider.getStyleClass().add("mixer-fader");
         panSlider.setTooltip(new Tooltip("Return Bus Pan"));
-        panSlider.valueProperty().addListener((_, _, newVal) ->
-                returnBus.setPan(newVal.doubleValue()));
         Label panLabel = new Label("PAN");
         panLabel.getStyleClass().add("mixer-channel-name");
 
@@ -1956,12 +2291,6 @@ public final class MixerView extends VBox implements Dockable {
         muteBtn.getStyleClass().add("track-mute-button");
         muteBtn.setTooltip(new Tooltip("Mute Return Bus"));
         muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, CONTROL_ICON_SIZE));
-        muteBtn.setOnAction(_ -> {
-            boolean muted = !returnBus.isMuted();
-            returnBus.setMuted(muted);
-            muteBtn.setStyle(muted
-                    ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
-        });
 
         // Remove return bus button
         Button removeBtn = new Button("✕");
@@ -2003,17 +2332,17 @@ public final class MixerView extends VBox implements Dockable {
         // solo (e.g. a parallel-compression bus they want to A/B).
         Button soloBtn = new Button("S");
         soloBtn.getStyleClass().add("track-solo-button");
-        soloBtn.setTooltip(new Tooltip("Solo (right-click for Solo Safe)"));
         soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, CONTROL_ICON_SIZE));
         applySoloButtonStyle(soloBtn, returnBus);
-        soloBtn.setOnAction(_ -> {
-            returnBus.setSolo(!returnBus.isSolo());
-            applySoloButtonStyle(soloBtn, returnBus);
-        });
         installSoloSafeContextMenu(soloBtn, returnBus);
 
         HBox buttonRow = new HBox(2, muteBtn, soloBtn, removeBtn);
         buttonRow.setAlignment(Pos.CENTER);
+
+        MixerStripControls controls = new MixerStripControls(
+                volumeFader, panSlider, muteBtn, soloBtn, null, null);
+        strip.getProperties().put(STRIP_CONTROLS_KEY, controls);
+        bindStandaloneStrip(returnBus, controls, wiring);
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         int bs = project.getFormat().bufferSize();
@@ -2565,20 +2894,20 @@ public final class MixerView extends VBox implements Dockable {
         levelMeter.setMinHeight(METER_HEIGHT);
         this.masterMeterDisplay = levelMeter;
 
+        // Story 322 — fader / pan / mute are VM subscribers: bound through a
+        // ChannelControlBinder against the registry's master ChannelVM on
+        // every refresh() (the strip itself is built once). The master pan is
+        // live in the engine since the bus pan law landed.
         Slider volumeFader = new Slider(0.0, 1.0, master.getVolume());
         volumeFader.setOrientation(Orientation.VERTICAL);
         volumeFader.setPrefHeight(FADER_HEIGHT);
         volumeFader.getStyleClass().add("mixer-fader");
         volumeFader.setTooltip(new Tooltip("Master Volume"));
-        volumeFader.valueProperty().addListener((_, _, newVal) ->
-                master.setVolume(newVal.doubleValue()));
 
         Slider panSlider = new Slider(-1.0, 1.0, master.getPan());
         panSlider.setPrefWidth(CHANNEL_WIDTH - 12);
         panSlider.getStyleClass().add("mixer-fader");
         panSlider.setTooltip(new Tooltip("Master Pan"));
-        panSlider.valueProperty().addListener((_, _, newVal) ->
-                master.setPan(newVal.doubleValue()));
         Label panLabel = new Label("PAN");
         panLabel.getStyleClass().add("mixer-channel-name");
 
@@ -2586,15 +2915,13 @@ public final class MixerView extends VBox implements Dockable {
         muteBtn.getStyleClass().add("track-mute-button");
         muteBtn.setTooltip(new Tooltip("Mute Master"));
         muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, CONTROL_ICON_SIZE));
-        muteBtn.setOnAction(_ -> {
-            boolean muted = !master.isMuted();
-            master.setMuted(muted);
-            muteBtn.setStyle(muted
-                    ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
-        });
 
         HBox buttonRow = new HBox(2, muteBtn);
         buttonRow.setAlignment(Pos.CENTER);
+
+        this.masterStripControls = new MixerStripControls(
+                volumeFader, panSlider, muteBtn, null, null, null);
+        strip.getProperties().put(STRIP_CONTROLS_KEY, masterStripControls);
 
         // Spacer to align vertically with track strips
         Region spacer = new Region();
@@ -2826,24 +3153,16 @@ public final class MixerView extends VBox implements Dockable {
     }
 
     /**
-     * Applies the visual style to a solo button so that its colour conveys
-     * both the solo and the solo-safe state. A soloed channel paints the
-     * button green; the solo-safe (solo-in-place defeat) flag adds a yellow
-     * ring so the engineer can see at a glance which channels stay audible
-     * during a solo.
+     * Renders the solo-safe (solo-in-place defeat) state of a solo button as
+     * the {@link #SOLO_SAFE} pseudo-class ring (styles.css
+     * {@code .track-solo-button:solo-safe}, tokens not hex) plus the matching
+     * tooltip, so the engineer can see at a glance which channels stay
+     * audible during a solo. The solo state itself is <em>not</em> painted
+     * here (story 322): it is the binder-driven {@code :active} pseudo-class
+     * seeded from the VM, never from a click.
      */
     private static void applySoloButtonStyle(Button soloBtn, MixerChannel channel) {
-        StringBuilder style = new StringBuilder();
-        if (channel.isSolo()) {
-            style.append("-fx-background-color: #00e676; -fx-text-fill: #0d0d0d;");
-        }
-        if (channel.isSoloSafe()) {
-            // Yellow ring marks "safe" channels (returns and groups) — they
-            // remain audible regardless of any other channel's solo state.
-            style.append("-fx-border-color: #ffeb3b; -fx-border-width: 2;"
-                    + " -fx-border-radius: 3; -fx-background-radius: 3;");
-        }
-        soloBtn.setStyle(style.toString());
+        soloBtn.pseudoClassStateChanged(SOLO_SAFE, channel.isSoloSafe());
         Tooltip tip = new Tooltip(channel.isSoloSafe()
                 ? "Solo (Solo Safe enabled — right-click to disable)"
                 : "Solo (right-click for Solo Safe)");
@@ -2885,10 +3204,93 @@ public final class MixerView extends VBox implements Dockable {
         });
     }
 
+    /**
+     * The solo-safe ring of a track's {@link MixerChannelStrip} (story 322
+     * skin swap): the {@link #SOLO_SAFE} pseudo-class on the strip control —
+     * seeded from the model, no skin required — which styles.css paints on the
+     * skin's S toggle ({@code .mixer-channel-strip:solo-safe .track-toggle.solo},
+     * tokens not hex). The solo state itself is the strip's own {@code :soloed}
+     * pseudo-class, mirrored from the VM by the binder.
+     */
+    private static void applySoloSafeRing(MixerChannelStrip strip, MixerChannel channel) {
+        strip.pseudoClassStateChanged(SOLO_SAFE, channel.isSoloSafe());
+    }
+
+    private static Tooltip soloTooltip(MixerChannel channel) {
+        return new Tooltip(channel.isSoloSafe()
+                ? "Solo (Solo Safe enabled — right-click to disable)"
+                : "Solo (right-click for Solo Safe)");
+    }
+
+    /**
+     * The {@link MixerChannelStrip} counterpart of
+     * {@link #installSoloSafeContextMenu(Button, MixerChannel)}: the right-click
+     * "Solo safe" menu (and the solo tooltip) go on the strip's own S toggle,
+     * which lives in its skin. JavaFX creates the skin on the first CSS pass,
+     * so the menu is installed on whatever skin is present now and again
+     * whenever the skin property changes; the listener is disposed with the
+     * strip's bindings. Installing on the toggle (not the strip) keeps the
+     * host column's right-click menu (VCA / freeze / presets) reachable from
+     * the rest of the strip.
+     *
+     * <p>Also registers the sync callback that re-reads the model into the
+     * ring, the checkmark and the tooltip after any undo-history change.</p>
+     */
+    private void installSoloSafeContextMenu(MixerChannelStrip strip, MixerChannel channel) {
+        ContextMenu menu = new ContextMenu();
+        CheckMenuItem soloSafeItem = new CheckMenuItem("Solo safe");
+        soloSafeItem.setSelected(channel.isSoloSafe());
+        Runnable installOnToggle = () -> {
+            if (strip.getSkin() instanceof MixerChannelStripSkin skin) {
+                skin.soloButton().setContextMenu(menu);
+                skin.soloButton().setTooltip(soloTooltip(channel));
+            }
+        };
+        soloSafeItem.setOnAction(_ -> {
+            boolean target = soloSafeItem.isSelected();
+            SetSoloSafeAction action = new SetSoloSafeAction(channel, target);
+            if (undoManager != null) {
+                undoManager.execute(action);
+            } else {
+                action.execute();
+            }
+            applySoloSafeRing(strip, channel);
+            installOnToggle.run();
+        });
+        menu.getItems().add(soloSafeItem);
+
+        installOnToggle.run();
+        ChangeListener<Skin<?>> skinListener = (_, _, _) -> installOnToggle.run();
+        strip.skinProperty().addListener(skinListener);
+        stripBindingDisposers.add(() -> strip.skinProperty().removeListener(skinListener));
+
+        soloSafeSyncCallbacks.add(() -> {
+            soloSafeItem.setSelected(channel.isSoloSafe());
+            applySoloSafeRing(strip, channel);
+            installOnToggle.run();
+        });
+    }
+
     private void runSoloSafeSyncCallbacks() {
         for (Runnable r : soloSafeSyncCallbacks) {
             r.run();
         }
+    }
+
+    /**
+     * FX-thread reaction to any {@link UndoManager} history change: re-sync
+     * the solo-safe rings and (story 322) heal the {@code Track} mirrors
+     * from the channels — an undo / redo of a snapshot recall (the
+     * {@link MixerSnapshotsPanel}'s included) or of a channel-only action
+     * such as {@code SetVolumeAction} moves the engine's channels without
+     * touching their mirrors. No undoable action writes {@code Track}-only
+     * volume / pan / mute / solo, so re-asserting the channel state is
+     * always the correct direction.
+     */
+    private void onUndoHistoryChanged() {
+        runSoloSafeSyncCallbacks();
+        healTrackMirrorsFromChannels();
+        reseedSendRows();
     }
 
     // ── VCA helpers (story 153) ────────────────────────────────────────────
@@ -3057,9 +3459,9 @@ public final class MixerView extends VBox implements Dockable {
                 }
             } else if (!linkManager.isLinked(leftId) && !linkManager.isLinked(rightId)) {
                 // Default per Story 159: faders + pans + mute/solo on,
-                // inserts + sends off, RELATIVE mode.
+                // sends off, RELATIVE mode ("link inserts" removed in 322).
                 ChannelLink link = new ChannelLink(leftId, rightId,
-                        LinkMode.RELATIVE, true, true, true, false, false);
+                        LinkMode.RELATIVE, true, true, true, false);
                 LinkChannelsAction linkAction = new LinkChannelsAction(linkManager, link);
                 if (undoManager != null) {
                     undoManager.execute(linkAction);
@@ -3116,126 +3518,518 @@ public final class MixerView extends VBox implements Dockable {
      */
     public record LinkTogglePair(UUID leftChannelId, UUID rightChannelId, ChannelLink link) { }
 
-    private void propagateVolumeChange(UUID sourceId, double oldValue, double newValue) {
-        if (propagationSuppressed.contains(sourceId)) {
-            return;
+    // ── Story 322: VM bindings — one intent path, both surfaces (§2.10, §5.6) ──
+
+    /**
+     * The control handles of a return-bus or master strip built by this view,
+     * so the binding code (and a test) can reach the strip's fader / pan /
+     * buttons without walking the scene graph. {@code soloBtn}, {@code armBtn}
+     * and {@code pannerBtn} are {@code null} on the strips that have no such
+     * control (return bus: no arm / 3D; master: mute only). Track strips are
+     * {@link MixerChannelStrip}s since story 322 — see {@link TrackStripHandles}.
+     *
+     * @param volumeFader the linear [0,1] fader; never {@code null}
+     * @param panSlider   the [−1,1] pan slider; never {@code null}
+     * @param muteBtn     the mute button; never {@code null}
+     * @param soloBtn     the solo button, or {@code null} (master)
+     * @param armBtn      the arm button, or {@code null} (return bus, master)
+     * @param pannerBtn   the 3D-panner button, or {@code null} (return bus, master)
+     */
+    record MixerStripControls(Slider volumeFader, Slider panSlider, Button muteBtn,
+                              Button soloBtn, Button armBtn, Button pannerBtn) {
+
+        MixerStripControls {
+            Objects.requireNonNull(volumeFader, "volumeFader must not be null");
+            Objects.requireNonNull(panSlider, "panSlider must not be null");
+            Objects.requireNonNull(muteBtn, "muteBtn must not be null");
         }
-        ChannelLinkManager mgr = project.getChannelLinkManager();
-        ChannelLink link = mgr.getLink(sourceId);
-        if (link == null || !link.linkFaders()) {
-            return;
-        }
-        UUID partnerId = link.partnerOf(sourceId);
-        MixerChannel source  = channelByChannelId.get(sourceId);
-        MixerChannel partner = channelByChannelId.get(partnerId);
-        Slider partnerSlider = volumeFaderByChannelId.get(partnerId);
-        if (source == null || partner == null || partnerSlider == null) {
-            return;
-        }
-        propagationSuppressed.add(partnerId);
-        try {
-            // Delegate the per-mode arithmetic to the manager so UI and
-            // model behaviour stay in lock-step. The manager updates the
-            // model, then we copy the new model value onto the partner
-            // slider's value (which would otherwise still hold the old
-            // pre-mirror display value).
-            mgr.applyVolumeChange(link, source, partner, oldValue, newValue);
-            partnerSlider.setValue(partner.getVolume());
-            Track partnerTrack = trackByChannelId.get(partnerId);
-            if (partnerTrack != null) {
-                partnerTrack.setVolume(partner.getVolume());
+
+        /** Disables (or re-enables) every control present — the inert state of an unbound strip. */
+        void setDisabled(boolean disabled) {
+            volumeFader.setDisable(disabled);
+            panSlider.setDisable(disabled);
+            muteBtn.setDisable(disabled);
+            if (soloBtn != null) {
+                soloBtn.setDisable(disabled);
             }
-        } finally {
-            propagationSuppressed.remove(partnerId);
+            if (armBtn != null) {
+                armBtn.setDisable(disabled);
+            }
         }
     }
 
-    private void propagatePanChange(UUID sourceId, double newPan) {
-        if (propagationSuppressed.contains(sourceId)) {
-            return;
+    /**
+     * A per-return send row's reflectable widgets ("Link Sends"): the level
+     * slider and the tap glyph. {@link #reflect(Send)} pushes the channel's
+     * <em>model</em> send into them — after a mirrored write on the partner,
+     * and on every history event for every row; the slider listener's echo
+     * guard (a value already equal to the model raises nothing) keeps the
+     * reflection from re-mirroring or re-writing.
+     *
+     * @param slider     the send-level slider
+     * @param tapButton  the tap-point cycler
+     * @param refreshTap re-reads the model send's tap into {@code tapButton}
+     */
+    record SendRow(Slider slider, Button tapButton, Runnable refreshTap) {
+
+        SendRow {
+            Objects.requireNonNull(slider, "slider must not be null");
+            Objects.requireNonNull(tapButton, "tapButton must not be null");
+            Objects.requireNonNull(refreshTap, "refreshTap must not be null");
         }
-        ChannelLinkManager mgr = project.getChannelLinkManager();
-        ChannelLink link = mgr.getLink(sourceId);
-        if (link == null || !link.linkPans()) {
-            return;
-        }
-        UUID partnerId = link.partnerOf(sourceId);
-        MixerChannel partner = channelByChannelId.get(partnerId);
-        Slider partnerSlider = panSliderByChannelId.get(partnerId);
-        if (partner == null || partnerSlider == null) {
-            return;
-        }
-        propagationSuppressed.add(partnerId);
-        try {
-            mgr.applyPanChange(link, partner, newPan);
-            partnerSlider.setValue(partner.getPan());
-            Track partnerTrack = trackByChannelId.get(partnerId);
-            if (partnerTrack != null) {
-                partnerTrack.setPan(partner.getPan());
+
+        /**
+         * Reflects {@code send}, the channel's model send feeding this row's
+         * bus; {@code null} means the send does not exist (an undone creation)
+         * and the slider shows the bottom of its travel — which the listener
+         * treats as "no send, nothing to create", never as a write.
+         */
+        void reflect(Send send) {
+            double level = send != null ? send.getLevel() : 0.0;
+            if (slider.getValue() != level) {
+                slider.setValue(level);
             }
-        } finally {
-            propagationSuppressed.remove(partnerId);
+            refreshTap.run();
         }
     }
 
-    private void propagateMuteChange(UUID sourceId, boolean muted) {
-        if (propagationSuppressed.contains(sourceId)) {
+    /**
+     * A send's pre-gesture state — existence, level and tap — captured when a
+     * drag starts and put back on release so the undo entry's
+     * {@code execute()} sees the model exactly as it was before the gesture.
+     * Story 322 fix round 1 (S6): the linked partner's send needs the same
+     * treatment as the source's because the per-tick "Link Sends" mirror
+     * rewrites it live.
+     */
+    private record SendState(boolean present, double level, SendTap tap) {
+
+        static final SendState ABSENT = new SendState(false, 0.0, SendTap.POST_FADER);
+
+        static SendState of(Send send) {
+            return send == null ? ABSENT : new SendState(true, send.getLevel(), send.getTap());
+        }
+
+        /** Puts the send of {@code channel} feeding {@code target} back to this state. */
+        void restore(MixerChannel channel, MixerChannel target) {
+            Send send = channel.getSendForTarget(target);
+            if (!present) {
+                if (send != null) {
+                    channel.removeSend(send);
+                }
+            } else if (send != null) {
+                send.setLevel(level);
+                if (send.getTap() != tap) {
+                    send.setTap(tap);
+                }
+            }
+        }
+    }
+
+    /**
+     * The undoable form of the live "Link Sends" mirror for one partner: a
+     * {@link SetSendRoutingAction} (creates the partner's send when absent,
+     * else sets its level) followed by a {@link SetSendTapAction} carrying the
+     * exact tap — {@link SendMode} cannot express {@code PRE_INSERTS}, so the
+     * routing action alone would not reproduce what the mirror wrote. Undone
+     * in reverse inside their compound they put the partner's send back
+     * exactly (existence, level, tap).
+     */
+    private static List<UndoableAction> partnerSendSteps(MixerChannel partner, MixerChannel target,
+                                                         double level, SendMode mode, SendTap tap) {
+        return List.of(new SetSendRoutingAction(partner, target, level, mode),
+                new SetSendTapAction(partner, target, tap));
+    }
+
+    /** {@code steps} as one history entry: the single step itself, or a compound. */
+    private static UndoableAction asOneAction(String description, List<UndoableAction> steps) {
+        return steps.size() == 1 ? steps.get(0) : new CompoundUndoableAction(description, steps);
+    }
+
+    /**
+     * Binds a track's {@link MixerChannelStrip} and its 3D button to the
+     * registry's {@link TrackVM} / {@link ChannelVM} through one
+     * {@link TrackControlBinder#bindStrip} raising {@code TrackCommand}s into
+     * the wiring's sink — the same intent path the arrangement strip drives.
+     * Every strip fact is a VM subscription (name, insert list, pan, dB fader,
+     * M/S/R, integrated meter): mute / solo / arm styles are seeded at bind
+     * time, and a snapshot recall re-seeds the fader / pan structurally (no
+     * imperative re-seed). A track the registry has no VMs for (a non-UUID
+     * fixture id, or a channel it does not know even after a reconcile)
+     * leaves the whole strip disabled and the 3D button hidden — it is never
+     * bound to the model directly ({@code bindStrip} needs both VMs).
+     *
+     * <p>The strip's meter: {@code bindStrip} subscribes the channel's
+     * {@code CHANNEL_POST} tap through {@link ChannelVM#bindMeter(Node)} when
+     * the VM has a live feed; the pair is recorded in {@link #trackStripMeters}
+     * so the view's scene lifecycle releases and re-acquires it exactly like
+     * its own {@link LevelMeterDisplay} bindings.</p>
+     */
+    private void bindTrackStrip(Track track, MixerChannel mixerChannel, UUID channelId,
+                                TrackStripHandles handles, TrackControlWiring wiring) {
+        MixerChannelStrip strip = handles.strip();
+        Button pannerBtn = handles.pannerBtn();
+        TrackChannelRegistry registry = wiring.registry();
+        TrackVM trackVm = channelId != null ? registry.trackVm(channelId) : null;
+        if (trackVm == null && channelId != null) {
+            registry.reconcile(); // a TRACKS signal still queued from another thread
+            trackVm = registry.trackVm(channelId);
+        }
+        ChannelVM channelVm = trackVm != null ? registry.channelVm(mixerChannel.getId()) : null;
+        if (trackVm == null || channelVm == null) {
+            LOG.fine(() -> "No track / channel VM for '" + track.getName()
+                    + "' — its mixer strip stays inert");
+            strip.setDisable(true);
+            pannerBtn.setVisible(false);
+            pannerBtn.setManaged(false);
             return;
         }
-        ChannelLinkManager mgr = project.getChannelLinkManager();
-        ChannelLink link = mgr.getLink(sourceId);
-        if (link == null || !link.linkMuteSolo()) {
+        strip.setDisable(false);
+
+        TrackControlBinder binder = new TrackControlBinder(
+                track, trackVm, mixerChannel, channelVm, undoableRenames(wiring.commandSink()));
+        stripBindingDisposers.add(binder::dispose);
+        binder.bindStrip(strip);
+        stripBindingDisposers.add(gatePannerButton(pannerBtn, channelVm));
+        if (channelVm.hasMeterFeed()) {
+            trackStripMeters.add(new TrackStripMeter(channelVm, strip));
+        }
+
+        // Story 137 — the input-meter column appears (on arm) or disappears
+        // (on disarm) immediately, from whichever surface flipped the flag.
+        ReadOnlyBooleanProperty armed = trackVm.armedProperty();
+        ChangeListener<Boolean> armRefresh = (_, _, _) -> {
+            if (inputLevelMonitorRegistry != null) {
+                refresh();
+            }
+        };
+        armed.addListener(armRefresh);
+        stripBindingDisposers.add(() -> armed.removeListener(armRefresh));
+    }
+
+    /**
+     * Binds a standalone strip — a return bus or the master — through a
+     * {@link ChannelControlBinder} over the registry's {@link ChannelVM}
+     * (§5.6 "Master / return pan": live in the engine; the strip's mute /
+     * solo raise the channel-targeted commands). A channel the registry does
+     * not know even after a reconcile leaves the controls disabled.
+     */
+    private void bindStandaloneStrip(MixerChannel channel, MixerStripControls controls,
+                                     TrackControlWiring wiring) {
+        TrackChannelRegistry registry = wiring.registry();
+        ChannelVM channelVm = registry.channelVm(channel.getId());
+        if (channelVm == null) {
+            registry.reconcile();
+            channelVm = registry.channelVm(channel.getId());
+        }
+        if (channelVm == null) {
+            LOG.fine(() -> "No channel VM for '" + channel.getName() + "' — its strip stays inert");
+            controls.setDisabled(true);
             return;
         }
-        UUID partnerId = link.partnerOf(sourceId);
-        MixerChannel partner = channelByChannelId.get(partnerId);
-        Button partnerBtn = muteBtnByChannelId.get(partnerId);
+        controls.setDisabled(false);
+        ChannelControlBinder binder = new ChannelControlBinder(channel, channelVm, wiring.commandSink());
+        stripBindingDisposers.add(binder::dispose);
+        binder.bindFader(controls.volumeFader());
+        binder.bindPan(controls.panSlider());
+        binder.bindMute(controls.muteBtn());
+        if (controls.soloBtn() != null) {
+            binder.bindSolo(controls.soloBtn());
+        }
+    }
+
+    /**
+     * Gates the 3D-panner button on {@link ChannelVM#spatialNodePresentProperty()}:
+     * {@code visible} and {@code managed} both follow the fact, so a channel
+     * without a spatial insert has no dead affordance and no empty slot.
+     *
+     * @return the disposer that unbinds both properties
+     */
+    private static Runnable gatePannerButton(Button pannerBtn, ChannelVM channelVm) {
+        pannerBtn.visibleProperty().bind(channelVm.spatialNodePresentProperty());
+        pannerBtn.managedProperty().bind(channelVm.spatialNodePresentProperty());
+        return () -> {
+            pannerBtn.visibleProperty().unbind();
+            pannerBtn.managedProperty().unbind();
+        };
+    }
+
+    /** Raises {@code command} into the current wiring's sink — the one intent path (§2.10). */
+    private void dispatchIntent(TrackCommand command) {
+        getTrackControlWiring().commandSink().accept(command);
+    }
+
+    /**
+     * Decorates the wiring's sink so a {@link RenameTrackCommand} raised by
+     * this view's strip (the skin's inline name editor) is recorded in this
+     * view's {@link UndoManager} — story 322 fix round 1 (S4): the
+     * arrangement's inline rename has always been undoable, so a mixer-strip
+     * rename must be too, and the surface that owns the undo manager is the
+     * one to record it (the handler stays a pure VALIDATE → MUTATE → ANNOUNCE
+     * path with no history of its own). Every other command passes straight
+     * through — mute / solo / volume / pan gestures are not undoable on
+     * either surface. Without an undo manager the sink is returned as is.
+     *
+     * <p>A rename that {@link RenameTrackCommand#changesNothing() changes
+     * nothing} — the strip's text differs from the track's name only by
+     * surrounding whitespace — goes straight to the sink like any other
+     * command (fix round 2): the handler's VALIDATE no-ops and the binder
+     * snaps the strip back, and recording it would push a visible
+     * do-nothing entry and clear the redo stack. The command's own
+     * normalisation decides, so this view never repeats the strip rule.</p>
+     *
+     * <p>{@link UndoManager#execute} runs the action <em>before</em> pushing
+     * it, so a rename the handler refuses (blank) throws out of
+     * {@code execute()} before any entry is recorded; the binder catches that
+     * and snaps the strip back, exactly as it did against the bare sink.</p>
+     */
+    private Consumer<TrackCommand> undoableRenames(Consumer<TrackCommand> sink) {
+        if (undoManager == null) {
+            return sink;
+        }
+        return command -> {
+            if (command instanceof RenameTrackCommand rename && !rename.changesNothing()) {
+                undoManager.execute(new RenameTrackAction(rename, sink));
+            } else {
+                sink.accept(command);
+            }
+        };
+    }
+
+    /**
+     * A strip rename as a history entry: {@code execute()} raises the command
+     * through the real sink (so redo takes the same intent path as the
+     * gesture), {@code undo()} raises a {@link RenameTrackCommand} back to the
+     * name the track had when the rename was raised.
+     */
+    private static final class RenameTrackAction implements UndoableAction {
+
+        private final RenameTrackCommand rename;
+        private final Consumer<TrackCommand> sink;
+        private final String previousName;
+
+        RenameTrackAction(RenameTrackCommand rename, Consumer<TrackCommand> sink) {
+            this.rename = Objects.requireNonNull(rename, "rename must not be null");
+            this.sink = Objects.requireNonNull(sink, "sink must not be null");
+            this.previousName = rename.track().getName();
+        }
+
+        @Override
+        public String description() {
+            return "Rename Track: " + previousName + " → " + rename.normalizedName();
+        }
+
+        @Override
+        public void execute() {
+            sink.accept(rename);
+        }
+
+        @Override
+        public void undo() {
+            sink.accept(new RenameTrackCommand(rename.track(), previousName));
+        }
+    }
+
+    /**
+     * After a snapshot recall (or its undo / redo) the channels hold the
+     * recalled scene but their {@code Track} mirrors do not — a
+     * {@code MixerSnapshot} writes channels only. Re-asserts every track
+     * channel's volume / pan / mute / solo through the intent path, whose
+     * per-surface VALIDATE turns each command into a Track-only heal (the
+     * channel already matches, so nothing is announced or mirrored for it).
+     * That keeps §2.10's "any mirrored model is updated in the same dual-write,
+     * in one place" true for recall without a single direct {@code Track}
+     * write here, and it is what lets the {@code TrackVM}-bound mute / solo of
+     * both surfaces re-seed structurally on recall (§5.6 "Snapshot / A-B
+     * recall"). Standalone channels (return buses, master) have no mirror.
+     */
+    private void healTrackMirrorsFromChannels() {
+        if (disposed) {
+            return; // a late history event must not resurrect a standalone wiring
+        }
+        java.util.function.Consumer<TrackCommand> sink = getTrackControlWiring().commandSink();
+        for (Track track : project.getTracks()) {
+            MixerChannel channel = project.getMixerChannelForTrack(track);
+            if (channel == null) {
+                continue;
+            }
+            sink.accept(new com.benesquivelmusic.daw.app.ui.vm.command.SetChannelVolumeCommand(
+                    channel, channel.getVolume()));
+            sink.accept(new com.benesquivelmusic.daw.app.ui.vm.command.SetChannelPanCommand(
+                    channel, channel.getPan()));
+            sink.accept(new ToggleMuteCommand(track, channel.isMuted()));
+            sink.accept(new ToggleSoloCommand(track, channel.isSolo()));
+        }
+    }
+
+    /** Runs and clears every strip-binding disposer of the last build. */
+    private void disposeStripBindings() {
+        for (Runnable disposer : stripBindingDisposers) {
+            disposer.run();
+        }
+        stripBindingDisposers.clear();
+    }
+
+    /**
+     * "Link Sends" (§5.6 "Stereo link"): mirrors a send edit on
+     * {@code sourceId}'s channel to its stereo partner through
+     * {@link ChannelLinkManager#applySendChange} — a no-op unless the pair is
+     * linked with {@code linkSends} — then reflects the partner's model send
+     * on the partner's row. The reflection cannot re-mirror: the partner
+     * slider's listener sees a value equal to its model and raises nothing.
+     *
+     * @param sourceId the edited channel's id, or {@code null} (no link affordance)
+     * @param target   the return bus the edited send feeds
+     * @param level    the source send's new level
+     * @param tap      the source send's new tap point
+     */
+    private void mirrorSendToPartner(UUID sourceId, MixerChannel target, double level, SendTap tap) {
+        if (sourceId == null) {
+            return;
+        }
+        ChannelLinkManager links = project.getChannelLinkManager();
+        ChannelLink link = links.getLink(sourceId);
+        if (link == null || !link.linkSends()) {
+            return;
+        }
+        MixerChannel partner = channelByChannelId.get(link.partnerOf(sourceId));
         if (partner == null) {
             return;
         }
-        propagationSuppressed.add(partnerId);
-        try {
-            mgr.applyMuteChange(link, partner, muted);
-            Track partnerTrack = trackByChannelId.get(partnerId);
-            if (partnerTrack != null) {
-                partnerTrack.setMuted(muted);
-            }
-            if (partnerBtn != null) {
-                partnerBtn.setStyle(muted
-                        ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
-            }
-        } finally {
-            propagationSuppressed.remove(partnerId);
+        links.applySendChange(link, partner, target, level, tap);
+        reflectSendRow(partner, target);
+    }
+
+    /**
+     * The stereo partner whose sends follow {@code sourceId}'s: present only
+     * when the pair is linked with {@code linkSends} and the partner's strip
+     * is in the last build.
+     */
+    private Optional<MixerChannel> linkedSendPartner(UUID sourceId) {
+        if (sourceId == null) {
+            return Optional.empty();
+        }
+        ChannelLink link = project.getChannelLinkManager().getLink(sourceId);
+        if (link == null || !link.linkSends()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(channelByChannelId.get(link.partnerOf(sourceId)));
+    }
+
+    /** Re-seeds the send row of {@code channel} feeding {@code target} from the model (no row: no-op). */
+    private void reflectSendRow(MixerChannel channel, MixerChannel target) {
+        Map<MixerChannel, SendRow> rows = sendRowsByChannelId.get(channel.getId());
+        SendRow row = rows != null ? rows.get(target) : null;
+        if (row != null) {
+            row.reflect(channel.getSendForTarget(target));
         }
     }
 
-    private void propagateSoloChange(UUID sourceId, boolean solo) {
-        if (propagationSuppressed.contains(sourceId)) {
-            return;
-        }
-        ChannelLinkManager mgr = project.getChannelLinkManager();
-        ChannelLink link = mgr.getLink(sourceId);
-        if (link == null || !link.linkMuteSolo()) {
-            return;
-        }
-        UUID partnerId = link.partnerOf(sourceId);
-        MixerChannel partner = channelByChannelId.get(partnerId);
-        Button partnerBtn = soloBtnByChannelId.get(partnerId);
-        if (partner == null) {
-            return;
-        }
-        propagationSuppressed.add(partnerId);
-        try {
-            mgr.applySoloChange(link, partner, solo);
-            Track partnerTrack = trackByChannelId.get(partnerId);
-            if (partnerTrack != null) {
-                partnerTrack.setSolo(solo);
+    /**
+     * Re-seeds every send row of the last build from the model. Run on every
+     * history event (and on scene re-attach): an undo / redo of a send action
+     * — a linked pair's compound included — moves the model sends without a
+     * gesture, and the rows are plain sliders rather than VM subscribers (the
+     * strip's own send rows are deliberately unfed — see the story note), so
+     * they need the imperative re-seed the VM-bound controls do not.
+     */
+    private void reseedSendRows() {
+        for (Map.Entry<UUID, Map<MixerChannel, SendRow>> rowsOfChannel : sendRowsByChannelId.entrySet()) {
+            MixerChannel channel = channelByChannelId.get(rowsOfChannel.getKey());
+            if (channel == null) {
+                continue;
             }
-            if (partnerBtn != null) {
-                applySoloButtonStyle(partnerBtn, partner);
+            for (Map.Entry<MixerChannel, SendRow> row : rowsOfChannel.getValue().entrySet()) {
+                row.getValue().reflect(channel.getSendForTarget(row.getKey()));
             }
-        } finally {
-            propagationSuppressed.remove(partnerId);
         }
+    }
+
+    /**
+     * The member badge's composite readout: the group's name and the
+     * channel's effective VCA gain across every group it belongs to
+     * ({@link VcaGroupManager#effectiveGainDb}) — e.g. {@code "VCA: Drums
+     * (-6.0 dB)"}; a group at {@link VcaGroup#MIN_GAIN_DB} reads as −∞.
+     */
+    private static String vcaBadgeText(VcaGroupManager vcaMgr, VcaGroup group, UUID channelId) {
+        double db = vcaMgr.effectiveGainDb(channelId);
+        String gain = db <= VcaGroup.MIN_GAIN_DB
+                ? "-∞ dB"
+                : String.format(Locale.ROOT, "%+.1f dB", db);
+        return "VCA: " + group.label() + " (" + gain + ")";
+    }
+
+    /**
+     * A track strip built by this view (story 322): the bound
+     * {@link MixerChannelStrip} and the host's gated 3D-panner button beside
+     * it. Stored on the host column under {@link #TRACK_STRIP_KEY}; the
+     * strip's own properties ({@code faderDb}, {@code pan}, {@code muted} /
+     * {@code soloed} / {@code armed}, {@code inserts}, {@code meterPeakDb}) are
+     * the test seams for what the old {@code MixerStripControls} exposed.
+     *
+     * @param strip     the bound channel strip; never {@code null}
+     * @param pannerBtn the 3D-panner button; never {@code null}
+     */
+    record TrackStripHandles(MixerChannelStrip strip, Button pannerBtn) {
+
+        TrackStripHandles {
+            Objects.requireNonNull(strip, "strip must not be null");
+            Objects.requireNonNull(pannerBtn, "pannerBtn must not be null");
+        }
+    }
+
+    /**
+     * The controls of a return / master strip built by this view, or
+     * {@code null} for any other node. Package-visible for tests.
+     */
+    static MixerStripControls controlsOf(Node strip) {
+        return strip.getProperties().get(STRIP_CONTROLS_KEY) instanceof MixerStripControls c ? c : null;
+    }
+
+    /**
+     * The track strip a host column built by this view carries, or
+     * {@code null} for any other node (a link toggle, a return strip …).
+     * Package-visible for tests.
+     */
+    static TrackStripHandles trackStripOf(Node hostColumn) {
+        return hostColumn.getProperties().get(TRACK_STRIP_KEY) instanceof TrackStripHandles h ? h : null;
+    }
+
+    /** The track strips of the last refresh, in project order. Visible for testing. */
+    List<TrackStripHandles> getTrackStrips() {
+        List<TrackStripHandles> out = new ArrayList<>();
+        for (Node n : channelStrips.getChildren()) {
+            TrackStripHandles h = trackStripOf(n);
+            if (h != null) {
+                out.add(h);
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    /** The return-bus strips' controls of the last refresh, in bus order. Visible for testing. */
+    List<MixerStripControls> getReturnStripControls() {
+        List<MixerStripControls> out = new ArrayList<>();
+        for (Node n : returnBusStrips.getChildren()) {
+            MixerStripControls c = controlsOf(n);
+            if (c != null) {
+                out.add(c);
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    /** The master strip's controls. Visible for testing. */
+    MixerStripControls getMasterStripControls() {
+        return masterStripControls;
+    }
+
+    /**
+     * The send row of the track strip {@code channelId} feeding
+     * {@code target}, or {@code null} if that strip / return bus is not in
+     * the last build. Visible for testing.
+     */
+    SendRow getSendRow(UUID channelId, MixerChannel target) {
+        Map<MixerChannel, SendRow> rows = sendRowsByChannelId.get(channelId);
+        return rows != null ? rows.get(target) : null;
     }
 }

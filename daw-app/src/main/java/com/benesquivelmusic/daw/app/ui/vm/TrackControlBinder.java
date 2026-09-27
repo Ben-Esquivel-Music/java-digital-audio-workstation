@@ -1,6 +1,9 @@
 package com.benesquivelmusic.daw.app.ui.vm;
 
+import com.benesquivelmusic.daw.app.ui.controls.InsertSlotModel;
 import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip;
+import com.benesquivelmusic.daw.app.ui.controls.TrackStrip;
+import com.benesquivelmusic.daw.app.ui.vm.command.RenameTrackCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.SetChannelPanCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.SetChannelVolumeCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleArmCommand;
@@ -10,23 +13,30 @@ import com.benesquivelmusic.daw.app.ui.vm.command.TrackCommand;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.track.Track;
 
+import javafx.beans.InvalidationListener;
 import javafx.beans.property.DoubleProperty;
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.value.ChangeListener;
+import javafx.collections.ListChangeListener;
 import javafx.css.PseudoClass;
 import javafx.scene.control.ButtonBase;
+import javafx.scene.control.Slider;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
- * Binds a track's controls — its arrangement-lane mute/solo/arm buttons, its
- * mixer strip, and its fader/pan — to a {@link TrackVM}/{@link ChannelVM} and
- * routes their gestures to {@link TrackCommand}s (story 291; the §6 control
- * wiring and the §4.4 single-writer binding discipline of the Control
- * Synchronization Design Book).
+ * Binds a track's controls — its arrangement-lane mute/solo/arm buttons and
+ * volume/pan sliders, its {@link MixerChannelStrip}, and its Performance Stage
+ * {@link TrackStrip} tile — to a
+ * {@link TrackVM}/{@link ChannelVM} and routes their gestures to
+ * {@link TrackCommand}s (story 291; story 322 — the §6 control wiring and the
+ * §4.4 single-writer binding discipline of the Control Synchronization Design
+ * Book, Audio Engine Wiring Design Book §5.6).
  *
  * <p>Each control's <em>visible state is a pure function of the VM</em>: the
  * binder drives the existing {@code :active} pseudo-class (UI Design Book §2.1)
@@ -34,31 +44,32 @@ import java.util.function.Consumer;
  * control's own value; it raises an intent through the
  * {@link Consumer}&lt;{@link TrackCommand}&gt; sink, so the control updates only
  * as a subscriber once the VM republishes — no {@code suppressEvents} guard is
- * needed (§4.4). The same command sink is shared by the lane buttons, the mixer
- * strip, and the Track menu (§2.8).</p>
+ * needed (§4.4). The same command sink is shared by the lane controls, the
+ * mixer strip, and the Track menu (§2.8).</p>
  *
  * <h2>The §1.3 "one flag, both surfaces" join</h2>
  *
- * <p>{@link #bindMute(ButtonBase)} and {@link #bindChannelStrip(MixerChannelStrip)}
+ * <p>{@link #bindMute(ButtonBase)} and {@link #bindStrip(MixerChannelStrip)}
  * subscribe the <em>same</em> {@link TrackVM#mutedProperty()} flag: the lane
  * button's {@code :active} pseudo-class and the strip's {@code :muted} pseudo
- * (via its bound {@code mutedProperty}) both follow it. One toggle, both
- * surfaces — the unification this story delivers.</p>
+ * (via its mirrored {@code mutedProperty}) both follow it. One toggle, both
+ * surfaces — the unification story 291 designed and story 322 puts in
+ * production.</p>
  *
  * <h2>Nullable channel</h2>
  *
  * <p>{@code channel}/{@code channelVm} may be {@code null} for a track with no
  * paired mixer channel; the flag bindings ({@link #bindMute}/{@link #bindSolo}/
- * {@link #bindArm}/{@link #bindChannelStrip}) work regardless, but
- * {@link #bindFader(DoubleProperty)} / {@link #bindPan(DoubleProperty)} require a
- * non-null channel VM.</p>
+ * {@link #bindArm}/{@link #bindChannelStrip}) work regardless, but the fader/pan
+ * bindings and {@link #bindStrip} require a non-null channel VM.</p>
  *
  * <h2>Unit scope</h2>
  *
- * <p>The fader/pan bindings operate on a plain {@link DoubleProperty} (a
- * Slider/Knob value) in <em>linear</em> units ([0,1] for volume, [−1,1] for pan)
- * — the {@code MixerChannelStrip} dB-fader↔linear conversion is a live detail
- * deferred to story 293's controller rewiring and is deliberately not done here.</p>
+ * <p>The {@link DoubleProperty} / {@link Slider} fader/pan bindings are in
+ * <em>linear</em> units ([0,1] for volume, [−1,1] for pan). Only
+ * {@link #bindStrip} converts: the strip's {@code faderDbProperty()} is in dB
+ * ({@code db = 20·log10(lin)}, floored at {@link MixerChannelStrip#FADER_MIN_DB}
+ * for {@code lin ≤ 0}; {@code lin = 10^(db/20)} clamped to [0,1]).</p>
  *
  * <p>{@link #dispose()} removes every listener and binding so no leak survives
  * the control's lifetime ({@code javafx-application-design} §3/§4). Idempotent.</p>
@@ -99,8 +110,9 @@ public final class TrackControlBinder {
 
     /**
      * Binds a lane mute button: its {@code :active} pseudo-class follows
-     * {@code trackVm.muted}; a click raises {@link ToggleMuteCommand} with the
-     * negated current state.
+     * {@code trackVm.muted} (seeded at bind time — the style is a function of
+     * the model, never of a click); a click raises {@link ToggleMuteCommand}
+     * with the negated current state.
      *
      * @param muteControl the mute button; must not be {@code null}
      */
@@ -108,7 +120,7 @@ public final class TrackControlBinder {
         Objects.requireNonNull(muteControl, "muteControl must not be null");
         updateActive(muteControl, trackVm.isMuted());
         ChangeListener<Boolean> listener =
-                (obs, was, now) -> updateActive(muteControl, Boolean.TRUE.equals(now));
+                (_, _, now) -> updateActive(muteControl, Boolean.TRUE.equals(now));
         trackVm.mutedProperty().addListener(listener);
         disposers.add(() -> trackVm.mutedProperty().removeListener(listener));
         onAction(muteControl, () -> new ToggleMuteCommand(track, !trackVm.isMuted()));
@@ -124,7 +136,7 @@ public final class TrackControlBinder {
         Objects.requireNonNull(soloControl, "soloControl must not be null");
         updateActive(soloControl, trackVm.isSoloed());
         ChangeListener<Boolean> listener =
-                (obs, was, now) -> updateActive(soloControl, Boolean.TRUE.equals(now));
+                (_, _, now) -> updateActive(soloControl, Boolean.TRUE.equals(now));
         trackVm.soloedProperty().addListener(listener);
         disposers.add(() -> trackVm.soloedProperty().removeListener(listener));
         onAction(soloControl, () -> new ToggleSoloCommand(track, !trackVm.isSoloed()));
@@ -140,7 +152,7 @@ public final class TrackControlBinder {
         Objects.requireNonNull(armControl, "armControl must not be null");
         updateActive(armControl, trackVm.isArmed());
         ChangeListener<Boolean> listener =
-                (obs, was, now) -> updateActive(armControl, Boolean.TRUE.equals(now));
+                (_, _, now) -> updateActive(armControl, Boolean.TRUE.equals(now));
         trackVm.armedProperty().addListener(listener);
         disposers.add(() -> trackVm.armedProperty().removeListener(listener));
         onAction(armControl, () -> new ToggleArmCommand(track, !trackVm.isArmed()));
@@ -148,10 +160,10 @@ public final class TrackControlBinder {
 
     /**
      * Mirrors the <em>same</em> {@link TrackVM} flags the lane buttons use onto a
-     * {@link MixerChannelStrip} — the §1.3 "one flag, both surfaces" join. The
-     * strip reflects the VM flag but never writes it back: its own mute/solo
-     * gesture must be wired through {@link #bindMute}/{@link #bindSolo} on its
-     * buttons (or the controller, story 293).
+     * {@link MixerChannelStrip} — the §1.3 "one flag, both surfaces" join. This
+     * is the one-way half only: the strip reflects the VM flag but its own M/S/R
+     * gesture raises nothing. {@link #bindStrip(MixerChannelStrip)} is the full
+     * two-way binding (mirror <em>plus</em> intent) a production strip needs.
      *
      * <p><strong>Why a listener + setter, not {@code bind()}:</strong> the strip's
      * {@code muted}/{@code soloed}/{@code armed} are <em>two-way</em> control
@@ -178,6 +190,197 @@ public final class TrackControlBinder {
     }
 
     /**
+     * Binds a whole {@link MixerChannelStrip} to this track's VMs (story 322,
+     * the §5.6 "Mixer strip vol/pan/mute/solo" row): every strip fact is a
+     * subscriber of a VM property and every strip gesture is an intent through
+     * the sink.
+     *
+     * <ul>
+     *   <li>{@code channelId} / {@code channelName} ← {@link ChannelVM#channelId()}
+     *       / {@link TrackVM#nameProperty()}.</li>
+     *   <li>M/S/R: mirrored from the {@code TrackVM} flags exactly as
+     *       {@link #bindChannelStrip}, <em>plus</em> a listener on each two-way
+     *       strip flag that raises the matching {@code ToggleXCommand} when the
+     *       strip's new value differs from the VM's — the stateless echo guard
+     *       (§4.4): a VM-driven mirror arrives with {@code now == vm} and raises
+     *       nothing; a user click arrives with {@code now != vm} and raises the
+     *       intent, whose republish then mirrors the identical value back
+     *       (no-op).</li>
+     *   <li>{@code faderDbProperty} ↔ {@link ChannelVM#volumeProperty()} via
+     *       linear↔dB with the same echo guard on both sides, compared in the
+     *       strip's own dB domain so a float round-trip can never raise a phantom
+     *       command; a rejected value snaps the fader back.</li>
+     *   <li>{@code panProperty} ↔ {@link ChannelVM#panProperty()} (linear,
+     *       {@link #bindPan(DoubleProperty)}).</li>
+     *   <li>{@code insertsProperty} ← {@link ChannelVM#insertsProperty()}
+     *       ({@code setAll} on every change).</li>
+     *   <li>Meter: the strip's integrated {@code LevelMeter} peak follows
+     *       {@link ChannelVM#meterLevelProperty()} through
+     *       {@link MixerChannelStrip#meterPeakDbProperty()} (an invalidation
+     *       listener reading the primitive — no per-tick boxing), and when the VM
+     *       {@linkplain ChannelVM#hasMeterFeed() has a feed} the strip is bound as
+     *       the visibility-owning surface via {@link ChannelVM#bindMeter}.</li>
+     * </ul>
+     *
+     * @param strip the mixer channel strip; must not be {@code null}
+     * @throws IllegalStateException if this binder has no paired channel VM
+     */
+    public void bindStrip(MixerChannelStrip strip) {
+        Objects.requireNonNull(strip, "strip must not be null");
+        requireChannel();
+
+        strip.setChannelId(channelVm.channelId());
+
+        strip.setChannelName(trackVm.getName());
+        ChangeListener<String> nameListener = (_, _, now) -> strip.setChannelName(now);
+        trackVm.nameProperty().addListener(nameListener);
+        disposers.add(() -> trackVm.nameProperty().removeListener(nameListener));
+        // The skin's double-click inline editor commits into channelName: a
+        // value the VM does not already hold is a rename gesture and raises
+        // RenameTrackCommand (the same stateless echo guard as the flags). If
+        // the model did not adopt the text verbatim — refused as blank, or
+        // stripped, or merely recorded by a non-executing sink — the strip
+        // snaps back to the VM's name: its name is a subscriber, never a store.
+        ChangeListener<String> stripNameToCommand = (_, _, now) -> {
+            if (now == null || now.equals(trackVm.getName())) {
+                return; // echo of the VM-driven mirror / snap-back, not a gesture
+            }
+            try {
+                commandSink.accept(new RenameTrackCommand(track, now));
+            } catch (IllegalArgumentException rejected) {
+                // blank: VALIDATE refused it — fall through to the snap-back
+            }
+            if (!now.equals(trackVm.getName())) {
+                strip.setChannelName(trackVm.getName());
+            }
+        };
+        strip.channelNameProperty().addListener(stripNameToCommand);
+        disposers.add(() -> strip.channelNameProperty().removeListener(stripNameToCommand));
+
+        bindChannelStrip(strip);
+        raiseOnFlagChange(strip.mutedProperty(), trackVm::isMuted,
+                now -> new ToggleMuteCommand(track, now));
+        raiseOnFlagChange(strip.soloedProperty(), trackVm::isSoloed,
+                now -> new ToggleSoloCommand(track, now));
+        raiseOnFlagChange(strip.armedProperty(), trackVm::isArmed,
+                now -> new ToggleArmCommand(track, now));
+
+        bindFaderDb(strip);
+        bindPan(strip.panProperty());
+
+        strip.insertsProperty().setAll(channelVm.insertsProperty());
+        ListChangeListener<InsertSlotModel> insertsListener =
+                _ -> strip.insertsProperty().setAll(channelVm.insertsProperty());
+        channelVm.insertsProperty().addListener(insertsListener);
+        disposers.add(() -> channelVm.insertsProperty().removeListener(insertsListener));
+
+        strip.setMeterPeakDb(channelVm.getMeterLevel());
+        InvalidationListener meterRelay = _ -> strip.setMeterPeakDb(channelVm.getMeterLevel());
+        channelVm.meterLevelProperty().addListener(meterRelay);
+        disposers.add(() -> channelVm.meterLevelProperty().removeListener(meterRelay));
+        if (channelVm.hasMeterFeed()) {
+            disposers.add(channelVm.bindMeter(strip));
+        }
+    }
+
+    /**
+     * Binds a {@link TrackStrip} tile — the Performance Stage's oversized M/S/R
+     * control (story 280) — to this track's VM (story 322: the §5.6 "one intent
+     * path, both surfaces" contract extended to the stage, Audio Engine Wiring
+     * Design Book §2.10). The tile's name follows {@link TrackVM#nameProperty()};
+     * its two-way {@code muted}/{@code soloed}/{@code armed} properties mirror
+     * the <em>same</em> {@code TrackVM} flags the lane buttons and the mixer
+     * strip use (listener + setter, never {@code bind()} — see
+     * {@link #bindChannelStrip}), and a flip the VM does not already hold raises
+     * the matching {@code ToggleXCommand} through the sink (the stateless echo
+     * guard of {@link #bindStrip}). The tile has no fader, so no paired channel
+     * is required.
+     *
+     * @param tile the stage tile; must not be {@code null}
+     */
+    public void bindTile(TrackStrip tile) {
+        Objects.requireNonNull(tile, "tile must not be null");
+        tile.setTrackName(trackVm.getName());
+        ChangeListener<String> nameListener = (_, _, now) -> tile.setTrackName(now);
+        trackVm.nameProperty().addListener(nameListener);
+        disposers.add(() -> trackVm.nameProperty().removeListener(nameListener));
+
+        mirrorFlag(trackVm.mutedProperty(), tile::setMuted);
+        mirrorFlag(trackVm.soloedProperty(), tile::setSoloed);
+        mirrorFlag(trackVm.armedProperty(), tile::setArmed);
+        raiseOnFlagChange(tile.mutedProperty(), trackVm::isMuted,
+                now -> new ToggleMuteCommand(track, now));
+        raiseOnFlagChange(tile.soloedProperty(), trackVm::isSoloed,
+                now -> new ToggleSoloCommand(track, now));
+        raiseOnFlagChange(tile.armedProperty(), trackVm::isArmed,
+                now -> new ToggleArmCommand(track, now));
+    }
+
+    /**
+     * The strip fader half of {@link #bindStrip}: VM linear volume → strip dB,
+     * and strip dB → {@link SetChannelVolumeCommand} with the linear value,
+     * guarded in the dB domain ({@code now == linearToDb(vm)} is an echo).
+     */
+    private void bindFaderDb(MixerChannelStrip strip) {
+        strip.setFaderDb(linearToDb(channelVm.getVolume()));
+        ChangeListener<Number> vmToFader =
+                (_, _, now) -> strip.setFaderDb(linearToDb(now.doubleValue()));
+        channelVm.volumeProperty().addListener(vmToFader);
+        disposers.add(() -> channelVm.volumeProperty().removeListener(vmToFader));
+
+        ChangeListener<Number> faderToCommand = (_, _, now) -> {
+            double db = now.doubleValue();
+            if (db == linearToDb(channelVm.getVolume())) {
+                return; // echo of the VM-driven write / snap-back, not a gesture
+            }
+            try {
+                commandSink.accept(new SetChannelVolumeCommand(channel, dbToLinear(db)));
+            } catch (IllegalArgumentException rejected) {
+                strip.setFaderDb(linearToDb(channelVm.getVolume()));
+            }
+        };
+        strip.faderDbProperty().addListener(faderToCommand);
+        disposers.add(() -> strip.faderDbProperty().removeListener(faderToCommand));
+    }
+
+    /**
+     * Linear [0,1] → dB for the strip fader: {@code 20·log10(lin)}, floored at
+     * {@link MixerChannelStrip#FADER_MIN_DB} (also for {@code lin ≤ 0}, where the
+     * logarithm is undefined / −∞). The floor matches the fader's own range so a
+     * value the control would clamp never differs from what the binder wrote —
+     * otherwise the clamp would read as a user gesture.
+     */
+    static double linearToDb(double linear) {
+        if (linear <= 0.0) {
+            return MixerChannelStrip.FADER_MIN_DB;
+        }
+        return Math.max(MixerChannelStrip.FADER_MIN_DB, 20.0 * Math.log10(linear));
+    }
+
+    /** dB → linear for the model: {@code 10^(db/20)} clamped to [0,1] (the channel's range). */
+    static double dbToLinear(double db) {
+        return Math.clamp(Math.pow(10.0, db / 20.0), 0.0, 1.0);
+    }
+
+    /**
+     * Raises {@code factory.apply(now)} when a two-way strip flag changes to a
+     * value the VM does not already hold — the stateless echo guard of
+     * {@link #bindStrip}.
+     */
+    private void raiseOnFlagChange(ReadOnlyBooleanProperty stripFlag, BooleanSupplier vmValue,
+                                   Function<Boolean, TrackCommand> factory) {
+        ChangeListener<Boolean> listener = (_, _, now) -> {
+            boolean requested = Boolean.TRUE.equals(now);
+            if (requested == vmValue.getAsBoolean()) {
+                return; // VM-driven mirror, not a gesture
+            }
+            commandSink.accept(factory.apply(requested));
+        };
+        stripFlag.addListener(listener);
+        disposers.add(() -> stripFlag.removeListener(listener));
+    }
+
+    /**
      * Seeds {@code sink} with {@code source}'s current value and keeps it in sync
      * on every change, registering a disposer that removes the listener. Used to
      * one-way mirror a VM flag onto a two-way control property via its setter (see
@@ -186,7 +389,7 @@ public final class TrackControlBinder {
     private void mirrorFlag(ReadOnlyBooleanProperty source, Consumer<Boolean> sink) {
         sink.accept(source.get());
         ChangeListener<Boolean> listener =
-                (obs, was, now) -> sink.accept(Boolean.TRUE.equals(now));
+                (_, _, now) -> sink.accept(Boolean.TRUE.equals(now));
         source.addListener(listener);
         disposers.add(() -> source.removeListener(listener));
     }
@@ -197,7 +400,9 @@ public final class TrackControlBinder {
      * whenever it republishes, and on commit raises {@link SetChannelVolumeCommand}.
      * A VM-driven refresh does not re-raise a command, and a value the handler
      * rejects snaps the control back to the VM's accepted value (see
-     * {@link #onCommit}). Requires a non-null channel VM.
+     * {@link #onCommit}). Requires a non-null channel VM. Prefer
+     * {@link #bindFader(Slider)} for a real {@link Slider}, which also gates the
+     * VM→control echo while the user drags.
      *
      * @param linearVolumeControl the fader's value property in [0,1]; must not be {@code null}
      * @throws IllegalStateException if this binder has no paired channel VM
@@ -207,11 +412,28 @@ public final class TrackControlBinder {
         requireChannel();
         linearVolumeControl.set(channelVm.getVolume());
         ChangeListener<Number> listener =
-                (obs, was, now) -> linearVolumeControl.set(now.doubleValue());
+                (_, _, now) -> linearVolumeControl.set(now.doubleValue());
         channelVm.volumeProperty().addListener(listener);
         disposers.add(() -> channelVm.volumeProperty().removeListener(listener));
         onCommit(linearVolumeControl, channelVm::getVolume,
                 () -> new SetChannelVolumeCommand(channel, linearVolumeControl.get()));
+    }
+
+    /**
+     * Binds a linear-volume {@link Slider} ([0,1]) to the channel VM with the
+     * {@link SliderBinding} discipline (story 322): commit per value change (a
+     * DAW fader is audible while dragging), the VM→slider echo suppressed while
+     * {@link Slider#isValueChanging()} and re-applied once on release, snap-back
+     * on a rejected value. Raises {@link SetChannelVolumeCommand}.
+     *
+     * @param slider the fader; must not be {@code null}
+     * @throws IllegalStateException if this binder has no paired channel VM
+     */
+    public void bindFader(Slider slider) {
+        Objects.requireNonNull(slider, "slider must not be null");
+        requireChannel();
+        disposers.add(SliderBinding.bind(slider, channelVm.volumeProperty(),
+                value -> new SetChannelVolumeCommand(channel, value), commandSink));
     }
 
     /**
@@ -230,17 +452,32 @@ public final class TrackControlBinder {
         requireChannel();
         panControl.set(channelVm.getPan());
         ChangeListener<Number> listener =
-                (obs, was, now) -> panControl.set(now.doubleValue());
+                (_, _, now) -> panControl.set(now.doubleValue());
         channelVm.panProperty().addListener(listener);
         disposers.add(() -> channelVm.panProperty().removeListener(listener));
         onCommit(panControl, channelVm::getPan,
                 () -> new SetChannelPanCommand(channel, panControl.get()));
     }
 
+    /**
+     * Binds a pan {@link Slider} ([−1,1]) to the channel VM with the
+     * {@link SliderBinding} discipline (see {@link #bindFader(Slider)}). Raises
+     * {@link SetChannelPanCommand}.
+     *
+     * @param slider the pan slider; must not be {@code null}
+     * @throws IllegalStateException if this binder has no paired channel VM
+     */
+    public void bindPan(Slider slider) {
+        Objects.requireNonNull(slider, "slider must not be null");
+        requireChannel();
+        disposers.add(SliderBinding.bind(slider, channelVm.panProperty(),
+                value -> new SetChannelPanCommand(channel, value), commandSink));
+    }
+
     private void requireChannel() {
         if (channel == null || channelVm == null) {
             throw new IllegalStateException(
-                    "this binder has no paired mixer channel; fader/pan cannot be bound");
+                    "this binder has no paired mixer channel; fader/pan/strip cannot be bound");
         }
     }
 
@@ -282,7 +519,7 @@ public final class TrackControlBinder {
     private void onCommit(DoubleProperty control,
                           java.util.function.DoubleSupplier vmValue,
                           java.util.function.Supplier<TrackCommand> factory) {
-        ChangeListener<Number> commit = (obs, was, now) -> {
+        ChangeListener<Number> commit = (_, _, now) -> {
             if (now.doubleValue() == vmValue.getAsDouble()) {
                 return; // echo of a VM-driven refresh / snap-back, not a user gesture
             }

@@ -21,7 +21,8 @@ import static org.assertj.core.api.Assertions.within;
 class MixerMasteringCompatibilityTest {
 
     @ParameterizedTest
-    @ValueSource(strings = {"simple", "aux", "returns", "tapped returns", "instrumented", "tapped instrumented"})
+    // Story 322 removed the dead single-aux mixDown overload ("aux" path).
+    @ValueSource(strings = {"simple", "returns", "tapped returns", "instrumented", "tapped instrumented"})
     void registeredMasteringRunsOnceAfterInsertsAndBeforeMonitorGain(String path) {
         for (var precision : MixPrecision.values()) {
             var mixer = new Mixer();
@@ -48,7 +49,6 @@ class MixerMasteringCompatibilityTest {
                 var taps = bus.snapshot();
                 switch (path) {
                     case "simple" -> mixer.mixDown(input, output, 4);
-                    case "aux" -> mixer.mixDown(input, output, new float[2][4], 4);
                     case "returns" -> mixer.mixDown(input, output, returns, 4);
                     case "tapped returns" -> mixer.mixDown(input, output, returns, 4, taps);
                     case "instrumented" -> mixer.mixDownInstrumented(input, output, returns, 4, List.of(), enforcer);

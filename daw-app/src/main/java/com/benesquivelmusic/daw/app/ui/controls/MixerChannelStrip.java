@@ -217,9 +217,25 @@ public final class MixerChannelStrip extends Control {
             };
 
     /**
+     * The fader's travel range in dB — the {@link Fader} defaults the skin
+     * builds with ({@code min = -96 dB}, {@code max = +12 dB}). A binder maps a
+     * linear model volume onto {@link #faderDbProperty()} and must floor at
+     * {@link #FADER_MIN_DB}: the fader clamps to this range, and a value the
+     * control silently clamps would otherwise read as a user gesture (story 322).
+     */
+    public static final double FADER_MIN_DB = -96.0;
+    /** See {@link #FADER_MIN_DB}. */
+    public static final double FADER_MAX_DB = 12.0;
+
+    /** Story 322 — see {@link #meterPeakDbProperty()}. */
+    private final DoubleProperty meterPeakDb =
+            new SimpleDoubleProperty(this, "meterPeakDb", -120.0);
+
+    /**
      * Creates a channel strip with defaults: no channel id, empty name /
      * I/O labels, empty inserts / sends lists, pan {@code 0.0} (centre),
-     * fader {@code 0.0 dB}, M/S/R all false, {@link ChannelType#AUDIO}.
+     * fader {@code 0.0 dB}, meter peak {@code -120 dB}, M/S/R all false,
+     * {@link ChannelType#AUDIO}.
      */
     public MixerChannelStrip() {
         getStyleClass().add(DEFAULT_STYLE_CLASS);
@@ -311,6 +327,26 @@ public final class MixerChannelStrip extends Control {
     public final double getFaderDb() { return faderDb.get(); }
     /** @param db the fader value in dB. */
     public final void setFaderDb(double db) { faderDb.set(db); }
+
+    // ── meterPeakDb (story 322) ───────────────────────────────────────────
+
+    /**
+     * Story 322 — the peak level, in dBFS, shown by the fader's integrated
+     * {@link LevelMeter}. The narrow control-level seam a binder feeds from
+     * {@code ChannelVM.meterLevel} (the engine's {@code CHANNEL_POST} tap);
+     * the skin relays it into {@code fader.getMeter().setPeakDb(...)} by a
+     * plain listener (never {@code bind()}: the meter's own audio relay may
+     * take ownership of that property). One-way: nothing in the skin writes
+     * it back. Default {@code -120 dB} — the {@code ChannelVM} floor for
+     * "no signal".
+     *
+     * @return the integrated meter's peak property (dBFS)
+     */
+    public final DoubleProperty meterPeakDbProperty() { return meterPeakDb; }
+    /** @return the integrated meter's peak in dBFS. */
+    public final double getMeterPeakDb() { return meterPeakDb.get(); }
+    /** @param db the integrated meter's peak in dBFS. */
+    public final void setMeterPeakDb(double db) { meterPeakDb.set(db); }
 
     // ── muted / soloed / armed ────────────────────────────────────────────
 

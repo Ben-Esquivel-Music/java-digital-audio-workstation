@@ -236,9 +236,10 @@ public final class VcaGroupManager {
      * multiplier collapses to {@code 0.0} to model "−∞ dB → silence".</p>
      *
      * <p>This method is allocation-free and lock-free; it reads the
-     * {@code AtomicReference}-published snapshot once and iterates over the
-     * immutable list. It is therefore safe to call on the real-time audio
-     * thread.</p>
+     * {@code AtomicReference}-published snapshot once and walks the
+     * immutable list by index (no iterator — story 322 made this the
+     * per-channel-per-block VCA read of {@code Mixer.mixDown}). It is
+     * therefore safe to call on the real-time audio thread.</p>
      *
      * @param channelId the channel id whose effective VCA multiplier is wanted
      * @return the linear multiplier in {@code [0.0, +∞)}
@@ -248,7 +249,9 @@ public final class VcaGroupManager {
         Objects.requireNonNull(channelId, "channelId must not be null");
         double totalDb = 0.0;
         boolean anyMembership = false;
-        for (VcaGroup g : snapshot.get().ordered()) {
+        List<VcaGroup> groups = snapshot.get().ordered();
+        for (int i = 0, n = groups.size(); i < n; i++) {
+            VcaGroup g = groups.get(i);
             if (g.hasMember(channelId)) {
                 anyMembership = true;
                 if (g.masterGainDb() <= VcaGroup.MIN_GAIN_DB) {

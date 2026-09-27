@@ -141,6 +141,44 @@ class CoreTrackSignalTest {
     }
 
     @Test
+    void settingAnUnchangedValueFiresNoSignal() {
+        // Story 322 — the intent path dual-writes Track and MixerChannel; a
+        // re-applied value must not echo back into the view-model layer.
+        Track track = newTrack();
+        track.setName("Bass");
+        track.setVolume(0.65);
+        track.setPan(0.3);
+        track.setMuted(true);
+        track.setSolo(true);
+        track.setArmed(true);
+        Map<ChangeKind, AtomicInteger> counts = new EnumMap<>(ChangeKind.class);
+        for (ChangeKind kind : ChangeKind.values()) {
+            counts.put(kind, new AtomicInteger());
+        }
+        track.addChangeListener(kind -> counts.get(kind).incrementAndGet());
+
+        track.setName("Bass");
+        track.setVolume(0.65);
+        track.setPan(0.3);
+        track.setMuted(true);
+        track.setSolo(true);
+        track.setArmed(true);
+
+        assertThat(counts.values()).allSatisfy(count ->
+                assertThat(count.get()).as("re-applying the current value is silent").isZero());
+
+        track.setName("Bass 2");
+        track.setVolume(0.7);
+        track.setPan(0.35);
+        track.setMuted(false);
+        track.setSolo(false);
+        track.setArmed(false);
+
+        assertThat(counts.values()).allSatisfy(count ->
+                assertThat(count.get()).as("a real change fires exactly once").isEqualTo(1));
+    }
+
+    @Test
     void removedListenerStopsReceivingSignals() {
         Track track = newTrack();
         AtomicInteger fires = new AtomicInteger();

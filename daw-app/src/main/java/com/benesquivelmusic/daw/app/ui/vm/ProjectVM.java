@@ -5,7 +5,6 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.DawProject.ChangeKind;
 import com.benesquivelmusic.daw.core.track.Track;
 
-import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.ReadOnlyStringProperty;
@@ -147,7 +146,10 @@ public final class ProjectVM {
      * already on the FX thread and otherwise marshalling it through
      * {@link FxDispatcher#onFx(Runnable)}. The inline fast-path is the one
      * sanctioned by {@code FxDispatcher}'s contract — callers that want it test
-     * {@link Platform#isFxApplicationThread()} themselves rather than asking the
+     * for the FX thread themselves, through {@link FxDispatcher#isFxThread()}
+     * (the lock-free field compare every VM uses; the audio-thread-reachable
+     * {@code ChannelVM} must not touch {@code Platform.isFxApplicationThread()},
+     * which takes the {@code Toolkit} class monitor), rather than asking the
      * dispatcher to run inline (its {@code onFx} always enqueues, deliberately).
      * Running inline keeps the mirror faithful to the authority within a single FX
      * pulse, so a UI edit that calls {@code markDirty()} / {@code setName()} on the
@@ -161,7 +163,7 @@ public final class ProjectVM {
      * off-thread one still converges on the current value regardless of order.</p>
      */
     private void applyOnFx(Runnable write) {
-        if (Platform.isFxApplicationThread()) {
+        if (dispatcher.isFxThread()) {
             write.run();
         } else {
             dispatcher.onFx(write);

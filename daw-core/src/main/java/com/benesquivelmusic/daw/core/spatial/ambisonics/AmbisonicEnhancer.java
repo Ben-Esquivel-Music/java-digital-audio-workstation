@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
 import com.benesquivelmusic.daw.core.analysis.FftUtils;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -43,6 +45,7 @@ import java.util.Arrays;
  * @see FftUtils
  * @see SphericalHarmonics
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AmbisonicEnhancer implements AudioProcessor {
 
     private static final int FOA_CHANNELS = 4;

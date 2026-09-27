@@ -832,6 +832,84 @@
     -fx-text-fill: -text-hi;
 }
 
+/* Story 322 — the arrangement strip's mute / solo / arm state is the
+ * binder-driven :active pseudo-class (seeded from the model on every strip
+ * build), rendered from the same tokens as controls/track-strip.css
+ * .track-toggle.mute:selected / .solo:selected / .arm:selected. */
+.track-mute-button:active {
+    -fx-background-color: -text;
+    -fx-text-fill: -text-on-accent;
+}
+
+.track-solo-button:active {
+    -fx-background-color: -warn;
+    -fx-text-fill: -text-on-accent;
+}
+
+.track-arm-button:active {
+    -fx-background-color: -danger;
+    -fx-text-fill: -text-on-accent;
+}
+
+/* Phase-invert and automation-lane toggles share the mute button's base
+ * look; their :active fill is the accent (declared after the mute rule so
+ * it wins at equal specificity). */
+.track-phase-button:active,
+.track-automation-button:active {
+    -fx-background-color: -accent;
+    -fx-text-fill: -text-on-accent;
+}
+
+/* Story 322 — the mixer strip solo button's solo-safe ring (solo-in-place
+ * defeat): a pseudo-class toggled from the model (SetSoloSafeAction / undo),
+ * so a channel that stays audible under another channel's solo is visible at
+ * a glance. Tokens, not inline hex; the accent keeps it distinct from the
+ * -warn :active fill when both apply. */
+.track-solo-button:solo-safe {
+    -fx-border-color: -accent;
+    -fx-border-width: 2;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+/* Story 322 (the story-271 skin swap of the mixer's track strips onto
+ * MixerChannelStrip): the same solo-safe ring on the strip's own S toggle.
+ * The pseudo-class is flipped on the strip CONTROL from the model — no skin
+ * is needed to seed it — and this descendant selector paints the ring on the
+ * skin's toggle. Author origin, so it wins over the control's user-agent
+ * .track-toggle.solo:selected border while the -warn fill still shows. */
+.mixer-channel-strip:solo-safe .track-toggle.solo {
+    -fx-border-color: -accent;
+    -fx-border-width: 2;
+}
+
+/* Frozen-track glyph (story 035) — tokens, not inline hex. */
+.track-freeze-indicator {
+    -fx-text-fill: -accent;
+    -fx-font-size: 14px;
+    -fx-padding: 0 2 0 2;
+}
+
+/* Story 322 — insert indicators rendered from the channel's real rack. */
+.track-insert-indicator {
+    -fx-background-color: -surface-3;
+    -fx-background-radius: 4;
+    -fx-text-fill: -text;
+    -fx-font-size: 9px;
+    -fx-font-weight: bold;
+    -fx-padding: 0 2;
+}
+
+.track-insert-indicator.bypassed {
+    -fx-text-fill: -text-mute;
+    -fx-opacity: 0.55;
+}
+
+.track-insert-placeholder {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 9px;
+}
+
 /* Track remove button */
 .track-remove-button {
     -fx-background-color: -surface-3;
@@ -963,7 +1041,10 @@
  * MixerChannelStrip control + its user-agent stylesheet above. This
  * selector is retained for one release cycle so un-migrated .mixer-channel
  * consumers keep the correct surface/padding tokens during the phased
- * migration. Remove in the story 271 follow-up. */
+ * migration. Story 322 migrated the MixerView TRACK strips onto
+ * MixerChannelStrip (their host column no longer carries this alias); the
+ * return-bus, master and VCA strips still do. Remove in the story 271
+ * follow-up. */
 .mixer-channel {
     -fx-background-color: -surface-2;
     -fx-padding: 4;
@@ -980,10 +1061,12 @@
  * .mixer-channel alias above. Story 271 only mandated removing the legacy
  * *purple circular* fader thumb (superseded by story 269's Fader control) —
  * styles.css never had such a rule (.mixer-fader theming was always the
- * tokenised -surface-3 / -accent below). 13 live, un-migrated consumers
- * (MixerView volume/pan/send Sliders, VcaStrip gain) still apply
+ * tokenised -surface-3 / -accent below). Story 322 moved the MixerView track
+ * strips' volume / pan onto MixerChannelStrip (story 269 Fader + Knob); the
+ * remaining un-migrated consumers (MixerView return / master faders and
+ * pans, the per-return and cue send Sliders, VcaStrip gain) still apply
  * .mixer-fader; keeping these token-based rules holds them on-theme until
- * the deferred MixerView migration lands. Remove in the story 271 follow-up. */
+ * that migration lands. Remove in the story 271 follow-up. */
 .mixer-fader {
     -fx-background-color: -surface-3;
 }

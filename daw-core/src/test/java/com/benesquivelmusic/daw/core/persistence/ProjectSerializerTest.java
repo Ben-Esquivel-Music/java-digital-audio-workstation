@@ -180,7 +180,6 @@ class ProjectSerializerTest {
         Track track = project.createAudioTrack("Bass");
         project.getMixerChannelForTrack(track).setVolume(0.7);
         project.getMixerChannelForTrack(track).setPan(-0.5);
-        project.getMixerChannelForTrack(track).setSendLevel(0.3);
         project.getMixerChannelForTrack(track).setPhaseInverted(true);
 
         ProjectSerializer serializer = new ProjectSerializer();
@@ -189,6 +188,9 @@ class ProjectSerializerTest {
         assertThat(xml).contains("<master");
         assertThat(xml).contains("<channel");
         assertThat(xml).contains("<return-bus");
+        assertThat(xml)
+                .as("story 322 removed the legacy scalar send level; it must no longer be written")
+                .doesNotContain("send-level=");
     }
 
     @Test

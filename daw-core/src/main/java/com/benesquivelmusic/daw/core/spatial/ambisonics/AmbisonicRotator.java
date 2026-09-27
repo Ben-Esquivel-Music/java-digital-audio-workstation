@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.AmbisonicOrder;
 
@@ -25,6 +27,7 @@ import java.util.Objects;
  *   <li><strong>Roll</strong> (γ) — rotation around the front (X) axis</li>
  * </ul>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AmbisonicRotator implements AudioProcessor {
 
     private final AmbisonicOrder order;

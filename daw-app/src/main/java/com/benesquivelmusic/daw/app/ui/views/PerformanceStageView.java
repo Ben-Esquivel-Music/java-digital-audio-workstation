@@ -6,6 +6,10 @@ import com.benesquivelmusic.daw.app.ui.design.SpacingTokens;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.metering.MeterSubscription;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
+import com.benesquivelmusic.daw.app.ui.vm.TrackChannelRegistry;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlBinder;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
+import com.benesquivelmusic.daw.app.ui.vm.TrackVM;
 import com.benesquivelmusic.daw.core.metering.MeterFrame;
 import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -32,6 +36,7 @@ import java.util.Objects;
 import java.util.ResourceBundle;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * Performance Stage view — an oversized-control "cockpit" for live use
@@ -89,6 +94,16 @@ import java.util.function.BooleanSupplier;
  * {@link Host} callbacks supplied by the application controller, so they
  * drive the <em>same</em> transport engine and view navigation as the
  * standard toolbar — never a parallel copy.</p>
+ *
+ * <p>Story 322 (Audio Engine Wiring Design Book §2.10 / §5.6): each tile's
+ * M/S/R is bound through the live {@link TrackControlWiring} — the tile is a
+ * subscriber of the same {@code TrackVM} flags the arrangement lane and the
+ * mixer strip use, and a toggle raises a {@code TrackCommand} into the one
+ * command sink, which dual-writes {@code Track} + {@code MixerChannel}. The
+ * stage never writes a {@code Track} directly (the story-280 Track-only
+ * listeners were a dead write the engine never read). Without a wiring the
+ * tiles are <em>disabled</em>: an inert control is honest, a toggle that
+ * writes nothing is not.</p>
  *
  * <h2>Cue stub</h2>
  *
@@ -161,6 +176,13 @@ public final class PerformanceStageView extends BorderPane {
     private final List<UUID> tileChannelIds = new ArrayList<>();
     /** Story 318 — live tap-bus tokens; created by {@link #bindMeters}, released by {@link #unbindMeters}. */
     private final List<MeterSubscription> meterSubscriptions = new ArrayList<>();
+    /**
+     * Story 322 — the live wiring supplier (rebuilt per project generation by
+     * {@code MainController}); a {@code null} result leaves the tiles disabled.
+     */
+    private final Supplier<TrackControlWiring> trackControlWiring;
+    /** Story 322 — one binder per tile bound through the wiring; released by {@link #dispose()}. */
+    private final List<TrackControlBinder> tileBinders = new ArrayList<>();
     private final Button hamburgerButton;
     private final StackPane overlay;
     /** Main overlay panel (Standard View / Audio Settings / Project / Exit). */
@@ -169,7 +191,11 @@ public final class PerformanceStageView extends BorderPane {
     private VBox overlayFilePanel;
 
     /**
-     * Creates a Performance Stage view bound to the given project.
+     * Creates a Performance Stage view bound to the given project with
+     * <em>no</em> control wiring: every tile's M/S/R is disabled (story 322 —
+     * an inert control rather than a dead one). Pure-unit contexts only; the
+     * production path is {@link #PerformanceStageView(DawProject, ResourceBundle,
+     * Host, Supplier)}.
      *
      * @param project  the project whose tracks become stage tiles; must
      *                 not be {@code null}
@@ -181,9 +207,33 @@ public final class PerformanceStageView extends BorderPane {
     public PerformanceStageView(DawProject project,
                                 ResourceBundle messages,
                                 Host host) {
+        this(project, messages, host, () -> null);
+    }
+
+    /**
+     * Creates a Performance Stage view bound to the given project whose tiles
+     * drive the one intent path (story 322, Audio Engine Wiring Design Book
+     * §2.10 / §5.6).
+     *
+     * @param project            the project whose tracks become stage tiles;
+     *                           must not be {@code null}
+     * @param messages           the {@code Messages} resource bundle for all
+     *                           user-facing strings (Skill §14); must not be
+     *                           {@code null}
+     * @param host               the application callbacks; must not be {@code null}
+     * @param trackControlWiring the live wiring supplier; must not be
+     *                           {@code null}, though it may yield {@code null}
+     *                           (then the tiles are disabled)
+     */
+    public PerformanceStageView(DawProject project,
+                                ResourceBundle messages,
+                                Host host,
+                                Supplier<TrackControlWiring> trackControlWiring) {
         Objects.requireNonNull(project, "project must not be null");
         this.messages = Objects.requireNonNull(messages, "messages must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
+        this.trackControlWiring = Objects.requireNonNull(trackControlWiring,
+                "trackControlWiring must not be null");
 
         getStyleClass().add(STYLE_CLASS);
         setAccessibleRole(AccessibleRole.NODE);
@@ -340,11 +390,10 @@ public final class PerformanceStageView extends BorderPane {
                     .showMeter(true)
                     .size("performance")
                     .build();
-            // Sync M/S/R toggle changes back to the DawProject Track model
-            // so Performance Stage actions affect the actual engine state.
-            tile.mutedProperty().addListener((_, _, newVal) -> track.setMuted(newVal));
-            tile.soloedProperty().addListener((_, _, newVal) -> track.setSolo(newVal));
-            tile.armedProperty().addListener((_, _, newVal) -> track.setArmed(newVal));
+            // Story 322 — M/S/R through the ONE intent path (never a direct
+            // Track write: the engine reads the MixerChannel, and only the
+            // handler dual-writes both).
+            bindTile(tile, track);
             trackTiles.add(tile);
             // Story 318 — remember the channel identity this tile meters. The
             // addTrack invariant makes the track id the MixerChannel id.
@@ -435,6 +484,54 @@ public final class PerformanceStageView extends BorderPane {
             subscription.dispose();
         }
         meterSubscriptions.clear();
+    }
+
+    // ── Story 322 — tiles through the one intent path ─────────────────────
+
+    /**
+     * Binds a tile's M/S/R to the track's {@code TrackVM} through the live
+     * wiring (Audio Engine Wiring Design Book §2.10 / §5.6): the tile becomes
+     * a subscriber of the same flags the arrangement lane and the mixer strip
+     * use, and a toggle raises a {@code TrackCommand} into the one command
+     * sink — never a direct {@code Track} write. A stage can be built before
+     * the registry heard a track's add, so a missing VM is retried once after
+     * {@link TrackChannelRegistry#reconcile()}. With no wiring (the wiring-less
+     * constructor) or still no VM (a forged non-UUID id) the tile is disabled.
+     */
+    private void bindTile(TrackStrip tile, Track track) {
+        TrackControlWiring wiring = trackControlWiring.get();
+        UUID trackId = parseChannelId(track);
+        TrackVM trackVm = null;
+        if (wiring != null && trackId != null) {
+            trackVm = wiring.registry().trackVm(trackId);
+            if (trackVm == null) {
+                wiring.registry().reconcile();
+                trackVm = wiring.registry().trackVm(trackId);
+            }
+        }
+        if (trackVm == null) {
+            tile.setDisable(true);
+            return;
+        }
+        TrackControlBinder binder =
+                new TrackControlBinder(track, trackVm, null, null, wiring.commandSink());
+        binder.bindTile(tile);
+        tileBinders.add(binder);
+    }
+
+    /**
+     * Releases everything this stage holds on the outside world: the tile
+     * binders (story 322 — every VM listener they installed) and the tap-bus
+     * subscriptions ({@link #unbindMeters()}). Idempotent; the caller
+     * ({@code ViewNavigationController}) invokes it before discarding the
+     * view ({@code javafx-application-design} §4 / §15).
+     */
+    public void dispose() {
+        for (TrackControlBinder binder : tileBinders) {
+            binder.dispose();
+        }
+        tileBinders.clear();
+        unbindMeters();
     }
 
     /** Live tap-bus subscription count (test seam). */

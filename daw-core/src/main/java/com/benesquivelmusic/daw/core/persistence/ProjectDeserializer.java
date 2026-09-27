@@ -794,11 +794,12 @@ public final class ProjectDeserializer {
                 boolean linkFaders = parseBooleanAttr(linkElem, "link-faders", true);
                 boolean linkPans = parseBooleanAttr(linkElem, "link-pans", true);
                 boolean linkMuteSolo = parseBooleanAttr(linkElem, "link-mute-solo", true);
-                boolean linkInserts = parseBooleanAttr(linkElem, "link-inserts", true);
+                // Story 322 removed "link-inserts"; a legacy attribute is
+                // tolerated by simply not being read.
                 boolean linkSends = parseBooleanAttr(linkElem, "link-sends", true);
                 try {
                     linkManager.link(new ChannelLink(leftId, rightId, mode,
-                            linkFaders, linkPans, linkMuteSolo, linkInserts, linkSends));
+                            linkFaders, linkPans, linkMuteSolo, linkSends));
                 } catch (IllegalStateException ignored) {
                     // A duplicate link in the file is malformed — skip rather than fail the whole load.
                 }
@@ -823,8 +824,8 @@ public final class ProjectDeserializer {
             channel.setSoloSafe("true".equalsIgnoreCase(soloSafeAttr));
         }
 
-        double sendLevel = clampDouble(parseDoubleAttr(elem, "send-level", 0.0), 0.0, 1.0);
-        channel.setSendLevel(sendLevel);
+        // Story 322 removed the legacy scalar "send-level"; a legacy attribute
+        // is tolerated by simply not being read — send state lives in <sends>.
 
         channel.setPhaseInverted(parseBooleanAttr(elem, "phase-inverted"));
 
@@ -1647,9 +1648,12 @@ public final class ProjectDeserializer {
 
     private void parseMixerSnapshots(Element elem, DawProject project) {
         MixerSnapshotManager manager = project.getMixerSnapshotManager();
+        // The mixer (and its return buses) is parsed before the snapshots, so
+        // snapshot send targets resolve against the loaded bus list.
+        List<MixerChannel> returnBuses = project.getMixer().getReturnBuses();
 
         for (Element snapshotElem : getDirectChildElements(elem, "snapshot")) {
-            MixerSnapshot snapshot = parseSnapshot(snapshotElem);
+            MixerSnapshot snapshot = parseSnapshot(snapshotElem, returnBuses);
             if (snapshot != null && manager.getSnapshotCount() < MixerSnapshotManager.MAX_SNAPSHOTS) {
                 manager.addSnapshot(snapshot);
             }
@@ -1657,14 +1661,14 @@ public final class ProjectDeserializer {
 
         List<Element> slotA = getDirectChildElements(elem, "slot-a");
         if (!slotA.isEmpty()) {
-            MixerSnapshot snap = parseSnapshot(slotA.getFirst());
+            MixerSnapshot snap = parseSnapshot(slotA.getFirst(), returnBuses);
             if (snap != null) {
                 manager.setSlot(MixerSnapshotManager.Slot.A, snap);
             }
         }
         List<Element> slotB = getDirectChildElements(elem, "slot-b");
         if (!slotB.isEmpty()) {
-            MixerSnapshot snap = parseSnapshot(slotB.getFirst());
+            MixerSnapshot snap = parseSnapshot(slotB.getFirst(), returnBuses);
             if (snap != null) {
                 manager.setSlot(MixerSnapshotManager.Slot.B, snap);
             }
@@ -1680,7 +1684,7 @@ public final class ProjectDeserializer {
         }
     }
 
-    private MixerSnapshot parseSnapshot(Element elem) {
+    private MixerSnapshot parseSnapshot(Element elem, List<MixerChannel> mixerReturnBuses) {
         String name = elem.getAttribute("name");
         if (name.isEmpty()) {
             name = "Untitled";
@@ -1691,7 +1695,7 @@ public final class ProjectDeserializer {
         if (masterElems.isEmpty()) {
             return null;
         }
-        ChannelSnapshot master = parseChannelSnapshot(masterElems.getFirst());
+        ChannelSnapshot master = parseChannelSnapshot(masterElems.getFirst(), mixerReturnBuses);
         if (master == null) {
             return null;
         }
@@ -1700,7 +1704,7 @@ public final class ProjectDeserializer {
         List<Element> channelContainers = getDirectChildElements(elem, "channels");
         if (!channelContainers.isEmpty()) {
             for (Element ce : getDirectChildElements(channelContainers.getFirst(), "channel")) {
-                ChannelSnapshot cs = parseChannelSnapshot(ce);
+                ChannelSnapshot cs = parseChannelSnapshot(ce, mixerReturnBuses);
                 if (cs != null) {
                     channels.add(cs);
                 }
@@ -1711,7 +1715,7 @@ public final class ProjectDeserializer {
         List<Element> returnContainers = getDirectChildElements(elem, "return-buses");
         if (!returnContainers.isEmpty()) {
             for (Element re : getDirectChildElements(returnContainers.getFirst(), "return-bus")) {
-                ChannelSnapshot cs = parseChannelSnapshot(re);
+                ChannelSnapshot cs = parseChannelSnapshot(re, mixerReturnBuses);
                 if (cs != null) {
                     returnBuses.add(cs);
                 }
@@ -1721,14 +1725,15 @@ public final class ProjectDeserializer {
         return new MixerSnapshot(name, timestamp, master, channels, returnBuses);
     }
 
-    private ChannelSnapshot parseChannelSnapshot(Element elem) {
+    private ChannelSnapshot parseChannelSnapshot(Element elem, List<MixerChannel> mixerReturnBuses) {
         try {
             double volume = clampDouble(parseDoubleAttr(elem, "volume", 1.0), 0.0, 1.0);
             double pan = clampDouble(parseDoubleAttr(elem, "pan", 0.0), -1.0, 1.0);
             boolean muted = parseBooleanAttr(elem, "muted");
             boolean solo = parseBooleanAttr(elem, "solo");
             boolean phaseInverted = parseBooleanAttr(elem, "phase-inverted");
-            double sendLevel = clampDouble(parseDoubleAttr(elem, "send-level", 0.0), 0.0, 1.0);
+            // Story 322 removed the legacy scalar "send-level" from snapshots;
+            // a legacy attribute is tolerated by simply not being read.
 
             OutputRouting routing = OutputRouting.MASTER;
             int orChannel = parseIntAttr(elem, "output-routing-channel", Integer.MIN_VALUE);
@@ -1756,13 +1761,14 @@ public final class ProjectDeserializer {
             List<Element> sendContainers = getDirectChildElements(elem, "sends");
             if (!sendContainers.isEmpty()) {
                 for (Element se : getDirectChildElements(sendContainers.getFirst(), "send")) {
-                    int targetIndex = parseIntAttr(se, "target-index", -1);
+                    UUID targetId = resolveSnapshotSendTarget(se, mixerReturnBuses);
+                    if (targetId == null) {
+                        continue;
+                    }
                     double level = clampDouble(parseDoubleAttr(se, "level", 0.0), 0.0, 1.0);
                     SendMode mode = parseSendMode(se.getAttribute("mode"));
                     SendTap tap = parseSendTap(se.getAttribute("tap"), mode);
-                    if (targetIndex >= 0) {
-                        sends.add(new SendSnapshot(targetIndex, level, mode, tap));
-                    }
+                    sends.add(new SendSnapshot(targetId, level, tap));
                 }
             }
 
@@ -1773,8 +1779,32 @@ public final class ProjectDeserializer {
             }
 
             return new ChannelSnapshot(volume, pan, muted, solo, phaseInverted,
-                    sendLevel, routing, inserts, sends, cpuBudget);
+                    routing, inserts, sends, cpuBudget);
         } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Story 322 — resolves a snapshot send's target bus id. The bus's index
+     * in the loaded mixer's return-bus list ({@code target-index}) is
+     * authoritative: return-bus ids are regenerated when a project is opened,
+     * so the persisted {@code target} id only matches within the session that
+     * wrote it. The id is the fallback for a file whose index no longer
+     * resolves; {@code null} when neither does (the send is skipped).
+     */
+    private UUID resolveSnapshotSendTarget(Element sendElem, List<MixerChannel> mixerReturnBuses) {
+        int targetIndex = parseIntAttr(sendElem, "target-index", -1);
+        if (targetIndex >= 0 && targetIndex < mixerReturnBuses.size()) {
+            return mixerReturnBuses.get(targetIndex).getId();
+        }
+        String targetAttr = sendElem.getAttribute("target");
+        if (targetAttr.isEmpty()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(targetAttr);
+        } catch (IllegalArgumentException e) {
             return null;
         }
     }

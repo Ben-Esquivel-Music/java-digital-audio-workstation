@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.InterpolationMode;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.Send;
+import com.benesquivelmusic.daw.core.mixer.SendTap;
 import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -216,7 +218,7 @@ class AutomationPlaybackTest {
     // ── Send level automation ──────────────────────────────────────────────
 
     @Test
-    void shouldApplySendLevelAutomation() {
+    void shouldApplySendLevelAutomationToTheSendTargetingTheFirstReturnBus() {
         Track track = createTrackWithClip("Track 1", 1.0f);
 
         // Automate send level to 0.75
@@ -224,6 +226,10 @@ class AutomationPlaybackTest {
                 .addPoint(new AutomationPoint(0.0, 0.75, InterpolationMode.LINEAR));
 
         MixerChannel mixerChannel = new MixerChannel("Track 1");
+        // Story 322 — SEND_LEVEL targets the channel's Send aimed at the
+        // first return bus (the live multi-bus path), not a legacy scalar.
+        Send auxSend = new Send(mixer.getAuxBus(), 0.1, SendTap.POST_FADER);
+        mixerChannel.addSend(auxSend);
         mixer.addChannel(mixerChannel);
 
         transport.play();
@@ -234,8 +240,32 @@ class AutomationPlaybackTest {
         float[][] output = new float[CHANNELS][BUFFER_SIZE];
         engine.processBlock(input, output, BUFFER_SIZE);
 
-        // After processBlock, the mixer channel's send level should be 0.75
-        assertThat(mixerChannel.getSendLevel()).isCloseTo(0.75, offset(0.001));
+        assertThat(auxSend.getLevel()).isCloseTo(0.75, offset(0.001));
+    }
+
+    @Test
+    void sendLevelAutomationIsInertWhenTheChannelHasNoSendToTheFirstReturnBus() {
+        Track track = createTrackWithClip("Track 1", 1.0f);
+        track.getAutomationData().getOrCreateLane(AutomationParameter.SEND_LEVEL)
+                .addPoint(new AutomationPoint(0.0, 0.75, InterpolationMode.LINEAR));
+
+        MixerChannel mixerChannel = new MixerChannel("Track 1");
+        MixerChannel otherReturn = mixer.addReturnBus("Delay Return");
+        Send otherSend = new Send(otherReturn, 0.2, SendTap.POST_FADER);
+        mixerChannel.addSend(otherSend);
+        mixer.addChannel(mixerChannel);
+
+        transport.play();
+        engine.setGraph(transport, mixer, List.of(track));
+        engine.start();
+        engine.processBlock(new float[CHANNELS][BUFFER_SIZE], new float[CHANNELS][BUFFER_SIZE], BUFFER_SIZE);
+
+        assertThat(mixerChannel.getSends())
+                .as("the lane never creates routing")
+                .hasSize(1);
+        assertThat(otherSend.getLevel())
+                .as("a send to another return bus is untouched by SEND_LEVEL")
+                .isEqualTo(0.2);
     }
 
     // ── Automation read mode disable ───────────────────────────────────────

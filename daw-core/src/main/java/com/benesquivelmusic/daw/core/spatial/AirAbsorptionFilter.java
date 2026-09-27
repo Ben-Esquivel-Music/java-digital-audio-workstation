@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.spatial;
 
 import com.benesquivelmusic.daw.core.dsp.BiquadFilter;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.core.spatial.panner.InverseSquareAttenuation;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -29,6 +31,7 @@ import java.util.Objects;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AirAbsorptionFilter implements AudioProcessor {
 
     /** Number of high-shelf filter stages approximating the ISO 9613-1 curve. */

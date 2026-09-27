@@ -355,7 +355,8 @@ class TransportCommandPathTest {
                 () -> CountInMode.OFF,
                 track -> { },
                 () -> true,
-                () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN);
+                () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
+                new StubSessionInputSelection());
     }
 
     /** Runs {@code work} on the FX thread with capture-and-rethrow of assertion errors. */

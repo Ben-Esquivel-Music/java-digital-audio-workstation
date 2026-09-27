@@ -223,11 +223,25 @@ public final class SessionInterchangeController {
         return track;
     }
 
+    /**
+     * Seeds a freshly created track's mixer state from the session — the
+     * engine's {@link MixerChannel} <em>and</em> its {@link Track} mirror in the
+     * one place (story 322, Audio Engine Wiring Design Book §2.10: "any mirrored
+     * model is updated in the same dual-write"), so an imported project opens
+     * with the arrangement lane, the mixer strip and the render path agreeing.
+     * This is a persistence-shaped seed of a track that has no controls yet, not
+     * a control gesture — which is why it writes the model directly and is
+     * allow-listed by {@code MixerControlTruthScanTest}.
+     */
     private void applyMixerSettings(SessionTrack sessionTrack, DawProject project, Track track) {
+        double volume = Math.max(0.0, Math.min(1.0, sessionTrack.volume()));
+        double pan = Math.max(-1.0, Math.min(1.0, sessionTrack.pan()));
+        track.setVolume(volume);
+        track.setPan(pan);
+        track.setMuted(sessionTrack.muted());
+        track.setSolo(sessionTrack.solo());
         MixerChannel channel = project.getMixerChannelForTrack(track);
         if (channel != null) {
-            double volume = Math.max(0.0, Math.min(1.0, sessionTrack.volume()));
-            double pan = Math.max(-1.0, Math.min(1.0, sessionTrack.pan()));
             channel.setVolume(volume);
             channel.setPan(pan);
             channel.setMuted(sessionTrack.muted());

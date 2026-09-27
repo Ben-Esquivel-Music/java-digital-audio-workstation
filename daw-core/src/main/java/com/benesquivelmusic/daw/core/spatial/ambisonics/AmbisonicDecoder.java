@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.AmbisonicOrder;
 import com.benesquivelmusic.daw.sdk.spatial.DecoderType;
@@ -20,6 +22,7 @@ import java.util.Objects;
  * <p>The decoding matrix is pre-computed when the speaker layout or decoder
  * type changes, making the per-sample processing efficient.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AmbisonicDecoder implements AudioProcessor {
 
     private final AmbisonicOrder order;

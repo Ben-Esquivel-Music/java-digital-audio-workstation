@@ -122,7 +122,7 @@ class ProjectSurfaceWiringTest {
         AtomicReference<UndoManager> um = new AtomicReference<>(new UndoManager());
         return new ProjectLifecycleController.Deps(
                 p::get, p::set, um::get, um::set,
-                () -> { }, () -> { }, mixerView -> { }, () -> null, json -> { });
+                () -> { }, () -> { }, () -> { }, () -> null, json -> { });
     }
 
     private static ProjectManager dummyProjectManager() {

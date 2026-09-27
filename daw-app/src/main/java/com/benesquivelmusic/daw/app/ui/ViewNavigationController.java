@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -66,6 +67,19 @@ final class ViewNavigationController {
          *         floor; it never disables the view.
          */
         MeterFeed meterFeed();
+
+        // ── Mixer control truth (story 322) ────────────────────────────────
+        /**
+         * @return the <em>current</em> per-project-generation
+         *         {@link TrackControlWiring} (VM registry + command sink) the
+         *         {@link MixerView} built here binds its strips through
+         *         (Audio Engine Wiring Design Book §2.10, §5.6), or
+         *         {@code null} when the host has none — then the view lazily
+         *         owns a standalone wiring over its project (the pure-unit
+         *         default). Resolved live via {@code host::trackControlWiring},
+         *         never captured: the host rebuilds the wiring per project load.
+         */
+        default TrackControlWiring trackControlWiring() { return null; }
 
         com.benesquivelmusic.daw.core.mastering.MasteringChain masteringChain();
 
@@ -252,8 +266,12 @@ final class ViewNavigationController {
         // Cache the current center content as the arrangement view
         viewCache.put(DawView.ARRANGEMENT, rootPane.getCenter());
 
-        // Mixer view — real channel-strip mixer panel
-        mixerView = new MixerView(host.project(), host.undoManager(), fxDispatcher);
+        // Mixer view — real channel-strip mixer panel, bound from construction
+        // to the host's LIVE per-generation control wiring (story 322): the
+        // constructor's first refresh() already binds every strip through it,
+        // so no standalone wiring is ever built for this view (fix round, N1).
+        mixerView = new MixerView(host.project(), host.undoManager(), fxDispatcher,
+                host::trackControlWiring);
         // Story 318 — subscribe the freshly built track / return / master strip
         // meters to the engine's tap bus. Done here (not only by the host)
         // because this controller owns the view's construction; the host
@@ -563,7 +581,11 @@ final class ViewNavigationController {
                     @Override public void onOpenProject() { host.onOpenProject(); }
                     @Override public void onSaveProject() { host.onSaveProject(); }
                     @Override public void onRecentProjects() { host.onRecentProjects(); }
-                });
+                },
+                // Story 322 — the tiles' M/S/R drive the one intent path through
+                // the live per-generation wiring (the same supplier the mixer
+                // and the arrangement strips bind through).
+                host::trackControlWiring);
 
         rootPane.setTop(null);
         rootPane.setLeft(null);
@@ -609,10 +631,11 @@ final class ViewNavigationController {
         removeStageEscFilter();
         // Unbind the stage clock before discarding the view.
         performanceStageView.clockLabel().textProperty().unbind();
-        // Story 318 — release the stage's tap-bus subscriptions before the
-        // view is dropped, so the app-scoped feed keeps no reference to it
+        // Story 318 / 322 — release the stage's tap-bus subscriptions AND its
+        // tile binders (the VM listeners) before the view is dropped, so
+        // neither the app-scoped feed nor the registry keeps a reference to it
         // (javafx-application-design §10/§15).
-        performanceStageView.unbindMeters();
+        performanceStageView.dispose();
         rootPane.setCenter(savedCenter);
         rootPane.setTop(savedTop);
         rootPane.setLeft(savedLeft);

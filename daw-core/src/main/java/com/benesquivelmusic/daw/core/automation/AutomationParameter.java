@@ -17,7 +17,18 @@ public enum AutomationParameter implements AutomationTarget {
     /** Track mute (0.0 = unmuted, 1.0 = muted). */
     MUTE(0.0, 1.0, 0.0),
 
-    /** Send level to auxiliary bus (0.0 = no send, 1.0 = full send). */
+    /**
+     * Level of the track channel's {@code Send} targeting the first return
+     * bus — {@code Mixer.getAuxBus()}, the "aux bus" this lane has always
+     * named (0.0 = no send, 1.0 = full send).
+     *
+     * <p>Story 322 retargeted this lane at the live multi-bus send path: the
+     * render pipeline writes {@code Send.setLevel} on the channel's send to
+     * the first return bus each block. A channel with no send to that bus,
+     * or a mixer left with no return bus at all, makes the lane inert — it
+     * never creates routing (Audio Engine Wiring Design Book §5.6, "Send
+     * levels").</p>
+     */
     SEND_LEVEL(0.0, 1.0, 0.0);
 
     private final double minValue;

@@ -17,6 +17,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,6 +33,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class VcaStripTest {
+
+    private static final BiConsumer<MixerChannel, Boolean> MUTE_INTENT = (ch, v) -> ch.setMuted(v);
+    private static final BiConsumer<MixerChannel, Boolean> SOLO_INTENT = (ch, v) -> ch.setSolo(v);
+
+    private static VcaStrip newStrip(VcaGroup vca, VcaGroupManager manager, Function<UUID, MixerChannel> lookup) {
+        return new VcaStrip(vca, manager, null, lookup, MUTE_INTENT, SOLO_INTENT, () -> {});
+    }
 
     private <T> T runFx(java.util.concurrent.Callable<T> task) throws Exception {
         AtomicReference<T> ref = new AtomicReference<>();
@@ -68,8 +76,7 @@ class VcaStripTest {
         VcaGroupManager manager = new VcaGroupManager();
         VcaGroup vca = manager.createVcaGroup("Drums");
 
-        VcaStrip strip = runFx(() -> new VcaStrip(
-                vca, manager, null, id -> null, () -> {}));
+        VcaStrip strip = runFx(() -> newStrip(vca, manager, id -> null));
 
         assertThat(strip.getStyleClass()).contains("vca-strip", "mixer-channel");
         assertThat(strip.getNameField().getText()).isEqualTo("Drums");
@@ -84,8 +91,7 @@ class VcaStripTest {
         VcaGroupManager manager = new VcaGroupManager();
         VcaGroup vca = manager.createVcaGroup("Bus");
 
-        VcaStrip strip = runFx(() -> new VcaStrip(
-                vca, manager, null, id -> null, () -> {}));
+        VcaStrip strip = runFx(() -> newStrip(vca, manager, id -> null));
         runFx(() -> {
             strip.getGainFader().setValue(3.5);
             return null;
@@ -102,8 +108,7 @@ class VcaStripTest {
         VcaGroupManager manager = new VcaGroupManager();
         VcaGroup vca = manager.createVcaGroup("Old");
 
-        VcaStrip strip = runFx(() -> new VcaStrip(
-                vca, manager, null, id -> null, () -> {}));
+        VcaStrip strip = runFx(() -> newStrip(vca, manager, id -> null));
         runFx(() -> {
             strip.getNameField().setText("Drums");
             strip.getNameField().fireEvent(new javafx.event.ActionEvent());
@@ -118,8 +123,7 @@ class VcaStripTest {
         VcaGroupManager manager = new VcaGroupManager();
         VcaGroup vca = manager.createVcaGroup("Doomed");
 
-        VcaStrip strip = runFx(() -> new VcaStrip(
-                vca, manager, null, id -> null, () -> {}));
+        VcaStrip strip = runFx(() -> newStrip(vca, manager, id -> null));
         // Delete is the third button in the M/S/✕ row; fire it directly.
         runFx(() -> {
             javafx.scene.layout.HBox row =
@@ -138,8 +142,7 @@ class VcaStripTest {
         manager.replace(vca.withColor(TrackColor.MAGENTA));
         VcaGroup colored = manager.getById(vca.id());
 
-        VcaStrip strip = runFx(() -> new VcaStrip(
-                colored, manager, null, id -> null, () -> {}));
+        VcaStrip strip = runFx(() -> newStrip(colored, manager, id -> null));
 
         // The strip's inline border style should cite the VCA's hex color so
         // the engineer can see at-a-glance which strip is which.
@@ -161,7 +164,7 @@ class VcaStripTest {
             return null;
         };
 
-        VcaStrip strip = runFx(() -> new VcaStrip(vca, manager, null, lookup, () -> {}));
+        VcaStrip strip = runFx(() -> newStrip(vca, manager, lookup));
         runFx(() -> {
             strip.getMuteButton().fire();
             return null;

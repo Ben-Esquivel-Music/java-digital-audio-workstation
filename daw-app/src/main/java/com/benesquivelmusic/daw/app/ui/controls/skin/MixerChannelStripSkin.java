@@ -22,6 +22,8 @@ import javafx.scene.control.Label;
 import javafx.scene.control.SkinBase;
 import javafx.scene.control.TextField;
 import javafx.scene.control.ToggleButton;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.HBox;
@@ -180,6 +182,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     private final ChangeListener<Number> panFromWidget;
     private final ChangeListener<Number> faderToWidget;
     private final ChangeListener<Number> faderFromWidget;
+    /** Story 322 — {@code control.meterPeakDb} → the embedded fader meter's peak (one-way). */
+    private final ChangeListener<Number> meterPeakListener;
     private final ChangeListener<Boolean> mutedSyncListener;
     private final ChangeListener<Boolean> soloedSyncListener;
     private final ChangeListener<Boolean> armedSyncListener;
@@ -272,9 +276,12 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         nameHolder.getStyleClass().add("mixer-channel-strip-name-holder");
         // Double-click swaps to an editable TextField (minimal inline
         // rename — the full rename-commit polish is out of scope per the
-        // story, but a double-click must not throw).
+        // story, but a double-click must not throw). Enter and focus loss
+        // commit; Escape cancels without touching channelName (story 322
+        // fix round 1, N13 — a partial edit must not reach the model).
         nameLabel.setOnMouseClicked(this::onNameClicked);
         nameEditor.setOnAction(e -> commitNameEdit());
+        nameEditor.setOnKeyPressed(this::onNameEditorKeyPressed);
         nameEditorFocusListener = (obs, was, now) -> {
             if (!now) {
                 commitNameEdit();
@@ -364,6 +371,18 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
             }
         };
         fader.valueProperty().addListener(faderFromWidget);
+        registeredListenerCount++;
+
+        // Story 322 — the control's meterPeakDb feeds the fader's integrated
+        // LevelMeter (one-way, listener + setter; the meter's own audio relay
+        // may later own peakDb, which a bind() would break).
+        fader.getMeter().setPeakDb(control.getMeterPeakDb());
+        meterPeakListener = (obs, was, now) -> {
+            if (now != null) {
+                fader.getMeter().setPeakDb(now.doubleValue());
+            }
+        };
+        control.meterPeakDbProperty().addListener(meterPeakListener);
         registeredListenerCount++;
 
         // M/S/R two-way sync (mirrors TrackStripSkin exactly).
@@ -662,6 +681,26 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         if (c != null) {
             c.setChannelName(nameEditor.getText());
         }
+        hideNameEditor();
+    }
+
+    /**
+     * Escape cancels the edit: the label (still holding the control's name)
+     * comes back and the editor's text is discarded — {@code setChannelName}
+     * is never called. The editor is hidden <em>before</em> it loses focus,
+     * so the focus-loss listener's {@link #commitNameEdit()} finds it
+     * invisible and returns without committing the partial text
+     * (javafx-application-design §12: the gesture is a typed key event on
+     * the editor, consumed here so it does not bubble as a strip shortcut).
+     */
+    private void onNameEditorKeyPressed(KeyEvent e) {
+        if (e.getCode() != KeyCode.ESCAPE) return;
+        e.consume();
+        if (!nameEditor.isVisible()) return;
+        hideNameEditor();
+    }
+
+    private void hideNameEditor() {
         nameEditor.setVisible(false);
         nameEditor.setManaged(false);
         nameLabel.setVisible(true);
@@ -797,6 +836,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     public HBox msrRow() { return msrRow; }
     /** @return the channel-name label (test seam). */
     public Label nameLabel() { return nameLabel; }
+    /** @return the inline name editor the label's double-click reveals (test seam). */
+    public TextField nameEditor() { return nameEditor; }
     /** @return the fader value readout label (test seam). */
     public Label valueReadout() { return valueReadout; }
     /** @return the input caption label (test seam). */
@@ -872,6 +913,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
             registeredListenerCount--;
             c.faderDbProperty().removeListener(faderToWidget);
             registeredListenerCount--;
+            c.meterPeakDbProperty().removeListener(meterPeakListener);
+            registeredListenerCount--;
             c.mutedProperty().removeListener(mutedSyncListener);
             registeredListenerCount--;
             c.soloedProperty().removeListener(soloedSyncListener);
@@ -899,6 +942,7 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         registeredListenerCount--;
         nameEditor.focusedProperty().removeListener(nameEditorFocusListener);
         registeredListenerCount--;
+        nameEditor.setOnKeyPressed(null);
         // Story 278 — detach the global-density listener (the weak
         // wrapper that was registered). Done outside the null guard like
         // the meter detach so the listener is severed even if the

@@ -277,6 +277,40 @@ public final class ChannelLinkManager {
         partner.setSolo(solo);
     }
 
+    /**
+     * Mirrors a send edit on the source channel to {@code partner}'s send
+     * for the same {@code target} return bus (story 322 — "Link Sends" is
+     * wired, Audio Engine Wiring Design Book §5.6 "Stereo link"): the
+     * partner's send receives {@code level} and {@code tap}, and is
+     * <em>created</em> when the partner has no send to that bus yet, so a
+     * linked pair always feeds a return together. No-op if
+     * {@link ChannelLink#linkSends()} is {@code false}. The caller mirrors
+     * exactly once — this method never re-dispatches.
+     *
+     * @param link    the link governing this pair
+     * @param partner the linked partner that should follow
+     * @param target  the return bus the edited send feeds
+     * @param level   the source send's new level (0.0 – 1.0)
+     * @param tap     the source send's new tap point
+     */
+    public void applySendChange(ChannelLink link, MixerChannel partner, MixerChannel target,
+                                double level, SendTap tap) {
+        Objects.requireNonNull(link, "link must not be null");
+        Objects.requireNonNull(partner, "partner must not be null");
+        Objects.requireNonNull(target, "target must not be null");
+        Objects.requireNonNull(tap, "tap must not be null");
+        if (!link.linkSends()) {
+            return;
+        }
+        Send partnerSend = partner.getSendForTarget(target);
+        if (partnerSend == null) {
+            partner.addSend(new Send(target, level, tap));
+            return;
+        }
+        partnerSend.setLevel(level);
+        partnerSend.setTap(tap);
+    }
+
     // ── Internal helpers ───────────────────────────────────────────────────
 
     private static Snapshot withAdded(Snapshot current, ChannelLink link) {

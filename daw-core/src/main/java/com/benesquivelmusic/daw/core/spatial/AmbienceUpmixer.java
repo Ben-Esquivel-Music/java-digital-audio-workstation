@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.spatial;
 
 import com.benesquivelmusic.daw.core.dsp.CrossoverFilter;
 import com.benesquivelmusic.daw.core.dsp.MidSideEncoder;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
@@ -46,6 +48,7 @@ import java.util.Objects;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AmbienceUpmixer implements AudioProcessor {
 
     /** Default PBA crossover frequencies in Hz. */

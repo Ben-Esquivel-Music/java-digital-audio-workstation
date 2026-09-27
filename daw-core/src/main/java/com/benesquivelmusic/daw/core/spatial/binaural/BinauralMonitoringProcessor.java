@@ -6,6 +6,8 @@ import com.benesquivelmusic.daw.acoustics.common.Vec3;
 import com.benesquivelmusic.daw.acoustics.dsp.Buffer;
 import com.benesquivelmusic.daw.acoustics.spatialiser.Config;
 import com.benesquivelmusic.daw.acoustics.spatialiser.FDN;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.ArrayList;
@@ -38,6 +40,7 @@ import java.util.Objects;
  * {@link com.benesquivelmusic.daw.core.spatial.binaural.DefaultBinauralRenderer}
  * and the object-based spatial audio pipeline.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class BinauralMonitoringProcessor implements AudioProcessor {
 
     private static final int DEFAULT_NUM_REVERB_SOURCES = 8;

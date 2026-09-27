@@ -110,8 +110,19 @@ final class MeterWiringConformanceScanTest {
                 .as("activating the Performance Stage must bind its bus + tile meters")
                 .contains("performanceStageView.bindMeters(feed);");
         assertThat(code)
-                .as("deactivating it must release them (book §6.2 disposal)")
-                .contains("performanceStageView.unbindMeters();");
+                .as("deactivating it must release them (book §6.2 disposal) — since story 322 "
+                        + "through PerformanceStageView.dispose(), which also drops the tile binders")
+                .contains("performanceStageView.dispose();");
+        // Two-hop proof: dispose() must still release the tap-bus subscriptions,
+        // or the 318 invariant would silently hide behind the 322 rename.
+        String stage = sourceOf("PerformanceStageView", "ui/views");
+        int disposeStart = stage.indexOf("public void dispose()");
+        assertThat(disposeStart).as("PerformanceStageView must declare dispose()").isNotNegative();
+        int disposeEnd = stage.indexOf("\n    }", disposeStart);
+        assertThat(disposeEnd).as("dispose() body must close").isGreaterThan(disposeStart);
+        assertThat(stage.substring(disposeStart, disposeEnd))
+                .as("PerformanceStageView.dispose() must release the meters (story 318 via 322)")
+                .contains("unbindMeters();");
         assertThat(code)
                 .as("the host seam the two hand-offs read the feed from must exist")
                 .contains("MeterFeed meterFeed();");

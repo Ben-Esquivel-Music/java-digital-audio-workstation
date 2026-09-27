@@ -12,16 +12,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.function.BiConsumer;
 
 /**
  * Immutable snapshot of the complete state of a {@link Mixer} at a point in time.
  *
  * <p>A snapshot captures all values an engineer expects to be restored when
- * recalling a mix — per-channel volume, pan, mute, solo, phase-invert, send
- * levels, output routing, the bypass state and parameter values of every
- * insert effect, plus all send levels and modes. Master, track channels, and
- * return buses are all captured.</p>
+ * recalling a mix — per-channel volume, pan, mute, solo, phase-invert,
+ * output routing, the bypass state and parameter values of every insert
+ * effect, plus every send's level and tap (keyed by target return bus —
+ * story 322). Master, track channels, and return buses are all captured.</p>
  *
  * <p>Snapshots are purely declarative <strong>scalar</strong> data carriers.
  * They do not attempt to reconstruct mixer <em>structure</em> (adding or
@@ -88,10 +89,14 @@ public record MixerSnapshot(String name,
      * Applies this snapshot's state to the given mixer, restoring all
      * per-channel values and insert/send parameters.
      *
-     * <p>The recall is index-aligned: the snapshot's i-th channel state is
-     * applied to the mixer's i-th channel, i-th insert state to the i-th
-     * insert, and so on. Extra channels or inserts on either side are ignored,
-     * so snapshots are tolerant of limited structural drift.</p>
+     * <p>The recall is index-aligned for channels and inserts: the snapshot's
+     * i-th channel state is applied to the mixer's i-th channel, i-th insert
+     * state to the i-th insert. Sends are restored <em>by target</em> (story
+     * 322): each {@link SendSnapshot} is applied to the channel's send aimed
+     * at the return bus with that id; a send the channel no longer has, or a
+     * bus that no longer exists, is skipped — a snapshot never creates
+     * routing. Extra channels or inserts on either side are ignored, so
+     * snapshots are tolerant of limited structural drift.</p>
      *
      * @param mixer the mixer to update
      */
@@ -124,10 +129,10 @@ public record MixerSnapshot(String name,
 
         List<SendSnapshot> sends = new ArrayList<>(channel.getSends().size());
         for (Send send : channel.getSends()) {
-            int targetIndex = returnBuses.indexOf(send.getTarget());
-            if (targetIndex >= 0) {
-                sends.add(new SendSnapshot(targetIndex, send.getLevel(),
-                        send.getMode(), send.getTap()));
+            // Only sends aimed at a bus the mixer still owns are captured.
+            if (returnBuses.contains(send.getTarget())) {
+                sends.add(new SendSnapshot(send.getTarget().getId(), send.getLevel(),
+                        send.getTap()));
             }
         }
 
@@ -137,7 +142,6 @@ public record MixerSnapshot(String name,
                 channel.isMuted(),
                 channel.isSolo(),
                 channel.isPhaseInverted(),
-                channel.getSendLevel(),
                 channel.getOutputRouting(),
                 inserts,
                 sends,
@@ -164,7 +168,6 @@ public record MixerSnapshot(String name,
         channel.setMuted(state.muted());
         channel.setSolo(state.solo());
         channel.setPhaseInverted(state.phaseInverted());
-        channel.setSendLevel(state.sendLevel());
         channel.setOutputRouting(state.outputRouting());
         channel.setCpuBudget(state.cpuBudget());
 
@@ -175,20 +178,32 @@ public record MixerSnapshot(String name,
             applyInsert(state.inserts().get(i), slots.get(i), channel, i);
         }
 
-        // Apply send state index-aligned: level + mode. Targets are resolved
-        // through the mixer's current return-bus list; sends whose target is
-        // no longer present are skipped.
-        List<Send> existingSends = channel.getSends();
+        // Apply send state BY TARGET (story 322): each captured send lands on
+        // the channel's send aimed at the same return bus, wherever that send
+        // sits in the list. A bus that no longer exists, or a send the channel
+        // no longer has, is skipped — a scalar snapshot never creates routing.
         List<MixerChannel> returnBuses = mixer.getReturnBuses();
-        int sendCount = Math.min(state.sends().size(), existingSends.size());
-        for (int i = 0; i < sendCount; i++) {
-            SendSnapshot snap = state.sends().get(i);
-            Send send = existingSends.get(i);
-            if (snap.targetIndex() >= 0 && snap.targetIndex() < returnBuses.size()) {
-                send.setLevel(snap.level());
-                send.setTap(snap.tap());
+        for (SendSnapshot snap : state.sends()) {
+            MixerChannel target = findReturnBus(returnBuses, snap.targetId());
+            if (target == null) {
+                continue;
+            }
+            Send send = channel.getSendForTarget(target);
+            if (send == null) {
+                continue;
+            }
+            send.setLevel(snap.level());
+            send.setTap(snap.tap());
+        }
+    }
+
+    private static MixerChannel findReturnBus(List<MixerChannel> returnBuses, UUID targetId) {
+        for (MixerChannel bus : returnBuses) {
+            if (bus.getId().equals(targetId)) {
+                return bus;
             }
         }
+        return null;
     }
 
     private static void applyInsert(InsertSnapshot state, InsertSlot slot,

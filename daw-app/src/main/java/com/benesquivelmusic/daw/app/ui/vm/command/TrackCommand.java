@@ -17,7 +17,10 @@ public sealed interface TrackCommand
                 ToggleSoloCommand,
                 ToggleArmCommand,
                 SetChannelVolumeCommand,
-                SetChannelPanCommand {
+                SetChannelPanCommand,
+                ToggleChannelMuteCommand,
+                ToggleChannelSoloCommand,
+                RenameTrackCommand {
 
     /**
      * Runs this intent against the given handler.

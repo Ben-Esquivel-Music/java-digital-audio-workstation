@@ -126,6 +126,9 @@ public final class DawProject {
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.format = Objects.requireNonNull(format, "format must not be null");
         this.mixer = new Mixer();
+        // Story 322 — the VCA fader is audible: the mixer folds
+        // effectiveLinearMultiplier into every member channel's gain.
+        this.mixer.setVcaGroupManager(vcaGroupManager);
         this.transport = new Transport();
         this.markerManager = new MarkerManager();
         this.referenceTrackManager = new ReferenceTrackManager();
@@ -292,6 +295,36 @@ public final class DawProject {
     public MixerChannel getMixerChannelForTrack(Track track) {
         Objects.requireNonNull(track, "track must not be null");
         return trackChannelMap.get(track.getId());
+    }
+
+    /**
+     * Reverse lookup of {@link #getMixerChannelForTrack(Track)}: the track
+     * whose mixer channel is {@code channel} (identity match), or empty for
+     * a standalone channel (return bus, master) or a channel whose track has
+     * been removed from the project.
+     *
+     * <p>Story 322 — the channel-intent path dual-writes the paired
+     * {@code Track} when a mixer strip moves a {@code MixerChannel}, so the
+     * arrangement surface stays consistent (Audio Engine Wiring Design Book
+     * §2.10, §5.6).</p>
+     *
+     * @param channel the mixer channel to resolve (must not be {@code null})
+     * @return the owning track, or empty if none
+     */
+    public Optional<Track> getTrackForChannel(MixerChannel channel) {
+        Objects.requireNonNull(channel, "channel must not be null");
+        for (Map.Entry<String, MixerChannel> entry : trackChannelMap.entrySet()) {
+            if (entry.getValue() == channel) {
+                String trackId = entry.getKey();
+                for (Track track : tracks) {
+                    if (track.getId().equals(trackId)) {
+                        return Optional.of(track);
+                    }
+                }
+                return Optional.empty();
+            }
+        }
+        return Optional.empty();
     }
 
     /**

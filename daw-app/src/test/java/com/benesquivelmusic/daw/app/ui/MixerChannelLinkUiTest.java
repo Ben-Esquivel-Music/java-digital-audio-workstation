@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mixer.ChannelLink;
 import com.benesquivelmusic.daw.core.mixer.ChannelLinkManager;
@@ -12,7 +13,6 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import javafx.application.Platform;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
-import javafx.scene.control.Slider;
 import javafx.scene.layout.VBox;
 
 import org.junit.jupiter.api.Test;
@@ -30,8 +30,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Headless JavaFX coverage for the Story 159 mixer channel-link UI:
  * chain-glyph link toggles between adjacent strips, fader / pan / mute /
- * solo propagation in both {@link LinkMode}s, the link-detail
+ * solo mirroring in both {@link LinkMode}s, the link-detail
  * {@link ChannelLinkPopover}, and the L/R badge under linked strip names.
+ *
+ * <p>Since story 322 the mirroring is the wiring's
+ * {@code LinkedTrackCommandDispatcher} (the partner's controls follow as VM
+ * subscribers), so the model writes that seed a scenario are made on the FX
+ * thread — a {@code ChannelVM} applies an FX-thread signal inline, whereas an
+ * off-thread one waits for a dispatcher pulse the un-started test dispatcher
+ * never issues.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class MixerChannelLinkUiTest {
@@ -86,7 +93,7 @@ class MixerChannelLinkUiTest {
 
     private static Button findLinkToggleBetween(MixerView view) {
         // The link toggle is wrapped in a small VBox spliced between
-        // adjacent .mixer-channel strips; the wrapper carries a
+        // adjacent track-strip host columns; the wrapper carries a
         // LinkTogglePair as user data.
         for (Node n : view.getChannelStrips().getChildren()) {
             if (n.getUserData() instanceof MixerView.LinkTogglePair) {
@@ -101,47 +108,21 @@ class MixerChannelLinkUiTest {
         throw new AssertionError("No link toggle found between strips");
     }
 
-    private static Slider findVolumeFader(MixerView view, int stripIndex) {
-        int seen = -1;
-        for (Node n : view.getChannelStrips().getChildren()) {
-            if (n.getStyleClass().contains("mixer-channel")) {
-                seen++;
-                if (seen == stripIndex) {
-                    return findFirst((VBox) n, Slider.class,
-                            s -> s.getOrientation() == javafx.geometry.Orientation.VERTICAL);
-                }
-            }
+    /**
+     * The {@code stripIndex}-th track strip (story 322: a {@link MixerChannelStrip}
+     * whose fader is in dB and whose pan is the strip's own property).
+     */
+    private static MixerChannelStrip trackStrip(MixerView view, int stripIndex) {
+        List<MixerView.TrackStripHandles> strips = view.getTrackStrips();
+        if (stripIndex >= strips.size()) {
+            throw new AssertionError("No strip at index " + stripIndex);
         }
-        throw new AssertionError("No strip at index " + stripIndex);
+        return strips.get(stripIndex).strip();
     }
 
-    private static Slider findPanSlider(MixerView view, int stripIndex) {
-        int seen = -1;
-        for (Node n : view.getChannelStrips().getChildren()) {
-            if (n.getStyleClass().contains("mixer-channel")) {
-                seen++;
-                if (seen == stripIndex) {
-                    return findFirst((VBox) n, Slider.class,
-                            s -> s.getOrientation() == javafx.geometry.Orientation.HORIZONTAL);
-                }
-            }
-        }
-        throw new AssertionError("No strip at index " + stripIndex);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Node> T findFirst(javafx.scene.Parent root, Class<T> type,
-                                                java.util.function.Predicate<T> pred) {
-        for (Node n : root.getChildrenUnmodifiable()) {
-            if (type.isInstance(n) && pred.test((T) n)) {
-                return (T) n;
-            }
-            if (n instanceof javafx.scene.Parent p) {
-                T r = findFirst(p, type, pred);
-                if (r != null) return r;
-            }
-        }
-        return null;
+    /** The strip fader's dB for a linear volume (the binder's law). */
+    private static double db(double linear) {
+        return 20.0 * Math.log10(linear);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -153,9 +134,11 @@ class MixerChannelLinkUiTest {
         Fixture f = makeFixture();
 
         // Pre-condition: not linked, two distinct volumes.
-        f.leftCh.setVolume(0.4);
-        f.rightCh.setVolume(0.9);
-        fxRun(f.view::refresh);
+        fxRun(() -> {
+            f.leftCh.setVolume(0.4);
+            f.rightCh.setVolume(0.9);
+            f.view.refresh();
+        });
 
         Button toggle = fxGet(() -> findLinkToggleBetween(f.view));
         fxRun(toggle::fire);
@@ -167,19 +150,21 @@ class MixerChannelLinkUiTest {
         assertThat(link.linkFaders()).isTrue();
         assertThat(link.linkPans()).isTrue();
         assertThat(link.linkMuteSolo()).isTrue();
-        assertThat(link.linkInserts()).isFalse();
         assertThat(link.linkSends()).isFalse();
         assertThat(link.mode()).isEqualTo(LinkMode.RELATIVE);
 
-        // Move A's fader: B should follow (RELATIVE: shifted by delta).
-        Slider leftFader  = fxGet(() -> findVolumeFader(f.view, 0));
-        Slider rightFader = fxGet(() -> findVolumeFader(f.view, 1));
+        // Move A's fader (what the strip's Fader does on a drag tick): B
+        // should follow (RELATIVE: shifted by delta). The command carries the
+        // strip's dB→linear round-trip of 0.5, exact to well below 1e-9.
+        MixerChannelStrip leftStrip  = fxGet(() -> trackStrip(f.view, 0));
+        MixerChannelStrip rightStrip = fxGet(() -> trackStrip(f.view, 1));
         double oldLeft = f.leftCh.getVolume();
         double oldRight = f.rightCh.getVolume();
-        fxRun(() -> leftFader.setValue(0.5));
-        double delta = 0.5 - oldLeft;
-        assertThat(f.rightCh.getVolume()).isEqualTo(clamp(oldRight + delta));
-        assertThat(rightFader.getValue()).isEqualTo(f.rightCh.getVolume());
+        fxRun(() -> leftStrip.setFaderDb(db(0.5)));
+        assertThat(f.leftCh.getVolume()).isEqualTo(0.5, within(1e-9));
+        double delta = f.leftCh.getVolume() - oldLeft;
+        assertThat(f.rightCh.getVolume()).isEqualTo(clamp(oldRight + delta), within(1e-9));
+        assertThat(rightStrip.getFaderDb()).isEqualTo(db(f.rightCh.getVolume()), within(1e-9));
     }
 
     @Test
@@ -192,8 +177,8 @@ class MixerChannelLinkUiTest {
         Button toggle2 = fxGet(() -> findLinkToggleBetween(f.view));
 
         // Set distinct values, then unlink.
-        Slider leftFader = fxGet(() -> findVolumeFader(f.view, 0));
-        fxRun(() -> leftFader.setValue(0.6));
+        MixerChannelStrip leftStrip = fxGet(() -> trackStrip(f.view, 0));
+        fxRun(() -> leftStrip.setFaderDb(db(0.6)));
         double leftAfter  = f.leftCh.getVolume();
         double rightAfter = f.rightCh.getVolume();
 
@@ -216,9 +201,9 @@ class MixerChannelLinkUiTest {
         fxRun(() -> f.project.getChannelLinkManager()
                 .replace(original.withLinkFaders(false)));
 
-        Slider leftFader  = fxGet(() -> findVolumeFader(f.view, 0));
+        MixerChannelStrip leftStrip = fxGet(() -> trackStrip(f.view, 0));
         double rightBefore = f.rightCh.getVolume();
-        fxRun(() -> leftFader.setValue(0.25));
+        fxRun(() -> leftStrip.setFaderDb(db(0.25)));
         // linkFaders is off — partner should NOT have moved.
         assertThat(f.rightCh.getVolume()).isEqualTo(rightBefore);
     }
@@ -230,31 +215,33 @@ class MixerChannelLinkUiTest {
     @Test
     void panMirrorsAroundCentreInRelativeMode() throws Exception {
         Fixture f = makeFixture();
-        f.leftCh.setPan(0.0);
-        f.rightCh.setPan(0.0);
-        fxRun(() -> f.project.getChannelLinkManager().link(
-                ChannelLink.ofPair(f.leftId, f.rightId))); // RELATIVE by default
+        fxRun(() -> {
+            f.leftCh.setPan(0.0);
+            f.rightCh.setPan(0.0);
+            f.project.getChannelLinkManager().link(
+                    ChannelLink.ofPair(f.leftId, f.rightId)); // RELATIVE by default
+        });
         fxRun(f.view::refresh);
 
-        Slider leftPan = fxGet(() -> findPanSlider(f.view, 0));
-        fxRun(() -> leftPan.setValue(-0.3));
+        MixerChannelStrip leftStrip = fxGet(() -> trackStrip(f.view, 0));
+        fxRun(() -> leftStrip.setPan(-0.3));
         assertThat(f.rightCh.getPan()).isEqualTo(0.3, within(1e-9));
     }
 
     @Test
     void panMirrorsAroundCentreInAbsoluteMode() throws Exception {
         Fixture f = makeFixture();
-        f.leftCh.setPan(0.0);
-        f.rightCh.setPan(0.0);
         fxRun(() -> {
+            f.leftCh.setPan(0.0);
+            f.rightCh.setPan(0.0);
             ChannelLinkManager m = f.project.getChannelLinkManager();
             m.link(new ChannelLink(f.leftId, f.rightId, LinkMode.ABSOLUTE,
-                    true, true, true, false, false));
+                    true, true, true, false));
         });
         fxRun(f.view::refresh);
 
-        Slider leftPan = fxGet(() -> findPanSlider(f.view, 0));
-        fxRun(() -> leftPan.setValue(-0.3));
+        MixerChannelStrip leftStrip = fxGet(() -> trackStrip(f.view, 0));
+        fxRun(() -> leftStrip.setPan(-0.3));
         assertThat(f.rightCh.getPan()).isEqualTo(0.3, within(1e-9));
     }
 
@@ -278,7 +265,7 @@ class MixerChannelLinkUiTest {
 
     private static List<Node> firstStripsOnly(MixerView view) {
         return view.getChannelStrips().getChildren().stream()
-                .filter(n -> n.getStyleClass().contains("mixer-channel"))
+                .filter(n -> MixerView.trackStripOf(n) != null)
                 .toList();
     }
 
@@ -303,12 +290,12 @@ class MixerChannelLinkUiTest {
                 new ChannelLinkPopover(mgr, new UndoManager(), mgr.getLink(f.leftId)));
 
         fxRun(() -> {
-            popover.getInsertsBox().setSelected(false);
-            popover.getInsertsBox().getOnAction().handle(
+            popover.getSendsBox().setSelected(false);
+            popover.getSendsBox().getOnAction().handle(
                     new javafx.event.ActionEvent());
         });
         ChannelLink updated = mgr.getLink(f.leftId);
-        assertThat(updated.linkInserts()).isFalse();
+        assertThat(updated.linkSends()).isFalse();
 
         fxRun(() -> {
             popover.getModeCombo().getSelectionModel().select(LinkMode.ABSOLUTE);

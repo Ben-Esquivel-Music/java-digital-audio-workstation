@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 /**
@@ -27,6 +29,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  * <p>The output has 8 channels: channels 0–3 are the salient B-format stream,
  * channels 4–7 are the diffuse B-format stream.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AsdmProcessor implements AudioProcessor {
 
     private static final int FOA_CHANNELS = 4;

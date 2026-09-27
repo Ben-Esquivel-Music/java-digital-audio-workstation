@@ -104,7 +104,7 @@ final class ProjectLifecycleController {
             Consumer<UndoManager> setUndoManager,
             Runnable resetTrackCounters,
             Runnable rebuildHistoryPanel,
-            Consumer<MixerView> onProjectUIRebuild,
+            Runnable onProjectUIRebuild,
             Supplier<String> captureLayoutJson,
             Consumer<String> applyLayoutJson) {
         Deps {
@@ -142,8 +142,8 @@ final class ProjectLifecycleController {
     private final SnapshotStore snapshotStore = new SnapshotStore();
     /**
      * The FX-thread marshalling seam (story 289), injected on the production
-     * path and threaded into the modeless {@link TaskProgressIndicator}s and
-     * the rebuilt {@link MixerView}. May be {@code null} in a pure-unit context
+     * path and threaded into the modeless {@link TaskProgressIndicator}s. May
+     * be {@code null} in a pure-unit context
      * (the compatibility constructor defaults it to
      * {@link FxDispatcher#getDefault()}); {@link #postFx} tolerates the null.
      */
@@ -1118,8 +1118,11 @@ final class ProjectLifecycleController {
         header.getStyleClass().add("panel-header");
         // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
-        MixerView newMixerView = new MixerView(deps.project().get(), deps.undoManager().get(), fxDispatcher);
-        deps.onProjectUIRebuild().accept(newMixerView);
+        // Story 322 fix round (N1): the host owns the control-wiring generation
+        // and constructs the fresh MixerView over it (MainController
+        // .handleProjectRebuild), so the view's first refresh() binds through
+        // that generation instead of building a standalone wiring first.
+        deps.onProjectUIRebuild().run();
     }
 
     // ── Project Hub / Welcome (story 296) ─────────────────────────────────────

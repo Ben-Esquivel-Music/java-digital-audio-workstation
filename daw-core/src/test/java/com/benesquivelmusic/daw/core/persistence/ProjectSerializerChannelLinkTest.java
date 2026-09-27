@@ -28,7 +28,7 @@ class ProjectSerializerChannelLinkTest {
         UUID left = UUID.randomUUID();
         UUID right = UUID.randomUUID();
         project.getChannelLinkManager().link(new ChannelLink(left, right,
-                LinkMode.ABSOLUTE, true, false, true, false, true));
+                LinkMode.ABSOLUTE, true, false, true, true));
 
         String xml = new ProjectSerializer().serialize(project);
 
@@ -39,8 +39,28 @@ class ProjectSerializerChannelLinkTest {
         assertThat(xml).contains("link-faders=\"true\"");
         assertThat(xml).contains("link-pans=\"false\"");
         assertThat(xml).contains("link-mute-solo=\"true\"");
-        assertThat(xml).contains("link-inserts=\"false\"");
+        assertThat(xml)
+                .as("story 322 removed the 'link inserts' flag; it must no longer be written")
+                .doesNotContain("link-inserts");
         assertThat(xml).contains("link-sends=\"true\"");
+    }
+
+    @Test
+    void shouldTolerateLegacyLinkInsertsAttributeOnRead() throws IOException {
+        DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
+        UUID left = UUID.randomUUID();
+        UUID right = UUID.randomUUID();
+        project.getChannelLinkManager().link(new ChannelLink(left, right,
+                LinkMode.ABSOLUTE, true, false, true, true));
+        String xml = new ProjectSerializer().serialize(project)
+                .replace("link-sends=\"true\"", "link-inserts=\"true\" link-sends=\"true\"");
+
+        DawProject restored = new ProjectDeserializer().deserialize(xml);
+
+        ChannelLink restoredLink = restored.getChannelLinkManager().getLink(left);
+        assertThat(restoredLink).isNotNull();
+        assertThat(restoredLink.linkSends()).isTrue();
+        assertThat(restoredLink.linkPans()).isFalse();
     }
 
     @Test
@@ -56,7 +76,7 @@ class ProjectSerializerChannelLinkTest {
         UUID left = UUID.randomUUID();
         UUID right = UUID.randomUUID();
         project.getChannelLinkManager().link(new ChannelLink(left, right,
-                LinkMode.RELATIVE, true, true, false, true, false));
+                LinkMode.RELATIVE, true, true, false, false));
 
         String xml = new ProjectSerializer().serialize(project);
         DawProject restored = new ProjectDeserializer().deserialize(xml);
@@ -70,7 +90,6 @@ class ProjectSerializerChannelLinkTest {
         assertThat(restoredLink.linkFaders()).isTrue();
         assertThat(restoredLink.linkPans()).isTrue();
         assertThat(restoredLink.linkMuteSolo()).isFalse();
-        assertThat(restoredLink.linkInserts()).isTrue();
         assertThat(restoredLink.linkSends()).isFalse();
     }
 }

@@ -10,15 +10,15 @@ import java.util.UUID;
  *
  * <p>Every major DAW exposes this concept (Pro Tools' "Track Link," Cubase's
  * "Link Channels," Logic's stereo/mono toggle). Once linked, edits to one
- * channel can propagate to its partner: faders move together, pans mirror
- * left and right around centre, and mute/solo states are kept in sync.
- * The {@link #linkInserts()} and {@link #linkSends()} flags signal the
- * <em>intent</em> to mirror insert and send edits as well — they are
- * persisted with the link and read by downstream layers (the application
- * UI and audio path) that perform the actual mirroring; the core model
- * itself only mirrors the controls for which it owns the state (volume,
- * pan, mute, solo). Unlinking is purely informational — it removes the
- * link record but leaves both channels' current values untouched.</p>
+ * channel propagate to its partner: faders move together, pans mirror
+ * left and right around centre, mute/solo states are kept in sync, and —
+ * when {@link #linkSends()} is set — a send-level / tap edit is mirrored to
+ * the partner's send for the same return bus
+ * ({@link ChannelLinkManager#applySendChange}). Story 322 removed the former
+ * "link inserts" flag: no plugin-clone contract exists to honour it, so it
+ * was a stored intent nothing consumed (Audio Engine Wiring Design Book
+ * §1.8, §5.6 "Stereo link"). Unlinking is purely informational — it removes
+ * the link record but leaves both channels' current values untouched.</p>
  *
  * <p>A link is identified by its {@link #leftChannelId() left} and
  * {@link #rightChannelId() right} channel UUIDs. The same UUIDs that
@@ -35,8 +35,8 @@ import java.util.UUID;
  * @param linkFaders      {@code true} to mirror volume/fader changes
  * @param linkPans        {@code true} to mirror pan position around centre
  * @param linkMuteSolo    {@code true} to mirror mute and solo state
- * @param linkInserts     {@code true} to mirror insert add/remove and parameter edits
- * @param linkSends       {@code true} to mirror per-send level/tap/destination edits
+ * @param linkSends       {@code true} to mirror per-send level/tap edits to the
+ *                        partner's send for the same return bus
  */
 public record ChannelLink(UUID leftChannelId,
                           UUID rightChannelId,
@@ -44,7 +44,6 @@ public record ChannelLink(UUID leftChannelId,
                           boolean linkFaders,
                           boolean linkPans,
                           boolean linkMuteSolo,
-                          boolean linkInserts,
                           boolean linkSends) {
 
     public ChannelLink {
@@ -63,7 +62,7 @@ public record ChannelLink(UUID leftChannelId,
      */
     public static ChannelLink ofPair(UUID leftChannelId, UUID rightChannelId) {
         return new ChannelLink(leftChannelId, rightChannelId,
-                LinkMode.RELATIVE, true, true, true, true, true);
+                LinkMode.RELATIVE, true, true, true, true);
     }
 
     /** Returns {@code true} if the link involves the given channel id (left or right). */
@@ -90,36 +89,30 @@ public record ChannelLink(UUID leftChannelId,
     /** Returns a copy with the given {@link LinkMode}. */
     public ChannelLink withMode(LinkMode newMode) {
         return new ChannelLink(leftChannelId, rightChannelId, newMode,
-                linkFaders, linkPans, linkMuteSolo, linkInserts, linkSends);
+                linkFaders, linkPans, linkMuteSolo, linkSends);
     }
 
     /** Returns a copy with the {@code linkFaders} attribute toggled to the given value. */
     public ChannelLink withLinkFaders(boolean value) {
         return new ChannelLink(leftChannelId, rightChannelId, mode,
-                value, linkPans, linkMuteSolo, linkInserts, linkSends);
+                value, linkPans, linkMuteSolo, linkSends);
     }
 
     /** Returns a copy with the {@code linkPans} attribute toggled to the given value. */
     public ChannelLink withLinkPans(boolean value) {
         return new ChannelLink(leftChannelId, rightChannelId, mode,
-                linkFaders, value, linkMuteSolo, linkInserts, linkSends);
+                linkFaders, value, linkMuteSolo, linkSends);
     }
 
     /** Returns a copy with the {@code linkMuteSolo} attribute toggled to the given value. */
     public ChannelLink withLinkMuteSolo(boolean value) {
         return new ChannelLink(leftChannelId, rightChannelId, mode,
-                linkFaders, linkPans, value, linkInserts, linkSends);
-    }
-
-    /** Returns a copy with the {@code linkInserts} attribute toggled to the given value. */
-    public ChannelLink withLinkInserts(boolean value) {
-        return new ChannelLink(leftChannelId, rightChannelId, mode,
-                linkFaders, linkPans, linkMuteSolo, value, linkSends);
+                linkFaders, linkPans, value, linkSends);
     }
 
     /** Returns a copy with the {@code linkSends} attribute toggled to the given value. */
     public ChannelLink withLinkSends(boolean value) {
         return new ChannelLink(leftChannelId, rightChannelId, mode,
-                linkFaders, linkPans, linkMuteSolo, linkInserts, value);
+                linkFaders, linkPans, linkMuteSolo, value);
     }
 }

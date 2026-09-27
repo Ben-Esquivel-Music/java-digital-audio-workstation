@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter;
@@ -2311,10 +2312,30 @@ public final class RenderPipeline {
                         automation.getValueAtTime(AutomationParameter.MUTE, currentBeat) > 0.5);
             }
 
-            if (automation.hasActiveAutomation(AutomationParameter.SEND_LEVEL)) {
-                channel.setSendLevel(Math.clamp(
-                        automation.getValueAtTime(AutomationParameter.SEND_LEVEL, currentBeat),
-                        0.0, 1.0));
+            // Story 322 fix round 1 (B1) — the count guard makes this read
+            // total on the audio thread: a SEND_LEVEL lane outlives the bus
+            // it named (it is user-selectable and deserialised from disk)
+            // and removeReturnBus has, by design, no last-bus guard, so an
+            // unguarded getAuxBus() would throw IndexOutOfBounds every
+            // block once the last return bus is gone. Same size-then-index
+            // idiom mixDown uses for returnBuses: no allocation, no lambda,
+            // no boxing, so RealTimeSafeContractTest's walk from renderBlock
+            // stays clean (dawg-annotations-reflection §4 "Adding a new
+            // @RealTimeSafe method"; Audio Engine Wiring Design Book §6.1).
+            if (automation.hasActiveAutomation(AutomationParameter.SEND_LEVEL)
+                    && mixer.getReturnBusCount() > 0) {
+                // Story 322 — SEND_LEVEL drives the level of the channel's
+                // Send aimed at the first return bus (the "aux bus" the enum
+                // has always named), on the live multi-bus path. getAuxBus()
+                // is returnBuses.get(0) and getSendForTarget is an indexed
+                // identity loop, so this stays allocation-free; a channel
+                // with no send to that bus leaves the lane inert.
+                Send auxSend = channel.getSendForTarget(mixer.getAuxBus());
+                if (auxSend != null) {
+                    auxSend.setLevel(Math.clamp(
+                            automation.getValueAtTime(AutomationParameter.SEND_LEVEL, currentBeat),
+                            0.0, 1.0));
+                }
             }
 
             applyPluginParameterAutomation(automation, channel, currentBeat);

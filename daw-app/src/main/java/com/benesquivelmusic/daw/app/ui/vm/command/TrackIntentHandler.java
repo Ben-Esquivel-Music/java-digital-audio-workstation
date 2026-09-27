@@ -51,8 +51,12 @@ public interface TrackIntentHandler {
     void toggleArm(Track track, boolean armed);
 
     /**
-     * Sets the channel's linear volume (§5.2). Channel/{@code ChannelVM} only;
-     * the track carries its own volume but the audio engine reads the channel's.
+     * Sets the channel's linear volume — what the audio engine reads — and
+     * mirrors it onto the paired {@code Track} when the channel has one
+     * (story 322: "the UI writes the model the engine reads; any mirrored
+     * model is updated in the same dual-write, in one place" — Audio Engine
+     * Wiring Design Book §2.10, §5.6). A standalone channel (return bus,
+     * master) is channel-only.
      *
      * @param channel the channel whose volume to set
      * @param volume  the requested linear volume in [0,1]
@@ -60,10 +64,52 @@ public interface TrackIntentHandler {
     void setVolume(MixerChannel channel, double volume);
 
     /**
-     * Sets the channel's pan position (§5.2). Channel/{@code ChannelVM} only.
+     * Sets the channel's pan position and mirrors it onto the paired
+     * {@code Track} when the channel has one (story 322, §2.10, §5.6).
      *
      * @param channel the channel whose pan to set
      * @param pan     the requested pan in [−1,1]
      */
     void setPan(MixerChannel channel, double pan);
+
+    /**
+     * Sets a channel's muted flag directly — for strips whose channel has no
+     * track (return bus, master, VCA member without a track; story 322 §5.6).
+     * When the channel <em>does</em> have a track the handler mirrors the flag
+     * onto it, exactly as {@link #toggleMute(Track, boolean)} does in the other
+     * direction, so both intents converge on lock-step state.
+     *
+     * @param channel the channel whose mute to set
+     * @param muted   the requested mute state
+     */
+    void toggleChannelMute(MixerChannel channel, boolean muted);
+
+    /**
+     * Sets a channel's solo flag directly (the channel-targeted sibling of
+     * {@link #toggleSolo(Track, boolean)}; story 322 §5.6). Mirrors onto a
+     * paired track when one exists.
+     *
+     * @param channel the channel whose solo to set
+     * @param soloed  the requested solo state
+     */
+    void toggleChannelSolo(MixerChannel channel, boolean soloed);
+
+    /**
+     * Renames the track (story 322 — Audio Engine Wiring Design Book §2.10
+     * "nothing dead"). The mixer strip's inline name editor raises this intent
+     * through the sink, with {@code MixerView} recording the undo entry around
+     * the command; the arrangement lane's inline rename keeps its own
+     * {@code UndoableAction} and writes the {@code Track} directly — both
+     * surfaces' name labels follow {@code TrackVM.name} either way. Whitespace
+     * is stripped; a blank result is rejected with
+     * {@link IllegalArgumentException} (the raising control snaps back to the
+     * VM's name); an unchanged name is a VALIDATE no-op that announces
+     * nothing. The name is track-only: a {@code MixerChannel}'s name is fixed at
+     * creation.
+     *
+     * @param track the track to rename
+     * @param name  the requested name
+     * @throws IllegalArgumentException if {@code name} is blank after stripping
+     */
+    void renameTrack(Track track, String name);
 }

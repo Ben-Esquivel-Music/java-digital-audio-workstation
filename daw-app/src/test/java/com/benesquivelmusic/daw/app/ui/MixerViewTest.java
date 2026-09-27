@@ -71,9 +71,11 @@ class MixerViewTest {
         MixerView view = createOnFxThread(project);
 
         // Filter out the chain-glyph link toggles spliced between adjacent
-        // strips by Story 159 — only count the channel strips themselves.
+        // strips by Story 159 — only count the channel strips themselves
+        // (story 322: a track strip's host column carries the
+        // mixer-track-strip class, not the legacy .mixer-channel alias).
         long stripCount = view.getChannelStrips().getChildren().stream()
-                .filter(n -> n.getStyleClass().contains("mixer-channel"))
+                .filter(n -> n.getStyleClass().contains(MixerView.TRACK_STRIP_HOST_STYLE_CLASS))
                 .count();
         assertThat(stripCount).isEqualTo(2);
     }
@@ -137,7 +139,7 @@ class MixerViewTest {
      */
     private static long countChannelStrips(MixerView view) {
         return view.getChannelStrips().getChildren().stream()
-                .filter(n -> n.getStyleClass().contains("mixer-channel"))
+                .filter(n -> n.getStyleClass().contains(MixerView.TRACK_STRIP_HOST_STYLE_CLASS))
                 .count();
     }
 

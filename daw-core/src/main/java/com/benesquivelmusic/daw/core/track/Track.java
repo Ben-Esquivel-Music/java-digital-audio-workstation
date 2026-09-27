@@ -49,6 +49,12 @@ public final class Track {
      * <p>An observer registered via {@link Track#addChangeListener(Consumer)}
      * re-reads only the affected slice from the track when it receives the
      * matching tag (Control Synchronization Design Book §3.2, §3.4).</p>
+     *
+     * <p>Story 322 — every signalling setter fires <em>only when the value
+     * actually changes</em>, so a dual-write that re-applies the value a
+     * surface already holds (the intent path heals {@code Track} from the
+     * {@code MixerChannel} write and vice versa) produces no echo
+     * (Audio Engine Wiring Design Book §5.6, design brief §2.2).</p>
      */
     public enum ChangeKind {
         /** The {@linkplain Track#getName() display name} changed. */
@@ -142,9 +148,13 @@ public final class Track {
         return name;
     }
 
-    /** Sets the display name. */
+    /** Sets the display name; signals {@link ChangeKind#NAME} only when it changes. */
     public void setName(String name) {
-        this.name = Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(name, "name must not be null");
+        if (this.name.equals(name)) {
+            return;
+        }
+        this.name = name;
         notifyChange(ChangeKind.NAME);
     }
 
@@ -178,6 +188,9 @@ public final class Track {
         if (volume < 0.0 || volume > 1.0) {
             throw new IllegalArgumentException("volume must be between 0.0 and 1.0: " + volume);
         }
+        if (this.volume == volume) {
+            return;
+        }
         this.volume = volume;
         notifyChange(ChangeKind.VOLUME);
     }
@@ -197,6 +210,9 @@ public final class Track {
         if (pan < -1.0 || pan > 1.0) {
             throw new IllegalArgumentException("pan must be between -1.0 and 1.0: " + pan);
         }
+        if (this.pan == pan) {
+            return;
+        }
         this.pan = pan;
         notifyChange(ChangeKind.PAN);
     }
@@ -206,8 +222,11 @@ public final class Track {
         return muted;
     }
 
-    /** Sets the muted state. */
+    /** Sets the muted state; signals {@link ChangeKind#MUTE} only when it flips. */
     public void setMuted(boolean muted) {
+        if (this.muted == muted) {
+            return;
+        }
         this.muted = muted;
         notifyChange(ChangeKind.MUTE);
     }
@@ -217,8 +236,11 @@ public final class Track {
         return solo;
     }
 
-    /** Sets the solo state. */
+    /** Sets the solo state; signals {@link ChangeKind#SOLO} only when it flips. */
     public void setSolo(boolean solo) {
+        if (this.solo == solo) {
+            return;
+        }
         this.solo = solo;
         notifyChange(ChangeKind.SOLO);
     }
@@ -228,8 +250,11 @@ public final class Track {
         return armed;
     }
 
-    /** Sets the armed (record-ready) state. */
+    /** Sets the armed (record-ready) state; signals {@link ChangeKind#ARM} only when it flips. */
     public void setArmed(boolean armed) {
+        if (this.armed == armed) {
+            return;
+        }
         this.armed = armed;
         notifyChange(ChangeKind.ARM);
     }

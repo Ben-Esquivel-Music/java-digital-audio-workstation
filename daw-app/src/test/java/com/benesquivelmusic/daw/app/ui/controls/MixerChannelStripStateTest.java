@@ -5,8 +5,13 @@ import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.controls.skin.MixerChannelStripSkin;
 
 import javafx.css.PseudoClass;
+import javafx.event.ActionEvent;
 import javafx.scene.Scene;
 import javafx.scene.control.ToggleButton;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.StackPane;
 
 import org.junit.jupiter.api.Test;
@@ -89,5 +94,52 @@ class MixerChannelStripStateTest {
                 PseudoClass.getPseudoClass("armed"));
         assertThat(s.toggleSelected()).isTrue();
         assertThat(s.stripPseudoSet()).isTrue();
+    }
+
+    // ── Inline name editor (story 322 fix round 1, N13) ──────────────────
+
+    private record NameEditOutcome(String channelName, String labelText,
+                                   boolean editorVisible, boolean labelVisible) { }
+
+    /** Opens the editor by double-click, types {@code typed}, then fires {@code finish} on the editor. */
+    private static NameEditOutcome editName(String typed, javafx.event.Event finish) {
+        return runOnFxThread(() -> {
+            MixerChannelStrip strip = new MixerChannelStrip();
+            strip.setChannelName("Drums");
+            StackPane root = new StackPane(strip);
+            root.getStyleClass().add("root-pane");
+            Scene scene = new Scene(root, 200, 600);
+            ThemeManager.getDefault().applyTo(scene);
+            root.applyCss();
+            root.layout();
+            MixerChannelStripSkin skin = (MixerChannelStripSkin) strip.getSkin();
+            skin.nameLabel().fireEvent(new MouseEvent(MouseEvent.MOUSE_CLICKED, 0, 0, 0, 0,
+                    MouseButton.PRIMARY, 2, false, false, false, false,
+                    true, false, false, false, false, false, null));
+            assertThat(skin.nameEditor().isVisible()).as("double-click opens the editor").isTrue();
+            skin.nameEditor().setText(typed);
+            skin.nameEditor().fireEvent(finish);
+            return new NameEditOutcome(strip.getChannelName(), skin.nameLabel().getText(),
+                    skin.nameEditor().isVisible(), skin.nameLabel().isVisible());
+        });
+    }
+
+    @Test
+    void escapeCancelsTheInlineNameEditWithoutTouchingChannelName() {
+        NameEditOutcome o = editName("Dru", new KeyEvent(KeyEvent.KEY_PRESSED, "", "",
+                KeyCode.ESCAPE, false, false, false, false));
+        assertThat(o.channelName()).as("Escape never calls setChannelName").isEqualTo("Drums");
+        assertThat(o.labelText()).as("the label keeps the control's name").isEqualTo("Drums");
+        assertThat(o.editorVisible()).as("editor hidden").isFalse();
+        assertThat(o.labelVisible()).as("label back").isTrue();
+    }
+
+    @Test
+    void enterCommitsTheInlineNameEditIntoChannelName() {
+        NameEditOutcome o = editName("Drum Bus", new ActionEvent());
+        assertThat(o.channelName()).as("Enter commits into channelName").isEqualTo("Drum Bus");
+        assertThat(o.labelText()).isEqualTo("Drum Bus");
+        assertThat(o.editorVisible()).isFalse();
+        assertThat(o.labelVisible()).isTrue();
     }
 }

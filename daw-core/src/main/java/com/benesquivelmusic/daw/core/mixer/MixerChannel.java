@@ -18,12 +18,14 @@ import java.util.function.Consumer;
 /**
  * Represents a single channel strip in the mixer.
  *
- * <p>Each mixer channel has independent volume, pan, mute, solo, and send level
- * controls. The send level controls how much of this channel's audio is routed
- * to the auxiliary/return bus (e.g., reverb, delay return).</p>
- *
- * <p>A channel may have multiple {@link Send} objects, each routing audio to a
- * different return bus with independent level and pre/post-fader mode.</p>
+ * <p>Each mixer channel has independent volume, pan, mute and solo controls.
+ * Audio reaches a return bus (reverb, delay return) only through the channel's
+ * {@link Send} objects — one per target return bus, each with its own level and
+ * {@link SendTap tap point}. Story 322 removed the legacy scalar "send level"
+ * that no production render path read (Audio Engine Wiring Design Book §1.8,
+ * §5.6): the per-send level rows on the multi-bus path are the one send
+ * model, and {@code AutomationParameter.SEND_LEVEL} targets the send aimed at
+ * the first return bus.</p>
  *
  * <p>Each channel provides up to {@value #MAX_INSERT_SLOTS} insert effect slots.
  * Insert effects are applied in order via an internal {@link EffectsChain}.
@@ -58,6 +60,14 @@ public final class MixerChannel {
      * {@link MixerChannel#addChangeListener(Consumer)} re-reads only the affected
      * slice from the channel when it receives the matching tag (Control
      * Synchronization Design Book §3.2, §3.4).</p>
+     *
+     * <p>Story 322 — the four scalar setters signal <em>only when the value
+     * actually changes</em>. {@code RenderPipeline.applyAutomation} calls
+     * {@link MixerChannel#setVolume}/{@link MixerChannel#setPan}/
+     * {@link MixerChannel#setMuted} on the real-time thread every block; a
+     * live registry of view-models subscribed to this signal would otherwise
+     * receive a notification per block per channel even while nothing moved
+     * (Audio Engine Wiring Design Book §5.6, design brief §2.2).</p>
      */
     public enum ChangeKind {
         /** The {@linkplain MixerChannel#getVolume() volume} changed. */
@@ -67,7 +77,17 @@ public final class MixerChannel {
         /** The {@linkplain MixerChannel#isMuted() muted} flag changed. */
         MUTE,
         /** The {@linkplain MixerChannel#isSolo() solo} flag changed. */
-        SOLO
+        SOLO,
+        /**
+         * The {@linkplain MixerChannel#getInsertSlots() insert chain} was
+         * rebuilt — a slot was added, removed, moved or (un)bypassed, or the
+         * plugin supervisor changed. Fired once per rebuild, after the
+         * published snapshot and the delay-compensation callback, so an
+         * observer re-reading {@code getInsertSlots()} sees the new chain.
+         * Never fired on the real-time thread: chain edits are UI/undo work
+         * (story 322, design brief §2.2/§2.3).
+         */
+        INSERTS
     }
 
     /**
@@ -84,7 +104,6 @@ public final class MixerChannel {
     private boolean muted;
     private boolean solo;
     private boolean soloSafe;
-    private double sendLevel;
     private boolean phaseInverted;
     private TrackColor color;
     private OutputRouting outputRouting = OutputRouting.MASTER;
@@ -134,7 +153,6 @@ public final class MixerChannel {
         this.muted = false;
         this.solo = false;
         this.soloSafe = false;
-        this.sendLevel = 0.0;
         this.phaseInverted = false;
     }
 
@@ -158,10 +176,16 @@ public final class MixerChannel {
         return volume;
     }
 
-    /** Sets the volume level. */
+    /**
+     * Sets the volume level. Signals {@link ChangeKind#VOLUME} only when the
+     * value actually changes (story 322 — see {@link ChangeKind}).
+     */
     public void setVolume(double volume) {
         if (volume < 0.0 || volume > 1.0) {
             throw new IllegalArgumentException("volume must be between 0.0 and 1.0: " + volume);
+        }
+        if (this.volume == volume) {
+            return;
         }
         this.volume = volume;
         notifyChange(ChangeKind.VOLUME);
@@ -172,10 +196,16 @@ public final class MixerChannel {
         return pan;
     }
 
-    /** Sets the pan position. */
+    /**
+     * Sets the pan position. Signals {@link ChangeKind#PAN} only when the
+     * value actually changes (story 322 — see {@link ChangeKind}).
+     */
     public void setPan(double pan) {
         if (pan < -1.0 || pan > 1.0) {
             throw new IllegalArgumentException("pan must be between -1.0 and 1.0: " + pan);
+        }
+        if (this.pan == pan) {
+            return;
         }
         this.pan = pan;
         notifyChange(ChangeKind.PAN);
@@ -186,8 +216,14 @@ public final class MixerChannel {
         return muted;
     }
 
-    /** Sets the muted state. */
+    /**
+     * Sets the muted state. Signals {@link ChangeKind#MUTE} only when the
+     * flag actually flips (story 322 — see {@link ChangeKind}).
+     */
     public void setMuted(boolean muted) {
+        if (this.muted == muted) {
+            return;
+        }
         this.muted = muted;
         notifyChange(ChangeKind.MUTE);
     }
@@ -197,8 +233,14 @@ public final class MixerChannel {
         return solo;
     }
 
-    /** Sets the solo state. */
+    /**
+     * Sets the solo state. Signals {@link ChangeKind#SOLO} only when the
+     * flag actually flips (story 322 — see {@link ChangeKind}).
+     */
     public void setSolo(boolean solo) {
+        if (this.solo == solo) {
+            return;
+        }
         this.solo = solo;
         notifyChange(ChangeKind.SOLO);
     }
@@ -227,19 +269,6 @@ public final class MixerChannel {
      */
     public void setSoloSafe(boolean soloSafe) {
         this.soloSafe = soloSafe;
-    }
-
-    /** Returns the send level (0.0 – 1.0). */
-    public double getSendLevel() {
-        return sendLevel;
-    }
-
-    /** Sets the send level. */
-    public void setSendLevel(double sendLevel) {
-        if (sendLevel < 0.0 || sendLevel > 1.0) {
-            throw new IllegalArgumentException("sendLevel must be between 0.0 and 1.0: " + sendLevel);
-        }
-        this.sendLevel = sendLevel;
     }
 
     /** Returns whether this channel's phase is inverted. */
@@ -374,11 +403,19 @@ public final class MixerChannel {
      * Returns the send targeting the specified return bus, or {@code null} if
      * no such send exists.
      *
+     * <p>Identity lookup over an indexed loop — no iterator, no allocation —
+     * so {@code RenderPipeline.applyAutomation} can resolve the
+     * {@code SEND_LEVEL} target once per channel per block on the real-time
+     * thread (story 322).</p>
+     *
      * @param target the return bus to look up
      * @return the send for the given target, or {@code null}
      */
+    @RealTimeSafe
     public Send getSendForTarget(MixerChannel target) {
-        for (Send send : sends) {
+        List<Send> current = sends;
+        for (int i = 0, n = current.size(); i < n; i++) {
+            Send send = current.get(i);
             if (send.getTarget() == target) {
                 return send;
             }
@@ -644,6 +681,13 @@ public final class MixerChannel {
      * as ONE publication. A drain-then-refill loop would publish every
      * intermediate chain to the render thread — including the empty one, so a
      * bypass toggle or a reorder could drop a block's inserts entirely.</p>
+     *
+     * <p>Story 322 — ends by signalling {@link ChangeKind#INSERTS} (after the
+     * snapshot is published and the delay-compensation callback has run) so a
+     * view-model can rebuild its insert facts from {@link #getInsertSlots()}.
+     * The signal is fired while the channel monitor is held, matching the
+     * existing shape of every insert-mutating entry point; observers must do
+     * only lock-free, non-blocking work (see {@link #addChangeListener}).</p>
      */
     private synchronized void rebuildEffectsChain() {
         List<AudioProcessor> rebuilt = new ArrayList<>(insertSlots.size());
@@ -668,6 +712,7 @@ public final class MixerChannel {
         if (callback != null) {
             callback.run();
         }
+        notifyChange(ChangeKind.INSERTS);
     }
 
     synchronized void refreshInsertChain() { rebuildEffectsChain(); }
