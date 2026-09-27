@@ -879,7 +879,7 @@ dock's floating zone (one surface, one feed).
 | Snapshot / A‑B recall          | model recall                               | immediate                   | **strips re-seed from model** after recall/undo — stale-fader corruption impossible |
 | Strip rebuild                  | n/a                                        | n/a                         | mute/arm/solo styles seeded from model at build |
 | Stereo link                    | fader/pan/mute/solo + send mirroring       | live                        | "Link Inserts" removed until a plugin-clone contract exists |
-| Per-track input device         | session-level input selection + mismatch warning | capture path            | full multi-device capture is `RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 326) |
+| Per-track input device         | session-level input selection + mismatch warning (an armed track's unresolvable per-track index is reported as an unavailable device over a non-empty enumeration — an empty enumeration compares nothing; the session select is latest-selection-wins) | capture path            | full multi-device capture is `RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 326) |
 | 3D panner button               | hidden until a spatial node exists in the channel chain | —              | — |
 | Strip insert indicator         | rendered from the channel's real InsertSlot list (name/bypass) | —       | replaces the hardcoded five-icon fiction |
 

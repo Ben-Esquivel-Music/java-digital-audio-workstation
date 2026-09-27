@@ -8,6 +8,8 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -46,6 +48,24 @@ import java.util.logging.Logger;
  * upgrades itself to the qualified form on the first confirm (one persist,
  * one apply — what every confirm did before the gate existed) and a
  * differently-qualified pick persists and applies.</p>
+ *
+ * <p><strong>Latest selection wins</strong> (PR #977 review). An ASIO reopen
+ * takes seconds — long enough for a second input-port dialog to be confirmed
+ * — and {@code applyConfiguration} serialises concurrent callers in
+ * unspecified order, so two independent workers could leave settings and the
+ * UI naming B while the engine runs A. Each selection therefore bumps a
+ * {@linkplain #generation generation} on the caller's thread together with
+ * the persist, and every worker applies under one {@linkplain #applyLock
+ * lock}, skipping its apply when its generation is no longer the latest. In
+ * every interleaving the device the engine is asked to end on is the one last
+ * persisted (a failed apply is reported, not repaired): A applies only when
+ * it read the generation before B was selected — it was already applying,
+ * and B applies after it; otherwise A reads B's newer generation under the
+ * lock and skips, so a worker never applies from a waiting state once
+ * superseded. A superseded worker's failure is stale and is logged but
+ * never shown — the newer worker reports its own outcome. A lock rather than
+ * a single-thread executor because this class has no dispose/shutdown seam
+ * and the worker is handed back to callers as a plain {@link Thread}.</p>
  */
 public final class SettingsBackedSessionInputSelection implements SessionInputSelection {
 
@@ -72,6 +92,25 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
     private final AudioEngineController controller;
     private final NotificationSink notifications;
     private final Runnable openAudioSettings;
+
+    /**
+     * The selection counter: bumped on the caller's thread in
+     * {@link #selectAndApply} right where the persist happens, so "the latest
+     * selection" and "the persisted device" are always the same one. The
+     * persist and the bump are two steps; they name the same device only
+     * because {@link #select} is called from one thread — the FX thread, per
+     * the interface's threading contract — so no second selection can land
+     * between them. A worker captures its own value and compares it under
+     * {@link #applyLock}.
+     */
+    private final AtomicLong generation = new AtomicLong();
+
+    /**
+     * Serialises the apply section across workers. Virtual threads park on it
+     * cheaply; the FX thread never takes it (the persist and the bump happen
+     * before the worker starts).
+     */
+    private final ReentrantLock applyLock = new ReentrantLock();
 
     /**
      * Creates the settings-backed selection.
@@ -104,15 +143,18 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
 
     /**
      * {@link #select(AudioDeviceInfo)} exposing the worker so a caller (a test)
-     * can wait for the apply to finish. The persist happens synchronously
-     * before this method returns; only the engine reconfiguration is deferred.
-     * When {@code device.qualifiedName()} equals {@link #currentDeviceName()}
-     * — exactly, never by the bare-name tolerance of {@link #isSessionDevice}
-     * — nothing happens and no worker exists (see the class Javadoc).
+     * can wait for the apply to finish. The persist and the generation bump
+     * happen synchronously before this method returns; only the engine
+     * reconfiguration is deferred. When {@code device.qualifiedName()} equals
+     * {@link #currentDeviceName()} — exactly, never by the bare-name tolerance
+     * of {@link #isSessionDevice} — nothing happens and no worker exists (see
+     * the class Javadoc).
      *
      * @param device the device the user chose; must not be {@code null}
-     * @return the started virtual thread performing the apply, or empty when
-     *         {@code device}'s qualified name already was the session name
+     * @return the started virtual thread performing the apply — it skips its
+     *         apply when a newer selection superseded it while it waited for
+     *         the lock — or empty when {@code device}'s qualified name already
+     *         was the session name
      */
     public Optional<Thread> selectAndApply(AudioDeviceInfo device) {
         Objects.requireNonNull(device, "device must not be null");
@@ -121,7 +163,27 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
             return Optional.empty();
         }
         settings.setAudioInputDevice(inputDevice);
-        Thread worker = Thread.ofVirtual().name("daw-session-input-apply").unstarted(() -> {
+        long mine = generation.incrementAndGet();
+        Thread worker = Thread.ofVirtual().name("daw-session-input-apply")
+                .unstarted(() -> applyUnlessSuperseded(mine, inputDevice));
+        worker.start();
+        return Optional.of(worker);
+    }
+
+    /**
+     * The worker body: under {@link #applyLock}, applies {@code inputDevice}
+     * unless a newer selection has bumped {@link #generation} past
+     * {@code mine} — that selection's own worker applies its device. A failure
+     * is always logged but shown only while {@code mine} is still the latest;
+     * a superseded failure is stale.
+     */
+    private void applyUnlessSuperseded(long mine, String inputDevice) {
+        applyLock.lock();
+        try {
+            if (mine != generation.get()) {
+                LOG.fine(() -> "Session input '" + inputDevice + "' superseded before it was applied");
+                return;
+            }
             String backend = "<configured backend>";
             try {
                 String persistedBackend = settings.getAudioBackend();
@@ -137,6 +199,9 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
                         settings.getWorkerPoolSize()));
             } catch (RuntimeException failure) {
                 LOG.log(Level.WARNING, "Failed to apply the session input device '" + inputDevice + "'", failure);
+                if (mine != generation.get()) {
+                    return; // stale: a newer selection was made meanwhile and reports its own outcome
+                }
                 String reason = failure.getMessage() == null || failure.getMessage().isBlank()
                         ? "the configuration was rejected"
                         : failure.getMessage();
@@ -148,8 +213,8 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
                         "Open Audio Settings",
                         openAudioSettings);
             }
-        });
-        worker.start();
-        return Optional.of(worker);
+        } finally {
+            applyLock.unlock();
+        }
     }
 }

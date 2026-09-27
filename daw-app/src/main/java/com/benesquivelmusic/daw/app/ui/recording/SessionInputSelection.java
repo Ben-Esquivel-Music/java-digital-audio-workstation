@@ -24,7 +24,14 @@ import java.util.Optional;
  * makes that honest: every per-track dialog also {@linkplain #select(AudioDeviceInfo)
  * selects} the session device, and whenever armed tracks disagree with it the
  * surfaces show a single {@code WARNING} built by {@link #mismatchWarning} —
- * never a silent ignore.</p>
+ * never a silent ignore. An armed track whose persisted index resolves to
+ * none of the enumerated devices (the interface was unplugged) is one such
+ * disagreement: over a non-empty enumeration it is reported as an unavailable
+ * device, not dropped (PR #977 review) — an empty enumeration compares
+ * nothing, see {@link #mismatches}. A stale index may instead name an
+ * unrelated device that now carries it (a backend change); that is treated as
+ * a choice of that device (reported only when that device is not the session
+ * device), since only the bare index is persisted.</p>
  *
  * <p>The pure comparison logic ({@link #mismatches}, {@link #mismatchWarning},
  * {@link #selectedIndexIn}) lives here as default methods so the production
@@ -106,28 +113,44 @@ public interface SessionInputSelection {
 
     /**
      * Returns the armed tracks whose explicit per-track input choice
-     * ({@code inputDeviceIndex != NO_INPUT_DEVICE}) resolves to an enumerated
-     * device that is not the session device — the tracks recording will
-     * silently serve from the wrong device unless the user is told.
+     * ({@code inputDeviceIndex != NO_INPUT_DEVICE}) is not the session device
+     * — the tracks recording will silently serve from the wrong device unless
+     * the user is told. A choice disagrees in two ways: it resolves to an
+     * enumerated device other than the session device, or it resolves to
+     * <em>no</em> enumerated device at all. The index is persisted
+     * ({@code ProjectSerializer} writes {@code input-device}), so a project
+     * reopened after an interface was unplugged may hold indices that resolve
+     * to nothing — and after a backend change a stale index may instead name
+     * an unrelated device, which is then treated as a choice of that device
+     * (reported only when that device is not the session device; only the
+     * bare int is persisted); treating an unresolved index as "not a
+     * disagreement" was the silent ignore §5.6 forbids (PR #977 review).
      *
-     * <p>Unarmed tracks are irrelevant to the next take and skipped. A track
-     * whose index resolves to no enumerated device cannot be named and is
-     * skipped as well (its choice is dangling, not a disagreement).</p>
+     * <p>Unarmed tracks are irrelevant to the next take and skipped. When
+     * {@code devices} is empty nothing is reported: both production callers
+     * pass an empty list when there is no backend or the enumeration failed,
+     * and that means "nothing to compare", not "every device is unavailable" —
+     * flagging every armed track on an enumeration failure would be a false
+     * warning.</p>
      *
      * @param tracks  the project's tracks; must not be {@code null}
-     * @param devices the enumerated devices; must not be {@code null}
+     * @param devices the enumerated devices, or empty when they could not be
+     *                enumerated; must not be {@code null}
      * @return the conflicting armed tracks, in project order; never {@code null}
      */
     default List<Track> mismatches(List<Track> tracks, List<AudioDeviceInfo> devices) {
         Objects.requireNonNull(tracks, "tracks must not be null");
         Objects.requireNonNull(devices, "devices must not be null");
         List<Track> conflicting = new ArrayList<>();
+        if (devices.isEmpty()) {
+            return conflicting; // no backend / enumeration failed: nothing to compare against
+        }
         for (Track track : tracks) {
-            if (!track.isArmed()) {
+            if (!track.isArmed() || track.getInputDeviceIndex() == Track.NO_INPUT_DEVICE) {
                 continue;
             }
             Optional<AudioDeviceInfo> chosen = resolve(track, devices);
-            if (chosen.isPresent() && !isSessionDevice(chosen.get())) {
+            if (chosen.isEmpty() || !isSessionDevice(chosen.get())) {
                 conflicting.add(track);
             }
         }
@@ -139,11 +162,17 @@ public interface SessionInputSelection {
      * {@code Recording uses the session input 'Mic In [ASIO]'; track(s) Vox,
      * Guitar chose 'USB In [WASAPI]' — multi-device capture is story 326}, or
      * {@link Optional#empty()} when every armed track agrees with the session
-     * device. Tracks that chose different devices are grouped per device and
+     * device — or when {@code devices} is empty, which compares nothing (see
+     * {@link #mismatches}). Tracks that chose different devices are grouped per device and
      * the groups joined with {@code "; "}, so every conflicting device is named.
+     * Tracks whose persisted index resolves to no enumerated device share ONE
+     * "unavailable" group — {@code track(s) Drums chose an input device that is
+     * no longer available} — because a device index means nothing to a user;
+     * that group takes its place among the others in first-seen project order.
      *
      * @param tracks  the project's tracks; must not be {@code null}
-     * @param devices the enumerated devices; must not be {@code null}
+     * @param devices the enumerated devices, or empty when they could not be
+     *                enumerated; must not be {@code null}
      * @return the warning text, or empty when there is nothing to warn about
      */
     default Optional<String> mismatchWarning(List<Track> tracks, List<AudioDeviceInfo> devices) {
@@ -151,25 +180,26 @@ public interface SessionInputSelection {
         if (conflicting.isEmpty()) {
             return Optional.empty();
         }
-        Map<String, List<String>> trackNamesByDevice = new LinkedHashMap<>();
+        // Key: the chosen device's qualified name, or empty for the one
+        // "no longer available" group. Insertion order = first-seen project order.
+        Map<Optional<String>, List<String>> trackNamesByDevice = new LinkedHashMap<>();
         for (Track track : conflicting) {
-            String chosen = resolve(track, devices).map(AudioDeviceInfo::qualifiedName).orElseThrow();
+            Optional<String> chosen = resolve(track, devices).map(AudioDeviceInfo::qualifiedName);
             trackNamesByDevice.computeIfAbsent(chosen, _ -> new ArrayList<>()).add(track.getName());
         }
         StringBuilder text = new StringBuilder("Recording uses the session input '")
                 .append(displayName(currentDeviceName()))
                 .append("'; ");
         boolean first = true;
-        for (Map.Entry<String, List<String>> group : trackNamesByDevice.entrySet()) {
+        for (Map.Entry<Optional<String>, List<String>> group : trackNamesByDevice.entrySet()) {
             if (!first) {
                 text.append("; ");
             }
             first = false;
-            text.append("track(s) ")
-                    .append(String.join(", ", group.getValue()))
-                    .append(" chose '")
-                    .append(group.getKey())
-                    .append('\'');
+            text.append("track(s) ").append(String.join(", ", group.getValue()));
+            group.getKey().ifPresentOrElse(
+                    device -> text.append(" chose '").append(device).append('\''),
+                    () -> text.append(" chose an input device that is no longer available"));
         }
         text.append(" — multi-device capture is story 326");
         return Optional.of(text.toString());

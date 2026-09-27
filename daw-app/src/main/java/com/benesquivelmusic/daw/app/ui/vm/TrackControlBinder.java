@@ -209,7 +209,8 @@ public final class TrackControlBinder {
      *   <li>{@code faderDbProperty} ↔ {@link ChannelVM#volumeProperty()} via
      *       linear↔dB with the same echo guard on both sides, compared in the
      *       strip's own dB domain so a float round-trip can never raise a phantom
-     *       command; a rejected value snaps the fader back.</li>
+     *       command; a rejected, clamped or no-op value snaps the fader back:
+     *       the strip is a subscriber, never a store (see {@link #bindFaderDb}).</li>
      *   <li>{@code panProperty} ↔ {@link ChannelVM#panProperty()} (linear,
      *       {@link #bindPan(DoubleProperty)}).</li>
      *   <li>{@code insertsProperty} ← {@link ChannelVM#insertsProperty()}
@@ -320,6 +321,18 @@ public final class TrackControlBinder {
      * The strip fader half of {@link #bindStrip}: VM linear volume → strip dB,
      * and strip dB → {@link SetChannelVolumeCommand} with the linear value,
      * guarded in the dB domain ({@code now == linearToDb(vm)} is an echo).
+     *
+     * <p>After every gesture — accepted, rejected or a no-op — the fader is
+     * re-asserted to {@code linearToDb(vm)} (PR #977 review). The strip's
+     * travel reaches {@link MixerChannelStrip#FADER_MAX_DB +12 dB} while the
+     * model is [0,1], so a drag from unity to +6 dB dispatches a clamped
+     * {@code 1.0}, which {@code CoreTrackIntentHandler.setVolume} sees as a
+     * true no-op: no MUTATE, no republish, and without the re-assert the strip
+     * would sit at +6 dB over a rendered gain of 1.0. On the FX thread the VM
+     * republish is synchronous, so when the model did change the re-assert is
+     * a same-value no-op that fires nothing; when it did not, the re-assert
+     * snaps the fader back and the echo guard swallows that change event —
+     * no ping-pong ({@code javafx-application-design} §13).</p>
      */
     private void bindFaderDb(MixerChannelStrip strip) {
         strip.setFaderDb(linearToDb(channelVm.getVolume()));
@@ -336,8 +349,9 @@ public final class TrackControlBinder {
             try {
                 commandSink.accept(new SetChannelVolumeCommand(channel, dbToLinear(db)));
             } catch (IllegalArgumentException rejected) {
-                strip.setFaderDb(linearToDb(channelVm.getVolume()));
+                // VALIDATE refused it — fall through to the snap-back
             }
+            strip.setFaderDb(linearToDb(channelVm.getVolume()));
         };
         strip.faderDbProperty().addListener(faderToCommand);
         disposers.add(() -> strip.faderDbProperty().removeListener(faderToCommand));
