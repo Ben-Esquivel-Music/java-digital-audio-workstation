@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.spatial.room;
 
 import com.benesquivelmusic.daw.acoustics.simulator.AcousticsRoomSimulator;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.spatial.ImpulseResponse;
 import com.benesquivelmusic.daw.sdk.spatial.RoomSimulationConfig;
 import com.benesquivelmusic.daw.sdk.spatial.RoomSimulator;
@@ -29,6 +31,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
  *
  * @see AcousticsRoomSimulator
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class FdnRoomSimulator implements RoomSimulator {
 
     private final AcousticsRoomSimulator delegate;

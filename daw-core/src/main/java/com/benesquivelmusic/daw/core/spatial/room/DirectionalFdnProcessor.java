@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.room;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.core.spatial.ambisonics.SphericalHarmonics;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -50,6 +52,7 @@ import java.util.Arrays;
  * @see com.benesquivelmusic.daw.core.spatial.ambisonics.AmbisonicEncoder
  * @see FdnRoomSimulator
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class DirectionalFdnProcessor implements AudioProcessor {
 
     /** Number of delay lines in the FDN. */

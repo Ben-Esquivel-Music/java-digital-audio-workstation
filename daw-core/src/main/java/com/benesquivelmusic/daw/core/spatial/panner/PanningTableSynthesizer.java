@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.panner;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.spatial.*;
 
 import java.util.Arrays;
@@ -30,6 +32,7 @@ import java.util.Objects;
  *       Loudspeaker Layouts" (AES, 2024)</li>
  * </ul>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class PanningTableSynthesizer implements SpatialPanner {
 
     /** Default angular resolution in degrees. */

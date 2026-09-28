@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.panner;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.spatial.*;
 
 import java.util.Arrays;
@@ -23,6 +25,7 @@ import java.util.Objects;
  *   <li>Pan automation support with per-parameter interpolation</li>
  * </ul>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class VbapPanner implements SpatialPanner {
 
     private static final SpatialPosition DEFAULT_POSITION =

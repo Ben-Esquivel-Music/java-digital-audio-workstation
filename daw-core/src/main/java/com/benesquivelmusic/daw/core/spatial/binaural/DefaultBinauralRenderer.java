@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.binaural;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.spatial.BinauralRenderer;
 import com.benesquivelmusic.daw.sdk.spatial.HrtfData;
 import com.benesquivelmusic.daw.sdk.spatial.MonitoringMode;
@@ -27,6 +29,7 @@ import java.util.Objects;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class DefaultBinauralRenderer implements BinauralRenderer {
 
     private static final SphericalCoordinate DEFAULT_POSITION =

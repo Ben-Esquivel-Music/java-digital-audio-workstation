@@ -19,9 +19,14 @@ public final class ProcessorCapabilities {
 
     /**
      * The processor is a spatial-audio node — an ambisonic encoder / decoder /
-     * rotator / enhancer, a binaural renderer, an A-format or ASDM converter,
-     * an air-absorption filter or an ambience upmixer. Declared by the twelve
-     * {@code AudioProcessor}s under {@code core.spatial}; consumed by
+     * rotator / enhancer, a binaural renderer, converter or externalization
+     * processor, an A-format converter or ASDM salient/diffuse separator, a
+     * VBAP or panning-table 3D panner, a room simulator or the directional FDN
+     * reverb with first-order Ambisonic output, the air-absorption filter, or
+     * the ambience upmixer. Declared by every concrete {@code AudioProcessor}
+     * under {@code core.spatial} — pinned by {@code SpatialInsertsTest}, whose
+     * package scan fails on any concrete top-level processor there that it
+     * does not list and tag-check. Consumed by
      * {@link com.benesquivelmusic.daw.core.mixer.SpatialInserts#hasSpatialNode},
      * which the mixer strip uses to show its 3D-panner affordance only for a
      * channel whose insert chain actually contains a spatial node (story 322,
