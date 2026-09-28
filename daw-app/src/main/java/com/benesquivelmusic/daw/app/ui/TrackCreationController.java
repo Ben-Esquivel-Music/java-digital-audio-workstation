@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
+import com.benesquivelmusic.daw.app.ui.recording.SessionInputSelection;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -49,7 +50,8 @@ final class TrackCreationController {
             Runnable updateUndoRedoState,
             Runnable markProjectDirty,
             BiConsumer<String, DawIcon> updateStatusBar,
-            BiConsumer<NotificationLevel, String> showNotification) {
+            BiConsumer<NotificationLevel, String> showNotification,
+            SessionInputSelection sessionInputSelection) {
     }
 
     private final Deps deps;
@@ -71,13 +73,19 @@ final class TrackCreationController {
     void onAddAudioTrack() {
         List<AudioDeviceInfo> devices = audioDeviceManager.getAvailableDevices();
 
-        InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, Track.NO_INPUT_DEVICE);
+        // Story 322: preselect the SESSION input device — the one recording opens.
+        InputPortSelectionDialog dialog = new InputPortSelectionDialog(
+                devices, deps.sessionInputSelection().selectedIndexIn(devices));
         Optional<AudioDeviceInfo> selected = dialog.showAndWait();
         if (selected.isEmpty()) {
             return;
         }
 
         AudioDeviceInfo selectedDevice = selected.get();
+        // Story 322: the per-track choice ALSO becomes the session input
+        // (persisted + applied to the engine) — the per-track index below is
+        // kept for story 326 but does not route audio today.
+        deps.sessionInputSelection().select(selectedDevice);
         audioTrackCounter++;
         String name = "Audio " + audioTrackCounter;
         deps.undoManager().get().execute(new UndoableAction() {

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.AmbisonicOrder;
 
@@ -17,6 +19,7 @@ import java.util.Objects;
  * using azimuth and elevation in radians. The direction can be updated
  * between processing calls to support automation.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AmbisonicEncoder implements AudioProcessor {
 
     private final AmbisonicOrder order;

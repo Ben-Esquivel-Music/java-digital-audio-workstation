@@ -153,7 +153,8 @@ class ChannelVMMeterTest {
             int channelsBefore = rig.dispatcher.openChannelCount();
             rig.vm.dispose();
             rig.assertDemand(0);
-            assertThat(rig.dispatcher.openChannelCount()).isEqualTo(channelsBefore - 1);
+            // Story 322 — dispose closes the meter channel AND the volume/pan channels.
+            assertThat(rig.dispatcher.openChannelCount()).isEqualTo(channelsBefore - 3);
             rig.stage.hide();
             rig.stage.show();
             rig.dispatcher.pulse();
@@ -194,7 +195,9 @@ class ChannelVMMeterTest {
             var stage = new Stage();
             stage.setScene(new Scene(surface, 100, 100));
             try {
-                assertThat(registry.channelVms()).hasSize(2).allSatisfy(vm ->
+                // Story 322 — the registry also mirrors every return bus and the master.
+                int expectedVms = 2 + project.getMixer().getReturnBuses().size() + 1;
+                assertThat(registry.channelVms()).hasSize(expectedVms).allSatisfy(vm ->
                         assertThat(vm.isMeterBound()).isFalse());
                 assertThat(feed.subscriptionCount()).isZero();
                 assertThat(bus.snapshot().isEmpty()).isTrue();

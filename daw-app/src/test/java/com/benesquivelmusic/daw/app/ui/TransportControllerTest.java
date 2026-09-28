@@ -37,6 +37,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
@@ -94,6 +95,8 @@ class TransportControllerTest {
     private NotificationBar notificationBar;
     /** Counts invocations of the injected Open Audio Settings route. */
     private AtomicInteger audioSettingsOpens;
+    /** Story 322 — the session input handed to the latest controller (blank = backend default). */
+    private StubSessionInputSelection sessionInputSelection = new StubSessionInputSelection();
 
     @AfterEach
     void closeEngine() {
@@ -159,6 +162,7 @@ class TransportControllerTest {
                     track -> { },
                     () -> true,
                     () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
+                    sessionInputSelection,
                     audioSettingsOpens::incrementAndGet,
                     null));
             latch.countDown();
@@ -809,6 +813,102 @@ class TransportControllerTest {
                 .contains("refused for recording", "Broken Backend", "<default>");
         assertThat(notificationBar.getPill().getActionButton().getText())
                 .isEqualTo("Open Audio Settings");
+    }
+
+    @Test
+    void recordStartWarnsWhenAnArmedTrackChoseAnInputOtherThanTheSessionDevice() throws Exception {
+        // Story 322 — the per-track index does not route audio (recording opens
+        // the SESSION device); a disagreement is surfaced as one WARNING naming
+        // the track and both devices, never silently ignored.
+        DawProject project = new DawProject("test", new AudioFormat(48000, 2, 16, 256));
+        Track vox = project.createAudioTrack("Vox");
+        vox.setArmed(true);
+        Track agreeing = project.createAudioTrack("Agreeing");
+        agreeing.setArmed(true);
+        MockAudioBackend backend = new MockAudioBackend();
+        AudioDeviceInfo mockDevice = backend.listDevices().get(0);
+        vox.setInputDeviceIndex(mockDevice.index());   // the enumerated device — not the session one
+        sessionInputSelection = new StubSessionInputSelection("Session In [ASIO]");
+        TransportController controller = newController(project, backend);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::toggleRecord);
+            awaitSessionInputCheck(controller);
+
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
+            assertThat(notificationBar.getMessage())
+                    .contains("Recording uses the session input 'Session In [ASIO]'")
+                    .contains("track(s) Vox chose '" + mockDevice.qualifiedName() + "'")
+                    .doesNotContain("Agreeing")
+                    .contains("story 326");
+        } finally {
+            runHandler(controller::stop);
+        }
+    }
+
+    @Test
+    void recordStartEnumeratesDevicesOffTheFxThreadAndStillWarns() throws Exception {
+        // Story 322 fix round (S7): AudioBackend.listDevices() is a driver walk
+        // (on ASIO it blocks on the control thread), so the record-start check
+        // enumerates on a worker and only its WARNING lands on the FX thread.
+        DawProject project = new DawProject("test", new AudioFormat(48000, 2, 16, 256));
+        Track vox = project.createAudioTrack("Vox");
+        vox.setArmed(true);
+        EnumerationTrackingBackend backend = new EnumerationTrackingBackend();
+        AudioDeviceInfo mockDevice = new MockAudioBackend().listDevices().get(0);
+        vox.setInputDeviceIndex(mockDevice.index());   // the enumerated device — not the session one
+        sessionInputSelection = new StubSessionInputSelection("Session In [ASIO]");
+        TransportController controller = newController(project, backend);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::toggleRecord);
+            assertThat(backend.enumerationsOnFxThread.get())
+                    .as("the record handler itself enumerated nothing on the FX thread").isZero();
+            awaitSessionInputCheck(controller);
+
+            assertThat(backend.enumerations.get()).as("the check did enumerate (off-thread)").isPositive();
+            assertThat(backend.enumerationsOnFxThread.get()).as("never on the FX thread").isZero();
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
+            assertThat(notificationBar.getMessage())
+                    .contains("track(s) Vox chose '" + mockDevice.qualifiedName() + "'");
+        } finally {
+            runHandler(controller::stop);
+        }
+    }
+
+    /**
+     * Story 322 fix round (S7): the session-input mismatch check enumerates
+     * devices on a worker; wait for it, then for the FX turn that shows (or,
+     * when every armed track agrees, does not show) its toast.
+     */
+    private static void awaitSessionInputCheck(TransportController controller) throws Exception {
+        Optional<Thread> check = controller.pendingSessionInputCheck();
+        assertThat(check).as("an audio take starts the session-input check").isPresent();
+        check.get().join(TimeUnit.SECONDS.toMillis(5));
+        assertThat(check.get().isAlive()).as("the input check completed").isFalse();
+        runHandler(() -> { });   // FX barrier: everything the check posted has run
+    }
+
+    @Test
+    void recordStartStaysOnTheInfoToastWhenEveryArmedTrackAgreesWithTheSessionDevice() throws Exception {
+        DawProject project = new DawProject("test", new AudioFormat(48000, 2, 16, 256));
+        Track vox = project.createAudioTrack("Vox");
+        vox.setArmed(true);
+        MockAudioBackend backend = new MockAudioBackend();
+        AudioDeviceInfo mockDevice = backend.listDevices().get(0);
+        vox.setInputDeviceIndex(mockDevice.index());
+        sessionInputSelection = new StubSessionInputSelection(mockDevice.qualifiedName());
+        TransportController controller = newController(project, backend);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::toggleRecord);
+            awaitSessionInputCheck(controller);
+
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
+            assertThat(notificationBar.getMessage()).contains("Recording started");
+        } finally {
+            runHandler(controller::stop);
+        }
     }
 
     @ParameterizedTest

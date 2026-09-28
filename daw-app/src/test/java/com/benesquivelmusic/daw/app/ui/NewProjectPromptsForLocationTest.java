@@ -105,7 +105,7 @@ class NewProjectPromptsForLocationTest {
             AtomicReference<UndoManager> um = new AtomicReference<>(new UndoManager());
             var deps = new ProjectLifecycleController.Deps(
                     p::get, p::set, um::get, um::set,
-                    () -> { }, () -> { }, mixerView -> { }, () -> null, json -> { });
+                    () -> { }, () -> { }, () -> { }, () -> null, json -> { });
             ref.set(new ProjectLifecycleController(
                     pm, new SessionInterchangeController(), new NotificationBar(),
                     new ProjectOperationProgress(new FxDispatcher()),

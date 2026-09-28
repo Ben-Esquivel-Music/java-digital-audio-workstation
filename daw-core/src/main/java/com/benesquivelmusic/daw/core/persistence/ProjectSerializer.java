@@ -137,7 +137,7 @@ public final class ProjectSerializer {
         buildMetronome(document, root, project.getMetronome());
         buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
         buildRoomConfiguration(document, root, project.getRoomConfiguration());
-        buildMixerSnapshots(document, root, project.getMixerSnapshotManager());
+        buildMixerSnapshots(document, root, project.getMixerSnapshotManager(), project.getMixer());
         buildBedBus(document, root, project.getBedBusManager());
         buildRippleMode(document, root, project);
         buildNudgeSettings(document, root, project);
@@ -464,7 +464,6 @@ public final class ProjectSerializer {
             linkElem.setAttribute("link-faders", String.valueOf(link.linkFaders()));
             linkElem.setAttribute("link-pans", String.valueOf(link.linkPans()));
             linkElem.setAttribute("link-mute-solo", String.valueOf(link.linkMuteSolo()));
-            linkElem.setAttribute("link-inserts", String.valueOf(link.linkInserts()));
             linkElem.setAttribute("link-sends", String.valueOf(link.linkSends()));
             channelLinksElem.appendChild(linkElem);
         }
@@ -479,7 +478,6 @@ public final class ProjectSerializer {
         elem.setAttribute("muted", String.valueOf(channel.isMuted()));
         elem.setAttribute("solo", String.valueOf(channel.isSolo()));
         elem.setAttribute("solo-safe", String.valueOf(channel.isSoloSafe()));
-        elem.setAttribute("send-level", String.valueOf(channel.getSendLevel()));
         elem.setAttribute("phase-inverted", String.valueOf(channel.isPhaseInverted()));
         if (!channel.getOutputRouting().isMaster()) {
             elem.setAttribute("output-routing-channel",
@@ -896,7 +894,7 @@ public final class ProjectSerializer {
     }
 
     private void buildMixerSnapshots(Document document, Element root,
-                                     MixerSnapshotManager manager) {
+                                     MixerSnapshotManager manager, Mixer mixer) {
         List<MixerSnapshot> snapshots = manager.getSnapshots();
         MixerSnapshot slotA = manager.getSlotA();
         MixerSnapshot slotB = manager.getSlotB();
@@ -909,47 +907,48 @@ public final class ProjectSerializer {
         root.appendChild(root0);
 
         for (MixerSnapshot snapshot : snapshots) {
-            root0.appendChild(buildSnapshotElement(document, "snapshot", snapshot));
+            root0.appendChild(buildSnapshotElement(document, "snapshot", snapshot, mixer));
         }
         if (slotA != null) {
-            Element slotElem = buildSnapshotElement(document, "slot-a", slotA);
+            Element slotElem = buildSnapshotElement(document, "slot-a", slotA, mixer);
             root0.appendChild(slotElem);
         }
         if (slotB != null) {
-            Element slotElem = buildSnapshotElement(document, "slot-b", slotB);
+            Element slotElem = buildSnapshotElement(document, "slot-b", slotB, mixer);
             root0.appendChild(slotElem);
         }
     }
 
-    private Element buildSnapshotElement(Document document, String tagName, MixerSnapshot snapshot) {
+    private Element buildSnapshotElement(Document document, String tagName, MixerSnapshot snapshot,
+                                         Mixer mixer) {
         Element elem = document.createElement(tagName);
         elem.setAttribute("name", snapshot.name());
         elem.setAttribute("timestamp", snapshot.timestamp().toString());
 
-        elem.appendChild(buildChannelSnapshotElement(document, "master", snapshot.master()));
+        elem.appendChild(buildChannelSnapshotElement(document, "master", snapshot.master(), mixer));
 
         Element channelsElem = document.createElement("channels");
         elem.appendChild(channelsElem);
         for (ChannelSnapshot cs : snapshot.channels()) {
-            channelsElem.appendChild(buildChannelSnapshotElement(document, "channel", cs));
+            channelsElem.appendChild(buildChannelSnapshotElement(document, "channel", cs, mixer));
         }
 
         Element returnsElem = document.createElement("return-buses");
         elem.appendChild(returnsElem);
         for (ChannelSnapshot cs : snapshot.returnBuses()) {
-            returnsElem.appendChild(buildChannelSnapshotElement(document, "return-bus", cs));
+            returnsElem.appendChild(buildChannelSnapshotElement(document, "return-bus", cs, mixer));
         }
         return elem;
     }
 
-    private Element buildChannelSnapshotElement(Document document, String tagName, ChannelSnapshot cs) {
+    private Element buildChannelSnapshotElement(Document document, String tagName, ChannelSnapshot cs,
+                                                Mixer mixer) {
         Element elem = document.createElement(tagName);
         elem.setAttribute("volume", String.valueOf(cs.volume()));
         elem.setAttribute("pan", String.valueOf(cs.pan()));
         elem.setAttribute("muted", String.valueOf(cs.muted()));
         elem.setAttribute("solo", String.valueOf(cs.solo()));
         elem.setAttribute("phase-inverted", String.valueOf(cs.phaseInverted()));
-        elem.setAttribute("send-level", String.valueOf(cs.sendLevel()));
         if (!cs.outputRouting().isMaster()) {
             elem.setAttribute("output-routing-channel",
                     String.valueOf(cs.outputRouting().firstChannel()));
@@ -979,11 +978,20 @@ public final class ProjectSerializer {
         if (!cs.sends().isEmpty()) {
             Element sendsElem = document.createElement("sends");
             elem.appendChild(sendsElem);
+            List<MixerChannel> returnBuses = mixer.getReturnBuses();
             for (SendSnapshot ss : cs.sends()) {
                 Element sendElem = document.createElement("send");
-                sendElem.setAttribute("target-index", String.valueOf(ss.targetIndex()));
+                // Story 322 — per-send snapshot state keyed by target bus.
+                // "target" is the bus id (the in-memory recall key);
+                // "target-index" is what survives a reload, because return
+                // bus ids are regenerated when a project is opened.
+                sendElem.setAttribute("target", ss.targetId().toString());
+                int targetIndex = indexOfReturnBus(returnBuses, ss.targetId());
+                if (targetIndex >= 0) {
+                    sendElem.setAttribute("target-index", String.valueOf(targetIndex));
+                }
                 sendElem.setAttribute("level", String.valueOf(ss.level()));
-                sendElem.setAttribute("mode", ss.mode().name());
+                sendElem.setAttribute("tap", ss.tap().name());
                 sendsElem.appendChild(sendElem);
             }
         }
@@ -994,6 +1002,15 @@ public final class ProjectSerializer {
         }
 
         return elem;
+    }
+
+    private static int indexOfReturnBus(List<MixerChannel> returnBuses, java.util.UUID busId) {
+        for (int i = 0; i < returnBuses.size(); i++) {
+            if (returnBuses.get(i).getId().equals(busId)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void buildBedBus(Document document, Element root, BedBusManager manager) {

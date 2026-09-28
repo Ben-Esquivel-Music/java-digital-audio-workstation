@@ -45,6 +45,15 @@ public final class Mixer {
     private final MixerChannel masterChannel;
     private final PluginDelayCompensation delayCompensation = new PluginDelayCompensation();
     private volatile MasteringChain masteringChain;
+    /**
+     * Story 322 — the VCA fader is audible: every channel's render gain is
+     * {@code channel.getVolume() × vcaGroups.effectiveLinearMultiplier(id)},
+     * resolved once per channel per block (post-fader sends ride it too;
+     * pre-fader / pre-insert sends do not). {@code null} means "no VCA
+     * scaling" (a bare {@code Mixer} outside a {@code DawProject}). Volatile:
+     * written by {@code DawProject} at construction, read once per block.
+     */
+    private volatile VcaGroupManager vcaGroups;
     private final ReflectiveParameterBinder reflectiveParameterBinder = new ReflectiveParameterBinder();
     private int preparedAudioChannels;
     private int preparedBlockSize;
@@ -265,13 +274,71 @@ public final class Mixer {
     }
 
     /**
-     * Returns the shared auxiliary/return bus used for send effects (e.g., reverb).
-     * This is the first return bus created by default.
+     * Returns the first return bus — the "aux bus" created by default and
+     * the target of {@code AutomationParameter.SEND_LEVEL} automation (story
+     * 322): the render pipeline writes that lane into the level of each
+     * channel's {@link Send} aimed at this bus. Audio reaches it only through
+     * {@link Send} objects on the multi-bus render path; the legacy
+     * single-aux mix-down and per-channel "send level" were removed in
+     * story 322 (Audio Engine Wiring Design Book §1.8, §5.6).
      *
-     * @return the aux bus channel
+     * <p>Allocation-free ({@code returnBuses.get(0)}) so it can be called on
+     * the real-time thread, unlike {@link #getReturnBuses()} which wraps the
+     * list. There is deliberately no empty guard here: {@link #removeReturnBus}
+     * may remove the last bus, so a real-time caller checks
+     * {@link #getReturnBusCount()} first and treats zero as "no aux bus"
+     * (story 322 fix round 1, B1) instead of paying for an {@code Optional}
+     * per block.</p>
+     *
+     * @return the first return bus
+     * @throws IndexOutOfBoundsException if every return bus has been removed
      */
+    @RealTimeSafe
     public MixerChannel getAuxBus() {
         return returnBuses.get(0);
+    }
+
+    /**
+     * Installs the {@link VcaGroupManager} whose
+     * {@link VcaGroupManager#effectiveLinearMultiplier(UUID)} is folded into
+     * every channel's render gain (story 322 — the VCA fader is audible,
+     * Audio Engine Wiring Design Book §5.6). {@code DawProject} wires its own
+     * manager here at construction; pass {@code null} to render without VCA
+     * scaling.
+     *
+     * @param vcaGroupManager the manager to consult, or {@code null}
+     */
+    public void setVcaGroupManager(VcaGroupManager vcaGroupManager) {
+        this.vcaGroups = vcaGroupManager;
+    }
+
+    /**
+     * Composite render gain of {@code channel}: its fader times the VCA
+     * multiplier of every group it belongs to ({@code 1.0} without a
+     * manager). Resolved once per channel per block by the render entries
+     * and threaded into {@link #routeSends} and the channel summing.
+     */
+    @RealTimeSafe
+    private static double compositeVolume(MixerChannel channel, VcaGroupManager vca) {
+        double volume = channel.getVolume();
+        return vca == null ? volume : volume * vca.effectiveLinearMultiplier(channel.getId());
+    }
+
+    /**
+     * Per-lane bus gain (story 322 bus pan law): the fader gain times the
+     * left / right pan multiplier on lanes 0 / 1, the fader gain alone on
+     * any lane beyond the stereo pair. Callers pass {@code 1.0} for both
+     * multipliers on a mono bus, which is therefore never panned.
+     */
+    @RealTimeSafe
+    private static double busLaneGain(int lane, double gain, double leftGain, double rightGain) {
+        if (lane == 0) {
+            return gain * leftGain;
+        }
+        if (lane == 1) {
+            return gain * rightGain;
+        }
+        return gain;
     }
 
     /**
@@ -354,8 +421,14 @@ public final class Mixer {
     /**
      * Returns the total number of return buses.
      *
+     * <p>Read on the real-time thread by {@code RenderPipeline} — the
+     * return-bus cap notice and the {@code SEND_LEVEL} automation guard
+     * (story 322 fix round 1, B1): a plain {@code ArrayList.size()},
+     * allocation-free and lock-free.</p>
+     *
      * @return return bus count
      */
+    @RealTimeSafe
     public int getReturnBusCount() {
         return returnBuses.size();
     }
@@ -507,6 +580,7 @@ public final class Mixer {
         }
 
         boolean anySolo = isAnySolo();
+        VcaGroupManager vca = this.vcaGroups;
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         for (int i = 0; i < channelCount; i++) {
@@ -539,96 +613,19 @@ public final class Mixer {
                 continue;
             }
 
+            double volumeD = compositeVolume(channel, vca);
             if (useDouble) {
                 sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames,
-                        null, 0L, 0L);
+                        volumeD, null, 0L, 0L);
             } else {
-                sumChannelToOutput(channel, src, outputBuffer, numFrames, null, 0L, 0L);
+                sumChannelToOutput(channel, src, outputBuffer, numFrames, (float) volumeD,
+                        null, 0L, 0L);
             }
         }
 
         sidechainChannelBuffers = channelBuffers;
         sidechainReturnBuffers = null;
         finishMasterMix(acc, outputBuffer, numFrames, null, masteringChain, null, false, true);
-    }
-
-    /**
-     * Sums all channel audio into the output buffer and routes send audio
-     * into the auxiliary output buffer, applying per-channel insert effects,
-     * volume, mute, solo, and send level. This method is allocation-free
-     * and lock-free when intermediate buffers have been pre-allocated.
-     *
-     * <p>For each non-muted channel with a non-zero send level, the channel's
-     * post-insert audio is scaled by the send level and summed into
-     * {@code auxOutputBuffer}. The aux bus volume is applied to the final
-     * aux output.</p>
-     *
-     * @param channelBuffers  per-channel audio data {@code [mixerChannel][audioChannel][frame]}
-     * @param outputBuffer    the destination main output buffer {@code [audioChannel][frame]}
-     * @param auxOutputBuffer the destination aux/send output buffer {@code [audioChannel][frame]}
-     * @param numFrames       the number of sample frames to mix
-     */
-    @RealTimeSafe
-    public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
-                        float[][] auxOutputBuffer, int numFrames) {
-        // Perform the main mix-down into outputBuffer
-        mixDown(channelBuffers, outputBuffer, numFrames);
-
-        // Clear aux output
-        for (float[] ch : auxOutputBuffer) {
-            Arrays.fill(ch, 0, numFrames, 0.0f);
-        }
-
-        boolean anySolo = isAnySolo();
-
-        MixerChannel auxBus = getAuxBus();
-
-        // Route sends to aux bus
-        int channelCount = Math.min(channels.size(), channelBuffers.length);
-        for (int i = 0; i < channelCount; i++) {
-            MixerChannel channel = channels.get(i);
-            if (channel.isMuted()) {
-                continue;
-            }
-            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
-                continue;
-            }
-
-            float sendLevel = (float) channel.getSendLevel();
-            if (sendLevel <= 0.0f) {
-                continue;
-            }
-
-            float[][] src = channelBuffers[i];
-            int audioChannels = Math.min(src.length, auxOutputBuffer.length);
-            for (int ch = 0; ch < audioChannels; ch++) {
-                for (int f = 0; f < numFrames; f++) {
-                    auxOutputBuffer[ch][f] += src[ch][f] * sendLevel;
-                }
-            }
-        }
-
-        // Apply aux bus insert effects
-        if (!auxBus.getEffectsChain().isEmpty()) {
-            auxBus.getEffectsChain().process(auxOutputBuffer, auxOutputBuffer, numFrames);
-        }
-
-        // Apply delay compensation for the aux bus (return bus index 0)
-        delayCompensation.applyToReturnBus(0, auxOutputBuffer, numFrames);
-
-        // Apply aux bus volume
-        float auxVolume = (float) auxBus.getVolume();
-        if (!auxBus.isMuted()) {
-            for (float[] ch : auxOutputBuffer) {
-                for (int f = 0; f < numFrames; f++) {
-                    ch[f] *= auxVolume;
-                }
-            }
-        } else {
-            for (float[] ch : auxOutputBuffer) {
-                Arrays.fill(ch, 0, numFrames, 0.0f);
-            }
-        }
     }
 
     /**
@@ -719,6 +716,7 @@ public final class Mixer {
         }
 
         boolean anySolo = isAnySolo();
+        VcaGroupManager vca = this.vcaGroups;
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
 
@@ -765,7 +763,11 @@ public final class Mixer {
                 }
             }
 
-            float volume = (float) channel.getVolume();
+            // Story 322 — composite gain (fader × VCA), resolved once per
+            // channel per block; post-fader sends and the summing stage
+            // both ride it.
+            double volumeD = compositeVolume(channel, vca);
+            float volume = (float) volumeD;
 
             // Route sends to return buses BEFORE applying delay compensation
             // so that return bus paths are compensated independently
@@ -784,9 +786,9 @@ public final class Mixer {
 
             if (useDouble) {
                 sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames,
-                        channelTap, tapEpoch, tapBlock);
+                        volumeD, channelTap, tapEpoch, tapBlock);
             } else {
-                sumChannelToOutput(channel, src, outputBuffer, numFrames,
+                sumChannelToOutput(channel, src, outputBuffer, numFrames, volume,
                         channelTap, tapEpoch, tapBlock);
             }
         }
@@ -831,6 +833,11 @@ public final class Mixer {
 
             float returnVolume = (float) returnBus.getVolume();
             int returnAudioChannels = Math.min(returnBuf.length, outputBuffer.length);
+            // Story 322 — return-bus pan: the unity-at-centre bus law on
+            // lanes 0/1 (PanLaw); a mono return is never panned.
+            double returnPan = returnBus.getPan();
+            double returnLeft = returnAudioChannels >= 2 ? PanLaw.busLeftGain(returnPan) : 1.0;
+            double returnRight = returnAudioChannels >= 2 ? PanLaw.busRightGain(returnPan) : 1.0;
 
             if (returnBus.isMuted() || (anySolo && !returnBus.isSolo() && !returnBus.isSoloSafe())) {
                 for (float[] ch : returnBuf) {
@@ -849,7 +856,8 @@ public final class Mixer {
                     // Apply return-bus volume in 64-bit and sum into the
                     // double accumulator (keep returnBuf coherent by also
                     // writing back the scaled value as float).
-                    sumReturnLaneDouble(returnBuf[ch], acc[ch], returnVolumeD, numFrames,
+                    sumReturnLaneDouble(returnBuf[ch], acc[ch],
+                            busLaneGain(ch, returnVolumeD, returnLeft, returnRight), numFrames,
                             returnTap, ch);
                 }
                 if (returnTap != null) {
@@ -861,7 +869,8 @@ public final class Mixer {
                     returnTap.beginBlock(tapEpoch, tapBlock, returnAudioChannels);
                 }
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
-                    sumReturnLane(returnBuf[ch], outputBuffer[ch], returnVolume, numFrames,
+                    sumReturnLane(returnBuf[ch], outputBuffer[ch],
+                            (float) busLaneGain(ch, returnVolume, returnLeft, returnRight), numFrames,
                             returnTap, ch);
                 }
                 if (returnTap != null) {
@@ -888,6 +897,11 @@ public final class Mixer {
     private void finishMasterMix(double[][] accumulator, float[][] output, int frames,
                                  TapSnapshot taps, MasteringChain masteringChain,
                                  float[][] extra, boolean bypassMaster, boolean stageMetersActive) {
+        // Story 322 — master pan: the unity-at-centre bus law on lanes 0/1
+        // (PanLaw), resolved once per block; a mono master is never panned.
+        double masterPan = masterChannel.getPan();
+        double masterLeft = output.length >= 2 ? PanLaw.busLeftGain(masterPan) : 1.0;
+        double masterRight = output.length >= 2 ? PanLaw.busRightGain(masterPan) : 1.0;
         try {
             if (taps != null && (bypassMaster || masteringChain == null)) {
                 int channels = masteringChain != null ? masteringChain.getOutputChannelCount() : output.length;
@@ -920,6 +934,7 @@ public final class Mixer {
                     }
                     finalizeAccumulator(accumulator, output, frames,
                             masterChannel.isMuted() ? 0.0 : masterChannel.getVolume(),
+                            masterLeft, masterRight,
                             taps != null ? taps.masterChain() : null,
                             taps != null ? taps.epoch() : 0L, taps != null ? taps.blockIndex() : 0L);
                     return;
@@ -930,7 +945,8 @@ public final class Mixer {
                 else inserts.process(output, output, frames, taps);
             }
             if (masteringChain != null) masteringChain.process(output, output, frames, taps, stageMetersActive);
-            applyMasterFader(output, frames, (float) masterChannel.getVolume(), masterChannel.isMuted(),
+            applyMasterFader(output, frames, (float) masterChannel.getVolume(),
+                    masterLeft, masterRight, masterChannel.isMuted(),
                     taps != null ? taps.masterChain() : null,
                     taps != null ? taps.epoch() : 0L, taps != null ? taps.blockIndex() : 0L);
         } finally {
@@ -945,10 +961,14 @@ public final class Mixer {
      * <em>pre-fader</em> value into the {@code MASTER_CHAIN} tap inside the
      * same pass when tapped — also while muted, because {@code MASTER_CHAIN}
      * is what an export would measure. Analysis rings receive the pre-fader
-     * block before it is scaled.
+     * block before it is scaled. Story 322: lanes 0/1 are scaled by the
+     * fader times the master pan-law multipliers ({@code leftGain} /
+     * {@code rightGain}, both {@code 1.0} on a mono master); the tap still
+     * sees the pre-fader, pre-pan value.
      */
     @RealTimeSafe
     private static void applyMasterFader(float[][] outputBuffer, int numFrames, float masterVolume,
+                                         double leftGain, double rightGain,
                                          boolean muted, LevelTapSlot masterTap,
                                          long tapEpoch, long tapBlock) {
         if (masterTap != null) {
@@ -957,7 +977,9 @@ public final class Mixer {
         }
         if (!muted) {
             for (int ch = 0; ch < outputBuffer.length; ch++) {
-                scaleMasterLane(outputBuffer[ch], masterVolume, numFrames, masterTap, ch);
+                scaleMasterLane(outputBuffer[ch],
+                        (float) busLaneGain(ch, masterVolume, leftGain, rightGain),
+                        numFrames, masterTap, ch);
             }
         } else {
             for (int ch = 0; ch < outputBuffer.length; ch++) {
@@ -1070,6 +1092,7 @@ public final class Mixer {
         }
 
         boolean anySolo = isAnySolo();
+        VcaGroupManager vca = this.vcaGroups;
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         int trackListSize = tracks.size();
@@ -1124,7 +1147,9 @@ public final class Mixer {
                 }
             }
 
-            float volume = (float) channel.getVolume();
+            // Story 322 — composite gain (fader × VCA), as in mixDown.
+            double volumeD = compositeVolume(channel, vca);
+            float volume = (float) volumeD;
 
             routeSends(channel, preInsertSrc, src, volume,
                     returnBuffers, returnBusCount, numFrames);
@@ -1143,9 +1168,9 @@ public final class Mixer {
 
             if (useDouble) {
                 sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames,
-                        channelTap, tapEpoch, tapBlock);
+                        volumeD, channelTap, tapEpoch, tapBlock);
             } else {
-                sumChannelToOutput(channel, src, outputBuffer, numFrames,
+                sumChannelToOutput(channel, src, outputBuffer, numFrames, volume,
                         channelTap, tapEpoch, tapBlock);
             }
 
@@ -1186,6 +1211,11 @@ public final class Mixer {
 
             float returnVolume = (float) returnBus.getVolume();
             int returnAudioChannels = Math.min(returnBuf.length, outputBuffer.length);
+            // Story 322 — return-bus pan: the unity-at-centre bus law on
+            // lanes 0/1 (PanLaw); a mono return is never panned.
+            double returnPan = returnBus.getPan();
+            double returnLeft = returnAudioChannels >= 2 ? PanLaw.busLeftGain(returnPan) : 1.0;
+            double returnRight = returnAudioChannels >= 2 ? PanLaw.busRightGain(returnPan) : 1.0;
             if (returnBus.isMuted() || (anySolo && !returnBus.isSolo() && !returnBus.isSoloSafe())) {
                 for (float[] ch : returnBuf) {
                     Arrays.fill(ch, 0, numFrames, 0.0f);
@@ -1200,7 +1230,8 @@ public final class Mixer {
                     returnTap.beginBlock(tapEpoch, tapBlock, returnAudioChannels);
                 }
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
-                    sumReturnLaneDouble(returnBuf[ch], acc[ch], returnVolumeD, numFrames,
+                    sumReturnLaneDouble(returnBuf[ch], acc[ch],
+                            busLaneGain(ch, returnVolumeD, returnLeft, returnRight), numFrames,
                             returnTap, ch);
                 }
                 if (returnTap != null) {
@@ -1212,7 +1243,8 @@ public final class Mixer {
                     returnTap.beginBlock(tapEpoch, tapBlock, returnAudioChannels);
                 }
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
-                    sumReturnLane(returnBuf[ch], outputBuffer[ch], returnVolume, numFrames,
+                    sumReturnLane(returnBuf[ch], outputBuffer[ch],
+                            (float) busLaneGain(ch, returnVolume, returnLeft, returnRight), numFrames,
                             returnTap, ch);
                 }
                 if (returnTap != null) {
@@ -1434,7 +1466,7 @@ public final class Mixer {
     @RealTimeSafe
     private static void finalizeAccumulator(double[][] acc, float[][] outputBuffer,
                                             int numFrames, double masterVolume) {
-        finalizeAccumulator(acc, outputBuffer, numFrames, masterVolume, null, 0L, 0L);
+        finalizeAccumulator(acc, outputBuffer, numFrames, masterVolume, 1.0, 1.0, null, 0L, 0L);
     }
 
     /**
@@ -1443,11 +1475,15 @@ public final class Mixer {
      * accumulator value is folded into {@code masterTap} inside the same
      * narrowing pass — also when the master is muted, because
      * {@code MASTER_CHAIN} is what an export would measure. Analysis rings
-     * receive the pre-fader accumulator, narrowed while copying.
+     * receive the pre-fader accumulator, narrowed while copying. Story 322:
+     * lanes 0/1 narrow at {@code masterVolume × leftGain / rightGain} (the
+     * master pan law; both {@code 1.0} on a mono master or when the caller
+     * is not the fader stage), every other lane at {@code masterVolume}.
      */
     @RealTimeSafe
     private static void finalizeAccumulator(double[][] acc, float[][] outputBuffer,
                                             int numFrames, double masterVolume,
+                                            double leftGain, double rightGain,
                                             LevelTapSlot masterTap, long tapEpoch, long tapBlock) {
         int channelCount = Math.min(acc.length, outputBuffer.length);
         if (masterTap != null) {
@@ -1470,7 +1506,8 @@ public final class Mixer {
             return;
         }
         for (int ch = 0; ch < channelCount; ch++) {
-            narrowLane(acc[ch], outputBuffer[ch], masterVolume, numFrames, masterTap, ch);
+            narrowLane(acc[ch], outputBuffer[ch],
+                    busLaneGain(ch, masterVolume, leftGain, rightGain), numFrames, masterTap, ch);
         }
         if (masterTap != null) {
             masterTap.publish(numFrames);
@@ -1652,14 +1689,15 @@ public final class Mixer {
     /**
      * Double-precision counterpart to {@link #sumChannelToOutput}: sums a
      * channel's post-insert audio into the 64-bit accumulator using the same
-     * constant-power pan law as the single-precision path.
+     * constant-power pan law as the single-precision path. {@code volume} is
+     * the caller-resolved composite gain (fader × VCA, story 322) — the
+     * channel is consulted only for its pan.
      */
     @RealTimeSafe
     private static void sumChannelToOutputDouble(MixerChannel channel, float[][] src,
                                                  double[][] acc, int outChannels,
-                                                 int numFrames, LevelTapSlot tap,
+                                                 int numFrames, double volume, LevelTapSlot tap,
                                                  long tapEpoch, long tapBlock) {
-        double volume = channel.getVolume();
         int audioChannels = Math.min(src.length, outChannels);
 
         if (outChannels >= 2 && audioChannels >= 1) {
@@ -1702,13 +1740,14 @@ public final class Mixer {
      * story 318) the scaled per-lane value is accumulated inside the same
      * summing loop — the post-fader signal is metered without an extra pass
      * or buffer — and the frame is published here; a mono source panned into
-     * a stereo bus meters as two lanes, exactly as it sums.
+     * a stereo bus meters as two lanes, exactly as it sums. {@code volume} is
+     * the caller-resolved composite gain (fader × VCA, story 322) — the
+     * channel is consulted only for its pan.
      */
     @RealTimeSafe
     private static void sumChannelToOutput(MixerChannel channel, float[][] src,
-                                           float[][] outputBuffer, int numFrames,
+                                           float[][] outputBuffer, int numFrames, float volume,
                                            LevelTapSlot tap, long tapEpoch, long tapBlock) {
-        float volume = (float) channel.getVolume();
         int audioChannels = Math.min(src.length, outputBuffer.length);
 
         if (outputBuffer.length >= 2 && audioChannels >= 1) {
@@ -1791,6 +1830,7 @@ public final class Mixer {
     public void renderDirectOutputs(float[][][] channelBuffers, float[][] hwOutputBuffer,
                                     int numFrames, TapSnapshot taps, boolean alignToMaster) {
         boolean anySolo = isAnySolo();
+        VcaGroupManager vca = this.vcaGroups;
         long tapEpoch = taps != null ? taps.epoch() : 0L;
         long tapBlock = taps != null ? taps.blockIndex() : 0L;
 
@@ -1815,7 +1855,8 @@ public final class Mixer {
 
             float[][] src = channelBuffers[i];
             if (alignToMaster) delayCompensation.applyToDirectOutput(i, src, numFrames);
-            float volume = (float) channel.getVolume();
+            // Story 322 — composite gain (fader × VCA) for direct outputs too.
+            float volume = (float) compositeVolume(channel, vca);
             int firstOut = routing.firstChannel();
             int outChannels = routing.channelCount();
             int availableOutputs = Math.max(0, Math.min(outChannels, hwOutputBuffer.length - firstOut));

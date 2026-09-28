@@ -232,37 +232,41 @@ class MixerTest {
         assertThat(mixer.getAuxBus().getName()).isEqualTo("Reverb Return");
     }
 
+    // Story 322 — the dead single-aux mixDown overload and the scalar
+    // MixerChannel "send level" are gone; the aux bus is fed only by Send
+    // objects on the multi-bus path, which these tests now exercise.
+
     @Test
-    void shouldRouteSendToAuxBuffer() {
+    void shouldRouteSendToAuxReturnBuffer() {
         Mixer mixer = new Mixer();
         MixerChannel ch = new MixerChannel("Ch1");
-        ch.setSendLevel(0.5);
+        ch.addSend(new Send(mixer.getAuxBus(), 0.5, SendTap.POST_FADER));
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f, -1.0f}}};
         float[][] output = {{0.0f, 0.0f}};
-        float[][] auxOutput = {{0.0f, 0.0f}};
+        float[][][] returnBuffers = {{{0.0f, 0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 2);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 2);
 
-        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
-        assertThat(auxOutput[0][1]).isEqualTo(-0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][1]).isEqualTo(-0.5f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 
     @Test
     void shouldNotRouteSendWhenSendLevelIsZero() {
         Mixer mixer = new Mixer();
         MixerChannel ch = new MixerChannel("Ch1");
-        ch.setSendLevel(0.0);
+        ch.addSend(new Send(mixer.getAuxBus(), 0.0, SendTap.POST_FADER));
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f}}};
         float[][] output = {{0.0f}};
-        float[][] auxOutput = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
 
-        assertThat(auxOutput[0][0]).isEqualTo(0.0f);
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.0f);
     }
 
     @Test
@@ -270,16 +274,17 @@ class MixerTest {
         Mixer mixer = new Mixer();
         mixer.getAuxBus().setVolume(0.5);
         MixerChannel ch = new MixerChannel("Ch1");
-        ch.setSendLevel(1.0);
+        ch.addSend(new Send(mixer.getAuxBus(), 1.0, SendTap.POST_FADER));
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f}}};
         float[][] output = {{0.0f}};
-        float[][] auxOutput = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
 
-        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        // The post-fader return value is written back into the return buffer.
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 
     @Test
@@ -287,42 +292,43 @@ class MixerTest {
         Mixer mixer = new Mixer();
         mixer.getAuxBus().setMuted(true);
         MixerChannel ch = new MixerChannel("Ch1");
-        ch.setSendLevel(1.0);
+        ch.addSend(new Send(mixer.getAuxBus(), 1.0, SendTap.POST_FADER));
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f}}};
         float[][] output = {{0.0f}};
-        float[][] auxOutput = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
 
-        assertThat(auxOutput[0][0]).isEqualTo(0.0f);
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.0f);
+        assertThat(output[0][0]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 
     @Test
     void shouldNotRouteSendForMutedChannel() {
         Mixer mixer = new Mixer();
         MixerChannel ch = new MixerChannel("Ch1");
-        ch.setSendLevel(1.0);
+        ch.addSend(new Send(mixer.getAuxBus(), 1.0, SendTap.POST_FADER));
         ch.setMuted(true);
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f}}};
         float[][] output = {{0.0f}};
-        float[][] auxOutput = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
 
-        assertThat(auxOutput[0][0]).isEqualTo(0.0f);
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.0f);
     }
 
     @Test
-    void shouldSumMultipleChannelSendsIntoAuxBuffer() {
+    void shouldSumMultipleChannelSendsIntoAuxReturnBuffer() {
         Mixer mixer = new Mixer();
         MixerChannel ch1 = new MixerChannel("Ch1");
-        ch1.setSendLevel(0.5);
+        ch1.addSend(new Send(mixer.getAuxBus(), 0.5, SendTap.POST_FADER));
         MixerChannel ch2 = new MixerChannel("Ch2");
-        ch2.setSendLevel(0.3);
+        ch2.addSend(new Send(mixer.getAuxBus(), 0.3, SendTap.POST_FADER));
         mixer.addChannel(ch1);
         mixer.addChannel(ch2);
 
@@ -331,12 +337,12 @@ class MixerTest {
                 {{1.0f}}
         };
         float[][] output = {{0.0f}};
-        float[][] auxOutput = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
 
         // 1.0 * 0.5 + 1.0 * 0.3 = 0.8
-        assertThat(auxOutput[0][0]).isEqualTo(0.8f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.8f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 
     // ── Multiple return bus tests ───────────────────────────────────────────
@@ -720,25 +726,6 @@ class MixerTest {
     }
 
     @Test
-    void shouldApplyInsertEffectsInAuxSendMixDown() {
-        Mixer mixer = new Mixer();
-        MixerChannel ch = new MixerChannel("Ch1");
-        ch.addInsert(new InsertSlot("Gain", new GainProcessor(0.5f)));
-        ch.setSendLevel(1.0);
-        mixer.addChannel(ch);
-
-        float[][][] channelBuffers = {{{1.0f, -1.0f}}};
-        float[][] output = {{0.0f, 0.0f}};
-        float[][] auxOutput = {{0.0f, 0.0f}};
-
-        mixer.mixDown(channelBuffers, output, auxOutput, 2);
-
-        // Insert halves the signal; aux send taps post-insert audio
-        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
-        assertThat(auxOutput[0][1]).isEqualTo(-0.5f, org.assertj.core.data.Offset.offset(1e-6f));
-    }
-
-    @Test
     void shouldApplyInsertEffectsOnStereoChannelBuffers() {
         Mixer mixer = new Mixer();
         MixerChannel ch = new MixerChannel("Ch1");
@@ -994,10 +981,10 @@ class MixerTest {
     }
 
     @Test
-    void auxMixDownShouldApplyReturnBusInsertEffects() {
+    void multiBusMixDownShouldApplyReturnBusInsertEffectsToAuxSend() {
         Mixer mixer = new Mixer();
         MixerChannel ch = new MixerChannel("Ch1");
-        ch.setSendLevel(1.0);
+        ch.addSend(new Send(mixer.getAuxBus(), 1.0, SendTap.POST_FADER));
         mixer.addChannel(ch);
 
         // Add a gain processor to the aux bus
@@ -1006,21 +993,21 @@ class MixerTest {
 
         float[][][] channelBuffers = {{{1.0f, 1.0f, 1.0f, 1.0f}}};
         float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        float[][] auxOutput = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        float[][][] returnBuffers = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 4);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 4);
 
         // Aux bus has a 0.5 gain processor applied before volume (1.0)
         // Send taps 1.0 * 1.0 (send level) → gain processor halves → 0.5
-        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
-        assertThat(auxOutput[0][3]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][3]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 
     @Test
-    void auxMixDownShouldApplyReturnBusCompensationDelay() {
+    void multiBusMixDownShouldApplyReturnBusCompensationDelayToAuxSend() {
         Mixer mixer = new Mixer();
         MixerChannel ch = new MixerChannel("Ch1");
-        ch.setSendLevel(1.0);
+        ch.addSend(new Send(mixer.getAuxBus(), 1.0, SendTap.POST_FADER));
         // Channel has 2-sample latency insert
         ch.addInsert(new InsertSlot("Latent", new LatencyProcessor(2)));
         mixer.addChannel(ch);
@@ -1029,15 +1016,15 @@ class MixerTest {
         // Channel has 2 samples latency, aux bus has 0 → aux bus gets 2-sample compensation
         float[][][] channelBuffers = {{{1.0f, 2.0f, 3.0f, 4.0f}}};
         float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        float[][] auxOutput = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        float[][][] returnBuffers = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
 
-        mixer.mixDown(channelBuffers, output, auxOutput, 4);
+        mixer.mixDown(channelBuffers, output, returnBuffers, 4);
 
         // The aux bus gets 2-sample compensation delay, so first 2 samples should be 0
-        assertThat(auxOutput[0][0]).isEqualTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
-        assertThat(auxOutput[0][1]).isEqualTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][1]).isEqualTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
         // Then delayed audio appears (1.0 and 2.0 from input)
-        assertThat(auxOutput[0][2]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
-        assertThat(auxOutput[0][3]).isEqualTo(2.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][2]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[0][0][3]).isEqualTo(2.0f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 }

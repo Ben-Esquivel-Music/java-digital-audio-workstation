@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.RecallSnapshotAction;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SaveSnapshotAction;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -101,8 +102,11 @@ public final class MixerSnapshotsPanel extends VBox {
 
     /**
      * Sets a callback invoked whenever the panel mutates the snapshot
-     * manager (save, delete, recall). The host (e.g. {@link MixerView})
-     * uses this to refresh dependent UI like A/B button highlights.
+     * manager (save, delete, recall) — and again on every undo / redo of a
+     * recall, because the recall's undo entry runs the hook itself (see
+     * {@link #recallSnapshot}). The host (e.g. {@link MixerView}) uses this
+     * to refresh dependent UI like A/B button highlights and to heal the
+     * {@code Track} mirrors of a channel-only recall.
      *
      * @param onChange the callback (must not be {@code null})
      */
@@ -164,17 +168,46 @@ public final class MixerSnapshotsPanel extends VBox {
      * restoring all per-channel volumes, pans, mutes, solos, insert
      * parameters, and send levels.
      *
+     * <p>The undo entry is a compound whose {@code execute()} <em>and</em>
+     * {@code undo()} run the {@link #setOnChange onChange} hook after the
+     * {@link RecallSnapshotAction} — exactly like {@code MixerView.recallSlot}
+     * / {@code toggleAB}. A {@code MixerSnapshot} writes channels only, so the
+     * hook is what heals the {@code Track} mirrors (story 322 — Audio Engine
+     * Wiring Design Book §2.10); running it inside the entry keeps the heal
+     * with the model change on undo / redo too, instead of relying on a
+     * history listener the host removes while it is off-screen (the
+     * {@code MixerView} releases its listeners on scene detach, and Edit ▸
+     * Undo from the Arrangement view would otherwise leave the arrangement's
+     * mute / solo showing a state the engine no longer has).</p>
+     *
      * @param snapshot the snapshot to recall
      */
     public void recallSnapshot(MixerSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot must not be null");
-        RecallSnapshotAction action = new RecallSnapshotAction(mixer, snapshot);
+        RecallSnapshotAction recall = new RecallSnapshotAction(mixer, snapshot);
+        UndoableAction action = new UndoableAction() {
+            @Override
+            public String description() {
+                return recall.description() + " (" + snapshot.name() + ")";
+            }
+
+            @Override
+            public void execute() {
+                recall.execute();
+                onChange.run();
+            }
+
+            @Override
+            public void undo() {
+                recall.undo();
+                onChange.run();
+            }
+        };
         if (undoManager != null) {
             undoManager.execute(action);
         } else {
             action.execute();
         }
-        onChange.run();
     }
 
     private void promptAndSave() {

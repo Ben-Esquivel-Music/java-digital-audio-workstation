@@ -150,6 +150,12 @@ class SessionInterchangeControllerTest {
         assertThat(drumsChannel.getPan()).isCloseTo(-0.5, within(0.001));
         assertThat(drumsChannel.isMuted()).isTrue();
         assertThat(drumsChannel.isSolo()).isFalse();
+        // Story 322 (§2.10) — the Track mirror is seeded in the same dual-write,
+        // so the arrangement lane and the mixer strip agree from the first frame.
+        assertThat(drums.getVolume()).as("Track mirror").isCloseTo(0.8, within(0.001));
+        assertThat(drums.getPan()).as("Track mirror").isCloseTo(-0.5, within(0.001));
+        assertThat(drums.isMuted()).as("Track mirror").isTrue();
+        assertThat(drums.isSolo()).as("Track mirror").isFalse();
 
         Track synth = project.getTracks().get(1);
         assertThat(synth.getName()).isEqualTo("Synth");
@@ -160,6 +166,10 @@ class SessionInterchangeControllerTest {
         assertThat(synthChannel.getPan()).isCloseTo(0.3, within(0.001));
         assertThat(synthChannel.isMuted()).isFalse();
         assertThat(synthChannel.isSolo()).isTrue();
+        assertThat(synth.getVolume()).as("Track mirror").isCloseTo(0.6, within(0.001));
+        assertThat(synth.getPan()).as("Track mirror").isCloseTo(0.3, within(0.001));
+        assertThat(synth.isMuted()).as("Track mirror").isFalse();
+        assertThat(synth.isSolo()).as("Track mirror").isTrue();
     }
 
     @Test

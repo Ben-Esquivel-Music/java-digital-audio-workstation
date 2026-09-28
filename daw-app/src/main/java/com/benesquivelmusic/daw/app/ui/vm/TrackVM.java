@@ -54,9 +54,19 @@ import java.util.function.Consumer;
  *
  * <h2>Threading</h2>
  *
- * <p>The core signal may fire on any thread; every property write is marshalled
- * onto the FX thread through the story-289 {@link FxDispatcher#onFx(Runnable)}
- * (§4.5). {@code TrackVM} carries no continuous (per-frame) value, so unlike
+ * <p>The core signal may fire on any thread. A property write is applied inline
+ * when the signal already arrives on the FX thread (story 322 — so a binder's
+ * stateless {@code now != vmValue} echo guard sees the republished value
+ * synchronously, the {@code ProjectVM.applyOnFx} precedent) and is otherwise
+ * marshalled through the story-289 {@link FxDispatcher#onFx(Runnable)} (§4.5).
+ * Every write re-reads the track, so an inline update interleaved with a
+ * still-queued off-thread one converges on the authority regardless of order.
+ * The FX-thread test is {@link FxDispatcher#isFxThread()} — the lock-free
+ * field compare every VM uses, never {@code Platform.isFxApplicationThread()},
+ * which takes the {@code Toolkit} class monitor (see {@code ChannelVM},
+ * "Threading") — and the per-flag writes are runnables built once in the
+ * constructor, so a signal allocates nothing before it is marshalled.
+ * {@code TrackVM} carries no continuous (per-frame) value, so unlike
  * {@code TransportVM} it opens no {@link FxDispatcher.ContinuousDoubleChannel}.</p>
  *
  * <h2>Lifecycle</h2>
@@ -90,6 +100,17 @@ public final class TrackVM {
     /** Removal token returned by {@link Track#addChangeListener(Consumer)}. */
     private final Runnable unregister;
 
+    /**
+     * The per-flag republishes, built once in the constructor so
+     * {@link #onCoreChange} hands {@link #applyOnFx} a pre-existing
+     * {@link Runnable} instead of allocating a capturing lambda per signal
+     * (the {@code ChannelVM} discipline; see the class Javadoc, "Threading").
+     */
+    private final Runnable republishName;
+    private final Runnable republishMuted;
+    private final Runnable republishSoloed;
+    private final Runnable republishArmed;
+
     private boolean disposed;
 
     /**
@@ -104,6 +125,10 @@ public final class TrackVM {
         this.track = Objects.requireNonNull(track, "track must not be null");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
         this.trackId = UUID.fromString(track.getId());
+        this.republishName = () -> name.set(track.getName());
+        this.republishMuted = () -> muted.set(track.isMuted());
+        this.republishSoloed = () -> soloed.set(track.isSolo());
+        this.republishArmed = () -> armed.set(track.isArmed());
 
         // Seed every property with the current state so a control binding shows
         // the correct value before the first signal arrives.
@@ -123,12 +148,26 @@ public final class TrackVM {
      */
     private void onCoreChange(ChangeKind kind) {
         switch (kind) {
-            case NAME -> dispatcher.onFx(() -> name.set(track.getName()));
-            case MUTE -> dispatcher.onFx(() -> muted.set(track.isMuted()));
-            case SOLO -> dispatcher.onFx(() -> soloed.set(track.isSolo()));
-            case ARM -> dispatcher.onFx(() -> armed.set(track.isArmed()));
+            case NAME -> applyOnFx(republishName);
+            case MUTE -> applyOnFx(republishMuted);
+            case SOLO -> applyOnFx(republishSoloed);
+            case ARM -> applyOnFx(republishArmed);
             // Volume/pan are projected by ChannelVM, not TrackVM.
             case VOLUME, PAN -> { }
+        }
+    }
+
+    /**
+     * Inline when already on the FX thread — {@link FxDispatcher#isFxThread()},
+     * the lock-free field compare, never {@code Platform.isFxApplicationThread()}
+     * — otherwise marshalled through {@link FxDispatcher#onFx(Runnable)} (see
+     * the class Javadoc, "Threading").
+     */
+    private void applyOnFx(Runnable write) {
+        if (dispatcher.isFxThread()) {
+            write.run();
+        } else {
+            dispatcher.onFx(write);
         }
     }
 

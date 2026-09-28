@@ -54,7 +54,6 @@ public final class ChannelLinkPopover {
     private final CheckBox fadersBox;
     private final CheckBox pansBox;
     private final CheckBox muteSoloBox;
-    private final CheckBox insertsBox;
     private final CheckBox sendsBox;
     private final Button unlinkButton;
 
@@ -91,8 +90,8 @@ public final class ChannelLinkPopover {
                 v -> currentLink.withLinkPans(v));
         muteSoloBox = checkBox("Link Mute / Solo", link.linkMuteSolo(),
                 v -> currentLink.withLinkMuteSolo(v));
-        insertsBox  = checkBox("Link Inserts",     link.linkInserts(),
-                v -> currentLink.withLinkInserts(v));
+        // Story 322 — "Link Inserts" removed: no plugin-clone contract exists
+        // to honour it, so the checkbox stored an intent nothing consumed.
         sendsBox    = checkBox("Link Sends",       link.linkSends(),
                 v -> currentLink.withLinkSends(v));
 
@@ -108,7 +107,7 @@ public final class ChannelLinkPopover {
 
         VBox root = new VBox(6,
                 header, new Separator(), modeRow,
-                fadersBox, pansBox, muteSoloBox, insertsBox, sendsBox,
+                fadersBox, pansBox, muteSoloBox, sendsBox,
                 new Separator(), bottomRow);
         root.setPadding(new Insets(8));
         root.getStyleClass().add("channel-link-popover");
@@ -183,7 +182,6 @@ public final class ChannelLinkPopover {
     CheckBox getFadersBox()           { return fadersBox; }
     CheckBox getPansBox()             { return pansBox; }
     CheckBox getMuteSoloBox()         { return muteSoloBox; }
-    CheckBox getInsertsBox()          { return insertsBox; }
     CheckBox getSendsBox()            { return sendsBox; }
     Button getUnlinkButton()          { return unlinkButton; }
 }

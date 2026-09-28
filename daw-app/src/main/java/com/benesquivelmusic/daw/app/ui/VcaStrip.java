@@ -27,6 +27,7 @@ import javafx.scene.paint.Color;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
@@ -39,6 +40,14 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * fader writes through {@link SetVcaGainAction}, so all gain moves are
  * undoable; the mute and solo buttons mute or solo every member channel
  * in one shot, mirroring the behavior of every console / DAW VCA channel.</p>
+ *
+ * <p>Story 322 (Audio Engine Wiring Design Book §5.6 "VCA mute/solo"): the
+ * strip never writes a member's {@code MixerChannel} itself. Mute and solo
+ * are raised as <em>intents</em> through the {@code muteIntent} /
+ * {@code soloIntent} consumers the host supplies — {@link MixerView} routes
+ * them into the one command path that dual-writes {@code Track} and
+ * {@code MixerChannel}, so the arrangement lane and the mixer strip stay in
+ * lock-step with what the engine renders.</p>
  *
  * <p>Drag-to-assign: the strip accepts JavaFX drag-and-drop drops carrying
  * {@link #CHANNEL_ID_FORMAT} payloads and assigns the channel via
@@ -69,6 +78,8 @@ public final class VcaStrip extends VBox {
     private final UndoManager undoManager;
     private final Runnable onChange;
     private final Function<UUID, MixerChannel> channelLookup;
+    private final BiConsumer<MixerChannel, Boolean> muteIntent;
+    private final BiConsumer<MixerChannel, Boolean> soloIntent;
 
     private final TextField nameField;
     private final Slider gainFader;
@@ -85,22 +96,33 @@ public final class VcaStrip extends VBox {
      * @param manager       the manager owning the group; mutations route through it
      * @param undoManager   undo manager for fader/assign actions; may be {@code null}
      * @param channelLookup resolves a member-channel UUID to its
-     *                      {@link MixerChannel} so mute/solo can update each
+     *                      {@link MixerChannel} so mute/solo can target each
      *                      member; pass {@code id -> null} if no mapping is
      *                      available (mute/solo become no-ops)
+     * @param muteIntent    raises "set this member's mute to {@code v}" into
+     *                      the host's intent path (story 322); must not be {@code null}
+     * @param soloIntent    raises "set this member's solo to {@code v}" into
+     *                      the host's intent path (story 322); must not be {@code null}
      * @param onChange      callback invoked after any structural change
      *                      (rename, color, delete, member-add/remove) so
      *                      {@link MixerView} can re-render dependent strips
+     * @throws NullPointerException if {@code group}, {@code manager},
+     *                              {@code channelLookup}, {@code muteIntent}
+     *                              or {@code soloIntent} is {@code null}
      */
     public VcaStrip(VcaGroup group,
                     VcaGroupManager manager,
                     UndoManager undoManager,
                     Function<UUID, MixerChannel> channelLookup,
+                    BiConsumer<MixerChannel, Boolean> muteIntent,
+                    BiConsumer<MixerChannel, Boolean> soloIntent,
                     Runnable onChange) {
         this.group = Objects.requireNonNull(group, "group must not be null");
         this.manager = Objects.requireNonNull(manager, "manager must not be null");
         this.undoManager = undoManager;
         this.channelLookup = Objects.requireNonNull(channelLookup, "channelLookup must not be null");
+        this.muteIntent = Objects.requireNonNull(muteIntent, "muteIntent must not be null");
+        this.soloIntent = Objects.requireNonNull(soloIntent, "soloIntent must not be null");
         this.onChange = onChange != null ? onChange : () -> {};
 
         getStyleClass().addAll("mixer-channel", "vca-strip");
@@ -189,18 +211,24 @@ public final class VcaStrip extends VBox {
             } else {
                 manager.setMasterGainDb(group.id(), finalValue);
             }
+            // Story 322 — the member strips' "VCA: <name> (<gain> dB)" badges
+            // read effectiveGainDb on rebuild; a committed gain move is a
+            // change they must show.
+            onChange.run();
         });
 
         // ── Mute / Solo / Delete row ───────────────────────────────────────
+        // Story 322 — both raise intents; the host's command path performs the
+        // Track + MixerChannel dual-write (never MixerChannel::setMuted here).
         muteBtn = new Button("M");
         muteBtn.getStyleClass().add("track-mute-button");
         muteBtn.setTooltip(new Tooltip("Mute every member channel"));
-        muteBtn.setOnAction(_ -> applyToAllMembers(MixerChannel::isMuted, MixerChannel::setMuted));
+        muteBtn.setOnAction(_ -> applyToAllMembers(MixerChannel::isMuted, muteIntent));
 
         soloBtn = new Button("S");
         soloBtn.getStyleClass().add("track-solo-button");
         soloBtn.setTooltip(new Tooltip("Solo every member channel"));
-        soloBtn.setOnAction(_ -> applyToAllMembers(MixerChannel::isSolo, MixerChannel::setSolo));
+        soloBtn.setOnAction(_ -> applyToAllMembers(MixerChannel::isSolo, soloIntent));
 
         Button deleteBtn = new Button("✕");
         deleteBtn.getStyleClass().add("track-arm-button");
@@ -322,17 +350,21 @@ public final class VcaStrip extends VBox {
         });
     }
 
+    /**
+     * Raises {@code intent} for every member with the same target flag —
+     * the negation of the <em>first</em> member's current state — so the
+     * engineer sees a single coherent "all members on" / "all members off"
+     * transition instead of a per-channel flip-flop. The intent (not this
+     * strip) writes the model (story 322).
+     */
     private void applyToAllMembers(java.util.function.Predicate<MixerChannel> getter,
-                                   java.util.function.BiConsumer<MixerChannel, Boolean> setter) {
-        // Toggle based on the *first* member's state, then propagate to all,
-        // so the engineer sees a single coherent "all members on" / "all
-        // members off" transition instead of a per-channel flip-flop.
+                                   BiConsumer<MixerChannel, Boolean> intent) {
         Boolean target = null;
         for (UUID id : group.memberChannelIds()) {
             MixerChannel ch = channelLookup.apply(id);
             if (ch == null) continue;
             if (target == null) target = !getter.test(ch);
-            setter.accept(ch, target);
+            intent.accept(ch, target);
         }
         onChange.run();
     }

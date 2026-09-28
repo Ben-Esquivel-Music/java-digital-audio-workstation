@@ -72,7 +72,7 @@ class ChannelLinkManagerTest {
         right.setVolume(0.9);
 
         ChannelLink link = new ChannelLink(UUID.randomUUID(), UUID.randomUUID(),
-                LinkMode.ABSOLUTE, true, true, true, true, true);
+                LinkMode.ABSOLUTE, true, true, true, true);
 
         double oldVol = left.getVolume();
         left.setVolume(0.7);
@@ -90,7 +90,7 @@ class ChannelLinkManagerTest {
         right.setVolume(0.8);   // pre-existing +0.3 offset
 
         ChannelLink link = new ChannelLink(UUID.randomUUID(), UUID.randomUUID(),
-                LinkMode.RELATIVE, true, true, true, true, true);
+                LinkMode.RELATIVE, true, true, true, true);
 
         double oldVol = left.getVolume();
         left.setVolume(0.6);    // +0.1 delta
@@ -109,7 +109,7 @@ class ChannelLinkManagerTest {
         right.setVolume(0.95);
 
         ChannelLink link = new ChannelLink(UUID.randomUUID(), UUID.randomUUID(),
-                LinkMode.RELATIVE, true, true, true, true, true);
+                LinkMode.RELATIVE, true, true, true, true);
 
         double oldVol = left.getVolume();
         left.setVolume(0.8); // +0.3 → would push right to 1.25
@@ -141,9 +141,9 @@ class ChannelLinkManagerTest {
         MixerChannel rightRel = new MixerChannel("R-rel");
 
         ChannelLink absLink = new ChannelLink(UUID.randomUUID(), UUID.randomUUID(),
-                LinkMode.ABSOLUTE, true, true, true, true, true);
+                LinkMode.ABSOLUTE, true, true, true, true);
         ChannelLink relLink = new ChannelLink(UUID.randomUUID(), UUID.randomUUID(),
-                LinkMode.RELATIVE, true, true, true, true, true);
+                LinkMode.RELATIVE, true, true, true, true);
 
         manager.applyPanChange(absLink, rightAbs, -0.5);
         manager.applyPanChange(relLink, rightRel, -0.5);
@@ -178,7 +178,7 @@ class ChannelLinkManagerTest {
         partner.setPan(0.0);
 
         ChannelLink fadersOff = new ChannelLink(UUID.randomUUID(), UUID.randomUUID(),
-                LinkMode.ABSOLUTE, false, false, false, false, false);
+                LinkMode.ABSOLUTE, false, false, false, false);
 
         // No-op: linkFaders=false.
         MixerChannel src = new MixerChannel("L");
@@ -241,20 +241,20 @@ class ChannelLinkManagerTest {
         manager.link(ChannelLink.ofPair(left, right));
 
         ChannelLink updated = new ChannelLink(left, right,
-                LinkMode.ABSOLUTE, true, false, true, false, false);
+                LinkMode.ABSOLUTE, true, false, true, false);
         manager.replace(updated);
 
         ChannelLink stored = manager.getLink(left);
         assertThat(stored.mode()).isEqualTo(LinkMode.ABSOLUTE);
         assertThat(stored.linkPans()).isFalse();
-        assertThat(stored.linkInserts()).isFalse();
+        assertThat(stored.linkSends()).isFalse();
     }
 
     @Test
     void channelLinkRecordRejectsSameLeftAndRight() {
         UUID id = UUID.randomUUID();
         assertThatThrownBy(() -> new ChannelLink(id, id, LinkMode.ABSOLUTE,
-                true, true, true, true, true))
+                true, true, true, true))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

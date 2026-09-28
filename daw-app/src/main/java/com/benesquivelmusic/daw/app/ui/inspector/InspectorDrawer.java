@@ -291,21 +291,33 @@ public final class InspectorDrawer extends Control {
         source.addEventFilter(MixerChannelStrip.InsertSelectedEvent.INSERT_SELECTED, ev -> {
             // Extract the channel's UUID from the originating MixerChannelStrip
             // so the InsertSelection disambiguates inserts across channels.
-            java.util.UUID channelId = null;
-            if (ev.getSource() instanceof MixerChannelStrip strip) {
-                channelId = strip.getChannelId();
-            }
+            // Read the TARGET, not the source: JavaFX re-sources an event at
+            // every node of its dispatch chain, so at a filter installed on
+            // an ancestor pane getSource() is that ancestor — only the target
+            // (the strip that fired it) is stable (story 322, the first
+            // production strip suite to reach this filter).
             getSelectionModel().setSelection(
-                    new InspectorSelection.InsertSelection(channelId, ev.getInsertIndex()));
+                    new InspectorSelection.InsertSelection(stripChannelId(ev), ev.getInsertIndex()));
         });
         source.addEventFilter(MixerChannelStrip.SendSelectedEvent.SEND_SELECTED, ev -> {
-            java.util.UUID channelId = null;
-            if (ev.getSource() instanceof MixerChannelStrip strip) {
-                channelId = strip.getChannelId();
-            }
             getSelectionModel().setSelection(
-                    new InspectorSelection.SendSelection(channelId, ev.getSendIndex()));
+                    new InspectorSelection.SendSelection(stripChannelId(ev), ev.getSendIndex()));
         });
+    }
+
+    /**
+     * The channel id of the {@link MixerChannelStrip} an insert / send selection
+     * event was fired from — its event <em>target</em> (or, for an event built
+     * without a target, its source) — or {@code null} if neither is a strip.
+     */
+    private static java.util.UUID stripChannelId(javafx.event.Event ev) {
+        if (ev.getTarget() instanceof MixerChannelStrip strip) {
+            return strip.getChannelId();
+        }
+        if (ev.getSource() instanceof MixerChannelStrip strip) {
+            return strip.getChannelId();
+        }
+        return null;
     }
 
     /** Manually publishes a selection — primarily for tests and external controllers. */

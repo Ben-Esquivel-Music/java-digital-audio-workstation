@@ -53,8 +53,11 @@ import java.util.function.DoubleConsumer;
  * onto a later turn of the FX event loop — even when called from the FX thread
  * itself — {@link #onFx(Runnable)} likewise never runs a post inline. Call sites
  * that want an inline fast-path when they are already on the FX thread test
- * {@link Platform#isFxApplicationThread()} themselves and hand only the
- * off-thread case to the seam (as {@code MixerView} does).
+ * for the FX thread themselves and hand only the off-thread case to the seam
+ * (as {@code MixerView} does). A call site the <strong>audio thread</strong> can
+ * reach — the view-model layer's core-signal handlers (story 322) — makes that
+ * test through {@link #isFxThread()}, never through
+ * {@link Platform#isFxApplicationThread()}; see that method for why.
  *
  * <p>{@link #onFx(Object, Runnable)} adds keyed per-frame coalescing: N posts
  * with the same {@code key} within one animation pulse collapse to a single
@@ -198,6 +201,18 @@ public final class FxDispatcher {
 
     /** Whether {@link #start()} has run (and {@link #dispose()} has not). */
     private boolean started;
+
+    /**
+     * The JavaFX Application Thread, recorded by {@link #start()} (FX-thread-only
+     * by contract) and re-asserted by every pulse (an {@link AnimationTimer}
+     * fires only on the FX thread); {@code null} until then. {@code volatile}
+     * so an audio-thread reader of {@link #isFxThread()} sees the reference the
+     * FX thread published, with no lock. Deliberately not cleared by
+     * {@link #dispose()}: the FX thread does not change for the life of the
+     * toolkit, and a disposed dispatcher's view-models may still receive a
+     * last core signal.
+     */
+    private volatile Thread fxThread;
 
     /** Creates an unstarted dispatcher. Call {@link #start()} on the FX thread. */
     public FxDispatcher() {
@@ -343,6 +358,57 @@ public final class FxDispatcher {
     /** Releases queued work when its surface is disposed or rebound. */
     public void cancelKey(Object key) {
         keyedWork.remove(Objects.requireNonNull(key));
+    }
+
+    // ── FX-thread test for audio-thread-reachable call sites (story 322) ─────
+
+    /**
+     * Whether the caller is on the JavaFX Application Thread — a plain
+     * reference compare against the thread recorded by {@link #start()},
+     * <strong>not</strong> {@link Platform#isFxApplicationThread()}.
+     *
+     * <p>Why not the toolkit's own query: {@code Platform.isFxApplicationThread()}
+     * delegates to {@code PlatformImpl}, which calls the
+     * {@code static synchronized Toolkit.getToolkit()} — every call acquires the
+     * {@code Toolkit.class} monitor, a lock the FX thread also takes on every
+     * pulse, {@code runLater} and dirty mark. The view-model layer asks this
+     * question on the core-signal path that {@code RenderPipeline.applyAutomation}
+     * drives per block on the <em>audio</em> thread ({@code ChannelVM.onCoreChange};
+     * Audio Engine Wiring Design Book §6.1 — the RT callback never locks), so
+     * the answer has to come from a lock-free read. Here it is one volatile
+     * read plus an identity compare, which is what the {@link RealTimeSafe}
+     * annotation promises.</p>
+     *
+     * <p>An un-started dispatcher has recorded no thread and falls back to
+     * {@code Platform.isFxApplicationThread()}. That branch is never reached
+     * from the audio thread: only the started, app-scoped dispatcher has an
+     * engine behind it; a pure-unit dispatcher ({@code new FxDispatcher()} in a
+     * test, or the standalone one a {@code MixerView} owns for itself) has no
+     * RT producer, and the fallback keeps its inline-on-FX semantics identical
+     * to production's.</p>
+     *
+     * @return {@code true} if called on the FX thread
+     */
+    @RealTimeSafe
+    public boolean isFxThread() {
+        Thread recorded = fxThread;
+        return recorded != null
+                ? Thread.currentThread() == recorded
+                : Platform.isFxApplicationThread();
+    }
+
+    /**
+     * Publishes the current thread as the FX thread when it is not already the
+     * recorded one. Called from {@link #start()} and from every pulse — both
+     * FX-thread-only — so the record is right from the first pulse even if
+     * {@code start()} was ever reached from elsewhere. One volatile read per
+     * pulse in the steady state; the write happens once.
+     */
+    private void recordFxThread() {
+        Thread current = Thread.currentThread();
+        if (fxThread != current) {
+            fxThread = current;
+        }
     }
 
     // ── continuous ───────────────────────────────────────────────────────────
@@ -612,6 +678,7 @@ public final class FxDispatcher {
             return;
         }
         started = true;
+        recordFxThread();
         pulseTimer = new PulseTimer();
         pulseTimer.start();
     }
@@ -645,6 +712,7 @@ public final class FxDispatcher {
     private final class PulseTimer extends AnimationTimer {
         @Override
         public void handle(long now) {
+            recordFxThread();
             pulse();
         }
     }

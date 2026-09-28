@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 /**
@@ -26,6 +28,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  *
  * <p>The output is in ACN/SN3D (AmbiX) order: W (ch 0), Y (ch 1), Z (ch 2), X (ch 3).</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AFormatConverter implements AudioProcessor {
 
     /** A-format channel index: Front-Left-Up. */

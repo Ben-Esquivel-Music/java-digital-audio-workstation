@@ -118,20 +118,100 @@ class CoreMixerChannelSignalTest {
 
     @Test
     void nonSignallingSettersDoNotFire() {
-        // Only the four documented slices signal; sibling setters such as
-        // setSoloSafe / setSendLevel / setColor are deliberately silent.
+        // Only the documented slices signal; sibling setters such as
+        // setSoloSafe / setColor / setPhaseInverted are deliberately silent.
         MixerChannel channel = newChannel();
         AtomicInteger fires = new AtomicInteger();
         channel.addChangeListener(kind -> fires.incrementAndGet());
 
         channel.setSoloSafe(true);
-        channel.setSendLevel(0.4);
         channel.setColor(null);
         channel.setPhaseInverted(true);
 
         assertThat(fires.get())
-                .as("setters outside the four-slice ChangeKind set must not fire a signal")
+                .as("setters outside the ChangeKind slice set must not fire a signal")
                 .isZero();
+    }
+
+    @Test
+    void settingAnUnchangedValueFiresNoSignal() {
+        // Story 322 — RenderPipeline.applyAutomation calls these setters every
+        // block on the real-time thread; a live view-model registry must not
+        // be signalled when nothing moved (design brief §2.2).
+        MixerChannel channel = newChannel();
+        channel.setVolume(0.65);
+        channel.setPan(-0.4);
+        channel.setMuted(true);
+        channel.setSolo(true);
+        Map<ChangeKind, AtomicInteger> counts = new EnumMap<>(ChangeKind.class);
+        for (ChangeKind kind : ChangeKind.values()) {
+            counts.put(kind, new AtomicInteger());
+        }
+        channel.addChangeListener(kind -> counts.get(kind).incrementAndGet());
+
+        channel.setVolume(0.65);
+        channel.setPan(-0.4);
+        channel.setMuted(true);
+        channel.setSolo(true);
+
+        assertThat(counts.values()).allSatisfy(count ->
+                assertThat(count.get()).as("re-applying the current value is silent").isZero());
+
+        channel.setVolume(0.66);
+        channel.setPan(-0.41);
+        channel.setMuted(false);
+        channel.setSolo(false);
+
+        assertThat(counts.get(ChangeKind.VOLUME).get()).isEqualTo(1);
+        assertThat(counts.get(ChangeKind.PAN).get()).isEqualTo(1);
+        assertThat(counts.get(ChangeKind.MUTE).get()).isEqualTo(1);
+        assertThat(counts.get(ChangeKind.SOLO).get()).isEqualTo(1);
+    }
+
+    @Test
+    void insertsSignalFiresOncePerChainRebuildAfterTheSnapshotIsPublished() {
+        // Story 322 — INSERTS fires at the end of every chain rebuild, after
+        // getInsertSlots() already reflects the new chain, so an observer can
+        // rebuild its insert facts from the channel inside the callback.
+        MixerChannel channel = newChannel();
+        List<Integer> slotCountsSeen = new ArrayList<>();
+        List<Boolean> bypassSeen = new ArrayList<>();
+        channel.addChangeListener(kind -> {
+            if (kind == ChangeKind.INSERTS) {
+                slotCountsSeen.add(channel.getInsertSlots().size());
+                bypassSeen.add(!channel.getInsertSlots().isEmpty()
+                        && channel.getInsertSlots().getFirst().isBypassed());
+            }
+        });
+
+        InsertSlot slot = new InsertSlot("Pass", new Passthrough());
+        channel.addInsert(slot);
+        channel.setInsertBypassed(0, true);
+        channel.removeInsert(0);
+
+        assertThat(slotCountsSeen)
+                .as("one INSERTS signal per rebuild, each observing the published chain")
+                .containsExactly(1, 1, 0);
+        assertThat(bypassSeen).containsExactly(false, true, false);
+    }
+
+    /** Minimal insert processor for the INSERTS-signal test. */
+    private static final class Passthrough implements com.benesquivelmusic.daw.sdk.audio.AudioProcessor {
+        @Override
+        public void process(float[][] in, float[][] out, int n) {
+            for (int ch = 0; ch < Math.min(in.length, out.length); ch++) {
+                System.arraycopy(in[ch], 0, out[ch], 0, n);
+            }
+        }
+
+        @Override
+        public void reset() { }
+
+        @Override
+        public int getInputChannelCount() { return 2; }
+
+        @Override
+        public int getOutputChannelCount() { return 2; }
     }
 
     @Test

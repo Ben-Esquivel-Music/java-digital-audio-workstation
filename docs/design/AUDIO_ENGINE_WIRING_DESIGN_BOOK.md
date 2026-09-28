@@ -874,12 +874,12 @@ dock's floating zone (one surface, one feed).
 | Mixer strip vol/pan/mute/solo  | same intent path                           | same                        | arrangement strip moves too |
 | VCA fader                      | group master gain                          | `effectiveLinearMultiplier` factored into channel gain and post-fader sends | member strips show composite |
 | VCA mute/solo                  | same dual-write path as strip buttons      | channel state               | Track + arrangement stay consistent |
-| Master / return pan            | channel pan                                | constant-power law in the summing stage | — |
+| Master / return pan            | channel pan                                | unity-at-centre constant-power taper in the summing stage (the bus law, `PanLaw`; the channel law is unchanged) | — |
 | Send levels                    | per-send level rows (multi-bus path)       | live send summing           | SEND_LEVEL automation retargeted; legacy SEND slider and dead aux overload removed |
 | Snapshot / A‑B recall          | model recall                               | immediate                   | **strips re-seed from model** after recall/undo — stale-fader corruption impossible |
 | Strip rebuild                  | n/a                                        | n/a                         | mute/arm/solo styles seeded from model at build |
 | Stereo link                    | fader/pan/mute/solo + send mirroring       | live                        | "Link Inserts" removed until a plugin-clone contract exists |
-| Per-track input device         | session-level input selection + mismatch warning | capture path            | full multi-device capture is `RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 326) |
+| Per-track input device         | session-level input selection + mismatch warning (an armed track's unresolvable per-track index is reported as an unavailable device over a non-empty enumeration — an empty enumeration compares nothing; the session select is latest-selection-wins) | capture path            | full multi-device capture is `RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 326) |
 | 3D panner button               | hidden until a spatial node exists in the channel chain | —              | — |
 | Strip insert indicator         | rendered from the channel's real InsertSlot list (name/bypass) | —       | replaces the hardcoded five-icon fiction |
 
@@ -1096,8 +1096,10 @@ surfaces).
 channel-intent path as the mixer (the story‑291 registry/binder finally constructed in
 production — dead `Track`-only writes die); VCA gain factored into the render path via
 the existing RT-safe multiplier (subsuming the engine half of *(existing 153)*);
-master/return pan get the constant-power law; the legacy SEND slider and dead aux
-overload are removed, SEND_LEVEL automation retargeted at real per-send levels;
+master/return pan get the unity-at-centre constant-power taper (the bus law in
+`PanLaw`: centre is exactly unity, so a never-panned bus renders as before; the
+channel law is unchanged); the legacy SEND slider and dead aux overload are
+removed, SEND_LEVEL automation retargeted at real per-send levels;
 snapshot/A‑B recall re-seeds strip visuals; mute/arm styles seed from the model on
 rebuild; "Link Inserts" removed, "Link Sends" wired; per-track input-device choices
 become a session-level selection with mismatch warnings (multi-device capture stays

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.recording.SessionInputSelection;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportIntentHandler;
@@ -23,6 +24,8 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
@@ -85,6 +88,13 @@ final class TransportController implements TransportIntentHandler {
     private final AudioEngine audioEngine;
     private final UndoManager undoManager;
     private final NotificationBar notificationBar;
+    /**
+     * Story 322 — the ONE session-level input device recording opens. Consulted
+     * at record start to warn when an armed track's per-track input choice
+     * disagrees with it (Audio Engine Wiring Design Book §5.6 "Per-track input
+     * device"; multi-device capture itself is story 326).
+     */
+    private final SessionInputSelection sessionInputSelection;
     private final Label statusLabel;
     private final Label statusBarLabel;
     private final Label recIndicator;
@@ -137,6 +147,15 @@ final class TransportController implements TransportIntentHandler {
      */
     private final FxDispatcher fxDispatcher;
 
+    /**
+     * The worker of the most recent record-start input check (story 322 fix
+     * round, S7): the device enumeration behind the session-input mismatch
+     * WARNING runs off the FX thread; only the comparison (over the FX-owned
+     * track list) and the toast are marshalled back. Kept so a test can wait
+     * for it; {@code null} until the first audio take.
+     */
+    private volatile Thread sessionInputCheck;
+
     private RecordingPipeline recordingPipeline;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
 
@@ -182,11 +201,13 @@ final class TransportController implements TransportIntentHandler {
                         Supplier<CountInMode> countInMode,
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
-                        Supplier<RoundTripLatency> reportedLatency) {
+                        Supplier<RoundTripLatency> reportedLatency,
+                        SessionInputSelection sessionInputSelection) {
         this(project, audioEngine, undoManager, notificationBar, statusLabel,
                 statusBarLabel, recIndicator, playButton,
                 recordButton, snapEnabled, gridResolution, countInMode,
                 flashMidiActivity, applyLatencyCompensation, reportedLatency,
+                sessionInputSelection,
                 () -> { },
                 FxDispatcher.getDefault());
     }
@@ -206,11 +227,13 @@ final class TransportController implements TransportIntentHandler {
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
                         Supplier<RoundTripLatency> reportedLatency,
+                        SessionInputSelection sessionInputSelection,
                         FxDispatcher fxDispatcher) {
         this(project, audioEngine, undoManager, notificationBar, statusLabel,
                 statusBarLabel, recIndicator, playButton, recordButton,
                 snapEnabled, gridResolution, countInMode, flashMidiActivity,
-                applyLatencyCompensation, reportedLatency, () -> { }, fxDispatcher);
+                applyLatencyCompensation, reportedLatency, sessionInputSelection,
+                () -> { }, fxDispatcher);
     }
 
     TransportController(DawProject project,
@@ -228,8 +251,11 @@ final class TransportController implements TransportIntentHandler {
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
                         Supplier<RoundTripLatency> reportedLatency,
+                        SessionInputSelection sessionInputSelection,
                         Runnable openAudioSettings,
                         FxDispatcher fxDispatcher) {
+        this.sessionInputSelection = Objects.requireNonNull(
+                sessionInputSelection, "sessionInputSelection must not be null");
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
@@ -752,6 +778,69 @@ final class TransportController implements TransportIntentHandler {
                         + (trackCount > 1 ? "s" : "") + " armed");
         recIndicator.setVisible(true);
         recIndicator.setManaged(true);
+        // Story 322: a per-track input choice that disagrees with the session
+        // input is never silently ignored — one WARNING names the tracks and
+        // both devices. Its enumeration runs off the FX thread, so the toast
+        // lands on a later FX turn than the INFO above and stays visible over it.
+        if (!armedAudioTracks.isEmpty()) {
+            warnOnSessionInputMismatchOffFx();
+        }
+    }
+
+    /**
+     * Enumerates the devices on a virtual thread and, back on the FX thread
+     * through {@link #postFx}, shows the session-input mismatch WARNING for
+     * the armed tracks — only while this take is still in flight
+     * ({@link #recIndicator} is the controller's own in-flight fact: set at the
+     * end of a successful start, cleared by stop and abort), so a take that
+     * ended or was abandoned before the driver answered raises no stale toast
+     * over whatever replaced it. The tracks are read on the FX thread, where
+     * the project's live list is owned (story 322 fix round, S7;
+     * {@code javafx-application-design} §11 — no blocking I/O in a handler:
+     * {@code AudioBackend.listDevices()} is a driver walk that, on ASIO, waits
+     * on the control thread).
+     */
+    private void warnOnSessionInputMismatchOffFx() {
+        sessionInputCheck = Thread.ofVirtual().name("daw-record-input-check").start(() -> {
+            List<AudioDeviceInfo> devices = listAudioDevices();
+            postFx(() -> {
+                if (!recIndicator.isVisible()) {
+                    return;
+                }
+                sessionInputSelection.mismatchWarning(project.getTracks(), devices)
+                        .ifPresent(message -> notificationBar.show(NotificationLevel.WARNING, message));
+            });
+        });
+    }
+
+    /**
+     * The worker of the latest record-start input check, so a test can wait
+     * for it before flushing the FX queue. Package-visible for tests.
+     *
+     * @return the worker, or empty before the first audio take
+     */
+    Optional<Thread> pendingSessionInputCheck() {
+        return Optional.ofNullable(sessionInputCheck);
+    }
+
+    /**
+     * Enumerates the audio devices via the engine's one SDK backend seam
+     * (story 316). An absent backend or a failed enumeration yields an empty
+     * list (logged), in which case no per-track index can be resolved and the
+     * mismatch check has nothing to compare. Called on the input check's
+     * worker, never on the FX thread.
+     */
+    private List<AudioDeviceInfo> listAudioDevices() {
+        AudioBackend backend = audioEngine.getBackend();
+        if (backend == null) {
+            return List.of();
+        }
+        try {
+            return backend.listDevices();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to enumerate audio devices for the session-input check", e);
+            return List.of();
+        }
     }
 
     /**

@@ -19,6 +19,9 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.vm.HistoryControlBinder;
 import com.benesquivelmusic.daw.app.ui.vm.HistoryVM;
 import com.benesquivelmusic.daw.app.ui.vm.ProjectVM;
+import com.benesquivelmusic.daw.app.ui.recording.SessionInputSelection;
+import com.benesquivelmusic.daw.app.ui.recording.SettingsBackedSessionInputSelection;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
 import com.benesquivelmusic.daw.app.ui.vm.TransportControlBinder;
 import com.benesquivelmusic.daw.app.ui.vm.TransportVM;
 import com.benesquivelmusic.daw.app.ui.vm.command.HistoryCommand;
@@ -209,6 +212,13 @@ public final class MainController {
     /** Cached settings model for transport-controller access to latency compensation toggle. */
     private SettingsModel settingsModel;
     private NotificationBar notificationBar;
+    /**
+     * Story 322 — the ONE session-level input device (§5.6 "Per-track input
+     * device"), built by {@link #createSessionInputSelection()} once the
+     * notification bar exists and shared by the transport, track-strip and
+     * track-creation controllers across project rebuilds.
+     */
+    private SessionInputSelection sessionInputSelection;
     private Metronome metronome;
     private PluginInvocationSupervisor pluginSupervisor;
     private PluginFaultUiController pluginFaultUiController;
@@ -276,6 +286,20 @@ public final class MainController {
     private java.time.Instant sessionStartInstant;
     /** Disposers for the current VM generation (binders + VM unregistration); run on rebuild + hide. */
     private final java.util.List<Runnable> vmDisposers = new java.util.ArrayList<>();
+
+    // ── Story 322: mixer control truth — the one intent path both surfaces bind through ──
+    /**
+     * The current per-project-generation {@link TrackControlWiring} (the live
+     * {@code TrackChannelRegistry} + the {@code LinkedTrackCommandDispatcher}
+     * sink over a {@code CoreTrackIntentHandler}) — Audio Engine Wiring Design
+     * Book §2.10 / §5.6. Built by {@link #rebuildTrackControlWiring()} BEFORE the
+     * strips of either surface exist (the init path and
+     * {@link #handleProjectRebuild}); deliberately <em>not</em> in
+     * {@link #vmDisposers}, because {@link #rebuildViewModels()} runs AFTER the
+     * strips are built. Both surfaces hold {@code this::trackControlWiring}, a
+     * live supplier, never the instance.
+     */
+    private TrackControlWiring trackControlWiring;
     private ToolbarStateStore toolbarStateStore;
     private KeyBindingManager keyBindingManager;
     private CommandPaletteView commandPaletteView;
@@ -509,6 +533,42 @@ public final class MainController {
      */
     private void postFx(Runnable work) {
         FxDispatcher.runOnFx(fxDispatcher, work);
+    }
+
+    /**
+     * Story 322 — (re)builds the mixer-control wiring for the current project
+     * generation: a live {@code TrackChannelRegistry} over {@link #project}
+     * (with the app's {@link #dispatcher()} and {@link #meterFeed()}), a
+     * {@code CoreTrackIntentHandler} and the {@code LinkedTrackCommandDispatcher}
+     * sink. The previous generation is disposed first (its own lifecycle,
+     * separate from {@link #vmDisposers} — see {@link #trackControlWiring}).
+     * Must run BEFORE {@link #createViewNavigationController()} /
+     * {@link #createTrackStripController()} on the init path and as the FIRST
+     * statement of {@link #handleProjectRebuild()}, so every strip of
+     * both surfaces binds through the fresh generation. A pure-unit context
+     * with no dispatcher leaves it {@code null}; the {@code MixerView} then owns
+     * a standalone wiring.
+     */
+    private void rebuildTrackControlWiring() {
+        if (trackControlWiring != null) {
+            trackControlWiring.dispose();
+            trackControlWiring = null;
+        }
+        FxDispatcher disp = dispatcher();
+        if (disp != null) {
+            trackControlWiring = TrackControlWiring.standalone(project, disp, meterFeed());
+        }
+    }
+
+    /**
+     * The live accessor both surfaces receive as a {@code Supplier}
+     * ({@code this::trackControlWiring}) — resolves the CURRENT generation on
+     * every call.
+     *
+     * @return the current wiring, or {@code null} in a pure-unit context
+     */
+    TrackControlWiring trackControlWiring() {
+        return trackControlWiring;
     }
 
     /**
@@ -1007,6 +1067,10 @@ public final class MainController {
         }
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         initializeNotificationBar();
+        // Story 322 — the session input selection needs the notification bar
+        // and must exist before the transport / track-strip / track-creation
+        // controllers that consult it.
+        createSessionInputSelection();
         createTempoEditController();
         initializePluginFaultIsolation();
         createTransportController();
@@ -1018,6 +1082,9 @@ public final class MainController {
         createSessionStatusStrip();
         createProjectLifecycleController();
         createAnimationController();
+        // Story 322 — the control wiring must exist BEFORE either surface builds
+        // its strips (the MixerView below, the TrackStripController after it).
+        rebuildTrackControlWiring();
         createViewNavigationController();
         // initializeViewNavigation() constructs the MixerView; it must run before
         // createTrackStripController() because TrackStripController requires a
@@ -1141,6 +1208,11 @@ public final class MainController {
                         // listeners + continuous channels) so nothing leaks on close.
                         for (Runnable disposer : vmDisposers) { disposer.run(); }
                         vmDisposers.clear();
+                        // Story 322 — and the mixer-control wiring generation.
+                        if (trackControlWiring != null) {
+                            trackControlWiring.dispose();
+                            trackControlWiring = null;
+                        }
                     }, () -> {
                         // Story 318 — detach every meter consumer (and the
                         // feed's pulse participant) before the engine unbinds
@@ -1462,8 +1534,27 @@ public final class MainController {
                 () -> audioEngineController != null
                         ? audioEngineController.reportedLatency()
                         : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
+                // Story 322 — the session input the record-start mismatch check consults.
+                sessionInputSelection,
                 this::onOpenAudioSettings,
                 dispatcher());
+    }
+
+    /**
+     * Story 322 — builds the ONE session-level input selection (Audio Engine
+     * Wiring Design Book §5.6 "Per-track input device") over the app-scoped
+     * settings, engine controller and notification bar. App-scoped like its
+     * collaborators: it survives project rebuilds and is handed to the
+     * transport, track-strip and track-creation controllers on every
+     * (re)construction.
+     */
+    private void createSessionInputSelection() {
+        sessionInputSelection = new SettingsBackedSessionInputSelection(
+                settingsModel,
+                audioEngineController,
+                (level, message, actionLabel, action) -> postFx(() ->
+                        notificationBar.show(level, message, actionLabel, action)),
+                this::onOpenAudioSettings);
     }
 
     private void status(String text, DawIcon icon) {
@@ -1707,7 +1798,21 @@ public final class MainController {
         return isDefault ? null : layoutManager.toJson();
     }
 
-    private void handleProjectRebuild(MixerView newMixerView) {
+    /**
+     * Rebuilds every project-scoped surface after a project load / new
+     * ({@code ProjectLifecycleController.rebuildUI}) or a snapshot restore.
+     * The control-wiring generation is rebuilt FIRST and the fresh
+     * {@link MixerView} is constructed over it through the four-argument
+     * constructor (story 322 fix round, N1), so the view's first
+     * {@code refresh()} binds through the new generation and never builds a
+     * standalone wiring — constructing the view before the rebuild would bind
+     * its strips through the previous project's registry.
+     */
+    private void handleProjectRebuild() {
+        // Story 322 — FIRST: a fresh registry + intent path over the new
+        // project, before any strip of either surface is (re)built below.
+        rebuildTrackControlWiring();
+        MixerView newMixerView = new MixerView(project, undoManager, dispatcher(), this::trackControlWiring);
         newMixerView.setPluginRegistry(pluginRegistry);
         wirePluginRackEditors(newMixerView);
         if (pluginViewController != null) pluginViewController.reconcileGraph();
@@ -1859,8 +1964,7 @@ public final class MainController {
         header.getStyleClass().add("panel-header");
         // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
-        MixerView newMixerView = new MixerView(project, undoManager, dispatcher());
-        handleProjectRebuild(newMixerView);
+        handleProjectRebuild();
         // Mark dirty AFTER the rebuild so the DIRTY signal lands on the freshly built
         // ProjectVM (the outgoing VM was disposed in rebuildViewModels and the new one
         // is wired to `project` there), which re-syncs the Save menu through its dirty
@@ -1958,6 +2062,11 @@ public final class MainController {
                     // Story 318 — the app-scoped FX-pulse meter drain the
                     // MixerView and Performance Stage subscribe through.
                     @Override public MeterFeed meterFeed() { return MainController.this.meterFeed(); }
+                    // Story 322 — the live per-generation control wiring the
+                    // MixerView's strips bind through (resolved on every call).
+                    @Override public TrackControlWiring trackControlWiring() {
+                        return MainController.this.trackControlWiring();
+                    }
                     @Override public com.benesquivelmusic.daw.core.mastering.MasteringChain masteringChain() {
                         return audioEngine.getMasteringChain();
                     }
@@ -1999,6 +2108,10 @@ public final class MainController {
         // the action runnables and live-state suppliers route to the
         // view-navigation / transport controllers. updateArrangementPlaceholder
         // was a no-op (the placeholder binds ProjectVM.tracks) and is dropped.
+        // Story 322 — release the outgoing generation's strip bindings first.
+        if (trackStripController != null) {
+            trackStripController.dispose();
+        }
         trackStripController = new TrackStripController(
                 project, undoManager, audioEngine, viewNavigationController.getMixerView(),
                 notificationBar, statusBarLabel, trackListPanel, rootPane,
@@ -2012,7 +2125,11 @@ public final class MainController {
                 () -> project.markDirty(),
                 () -> viewNavigationController.isSnapEnabled(),
                 () -> viewNavigationController.getZoomLevel(viewNavigationController.getActiveView()),
-                () -> viewNavigationController.getEditorView());
+                () -> viewNavigationController.getEditorView(),
+                // Story 322 — the live control wiring the arrangement strips bind through,
+                // and the session input the per-track dialog / arm warning consult.
+                this::trackControlWiring,
+                sessionInputSelection);
     }
 
     private void createPluginViewController() {
@@ -2259,7 +2376,9 @@ public final class MainController {
                         this::syncMenuStateIfPresent,
                         () -> project.markDirty(),
                         this::status,
-                        (level, message) -> notificationBar.show(level, message)),
+                        (level, message) -> notificationBar.show(level, message),
+                        // Story 322 — the session input the new-track dialog preselects/selects.
+                        sessionInputSelection),
                 deviceManager);
     }
 

@@ -141,7 +141,8 @@ class LoopBindingAcrossSurfacesTest {
                 () -> CountInMode.OFF,
                 track -> { },
                 () -> true,
-                () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN));
+                () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
+                new StubSessionInputSelection()));
     }
 
     /** Posts a barrier onto the FX thread and blocks until it (and every earlier {@code onFx}) has run. */

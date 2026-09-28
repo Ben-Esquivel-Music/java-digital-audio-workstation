@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.spatial.binaural;
 
 import com.benesquivelmusic.daw.core.dsp.BiquadFilter;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.HrtfData;
 import com.benesquivelmusic.daw.sdk.spatial.SphericalCoordinate;
@@ -53,6 +55,7 @@ import java.util.Objects;
  * @see HrtfInterpolator
  * @see BiquadFilter
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class BinauralExternalizationProcessor implements AudioProcessor {
 
     /** Number of early reflection taps per channel. */

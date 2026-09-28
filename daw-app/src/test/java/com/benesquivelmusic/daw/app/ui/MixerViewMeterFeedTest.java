@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
+import com.benesquivelmusic.daw.app.ui.vm.ChannelVM;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -62,9 +64,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       unchanged, so the app-scoped feed cannot accumulate dead meters.</li>
  * </ul>
  *
+ * <p>Since story 322 (the story-271 skin swap) a track strip is a
+ * {@link MixerChannelStrip} whose integrated meter is fed by its
+ * {@link ChannelVM}: the VM owns the {@code CHANNEL_POST} subscription (the
+ * strip is the visibility-owning surface) and relays the peak into
+ * {@link MixerChannelStrip#meterPeakDbProperty()}, floored at
+ * {@link ChannelVM#METER_FLOOR_DB}. The return strip and the master still use
+ * a view-registered {@link LevelMeterDisplay}. Every meter of both kinds is
+ * probed through one {@link MeterProbe} seam; subscription counts cover both
+ * (two track VMs + one return display + the master).</p>
+ *
  * <p>Signal design is the {@code MeteringTapCorrectnessTest} one: 750 Hz at
  * 48 kHz in 512-frame blocks is eight whole cycles per block, so every block
- * carries the exact peak sample regardless of grid alignment.</p>
+ * carries the exact peak sample regardless of grid alignment — and therefore
+ * the <em>same</em> peak every block. A VM republishes only a changed value,
+ * so a test that floors a strip and then expects a fresh delivery renders at
+ * a distinct channel gain ({@link #renderBlocksAtDistinctGain}).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class MixerViewMeterFeedTest {
@@ -79,10 +94,14 @@ class MixerViewMeterFeedTest {
     private static final int TOTAL_FRAMES = BLOCK * (BLOCKS + 4);
     private static final AudioFormat FORMAT = new AudioFormat(SAMPLE_RATE, CHANNELS, 24, BLOCK);
 
-    /** Two track strips + one return strip; the master strip's meter is separate. */
-    private static final int EXPECTED_STRIP_METERS = 3;
-    /** Strip meters plus the master's MASTER_OUT subscription. */
-    private static final int EXPECTED_SUBSCRIPTIONS = EXPECTED_STRIP_METERS + 1;
+    /** Two track strips (ChannelVM-owned meters). */
+    private static final int EXPECTED_TRACK_STRIPS = 2;
+    /** One return strip (a view-registered LevelMeterDisplay); the master's meter is separate. */
+    private static final int EXPECTED_RETURN_METERS = 1;
+    /** Track VMs + return display + the master's MASTER_OUT subscription. */
+    private static final int EXPECTED_SUBSCRIPTIONS = EXPECTED_TRACK_STRIPS + EXPECTED_RETURN_METERS + 1;
+    /** Every meter kind reads at or below this once floored (−120 dBFS strip floor; −∞ display). */
+    private static final double FLOOR_DB = ChannelVM.METER_FLOOR_DB;
 
     private DawProject project;
     private AudioEngine engine;
@@ -96,6 +115,31 @@ class MixerViewMeterFeedTest {
     private MeterFeed feed;
     private MixerView view;
     private Stage stage;
+    /** Channel gain of the next {@link #renderBlocksAtDistinctGain} pass (see the class Javadoc). */
+    private double distinctGain = 1.0;
+
+    /** One meter of either kind: what it currently shows and how to floor it by hand. */
+    private interface MeterProbe {
+        String name();
+        double pendingPeakDb();
+        void floor();
+    }
+
+    private static MeterProbe probe(String name, LevelMeterDisplay display) {
+        return new MeterProbe() {
+            @Override public String name() { return name; }
+            @Override public double pendingPeakDb() { return display.getPendingPeakDb(); }
+            @Override public void floor() { display.update(LevelData.SILENCE); }
+        };
+    }
+
+    private static MeterProbe probe(String name, MixerChannelStrip strip) {
+        return new MeterProbe() {
+            @Override public String name() { return name; }
+            @Override public double pendingPeakDb() { return strip.getMeterPeakDb(); }
+            @Override public void floor() { strip.setMeterPeakDb(FLOOR_DB); }
+        };
+    }
 
     // ── FX helpers (capture + rethrow — the swallowed-assertion pitfall) ──
 
@@ -225,19 +269,76 @@ class MixerViewMeterFeedTest {
         }
     }
 
-    /** Every meter this view owns: the track / return strips plus the master. */
-    private List<LevelMeterDisplay> allMeters() {
+    /**
+     * Renders {@code count} blocks at a channel gain no earlier pass used, so
+     * the post-fader peak every tap reports differs from the last delivered
+     * one and a {@link ChannelVM} — which republishes only a changed value —
+     * relays it into a strip that was floored by hand. Stays above −6 dB.
+     */
+    private void renderBlocksAtDistinctGain(int count) {
+        distinctGain -= 0.05;
+        for (MixerChannel channel : project.getMixer().getChannels()) {
+            channel.setVolume(distinctGain);
+        }
+        renderBlocks(count);
+    }
+
+    private List<MixerChannelStrip> trackStrips() {
+        return view.getTrackStrips().stream().map(MixerView.TrackStripHandles::strip).toList();
+    }
+
+    private ChannelVM channelVmOf(MixerChannelStrip strip) {
+        return view.getTrackControlWiring().registry().channelVm(strip.getChannelId());
+    }
+
+    /** The view-registered displays: the return strip's plus the master's. */
+    private List<LevelMeterDisplay> displays() {
         List<LevelMeterDisplay> meters = new ArrayList<>(view.getStripMeterDisplays());
         meters.add(view.getMasterMeterDisplay());
         return meters;
+    }
+
+    /** Every meter this view owns: the track strips, the return strip and the master. */
+    private List<MeterProbe> allMeters() {
+        List<MeterProbe> probes = new ArrayList<>();
+        for (MixerChannelStrip strip : trackStrips()) {
+            probes.add(probe("track strip " + strip.getChannelName(), strip));
+        }
+        for (LevelMeterDisplay display : view.getStripMeterDisplays()) {
+            probes.add(probe("return strip display", display));
+        }
+        probes.add(probe("master display", view.getMasterMeterDisplay()));
+        return probes;
+    }
+
+    private static List<Double> peaksOf(List<MeterProbe> probes) {
+        return probes.stream().map(MeterProbe::pendingPeakDb).toList();
+    }
+
+    private static void assertAllAboveFloor(List<MeterProbe> probes, String why) {
+        for (MeterProbe probe : probes) {
+            assertThat(probe.pendingPeakDb()).as(why + ": " + probe.name()).isGreaterThan(-60.0);
+        }
+    }
+
+    private static void assertAllAtFloor(List<MeterProbe> probes, String why) {
+        for (MeterProbe probe : probes) {
+            assertThat(probe.pendingPeakDb()).as(why + ": " + probe.name()).isLessThanOrEqualTo(FLOOR_DB);
+        }
     }
 
     @Test
     void everyStripMeterSubscribesItsOwnTapPoint() {
         assertThat(view.getMeterFeed()).as("the feed is retained").isSameAs(feed);
         assertThat(view.getStripMeterDisplays())
-                .as("two track strips and the default return strip")
-                .hasSize(EXPECTED_STRIP_METERS);
+                .as("the default return strip is the one view-registered strip display")
+                .hasSize(EXPECTED_RETURN_METERS);
+        assertThat(trackStrips()).as("two track strips").hasSize(EXPECTED_TRACK_STRIPS);
+        for (MixerChannelStrip strip : trackStrips()) {
+            assertThat(channelVmOf(strip).isMeterBound())
+                    .as("track strip %s meters through its ChannelVM", strip.getChannelName())
+                    .isTrue();
+        }
         assertThat(view.getMasterMeterDisplay()).as("the master strip meter").isNotNull();
         assertThat(view.getMasterMeterBinding()).as("MASTER_OUT binding").isNotNull();
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
@@ -286,34 +387,35 @@ class MixerViewMeterFeedTest {
             stage.hide();
             assertThat(view.getScene()).as("floating docks retain their Scene when hidden").isNotNull();
             assertMeterDemand(0);
-            allMeters().forEach(meter -> meter.update(LevelData.SILENCE));
+            allMeters().forEach(MeterProbe::floor);
         });
         renderBlock();
         onFxRun(() -> {
             dispatcher.pulse();
             assertMeterDemand(0);
-            assertThat(allMeters()).allSatisfy(meter ->
-                    assertThat(meter.getPendingPeakDb()).isEqualTo(Double.NEGATIVE_INFINITY));
+            assertAllAtFloor(allMeters(), "nothing is delivered while the window is hidden");
             stage.show();
             assertMeterDemand(EXPECTED_SUBSCRIPTIONS);
             assertThat(view.getMasterMeterBinding()).isSameAs(masterBefore);
         });
 
-        renderBlock();
+        // A distinct gain: the track VMs still hold the pre-hide peak, and an
+        // identical re-delivery would (correctly) not republish into the
+        // hand-floored strips.
+        renderBlocksAtDistinctGain(1);
         onFxRun(dispatcher::pulse);
-        assertThat(allMeters()).allSatisfy(meter ->
-                assertThat(meter.getPendingPeakDb()).isGreaterThan(-60.0));
+        assertAllAboveFloor(allMeters(), "delivery resumes once shown again");
     }
 
     @Test
     void hidingAnAncestorOrTheMixerReleasesEveryMeterImmediately() throws Exception {
         onFxRun(() -> {
             var parent = (StackPane) stage.getScene().getRoot();
-            var pendingBeforeHide = allMeters().stream().map(LevelMeterDisplay::getPendingPeakDb).toList();
+            var pendingBeforeHide = peaksOf(allMeters());
             parent.setVisible(false);
             assertMeterDemand(0);
             dispatcher.pulse();
-            assertThat(allMeters().stream().map(LevelMeterDisplay::getPendingPeakDb).toList())
+            assertThat(peaksOf(allMeters()))
                     .as("a hidden surface receives no frame and retains its last pending value")
                     .containsExactlyElementsOf(pendingBeforeHide);
             parent.setVisible(true);
@@ -327,8 +429,8 @@ class MixerViewMeterFeedTest {
 
     @Test
     void refreshingWhileTheWindowIsHiddenReactivatesOnlyTheCurrentStrips() throws Exception {
-        List<LevelMeterDisplay> discardedMeters = view.getStripMeterDisplays();
-        var discardedPeaks = discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList();
+        List<MeterProbe> discardedMeters = allMeters();
+        var discardedPeaks = peaksOf(discardedMeters);
         VisibleMeterBinding masterBefore = view.getMasterMeterBinding();
         onFxRun(() -> {
             stage.hide();
@@ -344,10 +446,13 @@ class MixerViewMeterFeedTest {
 
         renderBlock();
         onFxRun(dispatcher::pulse);
-        assertThat(discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList())
-                .containsExactlyElementsOf(discardedPeaks);
-        assertThat(allMeters()).allSatisfy(meter ->
-                assertThat(meter.getPendingPeakDb()).isGreaterThan(-60.0));
+        // The master probe is shared by both lists (its display is never
+        // rebuilt), so compare the discarded STRIP probes only.
+        List<MeterProbe> discardedStrips = discardedMeters.subList(0, discardedMeters.size() - 1);
+        assertThat(peaksOf(discardedStrips))
+                .as("a discarded strip receives no frames after the hidden refresh")
+                .containsExactlyElementsOf(discardedPeaks.subList(0, discardedPeaks.size() - 1));
+        assertAllAboveFloor(allMeters(), "the rebuilt strips are fed once shown");
     }
 
     @Test
@@ -378,21 +483,15 @@ class MixerViewMeterFeedTest {
     void renderedPlaybackPutsEveryStripAndMasterMeterAboveTheFloor() throws Exception {
         // The fixture visibility pulse may already have delivered a silent frame.
         // Both untouched defaults and raw silence are below the visible meter floor.
-        for (LevelMeterDisplay meter : allMeters()) {
-            assertThat(meter.getPendingPeakDb())
-                    .as("meter is dark before the first audio block")
-                    .isLessThanOrEqualTo(-120.0);
-        }
+        assertAllAtFloor(allMeters(), "meter is dark before the first audio block");
 
         renderBlocks(BLOCKS);
         onFxRun(dispatcher::pulse);
 
-        for (LevelMeterDisplay meter : allMeters()) {
-            assertThat(meter.getPendingPeakDb())
-                    .as("post-fader peak reached the strip meter")
-                    .isGreaterThan(-60.0);
+        assertAllAboveFloor(allMeters(), "post-fader peak reached the strip meter");
+        for (LevelMeterDisplay meter : displays()) {
             assertThat(meter.getPendingRmsDb())
-                    .as("post-fader RMS reached the strip meter")
+                    .as("post-fader RMS reached the strip display")
                     .isGreaterThan(-60.0);
         }
     }
@@ -401,19 +500,20 @@ class MixerViewMeterFeedTest {
     void whenRenderingStopsTheStaleWindowReturnsEveryMeterToTheFloor() throws Exception {
         renderBlocks(BLOCKS);
         onFxRun(dispatcher::pulse);
-        assertThat(view.getMasterMeterDisplay().getPendingPeakDb()).isGreaterThan(-60.0);
+        assertAllAboveFloor(allMeters(), "rendered blocks reached every meter");
 
         // No further blocks: after STALE_NANOS the feed delivers exactly one
         // silent frame per subscription and the meters fall to the floor.
         Thread.sleep(MeterFeed.STALE_NANOS / 1_000_000L + 80L);
         onFxRun(dispatcher::pulse);
 
-        for (LevelMeterDisplay meter : allMeters()) {
+        assertAllAtFloor(allMeters(), "silent frame drove the meter to its floor");
+        for (LevelMeterDisplay meter : displays()) {
             assertThat(meter.getPendingPeakDb())
-                    .as("silent frame drove the meter to its floor")
+                    .as("silent frame drove the display to digital silence")
                     .isEqualTo(Double.NEGATIVE_INFINITY);
             assertThat(meter.getPendingRmsDb())
-                    .as("silent frame drove the meter to its floor")
+                    .as("silent frame drove the display to digital silence")
                     .isEqualTo(Double.NEGATIVE_INFINITY);
         }
     }
@@ -422,10 +522,11 @@ class MixerViewMeterFeedTest {
     void refreshDisposesTheDiscardedStripSubscriptionsAndSubscribesTheRebuiltOnes()
             throws Exception {
         List<VisibleMeterBinding> before = view.getStripMeterBindings();
-        List<LevelMeterDisplay> discardedMeters = view.getStripMeterDisplays();
-        var discardedPeaks = discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList();
+        List<MixerChannelStrip> discardedStrips = trackStrips();
+        List<MeterProbe> discardedMeters = allMeters();
+        var discardedPeaks = peaksOf(discardedMeters);
         VisibleMeterBinding masterBefore = view.getMasterMeterBinding();
-        assertThat(before).hasSize(EXPECTED_STRIP_METERS);
+        assertThat(before).hasSize(EXPECTED_RETURN_METERS);
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
 
         onFxRun(() -> {
@@ -439,9 +540,13 @@ class MixerViewMeterFeedTest {
                 .as("the master strip is not rebuilt, so its binding survives")
                 .isSameAs(masterBefore);
         assertThat(view.getStripMeterBindings())
-                .as("the rebuilt strips are subscribed")
-                .hasSize(EXPECTED_STRIP_METERS)
+                .as("the rebuilt return strip is subscribed")
+                .hasSize(EXPECTED_RETURN_METERS)
                 .doesNotContainAnyElementsOf(before);
+        assertThat(trackStrips())
+                .as("the track strips were rebuilt")
+                .hasSize(EXPECTED_TRACK_STRIPS)
+                .doesNotContainAnyElementsOf(discardedStrips);
         assertThat(feed.subscriptionCount())
                 .as("refresh() must not leak subscriptions into the app-scoped feed")
                 .isEqualTo(EXPECTED_SUBSCRIPTIONS);
@@ -450,14 +555,11 @@ class MixerViewMeterFeedTest {
         // The rebuilt strips are live: they meter the next rendered blocks.
         renderBlocks(BLOCKS);
         onFxRun(dispatcher::pulse);
-        assertThat(discardedMeters.stream().map(LevelMeterDisplay::getPendingPeakDb).toList())
+        List<MeterProbe> discardedStripProbes = discardedMeters.subList(0, discardedMeters.size() - 1);
+        assertThat(peaksOf(discardedStripProbes))
                 .as("discarded strip receives no frames after refresh")
-                .containsExactlyElementsOf(discardedPeaks);
-        for (LevelMeterDisplay meter : allMeters()) {
-            assertThat(meter.getPendingPeakDb())
-                    .as("rebuilt strip meter is fed")
-                    .isGreaterThan(-60.0);
-        }
+                .containsExactlyElementsOf(discardedPeaks.subList(0, discardedPeaks.size() - 1));
+        assertAllAboveFloor(allMeters(), "rebuilt strip meter is fed");
     }
 
     @Test
@@ -472,6 +574,11 @@ class MixerViewMeterFeedTest {
                 .as("a detached MixerView holds no subscription in the app-scoped feed")
                 .isZero();
         assertThat(view.getMasterMeterBinding()).isNull();
+        for (MixerChannelStrip strip : trackStrips()) {
+            assertThat(channelVmOf(strip).isMeterBound())
+                    .as("a detached view releases the VM-owned meter of %s", strip.getChannelName())
+                    .isFalse();
+        }
     }
 
     /**
@@ -498,21 +605,22 @@ class MixerViewMeterFeedTest {
         assertThat(view.getScene()).as("the view is back in the scene graph").isNotNull();
         assertThat(view.getMasterMeterBinding())
                 .as("the master strip re-subscribes MASTER_OUT").isNotNull();
-        assertThat(view.getStripMeterBindings()).hasSize(EXPECTED_STRIP_METERS);
+        assertThat(view.getStripMeterBindings()).hasSize(EXPECTED_RETURN_METERS);
+        for (MixerChannelStrip strip : trackStrips()) {
+            assertThat(channelVmOf(strip).isMeterBound())
+                    .as("re-attach re-binds the VM-owned meter of %s", strip.getChannelName())
+                    .isTrue();
+        }
         assertThat(feed.subscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
         assertThat(bus.levelSubscriptionCount()).isEqualTo(EXPECTED_SUBSCRIPTIONS);
 
         // And they are live, not merely counted: floor every meter first, so
         // a stale reading left over from before the detach cannot pass.
-        List<LevelMeterDisplay> meters = allMeters();
-        onFxRun(() -> meters.forEach(meter -> meter.update(LevelData.SILENCE)));
-        renderBlocks(BLOCKS);
+        List<MeterProbe> meters = allMeters();
+        onFxRun(() -> meters.forEach(MeterProbe::floor));
+        renderBlocksAtDistinctGain(BLOCKS);
         onFxRun(dispatcher::pulse);
-        for (LevelMeterDisplay meter : meters) {
-            assertThat(meter.getPendingPeakDb())
-                    .as("a re-mounted strip meter is fed again")
-                    .isGreaterThan(-60.0);
-        }
+        assertAllAboveFloor(meters, "a re-mounted strip meter is fed again");
     }
 
     /**
@@ -532,7 +640,9 @@ class MixerViewMeterFeedTest {
         onFxRun(view::refresh);
 
         assertThat(view.getStripMeterDisplays())
-                .as("the strips were still rebuilt").hasSize(EXPECTED_STRIP_METERS);
+                .as("the return strip was still rebuilt").hasSize(EXPECTED_RETURN_METERS);
+        assertThat(trackStrips())
+                .as("the track strips were still rebuilt").hasSize(EXPECTED_TRACK_STRIPS);
         assertThat(view.getStripMeterBindings())
                 .as("a detached view acquires no strip subscription on refresh").isEmpty();
         assertThat(feed.subscriptionCount())
@@ -565,15 +675,19 @@ class MixerViewMeterFeedTest {
         });
 
         List<LevelMeterDisplay> before = view.getStripMeterDisplays();
+        List<MixerChannelStrip> stripsBefore = trackStrips();
         List<MixerChannel> channels = project.getMixer().getChannels();
         ChannelLink link = new ChannelLink(channels.get(0).getId(), channels.get(1).getId(),
-                LinkMode.ABSOLUTE, true, true, true, false, false);
+                LinkMode.ABSOLUTE, true, true, true, false);
 
         onFxRun(() -> project.getChannelLinkManager().link(link));
 
         assertThat(view.getStripMeterDisplays())
-                .as("the restored channel-link listener re-rendered the strips")
+                .as("the restored channel-link listener re-rendered the return strip")
                 .isNotEqualTo(before);
+        assertThat(trackStrips())
+                .as("the restored channel-link listener re-rendered the track strips")
+                .doesNotContainAnyElementsOf(stripsBefore);
         assertThat(feed.subscriptionCount())
                 .as("and the rebuilt strips are subscribed exactly once each")
                 .isEqualTo(EXPECTED_SUBSCRIPTIONS);

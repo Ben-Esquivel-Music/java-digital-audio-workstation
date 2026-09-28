@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.AmbisonicOrder;
 import com.benesquivelmusic.daw.sdk.spatial.DecoderType;
@@ -23,6 +25,7 @@ import java.util.Objects;
  * HRTFs, use the {@link com.benesquivelmusic.daw.sdk.spatial.BinauralRenderer}
  * interface with SOFA-based implementations.</p>
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class AmbisonicBinauralDecoder implements AudioProcessor {
 
     private static final List<SpatialPosition> DEFAULT_VIRTUAL_SPEAKERS = List.of(

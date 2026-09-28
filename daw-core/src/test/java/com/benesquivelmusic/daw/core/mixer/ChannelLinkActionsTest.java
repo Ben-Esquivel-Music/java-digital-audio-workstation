@@ -39,7 +39,7 @@ class ChannelLinkActionsTest {
         UUID left = UUID.randomUUID();
         UUID right = UUID.randomUUID();
         ChannelLink original = new ChannelLink(left, right,
-                LinkMode.ABSOLUTE, true, false, true, false, true);
+                LinkMode.ABSOLUTE, true, false, true, true);
         manager.link(original);
 
         UnlinkChannelsAction action = new UnlinkChannelsAction(manager, left);

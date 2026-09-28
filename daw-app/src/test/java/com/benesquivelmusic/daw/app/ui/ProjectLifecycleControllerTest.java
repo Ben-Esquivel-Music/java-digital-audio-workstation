@@ -377,7 +377,7 @@ class ProjectLifecycleControllerTest {
                 undoManager::set,
                 () -> { },
                 () -> { },
-                mixerView -> { },
+                () -> { },
                 () -> null,
                 json -> { });
     }

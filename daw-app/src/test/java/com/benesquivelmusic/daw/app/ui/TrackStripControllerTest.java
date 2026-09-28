@@ -1,16 +1,16 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
-
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for the {@link TrackStripController} helper logic that can be exercised
  * without a live JavaFX scene or toolkit.
+ *
+ * <p>Story 322 deleted {@code midiInstrumentIcon} together with the MIDI
+ * instrument-hint icons it fed (the insert row now renders the channel's real
+ * rack — see {@code InsertIndicatorTruthTest}); its keyword tests went with it.</p>
  */
 class TrackStripControllerTest {
 
@@ -82,93 +82,13 @@ class TrackStripControllerTest {
         assertThat(TrackStripController.computeDropTargetIndex(2, 1, true)).isEqualTo(1);
     }
 
-    // ── midiInstrumentIcon keyword matching ──────────────────────────────────
-
-    @ParameterizedTest(name = "trackName=\"{0}\" → {1}")
-    @CsvSource({
-            "Drums,           DRUMS",
-            "Percussion,      DRUMS",
-            "My Guitar Track, GUITAR",
-            "Bass Guitar,     BASS_GUITAR",
-            "Electric Guitar, ELECTRIC_GUITAR",
-            "Acoustic Guitar, ACOUSTIC_GUITAR",
-            "Bass Line,       BASS_GUITAR",
-            "Violin I,        VIOLIN",
-            "Strings,         VIOLIN",
-            "Cello,           CELLO",
-            "Sax Solo,        SAXOPHONE",
-            "Trumpet,         TRUMPET",
-            "Trombone,        TROMBONE",
-            "Tuba,            TUBA",
-            "Flute Melody,    FLUTE",
-            "Clarinet,        CLARINET",
-            "Concert Harp,    HARP",
-            "Harmonica,       HARMONICA",
-            "Banjo,           BANJO",
-            "Mandolin,        MANDOLIN",
-            "Ukulele,         UKULELE",
-            "Uke Strum,       UKULELE",
-            "Accordion,       ACCORDION",
-            "Xylophone,       XYLOPHONE",
-            "Marimba,         XYLOPHONE",
-            "Bongo,           BONGOS",
-            "Djembe,          DJEMBE",
-            "Maracas,         MARACAS",
-            "Tambourine,      TAMBOURINE",
-            "Electric,        ELECTRIC_GUITAR",
-            "Acoustic,        ACOUSTIC_GUITAR",
-            "Organ,           KEYBOARD",
-            "Keyboard,        KEYBOARD",
-            "Synth Lead,      EQUALIZER",
-            "Warm Pad,        PAD"
-    })
-    void shouldMatchInstrumentKeyword(String trackName, DawIcon expected) {
-        assertThat(TrackStripController.midiInstrumentIcon(trackName)).isEqualTo(expected);
-    }
+    // ── abbreviateInsertName (story 322 insert indicators) ───────────────────
 
     @Test
-    void shouldReturnPianoForUnrecognizedName() {
-        assertThat(TrackStripController.midiInstrumentIcon("MIDI 1")).isEqualTo(DawIcon.PIANO);
-    }
-
-    @Test
-    void shouldBeCaseInsensitive() {
-        assertThat(TrackStripController.midiInstrumentIcon("DRUMS")).isEqualTo(DawIcon.DRUMS);
-        assertThat(TrackStripController.midiInstrumentIcon("drums")).isEqualTo(DawIcon.DRUMS);
-        assertThat(TrackStripController.midiInstrumentIcon("DrUmS")).isEqualTo(DawIcon.DRUMS);
-    }
-
-    @Test
-    void shouldMatchSubstringInTrackName() {
-        assertThat(TrackStripController.midiInstrumentIcon("My Cool Guitar Solo"))
-                .isEqualTo(DawIcon.GUITAR);
-        assertThat(TrackStripController.midiInstrumentIcon("Track 3 - bass"))
-                .isEqualTo(DawIcon.BASS_GUITAR);
-    }
-
-    @Test
-    void shouldReturnPianoForEmptyOrGenericName() {
-        assertThat(TrackStripController.midiInstrumentIcon("")).isEqualTo(DawIcon.PIANO);
-        assertThat(TrackStripController.midiInstrumentIcon("Instrument")).isEqualTo(DawIcon.PIANO);
-        assertThat(TrackStripController.midiInstrumentIcon("Lead")).isEqualTo(DawIcon.PIANO);
-    }
-
-    @Test
-    void shouldMatchFirstKeywordWhenMultiplePresent() {
-        // "drum" comes before "guitar" in the check order
-        assertThat(TrackStripController.midiInstrumentIcon("Drum Guitar")).isEqualTo(DawIcon.DRUMS);
-    }
-
-    @Test
-    void shouldPreferCompoundGuitarNamesOverGenericGuitar() {
-        assertThat(TrackStripController.midiInstrumentIcon("Bass Guitar"))
-                .isEqualTo(DawIcon.BASS_GUITAR);
-        assertThat(TrackStripController.midiInstrumentIcon("Electric Guitar"))
-                .isEqualTo(DawIcon.ELECTRIC_GUITAR);
-        assertThat(TrackStripController.midiInstrumentIcon("Acoustic Guitar"))
-                .isEqualTo(DawIcon.ACOUSTIC_GUITAR);
-        // Generic "guitar" without qualifier still returns GUITAR
-        assertThat(TrackStripController.midiInstrumentIcon("Guitar Solo"))
-                .isEqualTo(DawIcon.GUITAR);
+    void abbreviatesInsertNamesToThreeUpperCaseCharacters() {
+        assertThat(TrackStripController.abbreviateInsertName("Compressor")).isEqualTo("COM");
+        assertThat(TrackStripController.abbreviateInsertName("EQ")).isEqualTo("EQ");
+        assertThat(TrackStripController.abbreviateInsertName("  reverb ")).isEqualTo("REV");
+        assertThat(TrackStripController.abbreviateInsertName("   ")).isEqualTo("?");
     }
 }

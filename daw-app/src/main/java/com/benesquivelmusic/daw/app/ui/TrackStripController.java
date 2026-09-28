@@ -1,8 +1,16 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.controls.InsertSlotModel;
 import com.benesquivelmusic.daw.app.ui.display.MiniClipIndicator;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.recording.SessionInputSelection;
+import com.benesquivelmusic.daw.app.ui.vm.ChannelVM;
+import com.benesquivelmusic.daw.app.ui.vm.TrackChannelRegistry;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlBinder;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
+import com.benesquivelmusic.daw.app.ui.vm.TrackVM;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
@@ -12,6 +20,7 @@ import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.export.MidiFileExporter;
 import com.benesquivelmusic.daw.core.export.TrackBouncer;
 import com.benesquivelmusic.daw.core.export.WavExporter;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -26,6 +35,10 @@ import javafx.animation.FadeTransition;
 import javafx.animation.Interpolator;
 import javafx.animation.ParallelTransition;
 import javafx.animation.TranslateTransition;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.value.ChangeListener;
+import javafx.collections.ListChangeListener;
+import javafx.css.PseudoClass;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -42,11 +55,15 @@ import javafx.util.Duration;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -57,6 +74,27 @@ import java.util.logging.Logger;
  * <p>Extracted from {@link MainController} to isolate track-strip construction,
  * context-menu building, and inline-rename logic into a dedicated, independently
  * testable class. All dependencies are received via constructor injection.</p>
+ *
+ * <h2>Control truth (story 322)</h2>
+ *
+ * <p>The strip's volume / pan sliders and mute / solo / arm buttons never
+ * write the {@link Track} themselves. Each strip is bound through the live
+ * {@link TrackControlWiring} — a {@link TrackControlBinder} over the
+ * registry's {@link TrackVM}/{@link ChannelVM} raising {@code TrackCommand}s
+ * into the one command sink — so an arrangement gesture drives exactly the
+ * intent path the mixer strips drive (Audio Engine Wiring Design Book §2.10,
+ * §5.6 "Arrangement strip vol/pan/mute/solo"). Every visual on the strip is a
+ * VM subscriber: the {@code :active} pseudo-class of the three buttons, the
+ * status-bar messages, the story-137 clip indicator, and the insert
+ * indicators (rendered from {@link ChannelVM#insertsProperty()}, the channel's
+ * real rack — the hard-coded five-icon chain is gone).</p>
+ *
+ * <p>Binding follows the strip's presence in the track-list panel: the
+ * binder is installed when the strip's {@code parent} becomes the panel and
+ * disposed when it leaves (remove, undo-remove, reorder, project rebuild) —
+ * so an undo that re-adds a strip after the registry recreated the track's
+ * VMs re-binds against the fresh ones. {@link #dispose()} releases every
+ * binding of the generation.</p>
  */
 final class TrackStripController {
 
@@ -69,6 +107,35 @@ final class TrackStripController {
     /** Custom data format for track-ID drag-and-drop payloads. */
     private static final DataFormat TRACK_ID_FORMAT =
             new DataFormat("application/x-daw-track-id");
+    /** The {@code :active} pseudo-class the strip toggles share with the binder (UI Design Book §2.1). */
+    private static final PseudoClass ACTIVE = PseudoClass.getPseudoClass("active");
+    /** Node-properties key under which a strip carries its {@link StripControls}. */
+    private static final Object STRIP_CONTROLS_KEY = new Object();
+    /** Placeholder text rendered when a channel has no inserts. */
+    static final String NO_INSERTS_TEXT = "(no inserts)";
+    /** Style class of a bypassed insert indicator (consumed by styles.css). */
+    static final String BYPASSED_STYLE_CLASS = "bypassed";
+
+    /**
+     * The handles of one strip that the VM binding attaches to. Stored on the
+     * strip node itself (its {@code properties}) so a strip re-added after an
+     * undo can be re-bound without this controller retaining removed strips.
+     * Package-visible for tests via {@link #controlsOf(HBox)}.
+     */
+    record StripControls(Label nameLabel,
+                         Slider volumeSlider,
+                         Slider panSlider,
+                         Button muteBtn,
+                         Button soloBtn,
+                         Button armBtn,
+                         HBox insertChain,
+                         HBox clipIndicatorSlot) {
+    }
+
+    /** One live binding: the VMs a strip observes and the disposers that detach it. */
+    private record StripBinding(Track track, TrackVM trackVm, HBox clipIndicatorSlot,
+                                List<Runnable> disposers) {
+    }
 
     private final DawProject project;
     private final UndoManager undoManager;
@@ -103,6 +170,34 @@ final class TrackStripController {
     private final BooleanSupplier snapEnabled;
     private final Supplier<ZoomLevel> currentZoomLevel;
     private final Supplier<EditorView> editorView;
+    /**
+     * Story 322 — the live per-project-generation {@link TrackControlWiring}
+     * (registry + command sink) the arrangement strips bind their mute / solo /
+     * arm / volume / pan through, so they drive the same intent path as the
+     * mixer strips (Audio Engine Wiring Design Book §2.10, §5.6). A supplier,
+     * not an instance: {@code MainController.rebuildTrackControlWiring()}
+     * swaps the generation per project load. Held here for the strip-binding
+     * rewire of {@code addTrackToUI}.
+     */
+    private final Supplier<TrackControlWiring> trackControlWiring;
+    /**
+     * Story 322 — the ONE session-level input device the per-track input
+     * dialog selects and the arm-time mismatch warning is computed against
+     * (Audio Engine Wiring Design Book §5.6 "Per-track input device").
+     */
+    private final SessionInputSelection sessionInputSelection;
+    /**
+     * The worker of the most recent arm-time input check (story 322 fix
+     * round, S7): the device enumeration behind the mismatch WARNING runs off
+     * the FX thread; only the comparison (over the FX-owned track list) and
+     * the toast are marshalled back. Kept so a test can wait for the check to
+     * land; {@code null} before the first arm.
+     */
+    private volatile Thread sessionInputCheck;
+    /** Live bindings keyed by strip node — present only while the strip is in the panel. */
+    private final Map<HBox, StripBinding> stripBindings = new LinkedHashMap<>();
+    /** Set by {@link #dispose()}: a strip re-added afterwards must not re-bind. */
+    private boolean disposed;
     private ArrangementCanvas arrangementCanvas;
     // Story 137: when set, armed audio tracks grow a miniature clip
     // indicator in their arrangement-view header that mirrors the mixer's
@@ -157,7 +252,9 @@ final class TrackStripController {
                          Runnable markDirty,
                          BooleanSupplier snapEnabled,
                          Supplier<ZoomLevel> currentZoomLevel,
-                         Supplier<EditorView> editorView) {
+                         Supplier<EditorView> editorView,
+                         Supplier<TrackControlWiring> trackControlWiring,
+                         SessionInputSelection sessionInputSelection) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
@@ -178,6 +275,9 @@ final class TrackStripController {
         this.snapEnabled = Objects.requireNonNull(snapEnabled, "snapEnabled must not be null");
         this.currentZoomLevel = Objects.requireNonNull(currentZoomLevel, "currentZoomLevel must not be null");
         this.editorView = Objects.requireNonNull(editorView, "editorView must not be null");
+        this.trackControlWiring = Objects.requireNonNull(trackControlWiring, "trackControlWiring must not be null");
+        this.sessionInputSelection = Objects.requireNonNull(
+                sessionInputSelection, "sessionInputSelection must not be null");
     }
 
     /**
@@ -195,6 +295,12 @@ final class TrackStripController {
      */
     void setInputLevelMonitorRegistry(InputLevelMonitorRegistry registry) {
         this.inputLevelMonitorRegistry = registry;
+        // Strips bound before the registry arrived (the startup order) show
+        // their indicator now rather than on the next arm toggle.
+        for (StripBinding binding : stripBindings.values()) {
+            refreshClipIndicatorSlot(binding.clipIndicatorSlot(), binding.track(),
+                    binding.trackVm().isArmed());
+        }
     }
 
     /**
@@ -292,9 +398,9 @@ final class TrackStripController {
         // freezes ("Loaded from cache") from fresh renders ("Rendered
         // fresh, cached at <ISO timestamp>").
         Label freezeIndicator = new Label("\u2744");
+        // Colour/size come from the .track-freeze-indicator rule in styles.css
+        // (tokens, no inline hex; story 322).
         freezeIndicator.getStyleClass().add("track-freeze-indicator");
-        freezeIndicator.setStyle("-fx-text-fill: #5fa8ff; -fx-font-size: 14px;"
-                + " -fx-padding: 0 2 0 2;");
         boolean showFrozen = track.isFrozen() && trackFreezeController != null;
         freezeIndicator.setVisible(showFrozen);
         freezeIndicator.setManaged(showFrozen);
@@ -326,19 +432,16 @@ final class TrackStripController {
         if (track.getType() == TrackType.AUDIO) {
             ioLabel.setOnMouseClicked(event -> {
                 if (event.getClickCount() == 2) {
-                    List<AudioDeviceInfo> devices = List.of();
-                    // Story 316: enumerate via the engine's one SDK backend
-                    // seam (the open stream's backend, else the provision's
-                    // requested rung).
-                    AudioBackend backend = audioEngine.getBackend();
-                    if (backend != null) {
-                        try {
-                            devices = backend.listDevices();
-                        } catch (Exception e) {
-                            LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
-                        }
+                    List<AudioDeviceInfo> devices = listAudioDevices();
+                    // Story 322: the dialog preselects the SESSION input device
+                    // (the one recording actually opens); the track's own
+                    // index is only the fallback when the session device is
+                    // not in the enumerated list.
+                    int preselected = sessionInputSelection.selectedIndexIn(devices);
+                    if (preselected == Track.NO_INPUT_DEVICE) {
+                        preselected = track.getInputDeviceIndex();
                     }
-                    InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, track.getInputDeviceIndex());
+                    InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, preselected);
                     dialog.showAndWait().ifPresent(device -> {
                         // Persisted per-track user intent (ProjectSerializer /
                         // ProjectDeserializer) that is currently INERT on the
@@ -353,6 +456,10 @@ final class TrackStripController {
                         // itself is owned by stories 092 (per-track audio I/O
                         // routing) and 215 (driver-reported channel names).
                         track.setInputDeviceIndex(device.index());
+                        // Story 322: the choice ALSO becomes the session input
+                        // (persisted + applied to the engine), so what the
+                        // user picked is what recording opens.
+                        sessionInputSelection.select(device);
                         // qualifiedName(), not name() (story 316 review): the
                         // row the user just picked is labelled with the
                         // host-API-qualified name, so echoing the bare one
@@ -384,13 +491,13 @@ final class TrackStripController {
         }
 
         // ── Volume slider with icon decorations (Volume category) ───────────
-        Slider volumeSlider = new Slider(0.0, 1.0, track.getVolume());
+        // Story 322: the slider is a ChannelVM subscriber — its value is seeded
+        // and refreshed by the binder (bindStrip) and a drag raises
+        // SetChannelVolumeCommand through the shared sink. No model write here.
+        Slider volumeSlider = new Slider(0.0, 1.0, 1.0);
         volumeSlider.getStyleClass().add("track-volume-slider");
         volumeSlider.setPrefWidth(80);
         volumeSlider.setTooltip(new Tooltip("Volume"));
-        volumeSlider.valueProperty().addListener((_, _, newVal) -> {
-            track.setVolume(newVal.doubleValue());
-        });
         HBox volRow = new HBox(4,
                 IconNode.of(DawIcon.VOLUME_DOWN, TRACK_CONTROL_ICON_SIZE),
                 volumeSlider,
@@ -398,47 +505,24 @@ final class TrackStripController {
         volRow.setAlignment(Pos.CENTER_LEFT);
 
         // ── Pan slider with audio-balance icon (Volume category) ────────────
-        Slider panSlider = new Slider(-1.0, 1.0, track.getPan());
+        Slider panSlider = new Slider(-1.0, 1.0, 0.0);
         panSlider.getStyleClass().add("track-volume-slider");
         panSlider.setPrefWidth(60);
         panSlider.setTooltip(new Tooltip("Pan (L/R)"));
-        panSlider.valueProperty().addListener((_, _, newVal) -> {
-            track.setPan(newVal.doubleValue());
-        });
         HBox panRow = new HBox(4,
                 IconNode.of(DawIcon.AUDIO_BALANCE, TRACK_CONTROL_ICON_SIZE),
                 panSlider);
         panRow.setAlignment(Pos.CENTER_LEFT);
 
-        // ── DSP insert chain indicators (DAW category) ──────────────────────
-        // Shows placeholder inserts that represent the default signal chain
+        // ── Insert chain indicators (story 322, §5.6 "Strip insert indicator") ──
+        // Rendered from the channel's REAL insert list (ChannelVM.inserts) by
+        // bindStrip, for every track type; until bound it shows the empty
+        // placeholder. The hard-coded Gain/Gate/Comp/HPF/Limiter fiction and
+        // the MIDI instrument-hint icons are gone.
         HBox insertChain = new HBox(2);
+        insertChain.getStyleClass().add("track-insert-chain");
         insertChain.setAlignment(Pos.CENTER_LEFT);
-        if (track.getType() == TrackType.AUDIO || track.getType() == TrackType.MASTER) {
-            Node gainIcon = IconNode.of(DawIcon.GAIN, 10);
-            Tooltip.install(gainIcon, new Tooltip("Gain"));
-            Node gateIcon = IconNode.of(DawIcon.NOISE_GATE, 10);
-            Tooltip.install(gateIcon, new Tooltip("Gate"));
-            Node compIcon = IconNode.of(DawIcon.COMPRESSOR, 10);
-            Tooltip.install(compIcon, new Tooltip("Compressor"));
-            Node eqIcon = IconNode.of(DawIcon.HIGH_PASS, 10);
-            Tooltip.install(eqIcon, new Tooltip("High-Pass Filter"));
-            Node limiterIcon = IconNode.of(DawIcon.LIMITER, 10);
-            Tooltip.install(limiterIcon, new Tooltip("Limiter"));
-            insertChain.getChildren().addAll(gainIcon, gateIcon, compIcon, eqIcon, limiterIcon);
-        } else if (track.getType() == TrackType.MIDI) {
-            // MIDI tracks get instrument-category hint icons
-            DawIcon instrIcon = midiInstrumentIcon(track.getName());
-            Node instrNode = IconNode.of(instrIcon, 10);
-            Tooltip.install(instrNode, new Tooltip("Instrument: " + instrIcon.name().replace('_', ' ')));
-            Node velocityIcon = IconNode.of(DawIcon.NORMALIZE, 10);
-            Tooltip.install(velocityIcon, new Tooltip("Velocity / Normalize"));
-            insertChain.getChildren().addAll(instrNode, velocityIcon);
-        } else {
-            Node routeIcon = IconNode.of(DawIcon.CROSSFADE, 10);
-            Tooltip.install(routeIcon, new Tooltip("Crossfade routing"));
-            insertChain.getChildren().add(routeIcon);
-        }
+        renderInsertIndicators(insertChain, List.of());
 
         // ── Output assignment indicator (Recording category) ────────────────
         Label outputLabel = new Label();
@@ -446,84 +530,56 @@ final class TrackStripController {
         outputLabel.setTooltip(new Tooltip("Output: Master"));
         outputLabel.getStyleClass().add("status-bar-label");
 
-        // ── Mute button with icon (Recording category) ──────────────────────
+        // ── Mute / Solo buttons (Recording category) ─────────────────────────
+        // Story 322: no handler and no inline style here — bindStrip installs
+        // the binder, whose :active pseudo-class follows TrackVM.muted/soloed
+        // (seeded at bind, so a rebuilt strip over a muted track renders muted
+        // without a click) and whose click raises ToggleMute/SoloCommand. The
+        // .track-mute-button:active / .track-solo-button:active rules in
+        // styles.css render the state from tokens.
         Button muteBtn = new Button();
         muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, TRACK_CONTROL_ICON_SIZE));
         muteBtn.getStyleClass().add("track-mute-button");
         muteBtn.setTooltip(new Tooltip("Mute"));
-        muteBtn.setOnAction(_ -> {
-            track.setMuted(!track.isMuted());
-            muteBtn.setStyle(track.isMuted()
-                    ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
-            // Volume-category feedback: use VOLUME_MUTE or VOLUME_OFF
-            statusBarLabel.setText(track.isMuted()
-                    ? "Muted: " + track.getName()
-                    : "Unmuted: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(
-                    track.isMuted() ? DawIcon.VOLUME_MUTE : DawIcon.VOLUME_SLIDER, 12));
-        });
 
-        // ── Solo button with icon (Recording category) ──────────────────────
         Button soloBtn = new Button();
         soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, TRACK_CONTROL_ICON_SIZE));
         soloBtn.getStyleClass().add("track-solo-button");
         soloBtn.setTooltip(new Tooltip("Solo"));
-        soloBtn.setOnAction(_ -> {
-            track.setSolo(!track.isSolo());
-            soloBtn.setStyle(track.isSolo()
-                    ? "-fx-background-color: #00e676; -fx-text-fill: #0d0d0d;" : "");
-            statusBarLabel.setText(track.isSolo()
-                    ? "Solo: " + track.getName()
-                    : "Unsolo: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.SOLO, 12));
-        });
 
         // ── Miniature input-clip indicator (story 137) ──────────────────
         // Slot in the track item that holds the clip indicator when the
         // track is armed. Wrapped in a container so we can swap the
         // indicator in/out on arm without touching the rest of the strip.
+        // Populated by bindStrip from TrackVM.armed (story 322).
         HBox clipIndicatorSlot = new HBox();
         clipIndicatorSlot.setAlignment(Pos.CENTER);
         clipIndicatorSlot.setPrefWidth(12);
         clipIndicatorSlot.setMaxWidth(12);
-        if (track.isArmed() && inputLevelMonitorRegistry != null) {
-            InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
-            MiniClipIndicator indicator = new MiniClipIndicator(monitor, inputLevelMonitorRegistry);
-            Tooltip.install(indicator,
-                    new Tooltip("Input clipped. Click to reset; Alt+click resets all."));
-            clipIndicatorSlot.getChildren().add(indicator);
-        }
 
-        // ── Arm button with icon and toggle action (Recording category) ─────
+        // ── Arm button (Recording category) — bound like mute/solo ──────────
         Button armBtn = new Button();
         armBtn.setGraphic(IconNode.of(DawIcon.ARM_TRACK, TRACK_CONTROL_ICON_SIZE));
         armBtn.getStyleClass().add("track-arm-button");
         armBtn.setTooltip(new Tooltip("Arm for Recording"));
-        armBtn.setOnAction(_ -> {
-            track.setArmed(!track.isArmed());
-            armBtn.setStyle(track.isArmed()
-                    ? "-fx-background-color: #ff1744; -fx-text-fill: #ffffff;" : "");
-            statusBarLabel.setText(track.isArmed()
-                    ? "Armed: " + track.getName()
-                    : "Disarmed: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(
-                    track.isArmed() ? DawIcon.BELL_RING : DawIcon.ARM_TRACK, 12));
-
-            // Story 137: toggle the mini clip indicator on/off together
-            // with the arm state. Stops the indicator's redraw timer on
-            // disarm so we don't leak animation-timer subscriptions.
-            refreshClipIndicatorSlot(clipIndicatorSlot, track);
-        });
 
         // ── Phase invert toggle (Recording category) ────────────────────────
+        // A direct Track write, outside the §5.6 intent path: MixerChannel has
+        // its own phaseInverted flag (captured by MixerSnapshot and read by
+        // RenderInPlaceService), but neither Mixer nor RenderPipeline reads
+        // either flag on the live path and ChannelVM has no phase slice, so
+        // this button is not an audible control and its Track/MixerChannel
+        // dual-write is a flagged follow-up (story 322 "Known limitations").
+        // Its highlight is the token-based :active rule, seeded from the
+        // model at build (no inline hex — story 322).
         Button phaseBtn = new Button();
         phaseBtn.setGraphic(IconNode.of(DawIcon.PHASE, TRACK_CONTROL_ICON_SIZE));
-        phaseBtn.getStyleClass().add("track-mute-button");
+        phaseBtn.getStyleClass().addAll("track-mute-button", "track-phase-button");
         phaseBtn.setTooltip(new Tooltip("Phase Invert (Ø)"));
+        phaseBtn.pseudoClassStateChanged(ACTIVE, track.isPhaseInverted());
         phaseBtn.setOnAction(_ -> {
             track.setPhaseInverted(!track.isPhaseInverted());
-            phaseBtn.setStyle(track.isPhaseInverted()
-                    ? "-fx-background-color: #448aff; -fx-text-fill: #ffffff;" : "");
+            phaseBtn.pseudoClassStateChanged(ACTIVE, track.isPhaseInverted());
             statusBarLabel.setText(track.isPhaseInverted()
                     ? "Phase inverted: " + track.getName()
                     : "Phase normal: " + track.getName());
@@ -579,13 +635,15 @@ final class TrackStripController {
         // ── Automation lane toggle (DAW category) ───────────────────────────
         Button autoBtn = new Button();
         autoBtn.setGraphic(IconNode.of(DawIcon.AUTOMATION, TRACK_CONTROL_ICON_SIZE));
-        autoBtn.getStyleClass().add("track-mute-button");
+        autoBtn.getStyleClass().addAll("track-mute-button", "track-automation-button");
         autoBtn.setTooltip(new Tooltip("Toggle Automation Lane"));
+        autoBtn.pseudoClassStateChanged(ACTIVE,
+                arrangementCanvas != null && arrangementCanvas.isAutomationLaneVisible(track));
         autoBtn.setOnAction(_ -> {
             if (arrangementCanvas != null) {
                 arrangementCanvas.toggleAutomationLane(track);
-                autoBtn.setStyle(arrangementCanvas.isAutomationLaneVisible(track)
-                        ? "-fx-background-color: #00E5FF; -fx-text-fill: #0d0d0d;" : "");
+                // Token-based :active rule in styles.css (no inline hex — story 322).
+                autoBtn.pseudoClassStateChanged(ACTIVE, arrangementCanvas.isAutomationLaneVisible(track));
                 statusBarLabel.setText(arrangementCanvas.isAutomationLaneVisible(track)
                         ? "Automation: " + track.getName()
                         : "Hide automation: " + track.getName());
@@ -659,6 +717,22 @@ final class TrackStripController {
                 typeIcon, ioLabel, nameLabel, freezeIndicator, insertChain, volRow, panRow,
                 autoBtn, foldBtn, paramSelector, spacer, clipIndicatorSlot,
                 outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
+
+        // ── Story 322: the VM binding follows the strip's presence in the panel ──
+        // The handles live on the node so a strip re-added by an undo (after
+        // the registry recreated the track's VMs) re-binds against the fresh
+        // VMs; leaving the panel (remove / undo-remove / reorder / project
+        // rebuild) disposes the binding. Registered BEFORE the add below so
+        // that add is the first bind.
+        trackItem.getProperties().put(STRIP_CONTROLS_KEY, new StripControls(
+                nameLabel, volumeSlider, panSlider, muteBtn, soloBtn, armBtn, insertChain, clipIndicatorSlot));
+        trackItem.parentProperty().addListener((_, _, parent) -> {
+            if (parent == null) {
+                unbindStrip(trackItem);
+            } else {
+                bindStrip(track, trackItem);
+            }
+        });
         if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
             trackListPanel.getChildren().add(uiIndex, trackItem);
         } else {
@@ -689,16 +763,9 @@ final class TrackStripController {
      * {@link javafx.animation.AnimationTimer} subscriptions when a track
      * is disarmed.
      */
-    private void refreshClipIndicatorSlot(HBox slot, Track track) {
-        // Drop the old indicator (if any) and stop its redraw timer.
-        for (Node child : new ArrayList<>(slot.getChildren())) {
-            if (child instanceof MiniClipIndicator mci) {
-                mci.stop();
-            }
-        }
-        slot.getChildren().clear();
-
-        if (track.isArmed() && inputLevelMonitorRegistry != null) {
+    private void refreshClipIndicatorSlot(HBox slot, Track track, boolean armed) {
+        clearClipIndicatorSlot(slot);
+        if (armed && inputLevelMonitorRegistry != null) {
             InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
             MiniClipIndicator indicator = new MiniClipIndicator(monitor, inputLevelMonitorRegistry);
             Tooltip.install(indicator,
@@ -707,46 +774,298 @@ final class TrackStripController {
         }
     }
 
+    /** Drops the slot's indicator (if any), stopping its redraw timer first. */
+    private static void clearClipIndicatorSlot(HBox slot) {
+        for (Node child : new ArrayList<>(slot.getChildren())) {
+            if (child instanceof MiniClipIndicator mci) {
+                mci.stop();
+            }
+        }
+        slot.getChildren().clear();
+    }
+
+    // ── Story 322: VM binding of one strip ─────────────────────────────────
+
     /**
-     * Selects an instrument-category icon based on the MIDI track name.
+     * Binds {@code trackItem}'s controls to the track's VMs through the
+     * current {@link TrackControlWiring} generation (idempotent — any earlier
+     * binding of the strip is disposed first).
      *
-     * <p>Scans the track name for common instrument keywords and returns
-     * the matching {@link DawIcon} from the <em>Instruments</em> category.
-     * Falls back to {@link DawIcon#PIANO} for unrecognized names.</p>
+     * <p>The registry normally already holds the track's VM (a
+     * {@code DawProject.ChangeKind.TRACKS} signal on the FX thread reconciles
+     * inline). If it does not yet — the signal was queued from another thread
+     * — {@link TrackChannelRegistry#reconcile()} is run first. A track that
+     * still has no VM after that (a non-UUID fixture id), or a context with
+     * no wiring at all, leaves the five controls <em>disabled</em>: they are
+     * never bound to the model directly (§2.10).</p>
      */
-    static DawIcon midiInstrumentIcon(String trackName) {
-        String lower = trackName.toLowerCase(Locale.ROOT);
-        if (lower.contains("drum") || lower.contains("perc")) return DawIcon.DRUMS;
-        if (lower.contains("bass guitar"))     return DawIcon.BASS_GUITAR;
-        if (lower.contains("electric guitar")) return DawIcon.ELECTRIC_GUITAR;
-        if (lower.contains("acoustic guitar")) return DawIcon.ACOUSTIC_GUITAR;
-        if (lower.contains("guitar"))    return DawIcon.GUITAR;
-        if (lower.contains("bass"))      return DawIcon.BASS_GUITAR;
-        if (lower.contains("violin") || lower.contains("string")) return DawIcon.VIOLIN;
-        if (lower.contains("cello"))     return DawIcon.CELLO;
-        if (lower.contains("sax"))       return DawIcon.SAXOPHONE;
-        if (lower.contains("trumpet"))   return DawIcon.TRUMPET;
-        if (lower.contains("trombone"))  return DawIcon.TROMBONE;
-        if (lower.contains("tuba"))      return DawIcon.TUBA;
-        if (lower.contains("flute"))     return DawIcon.FLUTE;
-        if (lower.contains("clarinet"))  return DawIcon.CLARINET;
-        if (lower.contains("harp"))      return DawIcon.HARP;
-        if (lower.contains("harmonica")) return DawIcon.HARMONICA;
-        if (lower.contains("banjo"))     return DawIcon.BANJO;
-        if (lower.contains("mandolin"))  return DawIcon.MANDOLIN;
-        if (lower.contains("ukulele") || lower.contains("uke")) return DawIcon.UKULELE;
-        if (lower.contains("accordion")) return DawIcon.ACCORDION;
-        if (lower.contains("xylo") || lower.contains("marimba")) return DawIcon.XYLOPHONE;
-        if (lower.contains("bongo"))     return DawIcon.BONGOS;
-        if (lower.contains("djembe"))    return DawIcon.DJEMBE;
-        if (lower.contains("maraca"))    return DawIcon.MARACAS;
-        if (lower.contains("tambourine")) return DawIcon.TAMBOURINE;
-        if (lower.contains("electric"))  return DawIcon.ELECTRIC_GUITAR;
-        if (lower.contains("acoustic"))  return DawIcon.ACOUSTIC_GUITAR;
-        if (lower.contains("organ") || lower.contains("key")) return DawIcon.KEYBOARD;
-        if (lower.contains("synth"))     return DawIcon.EQUALIZER;
-        if (lower.contains("pad"))       return DawIcon.PAD;
-        return DawIcon.PIANO;
+    private void bindStrip(Track track, HBox trackItem) {
+        unbindStrip(trackItem);
+        if (disposed) {
+            return;
+        }
+        StripControls controls = controlsOf(trackItem);
+        if (controls == null) {
+            return;
+        }
+        TrackControlWiring wiring = trackControlWiring.get();
+        TrackVM trackVm = null;
+        if (wiring != null) {
+            trackVm = lookupTrackVm(wiring.registry(), track);
+        }
+        if (trackVm == null) {
+            LOG.fine(() -> "No control wiring / track VM for '" + track.getName()
+                    + "' — its strip controls stay inert");
+            setControlsDisabled(controls, true);
+            return;
+        }
+        setControlsDisabled(controls, false);
+        TrackChannelRegistry registry = wiring.registry();
+        ChannelVM channelVm = registry.peerChannelVm(trackVm).orElse(null);
+        MixerChannel channel = project.getMixerChannelForTrack(track);
+        if (channelVm != null && (channel == null || !channel.getId().equals(channelVm.channelId()))) {
+            channelVm = null; // the pairing must be the project's, never a guess
+        }
+
+        List<Runnable> disposers = new ArrayList<>();
+        // Story 322 fix round 1 (S5): the lane's name label is a TrackVM.name
+        // subscriber, so a rename from any surface (the mixer strip's inline
+        // editor, undo) updates it. Listener + setText, never bind():
+        // startTrackRename swaps the label for an editor and writes its text
+        // directly (javafx-application-design §15).
+        Label nameLabel = controls.nameLabel();
+        var trackName = trackVm.nameProperty();
+        nameLabel.setText(trackName.get());
+        ChangeListener<String> nameMirror = (_, _, now) -> nameLabel.setText(now == null ? "" : now);
+        trackName.addListener(nameMirror);
+        disposers.add(() -> trackName.removeListener(nameMirror));
+
+        TrackControlBinder binder = new TrackControlBinder(
+                track, trackVm, channelVm == null ? null : channel, channelVm, wiring.commandSink());
+        disposers.add(binder::dispose);
+        binder.bindMute(controls.muteBtn());
+        binder.bindSolo(controls.soloBtn());
+        binder.bindArm(controls.armBtn());
+        if (channelVm != null) {
+            binder.bindFader(controls.volumeSlider());
+            binder.bindPan(controls.panSlider());
+            disposers.add(bindInsertIndicators(controls.insertChain(), channelVm));
+        } else {
+            // A track with no paired channel has no audible volume/pan.
+            controls.volumeSlider().setDisable(true);
+            controls.panSlider().setDisable(true);
+            renderInsertIndicators(controls.insertChain(), List.of());
+        }
+
+        // Status-bar feedback is a VM subscription: it reports the flag from
+        // whichever surface flipped it (§5.6 "mirrored surface").
+        disposers.add(onFlagChange(trackVm.mutedProperty(), muted -> {
+            statusBarLabel.setText((muted ? "Muted: " : "Unmuted: ") + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(
+                    muted ? DawIcon.VOLUME_MUTE : DawIcon.VOLUME_SLIDER, 12));
+        }));
+        disposers.add(onFlagChange(trackVm.soloedProperty(), soloed -> {
+            statusBarLabel.setText((soloed ? "Solo: " : "Unsolo: ") + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.SOLO, 12));
+        }));
+        disposers.add(onFlagChange(trackVm.armedProperty(), armed -> {
+            statusBarLabel.setText((armed ? "Armed: " : "Disarmed: ") + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(
+                    armed ? DawIcon.BELL_RING : DawIcon.ARM_TRACK, 12));
+            // Story 137: the mini clip indicator follows the arm state (the
+            // redraw timer is stopped on disarm — no animation-timer leak).
+            refreshClipIndicatorSlot(controls.clipIndicatorSlot(), track, armed);
+            if (armed) {
+                warnOnInputMismatch();
+            }
+        }));
+        refreshClipIndicatorSlot(controls.clipIndicatorSlot(), track, trackVm.isArmed());
+
+        stripBindings.put(trackItem, new StripBinding(track, trackVm, controls.clipIndicatorSlot(), disposers));
+    }
+
+    /** The registry's VM for {@code track}, reconciling once if it is not there yet. */
+    private static TrackVM lookupTrackVm(TrackChannelRegistry registry, Track track) {
+        UUID trackId;
+        try {
+            trackId = UUID.fromString(track.getId());
+        } catch (IllegalArgumentException notAUuid) {
+            return null;
+        }
+        TrackVM vm = registry.trackVm(trackId);
+        if (vm == null) {
+            registry.reconcile();
+            vm = registry.trackVm(trackId);
+        }
+        return vm;
+    }
+
+    private static void setControlsDisabled(StripControls controls, boolean disabled) {
+        controls.volumeSlider().setDisable(disabled);
+        controls.panSlider().setDisable(disabled);
+        controls.muteBtn().setDisable(disabled);
+        controls.soloBtn().setDisable(disabled);
+        controls.armBtn().setDisable(disabled);
+    }
+
+    /** Subscribes {@code onChange} to a VM flag (change only, no seed) and returns the disposer. */
+    private static Runnable onFlagChange(ReadOnlyBooleanProperty flag, Consumer<Boolean> onChange) {
+        ChangeListener<Boolean> listener = (_, _, now) -> onChange.accept(Boolean.TRUE.equals(now));
+        flag.addListener(listener);
+        return () -> flag.removeListener(listener);
+    }
+
+    /**
+     * Disposes the binding of {@code trackItem} (no-op when it has none):
+     * every listener the binder and this controller installed is removed and
+     * the clip indicator's timer stopped.
+     */
+    private void unbindStrip(HBox trackItem) {
+        StripBinding binding = stripBindings.remove(trackItem);
+        if (binding == null) {
+            return;
+        }
+        for (Runnable disposer : binding.disposers()) {
+            disposer.run();
+        }
+        clearClipIndicatorSlot(binding.clipIndicatorSlot());
+    }
+
+    /**
+     * Releases every strip binding of this generation. Called by
+     * {@code MainController} before the controller is replaced on a project
+     * rebuild; a strip re-added afterwards (a stale undo) is not re-bound.
+     * Idempotent.
+     */
+    void dispose() {
+        disposed = true;
+        for (HBox trackItem : new ArrayList<>(stripBindings.keySet())) {
+            unbindStrip(trackItem);
+        }
+    }
+
+    /**
+     * The control handles of a strip built by {@link #addTrackToUI}, or
+     * {@code null} for any other node. Package-visible for tests.
+     */
+    static StripControls controlsOf(HBox trackItem) {
+        return trackItem.getProperties().get(STRIP_CONTROLS_KEY) instanceof StripControls c ? c : null;
+    }
+
+    /** Whether {@code trackItem} currently has a live VM binding. Package-visible for tests. */
+    boolean isBound(HBox trackItem) {
+        return stripBindings.containsKey(trackItem);
+    }
+
+    // ── Story 322: insert indicators rendered from the real rack ───────────
+
+    /**
+     * Keeps {@code insertChain} rendered from {@link ChannelVM#insertsProperty()}
+     * — seeded now and rebuilt on every list change — and returns the disposer.
+     */
+    private static Runnable bindInsertIndicators(HBox insertChain, ChannelVM channelVm) {
+        renderInsertIndicators(insertChain, channelVm.insertsProperty());
+        ListChangeListener<InsertSlotModel> listener =
+                _ -> renderInsertIndicators(insertChain, channelVm.insertsProperty());
+        channelVm.insertsProperty().addListener(listener);
+        return () -> channelVm.insertsProperty().removeListener(listener);
+    }
+
+    /**
+     * Rebuilds the indicator row: one small badge per real insert slot
+     * (abbreviated name, tooltip = full name; a bypassed slot carries the
+     * {@value #BYPASSED_STYLE_CLASS} style class the stylesheet dims with the
+     * text-mute token), or the {@value #NO_INSERTS_TEXT} placeholder when the
+     * chain is empty. Package-visible for tests.
+     */
+    static void renderInsertIndicators(HBox insertChain, List<InsertSlotModel> inserts) {
+        insertChain.getChildren().clear();
+        if (inserts.isEmpty()) {
+            Label none = new Label(NO_INSERTS_TEXT);
+            none.getStyleClass().add("track-insert-placeholder");
+            insertChain.getChildren().add(none);
+            return;
+        }
+        for (InsertSlotModel insert : inserts) {
+            Label badge = new Label(abbreviateInsertName(insert.name()));
+            badge.getStyleClass().add("track-insert-indicator");
+            if (insert.bypassed()) {
+                badge.getStyleClass().add(BYPASSED_STYLE_CLASS);
+            }
+            badge.setTooltip(new Tooltip(insert.bypassed()
+                    ? insert.name() + " (bypassed)" : insert.name()));
+            insertChain.getChildren().add(badge);
+        }
+    }
+
+    /** Up to three leading characters of the slot name, upper-cased ("Compressor" → "COM"). */
+    static String abbreviateInsertName(String name) {
+        String trimmed = name.strip();
+        if (trimmed.isEmpty()) {
+            return "?";
+        }
+        return trimmed.substring(0, Math.min(3, trimmed.length())).toUpperCase(Locale.ROOT);
+    }
+
+    // ── Story 322: session input selection ─────────────────────────────────
+
+    /**
+     * Enumerates the audio devices via the engine's one SDK backend seam
+     * (story 316: the open stream's backend, else the provision's requested
+     * rung). An enumeration failure is logged and yields an empty list. A
+     * driver walk — on ASIO it waits on the driver control thread, for seconds
+     * while a reopen is in flight — so it is called from the input-port dialog
+     * (a deliberate user gesture) and from the arm check's worker, never from
+     * a property listener on the FX thread.
+     */
+    private List<AudioDeviceInfo> listAudioDevices() {
+        AudioBackend backend = audioEngine.getBackend();
+        if (backend == null) {
+            return List.of();
+        }
+        try {
+            return backend.listDevices();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
+            return List.of();
+        }
+    }
+
+    /**
+     * Shows the single mismatch {@code WARNING} when an armed track's
+     * per-track input choice disagrees with the session input device (§5.6
+     * "Per-track input device"): recording opens the session device, so the
+     * disagreement must be visible, never silently ignored.
+     *
+     * <p>The device enumeration runs on a virtual thread, never on the FX
+     * thread ({@code javafx-application-design} §11 — no blocking I/O in a
+     * handler; this runs from the arm listener on every arm gesture). The
+     * comparison and the toast happen back on the FX thread through the
+     * {@link FxDispatcher} seam, where the project's live track list is read
+     * (it is FX-owned); a controller disposed in the meantime shows nothing.
+     * {@code ArrangementArmInputCheckOffFxTest} pins the thread.</p>
+     */
+    private void warnOnInputMismatch() {
+        sessionInputCheck = Thread.ofVirtual().name("daw-arm-input-check").start(() -> {
+            List<AudioDeviceInfo> devices = listAudioDevices();
+            FxDispatcher.runOnFx(() -> {
+                if (disposed) {
+                    return;
+                }
+                sessionInputSelection.mismatchWarning(project.getTracks(), devices)
+                        .ifPresent(message -> notificationBar.show(NotificationLevel.WARNING, message));
+            });
+        });
+    }
+
+    /**
+     * The worker of the latest arm-time input check, so a test can wait for
+     * it before flushing the FX queue. Package-visible for tests.
+     *
+     * @return the worker, or empty before the first arm
+     */
+    Optional<Thread> pendingSessionInputCheck() {
+        return Optional.ofNullable(sessionInputCheck);
     }
 
     /**

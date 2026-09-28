@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.binaural;
 
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapabilities;
+import com.benesquivelmusic.daw.core.plugin.ProcessorCapability;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.HrtfData;
 import com.benesquivelmusic.daw.sdk.spatial.RoomSimulator;
@@ -41,6 +43,7 @@ import java.util.Objects;
  * @see PartitionedConvolver
  * @see SofaFileParser
  */
+@ProcessorCapability(ProcessorCapabilities.SPATIAL)
 public final class StereoToBinauralConverter implements AudioProcessor {
 
     private static final double DEFAULT_SPEAKER_AZIMUTH = 30.0;

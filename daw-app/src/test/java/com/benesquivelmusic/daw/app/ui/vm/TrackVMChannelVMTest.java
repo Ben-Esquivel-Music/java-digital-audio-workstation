@@ -118,17 +118,35 @@ class TrackVMChannelVMTest {
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track track = project.createAudioTrack("Keys");
         MixerChannel channel = project.getMixerChannelForTrack(track);
-        ChannelVM vm = new ChannelVM(channel, new FxDispatcher());
+        FxDispatcher dispatcher = new FxDispatcher();
+        ChannelVM vm = new ChannelVM(channel, dispatcher);
         try {
             channel.setVolume(0.4);
             channel.setPan(-0.75);
-            flushFx();
+            // Story 322 §2.2 — an off-FX VOLUME/PAN signal (the audio thread under
+            // automation) never posts a runLater; it rides the dispatcher's
+            // continuous channel and lands on the next pulse.
+            pulseOnFx(dispatcher);
 
             assertThat(vm.getVolume()).isEqualTo(0.4);
             assertThat(vm.getPan()).isEqualTo(-0.75);
         } finally {
             vm.dispose();
         }
+    }
+
+    /** Runs one dispatcher pulse on the FX thread and waits for it. */
+    private static void pulseOnFx(FxDispatcher dispatcher) throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                dispatcher.pulse();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .as("FX pulse must run within %ds", TIMEOUT_SECONDS).isTrue();
     }
 
     @Test
@@ -166,21 +184,23 @@ class TrackVMChannelVMTest {
                 .as("no continuous channel before the VM is created").isZero();
         ChannelVM channelVm = new ChannelVM(channel, dispatcher);
         assertThat(dispatcher.openChannelCount())
-                .as("the channel VM opens exactly one meter channel").isEqualTo(1);
+                .as("the channel VM opens exactly three continuous channels: meter, volume, pan (story 322)")
+                .isEqualTo(3);
 
         TrackVM trackVm = new TrackVM(track, dispatcher);
         assertThat(dispatcher.openChannelCount())
-                .as("the track VM opens no continuous channel").isEqualTo(1);
+                .as("the track VM opens no continuous channel").isEqualTo(3);
 
         channelVm.dispose();
         assertThat(dispatcher.openChannelCount())
-                .as("dispose() closes the meter channel, not leaks it").isZero();
+                .as("dispose() closes every continuous channel, not leaks them").isZero();
 
         // After dispose the VMs observe no further signals.
         trackVm.dispose();
         track.setMuted(true);
         channel.setVolume(0.1);
         flushFx();
+        pulseOnFx(dispatcher); // a live volume channel would drain here — there is none
         assertThat(trackVm.isMuted())
                 .as("muted retains its last value — listener unregistered").isFalse();
         assertThat(channelVm.getVolume())

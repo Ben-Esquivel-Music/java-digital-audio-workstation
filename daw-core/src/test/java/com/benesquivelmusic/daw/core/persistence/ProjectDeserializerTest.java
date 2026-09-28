@@ -253,7 +253,6 @@ class ProjectDeserializerTest {
         Track track = original.createAudioTrack("Bass");
         original.getMixerChannelForTrack(track).setVolume(0.7);
         original.getMixerChannelForTrack(track).setPan(-0.5);
-        original.getMixerChannelForTrack(track).setSendLevel(0.3);
         original.getMixerChannelForTrack(track).setPhaseInverted(true);
         original.getMixerChannelForTrack(track).setMuted(true);
         original.getMixerChannelForTrack(track).setSolo(true);
@@ -268,7 +267,6 @@ class ProjectDeserializerTest {
         assertThat(restored.getMixer().getChannels()).hasSize(1);
         assertThat(restored.getMixer().getChannels().get(0).getVolume()).isCloseTo(0.7, within(0.001));
         assertThat(restored.getMixer().getChannels().get(0).getPan()).isCloseTo(-0.5, within(0.001));
-        assertThat(restored.getMixer().getChannels().get(0).getSendLevel()).isCloseTo(0.3, within(0.001));
         assertThat(restored.getMixer().getChannels().get(0).isPhaseInverted()).isTrue();
         assertThat(restored.getMixer().getChannels().get(0).isMuted()).isTrue();
         assertThat(restored.getMixer().getChannels().get(0).isSolo()).isTrue();
