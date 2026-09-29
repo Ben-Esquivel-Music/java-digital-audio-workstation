@@ -165,7 +165,15 @@ public final class JournalReplayer {
      * Loads {@code checkpointPath} into a fresh {@link DawProject}. Throws if
      * the checkpoint is missing or cannot be deserialised — which fails the
      * recovery and rolls it back. The {@code ctx} argument is the
-     * explicitly-threaded context (no {@link ThreadLocal}).
+     * explicitly-threaded context (no {@link ThreadLocal}); its
+     * {@link ProjectContext#projectDirectory()} is the base the checkpoint's
+     * project-relative clip references resolve against (story 323) — a
+     * checkpoint lives in {@code <project>/checkpoints/} but its references
+     * are relative to {@code <project>/}. The same directory is stamped on the
+     * recovered project's metadata (mirroring
+     * {@code ProjectManager.openProject}): the references are absolute in
+     * memory, and a serializer can only write them project-relative again
+     * when the project knows its directory.
      */
     private DawProject loadCheckpoint(ProjectContext ctx, Path checkpointPath) throws IOException {
         Objects.requireNonNull(ctx, "ctx must not be null");
@@ -173,7 +181,9 @@ public final class JournalReplayer {
             throw new IOException("checkpoint file not found: " + checkpointPath);
         }
         String xml = Files.readString(checkpointPath);
-        return deserializer.deserialize(xml);
+        DawProject project = deserializer.deserialize(xml, ctx.projectDirectory());
+        project.setMetadata(project.getMetadata().withPath(ctx.projectDirectory()));
+        return project;
     }
 
     /**

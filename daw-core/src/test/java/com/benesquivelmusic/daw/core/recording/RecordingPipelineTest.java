@@ -221,6 +221,7 @@ class RecordingPipelineTest {
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
+        pipeline.awaitFlushed();
 
         assertThat(session.getTotalSamplesRecorded()).isGreaterThan(0);
 
@@ -594,6 +595,7 @@ class RecordingPipelineTest {
             advanceTransportByFrames(512);
         }
 
+        pipeline.awaitFlushed();
         RecordingSession session = pipeline.getSession(track);
         // Exactly two blocks (512 * 2 = 1024 frames) fall inside the region.
         assertThat(session.getTotalSamplesRecorded()).isEqualTo(1024L);
@@ -620,6 +622,7 @@ class RecordingPipelineTest {
         }
 
         // All 4 blocks should be captured because punch is disabled.
+        pipeline.awaitFlushed();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(2048L);
 
         pipeline.stop();
@@ -645,6 +648,7 @@ class RecordingPipelineTest {
         audioEngine.processBlock(input, output, 512);
         advanceTransportByFrames(512);
 
+        pipeline.awaitFlushed();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(100L);
 
         pipeline.stop();
@@ -674,6 +678,7 @@ class RecordingPipelineTest {
             advanceTransportByFrames(512);
         }
 
+        pipeline.awaitFlushed();
         float[][] captured = pipeline.getSession(track).getCapturedAudio();
         assertThat(captured).isNotNull();
         assertThat(captured[0].length).isGreaterThanOrEqualTo(1024);
@@ -724,6 +729,7 @@ class RecordingPipelineTest {
             audioEngine.processBlock(input, output, 512);
             advanceTransportByFrames(512);
         }
+        pipeline.awaitFlushed();
         long afterPass1 = pipeline.getSession(track).getTotalSamplesRecorded();
         assertThat(afterPass1).isEqualTo(512L);
 
@@ -736,6 +742,7 @@ class RecordingPipelineTest {
             audioEngine.processBlock(input, output, 512);
             advanceTransportByFrames(512);
         }
+        pipeline.awaitFlushed();
         long afterPass2 = pipeline.getSession(track).getTotalSamplesRecorded();
         assertThat(afterPass2).isEqualTo(afterPass1 + 512L);
 
@@ -765,6 +772,7 @@ class RecordingPipelineTest {
 
         // Frame region captured 1024 frames despite the legacy beat range
         // covering a completely different span.
+        pipeline.awaitFlushed();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(1024L);
 
         pipeline.stop();

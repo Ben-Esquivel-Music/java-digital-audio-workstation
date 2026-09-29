@@ -12,10 +12,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.offset;
 
 class ClipProcessingServiceTest {
@@ -159,6 +162,122 @@ class ClipProcessingServiceTest {
         um.undo();
         assertThat(c1.getSourceFilePath()).isEqualTo(a.toString());
         assertThat(c2.getSourceFilePath()).isEqualTo(b.toString());
+    }
+
+    // ------------------------------------------------------------------
+    // Recorded takes (story 323): the clip carries a segment list
+    // ------------------------------------------------------------------
+
+    @Test
+    void oneSegmentRecordedClip_executeCollapsesTheList_undoRestoresIt_redoCollapsesAgain()
+            throws IOException {
+        Path segment = tempDir.resolve("segment-000.wav");
+        WavExporter.write(signal(512), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, segment);
+
+        AudioClip clip = new AudioClip("take", 0.0, 4.0, segment.toString());
+        clip.setSourceSegmentPaths(List.of(segment.toString()));
+        ClipProcessingService service = new ClipProcessingService(new ClipAssetHistory());
+
+        UndoManager um = new UndoManager();
+        um.execute(service.reverse(clip));
+        String rendered = clip.getSourceFilePath();
+        assertThat(rendered).isNotEqualTo(segment.toString());
+        assertThat(Path.of(rendered)).exists();
+        assertThat(clip.getSourceSegmentPaths())
+                .as("the clip is now a single-file clip backed by the rendered file")
+                .isEmpty();
+
+        um.undo();
+        assertThat(clip.getSourceSegmentPaths()).containsExactly(segment.toString());
+        assertThat(clip.getSourceFilePath()).isEqualTo(segment.toString());
+
+        um.redo();
+        assertThat(clip.getSourceSegmentPaths()).isEmpty();
+        assertThat(clip.getSourceFilePath()).isEqualTo(rendered);
+    }
+
+    @Test
+    void multiSegmentRecordedClip_isRefusedBeforeAnyFileIsWrittenOrHistoryRecorded()
+            throws IOException {
+        Path first = tempDir.resolve("segment-000.wav");
+        Path second = tempDir.resolve("segment-001.wav");
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, first);
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, second);
+
+        AudioClip clip = new AudioClip("take", 0.0, 8.0, first.toString());
+        clip.setSourceSegmentPaths(List.of(first.toString(), second.toString()));
+        ClipAssetHistory history = new ClipAssetHistory();
+        ClipProcessingService service = new ClipProcessingService(history);
+        UndoManager um = new UndoManager();
+
+        assertThatThrownBy(() -> um.execute(service.normalize(clip, -1.0)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(clip.getId())
+                .hasMessageContaining("multi-segment")
+                .hasMessageContaining("2 segments");
+
+        try (Stream<Path> files = Files.list(tempDir)) {
+            assertThat(files.map(p -> p.getFileName().toString()))
+                    .as("no rendered file was written next to the segments")
+                    .containsExactlyInAnyOrder("segment-000.wav", "segment-001.wav");
+        }
+        assertThat(history.clipIds()).isEmpty();
+        assertThat(history.priorAssets(clip.getId())).isEmpty();
+        assertThat(um.canUndo()).isFalse();
+        assertThat(clip.getSourceSegmentPaths())
+                .containsExactly(first.toString(), second.toString());
+        assertThat(clip.getSourceFilePath()).isEqualTo(first.toString());
+    }
+
+    @Test
+    void batchHoldingAMultiSegmentClip_isRefusedAtTheFactoryBeforeAnyClipIsProcessed()
+            throws IOException {
+        Path imported = tempDir.resolve("import.wav");
+        Path first = tempDir.resolve("segment-000.wav");
+        Path second = tempDir.resolve("segment-001.wav");
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, imported);
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, first);
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, second);
+
+        AudioClip singleFileClip = new AudioClip("import", 0.0, 4.0, imported.toString());
+        AudioClip twoSegmentClip = new AudioClip("take", 4.0, 8.0, first.toString());
+        twoSegmentClip.setSourceSegmentPaths(List.of(first.toString(), second.toString()));
+        List<AudioClip> selection = List.of(singleFileClip, twoSegmentClip);
+        ClipAssetHistory history = new ClipAssetHistory();
+        ClipProcessingService service = new ClipProcessingService(history);
+        UndoManager um = new UndoManager();
+
+        // The gesture as a caller makes it: build the batch, hand it to the
+        // undo manager. The clip that CAN be processed comes first.
+        assertThatThrownBy(() -> um.execute(service.normalize(selection, -1.0)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(twoSegmentClip.getId())
+                .hasMessageContaining("multi-segment")
+                .hasMessageContaining("2 segments");
+
+        assertThat(singleFileClip.getSourceFilePath())
+                .as("the clip ahead of the refused one was not processed")
+                .isEqualTo(imported.toString());
+        assertThat(singleFileClip.getSourceSegmentPaths()).isEmpty();
+        try (Stream<Path> files = Files.list(tempDir)) {
+            assertThat(files.map(p -> p.getFileName().toString()))
+                    .as("no rendered file was written")
+                    .containsExactlyInAnyOrder("import.wav", "segment-000.wav", "segment-001.wav");
+        }
+        assertThat(history.clipIds()).isEmpty();
+        assertThat(um.canUndo()).isFalse();
+        assertThat(twoSegmentClip.getSourceSegmentPaths())
+                .containsExactly(first.toString(), second.toString());
+
+        // ... and the refusal is the factory's: no action is ever built.
+        assertThatThrownBy(() -> service.normalize(selection, -1.0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(twoSegmentClip.getId())
+                .hasMessageContaining("normalizing it");
+        assertThatThrownBy(() -> service.reverse(selection))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(twoSegmentClip.getId())
+                .hasMessageContaining("reversing it");
     }
 
     // ------------------------------------------------------------------

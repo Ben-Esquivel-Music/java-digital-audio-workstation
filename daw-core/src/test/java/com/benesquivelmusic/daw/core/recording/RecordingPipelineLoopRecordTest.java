@@ -58,10 +58,16 @@ class RecordingPipelineLoopRecordTest {
         transport.setLoopEnabled(true);
     }
 
-    private void processOneBlock() {
+    /**
+     * Feeds one block and waits for the flush thread to apply it (story
+     * 323): capture is asynchronous, and the wrap detection, lane seals and
+     * sample counts these tests assert are all flush-thread facts.
+     */
+    private void processOneBlock(RecordingPipeline pipeline) {
         float[][] input = new float[2][BUFFER_SIZE];
         float[][] output = new float[2][BUFFER_SIZE];
         audioEngine.processBlock(input, output, BUFFER_SIZE);
+        pipeline.awaitFlushed();
         advanceTransportByBufferSize();
     }
 
@@ -88,10 +94,10 @@ class RecordingPipelineLoopRecordTest {
         // drive one extra block to ensure the wrap from lap 10 is detected.
         int laps = 10;
         for (int i = 0; i < laps * blocksPerLoop; i++) {
-            processOneBlock();
+            processOneBlock(pipeline);
         }
         // One more block to trigger the wrap detection for lap 10.
-        processOneBlock();
+        processOneBlock(pipeline);
 
         List<AudioClip> clips = pipeline.stop();
 
@@ -132,10 +138,10 @@ class RecordingPipelineLoopRecordTest {
 
         // Drive three full loops.
         for (int i = 0; i < 3 * blocksPerLoop; i++) {
-            processOneBlock();
+            processOneBlock(pipeline);
         }
         // Trigger wrap detection for the 3rd lap.
-        processOneBlock();
+        processOneBlock(pipeline);
 
         pipeline.stop();
 
@@ -183,6 +189,7 @@ class RecordingPipelineLoopRecordTest {
                 input[1][f] = v;
             }
             audioEngine.processBlock(input, output, BUFFER_SIZE);
+            pipeline.awaitFlushed();
             advanceTransportByBufferSize();
         }
 
@@ -221,7 +228,7 @@ class RecordingPipelineLoopRecordTest {
         pipeline.start();
 
         for (int i = 0; i < 5; i++) {
-            processOneBlock();
+            processOneBlock(pipeline);
         }
 
         List<AudioClip> clips = pipeline.stop();

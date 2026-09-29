@@ -35,8 +35,9 @@ public final class GlueClipsAction implements UndoableAction {
      * @param first  the earlier clip (by start beat)
      * @param second the later clip (by start beat)
      * @throws IllegalArgumentException if the clips are the same instance, are not
-     *         in order, or are not adjacent (i.e. the first clip's end beat does not
-     *         approximately equal the second clip's start beat)
+     *         in order, are not adjacent (i.e. the first clip's end beat does not
+     *         approximately equal the second clip's start beat), or do not share
+     *         the same source file path, source segment list and audio data buffer
      */
     public GlueClipsAction(Track track, AudioClip first, AudioClip second) {
         this.track = Objects.requireNonNull(track, "track must not be null");
@@ -59,6 +60,12 @@ public final class GlueClipsAction implements UndoableAction {
             throw new IllegalArgumentException(
                     "clips must share the same source file path to be glued");
         }
+        // A recorded take's source is its whole segment list, of which the
+        // source file path is only the first element (story 323).
+        if (!first.getSourceSegmentPaths().equals(second.getSourceSegmentPaths())) {
+            throw new IllegalArgumentException(
+                    "clips must share the same source segment list to be glued");
+        }
         if (first.getAudioData() != second.getAudioData()) {
             throw new IllegalArgumentException(
                     "clips must share the same audio data buffer to be glued");
@@ -76,6 +83,9 @@ public final class GlueClipsAction implements UndoableAction {
         double mergedDuration = second.getEndBeat() - first.getStartBeat();
         merged = new AudioClip(first.getName(), mergedStart, mergedDuration,
                 first.getSourceFilePath());
+        // Both halves reference the same segments (checked at construction);
+        // the merged clip must keep referencing every one of them.
+        merged.setSourceSegmentPaths(first.getSourceSegmentPaths());
         merged.setSourceOffsetBeats(first.getSourceOffsetBeats());
         merged.setGainDb(first.getGainDb());
         merged.setReversed(first.isReversed());

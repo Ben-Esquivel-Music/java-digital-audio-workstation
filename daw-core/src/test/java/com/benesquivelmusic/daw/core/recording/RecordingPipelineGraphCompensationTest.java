@@ -73,6 +73,7 @@ class RecordingPipelineGraphCompensationTest {
             float[][] input = new float[2][64];
             for (float[] samples : input) Arrays.fill(samples, 0.5f);
             for (int block = 0; block < 6; block++) engine.processBlock(input, new float[2][64], 64);
+            recording.awaitFlushed();
             assertThat(recording.getSession(instrument).getCompensationFrames()).isZero();
             if (mixed) assertThat(recording.getSession(physical).getCompensationFrames()).isEqualTo(expectedPhysical);
             recording.stop();

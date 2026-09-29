@@ -786,6 +786,27 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
+    void shouldRoundTripSourceSegmentListVerbatimWithoutAProjectDirectory() throws IOException {
+        DawProject original = new DawProject("Segments", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Audio");
+        AudioClip clip = new AudioClip("Take", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(List.of(
+                "/nonexistent/take/segment-000.wav", "/nonexistent/take/segment-001.wav"));
+        track.addClip(clip);
+
+        String xml = serializer.serialize(original);
+        ProjectDeserializer freshDeserializer = new ProjectDeserializer();
+        AudioClip restored = freshDeserializer.deserialize(xml).getTracks().get(0).getClips().get(0);
+
+        assertThat(restored.getSourceSegmentPaths()).containsExactly(
+                "/nonexistent/take/segment-000.wav", "/nonexistent/take/segment-001.wav");
+        assertThat(restored.getSourceFilePath()).isEqualTo("/nonexistent/take/segment-000.wav");
+        // Each missing segment once; the head is not reported a second time.
+        assertThat(freshDeserializer.getMissingFiles()).containsExactly(
+                "/nonexistent/take/segment-000.wav", "/nonexistent/take/segment-001.wav");
+    }
+
+    @Test
     void shouldRoundTripNoReferenceTracksGracefully() throws IOException {
         DawProject original = new DawProject("No Refs", AudioFormat.CD_QUALITY);
 

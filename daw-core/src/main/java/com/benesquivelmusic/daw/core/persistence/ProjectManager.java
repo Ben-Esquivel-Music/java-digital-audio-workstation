@@ -29,14 +29,37 @@ import java.util.*;
  * <pre>
  *   MyProject/
  *     project.daw            — full project state (XML)
- *     audio/                 — recorded audio files
+ *     audio/                 — recorded audio (story 323; see {@link #audioDirectory(Path)})
+ *       takes/
+ *         2026-08-03T14-22-05_take-0007/   — one directory per record gesture
+ *           take.manifest                  — ordered segment lists, format, seal status
+ *           &lt;trackId&gt;/segment-000.wav      — sealed segments; segment-NNN.wav.part while streaming
  *     checkpoints/           — auto-save checkpoints
  * </pre>
  */
 public final class ProjectManager {
 
     private static final String PROJECT_FILE_NAME = "project.daw";
-    private static final String AUDIO_DIR_NAME = "audio";
+
+    /**
+     * Name of the per-project directory that holds recorded audio — the only
+     * home for captured takes (Recording Reliability book §2.6).
+     */
+    public static final String AUDIO_DIR_NAME = "audio";
+
+    /**
+     * Returns {@code <projectDir>/audio} — where recorded takes live
+     * ({@code audio/takes/<stamp>_take-NNNN/…}, allocated by
+     * {@code com.benesquivelmusic.daw.core.recording.TakeDirectories}).
+     * Created by {@link #createProject(String, Path)}.
+     *
+     * @param projectDir the project directory
+     * @return the audio directory path (not necessarily existing yet)
+     */
+    public static Path audioDirectory(Path projectDir) {
+        return Objects.requireNonNull(projectDir, "projectDir must not be null")
+                .resolve(AUDIO_DIR_NAME);
+    }
 
     private final Map<String, ProjectMetadata> recentProjects = new LinkedHashMap<>();
     private final CheckpointManager checkpointManager;
@@ -157,7 +180,7 @@ public final class ProjectManager {
         Objects.requireNonNull(parentDirectory, "parentDirectory must not be null");
 
         Path projectDir = createUniqueProjectDirectory(parentDirectory, sanitizeDirectoryName(name));
-        Files.createDirectories(projectDir.resolve(AUDIO_DIR_NAME));
+        Files.createDirectories(audioDirectory(projectDir));
 
         ProjectMetadata metadata = ProjectMetadata.createNew(name).withPath(projectDir);
         writeProjectFile(metadata);
@@ -248,7 +271,9 @@ public final class ProjectManager {
         String content = Files.readString(projectFile);
 
         if (content.strip().startsWith("<?xml") || content.strip().startsWith("<daw-project")) {
-            DawProject dawProject = deserializer.deserialize(content);
+            // Project-relative clip references (story 323) resolve against
+            // the directory the project file lives in.
+            DawProject dawProject = deserializer.deserialize(content, projectDirectory);
             ProjectMetadata metadata = dawProject.getMetadata().withPath(projectDirectory);
             dawProject.setMetadata(metadata);
             dawProject.markClean();

@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.audio.TimelineRegion;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,15 @@ import java.util.UUID;
  *
  * <p>Each clip references a source audio file or buffer and is positioned
  * at a specific beat on the timeline with a given duration.</p>
+ *
+ * <p><strong>Segment references</strong> (Recording Reliability book §3.3,
+ * §5.3 "Reference completeness"; story 323). A recorded take is streamed to
+ * disk as one or more WAV segments; the clip carries the complete, ordered
+ * list in {@link #getSourceSegmentPaths()}. Invariant: when that list is
+ * non-empty, {@link #getSourceFilePath()} equals its first element — the
+ * head is <em>derived</em> from the list, the list is the authority. A clip
+ * backed by a single file (an import, a bounce) has an empty list and a
+ * free-standing {@code sourceFilePath}.</p>
  */
 public final class AudioClip implements TimelineRegion, Clip {
 
@@ -23,6 +33,7 @@ public final class AudioClip implements TimelineRegion, Clip {
     private double durationBeats;
     private double sourceOffsetBeats;
     private String sourceFilePath;
+    private List<String> sourceSegmentPaths = List.of();
     private double gainDb;
     private boolean reversed;
     private boolean locked;
@@ -117,14 +128,58 @@ public final class AudioClip implements TimelineRegion, Clip {
         this.sourceOffsetBeats = sourceOffsetBeats;
     }
 
-    /** Returns the path to the source audio file. */
+    /**
+     * Returns the path to the source audio file. When
+     * {@link #getSourceSegmentPaths()} is non-empty this is its first element.
+     */
     public String getSourceFilePath() {
         return sourceFilePath;
     }
 
-    /** Sets the source audio file path. */
+    /**
+     * Sets the source audio file path.
+     *
+     * @throws IllegalArgumentException if {@link #getSourceSegmentPaths()} is
+     *         non-empty and {@code sourceFilePath} is not its first element —
+     *         the segment list is the authority for a recorded take; clear it
+     *         first ({@code setSourceSegmentPaths(List.of())}) to re-point the
+     *         clip at a single file
+     */
     public void setSourceFilePath(String sourceFilePath) {
+        if (!sourceSegmentPaths.isEmpty()
+                && !Objects.equals(sourceFilePath, sourceSegmentPaths.getFirst())) {
+            throw new IllegalArgumentException("sourceFilePath must equal the first segment ("
+                    + sourceSegmentPaths.getFirst() + ") while the clip carries a segment list; was: "
+                    + sourceFilePath);
+        }
         this.sourceFilePath = sourceFilePath;
+    }
+
+    /**
+     * Returns the ordered, immutable list of segment files that together
+     * hold this clip's audio (manifest order), or an empty list for a clip
+     * backed by a single file. Recorded takes hold absolute paths in memory;
+     * the serializer writes them project-relative.
+     */
+    public List<String> getSourceSegmentPaths() {
+        return sourceSegmentPaths;
+    }
+
+    /**
+     * Sets the ordered segment list. A non-empty list also sets
+     * {@link #getSourceFilePath()} to its first element (the head invariant);
+     * an empty list leaves {@code sourceFilePath} untouched.
+     *
+     * @param sourceSegmentPaths the segment paths in playback order; copied,
+     *                           must not be {@code null} or contain {@code null}
+     */
+    public void setSourceSegmentPaths(List<String> sourceSegmentPaths) {
+        List<String> copy = List.copyOf(
+                Objects.requireNonNull(sourceSegmentPaths, "sourceSegmentPaths must not be null"));
+        this.sourceSegmentPaths = copy;
+        if (!copy.isEmpty()) {
+            this.sourceFilePath = copy.getFirst();
+        }
     }
 
     /** Returns the clip gain in dB. */
@@ -446,6 +501,7 @@ public final class AudioClip implements TimelineRegion, Clip {
         copy.setAudioData(audioData);
         copy.setSourceRateMetadata(sourceRateMetadata);
         copy.setGainEnvelope(gainEnvelope);
+        copy.setSourceSegmentPaths(sourceSegmentPaths);
         return copy;
     }
 
@@ -484,6 +540,7 @@ public final class AudioClip implements TimelineRegion, Clip {
         second.setAudioData(audioData);
         second.setSourceRateMetadata(sourceRateMetadata);
         second.setGainEnvelope(gainEnvelope);
+        second.setSourceSegmentPaths(sourceSegmentPaths);
 
         // Truncate this clip
         this.durationBeats = splitBeat - startBeat;

@@ -741,7 +741,10 @@ final class ProjectLifecycleController {
      * Walks the project for asset references whose path no longer points
      * at a regular file on disk. Mirrors the iteration order of
      * {@link ProjectArchiver} so the user sees the same set the archiver
-     * will end up skipping.
+     * will end up skipping: a clip that carries a segment list (a recorded
+     * take, story 323) is checked segment by segment, each missing segment
+     * reported once and the head not a second time; a single-file clip is
+     * checked by its source file path.
      *
      * <p>Package-private for unit tests.</p>
      */
@@ -749,6 +752,15 @@ final class ProjectLifecycleController {
         List<String> missing = new ArrayList<>();
         for (Track track : project.getTracks()) {
             for (AudioClip clip : track.getClips()) {
+                List<String> segments = clip.getSourceSegmentPaths();
+                if (!segments.isEmpty()) {
+                    for (String segment : segments) {
+                        if (!segment.isBlank() && !isRegularFile(segment)) {
+                            missing.add(segment);
+                        }
+                    }
+                    continue;
+                }
                 String p = clip.getSourceFilePath();
                 if (p != null && !p.isBlank() && !isRegularFile(p)) {
                     missing.add(p);

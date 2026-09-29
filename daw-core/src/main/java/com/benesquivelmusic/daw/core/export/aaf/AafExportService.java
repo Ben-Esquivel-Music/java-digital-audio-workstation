@@ -50,6 +50,9 @@ public final class AafExportService {
      * config's frame rate and returns the AAF data model. Made public
      * so callers (and tests) can inspect the composition before it is
      * written.
+     *
+     * @throws IllegalStateException if an included clip is a recorded take
+     *         spanning more than one segment file (the message names the clip)
      */
     public AafComposition composeTimeline(DawProject project, AafExportConfig config) {
         Objects.requireNonNull(project, "project must not be null");
@@ -71,6 +74,7 @@ public final class AafExportService {
             if (track.getType() != TrackType.AUDIO) continue;
 
             for (AudioClip clip : track.getClips()) {
+                requireSingleSourceFile(clip, track);
                 long startSample  = Math.round(clip.getStartBeat()      * samplesPerBeat);
                 long lengthSample = Math.max(1L,
                                        Math.round(clip.getDurationBeats() * samplesPerBeat));
@@ -120,10 +124,28 @@ public final class AafExportService {
     }
 
     /**
+     * An AAF source clip names exactly one source file. A recorded take that
+     * rotated spans several segment files (story 323), so exporting only
+     * {@link AudioClip#getSourceFilePath()} — its first segment — would hand
+     * the receiving tool a reference to a fraction of the take. Refuse by
+     * name instead; a take with one segment (or a single-file clip) passes.
+     */
+    private static void requireSingleSourceFile(AudioClip clip, Track track) {
+        int segments = clip.getSourceSegmentPaths().size();
+        if (segments > 1) {
+            throw new IllegalStateException("Clip '" + clip.getName() + "' (" + clip.getId()
+                    + ") on track '" + track.getName() + "' is a multi-segment recorded take ("
+                    + segments + " segments); consolidate it before exporting to AAF");
+        }
+    }
+
+    /**
      * Performs a complete export: composes the timeline, builds embedded
      * media when requested, and writes the AAF file.
      *
      * @return the composition that was written (useful for status display)
+     * @throws IllegalStateException if an included clip is a recorded take
+     *         spanning more than one segment file; nothing is written
      */
     public AafComposition export(DawProject project,
                                  AafExportConfig config,

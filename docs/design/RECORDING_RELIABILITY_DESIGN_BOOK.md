@@ -578,7 +578,10 @@ the *oldest unwritten block*, increments an atomic overflow counter, and the flu
 records a gap marker in the manifest (audible dropout, but bounded loss and an honest record).
 The counter surfaces through the RT-safe error channel (`FAILURE_SURFACING_DESIGN_BOOK.md`,
 story 337) and the xrun counter (story 338). Rejected: blocking the callback until space frees —
-never; and silently overwriting — a lie in the take.
+never; and silently overwriting — a lie in the take. Stage 1 as landed (story 323) drops the
+*incoming* block instead — see `CaptureRing`'s Javadoc: overwriting the oldest slot is not
+single-producer-safe while the consumer may be copying out of it — and records the drop as a
+`gap=` line in the manifest.
 
 ### 4.3 The flush thread
 
@@ -666,6 +669,19 @@ callback; "FLUSH" = flush thread only; "FX" = FX thread only.
 | Take/clip/lane object construction                   | FLUSH   | §4.6 |
 | Record state transitions; notifications; dialogs     | FX      | `RecordCoordinator` owns the machine |
 | Buffer sizing inputs                                 | engine live format + delivered frame count | §2.7; never `project.getFormat()`, never a captured constant |
+
+Stage 1 as landed (story 323) departs from the two FLUSH rows on file operations and
+take/clip construction in three places, by design: the *initial* segment and manifest creation
+(each armed track's `segment-000.wav.part` and the first `take.manifest`) runs on the caller
+thread (FX in the app) inside `RecordingPipeline.start()`, before the flush thread is started;
+the rollback of a failed start deletes those files on the caller thread too, after joining the
+flush thread if it had been started — together they make a start all-or-nothing; and the
+normal-path clip is built on the caller thread in `RecordingPipeline.stop()`, after the flush
+thread has been joined, so that `Track`s are mutated by one thread. Every other file operation —
+appends, forces, rotation opens and seals, manifest rewrites — and the loop-lap takes stay on the
+flush thread. The ring is still sized from the format the pipeline is constructed with (the
+project's format in the app); a longer delivered block is truncated, counted and recorded
+(`truncated-frames`), and story 324 owns format truth.
 
 ### 5.2 Record state transitions
 
@@ -868,6 +884,8 @@ asserts the seal rename is atomic (no observable provisional-header `.wav`).
 
 **Unblocks.** Story 329 (audio reload) has real files to reload; Stage 5's rescue = this
 stage's seal; the §1.1 "auto-save active" status line stops being a lie.
+
+**Landed 2026-09-28** — see the story's Resolution (`docs/user-stories/323-recorded-audio-reaches-disk.md`).
 
 ### Stage 2 — RT-Safe Capture Path (story 324)
 

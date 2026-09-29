@@ -203,6 +203,7 @@ class RecordingPipelineLatencyCompensationTest {
         pipeline.setReportedLatency(new RoundTripLatency(64, 128, 16));
         pipeline.start();
 
+        pipeline.awaitFlushed();
         RecordingSession session = pipeline.getSession(track);
         assertThat(session).isNotNull();
         assertThat(session.getCompensationFrames()).isEqualTo(208);

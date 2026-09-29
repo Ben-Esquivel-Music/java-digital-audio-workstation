@@ -290,6 +290,10 @@ class AudioIORoutingTest {
         float[][] outputBuffer = new float[4][512];
         engine.processBlock(inputBuffer, outputBuffer, 512);
 
+        // Capture is applied on the capture-flush thread (story 323): fence
+        // on it before reading session state.
+        pipeline.awaitFlushed();
+
         // Get sessions to verify what was captured
         RecordingSession session1 = pipeline.getSession(track1);
         RecordingSession session2 = pipeline.getSession(track2);

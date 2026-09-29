@@ -72,4 +72,39 @@ class ProjectLifecycleArchiveTest {
 
         assertThat(ProjectLifecycleController.collectMissingAssetPaths(project)).isEmpty();
     }
+
+    @Test
+    void collectMissingAssetPathsChecksEverySegmentOfARecordedTakeAndReportsEachOnce()
+            throws IOException {
+        // Story 323: a recorded take references an ordered segment list; the
+        // archiver walks every element, so the pre-archive dialog must too.
+        DawProject project = new DawProject("Rotated", AudioFormat.CD_QUALITY);
+        Path present = tmp.resolve("segment-000.wav");
+        Files.write(present, new byte[]{1, 2, 3});
+        Path goneMiddle = tmp.resolve("segment-001.wav");
+        Path goneLast = tmp.resolve("segment-002.wav");
+
+        Track t = project.createAudioTrack("Vox");
+        AudioClip take = new AudioClip("Take 1", 0, 8.0, present.toString());
+        take.setSourceSegmentPaths(List.of(
+                present.toString(), goneMiddle.toString(), goneLast.toString()));
+        t.addClip(take);
+
+        List<String> missing = ProjectLifecycleController.collectMissingAssetPaths(project);
+
+        assertThat(missing).containsExactly(goneMiddle.toString(), goneLast.toString());
+    }
+
+    @Test
+    void collectMissingAssetPathsReportsAMissingHeadSegmentOnce() {
+        DawProject project = new DawProject("Lost", AudioFormat.CD_QUALITY);
+        Path goneHead = tmp.resolve("segment-000.wav");
+        Track t = project.createAudioTrack("Vox");
+        AudioClip take = new AudioClip("Take 1", 0, 8.0, goneHead.toString());
+        take.setSourceSegmentPaths(List.of(goneHead.toString()));
+        t.addClip(take);
+
+        assertThat(ProjectLifecycleController.collectMissingAssetPaths(project))
+                .containsExactly(goneHead.toString());
+    }
 }

@@ -10,8 +10,10 @@ import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -32,7 +34,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -71,6 +76,14 @@ class TransportCommandPathTest {
 
     private DefaultEventBus bus;
     private AudioEngine audioEngine;
+
+    /**
+     * Story 323 — an audio take streams under the project's own
+     * {@code audio/takes}; a project without a directory is refused before
+     * the device open, so the abort test gives its project one.
+     */
+    @TempDir
+    Path projectDirectory;
 
     /** The marker {@link #awaitBusDrained()} is currently waiting on, if any. */
     private final AtomicReference<DrainMarker> drainMarker = new AtomicReference<>();
@@ -198,6 +211,10 @@ class TransportCommandPathTest {
         // a take silently missing the audio tracks the user armed, which is
         // the same dishonesty in a form that is harder to notice.
         DawProject project = new DawProject("record-abort", FORMAT);
+        // Story 323 — the project has a directory, so the refusal-for-want-of-
+        // a-folder gate is passed and the take directory IS allocated under
+        // audio/takes before the open fails; the abort must remove it again.
+        project.setMetadata(project.getMetadata().withPath(projectDirectory));
         Transport transport = project.getTransport();
         transport.setPositionInBeats(5.0);
         Track armedAudio = new Track("Gtr", TrackType.AUDIO);
@@ -240,6 +257,20 @@ class TransportCommandPathTest {
                     .contains("aborted")
                     .doesNotContain("Recording — ")
                     .contains("no audio backend is configured");
+            // Story 323 — the take directory was allocated under the project's
+            // audio/takes BEFORE the open (the allocation is what created the
+            // takes folder), and the abort removed it again: nothing of a take
+            // that never started is left in the project.
+            Path takes = TakeDirectories.takesDirectory(
+                    ProjectManager.audioDirectory(projectDirectory));
+            assertThat(takes)
+                    .as("the allocation reached the project's audio/takes folder")
+                    .isDirectory();
+            try (var entries = Files.list(takes)) {
+                assertThat(entries)
+                        .as("the aborted take's directory was removed from audio/takes")
+                        .isEmpty();
+            }
         }
 
         // The pipeline reference was cleared too, not merely never started: a

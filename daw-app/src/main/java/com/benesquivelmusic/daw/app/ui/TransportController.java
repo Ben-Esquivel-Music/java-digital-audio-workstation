@@ -14,10 +14,13 @@ import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.MidiRecorder;
 import com.benesquivelmusic.daw.core.midi.RecordMidiNotesAction;
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
+import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -83,6 +86,15 @@ import java.util.logging.Logger;
 final class TransportController implements TransportIntentHandler {
 
     private static final Logger LOG = Logger.getLogger(TransportController.class.getName());
+
+    /**
+     * Story 323 (D6): an audio take streams to disk under the project's own
+     * {@code audio/takes} folder and never to the OS temp directory, so a
+     * project that has no directory yet cannot record audio. Shown as the
+     * ERROR toast and the status-bar text when {@link #onRecord()} refuses.
+     */
+    static final String NO_PROJECT_FOLDER_MESSAGE =
+            "Recording needs a project folder — save the project first";
 
     private final DawProject project;
     private final AudioEngine audioEngine;
@@ -439,14 +451,16 @@ final class TransportController implements TransportIntentHandler {
      * alone.</p>
      *
      * <p><strong>Why the rewind is gated on "nothing is recording"</strong>: the
-     * pipeline can be ACTIVE while the transport is still STOPPED.
-     * {@code RecordingPipeline.start()} sets {@code active = true} at its top and
-     * only calls {@code Transport.record()} at the very end, so a throw in
-     * between (session creation, temp-file I/O, engine start) escapes
-     * {@link #onRecord()} with the pipeline assigned and running and the
-     * transport untouched. Returning early on that state would leak recording
-     * sessions and temp files, leave per-track recording flags set and the REC
-     * indicator lit forever — every further Stop hitting the same early return.
+     * pipeline can be ACTIVE while the transport is still STOPPED — an internal
+     * caller that stopped the transport underneath a running pipeline (count-in
+     * does not defer {@code Transport.record()} today; story 328 owns
+     * count-in). (Before story 323 a throw inside
+     * {@code RecordingPipeline.start()} was a second way in; its start is now
+     * all-or-nothing and {@link #onRecord()} aborts the take on it, so nothing
+     * active is left behind.) Returning early on that
+     * state would leak recording sessions and segment files, leave per-track
+     * recording flags set and the REC indicator lit forever — every further
+     * Stop hitting the same early return.
      * Falling through instead runs the finalize exactly once: on an
      * already-STOPPED transport {@link Transport#requestStop()} takes the
      * {@code stop()} branch, which is an idempotent no-op, so the tail below is
@@ -635,9 +649,11 @@ final class TransportController implements TransportIntentHandler {
      * <p>ANNOUNCE (story 315): {@link TransportEvent.Started} is published at
      * the end of the start flow, and only once the transport is actually in
      * RECORDING — the audio path mutates the state inside
-     * {@code RecordingPipeline.start()} (possibly deferred by a count-in), the
-     * MIDI-only path via {@link Transport#record()}; announcing on the actual
-     * transition keeps the bus truthful for both.</p>
+     * {@code RecordingPipeline.start()}, the MIDI-only path via
+     * {@link Transport#record()}; announcing on the actual transition keeps the
+     * bus truthful for both, and declines only when an internal caller stopped
+     * the transport underneath a running pipeline (count-in does not defer
+     * {@code Transport.record()} today; story 328 owns count-in).</p>
      */
     @Override
     public void toggleRecord() {
@@ -677,6 +693,23 @@ final class TransportController implements TransportIntentHandler {
 
         CountInMode countIn = countInMode.get();
 
+        // Story 323 (D6): an audio take lives in the project — its segments
+        // stream under <project>/audio/takes/<take>/ — so a project without a
+        // directory (never saved) cannot record audio. Refused BEFORE the
+        // engine, the pipeline or any MidiRecorder is touched: nothing has
+        // started and the transport remains STOPPED. MIDI-only recording
+        // writes no audio files and needs no folder, so it is not gated.
+        Optional<Path> projectDirectory = projectDirectory();
+        if (!armedAudioTracks.isEmpty() && projectDirectory.isEmpty()) {
+            LOG.warning("Recording refused — the project has no directory yet");
+            statusBarLabel.setText(NO_PROJECT_FOLDER_MESSAGE);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+            notificationBar.show(NotificationLevel.ERROR, NO_PROJECT_FOLDER_MESSAGE);
+            recIndicator.setVisible(false);
+            recIndicator.setManaged(false);
+            return;
+        }
+
         // MIDI-only recording still needs the output callback to drive time
         // and play existing tracks. Open it before creating any MidiRecorder:
         // on refusal nothing has started, no track is marked recording and
@@ -688,20 +721,37 @@ final class TransportController implements TransportIntentHandler {
             return;
         }
 
+        // The take directory of this audio take (empty for a MIDI-only take);
+        // named in the status line below.
+        Path takeDirectory = null;
+
         // Start audio recording pipeline for non-MIDI armed tracks
         if (!armedAudioTracks.isEmpty()) {
-            // Create output directory for recording segments
+            // Allocate this take's directory under the project's audio/takes
+            // folder (story 323, D6). On the FX thread this ensures audio/takes
+            // exists, lists it, and makes one Files.createDirectory per
+            // attempt, followed below by the pipeline's per-track segment
+            // opens and its manifest write (the manifest write includes one
+            // force(true) of its staging file) — small, bounded, synchronous
+            // I/O in the record handler
+            // (a javafx-application-design §11 deviation, the same class as the
+            // temp-dir call it replaces). The OS temp directory is never used
+            // (Recording Reliability book §9.4).
             Path outputDir;
             try {
-                outputDir = Files.createTempDirectory("daw-recording-");
+                outputDir = TakeDirectories.allocate(
+                        ProjectManager.audioDirectory(projectDirectory.get()), Instant.now());
             } catch (IOException e) {
-                LOG.log(Level.SEVERE, "Failed to create recording output directory", e);
-                statusBarLabel.setText("Recording failed — could not create output directory");
+                LOG.log(Level.SEVERE,
+                        "Failed to create a take directory under the project's audio/takes folder", e);
+                String message = "Recording failed — could not create a take folder under the project's "
+                        + ProjectManager.AUDIO_DIR_NAME + "/" + TakeDirectories.TAKES_DIR_NAME;
+                statusBarLabel.setText(message);
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
-                notificationBar.show(NotificationLevel.ERROR,
-                        "Recording failed — could not create output directory");
+                notificationBar.show(NotificationLevel.ERROR, message);
                 return;
             }
+            takeDirectory = outputDir;
 
             recordingPipeline = new RecordingPipeline(
                     audioEngine, project.getTransport(), project.getFormat(), outputDir,
@@ -736,6 +786,12 @@ final class TransportController implements TransportIntentHandler {
             // desynchronize the two. Blocks the device delivers between the
             // open and the pipeline start reach a recording callback that is
             // still null: they were never part of any take.
+            //
+            // RecordingPipeline.start() is all-or-nothing (story 323, D11): on
+            // any failure it rolls itself back — flush thread stopped, every
+            // segment and the manifest it created deleted, recording flags
+            // cleared — and rethrows, so the same abort path applies and the
+            // take directory is empty again for deleteEmptyTakeDirectory.
             try {
                 if (armedAudioTracks.stream().allMatch(track ->
                         track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track))) {
@@ -743,11 +799,11 @@ final class TransportController implements TransportIntentHandler {
                 } else {
                     audioEngine.startAudioInputOutput();
                 }
+                recordingPipeline.start();
             } catch (RuntimeException e) {
                 abortRecordingTake(outputDir, e);
                 return;
             }
-            recordingPipeline.start();
         }
 
         // Start MIDI recording for armed MIDI tracks
@@ -761,17 +817,26 @@ final class TransportController implements TransportIntentHandler {
             project.getTransport().record();
         }
 
-        // ANNOUNCE (story 315) — only once the transport actually transitioned
-        // (a count-in pipeline may not be RECORDING yet; announcing then would
-        // put a fiction on the bus).
+        // ANNOUNCE (story 315) — only once the transport actually transitioned.
+        // Both paths above call Transport.record(), so the guard declines only
+        // when an internal caller stopped the transport underneath a running
+        // pipeline; announcing then would put a fiction on the bus (count-in
+        // does not defer Transport.record() today; story 328 owns count-in).
         if (project.getTransport().getState() == TransportState.RECORDING) {
             EventBusPublisher.publish(new TransportEvent.Started(
                     core.beatsToFrames(project.getTransport().getPositionInBeats()), Instant.now()));
         }
         updateStatus();
         int trackCount = armedTracks.size();
-        statusBarLabel.setText("Recording — " + trackCount + " track"
-                + (trackCount > 1 ? "s" : "") + " armed — auto-save active");
+        // Status line truth (story 323, D12): an audio take names the take
+        // directory its segments are streaming into; a MIDI-only take writes
+        // no audio files, so it names none. Neither claims an "auto-save".
+        String armedSummary = "Recording — " + trackCount + " track"
+                + (trackCount > 1 ? "s" : "") + " armed";
+        statusBarLabel.setText(takeDirectory == null
+                ? armedSummary
+                : armedSummary + " — streaming to " + ProjectManager.AUDIO_DIR_NAME + "/"
+                        + TakeDirectories.TAKES_DIR_NAME + "/" + takeDirectory.getFileName());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
         notificationBar.show(NotificationLevel.INFO,
                 "Recording started — " + trackCount + " track"
@@ -821,6 +886,31 @@ final class TransportController implements TransportIntentHandler {
      */
     Optional<Thread> pendingSessionInputCheck() {
         return Optional.ofNullable(sessionInputCheck);
+    }
+
+    /**
+     * The take directory the active audio pipeline is streaming into, so a
+     * test can pin where a take lives (story 323). Package-visible for tests;
+     * FX thread.
+     *
+     * @return the take directory under the project's {@code audio/takes}, or
+     *         empty when no audio pipeline is active
+     */
+    Optional<Path> activeTakeDirectory() {
+        return recordingPipeline != null && recordingPipeline.isActive()
+                ? Optional.of(recordingPipeline.getTakeDirectory())
+                : Optional.empty();
+    }
+
+    /**
+     * The project's directory, or empty while the project has never been
+     * saved (metadata without a path). Read on the FX thread by
+     * {@link #onRecord()}; in the app {@code ProjectLifecycleController}
+     * always leaves the path set once a project is created or opened.
+     */
+    private Optional<Path> projectDirectory() {
+        ProjectMetadata metadata = project.getMetadata();
+        return metadata == null ? Optional.empty() : Optional.ofNullable(metadata.projectPath());
     }
 
     /**
@@ -881,19 +971,22 @@ final class TransportController implements TransportIntentHandler {
      * so the status label and the Play enablement report whatever the
      * transport actually is.</p>
      *
-     * @param outputDirectory the temp directory {@link #onRecord()} had just
-     *                        created for this take's segments; still empty,
+     * @param outputDirectory the take directory {@link #onRecord()} had just
+     *                        allocated under the project's {@code audio/takes}
+     *                        for this take's segments (story 323); empty again,
      *                        because the pipeline that would have populated it
-     *                        never started
+     *                        either never started or rolled itself back (D11)
      * @param failure         the open failure, whose message names the actual
      *                        cause (story 316 makes it specific: every ladder
      *                        rung refused for want of capture channels, an
      *                        ambiguous device selection, or no backend
-     *                        configured at all)
+     *                        configured at all), or the pipeline's own start
+     *                        failure (a segment or the manifest could not be
+     *                        created, or an unsupported bit depth)
      */
     private void abortRecordingTake(Path outputDirectory, RuntimeException failure) {
         LOG.log(Level.WARNING,
-                "Recording aborted — the capture device could not be opened", failure);
+                "Recording aborted — the take could not be started", failure);
         recordingPipeline = null;
         deleteEmptyTakeDirectory(outputDirectory);
 
@@ -910,14 +1003,18 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * Best-effort removal of the take directory created for a record gesture
-     * that then aborted (story 316 review). It is still empty: nothing has
-     * been written beneath it, because {@code RecordingPipeline.start()} is
-     * what resolves the per-track paths under it and it never ran. A plain
-     * delete therefore suffices and no recursive walk is warranted.
+     * Best-effort removal of the take directory allocated under the project's
+     * {@code audio/takes} for a record gesture that then aborted (story 316
+     * review; story 323). It is empty: either {@code RecordingPipeline.start()}
+     * — what creates the per-track directories, segments and manifest under it
+     * — never ran (the device open failed first), or it failed and rolled
+     * itself back to an empty directory (D11). A plain delete therefore
+     * suffices and no recursive walk is warranted; a directory a rollback
+     * could not empty is left in place for recovery (story 332) rather than
+     * walked.
      *
      * <p>A failure here is logged at FINE and swallowed on purpose: an
-     * undeleted empty temp directory is housekeeping, and escalating it would
+     * undeleted empty take directory is housekeeping, and escalating it would
      * replace the device message the user actually needs with a filesystem
      * complaint about a directory they never asked for.</p>
      */

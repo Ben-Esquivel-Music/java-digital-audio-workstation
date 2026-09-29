@@ -373,6 +373,174 @@ class ProjectArchiverTest {
                 .hasMessageContaining("integrity");
     }
 
+    // ── Story 323 — a recorded take's clip carries an ordered segment list ──
+
+    @Test
+    void shouldArchiveEverySegmentOfARecordedTakeAndRestoreTheListInOrder() throws IOException {
+        Path trackDir = Files.createDirectories(
+                tmp.resolve("Song/audio/takes/2026-09-29T10-00-00_take-0001/track-a"));
+        byte[] firstBytes = new byte[]{1, 1, 1, 1};
+        byte[] secondBytes = new byte[]{2, 2, 2, 2, 2};
+        Path first = Files.write(trackDir.resolve("segment-000.wav"), firstBytes);
+        Path second = Files.write(trackDir.resolve("segment-001.wav"), secondBytes);
+
+        DawProject project = new DawProject("Rotated", AudioFormat.CD_QUALITY);
+        AudioClip clip = recordedClip("Take 1", first, second);
+        project.createAudioTrack("Vox").addClip(clip);
+
+        ProjectArchiver archiver = new ProjectArchiver();
+        Path archive = tmp.resolve("rotated.dawz");
+        ProjectArchiveSummary summary = archiver.saveAsArchive(project, archive);
+
+        // Both segments are in the archive, as two distinct assets/ entries.
+        assertThat(summary.uniqueAssetCount()).isEqualTo(2);
+        assertThat(summary.totalAssetBytes()).isEqualTo(firstBytes.length + secondBytes.length);
+        List<String> assetEntries = assetEntryNames(archive);
+        assertThat(assetEntries).hasSize(2).doesNotHaveDuplicates();
+        assertThat(assetEntries).anyMatch(name -> name.endsWith("_segment-000.wav"));
+        assertThat(assetEntries).anyMatch(name -> name.endsWith("_segment-001.wav"));
+
+        // The in-memory project's references are unchanged after archiving.
+        assertThat(clip.getSourceSegmentPaths())
+                .containsExactly(first.toString(), second.toString());
+        assertThat(clip.getSourceFilePath()).isEqualTo(first.toString());
+
+        // Opening yields the same two segments, absolute, under the extract dir, in order.
+        Path extractDir = tmp.resolve("restored");
+        ArchivedProject opened = archiver.openArchive(archive, extractDir, null);
+        assertThat(opened.missingAssets()).isEmpty();
+        AudioClip restored = opened.project().getTracks().get(0).getClips().get(0);
+        List<String> restoredSegments = restored.getSourceSegmentPaths();
+        assertThat(restoredSegments).hasSize(2);
+        Path extractAbs = extractDir.toAbsolutePath().normalize();
+        for (String segment : restoredSegments) {
+            assertThat(Path.of(segment)).isAbsolute();
+            assertThat(Path.of(segment).normalize()).startsWith(extractAbs);
+        }
+        assertThat(Files.readAllBytes(Path.of(restoredSegments.get(0)))).containsExactly(firstBytes);
+        assertThat(Files.readAllBytes(Path.of(restoredSegments.get(1)))).containsExactly(secondBytes);
+        assertThat(restored.getSourceFilePath()).isEqualTo(restoredSegments.get(0));
+    }
+
+    @Test
+    void shouldLeaveAnEarlierImportUntouchedWhenAProjectWithARecordedTakeIsArchived()
+            throws IOException {
+        Path mediaDir = Files.createDirectories(tmp.resolve("media"));
+        Path imported = Files.write(mediaDir.resolve("loop.wav"), new byte[]{7, 7, 7});
+        Path trackDir = Files.createDirectories(
+                tmp.resolve("Song/audio/takes/2026-09-29T10-00-00_take-0001/track-b"));
+        Path first = Files.write(trackDir.resolve("segment-000.wav"), new byte[]{3, 3});
+        Path second = Files.write(trackDir.resolve("segment-001.wav"), new byte[]{4, 4, 4});
+
+        DawProject project = new DawProject("Mixed", AudioFormat.CD_QUALITY);
+        AudioClip importClip = new AudioClip("Loop", 0, 4, imported.toString());
+        project.createAudioTrack("Loops").addClip(importClip);      // earlier track
+        AudioClip recorded = recordedClip("Take 1", first, second);
+        project.createAudioTrack("Vox").addClip(recorded);          // later track
+
+        Throwable failure = org.assertj.core.api.Assertions.catchThrowable(
+                () -> new ProjectArchiver().saveAsArchive(project, tmp.resolve("mixed.dawz")));
+
+        // Whatever happened to the archive, the in-memory project is never
+        // left half-rewritten to archive-relative assets/… references.
+        assertThat(importClip.getSourceFilePath())
+                .as("the import on the earlier track keeps its path")
+                .isEqualTo(imported.toString());
+        assertThat(importClip.getSourceSegmentPaths()).isEmpty();
+        assertThat(recorded.getSourceSegmentPaths())
+                .containsExactly(first.toString(), second.toString());
+        assertThat(recorded.getSourceFilePath()).isEqualTo(first.toString());
+        assertThat(failure).as("archiving a project that holds a recorded take succeeds").isNull();
+        assertThat(assetEntryNames(tmp.resolve("mixed.dawz"))).hasSize(3);
+    }
+
+    @Test
+    void shouldRoundTripAOneSegmentRecordedTake() throws IOException {
+        // The common case: a take shorter than the rotation caps still carries
+        // a (one-element) segment list.
+        Path trackDir = Files.createDirectories(
+                tmp.resolve("Song/audio/takes/2026-09-29T10-00-00_take-0001/track-c"));
+        byte[] bytes = new byte[]{5, 6, 7, 8};
+        Path only = Files.write(trackDir.resolve("segment-000.wav"), bytes);
+
+        DawProject project = new DawProject("Short", AudioFormat.CD_QUALITY);
+        AudioClip clip = recordedClip("Take 1", only);
+        project.createAudioTrack("Gtr").addClip(clip);
+
+        ProjectArchiver archiver = new ProjectArchiver();
+        Path archive = tmp.resolve("short.dawz");
+        ProjectArchiveSummary summary = archiver.saveAsArchive(project, archive);
+
+        assertThat(summary.uniqueAssetCount()).isEqualTo(1);
+        assertThat(clip.getSourceSegmentPaths()).containsExactly(only.toString());
+        assertThat(clip.getSourceFilePath()).isEqualTo(only.toString());
+
+        ArchivedProject opened = archiver.openArchive(archive, tmp.resolve("short-restored"), null);
+        assertThat(opened.missingAssets()).isEmpty();
+        AudioClip restored = opened.project().getTracks().get(0).getClips().get(0);
+        assertThat(restored.getSourceSegmentPaths()).hasSize(1);
+        assertThat(restored.getSourceFilePath()).isEqualTo(restored.getSourceSegmentPaths().get(0));
+        assertThat(Path.of(restored.getSourceFilePath())).isAbsolute();
+        assertThat(Files.readAllBytes(Path.of(restored.getSourceFilePath()))).containsExactly(bytes);
+    }
+
+    @Test
+    void shouldReportEachMissingSegmentOfARecordedTakeOnce() throws IOException {
+        Path trackDir = Files.createDirectories(
+                tmp.resolve("Song/audio/takes/2026-09-29T10-00-00_take-0001/track-d"));
+        Path first = Files.write(trackDir.resolve("segment-000.wav"), new byte[]{1});
+        Path second = Files.write(trackDir.resolve("segment-001.wav"), new byte[]{2});
+        DawProject project = new DawProject("Lost", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("Vox").addClip(recordedClip("Take 1", first, second));
+
+        ProjectArchiver archiver = new ProjectArchiver();
+        Path archive = tmp.resolve("lost.dawz");
+        archiver.saveAsArchive(project, archive);
+
+        // Rebuild the archive without its assets/ entries: both segments are
+        // now unresolvable, and each must be reported exactly once.
+        Path scratch = tmp.resolve("lost-scratch");
+        archiver.openArchive(archive, scratch, null);
+        Path bare = tmp.resolve("lost-bare.dawz");
+        try (var out = Files.newOutputStream(bare);
+             var zip = new java.util.zip.ZipOutputStream(out)) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("archive.properties"));
+            zip.write(Files.readAllBytes(scratch.resolve("archive.properties")));
+            zip.closeEntry();
+            zip.putNextEntry(new java.util.zip.ZipEntry("project.daw"));
+            zip.write(Files.readAllBytes(scratch.resolve("project.daw")));
+            zip.closeEntry();
+        }
+        ArchivedProject opened = archiver.openArchive(
+                bare, tmp.resolve("lost-restored"), MissingAssetResolver.none());
+
+        assertThat(opened.missingAssets()).hasSize(2).doesNotHaveDuplicates();
+        assertThat(opened.missingAssets()).anyMatch(name -> name.endsWith("_segment-000.wav"));
+        assertThat(opened.missingAssets()).anyMatch(name -> name.endsWith("_segment-001.wav"));
+    }
+
+    /** A clip shaped like a recorded take: the segment list is the authority, the head follows. */
+    private static AudioClip recordedClip(String name, Path... segments) {
+        AudioClip clip = new AudioClip(name, 0, 8, segments[0].toString());
+        List<String> paths = new ArrayList<>();
+        for (Path segment : segments) {
+            paths.add(segment.toString());
+        }
+        clip.setSourceSegmentPaths(paths);
+        return clip;
+    }
+
+    private static List<String> assetEntryNames(Path archive) throws IOException {
+        List<String> names = new ArrayList<>();
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive.toFile())) {
+            zip.stream()
+                    .map(java.util.zip.ZipEntry::getName)
+                    .filter(name -> name.startsWith("assets/"))
+                    .forEach(names::add);
+        }
+        return names;
+    }
+
     private static String sha256(byte[] bytes) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");

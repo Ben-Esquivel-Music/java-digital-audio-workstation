@@ -322,10 +322,27 @@ final class SnapshotsController {
      * deserialising the snapshot's stored XML. Visible for tests so the
      * "restore equals direct load" guarantee can be verified without
      * driving the JavaFX dialog.
+     *
+     * <p>A snapshot is a checkpoint of the current project, so its
+     * project-relative clip references (story 323) resolve against the
+     * current project's directory; with no open project directory (unit
+     * tests, an unsaved project) references are kept verbatim.</p>
+     *
+     * <p>When the project directory is known it is also stamped on the
+     * loaded project's metadata, mirroring {@code ProjectManager.openProject}.
+     * A restored snapshot replaces the live project, and a project without a
+     * directory cannot record (the take has no home) and serializes its
+     * clip references absolute in every later checkpoint.</p>
      */
     DawProject loadFromEntry(SnapshotEntry entry) throws IOException {
         Objects.requireNonNull(entry, "entry must not be null");
-        return deserializer.deserialize(entry.loadContent());
+        ProjectMetadata current = projectManager.getCurrentProject();
+        Path projectDirectory = current != null ? current.projectPath() : null;
+        DawProject project = deserializer.deserialize(entry.loadContent(), projectDirectory);
+        if (projectDirectory != null) {
+            project.setMetadata(project.getMetadata().withPath(projectDirectory));
+        }
+        return project;
     }
 
     private void showDiffDialog(SnapshotEntry entry, SnapshotDiff diff) {

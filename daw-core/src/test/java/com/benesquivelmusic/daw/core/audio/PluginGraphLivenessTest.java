@@ -302,6 +302,7 @@ class PluginGraphLivenessTest {
             graph.engine().processBlock(input, output, 256);
             assertThat(peak(output)).as("the hosted keyboard is producing a distinct graph signal")
                     .isGreaterThan(0.01f);
+            recording.awaitFlushed();
             var captured = recording.getSession(graph.track()).getCapturedAudio();
             assertThat(captured[0]).containsOnly(0.25f);
             assertThat(captured[1]).containsOnly(inputChannels == 1 ? 0f : -0.5f);
@@ -337,6 +338,7 @@ class PluginGraphLivenessTest {
             java.util.Arrays.fill(input[0], -0.5f);
             java.util.Arrays.fill(input[1], 0.25f);
             graph.engine().processBlock(input, new float[2][256], 256);
+            recording.awaitFlushed();
             var keyboardCapture = recording.getSession(graph.track()).getCapturedAudio();
             assertThat(peak(keyboardCapture)).isGreaterThan(0.01f);
             assertThat(keyboardCapture[0]).isNotEqualTo(input[0]);

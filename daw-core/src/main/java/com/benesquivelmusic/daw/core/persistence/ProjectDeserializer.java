@@ -72,6 +72,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.BiConsumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Deserializes a {@link DawProject} from XML produced by {@link ProjectSerializer}.
@@ -82,12 +84,22 @@ import java.util.function.BiConsumer;
  */
 public final class ProjectDeserializer {
 
+    private static final Logger LOG = Logger.getLogger(ProjectDeserializer.class.getName());
+
     /** Maximum valid azimuth value — just below 360° (exclusive upper bound). */
     private static final double MAX_AZIMUTH_EXCLUSIVE = Math.nextDown(360.0);
 
     private final List<String> missingFiles = new ArrayList<>();
     private final MigrationRegistry migrationRegistry;
     private MigrationReport lastMigrationReport = MigrationReport.noOp(MigrationRegistry.CURRENT_VERSION);
+
+    /**
+     * The directory project-relative clip references resolve against for
+     * the call in progress ({@link #deserialize(String, Path)}); {@code null}
+     * keeps every reference verbatim. Per-call state, like
+     * {@link #missingFiles}: one deserialization at a time per instance.
+     */
+    private Path projectDirectory;
 
     /**
      * Creates a deserializer backed by the production
@@ -123,10 +135,12 @@ public final class ProjectDeserializer {
      * Returns a list of audio file paths referenced by the project that were
      * not found on the file system at the time of deserialization.
      *
-     * <p>This list is populated during {@link #deserialize(String)} and can
-     * be used by the UI layer to present a "missing files" notification with
-     * relinking options. The list is cleared at the start of each
-     * deserialization call.</p>
+     * <p>This list is populated during {@link #deserialize(String, Path)} and
+     * can be used by the UI layer to present a "missing files" notification
+     * with relinking options. Entries are the <em>resolved</em> paths (absolute
+     * when a project directory was given); a recorded take's segments are
+     * listed one per missing segment file, the head segment once. The list is
+     * cleared at the start of each deserialization call.</p>
      *
      * @return an unmodifiable view of missing file paths
      */
@@ -135,14 +149,53 @@ public final class ProjectDeserializer {
     }
 
     /**
-     * Deserializes a project from an XML string.
+     * Deserializes a project from an XML string with no project directory:
+     * every persisted reference is kept verbatim — a project-relative
+     * reference stays relative in memory and its existence is checked
+     * against the JVM's working directory. Prefer
+     * {@link #deserialize(String, Path)} whenever the project directory is
+     * known.
      *
      * @param xml the XML content produced by {@link ProjectSerializer}
      * @return the reconstructed project
      * @throws IOException if the XML cannot be parsed
      */
     public DawProject deserialize(String xml) throws IOException {
+        return deserialize(xml, null);
+    }
+
+    /**
+     * Deserializes a project from an XML string, resolving project-relative
+     * clip references against {@code projectDirectory} (story 323; Recording
+     * Reliability book §3.3, Persistence Integrity book §3.3).
+     *
+     * <p>A clip's {@code source-file} attribute and its
+     * {@code <source-segment>} children that are project-relative (no root
+     * component) become absolute in-memory paths under
+     * {@code projectDirectory}, through the {@link ProjectPaths} rule shared
+     * with the serializer; references that have a root component on the
+     * platform reading the file — a legacy file's absolute path, or an asset
+     * outside the project — are kept verbatim (a Windows-absolute reference
+     * read on Linux has none and is rebased under the project directory).
+     * The missing-file check ({@link #getMissingFiles()}) runs on the
+     * resolved paths. A {@code null} directory gives the
+     * {@link #deserialize(String)} semantics.</p>
+     *
+     * <p>Called on whichever thread opens the project (the caller of
+     * {@code ProjectManager.openProject}, a recovery subtask of
+     * {@code JournalReplayer}, the FX thread in
+     * {@code SnapshotsController.loadFromEntry}); one call at a time per
+     * instance.</p>
+     *
+     * @param xml              the XML content produced by {@link ProjectSerializer}
+     * @param projectDirectory the directory project-relative references
+     *                         resolve against, or {@code null}
+     * @return the reconstructed project
+     * @throws IOException if the XML cannot be parsed
+     */
+    public DawProject deserialize(String xml, Path projectDirectory) throws IOException {
         missingFiles.clear();
+        this.projectDirectory = projectDirectory;
         lastMigrationReport = MigrationReport.noOp(migrationRegistry.currentVersion());
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -532,18 +585,24 @@ public final class ProjectDeserializer {
         if (sourceFile.isEmpty()) {
             sourceFile = null;
         }
+        sourceFile = ProjectPaths.resolve(projectDirectory, sourceFile);
+        List<String> segmentPaths = parseSourceSegments(elem);
 
-        if (sourceFile != null) {
-            try {
-                if (!Files.exists(Path.of(sourceFile))) {
-                    missingFiles.add(sourceFile);
-                }
-            } catch (java.nio.file.InvalidPathException ignored) {
-                missingFiles.add(sourceFile);
+        if (!segmentPaths.isEmpty()) {
+            // The segment list is the authority (AudioClip head invariant):
+            // each segment is checked once, and the head IS the first
+            // segment, so source-file is not reported a second time.
+            for (String segmentPath : segmentPaths) {
+                noteIfMissing(segmentPath);
             }
+        } else if (sourceFile != null) {
+            noteIfMissing(sourceFile);
         }
 
         AudioClip clip = new AudioClip(name, startBeat, durationBeats, sourceFile);
+        if (!segmentPaths.isEmpty()) {
+            clip.setSourceSegmentPaths(segmentPaths);
+        }
         clip.setSourceOffsetBeats(parseDoubleAttr(elem, "source-offset", 0.0));
         clip.setGainDb(parseDoubleAttr(elem, "gain-db", 0.0));
         clip.setReversed(parseBooleanAttr(elem, "reversed"));
@@ -574,6 +633,47 @@ public final class ProjectDeserializer {
         }
 
         return clip;
+    }
+
+    /**
+     * Reads a recorded take's ordered {@code <source-segment path="…"/>}
+     * children (story 323), each resolved through {@link ProjectPaths};
+     * empty for a single-file clip and for files written before story 323.
+     * A child whose {@code path} is empty or missing is skipped with a
+     * WARNING that names the clip.
+     */
+    private List<String> parseSourceSegments(Element clipElem) {
+        List<Element> segmentElements = getDirectChildElements(clipElem, "source-segment");
+        if (segmentElements.isEmpty()) {
+            return List.of();
+        }
+        List<String> paths = new ArrayList<>(segmentElements.size());
+        int position = 0;
+        for (Element segmentElem : segmentElements) {
+            String path = segmentElem.getAttribute("path");
+            if (!path.isEmpty()) {
+                paths.add(ProjectPaths.resolve(projectDirectory, path));
+            } else {
+                // A segment that cannot be named cannot be loaded; say so
+                // rather than shorten the take's segment order in silence.
+                LOG.log(Level.WARNING, "Clip '" + clipElem.getAttribute("name")
+                        + "': <source-segment> " + position + " of " + segmentElements.size()
+                        + " has no path; the segment is skipped");
+            }
+            position++;
+        }
+        return paths;
+    }
+
+    /** Adds {@code reference} to {@link #missingFiles} unless it names an existing file. */
+    private void noteIfMissing(String reference) {
+        try {
+            if (!Files.exists(Path.of(reference))) {
+                missingFiles.add(reference);
+            }
+        } catch (java.nio.file.InvalidPathException ignored) {
+            missingFiles.add(reference);
+        }
     }
 
     private ClipGainEnvelope parseGainEnvelope(Element envElem) {

@@ -219,6 +219,9 @@ public final class TakeComping {
                             clipStart,
                             duration,
                             takeClip.getSourceFilePath());
+                    // A take that rotated spans several segment files; the
+                    // comp clip references all of them, not only the head.
+                    compClip.setSourceSegmentPaths(takeClip.getSourceSegmentPaths());
                     compClip.setSourceOffsetBeats(sourceOffset);
                     compClip.setGainDb(takeClip.getGainDb());
                     compClip.setAudioData(takeClip.getAudioData());

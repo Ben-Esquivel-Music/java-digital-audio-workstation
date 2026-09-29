@@ -33,6 +33,20 @@ import java.util.UUID;
  * Retention-window cleanup is triggered by
  * {@link ClipAssetHistory#purgeUnused()}.</p>
  *
+ * <p><b>Recorded takes (story 323).</b> A recorded clip carries an ordered
+ * segment list ({@link AudioClip#getSourceSegmentPaths()}), one element for a
+ * take that never rotated. Processing a one-segment clip collapses it to a
+ * single-file clip backed by the rendered file (the list is cleared, then the
+ * source path is set); undo restores the list, and with it the head. A clip
+ * spanning more than one segment is refused with
+ * {@link IllegalStateException} before anything is rendered, because the
+ * render reads one file and would drop every later segment. The batch
+ * variants check every clip of the selection before they build an action,
+ * so a batch holding such a clip is refused as a whole and the clips ahead
+ * of it are not processed. The rendered
+ * file of a recorded clip is written beside its source, i.e. inside the
+ * take's track directory, and is not listed in the take's manifest.</p>
+ *
  * <p>The returned {@link UndoableAction} can be executed through the
  * project's {@link com.benesquivelmusic.daw.core.undo.UndoManager}.
  * The batch variants ({@link #reverse(List)}, {@link #normalize(List, double)})
@@ -122,12 +136,14 @@ public final class ClipProcessingService {
     /**
      * Batch reverse: produces a single {@link CompoundUndoableAction}
      * covering the given clips.
+     *
+     * @throws IllegalStateException if any clip of the batch is a recorded
+     *         take spanning more than one segment; the message names the
+     *         first such clip. Every clip is checked before any action is
+     *         built, so no clip of a refused batch is processed.
      */
     public UndoableAction reverse(List<AudioClip> clips) {
-        Objects.requireNonNull(clips, "clips must not be null");
-        if (clips.isEmpty()) {
-            throw new IllegalArgumentException("clips must not be empty");
-        }
+        requireProcessableBatch(clips, Mode.REVERSE);
         List<UndoableAction> children = new ArrayList<>(clips.size());
         for (AudioClip c : clips) children.add(reverse(c));
         return new CompoundUndoableAction("Reverse Clips", children);
@@ -136,15 +152,53 @@ public final class ClipProcessingService {
     /**
      * Batch normalize: produces a single {@link CompoundUndoableAction}
      * covering the given clips, each normalized to {@code targetPeakDbfs}.
+     *
+     * @throws IllegalStateException if any clip of the batch is a recorded
+     *         take spanning more than one segment; the message names the
+     *         first such clip. Every clip is checked before any action is
+     *         built, so no clip of a refused batch is processed.
      */
     public UndoableAction normalize(List<AudioClip> clips, double targetPeakDbfs) {
+        requireProcessableBatch(clips, Mode.NORMALIZE);
+        List<UndoableAction> children = new ArrayList<>(clips.size());
+        for (AudioClip c : clips) children.add(normalize(c, targetPeakDbfs));
+        return new CompoundUndoableAction("Normalize Clips", children);
+    }
+
+    /**
+     * The batch factories' gate: a compound action runs its children in
+     * order with no rollback, so a clip the render must refuse is refused
+     * here, before the clips ahead of it could be processed.
+     */
+    private static void requireProcessableBatch(List<AudioClip> clips, Mode mode) {
         Objects.requireNonNull(clips, "clips must not be null");
         if (clips.isEmpty()) {
             throw new IllegalArgumentException("clips must not be empty");
         }
-        List<UndoableAction> children = new ArrayList<>(clips.size());
-        for (AudioClip c : clips) children.add(normalize(c, targetPeakDbfs));
-        return new CompoundUndoableAction("Normalize Clips", children);
+        for (AudioClip clip : clips) {
+            requireSingleSegment(Objects.requireNonNull(clip, "clip must not be null"), mode);
+        }
+    }
+
+    /**
+     * Refuses a recorded take spanning more than one segment: the render
+     * reads one file, so processing only the head would silently drop every
+     * later segment.
+     */
+    private static void requireSingleSegment(AudioClip clip, Mode mode) {
+        List<String> segments = clip.getSourceSegmentPaths();
+        if (segments.size() > 1) {
+            throw new IllegalStateException("Clip " + clip.getId()
+                    + " is a multi-segment recorded take (" + segments.size()
+                    + " segments); consolidate it before " + operationName(mode));
+        }
+    }
+
+    private static String operationName(Mode mode) {
+        return switch (mode) {
+            case REVERSE   -> "reversing it";
+            case NORMALIZE -> "normalizing it";
+        };
     }
 
     // ---------------------------------------------------------------------
@@ -241,6 +295,9 @@ public final class ClipProcessingService {
         private boolean executedOnce;
         private Path previousPath;     // the asset before the first execute()
         private Path newPath;          // the asset produced by execute()
+        // The clip's segment list before the first execute(): empty for a
+        // single-file clip, one element for a recorded take that never rotated.
+        private List<String> previousSegments = List.of();
 
         DestructiveClipAction(AudioClip clip, Mode mode, double targetDbfs) {
             this.clip = Objects.requireNonNull(clip, "clip must not be null");
@@ -256,6 +313,18 @@ public final class ClipProcessingService {
             };
         }
 
+        /**
+         * {@inheritDoc}
+         *
+         * @throws IllegalStateException if the clip has no source asset, or if
+         *         it is a recorded take spanning more than one segment — the
+         *         render reads one file, so processing only the head would
+         *         silently drop every later segment. The refusal comes before
+         *         anything is rendered for this clip: no file is written and
+         *         nothing is recorded in the {@link ClipAssetHistory} for it
+         *         (the batch factories refuse such a clip earlier still,
+         *         before any clip of the batch is processed).
+         */
         @Override
         public void execute() {
             try {
@@ -265,6 +334,11 @@ public final class ClipProcessingService {
                         throw new IllegalStateException(
                                 "Clip has no source asset to process: " + clip.getId());
                     }
+                    // Checked when the action runs as well: the single-clip
+                    // factories build it without this check, and the list
+                    // that counts is the one the clip carries now.
+                    requireSingleSegment(clip, mode);
+                    previousSegments = clip.getSourceSegmentPaths();
                     previousPath = Paths.get(source);
                     newPath = produceProcessedFile(previousPath);
                     history.recordPriorAsset(clip.getId(), previousPath);
@@ -275,6 +349,10 @@ public final class ClipProcessingService {
                     history.markManaged(newPath);
                     executedOnce = true;
                 }
+                // The rendered file replaces the whole source: the clip becomes
+                // a single-file clip. Clearing the list first frees the head,
+                // which setSourceFilePath refuses to move while a list is present.
+                clip.setSourceSegmentPaths(List.of());
                 clip.setSourceFilePath(newPath.toString());
             } catch (IOException e) {
                 throw new UncheckedIOException("Failed to process clip " + clip.getId(), e);
@@ -286,7 +364,12 @@ public final class ClipProcessingService {
             if (!executedOnce) {
                 throw new IllegalStateException("undo() called before execute()");
             }
-            clip.setSourceFilePath(previousPath.toString());
+            if (previousSegments.isEmpty()) {
+                clip.setSourceFilePath(previousPath.toString());
+            } else {
+                // Restoring the list re-derives the head (its first element).
+                clip.setSourceSegmentPaths(previousSegments);
+            }
         }
 
         @Override

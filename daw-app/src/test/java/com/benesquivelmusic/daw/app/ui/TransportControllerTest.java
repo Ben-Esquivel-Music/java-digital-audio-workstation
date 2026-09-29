@@ -7,8 +7,11 @@ import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.TakeDirectories;
+import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -29,9 +32,11 @@ import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import java.nio.file.Path;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -97,6 +102,23 @@ class TransportControllerTest {
     private AtomicInteger audioSettingsOpens;
     /** Story 322 — the session input handed to the latest controller (blank = backend default). */
     private StubSessionInputSelection sessionInputSelection = new StubSessionInputSelection();
+
+    /**
+     * Story 323 — an audio take streams into the project's own
+     * {@code audio/takes}, so every test that starts (or tries to start) an
+     * audio take gives its project this directory through
+     * {@link #giveTheProjectADirectory(DawProject)}; a project without one is
+     * refused before the engine is touched
+     * ({@link #recordIsRefusedWithAVisibleErrorWhenTheProjectHasNoDirectory()}).
+     * Cleaned up by JUnit after the test's {@code @AfterEach}, by which time
+     * every take started here has been stopped (segments sealed and closed).
+     */
+    @TempDir
+    Path projectDirectory;
+
+    private void giveTheProjectADirectory(DawProject project) {
+        project.setMetadata(project.getMetadata().withPath(projectDirectory));
+    }
 
     @AfterEach
     void closeEngine() {
@@ -821,6 +843,7 @@ class TransportControllerTest {
         // the SESSION device); a disagreement is surfaced as one WARNING naming
         // the track and both devices, never silently ignored.
         DawProject project = new DawProject("test", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);   // story 323: the take lives in the project
         Track vox = project.createAudioTrack("Vox");
         vox.setArmed(true);
         Track agreeing = project.createAudioTrack("Agreeing");
@@ -852,6 +875,7 @@ class TransportControllerTest {
         // (on ASIO it blocks on the control thread), so the record-start check
         // enumerates on a worker and only its WARNING lands on the FX thread.
         DawProject project = new DawProject("test", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);   // story 323: the take lives in the project
         Track vox = project.createAudioTrack("Vox");
         vox.setArmed(true);
         EnumerationTrackingBackend backend = new EnumerationTrackingBackend();
@@ -898,6 +922,7 @@ class TransportControllerTest {
         AudioDeviceInfo mockDevice = backend.listDevices().get(0);
         vox.setInputDeviceIndex(mockDevice.index());
         sessionInputSelection = new StubSessionInputSelection(mockDevice.qualifiedName());
+        giveTheProjectADirectory(project);   // story 323: the take lives in the project
         TransportController controller = newController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
@@ -916,6 +941,7 @@ class TransportControllerTest {
     void instrumentRecordingRequiresCaptureOnlyWhenPhysicalInputIsAssigned(boolean physicalInput,
                                                                            boolean captureCapable) throws Exception {
         var project = new DawProject("Keyboard recording", new AudioFormat(48_000, 2, 16, 256));
+        giveTheProjectADirectory(project);   // story 323: the take lives in the project
         var keyboard = project.createAudioTrack("Keyboard");
         keyboard.setArmed(true);
         keyboard.setInputRouting(physicalInput ? new InputRouting(1, 1) : InputRouting.NONE);
@@ -946,6 +972,7 @@ class TransportControllerTest {
     void mixedInstrumentAndPhysicalInputTracksRequireCaptureForTheWholeTake(boolean inputTrackHasInstrument)
             throws Exception {
         var project = new DawProject("Mixed recording", new AudioFormat(48_000, 2, 16, 256));
+        giveTheProjectADirectory(project);   // story 323: the take lives in the project
         var keyboard = project.createAudioTrack("Keyboard");
         keyboard.setArmed(true);
         keyboard.setInputRouting(InputRouting.NONE);
@@ -1190,15 +1217,16 @@ class TransportControllerTest {
 
     @Test
     void stopFinalizesAnActiveRecordingEvenWhenTheTransportIsAlreadyStopped() throws Exception {
-        // Story 315 review — RecordingPipeline.start() sets active = true at its
-        // top and only calls transport.record() at the very end, so a throw in
-        // between (session creation, temp-file I/O, engine start) leaves the
-        // pipeline ACTIVE while the transport is still STOPPED, and onRecord()
-        // does not catch it. This test reproduces exactly that end state — an
+        // Story 315 review — the pipeline can be ACTIVE while the transport is
+        // STOPPED: a count-in take before its deferred transport.record(), or
+        // an internal caller stopping the transport under a running pipeline.
+        // (Before story 323 a throw inside RecordingPipeline.start() was a
+        // third way in — its start is now all-or-nothing and onRecord() aborts
+        // the take on it.) This test reproduces exactly that end state — an
         // active pipeline over a stopped transport — and asserts Stop finalizes
         // rather than taking the double-stop rewind and leaking the recording
-        // sessions, the temp files, the per-track recording flags and the lit
-        // REC indicator forever.
+        // sessions, the segment files, the per-track recording flags and the
+        // lit REC indicator forever.
         //
         // Story 316 review — the engine now needs a REAL capture-capable
         // provision to reach that state at all. onRecord() opens the device
@@ -1208,8 +1236,13 @@ class TransportControllerTest {
         // abort is pinned in TransportCommandPathTest). MockAudioBackend
         // overrides openedInputChannels() honestly, so it survives the
         // CaptureRequirement.REQUIRED walk.
+        //
+        // Story 323 — the take streams under the project's audio/takes, so the
+        // project gets a directory; without one the record is refused before
+        // any pipeline exists.
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
         Transport transport = project.getTransport();
         Track armed = new Track("Armed", TrackType.AUDIO);
         armed.setArmed(true);
@@ -1289,6 +1322,135 @@ class TransportControllerTest {
         assertThat(playButton.isDisable())
                 .as("Play is disabled during RECORDING (Stop is the only way out)")
                 .isTrue();
+    }
+
+    // ── Story 323: the take lives in the project ─────────────────────────────
+
+    @Test
+    void recordIsRefusedWithAVisibleErrorWhenTheProjectHasNoDirectory() throws Exception {
+        // Story 323 (D6) — an audio take streams under <project>/audio/takes
+        // and never into the OS temp directory, so a never-saved project
+        // (metadata without a path) cannot record audio. The refusal is
+        // visible (ERROR toast + status text) and happens BEFORE the engine,
+        // the pipeline or any MidiRecorder is touched.
+        DawProject project = new DawProject("unsaved", new AudioFormat(48000, 2, 16, 256));
+        assertThat(project.getMetadata().projectPath())
+                .as("fixture: a project that has never been saved").isNull();
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        OpenCountingBackend backend = new OpenCountingBackend();
+        TransportController controller = newController(project, backend);
+
+        runHandler(controller::toggleRecord);
+
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage())
+                .isEqualTo(TransportController.NO_PROJECT_FOLDER_MESSAGE);
+        assertThat(statusBarLabel.getText())
+                .isEqualTo(TransportController.NO_PROJECT_FOLDER_MESSAGE);
+        assertThat(project.getTransport().getState())
+                .as("nothing started — the transport never left STOPPED")
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(armed.isRecording()).as("no pipeline flagged the track").isFalse();
+        assertThat(recIndicator.isVisible()).as("the REC indicator stays hidden").isFalse();
+        assertThat(backend.opens.get()).as("the device was never opened").isZero();
+        assertThat(audioEngine.isStreamOpen()).as("no stream is open").isFalse();
+        assertThat(controller.activeTakeDirectory()).as("no take directory exists").isEmpty();
+    }
+
+    @Test
+    void aStartedTakeLivesUnderTheProjectsAudioTakesDirectory() throws Exception {
+        // Story 323 (D6, D12) — the take directory is allocated by
+        // TakeDirectories under the project's audio/takes, the pipeline
+        // streams into it from the start (manifest + lane-0 .part), and the
+        // status line names it.
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        OpenCountingBackend backend = new OpenCountingBackend();
+        TransportController controller = newController(project, backend);
+        try {
+            runHandler(controller::toggleRecord);
+
+            assertThat(backend.opens.get())
+                    .as("non-vacuity of the refusal test's zero: a real take opens the device")
+                    .isPositive();
+            Optional<Path> takeDirectory = controller.activeTakeDirectory();
+            assertThat(takeDirectory).as("an audio take is in flight").isPresent();
+            Path takes = TakeDirectories.takesDirectory(
+                    ProjectManager.audioDirectory(projectDirectory));
+            assertThat(takeDirectory.get().getParent())
+                    .as("the take is a direct child of <project>/audio/takes")
+                    .isEqualTo(takes);
+            String takeName = takeDirectory.get().getFileName().toString();
+            assertThat(TakeDirectories.isTakeDirectoryName(takeName))
+                    .as("take directory name has the <stamp>_take-NNNN shape: " + takeName)
+                    .isTrue();
+            assertThat(TakeManifest.manifestPath(takeDirectory.get()))
+                    .as("the manifest is written at take start").isRegularFile();
+            assertThat(takeDirectory.get().resolve(armed.getId()).resolve("segment-000.wav.part"))
+                    .as("lane 0 of the armed track is streaming to disk").isRegularFile();
+            assertThat(statusBarLabel.getText())
+                    .isEqualTo("Recording — 1 track armed — streaming to audio/takes/" + takeName);
+            assertThat(recIndicator.isVisible()).isTrue();
+        } finally {
+            runHandler(controller::stop);
+        }
+    }
+
+    @Test
+    void midiOnlyRecordingDoesNotNeedAProjectDirectory() throws Exception {
+        // Story 323 — MIDI recording writes no audio files, so a never-saved
+        // project may still record MIDI; the status line names no take
+        // directory and claims no auto-save.
+        DawProject project = new DawProject("unsaved", new AudioFormat(48000, 2, 16, 256));
+        assertThat(project.getMetadata().projectPath()).isNull();
+        Track midiTrack = new Track("Keys", TrackType.MIDI);
+        midiTrack.setArmed(true);
+        project.addTrack(midiTrack);
+        TransportController controller = newController(project, new MockAudioBackend());
+        try {
+            runHandler(controller::toggleRecord);
+
+            assertThat(project.getTransport().getState())
+                    .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.RECORDING);
+            assertThat(recIndicator.isVisible()).isTrue();
+            assertThat(notificationBar.getCurrentLevel())
+                    .as("no refusal — the INFO toast is the last one shown")
+                    .isEqualTo(NotificationLevel.INFO);
+            assertThat(statusBarLabel.getText()).isEqualTo("Recording — 1 track armed");
+            assertThat(controller.activeTakeDirectory())
+                    .as("no audio pipeline, so no take directory").isEmpty();
+        } finally {
+            runHandler(controller::stop);
+        }
+    }
+
+    /** Counts every device open (both overloads) — proof of whether the engine was touched. */
+    private static final class OpenCountingBackend implements AudioBackend {
+        private final MockAudioBackend delegate = new MockAudioBackend();
+        private final AtomicInteger opens = new AtomicInteger();
+
+        @Override public String name() { return delegate.name(); }
+        @Override public boolean isAvailable() { return true; }
+        @Override public boolean supportsStreaming() { return true; }
+        @Override public List<AudioDeviceInfo> listDevices() { return delegate.listDevices(); }
+        @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                                   int bufferFrames) {
+            opens.incrementAndGet();
+            delegate.open(device, format, bufferFrames);
+        }
+        @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                                   int bufferFrames, CaptureRequirement capture) {
+            opens.incrementAndGet();
+            delegate.open(device, format, bufferFrames);
+        }
+        @Override public int openedInputChannels() { return delegate.openedInputChannels(); }
+        @Override public Flow.Publisher<AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
+        @Override public void sink(AudioBlock block) { delegate.sink(block); }
+        @Override public boolean isOpen() { return delegate.isOpen(); }
+        @Override public void close() { delegate.close(); }
     }
 
     /** Runs a handler method on the FX thread, tolerating headless audio-engine failures. */
