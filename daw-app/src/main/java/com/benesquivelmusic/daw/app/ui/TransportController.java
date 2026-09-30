@@ -21,6 +21,7 @@ import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
+import com.benesquivelmusic.daw.core.recording.TakeFinalizationPendingException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -96,6 +97,36 @@ final class TransportController implements TransportIntentHandler {
     static final String NO_PROJECT_FOLDER_MESSAGE =
             "Recording needs a project folder — save the project first";
 
+    /**
+     * Story 323 review: a Stop that gave up waiting for the take to be
+     * written ({@link TakeFinalizationPendingException}). Shown as the
+     * WARNING toast and the status-bar text; the clips are published when
+     * the take's capture thread has finished.
+     */
+    static final String TAKE_STILL_WRITING_MESSAGE =
+            "Recording stopped — the take is still being written to disk; its clips will appear when it finishes";
+
+    /** Replaces {@link #TAKE_STILL_WRITING_MESSAGE} in the status bar when that take produced no clip. */
+    static final String TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE =
+            "Recording stopped — the take has been written to disk; it holds no audio";
+
+    /**
+     * Replaces {@link #TAKE_STILL_WRITING_MESSAGE} in the status bar when a
+     * {@linkplain #retire() retired} controller's take has finished: the
+     * short form of {@link #takeOfAReplacedProjectMessage}.
+     */
+    static final String TAKE_OF_A_REPLACED_PROJECT_STATUS =
+            "Recording stopped — the take was not added to any project: the project it was recorded in was replaced";
+
+    /**
+     * Story 323 review: Record while the previous take is still being
+     * written (Recording Reliability book §5.2 — Record is valid only from
+     * IDLE, and FINALIZING returns to IDLE once the seal and the manifest
+     * are complete). Shown as the WARNING toast and the status-bar text.
+     */
+    static final String RECORD_WHILE_WRITING_MESSAGE =
+            "Record is unavailable until the last take has finished writing to disk";
+
     private final DawProject project;
     private final AudioEngine audioEngine;
     private final UndoManager undoManager;
@@ -169,6 +200,22 @@ final class TransportController implements TransportIntentHandler {
     private volatile Thread sessionInputCheck;
 
     private RecordingPipeline recordingPipeline;
+    /**
+     * Story 323 review — the pipeline whose Stop gave up waiting for its take
+     * to be written: set when {@link #stop()} catches the
+     * {@link TakeFinalizationPendingException}, cleared on the FX turn that
+     * finishes that stop once the take's capture thread has terminated.
+     * While set, {@link #onRecord()} refuses and {@link #isTakeBeingWritten()}
+     * is {@code true}. FX thread.
+     */
+    private RecordingPipeline writingPipeline;
+    /**
+     * Story 323 review — set by {@link #retire()} once {@code MainController}
+     * has replaced this controller with the next project's. FX thread.
+     */
+    private boolean retired;
+    /** How a pipeline is stopped — {@code RecordingPipeline::stop}; replaced only by {@link #setPipelineStopForTest}. */
+    private PipelineStop pipelineStop = RecordingPipeline::stop;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
 
     /**
@@ -456,8 +503,8 @@ final class TransportController implements TransportIntentHandler {
      * does not defer {@code Transport.record()} today; story 328 owns
      * count-in). (Before story 323 a throw inside
      * {@code RecordingPipeline.start()} was a second way in; its start is now
-     * all-or-nothing and {@link #onRecord()} aborts the take on it, so nothing
-     * active is left behind.) Returning early on that
+     * all-or-nothing and {@link #onRecord()} aborts the take on it, so no
+     * active pipeline is left behind.) Returning early on that
      * state would leak recording sessions and segment files, leave per-track
      * recording flags set and the REC indicator lit forever — every further
      * Stop hitting the same early return.
@@ -474,6 +521,36 @@ final class TransportController implements TransportIntentHandler {
      * aborted-record path above it never started, so announcing would put a
      * fiction — an unmatched Stopped — on the bus (the same {@code wasRolling}
      * rule {@link #finishPostRoll()} follows).</p>
+     *
+     * <p><strong>A take still being written</strong> (story 323 review). When
+     * {@code RecordingPipeline.stop()} gives up waiting for the capture thread
+     * — its bounded join ran out on a slow or stuck disk — it throws
+     * {@link TakeFinalizationPendingException} and has built no clip. That is
+     * caught here: the rest of this Stop runs as always (MIDI stop,
+     * {@code requestStop()}, the Stopped announce, the UI reset, the REC
+     * indicator), a WARNING toast and the status bar say the take is still
+     * being written to disk, and nothing is registered for undo. No post-roll
+     * follows on this path: the pipeline's own stop has already stopped the
+     * transport, so {@code requestStop()} finds it stopped. When
+     * the thread has terminated, the exception's completion hands the rest to
+     * the FX thread through {@link #postFx}: {@code stop()} is called again on
+     * that same pipeline and its clips are published exactly as on the normal
+     * path ({@link #publishRecordedTake}) — or, if that call fails, the failure
+     * is logged and shown as an ERROR toast. Nothing on the FX thread waits
+     * for the completion: the deferred half is posted only once the thread
+     * has terminated, so its {@code stop()} neither wakes nor joins that
+     * thread. Until then {@link #onRecord()} refuses, and
+     * {@link #isTakeBeingWritten()} tells {@code ProjectLifecycleController}
+     * to refuse the in-app doors that replace the open project; a Stop
+     * meanwhile is an ordinary Stop with no recording in flight (see
+     * {@link #isRecordingInFlight()}) and never calls the pipeline again.</p>
+     *
+     * <p>The "Record Audio" undo entry of such a take is pushed when its clips
+     * are published, not when Stop was pressed: it lands on top of any edit
+     * made while the take was being written, and — as every
+     * {@link UndoManager#execute} does — clears the redo stack. A controller
+     * {@linkplain #retire() retired} before that deferred half runs publishes
+     * nothing at all.</p>
      */
     @Override
     public void stop() {
@@ -496,45 +573,32 @@ final class TransportController implements TransportIntentHandler {
         long stoppedAtFrames = core.beatsToFrames(transport.getPositionInBeats());
 
         // Finalize recording if a recording pipeline is active
+        TakeFinalizationPendingException stillWriting = null;
         if (recordingPipeline != null && recordingPipeline.isActive()) {
-            List<AudioClip> recordedClips = recordingPipeline.stop();
-            if (!recordedClips.isEmpty()) {
-                // Register undo action for the recorded clips
-                Map<Track, AudioClip> clipMap = Map.copyOf(recordingPipeline.getRecordedClips());
-                undoManager.execute(new UndoableAction() {
-                    @Override
-                    public String description() { return "Record Audio"; }
-
-                    @Override
-                    public void execute() {
-                        // Clips are already added by the pipeline on first execution;
-                        // on redo, re-add them.
-                        for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
-                            if (!entry.getKey().getClips().contains(entry.getValue())) {
-                                entry.getKey().addClip(entry.getValue());
-                            }
-                        }
-                    }
-
-                    @Override
-                    public void undo() {
-                        for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
-                            entry.getKey().removeClip(entry.getValue());
-                        }
-                    }
-                });
-                int segmentCount = clipMap.values().size();
-                statusBarLabel.setText("Recording stopped — " + segmentCount + " clip"
-                        + (segmentCount > 1 ? "s" : "") + " created");
-                notificationBar.show(NotificationLevel.SUCCESS,
-                        "Recording stopped — " + segmentCount + " clip"
-                                + (segmentCount > 1 ? "s" : "") + " created");
+            RecordingPipeline stopping = recordingPipeline;
+            try {
+                publishRecordedTake(stopping, pipelineStop.stop(stopping));
+            } catch (TakeFinalizationPendingException pending) {
+                // The pipeline built nothing: its capture thread is still
+                // writing the take. The rest of this Stop runs; the clips
+                // follow when the thread has terminated.
+                LOG.log(Level.WARNING, "Stop gave up waiting for the take under "
+                        + pending.takeDirectory() + " to be written; its clips are published when it is", pending);
+                stillWriting = pending;
+                statusBarLabel.setText(TAKE_STILL_WRITING_MESSAGE);
+                publishWhenWritten(stopping, pending);
             }
             recordingPipeline = null;
         }
 
         // Finalize MIDI recording if any MIDI recorders are active
         stopMidiRecording();
+
+        // After the MIDI toast, so that the take still being written is what
+        // the notification bar shows.
+        if (stillWriting != null) {
+            notificationBar.show(NotificationLevel.WARNING, TAKE_STILL_WRITING_MESSAGE);
+        }
 
         // Story 134 — use requestStop() so that a configured post-roll
         // keeps the transport running for postBars × barLength before
@@ -607,10 +671,219 @@ final class TransportController implements TransportIntentHandler {
      * pipeline can be active while the transport is STOPPED (see {@link #stop()}
      * for how {@code RecordingPipeline.start()} leaves that state behind when it
      * throws), and only the full flow finalizes it.
+     *
+     * <p>A take still being written to disk ({@link #writingPipeline}) does not
+     * count (story 323 review). Its Stop has already run — callback removed,
+     * flags cleared, transport stopped — and what remains is finished by the
+     * take's completion, never by another Stop: a Stop that called the
+     * pipeline again would only sit in another bounded join on the FX thread.
+     * So a Stop over a stopped transport while the take is being written is
+     * the ordinary double-stop gesture; the rewind moves only the playhead,
+     * and the take's clips are anchored where the take started.</p>
      */
     private boolean isRecordingInFlight() {
         return (recordingPipeline != null && recordingPipeline.isActive())
                 || !activeMidiRecorders.isEmpty();
+    }
+
+    /**
+     * The one publication of a stopped take's clips, on the normal path and
+     * on the deferred one ({@link #finishWrittenTake}): registers the
+     * "Record Audio" undo action over the pipeline's recorded clips, then
+     * sets the status bar and shows the SUCCESS toast. Nothing when the take
+     * produced no clip. FX thread.
+     */
+    private void publishRecordedTake(RecordingPipeline pipeline, List<AudioClip> recordedClips) {
+        if (recordedClips.isEmpty()) {
+            return;
+        }
+        // Register undo action for the recorded clips
+        Map<Track, AudioClip> clipMap = Map.copyOf(pipeline.getRecordedClips());
+        undoManager.execute(new UndoableAction() {
+            @Override
+            public String description() { return "Record Audio"; }
+
+            @Override
+            public void execute() {
+                // Clips are already added by the pipeline on first execution;
+                // on redo, re-add them.
+                for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
+                    if (!entry.getKey().getClips().contains(entry.getValue())) {
+                        entry.getKey().addClip(entry.getValue());
+                    }
+                }
+            }
+
+            @Override
+            public void undo() {
+                for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
+                    entry.getKey().removeClip(entry.getValue());
+                }
+            }
+        });
+        int segmentCount = clipMap.values().size();
+        statusBarLabel.setText("Recording stopped — " + segmentCount + " clip"
+                + (segmentCount > 1 ? "s" : "") + " created");
+        notificationBar.show(NotificationLevel.SUCCESS,
+                "Recording stopped — " + segmentCount + " clip"
+                        + (segmentCount > 1 ? "s" : "") + " created");
+    }
+
+    /**
+     * Remembers {@code pipeline} as the take still being written and, when
+     * its capture thread has terminated, posts {@link #finishWrittenTake} to
+     * the FX thread. The dependent registered here only posts — it may run
+     * on the capture thread as its last act, or at once on this thread if
+     * the thread has already terminated; the work itself always runs on a
+     * later FX turn. FX thread.
+     */
+    private void publishWhenWritten(RecordingPipeline pipeline, TakeFinalizationPendingException pending) {
+        writingPipeline = pipeline;
+        pending.completion().whenComplete((_, _) -> postFx(() -> finishWrittenTake(pipeline)));
+    }
+
+    /**
+     * The deferred half of a Stop whose take was still being written: calls
+     * {@code stop()} again on that same pipeline — the thread has terminated,
+     * so the pipeline builds the clips without repeating its one-shot stop —
+     * and publishes them through {@link #publishRecordedTake}, exactly as the
+     * normal path does. A take that produced no clip only takes back the
+     * status bar's "still being written", if it still says so. A failure is
+     * logged SEVERE and shown as an ERROR toast. After a publication or a
+     * failure, Record is available again. A controller {@linkplain #retire()
+     * retired} by then does none of this: it only reports where the take's
+     * files are, and takes back the status bar's "still being written" in the
+     * same way. FX thread.
+     */
+    private void finishWrittenTake(RecordingPipeline pipeline) {
+        if (writingPipeline == pipeline) {
+            writingPipeline = null;
+        }
+        if (retired) {
+            // The project the take was recorded in has been replaced.
+            // Stopping the pipeline again is not needed for the files: the
+            // capture thread has terminated, so it writes nothing more, and
+            // RecordingPipeline.stop() would then only build clips onto the
+            // tracks of a project that is no longer open.
+            String message = takeOfAReplacedProjectMessage(project.getName(), pipeline.getTakeDirectory());
+            LOG.warning(message);
+            notificationBar.show(NotificationLevel.WARNING, message);
+            // Nothing on the replacement path rewrites the shared status bar,
+            // so its promise that the clips will appear is taken back here.
+            if (statusBarStillSays(TAKE_STILL_WRITING_MESSAGE)) {
+                statusBarLabel.setText(TAKE_OF_A_REPLACED_PROJECT_STATUS);
+            }
+            return;
+        }
+        List<AudioClip> clips;
+        try {
+            clips = pipelineStop.stop(pipeline);
+        } catch (TakeFinalizationPendingException stillPending) {
+            // Only if the completion fired while the thread still ran, which
+            // the pipeline's own signal never does: wait for it again.
+            LOG.log(Level.WARNING, "The take under " + stillPending.takeDirectory()
+                    + " is still being written; its clips are published when it is", stillPending);
+            publishWhenWritten(pipeline, stillPending);
+            return;
+        } catch (RuntimeException failure) {
+            LOG.log(Level.SEVERE, "Could not finish the take under " + pipeline.getTakeDirectory()
+                    + " after it was written", failure);
+            String reason = failure.getMessage() == null || failure.getMessage().isBlank()
+                    ? failure.getClass().getSimpleName()
+                    : failure.getMessage();
+            String message = "Recording could not be finished — " + reason + "; the take's files stay under "
+                    + ProjectManager.AUDIO_DIR_NAME + "/" + TakeDirectories.TAKES_DIR_NAME + "/"
+                    + pipeline.getTakeDirectory().getFileName();
+            statusBarLabel.setText(message);
+            notificationBar.show(NotificationLevel.ERROR, message);
+            return;
+        }
+        if (clips.isEmpty() && statusBarStillSays(TAKE_STILL_WRITING_MESSAGE)) {
+            statusBarLabel.setText(TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE);
+        }
+        publishRecordedTake(pipeline, clips);
+    }
+
+    /** Whether the status bar still shows {@code text} (its cell separator aside). FX thread. */
+    private boolean statusBarStillSays(String text) {
+        return statusBarLabel.getText() != null
+                && stripCellSeparator(statusBarLabel.getText()).equals(text);
+    }
+
+    /**
+     * The WARNING a {@linkplain #retire() retired} controller logs and shows
+     * once a take it stopped has been written: it names the project the take
+     * was recorded in and the take's directory, which lies under that
+     * project's {@code audio/takes}. It claims no order between the
+     * replacement and the end of the writing — the retirement is read when
+     * the deferred half runs, which may be after the take had finished —
+     * only that the replacement came before the take could be added.
+     */
+    static String takeOfAReplacedProjectMessage(String projectName, Path takeDirectory) {
+        return "The take recorded in '" + projectName + "' was not added to any project because that project"
+                + " was replaced before the take could be added — its files are under " + takeDirectory;
+    }
+
+    /**
+     * Whether a take this controller stopped is still being written to disk:
+     * its Stop gave up waiting ({@link TakeFinalizationPendingException}) and
+     * the deferred half ({@link #finishWrittenTake}) has not run yet — the
+     * FINALIZING state of Recording Reliability book §5.2, which returns to
+     * IDLE only once the seal has completed. {@code MainController} feeds the
+     * current controller's answer to {@code ProjectLifecycleController}, which
+     * refuses the in-app doors that replace the open project while it is
+     * {@code true}; quitting the application does not ask (story 333). FX
+     * thread.
+     */
+    boolean isTakeBeingWritten() {
+        return writingPipeline != null;
+    }
+
+    /**
+     * Retires this controller. {@code MainController} builds a new
+     * {@code TransportController} every time it rebuilds for a project it has
+     * loaded, created, imported or restored, and retires the one it replaces,
+     * whose project is no longer open. javafx-application-design §15 flags
+     * "Unbounded listener registration without matching removal in
+     * {@code dispose()}"; the dependent this controller registers on a take
+     * cannot be removed from it, so retiring neutralises it. What this retires
+     * is the deferred half of a Stop whose take was still being written:
+     * when that take's capture thread has terminated,
+     * {@link #finishWrittenTake} neither stops the pipeline
+     * again nor publishes anything — no clip on the replaced project's tracks,
+     * no undo entry, no SUCCESS toast — and instead logs and shows the
+     * WARNING of {@link #takeOfAReplacedProjectMessage}, and replaces a status
+     * bar that still says {@link #TAKE_STILL_WRITING_MESSAGE} with
+     * {@link #TAKE_OF_A_REPLACED_PROJECT_STATUS}. Since
+     * {@code ProjectLifecycleController} refuses the in-app doors that replace
+     * the open project while {@link #isTakeBeingWritten()}, this is the
+     * fallback for a replacement that bypasses that guard. Quitting the
+     * application retires nothing: it replaces no controller. Nothing else is
+     * retired: a post-roll still running, or a record-start input check still
+     * waiting for its device list, finishes as it would have. Cannot be
+     * undone. FX thread.
+     */
+    void retire() {
+        retired = true;
+    }
+
+    /**
+     * How {@link #stop()} and {@link #finishWrittenTake} stop a pipeline.
+     * Production: {@code RecordingPipeline::stop}. A test seam — the core's
+     * own seams (the join bound, a held flush thread) are not reachable from
+     * this module.
+     */
+    @FunctionalInterface
+    interface PipelineStop {
+        List<AudioClip> stop(RecordingPipeline pipeline);
+    }
+
+    /**
+     * Test seam: replaces how pipelines are stopped (see {@link PipelineStop}).
+     * FX thread.
+     */
+    void setPipelineStopForTest(PipelineStop stop) {
+        pipelineStop = Objects.requireNonNull(stop, "stop must not be null");
     }
 
     /**
@@ -665,6 +938,21 @@ final class TransportController implements TransportIntentHandler {
     }
 
     private void onRecord() {
+        // Story 323 review (book §5.2): Record is valid only from IDLE, and a
+        // take still being written to disk is FINALIZING until its capture
+        // thread has terminated and its clips are published. Refused before
+        // anything is touched: no pipeline, no device, no MIDI recorder, and
+        // the transport stays where it is.
+        if (writingPipeline != null) {
+            LOG.warning("Recording refused — the last take is still being written to disk");
+            statusBarLabel.setText(RECORD_WHILE_WRITING_MESSAGE);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+            notificationBar.show(NotificationLevel.WARNING, RECORD_WHILE_WRITING_MESSAGE);
+            recIndicator.setVisible(false);
+            recIndicator.setManaged(false);
+            return;
+        }
+
         // Validate that at least one track is armed for recording
         List<Track> armedTracks = RecordingPipeline.findArmedTracks(project.getTracks());
         if (armedTracks.isEmpty()) {
@@ -792,6 +1080,12 @@ final class TransportController implements TransportIntentHandler {
             // segment and the manifest it created deleted, recording flags
             // cleared — and rethrows, so the same abort path applies and the
             // take directory is empty again for deleteEmptyTakeDirectory.
+            // The exception: a flush thread that does not stop within the
+            // bounded join is only asked to stop, nothing is deleted (it may
+            // still be writing those files), and the rollback's failure is
+            // attached to the rethrown one as suppressed; the files are left
+            // for recovery, and deleteEmptyTakeDirectory then leaves the
+            // directory in place.
             try {
                 if (armedAudioTracks.stream().allMatch(track ->
                         track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track))) {
@@ -935,8 +1229,25 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Abandons a record gesture whose capture device could not be opened
-     * (story 316 review), leaving nothing behind and telling the user the take
-     * did not start.
+     * (story 316 review) or whose pipeline could not start (story 323), and
+     * tells the user the take did not start. It leaves no take behind: the
+     * take directory {@link #onRecord()} allocated is deleted if it is empty,
+     * which it is unless a pipeline's rollback could not stop its flush
+     * thread in time (see {@code outputDirectory} below). It does not close
+     * the device: when the open succeeded and {@code RecordingPipeline.start()}
+     * then threw, the stream that open started stays open. This controller
+     * leaves a stream closed only through {@link #stopAudioOutputWhenIdle()}
+     * (a later Record's {@code startAudioInputOutput()} also closes the open
+     * stream, but only to open a new full-duplex one), which a
+     * later Stop calls and which closes it only while
+     * {@link #hasGraphInstruments()} is false: while a mixer channel, a return
+     * bus or the master channel holds an instrument insert, bypassed or not,
+     * the stream is kept open so the instrument can be auditioned while
+     * stopped. Closing it on abort belongs to story 325's rollback of
+     * everything already started, in reverse start order (story 323's Known
+     * limitations). No input-monitoring mode is left to restore: this
+     * controller builds its pipeline with {@link InputMonitoringMode#OFF},
+     * which {@code start()} applies to no track.
      *
      * <p><strong>The WHOLE take is abandoned, armed MIDI tracks included.</strong>
      * That is deliberate, not collateral damage. Silently continuing with the
@@ -947,7 +1258,7 @@ final class TransportController implements TransportIntentHandler {
      * keeps one rule the user can hold: either the take they armed started, or
      * no take started and they were told why.</p>
      *
-     * <p>{@link #stop()} is deliberately NOT called here. Nothing started, so
+     * <p>{@link #stop()} is deliberately NOT called here. No take started, so
      * there is nothing to finalize, and on the ordinary Record-from-stopped
      * gesture {@link #isRecordingInFlight()} is now false over a transport that
      * is still STOPPED &mdash; which is exactly the double-stop rewind
@@ -965,17 +1276,22 @@ final class TransportController implements TransportIntentHandler {
      * state {@link #stop()} documents it can still be burning when the user
      * presses Record again; leaving it lit over a take that never started is
      * the same lie in miniature. {@link #updateStatus()} then re-reads the
-     * authoritative {@link Transport#getState()}, which this path has not
-     * touched &mdash; on the audio-armed branch the only thing that moves the
-     * transport is {@code RecordingPipeline.start()}, and it never ran &mdash;
-     * so the status label and the Play enablement report whatever the
-     * transport actually is.</p>
+     * authoritative {@link Transport#getState()}, which this path does not
+     * touch &mdash; on the audio-armed branch the only thing that moves the
+     * transport is {@code RecordingPipeline.start()}, whose last step is
+     * {@code transport.record()}: it either never ran (the open failed) or
+     * threw at or before that step, and its rollback leaves the transport
+     * alone &mdash; so the status label and the Play enablement report
+     * whatever the transport actually is.</p>
      *
      * @param outputDirectory the take directory {@link #onRecord()} had just
      *                        allocated under the project's {@code audio/takes}
      *                        for this take's segments (story 323); empty again,
      *                        because the pipeline that would have populated it
      *                        either never started or rolled itself back (D11)
+     *                        — unless that rollback's bounded join ran out,
+     *                        which leaves the files it created in place for
+     *                        recovery
      * @param failure         the open failure, whose message names the actual
      *                        cause (story 316 makes it specific: every ladder
      *                        rung refused for want of capture channels, an
@@ -1005,25 +1321,30 @@ final class TransportController implements TransportIntentHandler {
     /**
      * Best-effort removal of the take directory allocated under the project's
      * {@code audio/takes} for a record gesture that then aborted (story 316
-     * review; story 323). It is empty: either {@code RecordingPipeline.start()}
-     * — what creates the per-track directories, segments and manifest under it
-     * — never ran (the device open failed first), or it failed and rolled
-     * itself back to an empty directory (D11). A plain delete therefore
-     * suffices and no recursive walk is warranted; a directory a rollback
-     * could not empty is left in place for recovery (story 332) rather than
-     * walked.
+     * review; story 323). It is empty unless a rollback could not empty it:
+     * either {@code RecordingPipeline.start()} — what creates the per-track
+     * directories, segments and manifest under it — never ran (the device
+     * open failed first), or it failed and rolled itself back to an empty
+     * directory (D11). A plain delete therefore suffices and no recursive
+     * walk is warranted; a directory a rollback could not empty — its flush
+     * thread did not stop within the bounded join, so nothing was deleted
+     * and the rollback's failure rides on the start failure as suppressed —
+     * is not empty, so the delete fails and it is left in place for recovery
+     * (story 332) rather than walked.
      *
      * <p>A failure here is logged at FINE and swallowed on purpose: an
-     * undeleted empty take directory is housekeeping, and escalating it would
+     * undeleted take directory is housekeeping, and escalating it would
      * replace the device message the user actually needs with a filesystem
-     * complaint about a directory they never asked for.</p>
+     * complaint about a directory they never asked for. (The start failure
+     * itself, suppressed rollback failure included, is logged at WARNING by
+     * {@link #abortRecordingTake}.)</p>
      */
     private static void deleteEmptyTakeDirectory(Path outputDirectory) {
         try {
             Files.deleteIfExists(outputDirectory);
         } catch (IOException | RuntimeException e) {
             LOG.log(Level.FINE,
-                    () -> "Could not delete the empty recording directory "
+                    () -> "Could not delete the recording directory "
                             + outputDirectory + ": " + e);
         }
     }

@@ -18,10 +18,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * about — {@code force(false)}, {@code force(true)}, positional writes and
  * {@code close} — so a test observes the syscalls themselves rather than the
  * writer's bookkeeping. It can also fail the next writes outright, the shape
- * of a disk that refuses the bytes.
+ * of a disk that refuses the bytes, or the next forces, the shape of a flush
+ * to storage that fails.
  *
  * <p>Thread-safe enough for the tests: the journal is copy-on-write and the
- * fault counter atomic, so a test thread can read while the
+ * fault counters atomic, so a test thread can read while the
  * {@code capture-flush} thread writes.</p>
  */
 final class ObservedFileChannel extends FileChannel {
@@ -31,6 +32,7 @@ final class ObservedFileChannel extends FileChannel {
 
         private final List<String> events = new CopyOnWriteArrayList<>();
         private final AtomicInteger writesToFail = new AtomicInteger();
+        private final AtomicInteger forcesToFail = new AtomicInteger();
         private volatile Runnable beforeForce;
 
         /** Returns an opener that wraps whatever {@code real} opens. */
@@ -42,6 +44,15 @@ final class ObservedFileChannel extends FileChannel {
         /** The next {@code count} writes throw an {@link IOException} before reaching the file. */
         void failNextWrites(int count) {
             writesToFail.set(count);
+        }
+
+        /**
+         * The next {@code count} {@code force} calls throw an {@link IOException}
+         * before reaching the file; a refused force is not journalled and does
+         * not run the {@link #beforeForce} hook.
+         */
+        void failNextForces(int count) {
+            forcesToFail.set(count);
         }
 
         /** Runs {@code hook} on the forcing thread immediately before every delegated {@code force}. */
@@ -82,19 +93,28 @@ final class ObservedFileChannel extends FileChannel {
     }
 
     private void failIfAsked() throws IOException {
+        if (claimFault(journal.writesToFail)) {
+            throw new IOException("injected write failure (test double)");
+        }
+    }
+
+    private static boolean claimFault(AtomicInteger faults) {
         while (true) {
-            int remaining = journal.writesToFail.get();
+            int remaining = faults.get();
             if (remaining <= 0) {
-                return;
+                return false;
             }
-            if (journal.writesToFail.compareAndSet(remaining, remaining - 1)) {
-                throw new IOException("injected write failure (test double)");
+            if (faults.compareAndSet(remaining, remaining - 1)) {
+                return true;
             }
         }
     }
 
     @Override
     public void force(boolean metaData) throws IOException {
+        if (claimFault(journal.forcesToFail)) {
+            throw new IOException("injected force(" + metaData + ") failure (test double)");
+        }
         Runnable hook = journal.beforeForce;
         if (hook != null) {
             hook.run();

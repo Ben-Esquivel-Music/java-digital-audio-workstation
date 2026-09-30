@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
@@ -10,7 +11,9 @@ import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
+import com.benesquivelmusic.daw.core.recording.TakeFinalizationPendingException;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -32,6 +35,8 @@ import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -43,12 +48,20 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -98,6 +111,8 @@ class TransportControllerTest {
     private AudioEngine audioEngine;
     /** Actionable notification surface handed to the latest controller. */
     private NotificationBar notificationBar;
+    /** Undo history handed to the latest controller (story 323 review: "Record Audio" registration). */
+    private UndoManager undoManager;
     /** Counts invocations of the injected Open Audio Settings route. */
     private AtomicInteger audioSettingsOpens;
     /** Story 322 — the session input handed to the latest controller (blank = backend default). */
@@ -160,6 +175,7 @@ class TransportControllerTest {
                 engine.setStreamingProvision(provision);
             }
             UndoManager undo = new UndoManager();
+            undoManager = undo;
             NotificationBar nb = new NotificationBar();
             nb.setAnimated(false);
             notificationBar = nb;
@@ -1425,6 +1441,413 @@ class TransportControllerTest {
         } finally {
             runHandler(controller::stop);
         }
+    }
+
+    // ── Story 323 review: a take still being written when Stop gives up ─────
+
+    /**
+     * Stands in for a Stop whose bounded join runs out (the core's join bound
+     * and flush-thread holds are package-private to daw-core, out of this
+     * module's reach). The FIRST call runs the real
+     * {@code RecordingPipeline.stop()} — callback removed, recording flags
+     * cleared, transport stopped (which returns the playhead to the take's
+     * start), take sealed, clips built — then takes the clips it added off
+     * their tracks again and throws {@link TakeFinalizationPendingException}
+     * carrying {@link #written}, which the test completes as "the thread has
+     * terminated". So the controller sees what a pending Stop leaves in
+     * production: an inactive pipeline whose one-shot stop has run, a
+     * stopped transport, and no clip on any track. It differs from production
+     * only in what the controller does not read: the take is already sealed on
+     * disk, and the pipeline is not
+     * {@linkplain RecordingPipeline#isFinalizationPending() finalization
+     * pending} and already lists its clips in {@code getRecordedClips()}. The
+     * SECOND call — the deferred half — puts those clips back on their tracks
+     * and returns them without repeating any of the one-shot stop, as the
+     * real completing stop does (the core's
+     * {@code Story323StopFinalizationPendingContractTest
+     * .aStopWhoseJoinRunsOutBuildsNothingAndTheStopAfterTerminationReferencesEverySegment}
+     * pins that it repeats none of it). Any later call — the Stop of a later
+     * take — is the real {@code RecordingPipeline.stop()}. Every call records
+     * its pipeline and whether it ran on the FX thread.
+     */
+    private static final class StillWritingStop implements TransportController.PipelineStop {
+        final CompletableFuture<Void> written = new CompletableFuture<>();
+        final List<RecordingPipeline> calls = new CopyOnWriteArrayList<>();
+        final List<Boolean> onFxThread = new CopyOnWriteArrayList<>();
+        final CountDownLatch deferredCall = new CountDownLatch(1);
+        /** Thrown by the second call instead of its clips. */
+        volatile RuntimeException deferredFailure;
+        /** The second call hands back no clip and puts none back. */
+        volatile boolean deferredReturnsNothing;
+        /** The clips the first call's real stop built, taken off their tracks until the second call. */
+        private volatile List<AudioClip> builtClips = List.of();
+
+        @Override
+        public List<AudioClip> stop(RecordingPipeline pipeline) {
+            calls.add(pipeline);
+            onFxThread.add(Platform.isFxApplicationThread());
+            if (calls.size() == 1) {
+                builtClips = pipeline.stop();
+                pipeline.getRecordedClips().forEach(Track::removeClip);
+                throw new TakeFinalizationPendingException(pipeline.getTakeDirectory(),
+                        java.time.Duration.ofSeconds(30), written);
+            }
+            if (calls.size() > 2) {
+                return pipeline.stop();
+            }
+            try {
+                RuntimeException failure = deferredFailure;
+                if (failure != null) {
+                    throw failure;
+                }
+                if (deferredReturnsNothing) {
+                    return List.of();
+                }
+                pipeline.getRecordedClips().forEach(Track::addClip);
+                return builtClips;
+            } finally {
+                deferredCall.countDown();
+            }
+        }
+    }
+
+    /** Records an audio take that has at least one block on disk, with {@code stops} as the pipeline stop. */
+    private TransportController recordingWithABlockOnDisk(DawProject project, Track armed,
+                                                          StillWritingStop stops) throws Exception {
+        TransportController controller = newController(project, new MockAudioBackend());
+        runHandler(() -> controller.setPipelineStopForTest(stops));
+        runHandler(controller::toggleRecord);
+        Path part = controller.activeTakeDirectory().orElseThrow()
+                .resolve(armed.getId()).resolve("segment-000.wav.part");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        // The engine's render pump delivers blocks at the device pace; the
+        // take has a clip to publish once one is past the 44-byte header.
+        while (!Files.exists(part) || Files.size(part) <= 44) {
+            assertThat(System.nanoTime() - deadline < 0)
+                    .as("fixture: a recorded block reached %s within 10 s", part).isTrue();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        }
+        return controller;
+    }
+
+    /** One FX turn after everything posted so far: the posts run in order. */
+    private static void flushFx() throws Exception {
+        runHandler(() -> { });
+    }
+
+    @Test
+    void aTakeStillBeingWrittenIsPublishedOnceOnTheFxThreadWhenItsThreadHasTerminated() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        Path takes = TakeDirectories.takesDirectory(ProjectManager.audioDirectory(projectDirectory));
+        List<Path> takeDirectories = listing(takes);
+
+        assertThat(runHandlerCatching(controller::stop))
+                .as("the pending take never escapes the Stop handler").isNull();
+
+        assertThat(stops.calls).hasSize(1);
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
+        assertThat(notificationBar.getMessage()).isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
+        assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
+        assertThat(armed.getClips()).as("no clip before the take is written").isEmpty();
+        assertThat(undoManager.canUndo()).as("no undo entry before the take is written").isFalse();
+        assertThat(recIndicator.isVisible()).as("the rest of Stop ran: REC indicator hidden").isFalse();
+        assertThat(project.getTransport().getState())
+                .as("the transport is stopped (by the pipeline's one-shot stop)")
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(controller.isTakeBeingWritten()).as("the take is FINALIZING").isTrue();
+
+        // Record while the take is still being written is refused, visibly.
+        assertThat(runHandlerCatching(controller::toggleRecord)).isNull();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
+        assertThat(notificationBar.getMessage()).isEqualTo(TransportController.RECORD_WHILE_WRITING_MESSAGE);
+        assertThat(statusBarLabel.getText()).isEqualTo(TransportController.RECORD_WHILE_WRITING_MESSAGE);
+        assertThat(project.getTransport().getState())
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(controller.activeTakeDirectory()).as("no pipeline was built").isEmpty();
+        assertThat(listing(takes)).as("no take directory was allocated").isEqualTo(takeDirectories);
+        assertThat(recIndicator.isVisible()).isFalse();
+
+        // A second Stop is an ordinary Stop: it never calls the pipeline again.
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+        assertThat(stops.calls).as("no second join on the FX thread").hasSize(1);
+
+        // Playback started while the take is being written belongs to the
+        // user: the deferred half publishes the take and leaves it alone.
+        runHandler(controller::start);
+        assertThat(project.getTransport().getState())
+                .as("fixture: playback started while the take is being written")
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+
+        stops.written.complete(null); // the capture thread has terminated
+        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
+        flushFx();
+
+        assertThat(stops.calls).hasSize(2);
+        assertThat(stops.calls.get(1)).as("the same pipeline is finished").isSameAs(stops.calls.getFirst());
+        assertThat(stops.onFxThread.get(1)).as("the deferred stop runs on the FX thread").isTrue();
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(undoManager.undoSize()).isEqualTo(1);
+        assertThat(undoManager.undoDescription()).isEqualTo("Record Audio");
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.SUCCESS);
+        assertThat(notificationBar.getMessage()).isEqualTo("Recording stopped — 1 clip created");
+        assertThat(statusBarLabel.getText()).isEqualTo("Recording stopped — 1 clip created");
+        assertThat(project.getTransport().getState())
+                .as("the deferred half does not stop the playback started while the take was being written")
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+        assertThat(controller.isTakeBeingWritten()).as("the take has been published").isFalse();
+
+        // Record is available again (from a stopped transport).
+        runHandler(controller::stop);
+        runHandler(controller::toggleRecord);
+        try {
+            assertThat(controller.activeTakeDirectory()).as("a new take started").isPresent();
+        } finally {
+            runHandler(controller::stop);
+        }
+    }
+
+    @Test
+    void aDeferredStopThatFailsIsLoggedAndShownAsAnErrorAndRecordIsAvailableAgain() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        stops.deferredFailure = new IllegalStateException("injected deferred-stop failure");
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        List<LogRecord> severe = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record.getLevel() == Level.SEVERE) {
+                    severe.add(record);
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        Logger logger = Logger.getLogger(TransportController.class.getName());
+        logger.addHandler(capture);
+        try {
+            assertThat(runHandlerCatching(controller::stop)).isNull();
+            stops.written.complete(null);
+            assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
+            flushFx();
+
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(notificationBar.getMessage())
+                    .startsWith("Recording could not be finished — injected deferred-stop failure");
+            assertThat(statusBarLabel.getText()).isEqualTo(notificationBar.getMessage());
+            assertThat(severe).as("the failure is logged, never swallowed")
+                    .anySatisfy(record -> assertThat(record.getThrown()).isSameAs(stops.deferredFailure));
+            assertThat(undoManager.canUndo()).as("nothing was published").isFalse();
+        } finally {
+            logger.removeHandler(capture);
+        }
+
+        runHandler(controller::toggleRecord);
+        try {
+            assertThat(controller.activeTakeDirectory()).as("Record is available again").isPresent();
+        } finally {
+            runHandler(controller::stop);
+        }
+    }
+
+    @Test
+    void aTakeWrittenWithoutAClipTakesBackTheStillWritingStatus() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        stops.deferredReturnsNothing = true;
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+        assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
+        stops.written.complete(null);
+        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
+        flushFx();
+
+        assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE);
+        assertThat(undoManager.canUndo()).isFalse();
+    }
+
+    // ── Story 323 review: the take's controller retired by a project change ──
+
+    /**
+     * MainController retires a controller when it builds the next project's
+     * ({@code createTransportController}); a take that controller was still
+     * writing finishes afterwards. Nothing is published into the project it
+     * was recorded in — no clip, no undo entry, no SUCCESS — and the pipeline
+     * is not stopped again; one WARNING, logged and shown, names that project
+     * and the take's directory, and the status bar's promise that the clips
+     * will appear is taken back.
+     */
+    @Test
+    void aRetiredControllerPublishesNothingWhenItsTakeFinishesAndSaysWhereItsFilesAre() throws Exception {
+        DawProject project = new DawProject("Song A", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+        assertThat(controller.isTakeBeingWritten()).as("fixture: the take is still being written").isTrue();
+        Path takeDirectory = stops.calls.getFirst().getTakeDirectory();
+
+        runHandler(controller::retire);
+        NotificationHistoryService shown = new NotificationHistoryService();
+        runHandler(() -> notificationBar.setHistoryService(shown));
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = warningCapture(warnings);
+        Logger logger = Logger.getLogger(TransportController.class.getName());
+        logger.addHandler(capture);
+        try {
+            stops.written.complete(null); // the capture thread has terminated
+            flushFx();
+        } finally {
+            logger.removeHandler(capture);
+        }
+
+        String expected = TransportController.takeOfAReplacedProjectMessage("Song A", takeDirectory);
+        assertThat(expected).as("the warning names the project and the take's directory")
+                .contains("'Song A'", takeDirectory.toString());
+        assertThat(stops.calls).as("a retired controller does not stop the pipeline again").hasSize(1);
+        assertThat(armed.getClips()).as("no clip on the replaced project's track").isEmpty();
+        assertThat(undoManager.canUndo()).as("no undo entry in the replaced project's history").isFalse();
+        assertThat(shown.getEntries()).as("one WARNING, and no SUCCESS, once the take has finished")
+                .singleElement()
+                .satisfies(entry -> {
+                    assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
+                    assertThat(entry.message()).isEqualTo(expected);
+                });
+        assertThat(warnings).as("the warning is logged").anySatisfy(
+                record -> assertThat(record.getMessage()).isEqualTo(expected));
+        assertThat(statusBarLabel.getText())
+                .as("nothing else takes back the status bar's promise that the clips will appear, so the"
+                        + " retired controller does, in the words of its warning")
+                .isEqualTo(TransportController.TAKE_OF_A_REPLACED_PROJECT_STATUS);
+        assertThat(controller.isTakeBeingWritten()).as("the take is no longer being written").isFalse();
+        assertThat(TakeManifest.manifestPath(takeDirectory))
+                .as("the take's files are where the warning says").isRegularFile();
+    }
+
+    /**
+     * The retirement is read when the deferred half runs, not when it is
+     * posted: a project change that lands between the take's termination and
+     * the FX turn it posted publishes nothing either.
+     */
+    @Test
+    void aControllerRetiredAfterItsTakeFinishedButBeforeTheDeferredHalfRanPublishesNothing() throws Exception {
+        DawProject project = new DawProject("Song B", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+        Path takeDirectory = stops.calls.getFirst().getTakeDirectory();
+
+        // One FX turn: the completion posts the deferred half, then the
+        // project change retires the controller before that post runs.
+        assertThat(runHandlerCatching(() -> {
+            stops.written.complete(null);
+            controller.retire();
+        })).isNull();
+        flushFx();
+
+        assertThat(stops.calls).as("the pipeline is not stopped again").hasSize(1);
+        assertThat(armed.getClips()).isEmpty();
+        assertThat(undoManager.canUndo()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
+        assertThat(notificationBar.getMessage())
+                .isEqualTo(TransportController.takeOfAReplacedProjectMessage("Song B", takeDirectory));
+    }
+
+    /**
+     * The retired controller takes back only its own promise: a status text
+     * something else wrote after the Stop is left as it is.
+     */
+    @Test
+    void aRetiredControllerLeavesAStatusTextItDidNotWrite() throws Exception {
+        DawProject project = new DawProject("Song C", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+        assertThat(statusBarLabel.getText()).as("fixture").isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
+
+        runHandler(() -> {
+            statusBarLabel.setText("Metronome: ON");
+            controller.retire();
+        });
+        stops.written.complete(null);
+        flushFx();
+
+        assertThat(notificationBar.getMessage()).as("fixture: the deferred half ran, retired")
+                .isEqualTo(TransportController.takeOfAReplacedProjectMessage(
+                        "Song C", stops.calls.getFirst().getTakeDirectory()));
+        assertThat(statusBarLabel.getText()).isEqualTo("Metronome: ON");
+    }
+
+    /** Collects the WARNING records a logger publishes. */
+    private static Handler warningCapture(List<LogRecord> warnings) {
+        return new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) {
+                    warnings.add(record);
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
+    private static List<Path> listing(Path directory) throws IOException {
+        try (Stream<Path> entries = Files.list(directory)) {
+            return entries.sorted().toList();
+        }
+    }
+
+    /** Runs a handler on the FX thread and returns the {@link RuntimeException} it threw, if any. */
+    private static RuntimeException runHandlerCatching(Runnable handler) throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        Platform.runLater(() -> {
+            try {
+                handler.run();
+            } catch (Throwable t) {
+                thrown.set(t);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        if (thrown.get() instanceof Error e) {
+            throw e;
+        }
+        return (RuntimeException) thrown.get();
     }
 
     /** Counts every device open (both overloads) — proof of whether the engine was touched. */

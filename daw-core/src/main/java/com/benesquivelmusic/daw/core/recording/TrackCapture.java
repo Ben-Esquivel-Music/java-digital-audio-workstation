@@ -32,10 +32,12 @@ import java.util.logging.Logger;
  * and the scratch/session accessors used while routing are flush-thread
  * only. {@link #setSegmentEvents}, {@link #discardAllFiles()} and
  * {@link #abandonForCrashSimulation()} run on the caller thread, before the
- * flush thread is started or after it has been joined. The
- * results ({@link #takeGroup()}, {@link #sealedSegments()},
- * {@link #session()}) are volatile or copy-on-write so the pipeline can read
- * them on the caller thread after the flush thread has been joined.</p>
+ * flush thread is started or once it has terminated
+ * ({@code CaptureFlushService.isTerminated()}; a join that runs out first
+ * leaves them uncalled). The results ({@link #takeGroup()},
+ * {@link #sealedSegments()}, {@link #session()}) are volatile or
+ * copy-on-write so the pipeline can read them on the caller thread once the
+ * flush thread has terminated.</p>
  */
 final class TrackCapture {
 

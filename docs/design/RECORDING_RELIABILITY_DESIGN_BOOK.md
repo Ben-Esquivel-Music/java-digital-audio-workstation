@@ -593,7 +593,11 @@ track's `SegmentWriter`, update the decimated peak mirror, and run the rotation 
 wall-clock reads are fine here). Cadence contracts:
 
 - **Force-to-storage every 5 seconds per active segment** (configurable). With the ring bound,
-  this fixes the §2.1 risk window: crash loss ≤ ring depth + 5 s per track. Rejected: force per
+  this fixes the §2.1 risk window: crash loss ≤ ring depth + 5 s per track, plus the wait for the
+  flush thread's next cadence check. As landed (story 323), that thread checks after every block
+  it applies and at the end of every drain pass — including the pass after each backstop park
+  while the ring is dry — so bytes are forced on cadence even when nothing more is appended to
+  their segment. Rejected: force per
   block (storage-bound, kills long sessions on spinning disks); no force (an OS crash loses
   everything the page cache held — violates §2.1).
 - **Disk-headroom watch**: before each append, a cached free-space figure (refreshed on a slow
@@ -674,10 +678,13 @@ Stage 1 as landed (story 323) departs from the two FLUSH rows on file operations
 take/clip construction in three places, by design: the *initial* segment and manifest creation
 (each armed track's `segment-000.wav.part` and the first `take.manifest`) runs on the caller
 thread (FX in the app) inside `RecordingPipeline.start()`, before the flush thread is started;
-the rollback of a failed start deletes those files on the caller thread too, after joining the
-flush thread if it had been started — together they make a start all-or-nothing; and the
-normal-path clip is built on the caller thread in `RecordingPipeline.stop()`, after the flush
-thread has been joined, so that `Track`s are mutated by one thread. Every other file operation —
+the rollback of a failed start deletes those files on the caller thread too, once the flush
+thread has terminated if it had been started — together they make a start all-or-nothing, except
+that a rollback whose bounded join runs out deletes nothing and leaves the files for recovery;
+and the normal-path clip is built on the caller thread in `RecordingPipeline.stop()`, once the
+flush thread has terminated (a stop whose bounded join runs out first throws
+`TakeFinalizationPendingException` and builds nothing until a later `stop()` finds the thread
+terminated), so that `Track`s are mutated by one thread. Every other file operation —
 appends, forces, rotation opens and seals, manifest rewrites — and the loop-lap takes stay on the
 flush thread. The ring is still sized from the format the pipeline is constructed with (the
 project's format in the app); a longer delivered block is truncated, counted and recorded
@@ -698,6 +705,7 @@ then surface the cause via the notification seam (§6.3).
 | Device lost (event or watchdog) | RECORDING   | —                                                                 | DEVICE_LOST | — (runs §5.5) |
 | Device returned                 | DEVICE_LOST | same device per identity match; reopen succeeds                   | IDLE (armed kept) | stays DEVICE_LOST, notification repeats remediation |
 | Settings apply requested        | RECORDING   | **blocked**: prompt "Stop the take and apply?"; apply proceeds only after FINALIZING completes | — | — (chosen over silent-defer: a deferred apply that fires later surprises; over allow: §1.3's gutted-take bug) |
+| Project replace requested       | FINALIZING  | **blocked** (story 323): every in-app door that replaces the open project (New, Open, Import, Restore from Archive, Hub/Welcome open, snapshot restore, Recover, migration roll-back) is refused with a WARNING toast and no prompt until FINALIZING completes | — | — (the take is published into the project it was recorded in; app exit is not a guarded door — story 333's close guard owns it) |
 | Input-open failure mid-arm      | any pre-RECORDING | —                                                           | ABORTED→IDLE | covered by Record guard row |
 | MIDI device missing / open fail | arm-time    | per-track: skip track with visible warning; if *no* track opens, treat as Record guard failure | — | — |
 
@@ -713,7 +721,7 @@ played instead of collapsing to column 0 (§1.8).
 |------|-----------|
 | Creation | A segment file exists on disk before the first frame routed to it is considered captured; `startNewSegment` without a file (§1.1) is forbidden |
 | Self-description | A STREAMING segment is recoverable from its bytes alone: fixed data offset, sample count = (length − offset) ÷ frame size (§3.4) |
-| Bounded risk | Un-forced data ≤ force cadence (5 s default); ring ≤ its allocated depth; both documented in the manifest |
+| Bounded risk | Un-forced data ≤ force cadence (5 s default) plus the wait for the flush thread's next cadence check (§4.3); ring ≤ its allocated depth; both documented in the manifest |
 | Seal atomicity | Patch-then-rename; a reader never observes a `.wav` with provisional sizes |
 | Exactness | Sealed metadata carries exact sample counts — never wall-clock estimates (§1.1) |
 | Rotation | Existing 30 min / 500 MB caps retained; rotation is a flush-thread act (§5.1) |

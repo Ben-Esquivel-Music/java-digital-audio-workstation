@@ -21,12 +21,14 @@ import java.util.function.LongSupplier;
  * seals it by patch-header + atomic rename (Recording Reliability book
  * §3.4, §4.4, §5.3; story 323).
  *
- * <p><strong>Thread.</strong> {@link #append} and {@link #seal()} run on the
- * {@code capture-flush} thread. {@link #open} runs on the caller thread for
- * a track's first segment (before the flush thread is started) and on the
- * flush thread for every later one. The rollback / crash seams
+ * <p><strong>Thread.</strong> {@link #append}, {@link #forceIfDue()} and
+ * {@link #seal()} run on the {@code capture-flush} thread. {@link #open}
+ * runs on the caller thread for a track's first segment (before the flush
+ * thread is started) and on the flush thread for every later one. The
+ * rollback / crash seams
  * ({@link #abandon()}, {@link #close()}) run on the caller thread, before
- * the flush thread is started or after it has been joined, and on the flush
+ * the flush thread is started or once it has terminated
+ * ({@code CaptureFlushService.isTerminated()}), and on the flush
  * thread when a seal fails or an empty tail is discarded; the fault seams
  * ({@link #failNextAppend()}, {@link #failNextRename()}) may be set from any
  * thread. One thread at a time writes the file (one writer per byte, book
@@ -54,10 +56,23 @@ import java.util.function.LongSupplier;
  *   <li>Appends go straight through a {@link FileChannel} — no Java-side
  *       buffering that could hide unforced bytes from the cadence
  *       accounting.</li>
- *   <li>Force cadence: after every append, if {@code now − lastForce ≥
- *       cadence} the channel is {@code force(false)}d. The clock is the
- *       injected {@code nanoClock} so tests pin the cadence exactly. The
- *       un-forced tail is therefore bounded by the cadence (book §2.1).</li>
+ *   <li>Force cadence: the channel is {@code force(false)}d when bytes have
+ *       been appended since the last cadence force and {@code now −
+ *       lastForce ≥ cadence} ({@code lastForce} is the open time until the
+ *       first force). The check runs after every append and in
+ *       {@link #forceIfDue()}, which the {@code capture-flush} thread calls,
+ *       while the take streams, after every block it applies and at the end
+ *       of every drain pass — so a segment that nothing more is appended to
+ *       (a punch-out, an absent instrument source, a dry ring) is forced on
+ *       cadence as well. The clock is the injected {@code nanoClock} so
+ *       tests pin the cadence exactly. While the take streams, a byte
+ *       therefore stays un-forced for at most the cadence plus the wait for
+ *       the flush thread's next check (book §2.1): while the ring is dry
+ *       that thread runs a pass after every park backstop
+ *       ({@code CaptureFlushService.PARK_BACKSTOP}, 50 ms); while it drains,
+ *       it checks after every block. Nothing is forced when nothing is
+ *       un-forced, and the seal's two {@code force(true)} calls are not
+ *       cadence forces.</li>
  *   <li>{@link #seal()} = write nothing more → {@code force(true)} → patch
  *       both size fields with exact values → {@code force(true)} → close →
  *       {@code Files.move(part, wav, ATOMIC_MOVE)}. The rename is the commit
@@ -191,7 +206,7 @@ public final class SegmentWriter implements AutoCloseable {
      * @param channels     channel count; positive
      * @param bitDepth     16, 24 or 32
      * @param forceCadence force-to-storage cadence; non-negative (zero =
-     *                     force after every append)
+     *                     force after every append of one or more frames)
      * @param nanoClock    monotonic nanosecond clock; {@code System::nanoTime}
      *                     in production
      * @return the open writer, positioned at frame 0
@@ -295,8 +310,11 @@ public final class SegmentWriter implements AutoCloseable {
      *                  least {@link #channels()} (extra rows are ignored —
      *                  the writer never fabricates silence for missing ones)
      * @param numFrames frames to append; non-negative
-     * @throws IOException           on a write failure, or if the segment
-     *                               would exceed {@link #MAX_DATA_BYTES}
+     * @throws IOException           on a write failure, on a failed cadence
+     *                               force, or if the segment would exceed
+     *                               {@link #MAX_DATA_BYTES}; see
+     *                               {@link #append(float[][], int, int, int)}
+     *                               for what is counted then
      * @throws IllegalStateException if the writer is sealed or abandoned
      */
     public void append(float[][] frames, int channels, int numFrames) throws IOException {
@@ -310,12 +328,21 @@ public final class SegmentWriter implements AutoCloseable {
      * holding a larger buffer (the session's RAM mirror) can append its newest
      * region without copying it out first.
      *
+     * <p>{@link #frameCount()} and {@link #dataBytes()} advance chunk by
+     * chunk (a block is written in chunks of at most 8192 frames), each
+     * chunk once its bytes are written, whether or not the append then
+     * throws: a cadence force that fails leaves the whole block written and
+     * counted; a write that fails leaves counted only the chunks written in
+     * full before it; a refusal before writing (the segment limit, the
+     * {@link #failNextAppend()} seam) counts nothing.</p>
+     *
      * @param frames      {@code [channel][frame]} samples in {@code [-1, 1]}
      * @param channels    rows of {@code frames} that are valid; at least {@link #channels()}
      * @param frameOffset first frame to append; non-negative
      * @param numFrames   frames to append; non-negative
-     * @throws IOException           on a write failure, or if the segment
-     *                               would exceed {@link #MAX_DATA_BYTES}
+     * @throws IOException           on a write failure, on a failed cadence
+     *                               force, or if the segment would exceed
+     *                               {@link #MAX_DATA_BYTES}
      * @throws IllegalStateException if the writer is sealed or abandoned
      */
     public void append(float[][] frames, int channels, int frameOffset, int numFrames) throws IOException {
@@ -367,14 +394,39 @@ public final class SegmentWriter implements AutoCloseable {
         forceIfCadenceElapsed();
     }
 
-    private void forceIfCadenceElapsed() throws IOException {
-        long now = nanoClock.getAsLong();
-        if (now - lastForceNanos >= cadenceNanos) {
-            channel.force(false);
-            lastForceNanos = now;
-            bytesSinceForce = 0;
-            forceCount++;
+    /**
+     * The force-cadence check on its own, with no append (book §2.1, §4.3):
+     * if bytes have been appended since the last cadence force and the
+     * cadence has elapsed on the injected clock since that force (or since
+     * the open, before the first one), the channel is {@code force(false)}d.
+     * {@link #append} makes the same check after every append; the
+     * {@code capture-flush} thread also makes it between appends, so bytes
+     * that nothing more is appended after are forced on cadence too. With
+     * nothing un-forced it neither forces nor reads the clock.
+     *
+     * @return whether the channel was forced
+     * @throws IOException           if the force fails; the writer stays
+     *                               streaming with its counters untouched
+     * @throws IllegalStateException if the writer is sealed or abandoned
+     */
+    public boolean forceIfDue() throws IOException {
+        requireStreaming("forceIfDue");
+        return forceIfCadenceElapsed();
+    }
+
+    private boolean forceIfCadenceElapsed() throws IOException {
+        if (bytesSinceForce == 0) {
+            return false;
         }
+        long now = nanoClock.getAsLong();
+        if (now - lastForceNanos < cadenceNanos) {
+            return false;
+        }
+        channel.force(false);
+        lastForceNanos = now;
+        bytesSinceForce = 0;
+        forceCount++;
+        return true;
     }
 
     /**

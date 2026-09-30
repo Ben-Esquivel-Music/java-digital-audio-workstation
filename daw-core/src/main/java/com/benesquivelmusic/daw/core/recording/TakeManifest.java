@@ -512,12 +512,17 @@ public final class TakeManifest {
         return startFrame;
     }
 
-    /** Returns the force cadence in milliseconds (the book §2.1 risk bound). */
+    /**
+     * Returns the force cadence in milliseconds (the book §2.1 risk window):
+     * while the take streams, a segment's un-forced bytes are forced at the
+     * {@code capture-flush} thread's first check once this long has passed
+     * since the segment's last force, or its open ({@link CaptureFlushService}).
+     */
     public long forceCadenceMillis() {
         return forceCadenceMillis;
     }
 
-    /** Returns the capture ring's slot count (the other half of the risk bound). */
+    /** Returns the capture ring's slot count (the other half of the book §2.1 risk window). */
     public int ringSlots() {
         return ringSlots;
     }

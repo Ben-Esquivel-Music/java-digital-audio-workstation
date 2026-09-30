@@ -37,9 +37,13 @@ final class Story323TestSupport {
     static final AudioFormat MONO_16 = new AudioFormat(SAMPLE_RATE, 1, 16, BLOCK_FRAMES);
 
     /**
-     * Bound of {@link #outcomeWithinTheGuard}: far larger than any wait
-     * inside the calls it guards (the longest is a 200 ms timeout), so it
-     * only runs out when the code under test no longer terminates.
+     * Bound of {@link #outcomeWithinTheGuard}. Where a guarded call is meant
+     * to wait out a bound of its own — a join shortened to 200 ms or one
+     * second, a 200 ms fence timeout — that bound lies far inside the guard.
+     * Where a guarded stop's join bound lies beyond it — the production 30 s,
+     * or an hour a test sets so that a stop which joins when it must not
+     * overruns the guard — the stop passes only if it returns without
+     * waiting that bound out.
      */
     static final Duration HANG_GUARD = Duration.ofSeconds(10);
 

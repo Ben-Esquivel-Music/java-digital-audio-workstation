@@ -36,8 +36,13 @@ import java.util.function.LongSupplier;
  * The callback writes ring slots only. The flush thread writes files, the
  * manifest, the RAM mirrors and the ring's read index. The caller thread
  * (FX in the app) calls {@link #start()} and {@link #stop()}; {@code stop()}
- * mutates {@link Track}s ({@code addClip}, {@code putTakeGroup}) only after
- * the flush thread has been joined.</p>
+ * reads what the flush thread wrote, and adds clips and take groups to
+ * {@link Track}s ({@code addClip}, {@code putTakeGroup}), only once the
+ * flush thread has terminated. When the bounded join runs out first,
+ * {@code stop()} throws {@link TakeFinalizationPendingException} and the
+ * pipeline stays
+ * {@linkplain #isFinalizationPending() finalization pending} until a later
+ * {@code stop()} finds the thread terminated.</p>
  *
  * <p>The pipeline supports:</p>
  * <ul>
@@ -61,14 +66,22 @@ import java.util.function.LongSupplier;
  *       per-track sessions (files!), start the flush thread, wire the audio
  *       engine's recording callback, and start the transport. This is
  *       all-or-nothing: any failure rolls everything back — thread stopped,
- *       files and manifest deleted, recording flags cleared — and rethrows.</li>
+ *       files and manifest deleted, recording flags cleared — and rethrows,
+ *       except that a flush thread that does not terminate within the
+ *       bounded join is only asked to stop: nothing is deleted, the files
+ *       are left for recovery, and the rollback's own failure is attached to
+ *       the rethrown one as suppressed.</li>
  *   <li>Audio data flows from {@link AudioEngine#processBlock} through the
  *       recording callback into the ring, and from there through the flush
  *       thread into each track's session.</li>
  *   <li>Call {@link #stop()} to remove the callback, stop the transport, seal
  *       every segment and the manifest (bounded join), then create
  *       {@link AudioClip}s referencing <em>every</em> sealed segment of the
- *       take in manifest order.</li>
+ *       take in manifest order. If the join runs out while the flush thread
+ *       is still finalising, {@code stop()} creates nothing and throws
+ *       {@link TakeFinalizationPendingException}; call {@code stop()} again
+ *       once its {@link TakeFinalizationPendingException#completion()
+ *       completion()} has completed, and that call creates the clips.</li>
  * </ol>
  *
  * <p>The {@code outputDirectory} passed to the constructor is the take
@@ -96,6 +109,18 @@ public final class RecordingPipeline {
     private Track[] instrumentTracks = new Track[0];
     private boolean loopRecord;
     private volatile boolean active;
+    /**
+     * A {@link #stop()} has begun and not yet returned the take's clips: set
+     * before its one-shot side effects, cleared when the clips are built.
+     * Stays set across a {@link TakeFinalizationPendingException}.
+     */
+    private volatile boolean finalizationPending;
+    /**
+     * The tempo the take's clips are built at: read by the {@link #stop()}
+     * that began the finalisation, so a stop that completes it later builds
+     * the same clips even if the tempo has changed since.
+     */
+    private double clipTempoBpm;
     private boolean allInputsMuted;
     private double recordingStartBeat;
     private long recordingStartFrame;
@@ -195,16 +220,31 @@ public final class RecordingPipeline {
      * order — callback removed, thread stopped, files and manifest deleted,
      * recording flags cleared, {@code active = false} — and the failure is
      * rethrown, carrying anything the rollback itself threw as suppressed.
+     * If the flush thread does not terminate within the bounded join, it is
+     * only asked to stop and nothing is deleted: the flush service's
+     * {@code IllegalStateException} is attached as suppressed and the files
+     * are left for recovery, while the thread finishes on its own.
      * The rollback reaches only the flush service and captures this start
      * created, never those of an earlier take of the same pipeline. Caller
      * thread.
      *
-     * @throws IllegalStateException    if the pipeline is already active
+     * <p>Refused while the previous take's {@linkplain #isFinalizationPending()
+     * finalisation is pending}: the reset at the top of a start would drop
+     * the captures, ring and flush service the {@link #stop()} that
+     * completes that take builds its clips from, while the flush thread may
+     * still be writing them. Nothing is touched by the refusal.</p>
+     *
+     * @throws IllegalStateException    if the pipeline is already active, or
+     *                                  its previous take's finalisation is pending
      * @throws java.io.UncheckedIOException if the take directory, a segment or
      *                                  the manifest cannot be created
      * @throws IllegalArgumentException if the format's bit depth is not 16, 24 or 32
      */
     public void start() {
+        if (finalizationPending) {
+            throw new IllegalStateException("Recording pipeline is still finalising its previous take under "
+                    + outputDirectory + "; call stop() once that take's finalisation has completed");
+        }
         if (active) {
             throw new IllegalStateException("Recording pipeline is already active");
         }
@@ -309,7 +349,7 @@ public final class RecordingPipeline {
             int source = instrument ? 1 + instrumentIndex++ : -1;
             int routedChannels = instrument ? format.channels() : routing.channelCount();
             captures.put(track, new TrackCapture(track, routing, source, routedChannels,
-                    format.bufferSize(), compensation, compensatedStartBeat(track),
+                    format.bufferSize(), compensation, compensatedStartBeat(track, tempo),
                     format.sampleRate(), tempo, outputDirectory.resolve(track.getId()), sessionFactory));
         }
 
@@ -350,9 +390,12 @@ public final class RecordingPipeline {
             }
             rollbackStep(cause, () -> {
                 if (flush != null) {
-                    // Created by this start. Kept reachable (dead) through
+                    // Created by this start. Kept reachable through
                     // getCaptureFlushService() so a caller can verify the
-                    // thread is gone; the next start replaces it.
+                    // thread is gone; the next start replaces it. If its
+                    // join runs out, abortStart deletes nothing and throws
+                    // (attached below as suppressed): the thread finishes
+                    // on its own and the files stay for recovery.
                     flush.abortStart();
                 } else {
                     for (TrackCapture capture : captures.values()) {
@@ -396,7 +439,34 @@ public final class RecordingPipeline {
      * the recording flags, stops the transport, seals every segment and the
      * manifest on the flush thread (bounded join), then creates audio clips
      * on armed tracks referencing every sealed segment in manifest order.
-     * Idempotent: a second call returns an empty list. Caller thread.
+     * Caller thread.
+     *
+     * <p><strong>Finalisation that outlasts the join.</strong> The clips are
+     * built from what the flush thread wrote, so nothing it writes is read,
+     * no clip or take group is added to any {@link Track} and nothing is
+     * recorded in {@link #getRecordedClips()} until that thread has
+     * terminated (the one-shot stop has already cleared the tracks'
+     * recording flags). If the join runs out first, this
+     * throws {@link TakeFinalizationPendingException} — never an empty list,
+     * which means "nothing was recorded" — and the pipeline stays
+     * {@linkplain #isFinalizationPending() finalization pending}. A call
+     * made on the flush thread itself before that thread has terminated
+     * (from the warning sink, say) never joins its own thread: it throws the
+     * same exception without waiting. A later call made once the thread has
+     * terminated ({@link CaptureFlushService#isTerminated()}) neither wakes
+     * nor joins it; one made before that, on any other thread, wakes it and
+     * waits the bounded join again, throwing again if the thread has still
+     * not terminated when the join ends. The call that finds the thread
+     * terminated completes the stop: it builds and returns the clips exactly
+     * as an uninterrupted stop would have — at the tempo read when the stop
+     * began. No later call repeats the removal of the callback, the clearing
+     * of the recording flags or the transport stop: those happened once, and
+     * by then the callback slot, the flags and the transport — whose stop returns the
+     * playhead to the record-start anchor (story 315) — may belong to
+     * whatever the user did next.</p>
+     *
+     * <p>Idempotent once the clips have been returned: a further call
+     * returns an empty list.</p>
      *
      * <p>Removing the callback does not wait for the audio thread: a block
      * whose callback was already running when it was removed may be
@@ -406,35 +476,60 @@ public final class RecordingPipeline {
      * handshake).</p>
      *
      * @return the list of {@link AudioClip}s created on armed tracks
+     * @throws TakeFinalizationPendingException if the flush thread has not
+     *                                          terminated when the bounded
+     *                                          join ends — or, for a call
+     *                                          made on the flush thread
+     *                                          itself, which never joins
+     *                                          it, if it has not terminated
+     *                                          yet
      */
     public List<AudioClip> stop() {
-        if (!active) {
-            return Collections.emptyList();
+        if (!finalizationPending) {
+            if (!active) {
+                return Collections.emptyList();
+            }
+            active = false;
+            // From here until the clips are built the take is finalising;
+            // a stop that completes it later skips the rest of this block.
+            finalizationPending = true;
+            clipTempoBpm = transport.getTempo();
+
+            // Remove the recording callback
+            audioEngine.setRecordingCallback(null);
+
+            // Clear recording indicator on armed tracks
+            for (Track track : armedTracks) {
+                track.setRecording(false);
+            }
+
+            // Stop the transport (story 315: this returns the playhead to the
+            // record-start anchor, per Transport.isReturnToStartOnStop()).
+            transport.stop();
         }
-        active = false;
-
-        // Remove the recording callback
-        audioEngine.setRecordingCallback(null);
-
-        // Clear recording indicator on armed tracks
-        for (Track track : armedTracks) {
-            track.setRecording(false);
-        }
-
-        // Stop the transport (story 315: this returns the playhead to the
-        // record-start anchor, per Transport.isReturnToStartOnStop()).
-        transport.stop();
 
         // Seal on the flush thread: final sweep, every lane sealed (in
         // loop-record the in-flight lap becomes the last take), manifest
-        // sealed. Returns after the bounded join.
-        flush.stopAndSeal(TakeManifest.SealedBy.STOP);
+        // sealed. Returns only once the thread has terminated; if the
+        // bounded join runs out first it throws, and the take stays pending.
+        CaptureFlushService service = flush;
+        service.stopAndSeal(TakeManifest.SealedBy.STOP);
+        finalizationPending = false;
+        return buildClips(service);
+    }
 
+    /**
+     * Builds the take's clips on the caller thread once the flush thread has
+     * terminated — a plain take's from the captured start position at
+     * {@link #clipTempoBpm}, a loop-record take's from the stacks the flush
+     * thread built — adds them to the armed tracks and records them in
+     * {@link #recordedClips}.
+     */
+    private List<AudioClip> buildClips(CaptureFlushService service) {
         // The take ends the way it began: the mode the flush thread worked
         // from, not whatever the field holds now.
-        boolean loopRecorded = flush.config().loopRecord();
+        boolean loopRecorded = service.config().loopRecord();
 
-        // Build clips on the caller thread using the captured start position
         List<AudioClip> clips = new ArrayList<>();
 
         for (Track track : armedTracks) {
@@ -461,7 +556,7 @@ public final class RecordingPipeline {
             RecordingSession session = capture.session();
             if (session != null && session.getTotalSamplesRecorded() > 0) {
                 double durationSeconds = session.getTotalSamplesRecorded() / format.sampleRate();
-                double durationBeats = durationSeconds * (transport.getTempo() / 60.0);
+                double durationBeats = durationSeconds * (clipTempoBpm / 60.0);
                 if (durationBeats <= 0) {
                     durationBeats = 0.01;
                 }
@@ -469,7 +564,7 @@ public final class RecordingPipeline {
 
                 AudioClip clip = new AudioClip(
                         "Recording — " + track.getName(),
-                        compensatedStartBeat(track),
+                        compensatedStartBeat(track, clipTempoBpm),
                         durationBeats,
                         segmentPaths.isEmpty() ? null : segmentPaths.getFirst());
                 clip.setSourceSegmentPaths(segmentPaths);
@@ -499,9 +594,29 @@ public final class RecordingPipeline {
     }
 
     /**
+     * Returns whether a {@link #stop()} has begun and not yet returned the
+     * take's clips — in practice, whether a stop threw
+     * {@link TakeFinalizationPendingException} because the flush thread was
+     * still finalising the take when the bounded join ran out. Meanwhile the
+     * pipeline is not {@linkplain #isActive() active}, {@link #start()} is
+     * refused, every setter that refuses a change while recording refuses
+     * it too, and the {@code stop()} that finds the flush thread terminated
+     * — at once, or when its bounded join ends — completes the stop. Any
+     * thread.
+     *
+     * @return {@code true} while the stop of the current take is incomplete
+     */
+    public boolean isFinalizationPending() {
+        return finalizationPending;
+    }
+
+    /**
      * Returns the recording session for the given track (its current lane
      * while recording, its last lane after {@link #stop()}), or {@code null}
-     * before {@link #start()}.
+     * before {@link #start()}. While the finalisation is
+     * {@linkplain #isFinalizationPending() pending} the flush thread may
+     * still be sealing that session; its results are final once
+     * {@code stop()} has returned the clips.
      *
      * @param track the track
      * @return the recording session, or {@code null}
@@ -522,7 +637,8 @@ public final class RecordingPipeline {
 
     /**
      * Returns an unmodifiable map of tracks to their recorded clips,
-     * populated after {@link #stop()} is called.
+     * populated by the {@link #stop()} that returns them — empty while the
+     * finalisation is {@linkplain #isFinalizationPending() pending}.
      *
      * @return the map of recorded clips
      */
@@ -621,7 +737,9 @@ public final class RecordingPipeline {
      */
     public void awaitFlushed(Duration timeout) {
         CaptureFlushService service = flush;
-        if (service == null || (!active && !service.isSealed())) {
+        // A pending finalisation's thread may still be in the final sweep,
+        // before anything is sealed: that take was started.
+        if (service == null || (!active && !finalizationPending && !service.isSealed())) {
             throw new IllegalStateException("Recording pipeline has not been started");
         }
         service.awaitFlushed(timeout);
@@ -659,7 +777,8 @@ public final class RecordingPipeline {
      *                           before an append would take it past this size; positive and
      *                           at most {@link SegmentWriter#MAX_DATA_BYTES}
      * @throws IllegalArgumentException if a cap is out of range
-     * @throws IllegalStateException    if the pipeline is recording
+     * @throws IllegalStateException    if the pipeline is recording, or its previous
+     *                                  take is still being finalised
      */
     public void setSegmentLimits(Duration maxSegmentDuration, long maxSegmentBytes) {
         requireInactive("segment limits");
@@ -762,7 +881,8 @@ public final class RecordingPipeline {
      * with {@link #setSessionFactory} builds its sessions itself and is not
      * affected. Must be called before {@link #start()}.
      *
-     * @throws IllegalStateException if the pipeline is recording
+     * @throws IllegalStateException if the pipeline is recording, or its previous take is
+     *                               still being finalised
      */
     void setChannelOpener(SegmentWriter.ChannelOpener opener) {
         requireInactive("channel opener");
@@ -797,9 +917,20 @@ public final class RecordingPipeline {
         return ring;
     }
 
+    /**
+     * Refuses a pre-start setting while a take is recording, and while one
+     * is still finalising: a loop lap that wraps in the final sweep opens
+     * its next lane on the flush thread through {@link #newSession}, which
+     * reads the segment limits, the force cadence, the clock and the channel
+     * opener. The other settings wait for the take in the same way.
+     */
     private void requireInactive(String what) {
         if (active) {
             throw new IllegalStateException("cannot change the " + what + " while recording");
+        }
+        if (finalizationPending) {
+            throw new IllegalStateException("cannot change the " + what
+                    + " while the previous take is still being finalised");
         }
     }
 
@@ -1122,14 +1253,15 @@ public final class RecordingPipeline {
      * wave aligns with the bar where the user played, not the (later)
      * sample position the DAW wrote it to. Negative results are clamped
      * to zero so {@link AudioClip} validation does not reject the clip
-     * for early takes near the start of the timeline.
+     * for early takes near the start of the timeline. {@code bpm} converts
+     * the compensation to beats: the tempo at start for the capture's
+     * snapshot, {@link #clipTempoBpm} for the clip.
      */
-    private double compensatedStartBeat(Track track) {
+    private double compensatedStartBeat(Track track, double bpm) {
         long compensationFrames = trackCompensationFrames.getOrDefault(track, 0L);
         if (compensationFrames <= 0) {
             return recordingStartBeat;
         }
-        double bpm = transport.getTempo();
         double compensationSeconds = compensationFrames / format.sampleRate();
         double compensationBeats = compensationSeconds * (bpm / 60.0);
         return Math.max(0.0, recordingStartBeat - compensationBeats);
@@ -1154,7 +1286,8 @@ public final class RecordingPipeline {
      * {@link #start()}: the mode is part of the take's configuration, and a
      * change while recording is active is refused.
      *
-     * @throws IllegalStateException if the pipeline is recording
+     * @throws IllegalStateException if the pipeline is recording, or its previous take is
+     *                               still being finalised
      */
     public void setLoopRecord(boolean loopRecord) {
         requireInactive("loop-record mode");
@@ -1165,7 +1298,10 @@ public final class RecordingPipeline {
      * Returns an unmodifiable map of the {@link TakeGroup}s accumulated so
      * far during a loop-record session, keyed by armed track. The map is
      * populated as each loop lap wraps (on the flush thread; the values are
-     * immutable snapshots); after {@link #stop()} it contains the final stacks.
+     * immutable snapshots); once {@link #stop()} has returned the clips it
+     * contains the final stacks. While the finalisation is
+     * {@linkplain #isFinalizationPending() pending} the flush thread may not
+     * have stacked the last lap yet.
      *
      * @return the per-track take groups (never {@code null})
      */

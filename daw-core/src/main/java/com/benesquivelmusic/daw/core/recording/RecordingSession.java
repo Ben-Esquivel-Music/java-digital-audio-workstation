@@ -44,7 +44,8 @@ import java.util.logging.Logger;
  * thread. {@link #start()} runs on the caller thread inside
  * {@code CaptureFlushService.start()} (before the flush thread is started)
  * for a track's first lane, and on the flush thread for a later loop lane;
- * {@link #recordAudioData} and {@link #stop()} run on the
+ * {@link #recordAudioData}, the cadence tick
+ * ({@code forceIfCadenceElapsed()}) and {@link #stop()} run on the
  * {@code capture-flush} thread — never on the audio callback;
  * {@link #pause()} and {@link #resume()} have no caller in the pipeline this
  * stage and run on whichever thread drives the session.
@@ -315,8 +316,12 @@ public final class RecordingSession {
      * advances the exact counters and rotates the segment when a limit is
      * reached. Ignored while inactive or paused.
      *
-     * <p>Disk first: if the append fails, the counters do not advance, so
-     * what the session reports is exactly what the file holds.</p>
+     * <p>Disk first: the counters advance after the append, whether or not
+     * it throws, by exactly the frames it added to the writer's
+     * {@link SegmentWriter#frameCount() count} — the whole block when only
+     * the cadence force after its writes fails, none when it fails before
+     * writing — so the session's counters, its RAM mirror and the segments
+     * its writers seal hold the same frames.</p>
      *
      * @param inputBuffer the routed audio {@code [channel][frame]}; rows
      *                    beyond the stream width are ignored, missing rows
@@ -355,17 +360,56 @@ public final class RecordingSession {
             openSegment();
         }
 
+        SegmentWriter w = writer;
+        long framesBefore = w.frameCount();
         try {
-            writer.append(capturedAudio, capturedAudio.length, at, numFrames);
+            w.append(capturedAudio, capturedAudio.length, at, numFrames);
         } catch (IOException e) {
-            throw new UncheckedIOException("write failed on " + writer.partPath(), e);
+            throw new UncheckedIOException("write failed on " + w.partPath(), e);
+        } finally {
+            // Disk first, however the append ends: count exactly the frames
+            // it added to the writer's count — the whole block when only the
+            // cadence force after its writes failed, none when it failed
+            // before writing.
+            int appended = (int) (w.frameCount() - framesBefore);
+            capturedSampleCount = at + appended;
+            totalSamplesRecorded.addAndGet(appended);
         }
-        capturedSampleCount = at + numFrames;
-        totalSamplesRecorded.addAndGet(numFrames);
 
         if (shouldRotateSegment()) {
             sealCurrentSegment();
             openSegment();
+        }
+    }
+
+    /**
+     * The flush service's cadence tick for this session (book §2.1, §4.3):
+     * forces the current segment's un-forced bytes if the force cadence has
+     * elapsed since its last force ({@link SegmentWriter#forceIfDue()}),
+     * whether or not a block was appended — so the last bytes before a
+     * stretch with no appends are forced on cadence as well. Runs while the
+     * session is active, paused or not (a pause stops the appends, not the
+     * risk to the bytes already written); an inactive session, or one with
+     * no open segment, has nothing to force. {@code capture-flush} thread.
+     *
+     * @return whether a force ran
+     * @throws UncheckedIOException  if the force fails; the flush service
+     *                               answers it as it answers a failed append
+     * @throws IllegalStateException if the session is active but its current
+     *                               writer is no longer streaming — a state
+     *                               the session never leaves itself in; the
+     *                               throw makes it loud instead of a quietly
+     *                               skipped force
+     */
+    boolean forceIfCadenceElapsed() {
+        SegmentWriter w = writer;
+        if (!active || w == null) {
+            return false;
+        }
+        try {
+            return w.forceIfDue();
+        } catch (IOException e) {
+            throw new UncheckedIOException("force failed on " + w.partPath(), e);
         }
     }
 

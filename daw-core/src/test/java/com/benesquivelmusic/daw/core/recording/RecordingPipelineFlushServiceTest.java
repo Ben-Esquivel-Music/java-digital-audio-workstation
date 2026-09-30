@@ -1383,7 +1383,7 @@ class RecordingPipelineFlushServiceTest {
     }
 
     @Test
-    void theFlushThreadIsNamedDaemonAndDeadAfterStop() {
+    void theFlushThreadIsNamedDaemonAndDeadAfterStop() throws InterruptedException {
         RecordingPipeline pipeline = newPipeline(track);
         pipeline.start();
         CaptureFlushService service = pipeline.getCaptureFlushService();
@@ -1396,6 +1396,10 @@ class RecordingPipelineFlushServiceTest {
 
         pipeline.stop();
 
+        assertThat(service.isTerminated()).as("the stop returns once the thread has terminated").isTrue();
+        // A thread that terminated before the stop looked is not joined by
+        // it and may still be exiting: the bounded join here waits that out.
+        thread.join(CaptureFlushService.DEFAULT_AWAIT_TIMEOUT.toMillis());
         assertThat(thread.isAlive()).isFalse();
         assertThat(service.isRunning()).isFalse();
         assertThat(service.isSealed()).isTrue();

@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -44,15 +46,21 @@ import java.util.logging.Logger;
  *       the sessions' RAM mirrors, the loop-take stacks and the ring's read
  *       index. Modeled on the ASIO shim's {@code asio-input-drain}: park when
  *       the ring is dry with a bounded {@link #PARK_BACKSTOP} backstop, drain
- *       in order, final sweep after the stop flag, then seal.</li>
+ *       in order, final sweep after the stop flag, then seal. Every pass —
+ *       including one that finds the ring still dry after a park — runs the
+ *       cadence tick (below) once more after the blocks it drained.</li>
  *   <li>The caller thread (FX in the app) calls {@link #start()} — which
  *       starts every session and writes the initial manifest itself, before
  *       the thread is started, so the manifest still has one writer at a
- *       time — {@link #stopAndSeal(SealedBy)} (bounded join, never an
- *       unbounded hang: {@link #STOP_JOIN_TIMEOUT}), and reads results only
- *       after that join. {@link #awaitFlushed(Duration)} is the fence any
- *       thread but the flush thread may use to observe every block
- *       published before its call.</li>
+ *       time — and {@link #stopAndSeal(SealedBy)} (bounded join, never an
+ *       unbounded hang: {@link #STOP_JOIN_TIMEOUT}). It reads results only
+ *       once the thread has terminated ({@link #isTerminated()}): a join
+ *       that runs out first ends in a {@link TakeFinalizationPendingException}
+ *       rather than in results the thread is still writing, and
+ *       {@link #termination()} completes when the thread is done.
+ *       {@link #awaitFlushed(Duration)} is the fence any thread but the
+ *       flush thread may use to observe every block published before its
+ *       call.</li>
  * </ul>
  *
  * <p><strong>Per block</strong> (context D9): (a) loop-wrap check from the
@@ -68,7 +76,26 @@ import java.util.logging.Logger;
  * stale); (e) the session append, which forces on cadence and rotates on
  * exact counts; (f) the truncation note for a block that was longer than
  * its slot; (g) a manifest rewrite whenever a segment opened, sealed or was
- * discarded, or a truncation episode began.</p>
+ * discarded, or a truncation episode began; (h) the cadence tick, before the
+ * block is released and counted.</p>
+ *
+ * <p><strong>Force cadence</strong> (book §2.1, §4.3). A segment's
+ * un-forced bytes are {@code force(false)}d at the first check made once
+ * the force cadence has elapsed, on the writer's clock, since its last
+ * force (or its open) — by the append that finds it elapsed, and otherwise
+ * by the cadence tick, which runs after every block and at the end of every
+ * pass. So bytes are forced on cadence when their track records nothing
+ * more — a block outside the punch region or the legacy range, or one
+ * without the track's instrument source — and while the ring is dry, and a
+ * long pass does not wait for the ring to empty. While the take streams, a
+ * byte therefore stays un-forced for at most the cadence plus the wait for
+ * this thread's next check: a pass after each {@link #PARK_BACKSTOP} park
+ * while the ring is dry, a check after each block while it drains (the test
+ * seam {@code setDrainPaused} suspends both while it holds the loop). The
+ * tick forces nothing when nothing is un-forced; it stands down once the
+ * take is sealed, and during the final sweep, because the seal that follows
+ * opens with a {@code force(true)} of every segment it seals; and a force
+ * that throws ends the take exactly as a failed append does (below).</p>
  *
  * <p><strong>Loss is recorded, never hidden.</strong> Ring overflow is
  * noticed after each drain pass and recorded as one {@code gap=} line per
@@ -89,9 +116,10 @@ import java.util.logging.Logger;
  * manifest write (exact at the seal).</p>
  *
  * <p><strong>Failure.</strong> An {@link UncheckedIOException} from a
- * session or any other {@link Throwable} while a block is applied is logged
- * SEVERE, reported through the warning sink, and answered by an immediate
- * clean seal with {@code seal-status=aborted} /
+ * session or any other {@link Throwable} while a block is applied or while
+ * the cadence tick forces is logged SEVERE, reported through the warning
+ * sink, and answered by an immediate clean seal with
+ * {@code seal-status=aborted} /
  * {@code sealed-by=write-failure} ({@code disk-exhaustion} for the headroom
  * floor). A throwable that escapes the drain loop itself is reported the
  * same way and ends the thread after the seal. After an early seal the
@@ -127,7 +155,13 @@ public final class CaptureFlushService implements AutoCloseable {
     /** Bounded park when the ring is dry; the callback's unpark normally wakes the thread sooner. */
     public static final Duration PARK_BACKSTOP = Duration.ofMillis(50);
 
-    /** Bound on the join in {@link #stopAndSeal(SealedBy)}; on expiry the caller continues with whatever is sealed. */
+    /**
+     * Bound on each join in {@link #stopAndSeal(SealedBy)} (and in the
+     * start-failure rollback). On expiry {@code stopAndSeal} throws
+     * {@link TakeFinalizationPendingException} instead of handing back a take
+     * the thread is still finalising, and the rollback leaves the take's
+     * files in place.
+     */
     public static final Duration STOP_JOIN_TIMEOUT = Duration.ofSeconds(30);
 
     /** Default bound for {@link #awaitFlushed(Duration)} callers that pass none. */
@@ -192,12 +226,32 @@ public final class CaptureFlushService implements AutoCloseable {
     private final Thread thread;
     private final TakeManifest.Builder manifest;
     private final int fadeFramesAtRate;
+    /** Completed by {@link #markTerminated()}; see {@link #termination()}. */
+    private final CompletableFuture<Void> termination = new CompletableFuture<>();
+    /** The read-only view of {@link #termination} handed out: a holder cannot complete it. */
+    private final CompletionStage<Void> terminationView = termination.minimalCompletionStage();
 
     private volatile boolean started;
+    /**
+     * The flush thread will never touch the take again: written as the
+     * thread's last write — after every write to the files, the manifest,
+     * the captures and the counters — or, for a thread that never ran, by the
+     * failed {@link #start()} or the stop that came first. Its volatile write
+     * and read are the happens-before edge for everything the thread wrote.
+     */
+    private volatile boolean terminated;
+    /** Bound of each join; {@link #STOP_JOIN_TIMEOUT} unless a test shortens it ({@link #setStopJoinTimeout}). */
+    private volatile Duration stopJoinTimeout = STOP_JOIN_TIMEOUT;
     private volatile boolean running;
     private volatile boolean stopping;
     private volatile boolean abortRequested;
     private volatile boolean drainPaused;
+    /**
+     * Set by the loop, between passes, each time it finds {@link #drainPaused}
+     * set; {@link #setDrainPaused setDrainPaused(true)} clears it first and
+     * then waits for it.
+     */
+    private volatile boolean drainPauseHeld;
     private volatile boolean sealed;
     private volatile SealedBy sealReason;
     private volatile SealedBy requestedReason = SealedBy.STOP;
@@ -222,6 +276,8 @@ public final class CaptureFlushService implements AutoCloseable {
     private long lastManifestAttemptNanos;
     /** The manifest carrying the final seal status is on disk. */
     private boolean finalManifestWritten;
+    /** The final sweep after the stop flag is running: the cadence tick stands down for the seal. */
+    private boolean finalSweep;
     private boolean sealFailed;
     private long lastOverflowSeen;
     private long lastAppliedEndFrame;
@@ -312,7 +368,8 @@ public final class CaptureFlushService implements AutoCloseable {
      * directory and the failing lane's own track directory are left;
      * {@code RecordingPipeline}'s rollback removes the latter through
      * {@code abortStart()}) and the failure propagates; the thread is never
-     * started. The rollback deletes
+     * started, so the service is marked terminated and {@link #termination()}
+     * completes. The rollback deletes
      * segment files this take opened, and the manifest only once this take
      * has attempted to write it — so a start that fails on a segment an
      * earlier take left in the same directory leaves that take's segments
@@ -320,11 +377,14 @@ public final class CaptureFlushService implements AutoCloseable {
      *
      * @throws UncheckedIOException     if a directory, segment or the manifest cannot be created
      * @throws IllegalArgumentException if the format's bit depth is unsupported
-     * @throws IllegalStateException    if already started
+     * @throws IllegalStateException    if already started, or stopped before it was started
      */
     public void start() {
         if (started) {
             throw new IllegalStateException("capture-flush already started");
+        }
+        if (stopping) {
+            throw new IllegalStateException("capture-flush was stopped before it was started");
         }
         started = true;
         List<TrackCapture> begun = new ArrayList<>();
@@ -338,6 +398,8 @@ public final class CaptureFlushService implements AutoCloseable {
                 begun.add(capture);
             }
             writeManifestOnce(manifest.build());
+            running = true;
+            thread.start();
         } catch (IOException e) {
             rollbackStart(begun);
             throw new UncheckedIOException("cannot start capture under " + config.takeDirectory(), e);
@@ -345,15 +407,29 @@ public final class CaptureFlushService implements AutoCloseable {
             rollbackStart(begun);
             throw e;
         }
-        running = true;
-        thread.start();
     }
 
+    /** The thread was never started: delete what the start created; nothing will ever touch the take. */
     private void rollbackStart(List<TrackCapture> begun) {
-        for (TrackCapture capture : begun) {
-            capture.discardAllFiles();
+        running = false;
+        try {
+            for (TrackCapture capture : begun) {
+                capture.discardAllFiles();
+            }
+            deleteManifestFiles();
+        } finally {
+            markTerminated();
         }
-        deleteManifestFiles();
+    }
+
+    /**
+     * Records that the flush thread will never touch the take again and
+     * completes {@link #termination()}. The flush thread's last act, or the
+     * caller's for a thread that never ran. Idempotent.
+     */
+    private void markTerminated() {
+        terminated = true;
+        termination.complete(null);
     }
 
     /**
@@ -367,12 +443,19 @@ public final class CaptureFlushService implements AutoCloseable {
     private void runLoop() {
         try {
             while (!stopping) {
-                boolean progressed = !drainPaused && drainOnce();
-                if (!progressed) {
+                if (drainPaused) {
+                    // Between passes: this is where setDrainPaused(true) waits for the loop to be.
+                    drainPauseHeld = true;
+                    LockSupport.parkNanos(this, PARK_BACKSTOP_NANOS);
+                } else if (!drainOnce()) {
                     LockSupport.parkNanos(this, PARK_BACKSTOP_NANOS);
                 }
             }
             if (!abortRequested) {
+                // The seal right behind this sweep opens with a force(true)
+                // of every segment it seals; a cadence tick in the sweep
+                // would only put a force(false) in front of it.
+                finalSweep = true;
                 drainOnce();
                 sealAll(requestedReason);
             }
@@ -390,16 +473,26 @@ public final class CaptureFlushService implements AutoCloseable {
             }
         } finally {
             running = false;
+            // Last: every path out of this method — a normal seal, a take
+            // sealed early earlier on, a throwable that escaped the loop, a
+            // lane's Error rethrown by the seal — ends here.
+            markTerminated();
         }
     }
 
-    /** Drains every published slot in order; returns whether any was applied. */
+    /**
+     * Drains every published slot in order, running the cadence tick
+     * ({@link #forceDueSegments()}) after each block and once more at the
+     * end of the pass; returns whether any block was applied.
+     */
     private boolean drainOnce() {
         boolean progressed = false;
         CaptureRing.Slot slot;
         while ((slot = ring.peek()) != null) {
             progressed = true;
             applyBlock(slot);
+            // Before the release and the count, so awaitFlushed covers it.
+            forceDueSegments();
             // Header values are read before the release: the producer may
             // reuse the slot as soon as the read index has moved.
             long sequence = slot.sequence();
@@ -419,10 +512,44 @@ public final class CaptureFlushService implements AutoCloseable {
             }
         }
         noteOverflow();
+        forceDueSegments(); // a dry ring's pass forces on cadence too
         if (manifestDirty) {
             flushManifest(); // the idle tick of a manifest that could not be written
         }
         return progressed;
+    }
+
+    /**
+     * The cadence tick (book §2.1, §4.3): forces every active segment whose
+     * un-forced bytes are due — bytes appended since its last force, and the
+     * force cadence elapsed on the writer's clock since that force (or the
+     * open) ({@link RecordingSession#forceIfCadenceElapsed()}) — whether or
+     * not the block just applied appended anything to it. It runs after
+     * every block and at the end of every pass ({@link #drainOnce()}), so
+     * bytes are forced on cadence when their track records nothing more (a
+     * block outside the punch region or the legacy range, or one without the
+     * track's instrument source), while the ring is dry (the pass after each
+     * park backstop), and during a long pass that never finds the ring
+     * empty. It stands down once the take is sealed, and in the final sweep,
+     * whose seal opens with a {@code force(true)} of every segment it seals.
+     * A force that throws is answered exactly like a failed append: with
+     * {@link #failAndSeal(Throwable)}, the call {@link #applyBlock} makes.
+     * Flush thread.
+     */
+    private void forceDueSegments() {
+        if (sealed || finalSweep) {
+            return;
+        }
+        try {
+            for (TrackCapture capture : captures) {
+                RecordingSession session = capture.session();
+                if (session != null) {
+                    session.forceIfCadenceElapsed();
+                }
+            }
+        } catch (Throwable failure) {
+            failAndSeal(failure);
+        }
     }
 
     private void applyBlock(CaptureRing.Slot slot) {
@@ -873,10 +1000,11 @@ public final class CaptureFlushService implements AutoCloseable {
 
     /**
      * Blocks until every block published before this call has been applied
-     * — routed, written, counted, and its manifest rewrite done — and every
-     * ring overflow counted before this call has its {@code gap=} line
-     * recorded, or the timeout elapses. "Manifest rewrite done" means
-     * attempted, or — while an earlier manifest failure is still being
+     * — routed, written, counted, its manifest rewrite done and the cadence
+     * tick after it run — and every ring overflow counted before this call
+     * has its {@code gap=} line recorded, or the timeout elapses. The
+     * end-of-pass cadence tick is not part of the fence. "Manifest rewrite
+     * done" means attempted, or — while an earlier manifest failure is still being
      * retried — deferred to the next retry slot: a rewrite that failed is
      * retried later and is not part of the fence. Any thread but the flush
      * thread (called from inside a block's application or the overflow
@@ -909,58 +1037,106 @@ public final class CaptureFlushService implements AutoCloseable {
 
     /**
      * Stops the flush thread and seals the take: sets the stop flag, wakes
-     * the thread, joins it for at most {@link #STOP_JOIN_TIMEOUT} (on expiry
-     * logs SEVERE and continues with whatever is sealed — the caller is
-     * never hung forever). The thread's final sweep drains the ring, seals
-     * every active writer and writes the final manifest (a final manifest
-     * that cannot be written is logged SEVERE and leaves the last written
-     * one on disk; the segments are sealed regardless). Idempotent; a take
-     * already sealed early (exhaustion, write failure) keeps its reason.
+     * the thread and joins it for at most {@link #STOP_JOIN_TIMEOUT} — the
+     * caller is never hung forever — unless it has already terminated, when
+     * the call neither wakes nor joins it. The thread's final sweep drains the
+     * ring, seals every active writer and writes the final manifest (a final
+     * manifest that cannot be written is logged SEVERE and leaves the last
+     * written one on disk; the segments are sealed regardless). Returns only
+     * once the thread has terminated ({@link #isTerminated()}). If the join
+     * runs out first, the thread is still finalising the take — and still
+     * writing everything this method would return — so it logs SEVERE, warns
+     * through the sink and throws {@link TakeFinalizationPendingException},
+     * whose {@link TakeFinalizationPendingException#completion() completion()}
+     * is {@link #termination()}; a later call joins again, or returns at
+     * once if the thread has terminated meanwhile. Idempotent: the
+     * first call's reason is the one requested; a take already sealed early
+     * (exhaustion, write failure) keeps its reason. A service that was never
+     * started has no thread to wait for: the call marks it terminated, and it
+     * can no longer be started.
      *
      * @param reason what ended the take ({@link SealedBy#STOP} on the normal path)
      * @return every track's sealed segment paths in manifest order, keyed by track id
+     * @throws TakeFinalizationPendingException if the thread has not terminated
+     *                                          when the join runs out
      */
     public Map<String, List<Path>> stopAndSeal(SealedBy reason) {
         Objects.requireNonNull(reason, "reason must not be null");
-        if (started) {
-            if (!stopping) {
-                requestedReason = reason;
-                stopping = true;
-            }
-            if (thread.isAlive()) {
-                LockSupport.unpark(thread);
-                joinBounded();
-            }
+        if (!stopping) {
+            requestedReason = reason;
+            stopping = true;
+        }
+        if (!started) {
+            markTerminated();
+        } else if (!awaitTermination()) {
+            Duration bound = stopJoinTimeout;
+            LOG.log(Level.SEVERE, "capture-flush did not stop within " + bound + "; the take under "
+                    + config.takeDirectory() + " is still being finalised, and nothing of it is read"
+                    + " until the thread has terminated");
+            warn("Recording finalisation is taking longer than " + describe(bound) + "; the take under "
+                    + config.takeDirectory() + " is still being written to disk, and its clips are built"
+                    + " only once that has finished");
+            throw new TakeFinalizationPendingException(config.takeDirectory(), bound, terminationView);
         }
         return sealedSegmentPaths();
     }
 
-    private void joinBounded() {
-        try {
-            thread.join(STOP_JOIN_TIMEOUT.toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+    /**
+     * Returns whether the thread has terminated, waiting for it only while
+     * it has not: once {@link #terminated} is set this returns {@code true}
+     * at once, without waking or joining the thread — which may still be
+     * running a non-async dependent of {@link #termination()}, or unwinding,
+     * and will never touch the take again. Otherwise it wakes the thread,
+     * joins it for at most the join bound and then reports. Never joins
+     * itself: called on the flush thread before it has terminated (from the
+     * warning sink, say), it only reports.
+     */
+    private boolean awaitTermination() {
+        if (terminated) {
+            return true;
         }
-        if (thread.isAlive()) {
-            LOG.log(Level.SEVERE, "capture-flush did not stop within " + STOP_JOIN_TIMEOUT
-                    + "; continuing with whatever is sealed under " + config.takeDirectory());
-            warn("Recording finalisation is taking longer than " + STOP_JOIN_TIMEOUT.toSeconds()
-                    + " s; the take under " + config.takeDirectory() + " may still be sealing");
+        if (Thread.currentThread() != thread) {
+            LockSupport.unpark(thread);
+            try {
+                thread.join(stopJoinTimeout.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
+        return terminated;
+    }
+
+    /** {@code 30 s} for whole seconds, else milliseconds — for the user-facing warnings. */
+    private static String describe(Duration bound) {
+        return bound.toMillis() % 1000 == 0 ? bound.toSeconds() + " s" : bound.toMillis() + " ms";
     }
 
     /**
      * Start-failure rollback for the pipeline: stops the thread without
-     * sealing, deletes every file the captures created and — if this take
-     * wrote one — the manifest. Only meaningful before any block was
-     * published.
+     * sealing, then deletes every file the captures created and — if this
+     * take wrote one — the manifest. Only meaningful before any block was
+     * published. If the join runs out, the thread may still be writing into
+     * those files: nothing is deleted, the failure is logged SEVERE and
+     * reported through the sink, and this throws; the files are left for
+     * recovery. A later call — once the thread has terminated — deletes
+     * them.
+     *
+     * @throws IllegalStateException if the thread has not terminated when
+     *                               the join runs out
      */
     void abortStart() {
         abortRequested = true;
         stopping = true;
-        if (thread.isAlive()) {
-            LockSupport.unpark(thread);
-            joinBounded();
+        if (!started) {
+            markTerminated();
+        } else if (!awaitTermination()) {
+            Duration bound = stopJoinTimeout;
+            String message = "capture-flush did not stop within " + bound + " after a failed start; the files"
+                    + " it may still be writing under " + config.takeDirectory() + " are left in place for recovery";
+            LOG.log(Level.SEVERE, message);
+            warn("A recording that failed to start could not stop its capture thread within " + describe(bound)
+                    + "; the files under " + config.takeDirectory() + " are left in place for recovery");
+            throw new IllegalStateException(message);
         }
         for (TrackCapture capture : captures) {
             capture.discardAllFiles();
@@ -972,24 +1148,74 @@ public final class CaptureFlushService implements AutoCloseable {
      * Crash simulation (test seam): stops the thread WITHOUT the final sweep
      * or any seal and abandons every writer, leaving the {@code .part}
      * files and a {@code streaming} manifest exactly as a JVM death would.
+     * Abandons nothing while the thread may still be writing.
+     *
+     * @throws IllegalStateException if the thread has not terminated when
+     *                               the join runs out
      */
     void simulateHardTermination() {
         abortRequested = true;
         stopping = true;
-        if (thread.isAlive()) {
-            LockSupport.unpark(thread);
-            joinBounded();
+        if (!started) {
+            markTerminated();
+        } else if (!awaitTermination()) {
+            throw new IllegalStateException("capture-flush did not stop within " + stopJoinTimeout
+                    + "; nothing was abandoned under " + config.takeDirectory());
         }
         for (TrackCapture capture : captures) {
             capture.abandonForCrashSimulation();
         }
     }
 
-    /** Test seam: while {@code true} the loop parks without draining, so the ring can be filled deliberately. */
+    /**
+     * Test seam: shortens (or restores) the bound of each join —
+     * {@link #STOP_JOIN_TIMEOUT} in production — so a test that holds the
+     * flush thread never waits 30 s. Any thread.
+     *
+     * @param timeout the bound; at least one millisecond
+     * @throws IllegalArgumentException if {@code timeout} is shorter than one millisecond
+     */
+    void setStopJoinTimeout(Duration timeout) {
+        Objects.requireNonNull(timeout, "timeout must not be null");
+        if (timeout.toMillis() < 1) {
+            throw new IllegalArgumentException("timeout must be at least 1 ms: " + timeout);
+        }
+        stopJoinTimeout = timeout;
+    }
+
+    /**
+     * Test seam: {@code true} holds the loop between drain passes, so the
+     * ring can be filled — and an injected clock moved — deliberately, with
+     * no pass (and so no cadence tick) running meanwhile; {@code false}
+     * releases it. {@code setDrainPaused(true)} returns once the loop holds,
+     * so a pass that was running when it was called has ended; it does not
+     * wait when the flush thread is not running (not started yet, or
+     * finished), once a stop has been requested (the final sweep drains
+     * whether or not the loop is held), or when called on the flush thread
+     * itself. Any thread.
+     *
+     * @throws IllegalStateException if the loop does not hold within
+     *                               {@link #DEFAULT_AWAIT_TIMEOUT}
+     */
     void setDrainPaused(boolean paused) {
-        drainPaused = paused;
         if (!paused) {
+            drainPaused = false;
             LockSupport.unpark(thread);
+            return;
+        }
+        drainPauseHeld = false;
+        drainPaused = true;
+        if (Thread.currentThread() == thread) {
+            return;
+        }
+        LockSupport.unpark(thread);
+        long deadline = System.nanoTime() + DEFAULT_AWAIT_TIMEOUT.toNanos();
+        while (!drainPauseHeld && running && !stopping) {
+            if (System.nanoTime() - deadline >= 0) {
+                throw new IllegalStateException("capture-flush did not hold its drain within "
+                        + DEFAULT_AWAIT_TIMEOUT);
+            }
+            LockSupport.parkNanos(AWAIT_POLL_NANOS);
         }
     }
 
@@ -1113,6 +1339,34 @@ public final class CaptureFlushService implements AutoCloseable {
     /** Returns whether the flush thread is running. */
     public boolean isRunning() {
         return running;
+    }
+
+    /**
+     * Returns whether the flush thread has terminated: it will never touch
+     * the take — files, manifest, captures, counters — again, and everything
+     * it wrote is visible to the thread that reads {@code true} here. For a
+     * service whose thread never ran: once its {@link #start()} failed, or a
+     * stop came before any start. Any thread.
+     */
+    public boolean isTerminated() {
+        return terminated;
+    }
+
+    /**
+     * Returns the signal that completes normally once {@link #isTerminated()}
+     * is {@code true}: on every path that ends the thread — the normal seal,
+     * a take sealed early by disk exhaustion or a write failure and then
+     * stopped, a throwable that escaped the drain loop, a lane's {@code Error}
+     * rethrown by the seal, an abort without a seal ({@code abortStart}, the
+     * crash simulation) — and, for a thread that never ran, when its
+     * {@link #start()} fails or a stop comes before any start. It never completes exceptionally, and a holder cannot
+     * complete it. A dependent registered with a non-async method may run on
+     * the flush thread as its last act; anything that is more than a hand-off
+     * belongs in an async variant with the executor of the thread that is to
+     * do it.
+     */
+    public CompletionStage<Void> termination() {
+        return terminationView;
     }
 
     /** Returns the most recently written manifest, once one has been written. */

@@ -616,6 +616,38 @@ class RecordingSessionTest {
     }
 
     @Test
+    void theCadenceTickForcesAnActiveSessionsUnforcedBytesPausedOrNot() {
+        AtomicLong clock = new AtomicLong(0);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir.resolve("tick"),
+                Duration.ofMinutes(10), DEFAULT_MAX_SEGMENT_BYTES, Duration.ofSeconds(1), clock::get);
+        assertThat(session.forceIfCadenceElapsed()).as("not started: nothing to force").isFalse();
+        session.start();
+        SegmentWriter writer = session.getCurrentWriter();
+
+        session.recordAudioData(block(10, 0.1f, 0.1f), 10);
+        clock.set(999_999_999L);
+        assertThat(session.forceIfCadenceElapsed()).as("short of the cadence").isFalse();
+        clock.set(1_000_000_000L);
+        assertThat(session.forceIfCadenceElapsed()).as("due, with no append").isTrue();
+        assertThat(writer.forceCount()).isEqualTo(1);
+        assertThat(writer.bytesSinceForce()).isZero();
+
+        session.recordAudioData(block(10, 0.1f, 0.1f), 10);
+        session.pause();
+        clock.set(2_000_000_000L);
+        assertThat(session.forceIfCadenceElapsed())
+                .as("a pause stops the appends, not the force of what was written").isTrue();
+        assertThat(writer.forceCount()).isEqualTo(2);
+
+        session.resume();
+        session.recordAudioData(block(10, 0.1f, 0.1f), 10);
+        session.stop();
+        clock.set(9_000_000_000L);
+        assertThat(session.forceIfCadenceElapsed()).as("stopped: the seal forced everything").isFalse();
+        assertThat(writer.forceCount()).isEqualTo(2);
+    }
+
+    @Test
     void shouldRejectNonPositiveMaxSegmentBytes() {
         assertThatThrownBy(() -> new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
                 Duration.ofMinutes(10), 0))

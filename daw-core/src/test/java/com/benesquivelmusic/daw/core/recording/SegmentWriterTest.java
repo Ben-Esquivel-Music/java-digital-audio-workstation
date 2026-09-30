@@ -287,6 +287,82 @@ class SegmentWriterTest {
     }
 
     @Test
+    void forceIfDueForcesUnforcedBytesOnceTheCadenceHasElapsedWithoutAnAppend() throws IOException {
+        ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
+        clock.set(0);
+        SegmentWriter writer = SegmentWriter.open(tempDir.resolve("segment-000.wav.part"), SAMPLE_RATE,
+                CHANNELS, 16, CADENCE, clock::get, journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
+        long blockBytes = 10L * writer.bytesPerFrame();
+
+        clock.set(60 * SECOND);
+        assertThat(writer.forceIfDue()).as("nothing appended yet: nothing to force").isFalse();
+        assertThat(journal.forces(false)).isZero();
+
+        clock.set(61 * SECOND);
+        writer.append(signal(10), CHANNELS, 10); // the append's own check: 61 s since the open
+        assertThat(journal.forces(false)).as("fixture: the append forced").isEqualTo(1);
+        clock.set(62 * SECOND);
+        writer.append(signal(10), CHANNELS, 10);
+        assertThat(writer.bytesSinceForce()).isEqualTo(blockBytes);
+
+        clock.set(66 * SECOND - 1);
+        assertThat(writer.forceIfDue()).as("one nanosecond short of the cadence").isFalse();
+        assertThat(journal.forces(false)).isEqualTo(1);
+
+        clock.set(66 * SECOND);
+        assertThat(writer.forceIfDue()).as("the cadence has elapsed since the last force").isTrue();
+        assertThat(journal.forces(false)).as("force(false) reached the channel with no append").isEqualTo(2);
+        assertThat(writer.forceCount()).isEqualTo(2);
+        assertThat(writer.bytesSinceForce()).isZero();
+        assertThat(writer.lastForceNanos()).isEqualTo(66 * SECOND);
+        assertThat(writer.frameCount()).isEqualTo(20);
+
+        clock.set(200 * SECOND);
+        assertThat(writer.forceIfDue()).as("nothing un-forced: not forced again").isFalse();
+        writer.append(signal(10), CHANNELS, 0);
+        assertThat(journal.forces(false)).as("nor by an append of no frames").isEqualTo(2);
+        assertThat(writer.lastForceNanos()).isEqualTo(66 * SECOND);
+
+        writer.seal();
+        assertThat(journal.forces(false)).as("the seal adds no cadence force").isEqualTo(2);
+        assertThatThrownBy(writer::forceIfDue).as("a sealed writer is refused, like an append")
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("forceIfDue");
+    }
+
+    @Test
+    void aForceIfDueThatFailsLeavesTheWriterStreamingWithItsCountersUntouched() throws IOException {
+        ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
+        clock.set(0);
+        SegmentWriter writer = SegmentWriter.open(tempDir.resolve("segment-000.wav.part"), SAMPLE_RATE,
+                CHANNELS, 16, CADENCE, clock::get, journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
+        clock.set(1 * SECOND);
+        writer.append(signal(10), CHANNELS, 10);
+        long unforced = writer.bytesSinceForce();
+
+        journal.failNextForces(1);
+        clock.set(5 * SECOND);
+        assertThatThrownBy(writer::forceIfDue).isInstanceOf(IOException.class);
+
+        assertThat(writer.isStreaming()).isTrue();
+        assertThat(writer.bytesSinceForce()).isEqualTo(unforced);
+        assertThat(writer.forceCount()).isZero();
+        assertThat(writer.lastForceNanos()).isZero();
+        assertThat(writer.forceIfDue()).as("the next check forces what is still due").isTrue();
+        assertThat(journal.forces(false)).isEqualTo(1);
+        writer.seal();
+    }
+
+    @Test
+    void forceIfDueOnAnAbandonedWriterIsRefused() throws IOException {
+        SegmentWriter writer = open("segment-000.wav.part", 16);
+        writer.append(signal(10), CHANNELS, 10);
+        writer.abandon();
+        clock.set(60 * SECOND);
+        assertThatThrownBy(writer::forceIfDue).isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("abandoned");
+    }
+
+    @Test
     void zeroCadenceForcesAfterEveryAppend() throws IOException {
         SegmentWriter writer = SegmentWriter.open(tempDir.resolve("z.wav.part"), SAMPLE_RATE,
                 CHANNELS, 16, Duration.ZERO, clock::get);
