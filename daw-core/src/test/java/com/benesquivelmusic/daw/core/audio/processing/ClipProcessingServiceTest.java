@@ -19,7 +19,9 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.offset;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ClipProcessingServiceTest {
 
@@ -278,6 +280,237 @@ class ClipProcessingServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining(twoSegmentClip.getId())
                 .hasMessageContaining("reversing it");
+    }
+
+    // ------------------------------------------------------------------
+    // Story 323: a clip reference that is not an absolute path names no file
+    // ------------------------------------------------------------------
+
+    @Test
+    void clipWhoseSourceIsNotAnAbsolutePath_isRefusedBeforeAnyFileIsWrittenOrHistoryRecorded()
+            throws IOException {
+        Path found = tempDir.resolve("found.wav");
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, found);
+        String relative = relativeFromTheWorkingDirectory(found);
+        AudioClip single = new AudioClip("single", 0.0, 4.0, relative);
+        AudioClip take = new AudioClip("take", 4.0, 4.0, relative);
+        take.setSourceSegmentPaths(List.of(relative));
+        ClipAssetHistory history = new ClipAssetHistory();
+        ClipProcessingService service = new ClipProcessingService(history);
+        UndoManager um = new UndoManager();
+
+        for (AudioClip clip : List.of(single, take)) {
+            assertThatThrownBy(() -> um.execute(service.reverse(clip)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(clip.getId())
+                    .hasMessageContaining("'" + relative + "'")
+                    .hasMessageContaining("relink the clip before reversing it");
+            assertThatThrownBy(() -> um.execute(service.normalize(clip, -1.0)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(clip.getId())
+                    .hasMessageContaining("'" + relative + "'")
+                    .hasMessageContaining("relink the clip before normalizing it");
+        }
+
+        try (Stream<Path> files = Files.list(tempDir)) {
+            assertThat(files.map(p -> p.getFileName().toString()))
+                    .as("nothing was rendered beside the file the working directory would name")
+                    .containsExactly("found.wav");
+        }
+        assertThat(history.clipIds()).isEmpty();
+        assertThat(um.canUndo()).isFalse();
+        assertThat(single.getSourceFilePath()).isEqualTo(relative);
+        assertThat(single.getSourceSegmentPaths()).isEmpty();
+        assertThat(take.getSourceSegmentPaths()).containsExactly(relative);
+        assertThat(take.getSourceFilePath()).isEqualTo(relative);
+    }
+
+    @Test
+    void batchHoldingAClipWhoseSourceIsNotAnAbsolutePath_isRefusedAtTheFactoryBeforeAnyClipIsProcessed()
+            throws IOException {
+        Path imported = tempDir.resolve("import.wav");
+        Path found = tempDir.resolve("found.wav");
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, imported);
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, found);
+        String relative = relativeFromTheWorkingDirectory(found);
+        AudioClip absoluteClip = new AudioClip("import", 0.0, 4.0, imported.toString());
+        AudioClip relativeClip = new AudioClip("relative", 4.0, 4.0, relative);
+        List<AudioClip> selection = List.of(absoluteClip, relativeClip);
+        ClipAssetHistory history = new ClipAssetHistory();
+        ClipProcessingService service = new ClipProcessingService(history);
+        UndoManager um = new UndoManager();
+
+        // The gesture as a caller makes it; the clip that CAN be processed comes first.
+        assertThatThrownBy(() -> um.execute(service.normalize(selection, -1.0)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(relativeClip.getId())
+                .hasMessageContaining("relink the clip before normalizing it");
+
+        assertThat(absoluteClip.getSourceFilePath())
+                .as("the clip ahead of the refused one was not processed")
+                .isEqualTo(imported.toString());
+        try (Stream<Path> files = Files.list(tempDir)) {
+            assertThat(files.map(p -> p.getFileName().toString()))
+                    .as("no rendered file was written")
+                    .containsExactlyInAnyOrder("import.wav", "found.wav");
+        }
+        assertThat(history.clipIds()).isEmpty();
+        assertThat(um.canUndo()).isFalse();
+        assertThat(relativeClip.getSourceFilePath()).isEqualTo(relative);
+
+        // ... and the refusal is the factory's: no action is ever built.
+        assertThatThrownBy(() -> service.reverse(selection))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(relativeClip.getId())
+                .hasMessageContaining("relink the clip before reversing it");
+        assertThatThrownBy(() -> service.normalize(selection, -1.0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(relativeClip.getId())
+                .hasMessageContaining("relink the clip before normalizing it");
+    }
+
+    @Test
+    void clipWithANullOrBlankSource_isRefusedBeforeAnyFileIsWrittenOrHistoryRecorded()
+            throws IOException {
+        AudioClip nullSource = new AudioClip("no source", 0.0, 4.0, null);
+        // Whitespace only: on Windows the project reader keeps such a
+        // source-file as written, because it is not a valid path there.
+        AudioClip blankSource = new AudioClip("blank source", 0.0, 4.0, "   ");
+        // The render writes beside the source, so a source with no parent
+        // directory would be rendered into the JVM's working directory.
+        Path workingDirectory = Path.of("").toAbsolutePath();
+        List<String> renderedBefore = renderedFilesIn(workingDirectory);
+
+        for (AudioClip sourceless : List.of(nullSource, blankSource)) {
+            String sourceBefore = sourceless.getSourceFilePath();
+            ClipAssetHistory history = new ClipAssetHistory();
+            ClipProcessingService service = new ClipProcessingService(history);
+            UndoManager um = new UndoManager();
+            String refusal = "Clip has no source asset to process: " + sourceless.getId();
+
+            // The single-clip actions, which the batch gate does not guard.
+            assertThatThrownBy(() -> um.execute(service.reverse(sourceless)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage(refusal);
+            assertThatThrownBy(() -> um.execute(service.normalize(sourceless, -1.0)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage(refusal);
+
+            assertThat(history.clipIds()).isEmpty();
+            assertThat(history.priorAssets(sourceless.getId())).isEmpty();
+            assertThat(um.canUndo()).isFalse();
+            assertThat(sourceless.getSourceFilePath()).isEqualTo(sourceBefore);
+            assertThat(sourceless.getSourceSegmentPaths()).isEmpty();
+        }
+        assertThat(renderedFilesIn(workingDirectory))
+                .as("no rendered file was written into the working directory")
+                .containsExactlyInAnyOrderElementsOf(renderedBefore);
+    }
+
+    @Test
+    void batchHoldingAClipWithANullOrBlankSource_isRefusedAtTheFactoryBeforeAnyClipIsProcessed()
+            throws IOException {
+        Path imported = tempDir.resolve("import.wav");
+        WavExporter.write(signal(256), 48_000, 32, DitherType.NONE, AudioMetadata.EMPTY, imported);
+        AudioClip absoluteClip = new AudioClip("import", 0.0, 4.0, imported.toString());
+        AudioClip nullSource = new AudioClip("no source", 4.0, 4.0, null);
+        // Whitespace only: on Windows the project reader keeps such a
+        // source-file as written, because it is not a valid path there.
+        AudioClip blankSource = new AudioClip("blank source", 4.0, 4.0, "   ");
+
+        for (AudioClip sourceless : List.of(nullSource, blankSource)) {
+            List<AudioClip> selection = List.of(absoluteClip, sourceless);
+            String sourceBefore = sourceless.getSourceFilePath();
+            ClipAssetHistory history = new ClipAssetHistory();
+            ClipProcessingService service = new ClipProcessingService(history);
+            UndoManager um = new UndoManager();
+            // The refusal the action itself makes when it runs.
+            String refusal = "Clip has no source asset to process: " + sourceless.getId();
+
+            // The gesture as a caller makes it; the clip that CAN be processed comes first.
+            assertThatThrownBy(() -> um.execute(service.normalize(selection, -1.0)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage(refusal);
+
+            assertThat(absoluteClip.getSourceFilePath())
+                    .as("the clip ahead of the refused one was not processed")
+                    .isEqualTo(imported.toString());
+            assertThat(absoluteClip.getSourceSegmentPaths()).isEmpty();
+            try (Stream<Path> files = Files.list(tempDir)) {
+                assertThat(files.map(p -> p.getFileName().toString()))
+                        .as("no rendered file was written")
+                        .containsExactly("import.wav");
+            }
+            assertThat(history.clipIds()).isEmpty();
+            assertThat(um.canUndo()).isFalse();
+            assertThat(sourceless.getSourceFilePath()).isEqualTo(sourceBefore);
+            assertThat(sourceless.getSourceSegmentPaths()).isEmpty();
+
+            // ... and the refusal is the factory's: no action is ever built.
+            assertThatThrownBy(() -> service.reverse(selection))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage(refusal);
+            assertThatThrownBy(() -> service.normalize(selection, -1.0))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage(refusal);
+        }
+    }
+
+    @Test
+    void batchHoldingAClipThatFailsTwoChecks_isRefusedWithTheMessageTheActionItselfGives() {
+        // A two-segment take whose segments are relative, as a load with no
+        // project directory keeps them: it fails both the segment check and
+        // the absolute-path check, and the action makes the segment check first.
+        AudioClip take = new AudioClip("take", 0.0, 8.0, "t1/segment-000.wav");
+        take.setSourceSegmentPaths(List.of("t1/segment-000.wav", "t1/segment-001.wav"));
+        ClipProcessingService service = new ClipProcessingService(new ClipAssetHistory());
+
+        Throwable reverseRefusal = catchThrowable(() -> new UndoManager().execute(service.reverse(take)));
+        Throwable normalizeRefusal = catchThrowable(
+                () -> new UndoManager().execute(service.normalize(take, -1.0)));
+        for (Throwable refusal : List.of(reverseRefusal, normalizeRefusal)) {
+            assertThat(refusal)
+                    .as("the action's own refusal is the segment-count one")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(take.getId())
+                    .hasMessageContaining("multi-segment")
+                    .hasMessageContaining("2 segments");
+        }
+
+        assertThatThrownBy(() -> service.reverse(List.of(take)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(reverseRefusal.getMessage());
+        assertThatThrownBy(() -> service.normalize(List.of(take), -1.0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(normalizeRefusal.getMessage());
+    }
+
+    /**
+     * A relative clip reference that names {@code file} when it is resolved
+     * against the JVM's working directory — what a render that ignored story
+     * 323's rule would read, and write beside. Both sides are real paths, so
+     * a symbolic link on the way cannot break the join; the test is skipped
+     * when no relative path joins them (different drives).
+     */
+    private static String relativeFromTheWorkingDirectory(Path file) throws IOException {
+        Path cwd = Path.of("").toAbsolutePath().toRealPath();
+        Path target = file.toRealPath();
+        assumeTrue(cwd.getRoot().equals(target.getRoot()),
+                "fixture: the temp directory and the working directory share a root");
+        String relative = cwd.relativize(target).toString().replace('\\', '/');
+        assertThat(Path.of(relative).isAbsolute()).as("fixture: %s is relative", relative).isFalse();
+        assertThat(Files.isRegularFile(Path.of(relative)))
+                .as("fixture: %s names the file from the working directory", relative).isTrue();
+        return relative;
+    }
+
+    /** The names of the rendered files ({@code Reversed-*}, {@code Normalized-*}) directly in {@code directory}. */
+    private static List<String> renderedFilesIn(Path directory) throws IOException {
+        try (Stream<Path> files = Files.list(directory)) {
+            return files.map(p -> p.getFileName().toString())
+                    .filter(name -> name.startsWith("Reversed-") || name.startsWith("Normalized-"))
+                    .toList();
+        }
     }
 
     // ------------------------------------------------------------------

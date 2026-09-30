@@ -21,6 +21,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationException;
@@ -740,11 +741,21 @@ final class ProjectLifecycleController {
     /**
      * Walks the project for asset references whose path no longer points
      * at a regular file on disk. Mirrors the iteration order of
-     * {@link ProjectArchiver} so the user sees the same set the archiver
-     * will end up skipping: a clip that carries a segment list (a recorded
-     * take, story 323) is checked segment by segment, each missing segment
-     * reported once and the head not a second time; a single-file clip is
-     * checked by its source file path.
+     * {@link ProjectArchiver} so the user sees the set the archiver will end
+     * up skipping, except a blank clip reference, which the archiver writes
+     * into the archive as it is and this list leaves out (see below): a clip
+     * that carries a segment list (a recorded take, story 323) is checked
+     * segment by segment, each missing segment reported once and the head
+     * not a second time; a single-file clip is checked by its source file
+     * path.
+     *
+     * <p>A clip reference that is not an absolute path on this platform names
+     * no file ({@link ProjectPaths#isAbsoluteReference}, story 323): it is
+     * listed as missing without touching the filesystem, and never looked up
+     * against the JVM's working directory. A {@code null} or blank clip
+     * reference is skipped, because the dialog turns every listed path into
+     * an {@code ArchiveAssetDecision}, which refuses a blank path. A
+     * SoundFont path is checked as it is.</p>
      *
      * <p>Package-private for unit tests.</p>
      */
@@ -755,14 +766,14 @@ final class ProjectLifecycleController {
                 List<String> segments = clip.getSourceSegmentPaths();
                 if (!segments.isEmpty()) {
                     for (String segment : segments) {
-                        if (!segment.isBlank() && !isRegularFile(segment)) {
+                        if (!segment.isBlank() && !namesRegularFile(segment)) {
                             missing.add(segment);
                         }
                     }
                     continue;
                 }
                 String p = clip.getSourceFilePath();
-                if (p != null && !p.isBlank() && !isRegularFile(p)) {
+                if (p != null && !p.isBlank() && !namesRegularFile(p)) {
                     missing.add(p);
                 }
             }
@@ -790,12 +801,14 @@ final class ProjectLifecycleController {
         }
     }
 
-    private static boolean isRegularFile(String path) {
-        try {
-            return Files.isRegularFile(Paths.get(path));
-        } catch (RuntimeException ignored) {
-            return false;
-        }
+    /**
+     * Whether a clip reference names a regular file. A reference that is not
+     * an absolute path on this platform names no file (story 323) and is
+     * answered without touching the filesystem.
+     */
+    private static boolean namesRegularFile(String clipReference) {
+        return ProjectPaths.isAbsoluteReference(clipReference)
+                && Files.isRegularFile(Path.of(clipReference));
     }
 
     private static String safeFileName(String name) {

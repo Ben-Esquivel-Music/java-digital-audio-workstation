@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.concurrent.DawScope;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -79,7 +80,13 @@ import java.util.zip.ZipOutputStream;
  * {@link AudioClip#getSourceSegmentPaths()}, in order, so each segment of a
  * rotated take is archived and the restored clip references all of them.
  * Assets are deduplicated by SHA-256, so the same recording referenced from
- * many clips is stored only once.</p>
+ * many clips is stored only once. A clip reference that is not an absolute
+ * path on this platform names no file ({@link ProjectPaths#isAbsoluteReference},
+ * story 323): {@link #saveAsArchive} gives it the missing-asset treatment,
+ * {@link #previewAssetSizes} leaves it out and {@link #consolidateInPlace}
+ * leaves it as it is — none of them resolves it against the JVM's working
+ * directory. A SoundFont path is still resolved against the working
+ * directory when it is relative.</p>
  *
  * <p>This class is thread-safe in the sense that distinct {@code ProjectArchiver}
  * instances may be used concurrently; a single instance should not be shared
@@ -349,7 +356,8 @@ public final class ProjectArchiver {
      *
      * <p>Assets already located beneath {@code projectDir} are left in place.
      * Assets are deduplicated by SHA-256 so the same recording referenced
-     * many times costs one copy on disk.</p>
+     * many times costs one copy on disk. A clip reference that is not an
+     * absolute path names no file and is left as it is.</p>
      */
     public ProjectArchiveSummary consolidateInPlace(DawProject project,
                                                      Path projectDir,
@@ -412,6 +420,13 @@ public final class ProjectArchiver {
      * head-only ref would both miss segments 1…n and be refused by
      * {@link AudioClip#setSourceFilePath(String)}. A single-file clip keeps
      * its {@link AudioClipRef}.</p>
+     *
+     * <p>Only a {@code null} or empty clip reference is skipped, the same
+     * test {@code AudioClip.setSourceSegmentPaths} and the project reader
+     * apply. A whitespace-only one gets a ref like any other; it names no
+     * file, and no {@link ArchiveAssetDecision} can name it (its constructor
+     * refuses a blank path), so it gets no payload and is written into the
+     * archive as it is.</p>
      */
     private List<AssetRef> collectRefs(DawProject project, ArchiveOptions options) {
         List<AssetRef> refs = new ArrayList<>();
@@ -420,14 +435,14 @@ public final class ProjectArchiver {
                 List<String> segments = clip.getSourceSegmentPaths();
                 if (!segments.isEmpty()) {
                     for (int index = 0; index < segments.size(); index++) {
-                        if (!segments.get(index).isBlank()) {
+                        if (!segments.get(index).isEmpty()) {
                             refs.add(new AudioClipSegmentRef(clip, index));
                         }
                     }
                     continue;
                 }
                 String p = clip.getSourceFilePath();
-                if (p != null && !p.isBlank()) {
+                if (p != null && !p.isEmpty()) {
                     refs.add(new AudioClipRef(clip));
                 }
             }
@@ -903,12 +918,28 @@ public final class ProjectArchiver {
         }
     }
 
+    /**
+     * The file a clip reference names (story 323), and what
+     * {@link AudioClipRef} and {@link AudioClipSegmentRef} return from
+     * {@code absolutePath()}: the reference as a path when it is absolute on
+     * this platform, and {@code null} for every other one — relative, drive-
+     * or root-relative, unparseable, {@code null} or empty — which names no
+     * file ({@link ProjectPaths#isAbsoluteReference}) and is never resolved
+     * against the JVM's working directory. {@link SoundFontRef} keeps the
+     * {@code AssetRef} default, which resolves a relative path against the
+     * working directory.
+     */
+    private static Path clipReferenceFile(String reference) {
+        return ProjectPaths.isAbsoluteReference(reference) ? Path.of(reference) : null;
+    }
+
     /** The single source file of a clip that carries no segment list. */
     private static final class AudioClipRef implements AssetRef {
         private final AudioClip clip;
         AudioClipRef(AudioClip clip) { this.clip = clip; }
         @Override public String currentPath() { return clip.getSourceFilePath(); }
         @Override public void update(String newPath) { clip.setSourceFilePath(newPath); }
+        @Override public Path absolutePath() { return clipReferenceFile(currentPath()); }
     }
 
     /**
@@ -931,6 +962,7 @@ public final class ProjectArchiver {
             segments.set(index, newPath);
             clip.setSourceSegmentPaths(segments);
         }
+        @Override public Path absolutePath() { return clipReferenceFile(currentPath()); }
     }
 
     private static final class SoundFontRef implements AssetRef {
@@ -1012,8 +1044,9 @@ public final class ProjectArchiver {
     // Exposed for tests — listing assets without committing the archive.
     /**
      * Returns, for the given project, the unique content hashes of every
-     * referenced asset that currently resolves on disk. Useful for UI that
-     * wants to estimate output size without writing.
+     * referenced asset that currently resolves on disk — a clip reference
+     * that is not an absolute path never does. Useful for UI that wants to
+     * estimate output size without writing.
      */
     public Map<String, Long> previewAssetSizes(DawProject project, ArchiveOptions options)
             throws IOException {

@@ -1,15 +1,21 @@
 package com.benesquivelmusic.daw.core.persistence;
 
+import com.benesquivelmusic.daw.core.persistence.ProjectPaths.Unresolvable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Pins the one write/read rule shared by {@code ProjectSerializer} and
- * {@code ProjectDeserializer} (story 323; Persistence book §3.3).
+ * {@code ProjectDeserializer} (story 323; Persistence book §3.3), and the
+ * in-memory rule the consumers of a clip reference follow.
  */
 class ProjectPathsTest {
 
@@ -69,6 +75,111 @@ class ProjectPathsTest {
         assertThat(ProjectPaths.resolve(root, UNPARSEABLE)).isEqualTo(UNPARSEABLE);
         assertThat(ProjectPaths.resolve(root, "")).isEmpty();
         assertThat(ProjectPaths.resolve(root, null)).isNull();
+    }
+
+    @Test
+    void resolveKeepsAReferenceWhoseTargetIsNotStrictlyUnderTheRootVerbatim() {
+        // '/' escapes on Windows and on Linux alike ("..\x" would be one file
+        // name on Linux), so these hold on both.
+        for (String escaping : List.of("../outside.wav", "audio/../../outside.wav", "..", ".", "audio/..")) {
+            assertThat(ProjectPaths.resolve(root, escaping)).as(escaping).isEqualTo(escaping);
+        }
+    }
+
+    @Test
+    void resolveJudgesContainmentOnTheNormalisedTargetSoAWalkBackIntoTheRootIsResolved() {
+        String walkBack = "../" + root.getFileName() + "/audio/x.wav";
+        String expected = root.toAbsolutePath().normalize().resolve("audio").resolve("x.wav").toString();
+
+        assertThat(ProjectPaths.resolve(root, walkBack)).isEqualTo(expected);
+    }
+
+    @Test
+    void unresolvableNamesTheReasonForExactlyTheReferencesThatAreNeitherProjectRelativeNorAbsolute() {
+        String insideAbsolute = root.resolve("audio").resolve("x.wav").toAbsolutePath().toString();
+        String outsideAbsolute = root.resolveSibling("elsewhere").resolve("x.wav").toAbsolutePath().toString();
+
+        for (String usable : List.of("audio/x.wav", "audio/./x.wav", "../" + root.getFileName() + "/audio/x.wav",
+                insideAbsolute, outsideAbsolute)) {
+            assertThat(ProjectPaths.unresolvable(root, usable)).as("usable: %s", usable).isEmpty();
+        }
+        for (String outside : List.of("../outside.wav", "audio/../../outside.wav", "..")) {
+            assertThat(ProjectPaths.unresolvable(root, outside)).as(outside)
+                    .contains(Unresolvable.ESCAPES_THE_DIRECTORY);
+        }
+        for (String itself : List.of(".", "audio/..")) {
+            assertThat(ProjectPaths.unresolvable(root, itself)).as(itself)
+                    .contains(Unresolvable.IS_THE_DIRECTORY);
+        }
+        assertThat(ProjectPaths.unresolvable(root, UNPARSEABLE))
+                .as("a NUL character parses on no platform")
+                .contains(Unresolvable.NOT_A_VALID_PATH);
+        assertThat(ProjectPaths.unresolvable(null, "../outside.wav")).as("no root").isEmpty();
+        assertThat(ProjectPaths.unresolvable(null, UNPARSEABLE)).as("no root, unparseable").isEmpty();
+        assertThat(ProjectPaths.unresolvable(root, null)).as("null reference").isEmpty();
+        assertThat(ProjectPaths.unresolvable(root, "")).as("empty reference").isEmpty();
+    }
+
+    @Test
+    void withARootEveryNonEmptyReferenceComesBackAbsoluteOrIsUnresolvableAndKeptAsWritten() {
+        List<String> references = List.of("audio/x.wav", "audio/./x.wav", "../" + root.getFileName() + "/audio/x.wav",
+                "../outside.wav", "audio/../../outside.wav", "..", ".", "audio/..", "/x.wav", "C:x.wav",
+                "\\x.wav", "..\\outside.wav", "bad|name.wav", "  ", "...", UNPARSEABLE,
+                root.resolve("x.wav").toAbsolutePath().toString());
+        for (String reference : references) {
+            boolean unresolvable = ProjectPaths.unresolvable(root, reference).isPresent();
+            String inMemory = ProjectPaths.resolve(root, reference);
+
+            assertThat(unresolvable)
+                    .as("unresolvable exactly when the in-memory form is not absolute: [%s]", reference)
+                    .isNotEqualTo(ProjectPaths.isAbsoluteReference(inMemory));
+            if (unresolvable) {
+                assertThat(inMemory).as("kept as written: [%s]", reference).isEqualTo(reference);
+            }
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void onWindowsDriveAndRootRelativeReferencesAreUnresolvableAndABackslashWalkEscapes() {
+        for (String rooted : List.of("C:x.wav", "\\x.wav", "/x.wav")) {
+            assertThat(ProjectPaths.unresolvable(root, rooted)).as(rooted)
+                    .contains(Unresolvable.DRIVE_OR_ROOT_RELATIVE);
+            assertThat(ProjectPaths.resolve(root, rooted)).as(rooted).isEqualTo(rooted);
+            assertThat(ProjectPaths.isAbsoluteReference(rooted)).as(rooted).isFalse();
+        }
+        assertThat(ProjectPaths.unresolvable(root, "..\\outside.wav"))
+                .contains(Unresolvable.ESCAPES_THE_DIRECTORY);
+        for (String unparseable : List.of("bad|name.wav", "ends-with-a-space ", "tab\tname.wav")) {
+            assertThat(ProjectPaths.unresolvable(root, unparseable)).as(unparseable)
+                    .contains(Unresolvable.NOT_A_VALID_PATH);
+            assertThat(ProjectPaths.resolve(root, unparseable)).as(unparseable).isEqualTo(unparseable);
+        }
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void onLinuxTheWindowsFormsAreSingleNamesUnderTheRootAndALeadingSlashIsAbsolute() {
+        Path rootAbs = root.toAbsolutePath().normalize();
+        for (String name : List.of("C:x.wav", "\\x.wav", "..\\outside.wav", "bad|name.wav")) {
+            assertThat(ProjectPaths.unresolvable(root, name)).as(name).isEmpty();
+            assertThat(ProjectPaths.resolve(root, name)).as(name).isEqualTo(rootAbs.resolve(name).toString());
+            assertThat(ProjectPaths.isAbsoluteReference(name)).as(name).isFalse();
+        }
+        assertThat(ProjectPaths.unresolvable(root, "/x.wav")).isEmpty();
+        assertThat(ProjectPaths.resolve(root, "/x.wav")).isEqualTo("/x.wav");
+        assertThat(ProjectPaths.isAbsoluteReference("/x.wav")).isTrue();
+    }
+
+    @Test
+    void isAbsoluteReferenceHoldsExactlyForAnAbsolutePathOnThisPlatform() {
+        assertThat(ProjectPaths.isAbsoluteReference(root.resolve("x.wav").toAbsolutePath().toString())).isTrue();
+        for (String relative : List.of("x.wav", "audio/x.wav", "../outside.wav", "..", ".")) {
+            assertThat(ProjectPaths.isAbsoluteReference(relative)).as(relative).isFalse();
+        }
+        assertThat(ProjectPaths.isAbsoluteReference(UNPARSEABLE)).as("unparseable").isFalse();
+        assertThat(ProjectPaths.isAbsoluteReference("")).as("empty").isFalse();
+        assertThat(ProjectPaths.isAbsoluteReference(null)).as("null").isFalse();
     }
 
     @Test

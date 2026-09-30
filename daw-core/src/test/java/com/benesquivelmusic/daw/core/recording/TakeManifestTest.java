@@ -17,10 +17,14 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * {@link TakeManifest} — the take sidecar grammar of story 323 (book §3.3;
@@ -78,6 +82,21 @@ class TakeManifestTest {
         assertThat(m.gaps()).containsExactly(
                 new GapEntry("*", 48_000, 2), new GapEntry("track-b", 96_000, 1));
         assertThat(m.overflowBlocks()).isEqualTo(3);
+    }
+
+    /**
+     * Asserts that the constructor refuses each path with a message naming the field and ending with the
+     * path; a path it accepts fails the test under that path's name.
+     */
+    private static void assertEveryPathIsRefused(List<String> paths) {
+        for (String path : paths) {
+            Throwable refusal = catchThrowable(() -> new SegmentEntry("t1", 0, 0, path, -1, SegmentState.STREAMING));
+            assertThat(refusal)
+                    .as(path)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("relativePath")
+                    .hasMessageEndingWith(": " + path);
+        }
     }
 
     @Test
@@ -243,6 +262,166 @@ class TakeManifestTest {
         assertThatThrownBy(() -> new SegmentEntry("t", 0, 0, "t\\segment-000.wav", -1, SegmentState.STREAMING))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("forward slashes");
+    }
+
+    @Test
+    void aSegmentPathThatCouldLeaveTheTakeDirectoryIsRefusedAtConstructionOnEveryPlatform() {
+        // Decided on the '/'-separated string, never with the Path semantics
+        // of the platform running the test: each of these is refused on
+        // Windows and on Linux alike. A capital-letter drive form would be
+        // refused for its capital even if ':' were allowed; the lowercase
+        // forms, which Windows reads as the same drives, are refused for
+        // their ':' alone.
+        List<String> escaping = List.of(
+                "/abs/segment-000.wav",            // POSIX-absolute; root-relative on Windows
+                "//server/share/segment-000.wav",  // UNC
+                "C:/take/segment-000.wav",         // drive-absolute, a capital-letter case
+                "C:segment-000.wav",               // drive-relative, a capital-letter case
+                "c:/take/segment-000.wav",         // drive-absolute
+                "c:segment-000.wav",               // drive-relative
+                "../segment-000.wav",
+                "t1/../../segment-000.wav",
+                "./t1/segment-000.wav",
+                "t1/./segment-000.wav",
+                "t1//segment-000.wav",             // an empty name
+                "t1/segment-000.wav/",             // a trailing '/'
+                "t1/segment-000.wav:stream",       // an NTFS alternate data stream
+                "..",
+                ".");
+
+        assertEveryPathIsRefused(escaping);
+    }
+
+    @Test
+    void aSegmentPathOfPlainNamesIsAcceptedAndResolvesInsideTheTakeDirectory() {
+        Path takeDir = tempDir.resolve(TAKE);
+
+        SegmentEntry oneLevel = new SegmentEntry("t1", 0, 0, "t1/segment-000.wav", -1, SegmentState.STREAMING);
+        SegmentEntry twoLevels = new SegmentEntry("t1", 0, 1, "a/b/segment-000.wav", -1, SegmentState.STREAMING);
+
+        assertThat(oneLevel.resolve(takeDir)).isEqualTo(takeDir.resolve("t1").resolve("segment-000.wav"));
+        assertThat(twoLevels.resolve(takeDir))
+                .isEqualTo(takeDir.resolve("a").resolve("b").resolve("segment-000.wav"));
+        for (SegmentEntry entry : List.of(oneLevel, twoLevels)) {
+            Path resolved = entry.resolve(takeDir);
+            assertThat(resolved.startsWith(takeDir)).as(entry.relativePath()).isTrue();
+            assertThat(resolved.normalize().startsWith(takeDir.normalize())).as(entry.relativePath()).isTrue();
+            assertThat(resolved.normalize()).as(entry.relativePath()).isNotEqualTo(takeDir.normalize());
+        }
+    }
+
+    @Test
+    void aWindowsDeviceNameIsRefusedAsAWholeNameAndAsTheStemBeforeAnExtension() {
+        // Refused wherever the name stands and whatever follows its stem: on
+        // Windows 10, t1/NUL.wav and NUL read as the empty NUL device, a CON
+        // read can block, and COMn opens a serial port.
+        assertEveryPathIsRefused(List.of(
+                "t1/nul",
+                "nul.wav",
+                "con",
+                "t1/com1.x",
+                "lpt9/segment-000.wav"));
+    }
+
+    @Test
+    void aNameWin32WouldTrimOrReadAsItsOwnDirectoryIsRefused() {
+        // Win32 trims a trailing '.': on Windows 10, "t1./x.wav" and "t1/x.wav."
+        // open t1/x.wav, and "..." denotes the directory that holds it.
+        assertEveryPathIsRefused(List.of(
+                "...",
+                "t1/...",
+                "t1.",
+                "t1/x.wav."));
+    }
+
+    @Test
+    void aNameThatStartsWithADotOrAHyphenIsRefused() {
+        assertEveryPathIsRefused(List.of(
+                ".hidden",
+                "t1/-x"));
+    }
+
+    @Test
+    void aCharacterOutsideLowercaseAsciiLettersDigitsDotUnderscoreAndHyphenIsRefused() {
+        assertEveryPathIsRefused(List.of(
+                "a b/x.wav",           // a space
+                "t1/segmen~1.wav",     // '~': a generated 8.3 short name, such as segment-000.wav's
+                "T1/segment-000.wav",  // a capital: t1/... on NTFS and default APFS, another entry on Linux
+                "t1/NUL.wav",          // a capital, on a device stem
+                "t1/caf\u00e9.wav"));  // a non-ASCII letter
+    }
+
+    @Test
+    void productionNamesAndNamesThatOnlyResembleRefusedOnesAreAcceptedAndResolveInsideTheTakeDirectory() {
+        Path takeDir = tempDir.resolve(TAKE);
+        String trackId = new UUID(0x0123456789ABCDEFL, 0xFEDCBA9876543210L).toString();
+        assertThat(trackId).as("fixture: UUID.toString(), the source of Track ids, writes lowercase hex")
+                .matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+        String longName = "a".repeat(196) + ".wav";
+        assertThat(longName).as("fixture").hasSize(200);
+        String fiftyNamesDeep = IntStream.range(0, 49).mapToObj(i -> "d" + i).collect(Collectors.joining("/"))
+                + "/segment-000.wav";
+        assertThat(fiftyNamesDeep.split("/")).as("fixture").hasSize(50);
+
+        List<String> accepted = List.of(
+                "t1/segment-000.wav",
+                "a/b/segment-000.wav",
+                "a.b.c",
+                "x-1/take_2.wav",
+                "console/x.wav",
+                "com10/x.wav",
+                "nul-1/x.wav",
+                trackId + "/segment-000.wav",
+                longName,
+                fiftyNamesDeep);
+
+        for (String path : accepted) {
+            Path resolved = new SegmentEntry("t1", 0, 0, path, -1, SegmentState.STREAMING).resolve(takeDir);
+            assertThat(resolved.startsWith(takeDir)).as(path).isTrue();
+            assertThat(resolved.getNameCount()).as(path).isEqualTo(takeDir.getNameCount() + path.split("/").length);
+        }
+    }
+
+    @Test
+    void readFailsNamingTheFileAndTheLineWhenASegmentPathLeavesTheTakeDirectory() throws IOException {
+        Path file = full().build().write(tempDir);
+        String valid = Files.readString(file, StandardCharsets.UTF_8);
+        String tampered = valid.replace("|track-b/segment-000.wav|", "|../outside/segment-000.wav|");
+        assertThat(tampered).as("fixture: exactly one segment line now leaves the take directory")
+                .isNotEqualTo(valid);
+        Files.writeString(file, tampered, StandardCharsets.UTF_8);
+        List<String> lines = tampered.lines().toList();
+        int lineNo = 1;
+        while (!lines.get(lineNo - 1).contains("../outside/segment-000.wav")) {
+            lineNo++;
+        }
+        assertThat(lines.get(lineNo - 1)).startsWith("segment=track-b|");
+
+        int expectedLine = lineNo;
+        assertThatThrownBy(() -> TakeManifest.read(file))
+                .isInstanceOf(IOException.class)
+                .hasMessageStartingWith(file + ":" + expectedLine + ": ")
+                .hasMessageContaining("../outside/segment-000.wav")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
+        // Non-vacuity: the untampered text of the same file reads.
+        assertThat(TakeManifest.parse(valid, file.toString())).isEqualTo(full().build());
+    }
+
+    @Test
+    void relativePathForRefusesAFileThatIsNotInsideTheTakeDirectory() {
+        Path takeDir = tempDir.resolve(TAKE);
+        Path inside = takeDir.resolve("t1").resolve("segment-000.wav");
+        Path inASibling = tempDir.resolve("2026-08-03T14-22-06_take-0008").resolve("t1").resolve("segment-000.wav");
+
+        assertThat(SegmentEntry.relativePathFor(takeDir, inside)).isEqualTo("t1/segment-000.wav");
+        assertThatThrownBy(() -> SegmentEntry.relativePathFor(takeDir, inASibling))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(inASibling.toString())
+                .hasMessageContaining(takeDir.toString());
+        assertThatThrownBy(() -> SegmentEntry.relativePathFor(takeDir, takeDir))
+                .as("the take directory itself is not a segment")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(takeDir.toString());
     }
 
     @Test

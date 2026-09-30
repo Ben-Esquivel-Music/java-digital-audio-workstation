@@ -158,8 +158,15 @@ public final class AudioClip implements TimelineRegion, Clip {
     /**
      * Returns the ordered, immutable list of segment files that together
      * hold this clip's audio (manifest order), or an empty list for a clip
-     * backed by a single file. Recorded takes hold absolute paths in memory;
-     * the serializer writes them project-relative.
+     * backed by a single file. A take recorded in this session holds
+     * absolute paths. After a load with a known project directory
+     * ({@code ProjectDeserializer.deserialize(String, Path)}) each element is
+     * an absolute path, or — when the project file's reference could not be
+     * resolved against that directory — the reference as written: code that
+     * opens a segment treats an element that is not an absolute path on this
+     * platform as naming no file ({@code ProjectPaths.isAbsoluteReference}).
+     * The serializer writes an element under the project directory
+     * project-relative and every other element as it is held.
      */
     public List<String> getSourceSegmentPaths() {
         return sourceSegmentPaths;
@@ -168,14 +175,31 @@ public final class AudioClip implements TimelineRegion, Clip {
     /**
      * Sets the ordered segment list. A non-empty list also sets
      * {@link #getSourceFilePath()} to its first element (the head invariant);
-     * an empty list leaves {@code sourceFilePath} untouched.
+     * an empty list leaves {@code sourceFilePath} untouched. The list is
+     * checked before anything is assigned, so a refused call leaves both the
+     * list and the head as they were.
      *
      * @param sourceSegmentPaths the segment paths in playback order; copied,
-     *                           must not be {@code null} or contain {@code null}
+     *                           must not be {@code null}, contain {@code null}
+     *                           or contain an empty element (a whitespace-only
+     *                           element is accepted)
+     * @throws NullPointerException     if the list or an element is {@code null}
+     * @throws IllegalArgumentException naming its index, if an element is empty
+     *         ({@link String#isEmpty()}): the saved form cannot carry one —
+     *         {@code ProjectDeserializer} skips a {@code <source-segment>} whose
+     *         {@code path} is empty, with a WARNING — so accepting it would let
+     *         a save/load cycle shorten the list, move every later segment up
+     *         one place and, when the empty element is first, change the head
      */
     public void setSourceSegmentPaths(List<String> sourceSegmentPaths) {
         List<String> copy = List.copyOf(
                 Objects.requireNonNull(sourceSegmentPaths, "sourceSegmentPaths must not be null"));
+        for (int i = 0; i < copy.size(); i++) {
+            if (copy.get(i).isEmpty()) {
+                throw new IllegalArgumentException("sourceSegmentPaths[" + i + "] must not be empty: "
+                        + "a saved project cannot carry an empty segment path");
+            }
+        }
         this.sourceSegmentPaths = copy;
         if (!copy.isEmpty()) {
             this.sourceFilePath = copy.getFirst();

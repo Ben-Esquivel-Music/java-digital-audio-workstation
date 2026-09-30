@@ -19,6 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * The {@code take.manifest} sidecar of one take directory (Recording
@@ -63,8 +64,24 @@ import java.util.Optional;
  * {@link #segments()} is canonical — grouped by track in {@link #tracks()}
  * order, then lane ascending, then index ascending — and
  * {@link #segmentsFor(String)} returns one track's entries in that order
- * regardless of the order the file listed them. Relative paths always use
- * forward slashes; a backslash is rejected at construction.</p>
+ * regardless of the order the file listed them. A segment's relative path is
+ * one or more names joined by forward slashes, and every name matches
+ * {@code [a-z0-9][a-z0-9._-]*}, does not end with {@code .}, and has a stem
+ * — the part before its first {@code .} — that is not a Windows device name
+ * ({@code con}, {@code prn}, {@code aux}, {@code nul}, {@code com1} to
+ * {@code com9}, {@code lpt1} to {@code lpt9}) or {@code com0}/{@code lpt0}.
+ * The rule is decided on the string alone, so every platform accepts and
+ * refuses the same paths; no accepted name is one that Win32 trims, reads as
+ * a generated 8.3 short name or opens as a device, and no two accepted paths
+ * differ only in case, so an accepted path names the same entry inside its
+ * take directory on Windows and on POSIX, judged lexically
+ * ({@link SegmentEntry#resolve(Path)} states what that does and does not
+ * guarantee). Any other path is rejected at construction, and
+ * {@link #read(Path)} fails on it with an {@code IOException} naming the
+ * file and the line. The track ids and the {@code take} name are checked
+ * only for {@code null}, blank values, {@code |} and line breaks, so a
+ * reader builds a segment's path through {@link SegmentEntry#resolve(Path)}
+ * and never from them.</p>
  *
  * <p><strong>Atomic replace.</strong> {@link #write(Path)} writes
  * {@code take.manifest.tmp} in the take directory through a
@@ -98,6 +115,17 @@ public final class TakeManifest {
 
     /** U+FEFF, written as a number so the source holds no invisible character. */
     private static final char BYTE_ORDER_MARK = (char) 0xFEFF;
+
+    /** The characters every name of a segment path is made of, and the ones it may start with. */
+    private static final Pattern SEGMENT_PATH_NAME = Pattern.compile("[a-z0-9][a-z0-9._-]*");
+
+    /**
+     * The stems Windows reserves for devices ({@code con}, {@code prn}, {@code aux}, {@code nul},
+     * {@code com1} to {@code com9}, {@code lpt1} to {@code lpt9}), plus {@code com0} and {@code lpt0},
+     * which are refused as well; Windows 10 opens a reserved device even when an extension follows
+     * ({@code nul.wav} reads NUL).
+     */
+    private static final Pattern WINDOWS_DEVICE_STEM = Pattern.compile("con|prn|aux|nul|com[0-9]|lpt[0-9]");
 
     /** Opens the staging file of {@link #write(Path)}: created if missing, truncated if a stale one is left over. */
     static final SegmentWriter.ChannelOpener STAGING_CHANNEL = path -> FileChannel.open(path,
@@ -197,9 +225,18 @@ public final class TakeManifest {
      * @param trackId      owning track id
      * @param lane         loop-take lane index (0 for a plain take); non-negative
      * @param index        segment index within the track directory; non-negative
-     * @param relativePath path relative to the take directory with {@code /} separators,
-     *                     e.g. {@code <trackId>/segment-000.wav} (always the sealed identity,
-     *                     even while streaming)
+     * @param relativePath path relative to the take directory, e.g.
+     *                     {@code <trackId>/segment-000.wav} (always the sealed identity,
+     *                     even while streaming): one or more names joined by {@code /},
+     *                     each matching {@code [a-z0-9][a-z0-9._-]*}, not ending with
+     *                     {@code .}, and with a stem (the part before its first {@code .})
+     *                     that is not {@code con}, {@code prn}, {@code aux}, {@code nul},
+     *                     {@code com0} to {@code com9} or {@code lpt0} to {@code lpt9}.
+     *                     {@code null} throws {@link NullPointerException}; a blank path
+     *                     throws {@link IllegalArgumentException} without naming it; any
+     *                     other path that breaks the rule, among them one holding
+     *                     {@code |}, a line break or a backslash, throws
+     *                     {@link IllegalArgumentException} naming the path
      * @param frames       exact frame count once sealed, {@link #FRAMES_STREAMING} while streaming
      * @param state        streaming or sealed
      */
@@ -211,6 +248,12 @@ public final class TakeManifest {
             if (relativePath.indexOf('\\') >= 0) {
                 throw new IllegalArgumentException(
                         "relativePath must use forward slashes: " + relativePath);
+            }
+            if (!isNameSequence(relativePath)) {
+                throw new IllegalArgumentException("relativePath must be one or more '/'-separated names, "
+                        + "each matching [a-z0-9][a-z0-9._-]*, not ending in '.', and with a stem (the part "
+                        + "before its first '.') that is not a Windows device name (con, prn, aux, nul, "
+                        + "com1-com9, lpt1-lpt9) or com0/lpt0: " + relativePath);
             }
             if (lane < 0) {
                 throw new IllegalArgumentException("lane must not be negative: " + lane);
@@ -227,7 +270,30 @@ public final class TakeManifest {
             }
         }
 
-        /** Resolves this entry's file against its take directory. */
+        /**
+         * Resolves this entry against its take directory: a plain
+         * {@link Path#resolve(String) join}, with no check of its own. The
+         * guarantee is the constructor's, and it is lexical. Every name of
+         * {@code relativePath} denotes itself on Windows and on POSIX alike —
+         * no root, drive, UNC prefix or stream, no {@code .} or {@code ..}
+         * step, no name Win32 trims, no generated 8.3 short name, no device
+         * stem — so the result is {@code takeDirectory} followed by exactly
+         * those names: an entry strictly inside {@code takeDirectory}, reached
+         * by the same names on every platform. This is judged lexically: a
+         * case-insensitive file system (NTFS, and APFS by default) can still
+         * match an on-disk entry whose name differs only in case. It names an
+         * entry, not necessarily a file, and the file system is never
+         * consulted: symbolic links, junctions and mount points inside the
+         * take directory are not examined, and the entry may be of any type —
+         * a directory such as a track directory, the manifest itself, or a
+         * FIFO or device node on POSIX — so a reader that needs a regular file
+         * must check that it is one and follow no links.
+         * Every character the rule admits is legal in a name on Windows and on
+         * POSIX, so on their default file systems the join does not throw
+         * {@link java.nio.file.InvalidPathException}; a take directory on
+         * another {@link java.nio.file.FileSystem} parses the path by that
+         * provider's rules.
+         */
         public Path resolve(Path takeDirectory) {
             return Objects.requireNonNull(takeDirectory, "takeDirectory must not be null")
                     .resolve(relativePath);
@@ -240,13 +306,30 @@ public final class TakeManifest {
 
         /**
          * Builds the {@code /}-separated relative reference of {@code file}
-         * inside {@code takeDirectory} on any platform.
+         * inside {@code takeDirectory} on any platform. Both paths are made
+         * absolute and normalised first, and {@code file} must then lie
+         * strictly inside the directory. The names are joined as they are,
+         * not checked against the constructor's rule, so a file whose names
+         * break it — a capital letter, a space — yields a string the
+         * constructor refuses; the names production gives a segment,
+         * {@code <track UUID>/segment-NNN.wav}, satisfy it.
+         *
+         * @throws IllegalArgumentException naming both paths if {@code file}
+         *         is not strictly inside {@code takeDirectory} (outside it, or
+         *         the directory itself). A segment lives at
+         *         {@code <take>/<trackId>/segment-NNN.wav}, so in production
+         *         this is a programming error, not a condition to recover from.
          */
         public static String relativePathFor(Path takeDirectory, Path file) {
             Objects.requireNonNull(takeDirectory, "takeDirectory must not be null");
             Objects.requireNonNull(file, "file must not be null");
-            Path relative = takeDirectory.toAbsolutePath().normalize()
-                    .relativize(file.toAbsolutePath().normalize());
+            Path base = takeDirectory.toAbsolutePath().normalize();
+            Path target = file.toAbsolutePath().normalize();
+            if (!target.startsWith(base) || target.equals(base)) {
+                throw new IllegalArgumentException(
+                        "file " + file + " is not inside the take directory " + takeDirectory);
+            }
+            Path relative = base.relativize(target);
             StringBuilder sb = new StringBuilder();
             for (Path element : relative) {
                 if (sb.length() > 0) {
@@ -925,6 +1008,49 @@ public final class TakeManifest {
             throw new IllegalArgumentException(name + " must not contain '|' or line breaks: " + value);
         }
         return value;
+    }
+
+    /**
+     * The segment path rule, decided on the string and never with the
+     * {@link Path} semantics of the platform reading the manifest: one or
+     * more names joined by {@code '/'}, each of which matches
+     * {@code SEGMENT_PATH_NAME} ({@code [a-z0-9][a-z0-9._-]*}), does not end
+     * with {@code '.'}, and has a stem — the part before its first
+     * {@code '.'}, or the whole name — that {@code WINDOWS_DEVICE_STEM} does
+     * not match ({@code con}, {@code prn}, {@code aux}, {@code nul},
+     * {@code com0} to {@code com9}, {@code lpt0} to {@code lpt9}; names are
+     * lowercase, so the stem is compared as written, and {@code console},
+     * {@code com10} and {@code nul-1} are legal). That refuses, on every
+     * platform: an empty name (a leading {@code '/'}, POSIX-absolute and
+     * root-relative on Windows; {@code //server/share}, a UNC path;
+     * {@code a//b}; a trailing {@code '/'}); {@code .}, {@code ..} and every
+     * other name made only of dots; a trailing {@code '.'}, which Win32 would
+     * trim; a leading {@code '.'} or {@code '-'}; a device stem
+     * ({@code nul}, {@code con.wav}, {@code com1.x}); and every character
+     * outside {@code [a-z0-9._-]}, among them {@code ':'} (the drive forms
+     * {@code C:/…} and {@code C:x}, an NTFS alternate data stream such as
+     * {@code segment.wav:stream}), {@code '~'} (a generated 8.3 short name
+     * such as {@code segmen~1.wav}), a space, and every capital and non-ASCII
+     * letter.
+     * The backslash is refused separately, before this rule runs.
+     */
+    private static boolean isNameSequence(String path) {
+        for (String name : path.split("/", -1)) {
+            if (!isPortableName(name)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether one name of a segment path keeps the {@code isNameSequence} rule. */
+    private static boolean isPortableName(String name) {
+        if (!SEGMENT_PATH_NAME.matcher(name).matches() || name.endsWith(".")) {
+            return false;
+        }
+        int firstDot = name.indexOf('.');
+        String stem = firstDot < 0 ? name : name.substring(0, firstDot);
+        return !WINDOWS_DEVICE_STEM.matcher(stem).matches();
     }
 
     private static List<SegmentEntry> canonicalOrder(List<TrackEntry> tracks, List<SegmentEntry> segments) {

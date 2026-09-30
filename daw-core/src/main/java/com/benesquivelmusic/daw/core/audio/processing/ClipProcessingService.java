@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.audio.processing;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audioimport.WavFileReader;
 import com.benesquivelmusic.daw.core.export.WavExporter;
+import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.undo.CompoundUndoableAction;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
@@ -46,6 +47,19 @@ import java.util.UUID;
  * of it are not processed. The rendered
  * file of a recorded clip is written beside its source, i.e. inside the
  * take's track directory, and is not listed in the take's manifest.</p>
+ *
+ * <p><b>Clip references (story 323).</b> A clip whose source reference is not
+ * an absolute path on this platform — such as a reference a project file
+ * could not resolve against its directory, which the load keeps as written —
+ * names no file ({@link ProjectPaths#isAbsoluteReference}). It is refused
+ * with {@link IllegalStateException} before anything is rendered, and never
+ * resolved against the JVM's working directory; a clip with no source
+ * reference ({@code null} or blank) is refused the same way, with a message
+ * of its own. The batch variants check every clip of the selection for the
+ * three things the action itself refuses — no source reference, more than
+ * one segment, and a source reference that is not an absolute path —
+ * before they build an action, so a batch holding such a clip is refused
+ * as a whole and no clip of it is processed.</p>
  *
  * <p>The returned {@link UndoableAction} can be executed through the
  * project's {@link com.benesquivelmusic.daw.core.undo.UndoManager}.
@@ -137,10 +151,12 @@ public final class ClipProcessingService {
      * Batch reverse: produces a single {@link CompoundUndoableAction}
      * covering the given clips.
      *
-     * @throws IllegalStateException if any clip of the batch is a recorded
-     *         take spanning more than one segment; the message names the
-     *         first such clip. Every clip is checked before any action is
-     *         built, so no clip of a refused batch is processed.
+     * @throws IllegalStateException if any clip of the batch has no source
+     *         reference ({@code null} or blank), is a recorded take spanning
+     *         more than one segment, or has a source reference that is not an
+     *         absolute path; the message names the first such clip. Every
+     *         clip is checked before any action is built, so no clip of a
+     *         refused batch is processed.
      */
     public UndoableAction reverse(List<AudioClip> clips) {
         requireProcessableBatch(clips, Mode.REVERSE);
@@ -153,10 +169,12 @@ public final class ClipProcessingService {
      * Batch normalize: produces a single {@link CompoundUndoableAction}
      * covering the given clips, each normalized to {@code targetPeakDbfs}.
      *
-     * @throws IllegalStateException if any clip of the batch is a recorded
-     *         take spanning more than one segment; the message names the
-     *         first such clip. Every clip is checked before any action is
-     *         built, so no clip of a refused batch is processed.
+     * @throws IllegalStateException if any clip of the batch has no source
+     *         reference ({@code null} or blank), is a recorded take spanning
+     *         more than one segment, or has a source reference that is not an
+     *         absolute path; the message names the first such clip. Every
+     *         clip is checked before any action is built, so no clip of a
+     *         refused batch is processed.
      */
     public UndoableAction normalize(List<AudioClip> clips, double targetPeakDbfs) {
         requireProcessableBatch(clips, Mode.NORMALIZE);
@@ -168,7 +186,8 @@ public final class ClipProcessingService {
     /**
      * The batch factories' gate: a compound action runs its children in
      * order with no rollback, so a clip the render must refuse is refused
-     * here, before the clips ahead of it could be processed.
+     * here, before the clips ahead of it could be processed. It makes the
+     * three checks {@code execute()} makes, in the same order.
      */
     private static void requireProcessableBatch(List<AudioClip> clips, Mode mode) {
         Objects.requireNonNull(clips, "clips must not be null");
@@ -176,8 +195,22 @@ public final class ClipProcessingService {
             throw new IllegalArgumentException("clips must not be empty");
         }
         for (AudioClip clip : clips) {
-            requireSingleSegment(Objects.requireNonNull(clip, "clip must not be null"), mode);
+            requireSource(Objects.requireNonNull(clip, "clip must not be null"));
+            requireSingleSegment(clip, mode);
+            requireAbsoluteSource(clip, mode);
         }
+    }
+
+    /**
+     * Returns the clip's source reference, refusing a clip that has none
+     * ({@code null} or blank): there is no file to render.
+     */
+    private static String requireSource(AudioClip clip) {
+        String source = clip.getSourceFilePath();
+        if (source == null || source.isBlank()) {
+            throw new IllegalStateException("Clip has no source asset to process: " + clip.getId());
+        }
+        return source;
     }
 
     /**
@@ -191,6 +224,24 @@ public final class ClipProcessingService {
             throw new IllegalStateException("Clip " + clip.getId()
                     + " is a multi-segment recorded take (" + segments.size()
                     + " segments); consolidate it before " + operationName(mode));
+        }
+    }
+
+    /**
+     * Refuses a clip whose source reference is present but is not an
+     * absolute path on this platform (story 323): it names no file
+     * ({@link ProjectPaths#isAbsoluteReference}), and resolving it against
+     * the JVM's working directory would read, and write beside, a file the
+     * reference does not name. A clip with no source reference at all
+     * ({@code null} or blank) is refused by {@code requireSource}, which both
+     * callers run first.
+     */
+    private static void requireAbsoluteSource(AudioClip clip, Mode mode) {
+        String source = clip.getSourceFilePath();
+        if (source != null && !source.isBlank() && !ProjectPaths.isAbsoluteReference(source)) {
+            throw new IllegalStateException("Clip " + clip.getId() + ": its source reference '"
+                    + source + "' is not an absolute path, so it names no file; relink the clip"
+                    + " before " + operationName(mode));
         }
     }
 
@@ -316,28 +367,28 @@ public final class ClipProcessingService {
         /**
          * {@inheritDoc}
          *
-         * @throws IllegalStateException if the clip has no source asset, or if
+         * @throws IllegalStateException if the clip has no source asset, if
          *         it is a recorded take spanning more than one segment — the
          *         render reads one file, so processing only the head would
-         *         silently drop every later segment. The refusal comes before
-         *         anything is rendered for this clip: no file is written and
-         *         nothing is recorded in the {@link ClipAssetHistory} for it
-         *         (the batch factories refuse such a clip earlier still,
-         *         before any clip of the batch is processed).
+         *         silently drop every later segment — or if its source
+         *         reference is not an absolute path on this platform, so it
+         *         names no file (the message says to relink the clip). The
+         *         refusal comes before anything is rendered for this clip: no
+         *         file is written and nothing is recorded in the
+         *         {@link ClipAssetHistory} for it (the batch factories refuse
+         *         all three earlier still, before any clip of the batch is
+         *         processed).
          */
         @Override
         public void execute() {
             try {
                 if (!executedOnce) {
-                    String source = clip.getSourceFilePath();
-                    if (source == null || source.isBlank()) {
-                        throw new IllegalStateException(
-                                "Clip has no source asset to process: " + clip.getId());
-                    }
                     // Checked when the action runs as well: the single-clip
-                    // factories build it without this check, and the list
-                    // that counts is the one the clip carries now.
+                    // factories build it without these checks, and the list
+                    // and source that count are the ones the clip carries now.
+                    String source = requireSource(clip);
                     requireSingleSegment(clip, mode);
+                    requireAbsoluteSource(clip, mode);
                     previousSegments = clip.getSourceSegmentPaths();
                     previousPath = Paths.get(source);
                     newPath = produceProcessedFile(previousPath);

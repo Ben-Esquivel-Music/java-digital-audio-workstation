@@ -3,23 +3,31 @@ package com.benesquivelmusic.daw.core.persistence.archive;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.stream.Stream;
+import java.util.zip.ZipFile;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Verifies that {@link ProjectArchiver} can bundle a project together with
@@ -517,6 +525,158 @@ class ProjectArchiverTest {
         assertThat(opened.missingAssets()).hasSize(2).doesNotHaveDuplicates();
         assertThat(opened.missingAssets()).anyMatch(name -> name.endsWith("_segment-000.wav"));
         assertThat(opened.missingAssets()).anyMatch(name -> name.endsWith("_segment-001.wav"));
+    }
+
+    // ── Story 323 — a clip reference that is not an absolute path names no file ──
+
+    @Test
+    void saveAsArchivePacksNoFileForAClipReferenceThatIsNotAnAbsolutePath() throws IOException {
+        Path mediaDir = Files.createDirectories(tmp.resolve("media"));
+        byte[] foundBytes = {6, 6, 6, 6, 6, 6};
+        Path found = Files.write(mediaDir.resolve("found.wav"), foundBytes);
+        Path present = Files.write(mediaDir.resolve("segment-000.wav"), new byte[]{1, 2});
+        String relative = relativeFromTheWorkingDirectory(found);
+        DawProject project = new DawProject("Relative", AudioFormat.CD_QUALITY);
+        AudioClip single = new AudioClip("Single", 0, 4, relative);
+        project.createAudioTrack("A").addClip(single);
+        AudioClip take = new AudioClip("Take", 0, 8, present.toString());
+        take.setSourceSegmentPaths(List.of(present.toString(), relative));
+        project.createAudioTrack("B").addClip(take);
+        ProjectArchiver archiver = new ProjectArchiver();
+
+        Path plain = tmp.resolve("plain.dawz");
+        ProjectArchiveSummary summary = archiver.saveAsArchive(project, plain);
+
+        assertThat(summary.uniqueAssetCount()).as("only the absolute segment is packed").isEqualTo(1);
+        List<String> packed = assetEntryNames(plain);
+        assertThat(packed).hasSize(1);
+        assertThat(packed.getFirst()).endsWith("_segment-000.wav");
+        assertThat(projectDocument(plain))
+                .contains("source-file=\"" + relative + "\"")
+                .contains("<source-segment path=\"" + relative + "\"/>");
+        assertThat(single.getSourceFilePath()).isEqualTo(relative);
+        assertThat(take.getSourceSegmentPaths()).containsExactly(present.toString(), relative);
+
+        // The reference takes the missing-asset path: a stub decision for it
+        // is honoured, and the file the working directory would name is not.
+        Path stubbed = tmp.resolve("stubbed.dawz");
+        archiver.saveAsArchive(project, stubbed, ArchiveOptions.defaults(),
+                List.of(ArchiveAssetDecision.useStub(relative)));
+        try (ZipFile zip = new ZipFile(stubbed.toFile())) {
+            List<String> stubs = zip.stream().map(java.util.zip.ZipEntry::getName)
+                    .filter(name -> name.endsWith("_found.wav")).toList();
+            assertThat(stubs).hasSize(1);
+            String content = new String(zip.getInputStream(zip.getEntry(stubs.getFirst())).readAllBytes(),
+                    StandardCharsets.UTF_8);
+            assertThat(content).startsWith("DAW missing asset stub").contains("original=" + relative);
+        }
+    }
+
+    @Test
+    void previewAssetSizesLeavesOutAClipReferenceThatIsNotAnAbsolutePath() throws IOException {
+        Path mediaDir = Files.createDirectories(tmp.resolve("media"));
+        Path found = Files.write(mediaDir.resolve("found.wav"), new byte[64]);
+        byte[] presentBytes = {1, 2, 3};
+        Path present = Files.write(mediaDir.resolve("present.wav"), presentBytes);
+        String relative = relativeFromTheWorkingDirectory(found);
+        DawProject project = new DawProject("Relative", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("A").addClip(new AudioClip("Single", 0, 4, relative));
+        AudioClip take = new AudioClip("Take", 0, 8, present.toString());
+        take.setSourceSegmentPaths(List.of(present.toString(), relative));
+        project.createAudioTrack("B").addClip(take);
+
+        Map<String, Long> sizes = new ProjectArchiver().previewAssetSizes(project, ArchiveOptions.defaults());
+
+        assertThat(sizes).containsExactly(entry(sha256(presentBytes), (long) presentBytes.length));
+    }
+
+    @Test
+    void consolidateInPlaceLeavesAClipReferenceThatIsNotAnAbsolutePathAsItIs() throws IOException {
+        Path projectDir = Files.createDirectories(tmp.resolve("MyProject"));
+        Path external = Files.createDirectories(tmp.resolve("external"));
+        Path found = Files.write(external.resolve("found.wav"), new byte[]{4, 4, 4, 4});
+        Path loop = Files.write(external.resolve("loop.wav"), new byte[]{5, 5});
+        String relative = relativeFromTheWorkingDirectory(found);
+        DawProject project = new DawProject("Relative", AudioFormat.CD_QUALITY);
+        AudioClip single = new AudioClip("Single", 0, 4, relative);
+        project.createAudioTrack("A").addClip(single);
+        AudioClip take = new AudioClip("Take", 0, 8, loop.toString());
+        take.setSourceSegmentPaths(List.of(loop.toString(), relative));
+        project.createAudioTrack("B").addClip(take);
+
+        ProjectArchiveSummary summary = new ProjectArchiver().consolidateInPlace(
+                project, projectDir, ArchiveOptions.defaults());
+
+        assertThat(summary.uniqueAssetCount()).as("only the absolute segment is consolidated").isEqualTo(1);
+        assertThat(single.getSourceFilePath()).isEqualTo(relative);
+        assertThat(take.getSourceSegmentPaths()).hasSize(2);
+        assertThat(Path.of(take.getSourceSegmentPaths().getFirst()).getParent())
+                .isEqualTo(projectDir.resolve(ProjectArchiver.CONSOLIDATED_ASSETS_DIR).toAbsolutePath());
+        assertThat(take.getSourceSegmentPaths().get(1)).isEqualTo(relative);
+        try (Stream<Path> assets = Files.list(projectDir.resolve(ProjectArchiver.CONSOLIDATED_ASSETS_DIR))) {
+            List<String> copied = assets.map(p -> p.getFileName().toString()).toList();
+            assertThat(copied).hasSize(1);
+            assertThat(copied.getFirst()).endsWith("_loop.wav");
+        }
+    }
+
+    @Test
+    void aReferenceTheProjectFileCouldNotResolveIsNeverConsolidatedFromTheWorkingDirectory()
+            throws IOException {
+        // The prober's reproduction, made independent of the working
+        // directory: a hand-edited project.daw names, relative to the JVM's
+        // working directory, a real file outside the project. Against the
+        // project directory the reference escapes, so the load keeps it as
+        // written and reports it missing; consolidation must not then copy
+        // the file the working directory would name into the project.
+        Path projectDir = Files.createDirectories(tmp.resolve("Session"));
+        Path found = Files.write(Files.createDirectories(tmp.resolve("elsewhere")).resolve("found.wav"),
+                new byte[]{8, 8, 8});
+        String relative = relativeFromTheWorkingDirectory(found);
+        DawProject edited = new DawProject("Hand edited", AudioFormat.CD_QUALITY);
+        edited.createAudioTrack("T").addClip(new AudioClip("Escaping", 0, 4, relative));
+        String xml = new ProjectSerializer().serialize(edited);
+        ProjectDeserializer deserializer = new ProjectDeserializer();
+        DawProject loaded = deserializer.deserialize(xml, projectDir);
+        AudioClip clip = loaded.getTracks().getFirst().getClips().getFirst();
+        assumeTrue(relative.equals(clip.getSourceFilePath()),
+                "fixture: the reference escapes the project directory, so the load keeps it as written");
+        assertThat(deserializer.getMissingFiles()).containsExactly(relative);
+
+        ProjectArchiveSummary summary = new ProjectArchiver().consolidateInPlace(
+                loaded, projectDir, ArchiveOptions.defaults());
+
+        assertThat(summary.uniqueAssetCount()).isZero();
+        assertThat(clip.getSourceFilePath()).isEqualTo(relative);
+        try (Stream<Path> assets = Files.list(projectDir.resolve(ProjectArchiver.CONSOLIDATED_ASSETS_DIR))) {
+            assertThat(assets).isEmpty();
+        }
+    }
+
+    /**
+     * A relative clip reference that names {@code file} when it is resolved
+     * against the JVM's working directory — what an archiver that ignored
+     * story 323's rule would find and pack. Both sides are real paths, so a
+     * symbolic link on the way cannot break the join; the test is skipped
+     * when no relative path joins them (different drives).
+     */
+    private static String relativeFromTheWorkingDirectory(Path file) throws IOException {
+        Path cwd = Path.of("").toAbsolutePath().toRealPath();
+        Path target = file.toRealPath();
+        assumeTrue(cwd.getRoot().equals(target.getRoot()),
+                "fixture: the temp directory and the working directory share a root");
+        String relative = cwd.relativize(target).toString().replace('\\', '/');
+        assertThat(Path.of(relative).isAbsolute()).as("fixture: %s is relative", relative).isFalse();
+        assertThat(Files.isRegularFile(Path.of(relative)))
+                .as("fixture: %s names the file from the working directory", relative).isTrue();
+        return relative;
+    }
+
+    private static String projectDocument(Path archive) throws IOException {
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
+            return new String(zip.getInputStream(zip.getEntry("project.daw")).readAllBytes(),
+                    StandardCharsets.UTF_8);
+        }
     }
 
     /** A clip shaped like a recorded take: the segment list is the authority, the head follows. */
