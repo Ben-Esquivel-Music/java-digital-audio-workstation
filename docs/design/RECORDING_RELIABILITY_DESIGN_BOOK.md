@@ -603,8 +603,19 @@ wall-clock reads are fine here). Cadence contracts:
 - **Disk-headroom watch**: before each append, a cached free-space figure (refreshed on a slow
   tick) is checked; crossing the low-water mark raises a warning through the notification seam,
   and exhaustion seals the take cleanly (ABORTED with everything captured so far intact) instead
-  of throwing out of a write loop.
-- The flush thread never touches JavaFX; its facts ride `FxDispatcher` channels (§6.1).
+  of throwing out of a write loop. As landed (story 323 review), an early seal — exhaustion, a
+  write failure, a throwable that ends the drain loop — completes the take's
+  `RecordingPipeline.earlySeal()` signal on the flush thread once every lane's seal and the final
+  manifest write have been attempted, and the flush thread does nothing more about it; the app's
+  dependent only posts to the FX thread through `FxDispatcher`, where the ordinary Stop runs
+  unless a Stop got there first, and one ERROR names the cause (story 325's `RecordCoordinator`
+  is to absorb this as a RECORDING → ABORTED transition, a row that story adds to §5.2).
+- The flush thread never touches FX-thread state; its continuous facts are to ride
+  `FxDispatcher` channels (§6.1). As landed (story 323), the two one-shot signals the app
+  listens to — the early seal, and, after a Stop whose join ran out, the end of the thread — are
+  `CompletionStage`s whose app dependents only post to the FX thread through `FxDispatcher`, on
+  `capture-flush` when the signal completes there: an interim departure from §6.1's `EventBus`
+  rule for discrete facts until story 325's `RecordCoordinator`.
 
 ### 4.4 The segment writer and atomic finalize
 
@@ -705,7 +716,7 @@ then surface the cause via the notification seam (§6.3).
 | Device lost (event or watchdog) | RECORDING   | —                                                                 | DEVICE_LOST | — (runs §5.5) |
 | Device returned                 | DEVICE_LOST | same device per identity match; reopen succeeds                   | IDLE (armed kept) | stays DEVICE_LOST, notification repeats remediation |
 | Settings apply requested        | RECORDING   | **blocked**: prompt "Stop the take and apply?"; apply proceeds only after FINALIZING completes | — | — (chosen over silent-defer: a deferred apply that fires later surprises; over allow: §1.3's gutted-take bug) |
-| Project replace requested       | FINALIZING  | **blocked** (story 323): every in-app door that replaces the open project (New, Open, Import, Restore from Archive, Hub/Welcome open, snapshot restore, Recover, migration roll-back) is refused with a WARNING toast and no prompt until FINALIZING completes | — | — (the take is published into the project it was recorded in; app exit is not a guarded door — story 333's close guard owns it) |
+| Project replace requested       | RECORDING, FINALIZING | **blocked** (story 323): every in-app door that replaces the open project (New, Open, Import, Restore from Archive, Hub/Welcome open, snapshot restore, Recover, migration roll-back) is refused with a WARNING toast and no prompt until FINALIZING completes; in RECORDING (story 323 review) the same doors are refused the same way while `TransportController.isRecordingInFlight()` — an active audio pipeline or a live MIDI recorder — with the WARNING `PROJECT_CHANGE_WHILE_RECORDING_MESSAGE` ("The open project can't be replaced while recording — stop the recording first"; the load that follows an archive extraction, a journal replay — successful or not — or a journal discard that deleted the journal uses `lateLoadRefusalWhileRecordingMessage`, which also says what that work did) | — | — (the take is published into the project it was recorded in; app exit is not a guarded door — story 333's close guard owns it) |
 | Input-open failure mid-arm      | any pre-RECORDING | —                                                           | ABORTED→IDLE | covered by Record guard row |
 | MIDI device missing / open fail | arm-time    | per-track: skip track with visible warning; if *no* track opens, treat as Record guard failure | — | — |
 
@@ -785,14 +796,18 @@ flush-side decisions are sample-accurate.
 | Thread            | Owns (writes)                                     | Never does |
 |-------------------|---------------------------------------------------|------------|
 | device callback   | ring slots + headers; health atomics              | anything else in §5.1's "never RT" rows |
-| `capture-flush`   | segment files, manifests, mirror, take model, ring read index | JavaFX access; blocking on FX; unbounded park |
+| `capture-flush`   | segment files, manifests, mirror, take model, ring read index | touching FX-thread state; any JavaFX call but the `FxDispatcher` post below; blocking on FX; unbounded park |
 | FX thread         | record state machine; arm/routing edits; notifications | file I/O; ring access |
 | device-event thread (Book 4 watcher / backend) | publishes device + health events | mutating capture state directly — events route through `RecordCoordinator` on FX |
 
 All cross-thread facts ride the two existing seams: `FxDispatcher` continuous channels for
 continuous values (elapsed, mirror, disk headroom) and the typed `EventBus` for discrete facts
 (take finalized, device lost, rescue registered), per `CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md
-§3.4` — no new bus, no ad-hoc `Platform.runLater`.
+§3.4` — no new bus, no ad-hoc `Platform.runLater`. As landed (story 323), until story 325's
+`RecordCoordinator`, two discrete facts are not `EventBus` events: the early seal and the end of
+the flush thread after a Stop whose join ran out are `CompletionStage`s whose app dependents
+only post to the FX thread through `FxDispatcher` — an unconditional `Platform.runLater`, made on
+`capture-flush` when the signal completes there (§4.3).
 
 ### 6.2 Observer rules on the capture path
 
@@ -1073,7 +1088,7 @@ Where each construct of this book attaches to today's tree.
 | Reference | Relevance |
 |-----------|-----------|
 | SKILL `dawg-annotations-reflection` | `@RealTimeSafe` (`daw-sdk/.../annotation/RealTimeSafe.java`) contract + the annotation-driven sentinel scanning idiom (§2.2, §5.1) |
-| SKILL `research-daw` §3 (real-time audio) | lock-free hand-off, dedicated I/O threads, never block the callback (§2.2, §4.2-4.3) |
+| SKILL `research-daw` §3 (real-time audio) | its primary source, `docs/research/open-source-daw-tools.md` §3: a lock-free audio thread — "no allocations or locks on the audio thread" — and "Ring buffers: For communication between audio thread and UI thread" (§2.2, §4.2); the dedicated drain thread is this book's own design (§2.3, §4.3), on the `AsioBufferSwitchShim` + `AudioBlockRing` pattern below |
 | SKILL `javafx-application-design` §11 | FX thread is sacred; capture facts marshal through one seam (§6.1) |
 | Repository pattern: `AsioBufferSwitchShim` + `AudioBlockRing` (stories 311-312) | the house ring + drain-thread discipline this book generalises (§1.9, §4.2-4.3); also the `SubmissionPublisher`-off-RT rule (§6.2) |
 | Repository pattern: `RealTimeSafeContractTest` | bytecode-level proof mechanism for §5.1 (Stage 2 proof) |

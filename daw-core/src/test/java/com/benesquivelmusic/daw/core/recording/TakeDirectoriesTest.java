@@ -129,7 +129,7 @@ class TakeDirectoriesTest {
         // The loop ends only because the ordinal moves on, so it runs under the guard: a bump that
         // regressed fails this test instead of retrying the same name on the JUnit thread forever.
         AtomicReference<Path> allocated = new AtomicReference<>();
-        Throwable thrown = Story323TestSupport.outcomeWithinTheGuard("take-directories-test-collision",
+        Throwable thrown = RampCaptureTestSupport.outcomeWithinTheGuard("take-directories-test-collision",
                 () -> allocated.set(TakeDirectories.allocate(takes, NOW, 1)));
         assertThat(thrown).isNull();
         Path claimed = allocated.get();

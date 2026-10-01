@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * of the atomic replace: the failure is reported and the old sidecar survives
  * untouched. Deterministic; no timing.
  */
-class Story323TakeManifestAtomicWriteProbeContractTest {
+class TakeManifestAtomicReplaceTest {
 
     @TempDir
     Path takeDir;

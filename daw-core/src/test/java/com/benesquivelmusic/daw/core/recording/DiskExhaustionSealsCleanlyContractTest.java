@@ -21,10 +21,10 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.decodedRampValue;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.decodedRampValue;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -33,9 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * no throw escapes the flush loop, the thread stays alive draining and
  * discarding, and {@code stop()} returns clips referencing the sealed segments.
  */
-class Story323DiskExhaustionContractTest {
+class DiskExhaustionSealsCleanlyContractTest {
 
-    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * Story323TestSupport.BYTES_PER_FRAME_MONO_16;
+    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
     private static final long GIB = 1L << 30;
     private static final long MIB = 1L << 20;
 
@@ -51,7 +51,7 @@ class Story323DiskExhaustionContractTest {
     void setUp() {
         engine = new AudioEngine(MONO_16);
         transport = new Transport();
-        track = Story323TestSupport.armedMonoTrack("Keys");
+        track = RampCaptureTestSupport.armedMonoTrack("Keys");
     }
 
     @Test
@@ -271,8 +271,8 @@ class Story323DiskExhaustionContractTest {
             service.setDrainPaused(true);
             float[][] output = new float[1][BLOCK_FRAMES];
             for (int b = 0; b < 9; b++) {        // 9 offered into 8 slots: one dropped
-                engine.processBlock(Story323TestSupport.rampBlock((long) b * BLOCK_FRAMES), output, BLOCK_FRAMES);
-                Story323TestSupport.advanceOneBlock(transport);
+                engine.processBlock(RampCaptureTestSupport.rampBlock((long) b * BLOCK_FRAMES), output, BLOCK_FRAMES);
+                RampCaptureTestSupport.advanceOneBlock(transport);
             }
             service.setDrainPaused(false);
             pipeline.awaitFlushed();
@@ -302,8 +302,8 @@ class Story323DiskExhaustionContractTest {
             withSink.start();
             withSink.getCaptureFlushService().setDrainPaused(true);
             for (int b = 0; b < 9; b++) {
-                engine.processBlock(Story323TestSupport.rampBlock((long) b * BLOCK_FRAMES), output, BLOCK_FRAMES);
-                Story323TestSupport.advanceOneBlock(transport);
+                engine.processBlock(RampCaptureTestSupport.rampBlock((long) b * BLOCK_FRAMES), output, BLOCK_FRAMES);
+                RampCaptureTestSupport.advanceOneBlock(transport);
             }
             withSink.getCaptureFlushService().setDrainPaused(false);
             withSink.awaitFlushed();

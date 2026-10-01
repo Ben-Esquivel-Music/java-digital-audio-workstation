@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * {@link TakeManifest.SegmentEntry}.
  *
  * <p>Pins the clauses of the rule that {@code TakeManifestTest} and
- * {@code Story323ManifestPathProbeContractTest} only sample. Each of the 24
+ * {@code TakeManifestPathContainmentTest} only sample. Each of the 24
  * stems the rule refuses — the Windows device names {@code con},
  * {@code prn}, {@code aux}, {@code nul}, {@code com1} to {@code com9} and
  * {@code lpt1} to {@code lpt9}, plus {@code com0} and {@code lpt0} — is
@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * name is a lowercase letter or a digit, so a leading {@code '_'} is refused
  * as a leading {@code '.'} or {@code '-'} is.</p>
  */
-class Story323SegmentNameRuleProbeContractTest {
+class TakeManifestSegmentNameRuleTest {
 
     private static final String TRACK = "b7d0c3a4-5e61-4f2a-9c1d-0a1b2c3d4e5f";
 

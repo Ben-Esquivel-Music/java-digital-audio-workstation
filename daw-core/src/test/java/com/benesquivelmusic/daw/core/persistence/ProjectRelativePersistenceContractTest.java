@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * {@link DawProject} whose metadata path is that directory, and one clip
  * carrying both segments' absolute paths.</p>
  */
-class Story323ProjectRelativeRoundTripContractTest {
+class ProjectRelativePersistenceContractTest {
 
     private static final String TAKE_DIR_NAME = "2026-09-28T10-00-00_take-0001";
     private static final double SAMPLE_RATE = 48_000.0;

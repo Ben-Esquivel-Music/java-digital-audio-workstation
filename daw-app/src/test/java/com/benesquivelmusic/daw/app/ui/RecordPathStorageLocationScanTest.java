@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * in prose, and that the predicate takes a record entry point in and leaves
  * an unrelated feature out.</p>
  */
-class Story323StorageLocationScanTest {
+class RecordPathStorageLocationScanTest {
 
     private static final String FORBIDDEN_TOKEN = "createTempDirectory";
 

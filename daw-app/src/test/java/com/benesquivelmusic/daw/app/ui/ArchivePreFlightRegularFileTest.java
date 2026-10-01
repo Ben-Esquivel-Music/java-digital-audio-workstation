@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * out): a pre-flight that asked only whether the path exists would hide it
  * from the dialog, and the archive would then skip it with no decision.</p>
  */
-class Story323PreFlightRegularFileProbeTest {
+class ArchivePreFlightRegularFileTest {
 
     @TempDir
     Path tmp;

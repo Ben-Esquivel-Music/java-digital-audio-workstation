@@ -329,7 +329,7 @@ class CaptureFlushServiceTest {
     }
 
     @Test
-    void aCrashSimulationWhoseJoinRunsOutAbandonsNothing() throws Exception {
+    void aStopAndAbandonWhoseJoinRunsOutAbandonsNothing() throws Exception {
         Track synth = new Track("Synth", TrackType.AUDIO);
         CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
         TrackCapture capture = instrumentCapture(synth);
@@ -342,7 +342,7 @@ class CaptureFlushServiceTest {
             publish(ring, 0, block(2, 0.5f), 2);
             assertThat(held.await(GUARD.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
 
-            assertThatThrownBy(service::simulateHardTermination)
+            assertThatThrownBy(service::stopAndAbandon)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("nothing was abandoned");
             assertThat(capture.session().isActive()).as("the session the thread holds was not abandoned").isTrue();
@@ -351,7 +351,7 @@ class CaptureFlushServiceTest {
 
             release.countDown();
             service.termination().toCompletableFuture().get(GUARD.toMillis(), TimeUnit.MILLISECONDS);
-            service.simulateHardTermination(); // the thread is gone: now the crash may be simulated
+            service.stopAndAbandon(); // the thread is gone: now the writers may be abandoned
         } finally {
             release.countDown();
         }

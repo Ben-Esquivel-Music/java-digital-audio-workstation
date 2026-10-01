@@ -1561,6 +1561,17 @@ public final class MainController {
     }
 
     /**
+     * Story 323 review — whether the CURRENT transport controller has a
+     * recording in flight; read by {@link ProjectLifecycleController} at the
+     * same doors as {@link #isTakeBeingWritten()}, which it refuses while
+     * this is {@code true} (Recording Reliability book §5.2). Quitting the
+     * application does not ask (story 333). FX thread.
+     */
+    private boolean isRecordingInFlight() {
+        return transportController != null && transportController.isRecordingInFlight();
+    }
+
+    /**
      * Story 322 — builds the ONE session-level input selection (Audio Engine
      * Wiring Design Book §5.6 "Per-track input device") over the app-scoped
      * settings, engine controller and notification bar. App-scoped like its
@@ -1677,9 +1688,11 @@ public final class MainController {
                 new ProjectArchiver(),
                 dispatcher());
         // Story 323 review — no in-app door replaces the open project while a
-        // take is still being written to disk. A method reference, so every
-        // check reads the transport controller that is current at that moment.
+        // recording is in flight or a take is still being written to disk.
+        // Method references, so every check reads the transport controller
+        // that is current at that moment.
         projectLifecycleController.setTakeBeingWrittenCheck(this::isTakeBeingWritten);
+        projectLifecycleController.setRecordingInFlightCheck(this::isRecordingInFlight);
         // Story 298 — the journal-open hook: on every open / new, atomically
         // close the prior project's journal (sealing its segments into the
         // outgoing session) then open the new one — all off the FX thread on a

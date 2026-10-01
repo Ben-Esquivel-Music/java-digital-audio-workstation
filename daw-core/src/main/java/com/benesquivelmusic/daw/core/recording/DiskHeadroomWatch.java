@@ -208,7 +208,7 @@ public final class DiskHeadroomWatch {
     }
 
     private State derive() {
-        if (consecutiveProbeFailures >= FAILURES_BEFORE_EXHAUSTED) {
+        if (isExhaustedByProbeFailures()) {
             return State.EXHAUSTED;
         }
         if (!hasFigure) {
@@ -227,7 +227,7 @@ public final class DiskHeadroomWatch {
         switch (next) {
             case LOW -> warn("Disk headroom low under " + root + ": "
                     + cachedFreeBytes / MIB + " MiB free (low-water " + lowWaterBytes / MIB + " MiB)");
-            case EXHAUSTED -> warn(consecutiveProbeFailures >= FAILURES_BEFORE_EXHAUSTED
+            case EXHAUSTED -> warn(isExhaustedByProbeFailures()
                     ? "Disk headroom unknown under " + root + ": " + consecutiveProbeFailures
                             + " consecutive free-space probes failed; sealing the take"
                     : "Disk exhausted under " + root + ": " + cachedFreeBytes / MIB
@@ -263,6 +263,18 @@ public final class DiskHeadroomWatch {
     /** Returns how many probes in a row have failed. */
     public int consecutiveProbeFailures() {
         return consecutiveProbeFailures;
+    }
+
+    /**
+     * Returns whether {@link #FAILURES_BEFORE_EXHAUSTED} or more probes in a
+     * row have failed: {@link #check(long)} then reports
+     * {@link State#EXHAUSTED} whatever the last probed figure was. The flush
+     * service reads it when it reports a take sealed for disk exhaustion
+     * ({@link EarlySeal.DiskExhausted#freeSpaceUnknown()}). Same thread as
+     * {@link #check(long)}.
+     */
+    boolean isExhaustedByProbeFailures() {
+        return consecutiveProbeFailures >= FAILURES_BEFORE_EXHAUSTED;
     }
 
     /** Returns the watched root. */

@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ({@code ProjectLifecycleController.lateLoadRefusalMessage}); and the FX
  * halves say what their load did when it is not refused.
  *
- * <p>{@code Story323ProjectChangeWhileTakeIsWrittenTest} drives the FX
+ * <p>{@code ProjectChangeWhileTakeIsWrittenTest} drives the FX
  * halves ({@code openRecoveredProject}, {@code openLastCleanSaveAfterFailedReplay},
  * {@code openRestoredArchive}) directly, with a load that succeeds; no test
  * ran a recovery of a project with a journal, so nothing drove the calls from
@@ -76,9 +76,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * IOException: AccessDeniedException on Windows, "Is a directory" on Linux);
  * a replay is made to fail by a checkpoint that is not a project.</p>
  *
- * <p>Same fixture as {@code Story323ProjectChangeWhileTakeIsWrittenTest}.
+ * <p>The same four late refusals are made while a recording is in flight
+ * (story 323 review, the user's decision "Refuse while recording"): a real
+ * recording ({@link RecordingInFlightFixture}) starts while the dialog is
+ * open, instead of a take starting to be written, and the one WARNING is
+ * the recording form
+ * ({@code ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage});
+ * the recording goes on untouched.</p>
+ *
+ * <p>Same fixture as {@code ProjectChangeWhileTakeIsWrittenTest}.
  * Every FX action runs through {@link Platform#runLater} and is bounded at
- * 5 s; the flow's outcome is polled for on the test thread, bounded by
+ * 5 s, or, for the fixture's Stop, at the longer bound
+ * {@link RecordingInFlightFixture} gives it; the flow's outcome is polled
+ * for on the test thread, bounded by
  * {@link #OUTCOME_BUDGET} (the scan, the replay and the discard are small
  * file operations). The dialog is answered on a later FX turn than the one
  * that showed it, so no test waits on a dialog; a dialog still open when a
@@ -86,7 +96,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * handed to a presenter that shows nothing.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
-class Story323LateLoadProbeTest {
+class LateLoadOutcomeReportingTest {
 
     private static final String RECOVERY_DIALOG_TITLE = "Recover unsaved work";
     private static final String RECOVER_EVERYTHING = "Recover everything";
@@ -105,14 +115,21 @@ class Story323LateLoadProbeTest {
     private final AtomicInteger recoveryDialogs = new AtomicInteger();
     private final AtomicReference<String> recoveryAnswer = new AtomicReference<>();
     private final AtomicReference<Throwable> answerFailure = new AtomicReference<>();
+    private final AtomicReference<Throwable> recordingStartFailure = new AtomicReference<>();
     private final NotificationHistoryService shown = new NotificationHistoryService();
+    /**
+     * What starts while the user reads the recovery dialog: a take starts
+     * being written; in the recording tests, a recording starts instead
+     * ({@link #aRecordingStartsWhileTheDialogIsOpen()}).
+     */
+    private final AtomicReference<Runnable> whileTheDialogIsOpen =
+            new AtomicReference<>(() -> takeBeingWritten.set(true));
     private final ListChangeListener<Window> answerRecoveryDialogs = change -> {
         while (change.next()) {
             for (Window window : change.getAddedSubList()) {
                 if (window instanceof Stage stage && RECOVERY_DIALOG_TITLE.equals(stage.getTitle())) {
                     recoveryDialogs.incrementAndGet();
-                    // A take starts being written while the user reads the dialog.
-                    takeBeingWritten.set(true);
+                    whileTheDialogIsOpen.get().run();
                     Platform.runLater(() -> answer(stage, recoveryAnswer.get()));
                 }
             }
@@ -122,6 +139,7 @@ class Story323LateLoadProbeTest {
     private ProjectManager projectManager;
     private Path songA;
     private ProjectLifecycleController lifecycle;
+    private RecordingInFlightFixture recording;
 
     @BeforeEach
     void openSongA() throws Exception {
@@ -148,15 +166,21 @@ class Story323LateLoadProbeTest {
 
     @AfterEach
     void closeTheOpenProject() throws Exception {
-        runOnFx(() -> {
-            Window.getWindows().removeListener(answerRecoveryDialogs);
-            for (Window window : List.copyOf(Window.getWindows())) {
-                if (window instanceof Stage stage && RECOVERY_DIALOG_TITLE.equals(stage.getTitle())) {
-                    stage.hide();
-                }
+        try {
+            if (recording != null) {
+                recording.close();
             }
-        });
-        projectManager.abandonProject();
+        } finally {
+            runOnFx(() -> {
+                Window.getWindows().removeListener(answerRecoveryDialogs);
+                for (Window window : List.copyOf(Window.getWindows())) {
+                    if (window instanceof Stage stage && RECOVERY_DIALOG_TITLE.equals(stage.getTitle())) {
+                        stage.hide();
+                    }
+                }
+            });
+            projectManager.abandonProject();
+        }
     }
 
     // ── the recovery flow, refused late ──────────────────────────────────────
@@ -231,6 +255,87 @@ class Story323LateLoadProbeTest {
         assertThat(warning.message())
                 .startsWith("Recovery failed (")
                 .endsWith(ProjectLifecycleController.lateLoadRefusalMessage(""))
+                .doesNotContain("opened the last clean save");
+        assertSongAIsStillOpen(songAModel);
+    }
+
+    // ── the recovery flow, refused late while recording ──────────────────────
+
+    @Test
+    void aDiscardRefusedWhileRecordingAfterTheJournalIsGoneSaysTheJournalWasDiscarded() throws Exception {
+        Path songB = aProjectWithACheckpointAndAJournal("Song B", aCheckpointOf("Song B"));
+        DawProject songAModel = project.get();
+        recoveryAnswer.set(RESTORE_CHECKPOINT_ONLY);
+        aRecordingStartsWhileTheDialogIsOpen();
+
+        runOnFx(() -> lifecycle.beginRecovery(songB));
+
+        assertOneWarningWhileRecording(ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage(
+                "The journal of " + songB + " was discarded"));
+        assertThat(onFx(shown::getEntries).getFirst().message())
+                .as("the recording form's own words, not only as lateLoadRefusalWhileRecordingMessage builds them")
+                .contains("the project was not opened", "stop the recording, then open it");
+        assertThat(ProjectContext.forProject(songB).journalDirectory())
+                .as("fixture: the discard deleted the journal before the load was refused").doesNotExist();
+        assertSongAIsStillOpen(songAModel);
+    }
+
+    @Test
+    void aReplayRefusedWhileRecordingAfterItWroteTheProjectFileSaysTheRecoveredChangesAreThere()
+            throws Exception {
+        Path songB = aProjectWithACheckpointAndAJournal("Song B", aCheckpointOf("Song B"));
+        Path projectFile = ProjectContext.forProject(songB).projectFile();
+        DawProject songAModel = project.get();
+        recoveryAnswer.set(RECOVER_EVERYTHING);
+        aRecordingStartsWhileTheDialogIsOpen();
+
+        runOnFx(() -> lifecycle.beginRecovery(songB));
+
+        assertOneWarningWhileRecording(ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage(
+                JOURNALED_CHANGES + " recovered changes were written to " + projectFile));
+        assertThat(recoveredBackupsIn(songB))
+                .as("fixture: the replay rewrote project.daw, backing up the prior file").hasSize(1);
+        assertSongAIsStillOpen(songAModel);
+    }
+
+    @Test
+    void aReplayWhoseProjectFileCouldNotBeWrittenIsRefusedWhileRecordingWithOneWarningThatCarriesTheFailure()
+            throws Exception {
+        Path songB = aProjectWithACheckpointAndAJournal("Song B", aCheckpointOf("Song B"));
+        // A directory where the replay writes its temporary project file.
+        Path occupied = Files.createDirectories(songB.resolve("project.daw.recovering.tmp"));
+        Files.writeString(occupied.resolve("occupied"), "not a project file");
+        DawProject songAModel = project.get();
+        recoveryAnswer.set(RECOVER_EVERYTHING);
+        aRecordingStartsWhileTheDialogIsOpen();
+
+        runOnFx(() -> lifecycle.beginRecovery(songB));
+
+        NotificationEntry warning = awaitOneEntryWhileRecording();
+        assertThat(warning.level()).isEqualTo(NotificationLevel.WARNING);
+        assertThat(warning.message())
+                .as("the failure, then the recording refusal's own words, in one WARNING")
+                .startsWith("Could not write recovered project: ")
+                .endsWith(ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage(""));
+        assertThat(ProjectContext.forProject(songB).journalDirectory())
+                .as("fixture: the write failed before the journal was cleared").isDirectory();
+        assertSongAIsStillOpen(songAModel);
+    }
+
+    @Test
+    void aFailedReplayRefusedLateWhileRecordingCarriesTheFailureAndClaimsNoOpen() throws Exception {
+        Path songB = aProjectWithACheckpointAndAJournal("Song B", "<<<not a project>>>");
+        DawProject songAModel = project.get();
+        recoveryAnswer.set(RECOVER_EVERYTHING);
+        aRecordingStartsWhileTheDialogIsOpen();
+
+        runOnFx(() -> lifecycle.beginRecovery(songB));
+
+        NotificationEntry warning = awaitOneEntryWhileRecording();
+        assertThat(warning.level()).isEqualTo(NotificationLevel.WARNING);
+        assertThat(warning.message())
+                .startsWith("Recovery failed (")
+                .endsWith(ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage(""))
                 .doesNotContain("opened the last clean save");
         assertSongAIsStillOpen(songAModel);
     }
@@ -311,6 +416,46 @@ class Story323LateLoadProbeTest {
 
     private void assertOneWarning(String message) throws Exception {
         assertThat(awaitOneEntry()).satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
+            assertThat(entry.message()).isEqualTo(message);
+        });
+    }
+
+    /**
+     * Records for real ({@link RecordingInFlightFixture}) instead of a take
+     * starting to be written: the lifecycle controller asks the recording
+     * transport controller both checks, as {@code MainController} asks its
+     * current one, and the recording starts while the user reads the
+     * recovery dialog — after the recovery's own up-front refusal has let it
+     * through — on an FX turn posted before the one that answers the dialog.
+     */
+    private void aRecordingStartsWhileTheDialogIsOpen() throws Exception {
+        recording = RecordingInFlightFixture.audio(project.get());
+        TransportController controller = recording.controller();
+        runOnFx(() -> {
+            lifecycle.setTakeBeingWrittenCheck(controller::isTakeBeingWritten);
+            lifecycle.setRecordingInFlightCheck(controller::isRecordingInFlight);
+        });
+        whileTheDialogIsOpen.set(() -> Platform.runLater(() -> {
+            try {
+                recording.startOnFx();
+            } catch (Throwable t) {
+                recordingStartFailure.set(t);
+            }
+        }));
+    }
+
+    /** {@link #awaitOneEntry()}, once the recording started while the dialog was open; it is still recording. */
+    private NotificationEntry awaitOneEntryWhileRecording() throws Exception {
+        NotificationEntry entry = awaitOneEntry();
+        assertThat(recordingStartFailure.get()).as("fixture: the recording started while the dialog was open")
+                .isNull();
+        recording.assertStillRecording();
+        return entry;
+    }
+
+    private void assertOneWarningWhileRecording(String message) throws Exception {
+        assertThat(awaitOneEntryWhileRecording()).satisfies(entry -> {
             assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
             assertThat(entry.message()).isEqualTo(message);
         });

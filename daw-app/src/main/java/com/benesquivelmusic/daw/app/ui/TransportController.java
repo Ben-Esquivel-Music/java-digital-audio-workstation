@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.EarlySeal;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
@@ -53,12 +54,15 @@ import javax.sound.midi.MidiDevice;
 import javax.sound.midi.MidiSystem;
 import javax.sound.midi.MidiUnavailableException;
 import java.io.IOException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletionStage;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -216,6 +220,17 @@ final class TransportController implements TransportIntentHandler {
     private boolean retired;
     /** How a pipeline is stopped — {@code RecordingPipeline::stop}; replaced only by {@link #setPipelineStopForTest}. */
     private PipelineStop pipelineStop = RecordingPipeline::stop;
+    /**
+     * How a take's early-seal signal is read — {@code RecordingPipeline::earlySeal};
+     * replaced only by {@link #setEarlySealSignalForTest}.
+     */
+    private EarlySealSignal earlySealSignal = RecordingPipeline::earlySeal;
+    /**
+     * How {@link #startMidiRecording} finds an armed MIDI track's input
+     * device by its name — {@link #resolveMidiDevice}; replaced only by
+     * {@link #setMidiInputDeviceResolverForTest}.
+     */
+    private Function<String, MidiDevice> midiInputDeviceResolver = TransportController::resolveMidiDevice;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
 
     /**
@@ -551,6 +566,18 @@ final class TransportController implements TransportIntentHandler {
      * {@link UndoManager#execute} does — clears the redo stack. A controller
      * {@linkplain #retire() retired} before that deferred half runs publishes
      * nothing at all.</p>
+     *
+     * <p><strong>A take the capture thread sealed early</strong> (story 323
+     * review). When the capture thread seals the take on its own — its
+     * disk-headroom watch reported the disk exhausted, or writing or
+     * capturing the take failed — this Stop runs for it on an FX turn
+     * ({@link #stopWhenSealedEarly}), unless a Stop
+     * got there first or the controller was {@linkplain #retire() retired}.
+     * Whichever Stop publishes such a take — this one, or the deferred half
+     * of one whose join ran out — publishes its clips and the "Record Audio"
+     * undo entry as always, but instead of the SUCCESS toast and its status
+     * text it shows {@link #takeSealedEarlyMessage} once, as the ERROR toast
+     * — here after the MIDI toast — and as the status text.</p>
      */
     @Override
     public void stop() {
@@ -574,10 +601,13 @@ final class TransportController implements TransportIntentHandler {
 
         // Finalize recording if a recording pipeline is active
         TakeFinalizationPendingException stillWriting = null;
+        String sealedEarlyReport = null;
         if (recordingPipeline != null && recordingPipeline.isActive()) {
             RecordingPipeline stopping = recordingPipeline;
             try {
-                publishRecordedTake(stopping, pipelineStop.stop(stopping));
+                List<AudioClip> clips = pipelineStop.stop(stopping);
+                publishRecordedTake(stopping, clips);
+                sealedEarlyReport = sealedEarlyMessage(stopping, clips.size()).orElse(null);
             } catch (TakeFinalizationPendingException pending) {
                 // The pipeline built nothing: its capture thread is still
                 // writing the take. The rest of this Stop runs; the clips
@@ -594,10 +624,13 @@ final class TransportController implements TransportIntentHandler {
         // Finalize MIDI recording if any MIDI recorders are active
         stopMidiRecording();
 
-        // After the MIDI toast, so that the take still being written is what
-        // the notification bar shows.
+        // After the MIDI toast, so that the take still being written — or the
+        // early seal that ended the take — is what the notification bar shows.
         if (stillWriting != null) {
             notificationBar.show(NotificationLevel.WARNING, TAKE_STILL_WRITING_MESSAGE);
+        }
+        if (sealedEarlyReport != null) {
+            reportTakeSealedEarly(sealedEarlyReport);
         }
 
         // Story 134 — use requestStop() so that a configured post-roll
@@ -668,9 +701,13 @@ final class TransportController implements TransportIntentHandler {
      * Whether a recording is in flight and still needs finalizing — an active
      * audio pipeline or any live MIDI recorder. Read by {@link #stop()} to
      * decide between the double-stop rewind gesture and the full stop flow: the
-     * pipeline can be active while the transport is STOPPED (see {@link #stop()}
-     * for how {@code RecordingPipeline.start()} leaves that state behind when it
-     * throws), and only the full flow finalizes it.
+     * pipeline can be active while the transport is STOPPED (see {@link #stop()}:
+     * an internal caller can stop the transport underneath a running
+     * pipeline), and only the full flow finalizes it.
+     * {@code MainController} also feeds the current controller's answer to
+     * {@code ProjectLifecycleController}, which refuses the in-app doors that
+     * replace the open project while it is {@code true} (story 323 review);
+     * quitting the application does not ask (story 333). FX thread.
      *
      * <p>A take still being written to disk ({@link #writingPipeline}) does not
      * count (story 323 review). Its Stop has already run — callback removed,
@@ -681,7 +718,7 @@ final class TransportController implements TransportIntentHandler {
      * the ordinary double-stop gesture; the rewind moves only the playhead,
      * and the take's clips are anchored where the take started.</p>
      */
-    private boolean isRecordingInFlight() {
+    boolean isRecordingInFlight() {
         return (recordingPipeline != null && recordingPipeline.isActive())
                 || !activeMidiRecorders.isEmpty();
     }
@@ -690,8 +727,10 @@ final class TransportController implements TransportIntentHandler {
      * The one publication of a stopped take's clips, on the normal path and
      * on the deferred one ({@link #finishWrittenTake}): registers the
      * "Record Audio" undo action over the pipeline's recorded clips, then
-     * sets the status bar and shows the SUCCESS toast. Nothing when the take
-     * produced no clip. FX thread.
+     * sets the status bar and shows the SUCCESS toast — unless the capture
+     * thread sealed the take early, whose report ({@link #takeSealedEarlyMessage})
+     * the caller shows instead. Nothing when the take produced no clip. FX
+     * thread.
      */
     private void publishRecordedTake(RecordingPipeline pipeline, List<AudioClip> recordedClips) {
         if (recordedClips.isEmpty()) {
@@ -721,6 +760,9 @@ final class TransportController implements TransportIntentHandler {
                 }
             }
         });
+        if (earlySealOf(pipeline).isPresent()) {
+            return;
+        }
         int segmentCount = clipMap.values().size();
         statusBarLabel.setText("Recording stopped — " + segmentCount + " clip"
                 + (segmentCount > 1 ? "s" : "") + " created");
@@ -748,7 +790,10 @@ final class TransportController implements TransportIntentHandler {
      * so the pipeline builds the clips without repeating its one-shot stop —
      * and publishes them through {@link #publishRecordedTake}, exactly as the
      * normal path does. A take that produced no clip only takes back the
-     * status bar's "still being written", if it still says so. A failure is
+     * status bar's "still being written", if it still says so. A take the
+     * capture thread sealed early is reported here, as {@link #stop()}
+     * reports one: {@link #takeSealedEarlyMessage} as the ERROR toast and the
+     * status text, with or without clips. A failure is
      * logged SEVERE and shown as an ERROR toast. After a publication or a
      * failure, Record is available again. A controller {@linkplain #retire()
      * retired} by then does none of this: it only reports where the take's
@@ -798,10 +843,12 @@ final class TransportController implements TransportIntentHandler {
             notificationBar.show(NotificationLevel.ERROR, message);
             return;
         }
-        if (clips.isEmpty() && statusBarStillSays(TAKE_STILL_WRITING_MESSAGE)) {
+        Optional<String> sealedEarlyReport = sealedEarlyMessage(pipeline, clips.size());
+        if (clips.isEmpty() && sealedEarlyReport.isEmpty() && statusBarStillSays(TAKE_STILL_WRITING_MESSAGE)) {
             statusBarLabel.setText(TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE);
         }
         publishRecordedTake(pipeline, clips);
+        sealedEarlyReport.ifPresent(this::reportTakeSealedEarly);
     }
 
     /** Whether the status bar still shows {@code text} (its cell separator aside). FX thread. */
@@ -825,6 +872,175 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
+     * Story 323 review — the auto-Stop of {@code pipeline}'s take: when the
+     * capture thread seals that take on its own (disk exhaustion, a write
+     * failure), {@link #stopTakeSealedEarly} is posted to the FX thread
+     * through {@link #postFx}. The dependent registered here only posts: it
+     * runs on the capture thread as that thread signals, or at once on this
+     * thread if the signal has completed already, and the Stop runs on a
+     * later FX turn. One registration per take, held by that take's pipeline
+     * and dropped with it; a {@linkplain #retire() retired} controller's
+     * posted turn does nothing. FX thread.
+     */
+    private void stopWhenSealedEarly(RecordingPipeline pipeline) {
+        earlySealSignal.of(pipeline).thenAccept(_ -> postFx(() -> stopTakeSealedEarly(pipeline)));
+    }
+
+    /**
+     * The FX turn of the auto-Stop: runs {@link #stop()} — the user's Stop,
+     * whole: callback removed, recording flags cleared, transport stopped and
+     * Stopped announced, MIDI recorders stopped, REC indicator hidden, clips
+     * and the "Record Audio" undo entry published, the early seal reported —
+     * while {@code pipeline} is still this controller's active recording
+     * pipeline and the controller is not {@linkplain #retire() retired}.
+     * Otherwise it does nothing: a Stop got there first, and the Stop that
+     * publishes the take reports the seal, or the take belongs to a project
+     * that was replaced. FX thread.
+     */
+    private void stopTakeSealedEarly(RecordingPipeline pipeline) {
+        if (retired || recordingPipeline != pipeline || !pipeline.isActive()) {
+            return;
+        }
+        LOG.info(() -> "Stopping the recording: its capture thread sealed the take under "
+                + pipeline.getTakeDirectory() + " early");
+        stop();
+    }
+
+    /**
+     * The early seal of {@code pipeline}'s take, if its capture thread sealed
+     * it on its own. Read by the Stop that publishes the take, once the
+     * pipeline's stop has returned the clips: its capture thread has
+     * terminated then, and that thread completes the signal, if at all,
+     * before it terminates. FX thread.
+     */
+    private Optional<EarlySeal> earlySealOf(RecordingPipeline pipeline) {
+        return Optional.ofNullable(earlySealSignal.of(pipeline).toCompletableFuture().getNow(null));
+    }
+
+    /** {@link #takeSealedEarlyMessage} for {@code pipeline}'s take, if its capture thread sealed it early. FX thread. */
+    private Optional<String> sealedEarlyMessage(RecordingPipeline pipeline, int clipCount) {
+        return earlySealOf(pipeline)
+                .map(seal -> takeSealedEarlyMessage(seal, clipCount, pipeline.getTakeDirectory()));
+    }
+
+    /** Logs the report of a take sealed early and shows it as the status text and the ERROR toast. FX thread. */
+    private void reportTakeSealedEarly(String message) {
+        LOG.warning(message);
+        statusBarLabel.setText(message);
+        notificationBar.show(NotificationLevel.ERROR, message);
+    }
+
+    /**
+     * Story 323 review — the ERROR toast and status text of a take the
+     * capture thread sealed on its own ({@link EarlySeal}), shown once by
+     * the Stop that publishes the take. It names the cause — free disk space
+     * below the headroom watch's floor; free space that could not be read; a
+     * failed write to disk, for a throwable that is an {@link IOException} or
+     * has one in its cause chain, with the reason the innermost one gives
+     * ({@link #ioReason}); or, for any other throwable, a failed capture,
+     * with its type and, when it has one, its message — and what was kept or
+     * left: the clips created from the audio recorded before it, or that none
+     * had been recorded; or, when one or more segments could not be finished
+     * — a seal that failed, or an empty segment that could not be discarded
+     * ({@link EarlySeal#everySegmentSealed()} is {@code false}) — that one or
+     * more segment files that could not be finished are left in the take's
+     * folder, with the clips created or, when there are none, after saying
+     * that no audio had been recorded. It never says that those files hold
+     * audio, and never calls them kept, saved or sealed.
+     *
+     * @param seal          the early seal the capture thread signalled
+     * @param clipCount     the clips the Stop created from the take
+     * @param takeDirectory the take's directory under the project's {@code audio/takes}
+     */
+    static String takeSealedEarlyMessage(EarlySeal seal, int clipCount, Path takeDirectory) {
+        String cause = switch (seal) {
+            case EarlySeal.DiskExhausted disk when disk.freeSpaceUnknown() ->
+                    "the free disk space could not be read";
+            case EarlySeal.DiskExhausted disk -> "free disk space fell below " + sizeText(disk.floorBytes());
+            case EarlySeal.WriteFailed write -> writeFailedText(write.failure());
+        };
+        String clips = clipCount + " clip" + (clipCount > 1 ? "s" : "") + " created";
+        String kept;
+        if (!seal.everySegmentSealed()) {
+            String left = "one or more segment files that could not be finished are left under "
+                    + ProjectManager.AUDIO_DIR_NAME + "/" + TakeDirectories.TAKES_DIR_NAME + "/"
+                    + takeDirectory.getFileName();
+            kept = clipCount > 0
+                    ? left + " (" + clips + ")"
+                    : "no audio had been recorded before that, and " + left;
+        } else if (clipCount > 0) {
+            kept = "the audio recorded before that is kept (" + clips + ")";
+        } else {
+            kept = "no audio had been recorded before that";
+        }
+        return "Recording stopped — " + cause + "; " + kept;
+    }
+
+    /** {@code 64 MiB} for a whole number of mebibytes, otherwise the count of bytes. */
+    private static String sizeText(long bytes) {
+        long mebibyte = 1L << 20;
+        return bytes % mebibyte == 0 ? bytes / mebibyte + " MiB" : bytes + " bytes";
+    }
+
+    /**
+     * The cause of an {@link EarlySeal.WriteFailed}: a failed write to disk
+     * when {@code failure} is an {@link IOException} or has one in its cause
+     * chain — every {@link java.io.UncheckedIOException} has — with the
+     * reason of the innermost one; otherwise a failed capture, which blames
+     * nothing on the disk (an {@link OutOfMemoryError} from growing the RAM
+     * mirror, say), with the throwable's type and, when it has one, its
+     * message.
+     */
+    private static String writeFailedText(Throwable failure) {
+        IOException ioFailure = innermostIOException(failure);
+        return ioFailure != null
+                ? "writing the take to disk failed (" + ioReason(ioFailure) + ")"
+                : "capturing the take failed (" + shortDescription(failure) + ")";
+    }
+
+    /**
+     * The innermost {@link IOException} in {@code failure}'s cause chain,
+     * {@code failure} itself included; {@code null} if there is none. A
+     * cause seen before ends the walk, so a cyclic chain ends it too.
+     */
+    private static IOException innermostIOException(Throwable failure) {
+        IOException innermost = null;
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable cause = failure; cause != null && seen.add(cause); cause = cause.getCause()) {
+            if (cause instanceof IOException ioFailure) {
+                innermost = ioFailure;
+            }
+        }
+        return innermost;
+    }
+
+    /**
+     * Why an I/O operation failed, in the exception's own words: a
+     * {@link FileSystemException}'s reason — its message is often just a
+     * path — and any other exception's message; its type when it gives
+     * neither.
+     */
+    private static String ioReason(IOException failure) {
+        String reason = failure instanceof FileSystemException fileSystemFailure
+                ? fileSystemFailure.getReason()
+                : failure.getMessage();
+        return reason == null || reason.isBlank() ? typeName(failure) : reason;
+    }
+
+    /** The throwable's type, and its message when it has one. */
+    private static String shortDescription(Throwable failure) {
+        String type = typeName(failure);
+        String message = failure.getMessage();
+        return message == null || message.isBlank() ? type : type + ": " + message;
+    }
+
+    /** The throwable's simple class name, or its full name for an anonymous class, which has no simple name. */
+    private static String typeName(Throwable failure) {
+        String simpleName = failure.getClass().getSimpleName();
+        return simpleName.isEmpty() ? failure.getClass().getName() : simpleName;
+    }
+
+    /**
      * Whether a take this controller stopped is still being written to disk:
      * its Stop gave up waiting ({@link TakeFinalizationPendingException}) and
      * the deferred half ({@link #finishWrittenTake}) has not run yet — the
@@ -845,9 +1061,12 @@ final class TransportController implements TransportIntentHandler {
      * loaded, created, imported or restored, and retires the one it replaces,
      * whose project is no longer open. javafx-application-design §15 flags
      * "Unbounded listener registration without matching removal in
-     * {@code dispose()}"; the dependent this controller registers on a take
-     * cannot be removed from it, so retiring neutralises it. What this retires
-     * is the deferred half of a Stop whose take was still being written:
+     * {@code dispose()}"; the dependents this controller registers on a take
+     * cannot be removed from it, so retiring neutralises them. The auto-Stop
+     * of a take the capture thread seals early ({@link #stopWhenSealedEarly})
+     * is retired: its posted FX turn does nothing — the take's pipeline is
+     * left as it is, and nothing is published or shown. So is the deferred
+     * half of a Stop whose take was still being written:
      * when that take's capture thread has terminated,
      * {@link #finishWrittenTake} neither stops the pipeline
      * again nor publishes anything — no clip on the replaced project's tracks,
@@ -856,8 +1075,14 @@ final class TransportController implements TransportIntentHandler {
      * bar that still says {@link #TAKE_STILL_WRITING_MESSAGE} with
      * {@link #TAKE_OF_A_REPLACED_PROJECT_STATUS}. Since
      * {@code ProjectLifecycleController} refuses the in-app doors that replace
-     * the open project while {@link #isTakeBeingWritten()}, this is the
-     * fallback for a replacement that bypasses that guard. Quitting the
+     * the open project while {@link #isRecordingInFlight()} or
+     * {@link #isTakeBeingWritten()}, this is the fallback for a take being
+     * written when a replacement bypasses that guard. For a recording still
+     * in flight it is no fallback: retiring stops nothing — an audio take's
+     * pipeline stays active with its recording callback installed on the
+     * engine, a MIDI recorder stays started on its input, and nothing
+     * publishes their clips or notes — and its only effect is that an audio
+     * take's auto-Stop does nothing. Quitting the
      * application retires nothing: it replaces no controller. Nothing else is
      * retired: a post-roll still running, or a record-start input check still
      * waiting for its device list, finishes as it would have. Cannot be
@@ -884,6 +1109,37 @@ final class TransportController implements TransportIntentHandler {
      */
     void setPipelineStopForTest(PipelineStop stop) {
         pipelineStop = Objects.requireNonNull(stop, "stop must not be null");
+    }
+
+    /**
+     * How {@link #stopWhenSealedEarly} and the Stop that publishes a take
+     * read the take's early-seal signal. Production:
+     * {@code RecordingPipeline::earlySeal}. A test seam — the core's ways of
+     * sealing a take early (an injected disk-headroom watch, a writer set to
+     * fail) are not reachable from this module.
+     */
+    @FunctionalInterface
+    interface EarlySealSignal {
+        CompletionStage<EarlySeal> of(RecordingPipeline pipeline);
+    }
+
+    /**
+     * Test seam: replaces how a take's early-seal signal is read (see
+     * {@link EarlySealSignal}). FX thread, before the take starts.
+     */
+    void setEarlySealSignalForTest(EarlySealSignal signal) {
+        earlySealSignal = Objects.requireNonNull(signal, "signal must not be null");
+    }
+
+    /**
+     * Test seam: replaces how {@link #startMidiRecording} finds an armed MIDI
+     * track's input device by its name (production:
+     * {@link #resolveMidiDevice}, over the system's MIDI devices), so that a
+     * test can record MIDI without MIDI hardware. FX thread, before the take
+     * starts.
+     */
+    void setMidiInputDeviceResolverForTest(Function<String, MidiDevice> resolver) {
+        midiInputDeviceResolver = Objects.requireNonNull(resolver, "resolver must not be null");
     }
 
     /**
@@ -1098,6 +1354,10 @@ final class TransportController implements TransportIntentHandler {
                 abortRecordingTake(outputDir, e);
                 return;
             }
+            // Story 323 review: a take the capture thread seals on its own
+            // (disk exhaustion, a write failure) is stopped like the user's
+            // Stop, on a later FX turn.
+            stopWhenSealedEarly(recordingPipeline);
         }
 
         // Start MIDI recording for armed MIDI tracks
@@ -1638,7 +1898,7 @@ final class TransportController implements TransportIntentHandler {
         long countInDurationUs = Math.round(countInSeconds * 1_000_000L);
 
         for (Track track : midiTracks) {
-            MidiDevice device = resolveMidiDevice(track.getMidiInputDeviceName());
+            MidiDevice device = midiInputDeviceResolver.apply(track.getMidiInputDeviceName());
             if (device == null) {
                 LOG.warning("No MIDI input device found for track: " + track.getName()
                         + " (device name: " + track.getMidiInputDeviceName() + ")");

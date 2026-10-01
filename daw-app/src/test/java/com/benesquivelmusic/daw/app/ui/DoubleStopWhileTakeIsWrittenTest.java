@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * effects included, whose {@code transport.stop()} finds the transport
  * already stopped and leaves the playhead where the rewind put it. A real
  * completing stop repeats none of the one-shot stop (the core's
- * {@code Story323StopFinalizationPendingContractTest} pins that). What this
+ * {@code StopFinalizationPendingContractTest} pins that). What this
  * probe pins is the controller's part: the second Stop is the double-stop
  * rewind and never calls the pipeline, and the published clip keeps the
  * take's anchor. FX work runs through
@@ -67,7 +67,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * for the deferred stop, as in {@code TransportControllerTest}).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
-class Story323PendingTakeDoubleStopProbeTest {
+class DoubleStopWhileTakeIsWrittenTest {
 
     private static final double TAKE_ANCHOR_BEATS = 8.0;
 

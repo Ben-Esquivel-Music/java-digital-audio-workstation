@@ -20,10 +20,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.feedRamp;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.hasProvisionalSizes;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.hasProvisionalSizes;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -33,9 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the provisional streaming sentinel — a segment is either a {@code .part}
  * or fully sealed.
  */
-class Story323AtomicSealContractTest {
+class SegmentSealAtomicityContractTest {
 
-    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * Story323TestSupport.BYTES_PER_FRAME_MONO_16;
+    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
     private static final int BLOCKS = 240; // 2 blocks per segment → 120 sealed segments
     private static final Duration GUARD = Duration.ofSeconds(20);
 
@@ -49,7 +49,7 @@ class Story323AtomicSealContractTest {
     void aScannerNeverObservesAWavWithProvisionalSizes() throws Exception {
         AudioEngine engine = new AudioEngine(MONO_16);
         Transport transport = new Transport();
-        Track track = Story323TestSupport.armedMonoTrack("Drums");
+        Track track = RampCaptureTestSupport.armedMonoTrack("Drums");
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
         pipeline.start();

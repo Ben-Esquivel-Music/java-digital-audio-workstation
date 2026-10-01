@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Probe (story 323 review, verification round 2) of the project-change guard
  * ({@link ProjectLifecycleController#PROJECT_CHANGE_WHILE_WRITING_MESSAGE}):
  * two of its call sites promise more than
- * {@code Story323ProjectChangeWhileTakeIsWrittenTest} checks.
+ * {@code ProjectChangeWhileTakeIsWrittenTest} checks.
  *
  * <ul>
  *   <li>The migration roll-back has two branches. With a backup it copies the
@@ -62,13 +62,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       that window.</li>
  * </ul>
  *
+ * <p>The same two call sites refuse while a recording is in flight (story
+ * 323 review, the user's decision "Refuse while recording";
+ * {@link ProjectLifecycleController#PROJECT_CHANGE_WHILE_RECORDING_MESSAGE}).
+ * Those tests record for real ({@link RecordingInFlightFixture}): the
+ * lifecycle controller asks the recording transport controller's
+ * {@code isRecordingInFlight()} and {@code isTakeBeingWritten()}, as
+ * {@code MainController} asks its current one; the recording goes on
+ * untouched, and once the user has stopped it the same call proceeds.</p>
+ *
  * <p>Every FX action runs through {@link Platform#runLater} and is bounded at
- * 5 s; the waits for a scan are on the test thread and bounded by
- * {@link #SCAN_WINDOW}; nothing blocks the FX thread and no dialog is
- * shown.</p>
+ * 5 s, or, for the fixture's Record and Stop, at the longer bound
+ * {@link RecordingInFlightFixture} gives them; the waits for a scan are on
+ * the test thread and bounded by
+ * {@link #SCAN_WINDOW}; no dialog is shown.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
-class Story323ProjectChangeGuardProbeTest {
+class MigrationRollBackAndRecoveryGuardTest {
 
     /** How long a recovery scan is given to report; the non-vacuity leg shows a started one does within it. */
     private static final Duration SCAN_WINDOW = Duration.ofSeconds(3);
@@ -85,6 +95,7 @@ class Story323ProjectChangeGuardProbeTest {
     private ProjectManager projectManager;
     private Path songA;
     private ProjectLifecycleController lifecycle;
+    private RecordingInFlightFixture recording;
 
     @BeforeEach
     void openSongA() throws Exception {
@@ -108,8 +119,14 @@ class Story323ProjectChangeGuardProbeTest {
     }
 
     @AfterEach
-    void closeTheOpenProject() {
-        projectManager.abandonProject();
+    void closeTheOpenProject() throws Exception {
+        try {
+            if (recording != null) {
+                recording.close();
+            }
+        } finally {
+            projectManager.abandonProject();
+        }
     }
 
     @Test
@@ -156,6 +173,72 @@ class Story323ProjectChangeGuardProbeTest {
         assertThat(projectManager.getCurrentProject().projectPath()).isEqualTo(songC);
     }
 
+    // ── the same call sites while a recording is in flight ───────────────────
+
+    @Test
+    void aMigrationRollBackWithNoBackupIsRefusedWhileRecordingBeforeTheInMemoryProjectIsAbandoned()
+            throws Exception {
+        recordInSongA();
+        MigrationReport report = new MigrationReport(0, 1, List.of(), Instant.now());
+        assertThat(backupsIn(songA)).as("fixture: no backup, so the roll-back takes its abandon branch").isEmpty();
+        DawProject songAModel = project.get();
+
+        runOnFx(() -> lifecycle.rollbackMigration(songA, report));
+
+        assertRefusedOnceWith(ProjectLifecycleController.PROJECT_CHANGE_WHILE_RECORDING_MESSAGE);
+        assertSongAIsStillOpen(songAModel);
+        recording.assertStillRecording();
+
+        // Non-vacuity: the same call, once the recording is stopped, abandons
+        // the open project and replaces it — the branch the guard must cover.
+        recording.stop();
+        runOnFx(() -> lifecycle.rollbackMigration(songA, report));
+        assertThat(project.get()).as("the in-memory project is discarded once the recording is stopped")
+                .isNotSameAs(songAModel);
+        assertThat(projectManager.getCurrentProject()).as("and the open project abandoned").isNull();
+        assertThat(rebuilds).hasValue(1);
+    }
+
+    @Test
+    void aRecoveryRefusedWhileRecordingStartsNoScanThatReportsOnALaterTurn() throws Exception {
+        recordInSongA();
+        Path songC = anotherProjectOnDisk("Song C");
+        DawProject songAModel = project.get();
+
+        runOnFx(() -> lifecycle.beginRecovery(songC));
+        assertRefusedOnceWith(ProjectLifecycleController.PROJECT_CHANGE_WHILE_RECORDING_MESSAGE);
+
+        boolean reportedLater = awaitWithinTheScanWindow(
+                () -> shown.getEntries().size() > 1 || rebuilds.get() > 0);
+        assertThat(reportedLater).as("a refused recovery never reports again: no scan was started").isFalse();
+        assertRefusedOnceWith(ProjectLifecycleController.PROJECT_CHANGE_WHILE_RECORDING_MESSAGE);
+        assertSongAIsStillOpen(songAModel);
+        recording.assertStillRecording();
+
+        // Non-vacuity: once the recording is stopped, the same recovery starts
+        // its scan, and the scan reports (it opens Song C) within the window.
+        recording.stop();
+        runOnFx(() -> lifecycle.beginRecovery(songC));
+        assertThat(awaitWithinTheScanWindow(() -> rebuilds.get() > 0))
+                .as("a started scan reports within %s", SCAN_WINDOW).isTrue();
+        assertThat(projectManager.getCurrentProject().projectPath()).isEqualTo(songC);
+    }
+
+    /**
+     * Records an audio take in Song A, with the lifecycle controller asking
+     * the recording transport controller both checks, as
+     * {@code MainController} asks its current one.
+     */
+    private void recordInSongA() throws Exception {
+        recording = RecordingInFlightFixture.audio(project.get());
+        TransportController controller = recording.controller();
+        runOnFx(() -> {
+            lifecycle.setTakeBeingWrittenCheck(controller::isTakeBeingWritten);
+            lifecycle.setRecordingInFlightCheck(controller::isRecordingInFlight);
+        });
+        recording.start();
+    }
+
     /** Polls {@code condition} (after an FX turn each time) until it holds or {@link #SCAN_WINDOW} ends. */
     private static boolean awaitWithinTheScanWindow(BooleanSupplier condition) throws Exception {
         long deadline = System.nanoTime() + SCAN_WINDOW.toNanos();
@@ -171,11 +254,14 @@ class Story323ProjectChangeGuardProbeTest {
     }
 
     private void assertRefusedOnce() {
+        assertRefusedOnceWith(ProjectLifecycleController.PROJECT_CHANGE_WHILE_WRITING_MESSAGE);
+    }
+
+    private void assertRefusedOnceWith(String warning) {
         assertThat(shown.getEntries()).as("one WARNING toast, no modal dialog").singleElement()
                 .satisfies(entry -> {
                     assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
-                    assertThat(entry.message())
-                            .isEqualTo(ProjectLifecycleController.PROJECT_CHANGE_WHILE_WRITING_MESSAGE);
+                    assertThat(entry.message()).isEqualTo(warning);
                 });
     }
 

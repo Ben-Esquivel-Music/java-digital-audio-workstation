@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * count". Two failures are pinned already: a refusal before any write
  * ({@code RecordingSessionTest.aFailedAppendLeavesMirrorAndCountsMatchingTheDisk},
  * nothing counted) and a failed cadence force after a one-chunk block
- * ({@code Story323ForceCadenceContractTest.anAppendWhoseCadenceForceFailsEndsTheTakeWithSessionClipSegmentAndManifestAgreeing},
+ * ({@code SegmentForceCadenceContractTest.anAppendWhoseCadenceForceFailsEndsTheTakeWithSessionClipSegmentAndManifestAgreeing},
  * the whole block counted). In both, what the writer counted is nothing or
  * the whole block, so a writer that counts only once the whole block is
  * written, or a session that counts the whole block once anything was
@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * at the second chunk's file offset, before it reaches the file. No thread,
  * no wait: both tests are synchronous.</p>
  */
-class Story323PartialChunkAppendProbeContractTest {
+class PartialChunkAppendAccountingContractTest {
 
     /** The writer's chunk size, as its Javadoc states it ("chunks of at most 8192 frames"). */
     private static final int CHUNK_FRAMES = 8192;

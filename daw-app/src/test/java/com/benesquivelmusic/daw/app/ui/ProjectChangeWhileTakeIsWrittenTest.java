@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -73,9 +75,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a dialog.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
-class Story323ProjectChangeWhileTakeIsWrittenTest {
+class ProjectChangeWhileTakeIsWrittenTest {
 
     private static final String UNSAVED_CHANGES_TITLE = "Unsaved Changes";
+
+    /**
+     * How long a recovery scan is given to report, as in
+     * {@code MigrationRollBackAndRecoveryGuardTest}, whose non-vacuity leg
+     * shows a started one does within it.
+     */
+    private static final Duration SCAN_WINDOW = Duration.ofSeconds(3);
 
     @TempDir
     Path workspace;
@@ -244,13 +253,14 @@ class Story323ProjectChangeWhileTakeIsWrittenTest {
 
     /**
      * A refused recovery shows one WARNING in the FX turn that asked and
-     * leaves Song A open. This does not prove the refusal comes before the
-     * scan: Song C has no journal, so a scan started anyway would post a load
-     * that {@code loadProjectFromPath} refuses with the same WARNING, and
-     * whether that second WARNING lands before this test reads the history
-     * is a matter of timing.
-     * {@code Story323ProjectChangeGuardProbeTest.aRefusedRecoveryStartsNoScanThatReportsOnALaterTurn}
-     * pins the before-the-scan property.
+     * leaves Song A open — also once {@link #SCAN_WINDOW} has passed with no
+     * second notification and no rebuild. Song C has no journal, so a scan
+     * started anyway would post a load: one that {@code loadProjectFromPath}
+     * refuses with the same WARNING, or one that opens Song C. Whether such a
+     * load lands within the window is a matter of timing;
+     * {@code MigrationRollBackAndRecoveryGuardTest.aRefusedRecoveryStartsNoScanThatReportsOnALaterTurn}
+     * pins the before-the-scan property and shows that a started scan
+     * reports within the window.
      */
     @Test
     void aRefusedRecoveryWarnsOnceAndLeavesTheOpenProjectOpen() throws Exception {
@@ -259,6 +269,12 @@ class Story323ProjectChangeWhileTakeIsWrittenTest {
 
         runOnFx(() -> lifecycle.beginRecovery(songC));
 
+        assertRefusedOnce();
+        assertSongAIsStillOpen(songAModel);
+
+        boolean reportedLater = awaitWithinTheScanWindow(
+                () -> shown.getEntries().size() > 1 || rebuilds.get() > 0);
+        assertThat(reportedLater).as("nothing follows the refusal: no second notification, no rebuild").isFalse();
         assertRefusedOnce();
         assertSongAIsStillOpen(songAModel);
     }
@@ -362,15 +378,18 @@ class Story323ProjectChangeWhileTakeIsWrittenTest {
 
     /**
      * {@code MainController}'s wiring points, read from its source with
-     * comments and string literals stripped and whitespace collapsed: the
-     * check handed to the lifecycle controller reads the transport controller
-     * that is current when it is asked (a method reading the field, not a
-     * captured controller) and answers exactly that controller's answer — the
-     * body is compared whole, so an inverted or widened answer fails; every
-     * new transport controller retires the one it replaces, captured before
-     * the field is overwritten; and the snapshot restore, whose only way to
-     * the guard is the {@code SnapshotsController.Deps} built here, is handed
-     * the project-close gate.
+     * comments and string literals stripped and whitespace collapsed: each
+     * check handed to the lifecycle controller — whether a take is being
+     * written, and (story 323 review, "Refuse while recording") whether a
+     * recording is in flight, which {@code ProjectChangeWhileRecordingTest}
+     * drives — reads the transport controller that is current when it is
+     * asked (a method reading the field, not a captured controller) and
+     * answers exactly that controller's answer — each body is compared whole,
+     * so an inverted or widened answer fails; every new transport controller
+     * retires the one it replaces, captured before the field is overwritten;
+     * and the snapshot restore, whose only way to the guard is the
+     * {@code SnapshotsController.Deps} built here, is handed the
+     * project-close gate.
      */
     @Test
     void mainControllerFeedsTheCurrentControllersAnswerAndRetiresTheControllerItReplaces() throws IOException {
@@ -392,9 +411,13 @@ class Story323ProjectChangeWhileTakeIsWrittenTest {
         assertThat(methodBody(code, "private boolean isTakeBeingWritten()"))
                 .as("the check reads the transport controller field on every call and answers its answer as it is")
                 .isEqualTo("{ return transportController != null && transportController.isTakeBeingWritten(); }");
+        assertThat(methodBody(code, "private boolean isRecordingInFlight()"))
+                .as("so does the recording check")
+                .isEqualTo("{ return transportController != null && transportController.isRecordingInFlight(); }");
         assertThat(methodBody(code, "private void createProjectLifecycleController()"))
-                .as("the lifecycle controller asks that method, not a captured controller")
-                .contains("projectLifecycleController.setTakeBeingWrittenCheck(this::isTakeBeingWritten);");
+                .as("the lifecycle controller asks those methods, not a captured controller")
+                .contains("projectLifecycleController.setTakeBeingWrittenCheck(this::isTakeBeingWritten);")
+                .contains("projectLifecycleController.setRecordingInFlightCheck(this::isRecordingInFlight);");
 
         String snapshotDeps = "new SnapshotsController.Deps(";
         assertThat(code.indexOf(snapshotDeps)).as("MainController builds SnapshotsController.Deps").isNotNegative()
@@ -445,6 +468,24 @@ class Story323ProjectChangeWhileTakeIsWrittenTest {
             }
         }
         throw new AssertionError("unbalanced braces after " + signature);
+    }
+
+    /**
+     * Polls {@code condition} (after an FX turn each time) until it holds or
+     * {@link #SCAN_WINDOW} ends; a copy of
+     * {@code MigrationRollBackAndRecoveryGuardTest}'s helper.
+     */
+    private static boolean awaitWithinTheScanWindow(BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + SCAN_WINDOW.toNanos();
+        while (System.nanoTime() < deadline) {
+            runOnFx(() -> { });
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            TimeUnit.MILLISECONDS.sleep(25);
+        }
+        runOnFx(() -> { });
+        return condition.getAsBoolean();
     }
 
     private void assertRefusedOnce() {

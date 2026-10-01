@@ -20,10 +20,10 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.advanceOneBlock;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.rampBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.advanceOneBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 
@@ -37,10 +37,10 @@ import static org.assertj.core.api.Assertions.tuple;
  * on cadence even when nothing more is appended to their segment: past a
  * punch-out, and while the ring is dry.
  */
-class Story323ForceCadenceContractTest {
+class SegmentForceCadenceContractTest {
 
     private static final long SECOND = 1_000_000_000L;
-    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * Story323TestSupport.BYTES_PER_FRAME_MONO_16;
+    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
     private static final int SECONDS = 20;
     private static final long GIB = 1L << 30;
 
@@ -58,7 +58,7 @@ class Story323ForceCadenceContractTest {
     @Test
     void theDefaultCadenceIsFiveSeconds() {
         assertThat(SegmentWriter.DEFAULT_FORCE_CADENCE).isEqualTo(Duration.ofSeconds(5));
-        Track track = Story323TestSupport.armedMonoTrack("Bass");
+        Track track = RampCaptureTestSupport.armedMonoTrack("Bass");
         RecordingPipeline pipeline = new RecordingPipeline(new AudioEngine(MONO_16), new Transport(), MONO_16,
                 tempDir.resolve("default"), List.of(track));
         assertThat(pipeline.getForceCadence()).isEqualTo(Duration.ofSeconds(5));
@@ -80,7 +80,7 @@ class Story323ForceCadenceContractTest {
         // three to the writer.
         AudioEngine engine = new AudioEngine(MONO_16);
         Transport transport = new Transport();
-        Track track = Story323TestSupport.armedMonoTrack("Keys");
+        Track track = RampCaptureTestSupport.armedMonoTrack("Keys");
         AtomicLong clock = new AtomicLong(0);
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16,
                 tempDir.resolve("configured"), List.of(track));
@@ -408,7 +408,7 @@ class Story323ForceCadenceContractTest {
     private long recordOneBlockPerSecond(Path takeDir, Duration cadence) throws IOException {
         AudioEngine engine = new AudioEngine(MONO_16);
         Transport transport = new Transport();
-        Track track = Story323TestSupport.armedMonoTrack("Vocal");
+        Track track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         AtomicLong clock = new AtomicLong(0);
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setNanoClock(clock::get);
@@ -533,7 +533,7 @@ class Story323ForceCadenceContractTest {
 
     private static Rig startedRig(Path takeDir, Transport transport, Consumer<String> warningSink) {
         AudioEngine engine = new AudioEngine(MONO_16);
-        Track track = Story323TestSupport.armedMonoTrack("Vocal");
+        Track track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         AtomicLong clock = new AtomicLong(0);
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setNanoClock(clock::get);

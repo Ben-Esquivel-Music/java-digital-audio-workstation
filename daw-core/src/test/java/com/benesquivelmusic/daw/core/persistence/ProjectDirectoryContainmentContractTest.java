@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * which {@code AudioClip.setSourceSegmentPaths} accepts, survives a save and a
  * load in its place, because the reader skips only an empty path.</p>
  */
-class Story323CopilotRoundProbeContractTest {
+class ProjectDirectoryContainmentContractTest {
 
     private static final Pattern REFERENCE = Pattern.compile("(?:source-file|<source-segment path)=\"([^\"]*)\"");
     private static final String ESCAPING_SINGLE = "a/b/../../../stray.wav";

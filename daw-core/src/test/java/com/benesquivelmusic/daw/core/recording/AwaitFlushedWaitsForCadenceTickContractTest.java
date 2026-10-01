@@ -17,12 +17,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.HANG_GUARD;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.advanceOneBlock;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.outcomeWithinTheGuard;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.rampBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.HANG_GUARD;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.advanceOneBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -37,15 +37,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code force(false)} is held on a latch through the channel opener seam.
  *
  * <p>Every wait is bounded: the hold and the final stop by
- * {@link Story323TestSupport#HANG_GUARD}, the fences by
+ * {@link RampCaptureTestSupport#HANG_GUARD}, the fences by
  * {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT}, and the fence that
  * must not pass by {@link #FENCE_PROBE} — a wait that always runs out while
  * the code is right.</p>
  */
-class Story323ForceCadenceFenceProbeContractTest {
+class AwaitFlushedWaitsForCadenceTickContractTest {
 
     private static final long SECOND = 1_000_000_000L;
-    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * Story323TestSupport.BYTES_PER_FRAME_MONO_16;
+    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
     private static final long GIB = 1L << 30;
     /** The fence that must not pass while the tick is held. */
     private static final Duration FENCE_PROBE = Duration.ofMillis(200);
@@ -90,7 +90,7 @@ class Story323ForceCadenceFenceProbeContractTest {
         AudioEngine engine = new AudioEngine(MONO_16);
         Transport transport = new Transport();
         transport.setPunchRegion(new PunchRegion(0L, 2L * BLOCK_FRAMES, true));
-        Track track = Story323TestSupport.armedMonoTrack("Vocal");
+        Track track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         AtomicLong clock = new AtomicLong(0);
         ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
         journal.beforeForce(() -> {

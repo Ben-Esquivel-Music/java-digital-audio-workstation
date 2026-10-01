@@ -67,8 +67,9 @@ final class SnapshotsController {
      * the gate a restore passes before it replaces the open project is a
      * {@link BooleanSupplier} (delegated to
      * {@code ProjectLifecycleController.confirmProjectMayClose()}, which
-     * refuses while a take is being written and otherwise asks about unsaved
-     * changes); the restore cascade is a {@link BiConsumer} that swaps the
+     * refuses while a recording is in flight or a take is being written and
+     * otherwise asks about unsaved changes); the restore cascade is a
+     * {@link BiConsumer} that swaps the
      * project, resets the undo manager, and rebuilds the UI exactly as for an
      * open-from-disk.
      */

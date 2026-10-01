@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * deferred stop, as in {@code TransportControllerTest}).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
-class Story323StatusCellProbeTest {
+class StillWritingStatusReplacedInStatusCellTest {
 
     @TempDir
     Path projectDirectory;

@@ -48,7 +48,9 @@ import java.util.logging.Logger;
  *       the ring is dry with a bounded {@link #PARK_BACKSTOP} backstop, drain
  *       in order, final sweep after the stop flag, then seal. Every pass —
  *       including one that finds the ring still dry after a park — runs the
- *       cadence tick (below) once more after the blocks it drained.</li>
+ *       cadence tick (below) once more after the blocks it drained. When it
+ *       seals the take on its own it completes {@link #earlySeal()} and does
+ *       nothing more about it: stopping the take is the caller's.</li>
  *   <li>The caller thread (FX in the app) calls {@link #start()} — which
  *       starts every session and writes the initial manifest itself, before
  *       the thread is started, so the manifest still has one writer at a
@@ -121,10 +123,11 @@ import java.util.logging.Logger;
  * sink, and answered by an immediate clean seal with
  * {@code seal-status=aborted} /
  * {@code sealed-by=write-failure} ({@code disk-exhaustion} for the headroom
- * floor). A throwable that escapes the drain loop itself is reported the
- * same way and ends the thread after the seal. After an early seal the
- * thread keeps draining: further blocks are discarded and counted
- * ({@link #discardedBlocks()}) so the callback side never notices.</p>
+ * floor), after which the thread keeps draining until a stop: further
+ * blocks are discarded and counted ({@link #discardedBlocks()}) so the
+ * callback side never notices. A throwable that escapes the drain loop
+ * itself is reported the same way and ends the thread after the seal. Each
+ * such early seal, once done, completes {@link #earlySeal()}.</p>
  *
  * <p><strong>The manifest is a sidecar.</strong> A manifest write that fails
  * — an {@link IOException} or a {@link RuntimeException} from building or
@@ -230,6 +233,10 @@ public final class CaptureFlushService implements AutoCloseable {
     private final CompletableFuture<Void> termination = new CompletableFuture<>();
     /** The read-only view of {@link #termination} handed out: a holder cannot complete it. */
     private final CompletionStage<Void> terminationView = termination.minimalCompletionStage();
+    /** Completed at most once, by {@link #announceEarlySeal()}; see {@link #earlySeal()}. */
+    private final CompletableFuture<EarlySeal> earlySeal = new CompletableFuture<>();
+    /** The read-only view of {@link #earlySeal} handed out: a holder cannot complete it. */
+    private final CompletionStage<EarlySeal> earlySealView = earlySeal.minimalCompletionStage();
 
     private volatile boolean started;
     /**
@@ -279,6 +286,10 @@ public final class CaptureFlushService implements AutoCloseable {
     /** The final sweep after the stop flag is running: the cadence tick stands down for the seal. */
     private boolean finalSweep;
     private boolean sealFailed;
+    /** The lanes were sealed by {@link #sealEarly}, not by the seal a stop requested. */
+    private boolean sealedEarly;
+    /** The throwable behind an early seal for a write failure; {@code null} for the headroom floor. */
+    private Throwable earlySealFailure;
     private long lastOverflowSeen;
     private long lastAppliedEndFrame;
     /** Sequence and end frame of the applied block the ring's drop marker named when it was applied. */
@@ -467,10 +478,12 @@ public final class CaptureFlushService implements AutoCloseable {
             try {
                 // Re-entry is safe: lanes already sealed are left alone, and
                 // a final manifest that did not reach the disk is written now.
-                sealAll(SealedBy.WRITE_FAILURE);
+                sealEarly(SealedBy.WRITE_FAILURE, t);
             } catch (Throwable sealFailure) {
                 LOG.log(Level.SEVERE, "capture-flush could not seal after a loop failure", sealFailure);
             }
+            // Before the thread terminates; nothing if a stop's seal sealed the lanes.
+            announceEarlySeal();
         } finally {
             running = false;
             // Last: every path out of this method — a normal seal, a take
@@ -577,7 +590,10 @@ public final class CaptureFlushService implements AutoCloseable {
             if (headroom.check(nanoClock.getAsLong()) == DiskHeadroomWatch.State.EXHAUSTED) {
                 // Counted before the seal: the seal may rethrow a lane's Error.
                 discardedBlocks = discardedBlocks + 1;
-                sealAll(SealedBy.DISK_EXHAUSTION);
+                sealEarly(SealedBy.DISK_EXHAUSTION, null);
+                // Reached when the seal returned; a seal that threw (a lane's
+                // Error) is announced by failAndSeal, after its re-entry.
+                announceEarlySeal();
                 return;
             }
 
@@ -795,10 +811,54 @@ public final class CaptureFlushService implements AutoCloseable {
         warn("Recording stopped early — " + describe(failure)
                 + "; everything captured so far is sealed under " + config.takeDirectory());
         try {
-            sealAll(SealedBy.WRITE_FAILURE);
+            sealEarly(SealedBy.WRITE_FAILURE, failure);
         } catch (Throwable sealFailure) {
             LOG.log(Level.SEVERE, "capture-flush could not seal after a write failure", sealFailure);
         }
+        announceEarlySeal();
+    }
+
+    /**
+     * Seals the take on the flush thread's own account — the headroom floor,
+     * a write failure, a throwable that escaped the drain loop — rather than
+     * for a stop. A call that finds the take unsealed records it as sealed
+     * early, with {@code failure}, and seals it; a call on a take already
+     * sealed — early, or by the seal a stop requested — only re-enters
+     * {@link #sealAll}, whose first reason sticks. Flush thread.
+     *
+     * @param failure the throwable behind a {@link SealedBy#WRITE_FAILURE};
+     *                {@code null} for {@link SealedBy#DISK_EXHAUSTION}
+     */
+    private void sealEarly(SealedBy reason, Throwable failure) {
+        if (!sealed) {
+            sealedEarly = true;
+            earlySealFailure = failure;
+        }
+        sealAll(reason);
+    }
+
+    /**
+     * Completes {@link #earlySeal()} for a take {@link #sealEarly} sealed,
+     * once that seal is done: every lane's seal attempted and the final
+     * manifest write attempted. Each path that seals early calls it last:
+     * the headroom branch of {@link #applyBlock} once {@code sealAll} has
+     * returned, and {@link #failAndSeal} and the loop's failure handler once
+     * their own seal call has returned or thrown — {@code failAndSeal} also
+     * finishes a headroom seal that threw. Does
+     * nothing for a take a stop's seal sealed, and nothing a second time.
+     * Signals only: stopping the take is the caller's (book §2.3). Flush
+     * thread, before it terminates.
+     */
+    private void announceEarlySeal() {
+        if (!sealedEarly || earlySeal.isDone()) {
+            return;
+        }
+        boolean everySegmentSealed = captures.stream().noneMatch(TrackCapture::hasUnsealedSegment);
+        EarlySeal seal = sealReason == SealedBy.DISK_EXHAUSTION
+                ? new EarlySeal.DiskExhausted(headroom.floorBytes(), headroom.isExhaustedByProbeFailures(),
+                        everySegmentSealed)
+                : new EarlySeal.WriteFailed(earlySealFailure, everySegmentSealed);
+        earlySeal.complete(seal);
     }
 
     private static String describe(Throwable failure) {
@@ -1145,15 +1205,21 @@ public final class CaptureFlushService implements AutoCloseable {
     }
 
     /**
-     * Crash simulation (test seam): stops the thread WITHOUT the final sweep
-     * or any seal and abandons every writer, leaving the {@code .part}
-     * files and a {@code streaming} manifest exactly as a JVM death would.
-     * Abandons nothing while the thread may still be writing.
+     * Test seam: stops the thread WITHOUT the final sweep or any seal — the
+     * loop ends at its next pass boundary and the join returns once it has
+     * — then abandons every writer from the calling thread
+     * ({@link TrackCapture#abandonWithoutSeal()}): a writer still streaming
+     * has its channel closed with no size patch and no rename, so its
+     * segment stays a {@code .part} carrying the streaming sentinel, and the
+     * manifest on disk stays the last one written before the loop ended.
+     * An orderly stop, not a process kill: this JVM goes on running and
+     * closes the files itself. Abandons nothing while the thread may still
+     * be writing.
      *
      * @throws IllegalStateException if the thread has not terminated when
      *                               the join runs out
      */
-    void simulateHardTermination() {
+    void stopAndAbandon() {
         abortRequested = true;
         stopping = true;
         if (!started) {
@@ -1163,7 +1229,7 @@ public final class CaptureFlushService implements AutoCloseable {
                     + "; nothing was abandoned under " + config.takeDirectory());
         }
         for (TrackCapture capture : captures) {
-            capture.abandonForCrashSimulation();
+            capture.abandonWithoutSeal();
         }
     }
 
@@ -1358,7 +1424,7 @@ public final class CaptureFlushService implements AutoCloseable {
      * a take sealed early by disk exhaustion or a write failure and then
      * stopped, a throwable that escaped the drain loop, a lane's {@code Error}
      * rethrown by the seal, an abort without a seal ({@code abortStart}, the
-     * crash simulation) — and, for a thread that never ran, when its
+     * {@code stopAndAbandon} test seam) — and, for a thread that never ran, when its
      * {@link #start()} fails or a stop comes before any start. It never completes exceptionally, and a holder cannot
      * complete it. A dependent registered with a non-async method may run on
      * the flush thread as its last act; anything that is more than a hand-off
@@ -1367,6 +1433,33 @@ public final class CaptureFlushService implements AutoCloseable {
      */
     public CompletionStage<Void> termination() {
         return terminationView;
+    }
+
+    /**
+     * Returns the signal that the flush thread sealed this take on its own
+     * ({@link EarlySeal}): the disk-headroom watch reported EXHAUSTED before
+     * a block was written, applying a block or forcing a segment on cadence
+     * threw, or a throwable escaped the drain loop. It completes normally,
+     * at most once, on the flush thread, when that early seal is done —
+     * every lane's seal attempted and the final manifest write attempted,
+     * also when the seal rethrew a lane's {@code Error} — and so before
+     * {@link #termination()}. A stop requested before the early seal does
+     * not prevent it: an exhaustion or a write failure in the final sweep
+     * completes it too, the seal the stop then requests keeps the early
+     * seal's reason, and the stop returns the take as sealed early. It never completes for
+     * the seal a stop requests (whatever that seal's outcome), for
+     * {@code abortStart} or for the {@code stopAndAbandon} test seam, never on the audio
+     * thread and never exceptionally, and a holder cannot complete it. The
+     * flush thread only signals: after an early seal it keeps draining,
+     * discarding every later block ({@link #discardedBlocks()}), until a
+     * stop — or, when the seal answered a throwable that escaped the drain
+     * loop, it terminates. A dependent registered with a non-async method
+     * runs on the flush thread, or on the registering thread if the signal
+     * has completed already; anything more than a hand-off belongs in an
+     * async variant with the executor of the thread that is to do it.
+     */
+    public CompletionStage<EarlySeal> earlySeal() {
+        return earlySealView;
     }
 
     /** Returns the most recently written manifest, once one has been written. */

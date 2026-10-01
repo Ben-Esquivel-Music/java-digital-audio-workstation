@@ -16,21 +16,27 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.decodedRampValue;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.feedRamp;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.hasProvisionalSizes;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.decodedRampValue;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.hasProvisionalSizes;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Story 323 proof (1) — crash durability (book §2.1, §2.5, §3.4, §8 Stage 1):
- * record about two minutes, hard-terminate the writer mid-take, and recover
- * every written frame from the sealed segments and the one streaming
+ * Exact frame accounting for a take whose writers are abandoned without a
+ * seal (story 323; book §2.5, §3.4): record about two minutes, stop the flush
+ * thread at a pass boundary once the ring has been drained — no final sweep,
+ * no seal — then close every writer from Java with no size patch and no
+ * rename ({@link CaptureFlushService#stopAndAbandon()}), and recover every
+ * written frame, exactly, from the sealed segments and the one streaming
  * {@code .part} using nothing but the §3.4 grammar ({@link SegmentFile}) and
- * the manifest's segment order.
+ * the manifest's segment order. An orderly stop, not a process kill: the JVM
+ * that wrote the files goes on running and closes them itself.
+ * {@link TakeRecoveryAfterJvmKillContractTest} kills the writing JVM instead,
+ * where the recovered count can only be bounded.
  */
-class Story323CrashDurabilityContractTest {
+class TakeRecoveryAfterAbandonedWritersContractTest {
 
     /** ≈ 2 minutes at 48 kHz in 512-frame blocks: 11,250 blocks = 5,760,000 frames = 11.5 MB of 16-bit mono. */
     private static final int BLOCKS = 11_250;
@@ -42,10 +48,11 @@ class Story323CrashDurabilityContractTest {
     Path projectDir;
 
     @Test
-    void hardTerminationLeavesSealedSegmentsAndOneRecoverablePartHoldingEveryWrittenFrame() throws IOException {
+    void abandoningTheWritersAfterAStopAtAPassBoundaryLeavesSealedSegmentsAndOnePartHoldingEveryWrittenFrame()
+            throws IOException {
         AudioEngine engine = new AudioEngine(MONO_16);
         Transport transport = new Transport();
-        Track track = Story323TestSupport.armedMonoTrack("Vocal");
+        Track track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         // The take lives where the app puts it: <project>/audio/takes/<stamp>_take-NNNN.
         Path takeDir = TakeDirectories.allocate(ProjectManager.audioDirectory(projectDir), Instant.now());
         assertThat(takeDir.getParent()).isEqualTo(projectDir.resolve("audio").resolve("takes"));
@@ -61,9 +68,10 @@ class Story323CrashDurabilityContractTest {
         assertThat(written).isEqualTo((long) BLOCKS * BLOCK_FRAMES);
         assertThat(pipeline.getOverflowCount()).as("paced feeding never overflowed").isZero();
 
-        // The JVM "dies": no seal, no manifest update, writers abandoned.
+        // Stop at a pass boundary with no final sweep and no seal, then close
+        // every writer with no size patch and no rename; this JVM goes on.
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        service.simulateHardTermination();
+        service.stopAndAbandon();
         assertThat(service.isRunning()).isFalse();
         assertThat(service.isSealed()).isFalse();
 

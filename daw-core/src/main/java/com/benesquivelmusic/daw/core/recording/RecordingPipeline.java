@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
@@ -42,7 +43,11 @@ import java.util.function.LongSupplier;
  * {@code stop()} throws {@link TakeFinalizationPendingException} and the
  * pipeline stays
  * {@linkplain #isFinalizationPending() finalization pending} until a later
- * {@code stop()} finds the thread terminated.</p>
+ * {@code stop()} finds the thread terminated. When the flush thread seals
+ * the take on its own — disk exhaustion, a write failure — it completes
+ * {@link #earlySeal()} and does nothing more: the callback stays installed,
+ * the transport keeps its state and every later block is discarded until
+ * the caller's {@code stop()}.</p>
  *
  * <p>The pipeline supports:</p>
  * <ul>
@@ -608,6 +613,41 @@ public final class RecordingPipeline {
      */
     public boolean isFinalizationPending() {
         return finalizationPending;
+    }
+
+    /**
+     * Returns the early-seal signal of the current take, or of the last take
+     * until the next {@link #start()}: it completes, at most once, on the
+     * {@code capture-flush} thread, when that thread has sealed the take on
+     * its own — disk exhaustion or a write failure ({@link EarlySeal}) — and
+     * that seal is done. It never completes for the seal {@link #stop()}
+     * requests, for a failed start's rollback or for the flush service's
+     * {@code stopAndAbandon} test seam, never on the audio thread and never
+     * exceptionally, and a holder cannot complete it; see
+     * {@link CaptureFlushService#earlySeal()}, including
+     * the early seal in the final sweep of a stop already requested. The
+     * pipeline does nothing on it: the callback stays installed and the
+     * transport keeps its state until {@code stop()}, which returns the
+     * clips of what was sealed. Each start creates the take's own signal, so
+     * a pipeline started again never hands out the previous take's. Once
+     * the take's flush thread has terminated — as when {@code stop()} has
+     * returned the clips — the signal has completed if it ever will. Caller
+     * thread (the one that calls {@code start()} and {@code stop()}).
+     *
+     * @return the signal; a dependent registered with a non-async method
+     *         runs on the {@code capture-flush} thread, or on the registering
+     *         thread if the signal has completed already
+     * @throws IllegalStateException if no start has created a take's flush
+     *                               service yet ({@link #start()} never
+     *                               called, or the last one failed before it
+     *                               created one)
+     */
+    public CompletionStage<EarlySeal> earlySeal() {
+        CaptureFlushService service = flush;
+        if (service == null) {
+            throw new IllegalStateException("Recording pipeline has not been started");
+        }
+        return service.earlySeal();
     }
 
     /**

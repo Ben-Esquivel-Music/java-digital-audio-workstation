@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * streaming segments; rewritten at every rotation; sealed at stop; never a
  * backslash; and its segment order is the clip's segment order.
  */
-class Story323TakeManifestContractTest {
+class TakeManifestLifecycleContractTest {
 
     private static final AudioFormat STEREO_16 = new AudioFormat(48_000.0, 2, 16, 512);
     /** Stage-1 capture width is the stream width: 2 channels × 16 bit. */
@@ -103,7 +103,7 @@ class Story323TakeManifestContractTest {
         }
         for (int b = 0; b < 3; b++) {
             engine.processBlock(input, output, 512);
-            Story323TestSupport.advanceOneBlock(transport);
+            RampCaptureTestSupport.advanceOneBlock(transport);
             pipeline.awaitFlushed();
         }
 
@@ -201,7 +201,7 @@ class Story323TakeManifestContractTest {
         float[][] output = new float[2][512];
         for (int b = 0; b < 6; b++) { // two blocks per segment: rotations open segments 1, 2 and 3
             engine.processBlock(input, output, 512);
-            Story323TestSupport.advanceOneBlock(transport);
+            RampCaptureTestSupport.advanceOneBlock(transport);
             pipeline.awaitFlushed();
         }
         pipeline.stop();

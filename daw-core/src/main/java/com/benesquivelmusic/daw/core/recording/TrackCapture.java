@@ -31,7 +31,7 @@ import java.util.logging.Logger;
  * {@link #finalizeLane(boolean, boolean)} — which starts every later lane —
  * and the scratch/session accessors used while routing are flush-thread
  * only. {@link #setSegmentEvents}, {@link #discardAllFiles()} and
- * {@link #abandonForCrashSimulation()} run on the caller thread, before the
+ * {@link #abandonWithoutSeal()} run on the caller thread, before the
  * flush thread is started or once it has terminated
  * ({@code CaptureFlushService.isTerminated()}; a join that runs out first
  * leaves them uncalled). The results ({@link #takeGroup()},
@@ -268,9 +268,13 @@ final class TrackCapture {
         }
     }
 
-    /** Crash simulation: abandon the current writer without sealing. */
-    void abandonForCrashSimulation() {
-        session.abandonForCrashSimulation();
+    /**
+     * Test seam: abandons the current lane's writer without sealing
+     * ({@link RecordingSession#abandonWithoutSeal()}); a segment that was
+     * streaming stays a {@code .part}.
+     */
+    void abandonWithoutSeal() {
+        session.abandonWithoutSeal();
     }
 
     /**
@@ -352,6 +356,23 @@ final class TrackCapture {
     /** Returns the current lane index. */
     int lane() {
         return lane;
+    }
+
+    /**
+     * Returns whether the current lane's session still lists a segment that
+     * did not seal: a seal that fails — at a rotation, or when the lane is
+     * finalized — leaves its segment listed in progress, the {@code .part}
+     * file in place for recovery. Only the current lane can hold one: a seal
+     * that fails at a rotation or at a loop wrap ends the take early, and a
+     * lane whose seal failed at a wrap stays the current lane. Flush thread.
+     */
+    boolean hasUnsealedSegment() {
+        for (RecordingSegment segment : session.getSegments()) {
+            if (segment.isInProgress()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Returns every sealed segment across lanes, in seal order (= lane, then index). */

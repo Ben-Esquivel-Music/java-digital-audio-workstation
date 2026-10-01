@@ -36,13 +36,13 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.SAMPLE_RATE;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.advanceOneBlock;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.feedRamp;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.outcomeWithinTheGuard;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.rampBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.SAMPLE_RATE;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.advanceOneBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.tuple;
  */
 class RecordingPipelineFlushServiceTest {
 
-    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * Story323TestSupport.BYTES_PER_FRAME_MONO_16;
+    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
     private static final long GIB = 1L << 30;
     private static final long MIB = 1L << 20;
 
@@ -75,7 +75,7 @@ class RecordingPipelineFlushServiceTest {
     void setUp() {
         engine = new AudioEngine(MONO_16);
         transport = new Transport();
-        track = Story323TestSupport.armedMonoTrack("Audio 1");
+        track = RampCaptureTestSupport.armedMonoTrack("Audio 1");
     }
 
     @AfterEach
@@ -132,7 +132,7 @@ class RecordingPipelineFlushServiceTest {
                 producing.set(false);
             }
         });
-        long deadline = System.nanoTime() + Story323TestSupport.HANG_GUARD.toNanos();
+        long deadline = System.nanoTime() + RampCaptureTestSupport.HANG_GUARD.toNanos();
         long observations = 0;
         do {
             long applied = service.appliedBlocks();
@@ -140,7 +140,7 @@ class RecordingPipelineFlushServiceTest {
             assertThat(applied).as("applied never runs ahead of published").isLessThanOrEqualTo(published);
             observations++;
             if (System.nanoTime() - deadline >= 0) {
-                fail("the producer was still feeding after " + Story323TestSupport.HANG_GUARD
+                fail("the producer was still feeding after " + RampCaptureTestSupport.HANG_GUARD
                         + ": " + published + " of " + blocks + " block(s) published");
             }
         } while (producing.get());
@@ -578,7 +578,7 @@ class RecordingPipelineFlushServiceTest {
         float[][] captured = pipeline.getSession(track).getCapturedAudio();
         assertThat(captured[0]).hasSize(256);
         for (int i = 0; i < 256; i++) {
-            assertThat(captured[0][i]).as("frame %d", i).isEqualTo(Story323TestSupport.rampValue(i));
+            assertThat(captured[0][i]).as("frame %d", i).isEqualTo(RampCaptureTestSupport.rampValue(i));
         }
 
         // Two more over-long blocks belong to the same episode: counted, but
@@ -711,7 +711,7 @@ class RecordingPipelineFlushServiceTest {
         // lanes goes on all the same: the second track's lane gets its seal
         // attempt, the manifest is written, and only then does the Error go
         // on to the flush loop, which reports it.
-        Track second = Story323TestSupport.armedMonoTrack("Audio 2");
+        Track second = RampCaptureTestSupport.armedMonoTrack("Audio 2");
         RecordingPipeline pipeline = newPipeline(track, second);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
@@ -782,7 +782,7 @@ class RecordingPipelineFlushServiceTest {
             // Sealed lanes hold no channel and this does nothing; a lane the
             // walk failed to reach would still hold its .part open, and the
             // temporary directory could not be deleted on Windows.
-            pipeline.getSession(second).abandonForCrashSimulation();
+            pipeline.getSession(second).abandonWithoutSeal();
         }
     }
 
@@ -792,7 +792,7 @@ class RecordingPipelineFlushServiceTest {
         // Error of its own, after its segment was sealed. The first lane's
         // Error is the one that goes on to the flush loop; the second
         // lane's is attached to it.
-        Track second = Story323TestSupport.armedMonoTrack("Audio 2");
+        Track second = RampCaptureTestSupport.armedMonoTrack("Audio 2");
         RecordingPipeline pipeline = newPipeline(track, second);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
@@ -831,8 +831,8 @@ class RecordingPipelineFlushServiceTest {
                     .satisfies(w -> assertThat(w).contains("InjectedFault").contains("first lane"));
         } finally {
             // As above: only a lane the walk failed to reach still holds a channel.
-            pipeline.getSession(track).abandonForCrashSimulation();
-            pipeline.getSession(second).abandonForCrashSimulation();
+            pipeline.getSession(track).abandonWithoutSeal();
+            pipeline.getSession(second).abandonWithoutSeal();
         }
     }
 
@@ -842,7 +842,7 @@ class RecordingPipelineFlushServiceTest {
         // Throwable.addSuppressed refuses self-suppression with an
         // IllegalArgumentException, which would replace the Error on its
         // way to the flush loop.
-        Track second = Story323TestSupport.armedMonoTrack("Audio 2");
+        Track second = RampCaptureTestSupport.armedMonoTrack("Audio 2");
         RecordingPipeline pipeline = newPipeline(track, second);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
@@ -876,8 +876,8 @@ class RecordingPipelineFlushServiceTest {
             assertThat(warnings).singleElement()
                     .satisfies(w -> assertThat(w).contains("InjectedFault").contains("both lanes"));
         } finally {
-            pipeline.getSession(track).abandonForCrashSimulation();
-            pipeline.getSession(second).abandonForCrashSimulation();
+            pipeline.getSession(track).abandonWithoutSeal();
+            pipeline.getSession(second).abandonWithoutSeal();
         }
     }
 
@@ -887,7 +887,7 @@ class RecordingPipelineFlushServiceTest {
         // early seal then runs the second track's stop notification, which
         // dies with an Error. lastFailure() is the most recent failure: the
         // Error. The write failure that caused the seal is in the log.
-        Track second = Story323TestSupport.armedMonoTrack("Audio 2");
+        Track second = RampCaptureTestSupport.armedMonoTrack("Audio 2");
         RecordingPipeline pipeline = newPipeline(track, second);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
@@ -943,8 +943,8 @@ class RecordingPipelineFlushServiceTest {
             assertThat(service.isRunning()).isFalse();
         } finally {
             flushLogger.removeHandler(logged);
-            pipeline.getSession(track).abandonForCrashSimulation();
-            pipeline.getSession(second).abandonForCrashSimulation();
+            pipeline.getSession(track).abandonWithoutSeal();
+            pipeline.getSession(second).abandonWithoutSeal();
         }
     }
 
@@ -990,7 +990,7 @@ class RecordingPipelineFlushServiceTest {
 
             assertThat(pipeline.stop()).hasSize(1);
         } finally {
-            pipeline.getSession(track).abandonForCrashSimulation();
+            pipeline.getSession(track).abandonWithoutSeal();
         }
     }
 
@@ -1301,7 +1301,7 @@ class RecordingPipelineFlushServiceTest {
 
     @Test
     void aSessionThatCannotStartRollsTheWholeStartBackAndPropagates() throws IOException {
-        Track second = Story323TestSupport.armedMonoTrack("Audio 2");
+        Track second = RampCaptureTestSupport.armedMonoTrack("Audio 2");
         Path blocker = Files.writeString(takeDir.resolve("blocker"), "not a directory");
         RecordingPipeline pipeline = newPipeline(track, second);
         pipeline.setSessionFactory((t, dir) -> t == second
@@ -1326,7 +1326,7 @@ class RecordingPipelineFlushServiceTest {
 
     @Test
     void aSessionFactoryThatThrowsRollsBackBeforeAnyFileExists() throws IOException {
-        Track second = Story323TestSupport.armedMonoTrack("Audio 2");
+        Track second = RampCaptureTestSupport.armedMonoTrack("Audio 2");
         RecordingPipeline pipeline = newPipeline(track, second);
         pipeline.setSessionFactory((t, dir) -> {
             if (t == second) {

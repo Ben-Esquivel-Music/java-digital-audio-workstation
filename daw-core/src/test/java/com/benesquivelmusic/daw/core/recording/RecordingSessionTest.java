@@ -723,13 +723,13 @@ class RecordingSessionTest {
     }
 
     @Test
-    void abandonForCrashSimulationLeavesThePartAndDeactivates() throws IOException {
-        Path trackDir = tempDir.resolve("crash");
+    void abandonWithoutSealLeavesThePartAndDeactivates() throws IOException {
+        Path trackDir = tempDir.resolve("abandoned");
         RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
         session.start();
         session.recordAudioData(block(300, 0.1f, 0.1f), 300);
 
-        session.abandonForCrashSimulation();
+        session.abandonWithoutSeal();
 
         assertThat(session.isActive()).isFalse();
         Path part = trackDir.resolve("segment-000.wav.part");

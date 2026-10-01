@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the same archiver straight afterwards. Deterministic; one thread; no
  * timing.</p>
  */
-class Story323ArchiveRewriteRollbackProbeContractTest {
+class ProjectArchiverRewriteRollbackTest {
 
     /** References the fixture project holds, in the order the archiver walks them. */
     private static final int REFERENCES = 3;

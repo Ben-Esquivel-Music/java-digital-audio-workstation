@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * through {@code ..} is refused, and a take directory given in a
  * non-normalised form still accepts its own files.</p>
  */
-class Story323ManifestPathProbeContractTest {
+class TakeManifestPathContainmentTest {
 
     private static final String TAKE = "2026-09-29T08-15-00_take-0042";
     private static final String TRACK = "b7d0c3a4-5e61-4f2a-9c1d-0a1b2c3d4e5f";

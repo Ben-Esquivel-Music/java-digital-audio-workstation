@@ -626,11 +626,12 @@ public final class RecordingSession {
     }
 
     /**
-     * Crash simulation (test seam): closes the current writer with no seal
-     * and no rename and marks the session inactive, leaving the
-     * {@code .part} exactly as a JVM death would.
+     * Test seam: closes the current writer with no seal and no rename
+     * ({@link SegmentWriter#abandon()}) and marks the session inactive; a
+     * segment that was streaming stays a {@code .part} holding every frame
+     * appended to it, with the streaming sentinel in its size fields.
      */
-    void abandonForCrashSimulation() {
+    void abandonWithoutSeal() {
         active = false;
         paused = false;
         if (writer != null) {

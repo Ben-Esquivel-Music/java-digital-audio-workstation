@@ -20,13 +20,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.HANG_GUARD;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.advanceOneBlock;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.feedRamp;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.outcomeWithinTheGuard;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.rampBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.HANG_GUARD;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.advanceOneBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -53,20 +53,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The final-manifest hold: every attempt of the seal's manifest write is
  * refused through {@code CaptureFlushService.failNextManifestWrites}, and
  * the warning the flush thread then hands to the sink holds it on a latch.
- * Every wait is bounded: by {@link Story323TestSupport#HANG_GUARD} — above
+ * Every wait is bounded: by {@link RampCaptureTestSupport#HANG_GUARD} — above
  * the {@link #JOIN} a guarded {@code stop()} waits, and below the one-hour
  * bound of the last test, whose stop must never join its own thread at all —
  * or, inside {@code feedRamp} and {@code setDrainPaused}, by
  * {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT}.</p>
  */
-class Story323StopFinalizationProbeContractTest {
+class PendingTakeCompletionContractTest {
 
     private static final long GIB = 1L << 30;
     private static final long MIB = 1L << 20;
     /**
      * The shortened join: long enough that the flush thread reaches its hold
      * (four 20 ms manifest retry pauses after the lane seal) before the join
-     * runs out, and far inside {@link Story323TestSupport#HANG_GUARD}.
+     * runs out, and far inside {@link RampCaptureTestSupport#HANG_GUARD}.
      */
     private static final Duration JOIN = Duration.ofSeconds(1);
 
@@ -88,7 +88,7 @@ class Story323StopFinalizationProbeContractTest {
         engine = new AudioEngine(MONO_16);
         transport = new Transport();
         transport.setTempo(120.0);
-        track = Story323TestSupport.armedMonoTrack("Vocal");
+        track = RampCaptureTestSupport.armedMonoTrack("Vocal");
     }
 
     /** A held thread is never left behind: released, then given the guard to finish before the directory goes. */

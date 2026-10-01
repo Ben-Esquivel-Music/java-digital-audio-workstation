@@ -515,7 +515,7 @@ class SegmentWriterTest {
         SegmentWriter writer = open("segment-000.wav.part", 24);
         writer.append(signal(300), CHANNELS, 300);
         long dataBytes = writer.dataBytes();
-        assertThat(Story323TestSupport.sizeFields(writer.partPath()))
+        assertThat(RampCaptureTestSupport.sizeFields(writer.partPath()))
                 .as("fixture: still provisional before the seal")
                 .containsExactly(SegmentWriter.PROVISIONAL_SIZE, SegmentWriter.PROVISIONAL_SIZE);
         writer.failNextRename();
@@ -528,7 +528,7 @@ class SegmentWriterTest {
         assertThat(writer.sealedPath()).doesNotExist();
         assertThat(writer.isStreaming()).isFalse();
         assertThat(writer.isSealed()).isFalse();
-        assertThat(Story323TestSupport.sizeFields(writer.partPath()))
+        assertThat(RampCaptureTestSupport.sizeFields(writer.partPath()))
                 .as("RIFF size and data size were patched before the rename was attempted")
                 .containsExactly((int) (36 + dataBytes), (int) dataBytes);
         assertThat(SegmentFile.describe(writer.partPath()).frameCount()).isEqualTo(300);

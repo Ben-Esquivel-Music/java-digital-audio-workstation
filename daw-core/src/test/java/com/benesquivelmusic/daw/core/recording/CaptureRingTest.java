@@ -436,19 +436,19 @@ class CaptureRingTest {
         // so a regression fails this test instead of hanging the suite.
         double largestCoverableRate = CaptureRing.MAX_SLOTS; // one-frame blocks, 1 s: exactly 2^30 blocks
         AtomicInteger largest = new AtomicInteger();
-        Throwable atTheLimit = Story323TestSupport.outcomeWithinTheGuard("capture-ring-test-slot-count-limit",
+        Throwable atTheLimit = RampCaptureTestSupport.outcomeWithinTheGuard("capture-ring-test-slot-count-limit",
                 () -> largest.set(CaptureRing.slotCountFor(largestCoverableRate, 1, Duration.ofSeconds(1))));
         assertThat(atTheLimit).as("exactly MAX_SLOTS blocks is still coverable").isNull();
         assertThat(largest.get()).isEqualTo(CaptureRing.MAX_SLOTS);
 
-        Throwable oneBlockMore = Story323TestSupport.outcomeWithinTheGuard("capture-ring-test-slot-count-over",
+        Throwable oneBlockMore = RampCaptureTestSupport.outcomeWithinTheGuard("capture-ring-test-slot-count-over",
                 () -> CaptureRing.slotCountFor(largestCoverableRate + 1, 1, Duration.ofSeconds(1)));
         assertThat(oneBlockMore)
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("tolerance covers more than " + CaptureRing.MAX_SLOTS + " blocks")
                 .hasMessageContaining(Long.toString(CaptureRing.MAX_SLOTS + 1L));
 
-        Throwable aDayOfOneFrameBlocks = Story323TestSupport.outcomeWithinTheGuard("capture-ring-test-slot-count-day",
+        Throwable aDayOfOneFrameBlocks = RampCaptureTestSupport.outcomeWithinTheGuard("capture-ring-test-slot-count-day",
                 () -> CaptureRing.slotCountFor(48_000, 1, Duration.ofDays(1)));
         assertThat(aDayOfOneFrameBlocks)
                 .isInstanceOf(IllegalArgumentException.class)

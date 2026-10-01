@@ -35,7 +35,6 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -44,36 +43,40 @@ import java.util.prefs.Preferences;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Story 323 review probe (verification round 3): the Project Hub's Open and
- * the Welcome screen's Continue replace the open project, so each passes
- * {@code ProjectLifecycleController.confirmProjectMayClose()} — the take
- * being written is refused first, with one WARNING and no unsaved-changes
- * prompt, and once the take is written a dirty project is asked about before
- * it is replaced. {@code Story323ProjectChangeWhileTakeIsWrittenTest} drives
- * New, Open, Import, Restore from Archive and the snapshot restore; no test
- * drove these two doors, so a door wired to the prompt alone, or to no gate,
- * went unnoticed.
+ * Story 323 review (the user's decision "Refuse while recording"): the
+ * Project Hub's Open and the Welcome screen's Continue replace the open
+ * project, so each passes {@code ProjectLifecycleController.confirmProjectMayClose()},
+ * which refuses while a recording is in flight — first, with one WARNING
+ * ({@link ProjectLifecycleController#PROJECT_CHANGE_WHILE_RECORDING_MESSAGE})
+ * and no unsaved-changes prompt, the recording going on untouched — and,
+ * once the user has stopped the recording, asks about a dirty project before
+ * it is replaced. The recording counterpart of
+ * {@code HubAndWelcomeOpenWhileTakeIsWrittenTest}, whose fixture and steps
+ * this follows.
  *
- * <p>Same fixture as {@code Story323ProjectChangeWhileTakeIsWrittenTest}
- * (a real {@link ProjectLifecycleController}; the check it asks is the test's
- * flag), plus a {@link RecentProjectsStore} on a throwaway preferences node,
- * removed after each test, so the Hub and the Welcome screen list Song B.
- * Each door is opened as a user does from the keyboard: Enter on Song B's
- * card. Every FX action runs through {@link Platform#runLater} and is bounded
- * at 5 s; an unsaved-changes prompt is counted and hidden on the FX thread,
- * which ends its {@code showAndWait} as a cancel, so no test waits on a
- * dialog. The cards' background scans are joined, bounded, before the
- * temporary directory is removed.</p>
+ * <p>The recording is real ({@link RecordingInFlightFixture}): a
+ * {@link TransportController} over Song A streams an armed track's take into
+ * Song A's {@code audio/takes}, and the lifecycle controller asks that
+ * controller's {@code isRecordingInFlight()} and {@code isTakeBeingWritten()},
+ * as {@code MainController} asks its current one. A {@link RecentProjectsStore}
+ * on a throwaway preferences node, removed after each test, makes the Hub and
+ * the Welcome screen list Song B. Each door is opened as a user does from the
+ * keyboard: Enter on Song B's card. Every FX action runs through
+ * {@link Platform#runLater} and is bounded at 5 s, or, for the fixture's
+ * Record and Stop, at the longer bound {@link RecordingInFlightFixture}
+ * gives them; an unsaved-changes prompt
+ * is counted and hidden on the FX thread, which ends its {@code showAndWait}
+ * as a cancel, so no test waits on a dialog. The cards' background scans are
+ * joined, bounded, before the temporary directory is removed.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
-class Story323HubAndWelcomeOpenProbeTest {
+class HubAndWelcomeOpenWhileRecordingTest {
 
     private static final String UNSAVED_CHANGES_TITLE = "Unsaved Changes";
 
     @TempDir
     Path workspace;
 
-    private final AtomicBoolean takeBeingWritten = new AtomicBoolean(true);
     private final AtomicReference<DawProject> project =
             new AtomicReference<>(new DawProject("Song A", AudioFormat.CD_QUALITY));
     private final AtomicInteger rebuilds = new AtomicInteger();
@@ -96,17 +99,20 @@ class Story323HubAndWelcomeOpenProbeTest {
     private Path songA;
     private Path songB;
     private ProjectLifecycleController lifecycle;
+    private RecordingInFlightFixture recording;
 
     @BeforeEach
-    void openSongAWithSongBInTheRecentProjects() throws Exception {
+    void openSongAWithSongBInTheRecentProjectsAndRecord() throws Exception {
         recentProjectsNode = Preferences.userRoot()
-                .node("daw-test-story323-hub-welcome-probe-" + System.nanoTime());
+                .node("daw-test-hub-welcome-open-while-recording-" + System.nanoTime());
         projectManager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT),
                 new RecentProjectsStore(recentProjectsNode));
         songA = projectManager.createProject("Song A", workspace).projectPath();
         project.get().setMetadata(project.get().getMetadata().withPath(songA));
         songB = anotherProjectOnDisk("Song B");
         projectManager.getRecentProjectsStore().addRecentProject(songB);
+        recording = RecordingInFlightFixture.audio(project.get());
+        TransportController controller = recording.controller();
         runOnFx(() -> {
             Window.getWindows().addListener(dismissUnsavedChangesPrompts);
             NotificationBar notificationBar = new NotificationBar();
@@ -120,23 +126,30 @@ class Story323HubAndWelcomeOpenProbeTest {
                             undoManager::set, () -> { }, () -> { }, rebuilds::incrementAndGet,
                             () -> null, _ -> { }),
                     new ProjectArchiver());
-            lifecycle.setTakeBeingWrittenCheck(takeBeingWritten::get);
+            lifecycle.setTakeBeingWrittenCheck(controller::isTakeBeingWritten);
+            lifecycle.setRecordingInFlightCheck(controller::isRecordingInFlight);
         });
+        recording.start();
     }
 
     @AfterEach
-    void closeTheOpenProject() throws Exception {
-        runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
-        for (Thread scan : cardScans) {
-            scan.join(TimeUnit.SECONDS.toMillis(5));
+    void stopTheRecordingAndCloseTheOpenProject() throws Exception {
+        try {
+            if (recording != null) {
+                recording.close();
+            }
+        } finally {
+            runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
+            for (Thread scan : cardScans) {
+                scan.join(TimeUnit.SECONDS.toMillis(5));
+            }
+            projectManager.abandonProject();
+            recentProjectsNode.removeNode();
         }
-        projectManager.abandonProject();
-        recentProjectsNode.removeNode();
     }
 
     @Test
-    void theProjectHubsOpenIsRefusedBeforeTheUnsavedChangesPromptAndAsksOnceTheTakeIsWritten()
-            throws Exception {
+    void theProjectHubsOpenIsRefusedWhileRecordingAndAsksOnceTheRecordingIsStopped() throws Exception {
         AtomicReference<ProjectHubView> presented = new AtomicReference<>();
         runOnFx(() -> {
             lifecycle.setProjectHubPresenter(presented::set);
@@ -154,8 +167,7 @@ class Story323HubAndWelcomeOpenProbeTest {
     }
 
     @Test
-    void theWelcomeScreensContinueIsRefusedBeforeTheUnsavedChangesPromptAndAsksOnceTheTakeIsWritten()
-            throws Exception {
+    void theWelcomeScreensContinueIsRefusedWhileRecordingAndAsksOnceTheRecordingIsStopped() throws Exception {
         AtomicReference<WelcomeView> presented = new AtomicReference<>();
         runOnFx(() -> {
             lifecycle.setWelcomePresenter(presented::set);
@@ -177,21 +189,20 @@ class Story323HubAndWelcomeOpenProbeTest {
 
         runOnFx(openSongB);
 
-        assertThat(unsavedChangesPrompts)
-                .as("refused before the unsaved-changes prompt, which a take being written does not trip")
-                .hasValue(0);
+        assertThat(unsavedChangesPrompts).as("refused before the unsaved-changes prompt").hasValue(0);
         assertThat(shown.getEntries()).as("one WARNING toast, no modal dialog").singleElement()
                 .satisfies(entry -> {
                     assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
                     assertThat(entry.message())
-                            .isEqualTo(ProjectLifecycleController.PROJECT_CHANGE_WHILE_WRITING_MESSAGE);
+                            .isEqualTo(ProjectLifecycleController.PROJECT_CHANGE_WHILE_RECORDING_MESSAGE);
                 });
         assertSongAIsStillOpen(songAModel);
+        recording.assertStillRecording();
 
-        takeBeingWritten.set(false);
+        recording.stop();
         runOnFx(openSongB);
         assertThat(unsavedChangesPrompts)
-                .as("once the take is written, the door asks about the unsaved changes before replacing them")
+                .as("once the recording is stopped, the door asks about the unsaved changes before replacing them")
                 .hasValue(1);
         assertSongAIsStillOpen(songAModel);
         assertThat(shown.getEntries()).as("the dismissed prompt cancels, and nothing more is shown").hasSize(1);

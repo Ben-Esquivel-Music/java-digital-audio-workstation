@@ -18,10 +18,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.SAMPLE_RATE;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.SAMPLE_RATE;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * segment in manifest order, never only {@code segment-000.wav}; in
  * loop-record each lap's take references its own lane's segments only.
  */
-class Story323RotationReferencesEverySegmentContractTest {
+class RotationReferencesEverySegmentContractTest {
 
-    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * Story323TestSupport.BYTES_PER_FRAME_MONO_16;
+    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
 
     @TempDir
     Path takeDir;
@@ -46,7 +46,7 @@ class Story323RotationReferencesEverySegmentContractTest {
         engine = new AudioEngine(MONO_16);
         transport = new Transport();
         transport.setTempo(120.0);
-        track = Story323TestSupport.armedMonoTrack("Guitar");
+        track = RampCaptureTestSupport.armedMonoTrack("Guitar");
     }
 
     @Test

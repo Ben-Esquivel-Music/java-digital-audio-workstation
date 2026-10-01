@@ -48,7 +48,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * as an in-project name. On Linux the Windows forms are ordinary names under
  * the directory and nothing but the escaping references is unresolvable.</p>
  */
-class Story323ReferenceClassesProbeContractTest {
+class ClipReferenceClassificationContractTest {
 
     private static final boolean WINDOWS = OS.WINDOWS.isCurrentOs();
     private static final String ESCAPES = "escapes the project directory";

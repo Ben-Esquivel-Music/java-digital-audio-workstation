@@ -25,7 +25,7 @@ import java.util.function.LongSupplier;
  * {@link #seal()} run on the {@code capture-flush} thread. {@link #open}
  * runs on the caller thread for a track's first segment (before the flush
  * thread is started) and on the flush thread for every later one. The
- * rollback / crash seams
+ * rollback / abandon seams
  * ({@link #abandon()}, {@link #close()}) run on the caller thread, before
  * the flush thread is started or once it has terminated
  * ({@code CaptureFlushService.isTerminated()}), and on the flush
@@ -86,9 +86,8 @@ import java.util.function.LongSupplier;
  *       a name whose {@code .wav} already exists); it is not a guard
  *       against another process creating the file between the check and
  *       the move.</li>
- *   <li>{@link #abandon()} closes the channel with no patch and no rename —
- *       the crash simulation used by the durability tests; the {@code .part}
- *       stays recoverable by the grammar above.</li>
+ *   <li>{@link #abandon()} closes the channel with no patch and no rename;
+ *       the {@code .part} stays recoverable by the grammar above.</li>
  * </ul>
  *
  * <p>Bit depths accepted: 16, 24, 32. {@code AudioFormat} permits any
@@ -478,9 +477,13 @@ public final class SegmentWriter implements AutoCloseable {
     }
 
     /**
-     * Crash simulation (test seam): closes the channel with no size patch
-     * and no rename, leaving the {@code .part} exactly as a JVM death would.
-     * No-op unless streaming.
+     * Closes the channel with no size patch and no rename: the {@code .part}
+     * keeps every byte written to it, and its size fields keep what they
+     * hold — the streaming sentinel, unless a {@link #seal()} that failed
+     * had already patched them. Called by {@link #close()}, and by the
+     * session for the start-failure rollback, after a seal that throws, to
+     * discard an empty tail, and for the test seams that abandon a take
+     * without a seal. No-op unless streaming.
      *
      * @throws IOException if closing the channel fails
      */

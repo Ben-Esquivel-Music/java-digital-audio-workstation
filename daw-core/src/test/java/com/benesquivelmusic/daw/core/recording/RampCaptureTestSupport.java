@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code SegmentFile} decodes {@code k / 32768f} — so the expected decoded
  * value of frame {@code n} is {@link #decodedRampValue(long)} to the bit.</p>
  */
-final class Story323TestSupport {
+final class RampCaptureTestSupport {
 
     static final double SAMPLE_RATE = 48_000.0;
     static final int BLOCK_FRAMES = 512;
@@ -53,7 +53,7 @@ final class Story323TestSupport {
         void run() throws Exception;
     }
 
-    private Story323TestSupport() {
+    private RampCaptureTestSupport() {
     }
 
     /**

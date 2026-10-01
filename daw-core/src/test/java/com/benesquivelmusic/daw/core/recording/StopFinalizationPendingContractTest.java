@@ -26,14 +26,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.BLOCK_FRAMES;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.HANG_GUARD;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.MONO_16;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.SAMPLE_RATE;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.advanceOneBlock;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.feedRamp;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.outcomeWithinTheGuard;
-import static com.benesquivelmusic.daw.core.recording.Story323TestSupport.rampBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.HANG_GUARD;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.SAMPLE_RATE;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.advanceOneBlock;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -63,19 +63,19 @@ import static org.assertj.core.api.Assertions.within;
  * shortened with {@code CaptureFlushService.setStopJoinTimeout}, so no test
  * waits the production 30 s; the two tests of stops that must not join at
  * all set it to an hour instead. Every wait is bounded: by
- * {@link Story323TestSupport#HANG_GUARD} — which exceeds the shortened join
+ * {@link RampCaptureTestSupport#HANG_GUARD} — which exceeds the shortened join
  * each guarded {@code stop()} waits out, and which a stop that joined for
  * the hour would overrun — or, inside {@code feedRamp}, {@code awaitFlushed}
  * and {@code setDrainPaused}, by {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT};
  * the holds by the guard, or by twice the guard for the hold a stop must not
  * wait for.</p>
  */
-class Story323StopFinalizationPendingContractTest {
+class StopFinalizationPendingContractTest {
 
-    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * Story323TestSupport.BYTES_PER_FRAME_MONO_16;
+    private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
     private static final long GIB = 1L << 30;
     private static final long MIB = 1L << 20;
-    /** The shortened join: a real wait, far inside {@link Story323TestSupport#HANG_GUARD}. */
+    /** The shortened join: a real wait, far inside {@link RampCaptureTestSupport#HANG_GUARD}. */
     private static final Duration SHORT_JOIN = Duration.ofMillis(200);
 
     @TempDir
@@ -97,7 +97,7 @@ class Story323StopFinalizationPendingContractTest {
         engine = new AudioEngine(MONO_16);
         transport = new Transport();
         transport.setTempo(120.0);
-        track = Story323TestSupport.armedMonoTrack("Vocal");
+        track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         journal.beforeForce(() -> {
             if (holdNextForce.compareAndSet(true, false)) {
                 holdHere();
@@ -128,7 +128,7 @@ class Story323StopFinalizationPendingContractTest {
     /**
      * {@link #holdHere()} with twice the guard as its bound, so a call that
      * waited for the held thread would still be waiting when
-     * {@link Story323TestSupport#HANG_GUARD} runs out, rather than slip
+     * {@link RampCaptureTestSupport#HANG_GUARD} runs out, rather than slip
      * through as the hold's own bound ran out.
      */
     private void holdBeyondTheGuard() {
