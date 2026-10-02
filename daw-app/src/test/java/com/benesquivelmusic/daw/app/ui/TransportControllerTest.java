@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.DiskHeadroomWatch;
 import com.benesquivelmusic.daw.core.recording.EarlySeal;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
+import com.benesquivelmusic.daw.core.recording.StopSealFailure;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.recording.TakeFinalizationPendingException;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
@@ -1542,6 +1543,12 @@ class TransportControllerTest {
             controller.setEarlySealSignalForTest(earlySeal);
         });
         runHandler(controller::toggleRecord);
+        awaitABlockOnDisk(controller, armed);
+        return controller;
+    }
+
+    /** Waits, for at most 10 s, until the active take of {@code controller} has a block of {@code armed} on disk. */
+    private static void awaitABlockOnDisk(TransportController controller, Track armed) throws IOException {
         Path part = controller.activeTakeDirectory().orElseThrow()
                 .resolve(armed.getId()).resolve("segment-000.wav.part");
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
@@ -1552,7 +1559,6 @@ class TransportControllerTest {
                     .as("fixture: a recorded block reached %s within 10 s", part).isTrue();
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
         }
-        return controller;
     }
 
     /** One FX turn after everything posted so far: the posts run in order. */
@@ -2227,6 +2233,407 @@ class TransportControllerTest {
                 new EarlySeal.WriteFailed(new OutOfMemoryError(), true), 0, take))
                 .isEqualTo("Recording stopped — capturing the take failed (OutOfMemoryError);"
                         + " no audio had been recorded before that");
+    }
+
+    // ── Story 323 review: a published take marks the project dirty ──────────
+
+    /**
+     * Stands in for a take that produced no clip — the core builds none for a
+     * take that recorded no frame, and a real take's first block arrives at
+     * the device's pace — on its FIRST call: it runs the real
+     * {@code RecordingPipeline.stop()}, takes the clips that stop added off
+     * their tracks again and returns none, so the controller sees what a take
+     * without a clip leaves. Any later call — the Stop of a later take — is
+     * the real {@code RecordingPipeline.stop()}.
+     */
+    private static final class NoClipOnTheFirstStop implements TransportController.PipelineStop {
+        final List<RecordingPipeline> calls = new CopyOnWriteArrayList<>();
+
+        @Override
+        public List<AudioClip> stop(RecordingPipeline pipeline) {
+            calls.add(pipeline);
+            List<AudioClip> clips = pipeline.stop();
+            if (calls.size() > 1) {
+                return clips;
+            }
+            pipeline.getRecordedClips().forEach(Track::removeClip);
+            return List.of();
+        }
+    }
+
+    /**
+     * A take that published no clip leaves the project as it was; the next
+     * take, which publishes one, marks it dirty, as an undoable edit does
+     * (story 294: {@code DawProject} holds the one dirty bit).
+     */
+    @Test
+    void anAudioTakeMarksTheProjectDirtyOnlyWhenItPublishedAClip() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        NoClipOnTheFirstStop stops = new NoClipOnTheFirstStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, RecordingPipeline::earlySeal);
+        project.markClean();
+
+        runHandler(controller::stop);
+
+        assertThat(stops.calls).as("fixture: the take was stopped").hasSize(1);
+        assertThat(armed.getClips()).as("fixture: the take published no clip").isEmpty();
+        assertThat(undoManager.canUndo()).isFalse();
+        assertThat(project.isDirty()).as("a take that published no clip leaves the project clean").isFalse();
+
+        runHandler(controller::toggleRecord);
+        awaitABlockOnDisk(controller, armed);
+        runHandler(controller::stop);
+
+        assertThat(stops.calls).as("fixture: the second take was stopped").hasSize(2);
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(undoManager.undoDescription()).isEqualTo("Record Audio");
+        assertThat(project.isDirty()).as("publishing the take's clip marks the project dirty").isTrue();
+    }
+
+    /**
+     * A take still being written is not in the project and leaves it clean;
+     * the deferred half that publishes it marks the project dirty.
+     */
+    @Test
+    void aTakePublishedByTheDeferredHalfMarksTheProjectDirtyOnlyThen() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        project.markClean();
+
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+        assertThat(controller.isTakeBeingWritten()).as("fixture: the take is being written").isTrue();
+        assertThat(project.isDirty()).as("a take still being written is not in the project yet").isFalse();
+
+        stops.written.complete(null); // the capture thread has terminated
+        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
+        flushFx();
+
+        assertThat(armed.getClips()).as("fixture: the deferred half published the take").hasSize(1);
+        assertThat(project.isDirty()).as("publishing the take's clip marks the project dirty").isTrue();
+    }
+
+    /** The auto-Stop of a take the capture thread sealed early publishes its clip and marks the project dirty. */
+    @Test
+    void aTakeSealedEarlyAndStoppedOnItsOwnMarksTheProjectDirty() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        CountingStop stops = new CountingStop();
+        ControlledEarlySeal earlySeal = new ControlledEarlySeal();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, earlySeal);
+        project.markClean();
+
+        earlySeal.sealEarlyOnTheCaptureThread(DISK_EXHAUSTED);
+        flushFx(); // the auto-Stop's turn
+
+        assertThat(stops.calls).as("fixture: the auto-Stop stopped the take").hasSize(1);
+        assertThat(controller.activeTakeDirectory()).isEmpty();
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(notificationBar.getCurrentLevel()).as("fixture: the early seal was reported")
+                .isEqualTo(NotificationLevel.ERROR);
+        assertThat(project.isDirty()).as("publishing the take's clip marks the project dirty").isTrue();
+    }
+
+    /**
+     * A MIDI take that recorded no note leaves the project as it was; one
+     * that recorded a note — the recorder put it into the track's clip, and
+     * the Stop registered it for undo — marks the project dirty.
+     */
+    @Test
+    void aMidiTakeMarksTheProjectDirtyOnlyWhenItRecordedANote() throws Exception {
+        DawProject project = new DawProject("unsaved", new AudioFormat(48000, 2, 16, 256));
+        try (RecordingInFlightFixture recording = RecordingInFlightFixture.midiOnly(project)) {
+            Track keys = project.getTracks().getFirst();
+            project.markClean();
+
+            recording.start();
+            recording.stop();
+
+            assertThat(keys.getMidiClip().isEmpty()).as("fixture: no note was recorded").isTrue();
+            assertThat(project.isDirty()).as("a MIDI take with no note leaves the project clean").isFalse();
+
+            recording.start();
+            recording.holdANote();
+            recording.stop();
+
+            assertThat(keys.getMidiClip().size()).as("fixture: the held note was recorded").isEqualTo(1);
+            assertThat(project.isDirty()).as("registering the recorded note marks the project dirty").isTrue();
+        }
+    }
+
+    /**
+     * The fallback of a project change that bypassed the guard: a retired
+     * controller's deferred half publishes nothing into the replaced project,
+     * so it marks nothing dirty, and it reports nothing but where the take's
+     * files are — not even a failure of the Stop's own seal.
+     */
+    @Test
+    void aRetiredControllersDeferredHalfLeavesTheProjectCleanAndReportsNoSealFailure() throws Exception {
+        DawProject project = new DawProject("Song D", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+        Path takeDirectory = stops.calls.getFirst().getTakeDirectory();
+        project.markClean();
+        runHandler(controller::retire);
+        NotificationHistoryService shown = notificationsFromNowOn();
+
+        stops.written.complete(null); // the capture thread has terminated
+        flushFx();
+
+        assertThat(stops.calls).as("fixture: a retired controller does not stop the pipeline again").hasSize(1);
+        assertThat(armed.getClips()).isEmpty();
+        assertThat(project.isDirty()).as("nothing was published into the replaced project").isFalse();
+        assertThat(shown.getEntries()).as("one WARNING, and no report of the seal").singleElement()
+                .satisfies(entry -> {
+                    assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
+                    assertThat(entry.message())
+                            .isEqualTo(TransportController.takeOfAReplacedProjectMessage("Song D", takeDirectory));
+                });
+    }
+
+    // ── Story 323 review: a Stop whose own seal failed ──────────────────────
+
+    /** A lane's rename failed in the seal the Stop requested, and its segment is left as its {@code .part}. */
+    private static final StopSealFailure RENAME_FAILED = new StopSealFailure(
+            new UncheckedIOException("cannot seal segment segment-000.wav", new IOException("injected rename failure")),
+            false);
+
+    /** Stands in for the core's failed Stop seal, whose triggers are package-private to daw-core. */
+    private static TransportController.StopSealOutcome stopSealFailedWith(StopSealFailure failure) {
+        return _ -> Optional.of(failure);
+    }
+
+    /**
+     * A clean Stop still ends in one SUCCESS: the core reports no failure of
+     * its seal, and the controller shows the clips created.
+     */
+    @Test
+    void aStopWhoseSealSucceededStillShowsOneSuccess() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        CountingStop stops = new CountingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, RecordingPipeline::earlySeal);
+        awaitSessionInputCheck(controller);
+        NotificationHistoryService shown = notificationsFromNowOn();
+
+        runHandler(controller::stop);
+
+        assertThat(stops.calls.getFirst().stopSealFailure()).as("the core reports no failure of the Stop's seal")
+                .isEmpty();
+        assertThat(shown.getEntries()).extracting(NotificationEntry::level, NotificationEntry::message)
+                .containsExactly(tuple(NotificationLevel.SUCCESS, "Recording stopped — 1 clip created"));
+        assertThat(statusBarLabel.getText()).isEqualTo("Recording stopped — 1 clip created");
+    }
+
+    /**
+     * A lane's seal failed in the seal the user's Stop requested: the clip
+     * and the undo entry are published, and the failure is reported once,
+     * as the ERROR toast and the status text, never as the SUCCESS.
+     */
+    @Test
+    void aStopWhoseSealFailedIsReportedOnceAsAnErrorWithItsClips() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingStop(),
+                RecordingPipeline::earlySeal);
+        awaitSessionInputCheck(controller);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
+        project.markClean();
+        NotificationHistoryService shown = notificationsFromNowOn();
+
+        runHandler(controller::stop);
+
+        String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory);
+        assertThat(expected).isEqualTo("Recording stopped — finishing the take on disk failed (injected rename"
+                + " failure); one or more segment files that could not be finished are left under audio/takes/"
+                + takeDirectory.getFileName() + " (1 clip created)");
+        assertThat(shown.getEntries()).as("one ERROR, and no SUCCESS").singleElement().satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(entry.message()).isEqualTo(expected);
+        });
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).isEqualTo(expected);
+        assertThat(statusBarLabel.getText()).isEqualTo(expected);
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(undoManager.undoDescription()).isEqualTo("Record Audio");
+        assertThat(project.isDirty())
+                .as("a take whose Stop seal failed still published its clips: an unsaved change").isTrue();
+    }
+
+    /** The same for a take whose Stop created no clip: the failure is still reported, once. */
+    @Test
+    void aStopWhoseSealFailedWithoutAClipIsReportedOnceAsAnError() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        NoClipOnTheFirstStop stops = new NoClipOnTheFirstStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, RecordingPipeline::earlySeal);
+        awaitSessionInputCheck(controller);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
+        NotificationHistoryService shown = notificationsFromNowOn();
+
+        runHandler(controller::stop);
+
+        String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 0, takeDirectory);
+        assertThat(expected).isEqualTo("Recording stopped — finishing the take on disk failed (injected rename"
+                + " failure); no audio had been recorded, and one or more segment files that could not be finished"
+                + " are left under audio/takes/" + takeDirectory.getFileName());
+        assertThat(shown.getEntries()).as("one ERROR, and no SUCCESS").singleElement().satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(entry.message()).isEqualTo(expected);
+        });
+        assertThat(notificationBar.getMessage()).isEqualTo(expected);
+        assertThat(statusBarLabel.getText()).isEqualTo(expected);
+        assertThat(armed.getClips()).isEmpty();
+    }
+
+    /**
+     * The deferred half of a Stop whose join ran out reports a failure of
+     * that Stop's seal the same way: after the Stop's WARNING, one ERROR, and
+     * no SUCCESS.
+     */
+    @Test
+    void aDeferredStopWhoseSealFailedIsReportedOnceAsAnError() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        awaitSessionInputCheck(controller);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
+        project.markClean();
+        NotificationHistoryService shown = notificationsFromNowOn();
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+
+        stops.written.complete(null); // the capture thread has terminated
+        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
+        flushFx();
+
+        String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory);
+        assertThat(shown.getEntries()).as("the pending Stop's WARNING, then one ERROR, and no SUCCESS")
+                .extracting(NotificationEntry::level, NotificationEntry::message)
+                .containsExactly(tuple(NotificationLevel.WARNING, TransportController.TAKE_STILL_WRITING_MESSAGE),
+                        tuple(NotificationLevel.ERROR, expected));
+        assertThat(notificationBar.getMessage()).isEqualTo(expected);
+        assertThat(statusBarLabel.getText()).isEqualTo(expected);
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(controller.isTakeBeingWritten()).isFalse();
+        assertThat(project.isDirty())
+                .as("a take whose Stop seal failed still published its clips: an unsaved change").isTrue();
+    }
+
+    /** The same for a deferred half whose take produced no clip: one ERROR, which the status text keeps. */
+    @Test
+    void aDeferredStopWhoseSealFailedWithoutAClipIsReportedOnceAsAnError() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        StillWritingStop stops = new StillWritingStop();
+        stops.deferredReturnsNothing = true;
+        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        awaitSessionInputCheck(controller);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
+        NotificationHistoryService shown = notificationsFromNowOn();
+        assertThat(runHandlerCatching(controller::stop)).isNull();
+
+        stops.written.complete(null); // the capture thread has terminated
+        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
+        flushFx();
+
+        String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 0, takeDirectory);
+        assertThat(shown.getEntries()).as("the pending Stop's WARNING, then one ERROR, and no SUCCESS")
+                .extracting(NotificationEntry::level, NotificationEntry::message)
+                .containsExactly(tuple(NotificationLevel.WARNING, TransportController.TAKE_STILL_WRITING_MESSAGE),
+                        tuple(NotificationLevel.ERROR, expected));
+        assertThat(statusBarLabel.getText()).as("the report, not that the take holds no audio")
+                .isEqualTo(expected);
+    }
+
+    @Test
+    void theStopSealFailureReportSaysWhatIsLeftWithAndWithoutClips() {
+        Path take = Path.of("project", "audio", "takes", "2026-10-01T10-00-00_take-0001");
+        StopSealFailure unfinished = new StopSealFailure(
+                new UncheckedIOException("cannot seal segment segment-000.wav",
+                        new IOException("There is not enough space on the disk")), false);
+        StopSealFailure finishedAllTheSame = new StopSealFailure(new IllegalStateException("listener failed"), true);
+
+        assertThat(TransportController.stopSealFailedMessage(unfinished, 2, take))
+                .as("files left unfinished are never said to hold audio, nor called kept, saved or sealed")
+                .isEqualTo("Recording stopped — finishing the take on disk failed (There is not enough space on the"
+                        + " disk); one or more segment files that could not be finished are left under"
+                        + " audio/takes/2026-10-01T10-00-00_take-0001 (2 clips created)")
+                .doesNotContain("kept", "saved", "sealed", "capturing");
+        assertThat(TransportController.stopSealFailedMessage(unfinished, 0, take))
+                .as("with no clip, the files left unfinished follow the words that no audio had been recorded")
+                .isEqualTo("Recording stopped — finishing the take on disk failed (There is not enough space on the"
+                        + " disk); no audio had been recorded, and one or more segment files that could not be"
+                        + " finished are left under audio/takes/2026-10-01T10-00-00_take-0001")
+                .doesNotContain("kept", "saved", "sealed", "capturing");
+        assertThat(TransportController.stopSealFailedMessage(finishedAllTheSame, 1, take))
+                .as("every segment finished all the same: nothing is said to be left")
+                .isEqualTo("Recording stopped — finishing the take failed (IllegalStateException: listener failed);"
+                        + " the audio recorded is kept (1 clip created)")
+                .doesNotContain("left under");
+        assertThat(TransportController.stopSealFailedMessage(finishedAllTheSame, 0, take))
+                .isEqualTo("Recording stopped — finishing the take failed (IllegalStateException: listener failed);"
+                        + " no audio had been recorded");
+    }
+
+    /**
+     * A failed Stop seal is blamed on the disk only when an {@link IOException}
+     * is in its cause chain, and then by the reason the innermost one gives;
+     * any other throwable — an {@link OutOfMemoryError}, say — by its type
+     * and message, with no word of the disk.
+     */
+    @Test
+    void aStopSealFailureIsBlamedOnTheDiskOnlyForAnIOFailure() {
+        Path take = Path.of("project", "audio", "takes", "2026-10-01T10-00-00_take-0001");
+        String part = "C:\\project\\audio\\takes\\2026-10-01T10-00-00_take-0001\\t1\\segment-000.wav.part";
+
+        assertThat(TransportController.stopSealFailedMessage(new StopSealFailure(
+                new UncheckedIOException("cannot seal segment " + part,
+                        new IOException("rename failed",
+                                new FileSystemException(part, null, "The device is not ready"))), false), 1, take))
+                .as("the innermost IOException, a FileSystemException with a reason")
+                .isEqualTo("Recording stopped — finishing the take on disk failed (The device is not ready);"
+                        + " one or more segment files that could not be finished are left under"
+                        + " audio/takes/2026-10-01T10-00-00_take-0001 (1 clip created)")
+                .doesNotContain("cannot seal segment", "rename failed");
+        assertThat(TransportController.stopSealFailedMessage(
+                new StopSealFailure(new OutOfMemoryError("Java heap space"), false), 1, take))
+                .isEqualTo("Recording stopped — finishing the take failed (OutOfMemoryError: Java heap space);"
+                        + " one or more segment files that could not be finished are left under"
+                        + " audio/takes/2026-10-01T10-00-00_take-0001 (1 clip created)")
+                .doesNotContain("disk", "capturing");
+        assertThat(TransportController.stopSealFailedMessage(
+                new StopSealFailure(new OutOfMemoryError(), true), 2, take))
+                .isEqualTo("Recording stopped — finishing the take failed (OutOfMemoryError);"
+                        + " the audio recorded is kept (2 clips created)")
+                .doesNotContain("disk");
     }
 
     /** Collects the WARNING records a logger publishes. */

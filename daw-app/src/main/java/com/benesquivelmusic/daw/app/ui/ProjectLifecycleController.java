@@ -892,10 +892,12 @@ final class ProjectLifecycleController {
      * being written to disk ({@link #refuseWhileATakeIsRecordingOrBeingWritten()}),
      * and then asks {@link #confirmDiscardUnsavedChanges()}. The refusal of a
      * take being written cannot be left to that prompt, which asks only when
-     * the project is dirty: a take still being written is not in the project
-     * yet, and publishing a take does not mark the project dirty either — it
-     * registers the "Record Audio" undo entry, and nothing on that path calls
-     * {@code DawProject.markDirty()} (story 323's Known limitations). FX
+     * the project is dirty and, when it asks, lets the door go ahead once the
+     * user saves or discards: a take still being written is not in the
+     * project yet and has not marked it dirty — {@code TransportController}
+     * marks the project dirty when it publishes the take's clips, which it
+     * does only once the take has been written to disk — and a door that
+     * replaced the project meanwhile would leave the take in no project. FX
      * thread.</p>
      *
      * @return {@code true} if the door may replace the open project,

@@ -19,9 +19,11 @@ import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 
+import javax.sound.midi.InvalidMidiDataException;
 import javax.sound.midi.MidiDevice;
 import javax.sound.midi.MidiUnavailableException;
 import javax.sound.midi.Receiver;
+import javax.sound.midi.ShortMessage;
 import javax.sound.midi.Transmitter;
 
 import java.io.IOException;
@@ -217,8 +219,9 @@ final class RecordingInFlightFixture implements AutoCloseable {
     /**
      * The user's Stop, once an audio take has its first block on disk; then
      * nothing is in flight or being written any more, an audio take's clip
-     * has been published on its track, and a MIDI-only take's input has been
-     * disconnected (no note was played, so it publishes none).
+     * has been published on its track — which marks the project dirty — and
+     * a MIDI-only take's input has been disconnected (it publishes only the
+     * notes played through {@link #holdANote()}).
      */
     void stop() throws Exception {
         if (midiInput == null) {
@@ -230,9 +233,26 @@ final class RecordingInFlightFixture implements AutoCloseable {
         if (midiInput == null) {
             assertThat(onFx(() -> List.copyOf(armed.getClips()))).as("fixture: the Stop published the take")
                     .hasSize(1);
+            assertThat(onFx(project::isDirty)).as("fixture: publishing the take marked the project dirty")
+                    .isTrue();
         } else {
             assertThat(midiInput.isConnected()).as("fixture: the Stop disconnected the input").isFalse();
         }
+    }
+
+    /**
+     * Holds one note down on a MIDI-only take's stub input: the stub's
+     * transmitter hands a note-on (middle C, channel 1, velocity 100) to the
+     * recorder's receiver, and the Stop finalises the held note into the
+     * track's MIDI clip. Any thread.
+     */
+    void holdANote() throws InvalidMidiDataException {
+        assertThat(midiInput).as("fixture: a MIDI-only take").isNotNull();
+        StubTransmitter transmitter = midiInput.transmitter;
+        assertThat(transmitter).as("fixture: the take's recorder took the stub's transmitter").isNotNull();
+        Receiver receiver = transmitter.receiver;
+        assertThat(receiver).as("fixture: the recorder listens to the stub input").isNotNull();
+        receiver.send(new ShortMessage(ShortMessage.NOTE_ON, 0, 60, 100), 0L);
     }
 
     /**

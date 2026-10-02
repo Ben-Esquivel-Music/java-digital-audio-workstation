@@ -64,7 +64,10 @@ import static org.assertj.core.api.Assertions.tuple;
  * says what that work did
  * ({@link ProjectLifecycleController#lateLoadRefusalWhileRecordingMessage}).
  * The recording goes on untouched, and once the user has stopped it — the
- * take published, nothing being written — the same door proceeds. Quitting
+ * take published, nothing being written — the same door no longer refuses; a
+ * door gated by {@link ProjectLifecycleController#confirmProjectMayClose()}
+ * then asks about unsaved changes, as it does for any dirty project, when
+ * the Stop published an audio clip, which marks the project dirty. Quitting
  * the application is not one of those doors (story 333).
  *
  * <p>The recording is real ({@link RecordingInFlightFixture}): a
@@ -212,6 +215,10 @@ class ProjectChangeWhileRecordingTest {
         recording.assertStillRecording();
 
         recording.stop();
+        // The Stop published the take's clip, which marked Song A dirty (the
+        // fixture checks it); a Save clears that, so what follows is New's
+        // gate alone, without the unsaved-changes prompt.
+        project.get().markClean();
         runOnFx(lifecycle::onNewProject);
         assertThat(locationPrompts).as("once the recording is stopped, New asks where to create the project")
                 .hasValue(1);
@@ -330,6 +337,10 @@ class ProjectChangeWhileRecordingTest {
         recording.assertStillRecording();
 
         recording.stop();
+        // The Stop published the take's clip, which marked Song A dirty (the
+        // fixture checks it); a Save clears that, so what follows is the
+        // restore's gate alone, without the unsaved-changes prompt.
+        project.get().markClean();
         runOnFx(() -> snapshots.restoreEntry(entry));
         assertThat(restores).as("once the recording is stopped, the restore goes ahead").hasValue(1);
     }

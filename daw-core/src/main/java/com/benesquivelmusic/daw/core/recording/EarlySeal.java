@@ -18,7 +18,8 @@ import java.util.Objects;
  * it makes still runs the writer's own cadence check); there
  * the headroom floor, a block whose application throws, or a throwable that
  * escapes the drain loop seals the take early too. The seal a stop requests
- * is never an early seal.
+ * is never an early seal; a lane whose seal throws in it is reported as a
+ * {@link StopSealFailure}.
  */
 public sealed interface EarlySeal permits EarlySeal.DiskExhausted, EarlySeal.WriteFailed {
 

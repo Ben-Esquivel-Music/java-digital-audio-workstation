@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -621,7 +622,8 @@ public final class RecordingPipeline {
      * {@code capture-flush} thread, when that thread has sealed the take on
      * its own — disk exhaustion or a write failure ({@link EarlySeal}) — and
      * that seal is done. It never completes for the seal {@link #stop()}
-     * requests, for a failed start's rollback or for the flush service's
+     * requests ({@link #stopSealFailure()} reports a lane that threw in that
+     * seal), for a failed start's rollback or for the flush service's
      * {@code stopAndAbandon} test seam, never on the audio thread and never
      * exceptionally, and a holder cannot complete it; see
      * {@link CaptureFlushService#earlySeal()}, including
@@ -648,6 +650,40 @@ public final class RecordingPipeline {
             throw new IllegalStateException("Recording pipeline has not been started");
         }
         return service.earlySeal();
+    }
+
+    /**
+     * Returns the failure of the seal {@link #stop()} requested for the
+     * current take, or for the last take until the next {@link #start()}, if
+     * a lane's seal threw in it ({@link StopSealFailure}): a segment whose
+     * seal failed is left as its {@code .part} for recovery, the take's final
+     * manifest reads {@code seal-status=aborted} with
+     * {@code sealed-by=write-failure} when the flush thread's write of it
+     * lands, and {@code stop()} still returns the clips it built. Empty when
+     * no lane's seal threw in that seal, for a take the
+     * {@code capture-flush} thread sealed early ({@link #earlySeal()} reports
+     * that one, also when it sealed the take in the final sweep of the stop),
+     * for a failed start's rollback and for the flush service's
+     * {@code stopAndAbandon} test seam; see
+     * {@link CaptureFlushService#stopSealFailure()}. Final once the take's
+     * flush thread has terminated — as when {@code stop()} has returned the
+     * clips; read before that, empty may only mean that the seal has not run
+     * yet. Each start creates the take's own flush service, so a pipeline
+     * started again never reports the previous take's. Caller thread (the one
+     * that calls {@code start()} and {@code stop()}).
+     *
+     * @return the failure of the stop's seal, or empty
+     * @throws IllegalStateException if no start has created a take's flush
+     *                               service yet ({@link #start()} never
+     *                               called, or the last one failed before it
+     *                               created one)
+     */
+    public Optional<StopSealFailure> stopSealFailure() {
+        CaptureFlushService service = flush;
+        if (service == null) {
+            throw new IllegalStateException("Recording pipeline has not been started");
+        }
+        return service.stopSealFailure();
     }
 
     /**

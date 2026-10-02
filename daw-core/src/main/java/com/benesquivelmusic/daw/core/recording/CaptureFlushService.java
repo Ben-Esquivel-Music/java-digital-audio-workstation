@@ -127,7 +127,9 @@ import java.util.logging.Logger;
  * blocks are discarded and counted ({@link #discardedBlocks()}) so the
  * callback side never notices. A throwable that escapes the drain loop
  * itself is reported the same way and ends the thread after the seal. Each
- * such early seal, once done, completes {@link #earlySeal()}.</p>
+ * such early seal, once done, completes {@link #earlySeal()}. A lane whose
+ * seal throws in the seal a stop requested is no early seal: the take is
+ * already stopping, and {@link #stopSealFailure()} reports it.</p>
  *
  * <p><strong>The manifest is a sidecar.</strong> A manifest write that fails
  * — an {@link IOException} or a {@link RuntimeException} from building or
@@ -271,6 +273,11 @@ public final class CaptureFlushService implements AutoCloseable {
     private volatile Throwable lastFailure;
     /** This take has attempted a manifest write, so the manifest files in the take directory are its own. */
     private volatile boolean manifestTouched;
+    /**
+     * The failure of the seal a stop requested; see {@link #stopSealFailure()}.
+     * Written at most once, by the flush thread, before it terminates.
+     */
+    private volatile StopSealFailure stopSealFailure;
     /** Test seams; see {@link #setBlockObserver}, {@link #failNextManifestWrites}, {@link #failNextManifestWriteWith}. */
     private volatile BlockObserver blockObserver;
     private volatile int injectedManifestFaults;
@@ -890,18 +897,28 @@ public final class CaptureFlushService implements AutoCloseable {
      * whose {@code seal-status} is not {@code streaming}; and when a lane
      * threw in the first call, that manifest reads
      * {@code aborted}/{@code write-failure}, never {@code sealed}.</p>
+     *
+     * <p>When that first call is the seal a stop requested — no early seal
+     * sealed the lanes ({@link #sealEarly}) — and a lane threw, the first
+     * throwable a lane threw is recorded for {@link #stopSealFailure()} once
+     * every lane has had its attempt, before the final manifest write. An
+     * early seal records nothing there: {@link #earlySeal()} reports it.</p>
      */
     private void sealAll(SealedBy reason) {
         Error firstLaneError = null;
         if (!sealed) {
             sealed = true;
             sealReason = reason;
+            Throwable firstLaneFailure = null;
             for (TrackCapture capture : captures) {
                 try {
                     capture.finalizeLane(config.loopRecord(), false);
                 } catch (RuntimeException e) {
                     sealFailed = true;
                     lastFailure = e;
+                    if (firstLaneFailure == null) {
+                        firstLaneFailure = e;
+                    }
                     LOG.log(Level.SEVERE, "seal failed for track " + capture.trackId()
                             + "; its streaming segment is left for recovery", e);
                     warn("Could not seal a segment of track " + capture.trackName()
@@ -911,6 +928,9 @@ public final class CaptureFlushService implements AutoCloseable {
                     // owed their seal, and the manifest its final write.
                     sealFailed = true;
                     lastFailure = e;
+                    if (firstLaneFailure == null) {
+                        firstLaneFailure = e;
+                    }
                     if (firstLaneError == null) {
                         firstLaneError = e;
                     } else if (e != firstLaneError) {
@@ -922,6 +942,12 @@ public final class CaptureFlushService implements AutoCloseable {
                     LOG.log(Level.SEVERE, "an Error ended the seal of track " + capture.trackId()
                             + "; the remaining lanes are sealed before it goes on", e);
                 }
+            }
+            if (firstLaneFailure != null && !sealedEarly) {
+                // The seal a stop requested: earlySeal() never completes for
+                // it, so this is how its failure reaches the caller.
+                boolean everySegmentSealed = captures.stream().noneMatch(TrackCapture::hasUnsealedSegment);
+                stopSealFailure = new StopSealFailure(firstLaneFailure, everySegmentSealed);
             }
         }
         if (!finalManifestWritten) {
@@ -1447,7 +1473,8 @@ public final class CaptureFlushService implements AutoCloseable {
      * not prevent it: an exhaustion or a write failure in the final sweep
      * completes it too, the seal the stop then requests keeps the early
      * seal's reason, and the stop returns the take as sealed early. It never completes for
-     * the seal a stop requests (whatever that seal's outcome), for
+     * the seal a stop requests (whatever that seal's outcome; a lane that
+     * threw in it is reported by {@link #stopSealFailure()}), for
      * {@code abortStart} or for the {@code stopAndAbandon} test seam, never on the audio
      * thread and never exceptionally, and a holder cannot complete it. The
      * flush thread only signals: after an early seal it keeps draining,
@@ -1460,6 +1487,36 @@ public final class CaptureFlushService implements AutoCloseable {
      */
     public CompletionStage<EarlySeal> earlySeal() {
         return earlySealView;
+    }
+
+    /**
+     * Returns the failure of the seal a stop requested ({@link StopSealFailure}),
+     * if a lane's seal threw in it: its rename or one of its forces failed —
+     * that segment is left as its {@code .part} for recovery — an empty
+     * segment could not be discarded, or anything else threw while the lane
+     * was sealed, an {@link Error} included. The value carries the first
+     * throwable a lane threw, and the final manifest the flush thread writes
+     * reads {@code seal-status=aborted} with {@code sealed-by=write-failure};
+     * if that write fails, the manifest on disk is the last one written.
+     *
+     * <p>Empty when no lane's seal threw in that seal, and always empty for
+     * a take the flush thread sealed early — {@link #earlySeal()} reports
+     * that one, also when the early seal came in the final sweep of a stop
+     * already requested, and also when a lane's seal threw in that early
+     * seal — for {@code abortStart}, for the {@code stopAndAbandon} test seam
+     * and for a service whose thread never ran.</p>
+     *
+     * <p>Written at most once, on the flush thread, by a volatile write made
+     * once every lane has had its seal attempt and before the final manifest
+     * write; the flush thread's later volatile write of {@link #isTerminated()}
+     * follows it in program order. So a thread that has read
+     * {@code isTerminated()} as {@code true} — as the caller of
+     * {@link #stopAndSeal(SealedBy)} has when it returns — reads the final
+     * value here; read before that, empty may only mean that the seal has not
+     * run yet. Never written on the audio thread. Any thread.</p>
+     */
+    public Optional<StopSealFailure> stopSealFailure() {
+        return Optional.ofNullable(stopSealFailure);
     }
 
     /** Returns the most recently written manifest, once one has been written. */
