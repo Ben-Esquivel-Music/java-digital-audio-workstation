@@ -174,15 +174,19 @@ class LateLoadOutcomeReportingTest {
                 recording.close();
             }
         } finally {
-            runOnFx(() -> {
-                Window.getWindows().removeListener(answerRecoveryDialogs);
-                for (Window window : List.copyOf(Window.getWindows())) {
-                    if (window instanceof Stage stage && RECOVERY_DIALOG_TITLE.equals(stage.getTitle())) {
-                        stage.hide();
+            // The project is abandoned even if the FX turn overruns its bound.
+            try {
+                runOnFx(() -> {
+                    Window.getWindows().removeListener(answerRecoveryDialogs);
+                    for (Window window : List.copyOf(Window.getWindows())) {
+                        if (window instanceof Stage stage && RECOVERY_DIALOG_TITLE.equals(stage.getTitle())) {
+                            stage.hide();
+                        }
                     }
-                }
-            });
-            projectManager.abandonProject();
+                });
+            } finally {
+                projectManager.abandonProject();
+            }
         }
     }
 

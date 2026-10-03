@@ -18,6 +18,8 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 
+import org.junit.jupiter.api.extension.ExtendWith;
+import com.benesquivelmusic.daw.core.recording.CaptureFlushThreadLeakGuard;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -31,6 +33,7 @@ import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSuppo
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class PluginGraphLivenessTest {
     private static final AudioFormat FORMAT = new AudioFormat(48_000, 2, 24, 256);
     @TempDir Path directory;

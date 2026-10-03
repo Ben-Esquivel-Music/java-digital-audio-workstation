@@ -17,6 +17,7 @@ import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -72,12 +73,62 @@ class StillWritingStatusReplacedInStatusCellTest {
     private final ManualFxDelay stillWritingDelay = new ManualFxDelay();
     private final List<RecordingPipeline> completions = new CopyOnWriteArrayList<>();
 
+    /** The controller {@link #newController} made for the running test, or {@code null}. */
+    private TransportController controller;
+
+    /** The capture-flush threads alive when the running test began. */
+    private CaptureFlushThreadWatch flushThreads;
+
+    /**
+     * On every path: releases the held capture thread, then stops a take the
+     * test left recording or preparing and waits (bounded, 30 s) until nothing
+     * is in flight or being written — so neither the capture thread nor an open
+     * segment outlives the test or the temporary directory — and only then
+     * closes the engine.
+     */
+    @BeforeEach
+    void rememberTheLiveCaptureFlushThreads() {
+        flushThreads = CaptureFlushThreadWatch.snapshot();
+    }
+
     @AfterEach
-    void closeEngine() {
-        hold.release();
-        if (audioEngine != null) {
-            audioEngine.stopAudioOutput();
-            audioEngine.stop();
+    void stopTheTakeAndCloseEngine() throws Exception {
+        AssertionError failure = null;
+        TransportController made = controller;
+        try {
+            hold.release();
+            if (made != null) {
+                runOnFx(() -> {
+                    if (made.isRecordingInFlight()) {
+                        made.stop();
+                    }
+                });
+                awaitOnFx(() -> !made.isRecordingInFlight() && !made.isTakeBeingWritten(),
+                        "a take the test left running is stopped and published");
+            }
+            failure = flushThreads.joinNewThreads();
+        } catch (AssertionError | Exception e) {
+            failure = new AssertionError("a take the test left running could not be ended", e);
+        } finally {
+            try {
+                if (made != null) {
+                    runOnFx(made::retire);
+                }
+            } catch (AssertionError | Exception e) {
+                if (failure == null) {
+                    failure = new AssertionError("retiring the controller failed", e);
+                } else {
+                    failure.addSuppressed(e);
+                }
+            } finally {
+                if (audioEngine != null) {
+                    audioEngine.stopAudioOutput();
+                    audioEngine.stop();
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 
@@ -172,6 +223,7 @@ class StillWritingStatusReplacedInStatusCellTest {
                     () -> RoundTripLatency.UNKNOWN,
                     new StubSessionInputSelection()));
         });
+        controller = ref.get();
         return ref.get();
     }
 

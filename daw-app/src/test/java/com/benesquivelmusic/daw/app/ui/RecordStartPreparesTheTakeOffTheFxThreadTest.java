@@ -1089,12 +1089,19 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             assertThat(onFx(engine::isStreamOpen)).as("over the open shared stream").isTrue();
             assertThat(onFx(recIndicator::isVisible)).as("the shared REC indicator is lit").isTrue();
         } finally {
-            runOnFx(() -> {
-                if (next.isRecordingInFlight()) {
-                    next.stop();
-                }
-            });
-            awaitOnFx(() -> !next.isTakeBeingWritten(), "the next project's take was written");
+            // @AfterEach ends only `controller`: this one is ended here on every
+            // path, and retired even if its take could not be ended in time.
+            try {
+                runOnFx(() -> {
+                    if (next.isRecordingInFlight()) {
+                        next.stop();
+                    }
+                });
+                awaitOnFx(() -> !next.isRecordingInFlight() && !next.isTakeBeingWritten(),
+                        "the next project's take was written");
+            } finally {
+                runOnFx(next::retire);
+            }
         }
     }
 

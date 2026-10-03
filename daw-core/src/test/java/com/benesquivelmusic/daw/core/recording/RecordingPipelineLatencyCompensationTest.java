@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * stream and shifts each recorded clip's start position by the total
  * round-trip latency so the take aligns with the cue the singer heard.</p>
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class RecordingPipelineLatencyCompensationTest {
 
     @TempDir

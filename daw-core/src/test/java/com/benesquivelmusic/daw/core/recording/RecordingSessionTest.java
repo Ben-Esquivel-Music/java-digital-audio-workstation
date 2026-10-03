@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.recording;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.sdk.event.RecordingListener;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -33,6 +34,44 @@ class RecordingSessionTest {
     @TempDir
     Path tempDir;
 
+    /** Every session a test made; {@link #closeEveryStreamingSegment()} closes what each left open. */
+    private final List<RecordingSession> sessions = new ArrayList<>();
+
+    private RecordingSession tracked(RecordingSession session) {
+        sessions.add(session);
+        return session;
+    }
+
+    /**
+     * Closes the streaming segment channel each session left open — a test
+     * that never stopped its session, or one that failed before it did —
+     * without sealing it, so no {@code .part} channel outlives the test.
+     * Every session is tried; a close that fails fails the test.
+     */
+    @AfterEach
+    void closeEveryStreamingSegment() throws IOException {
+        IOException failure = null;
+        for (RecordingSession session : sessions) {
+            SegmentWriter writer = session.getCurrentWriter();
+            if (writer == null || !writer.isStreaming()) {
+                continue;
+            }
+            try {
+                writer.abandon();
+            } catch (IOException e) {
+                if (failure == null) {
+                    failure = e;
+                } else {
+                    failure.addSuppressed(e);
+                }
+            }
+        }
+        sessions.clear();
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
     private static float[][] block(int frames, float left, float right) {
         float[][] input = new float[2][frames];
         for (int i = 0; i < frames; i++) {
@@ -53,7 +92,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldStartSession() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
 
         session.start();
 
@@ -67,7 +106,7 @@ class RecordingSessionTest {
     @Test
     void startCreatesTheFirstStreamingSegmentFileOnDisk() throws IOException {
         Path trackDir = tempDir.resolve("track-a");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
 
         session.start();
 
@@ -91,7 +130,7 @@ class RecordingSessionTest {
     void startRejectsAnUnsupportedBitDepthBeforeCreatingAnySegment() {
         AudioFormat eightBit = new AudioFormat(44_100.0, 2, 8, 512);
         Path trackDir = tempDir.resolve("eight");
-        RecordingSession session = new RecordingSession(eightBit, trackDir);
+        RecordingSession session = tracked(new RecordingSession(eightBit, trackDir));
 
         assertThatThrownBy(session::start)
                 .isInstanceOf(IllegalArgumentException.class)
@@ -103,7 +142,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldRejectDoubleStart() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         assertThatThrownBy(session::start)
@@ -112,7 +151,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldPauseAndResumeSession() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         session.pause();
@@ -125,7 +164,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldStopSession() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         session.stop();
@@ -137,7 +176,7 @@ class RecordingSessionTest {
     @Test
     void stopSealsWithTheExactFrameCountThatWasFed() throws IOException {
         Path trackDir = tempDir.resolve("exact");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
         session.start();
         int[] blocks = {512, 37, 512, 1, 300};
         int fed = 0;
@@ -179,8 +218,8 @@ class RecordingSessionTest {
         // 1200-byte cap at 4 bytes/frame = three 100-frame blocks: the segment
         // rotates as soon as it holds the cap, and never holds more.
         Path trackDir = tempDir.resolve("rotate");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), 1200L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 1200L));
         session.start();
         assertThat(session.getSegmentCount()).isEqualTo(1);
 
@@ -224,8 +263,8 @@ class RecordingSessionTest {
     void rotationByDurationUsesExactFrameCountsNotWallClock() {
         // 10 ms at 44.1 kHz = 441 frames per segment.
         Path trackDir = tempDir.resolve("duration");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofMillis(10), DEFAULT_MAX_SEGMENT_BYTES);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofMillis(10), DEFAULT_MAX_SEGMENT_BYTES));
         session.start();
 
         session.recordAudioData(block(440, 0.1f, 0.1f), 440);
@@ -241,8 +280,8 @@ class RecordingSessionTest {
         // segment to 1200 bytes, so the session rotates BEFORE appending it.
         Path trackDir = tempDir.resolve("cap");
         long cap = 1000L;
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), cap);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), cap));
         session.start();
 
         for (int i = 0; i < 7; i++) {
@@ -281,8 +320,8 @@ class RecordingSessionTest {
         // The early rotation needs something to seal: a block that alone
         // exceeds the cap goes into the empty segment, which then rotates.
         Path trackDir = tempDir.resolve("oversize");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), 800L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 800L));
         session.start();
 
         session.recordAudioData(block(250, 0.1f, 0.1f), 250); // 1000 bytes > 800
@@ -309,16 +348,16 @@ class RecordingSessionTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("MAX_DATA_BYTES");
 
-        RecordingSession atTheLimit = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
-                Duration.ofMinutes(10), limit);
+        RecordingSession atTheLimit = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+                Duration.ofMinutes(10), limit));
         assertThat(atTheLimit.getMaxSegmentBytes()).isEqualTo(limit);
     }
 
     @Test
     void stopDiscardsAnEmptyTailInsteadOfSealingAZeroFrameFile() {
         Path trackDir = tempDir.resolve("empty-tail");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), 400L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 400L));
         session.start();
         session.recordAudioData(block(100, 0.5f, 0.5f), 100); // exactly the cap → rotate → empty tail
         assertThat(session.getSegmentCount()).isEqualTo(2);
@@ -337,7 +376,7 @@ class RecordingSessionTest {
     @Test
     void sessionWithNoAudioLeavesNoSegmentBehind() {
         Path trackDir = tempDir.resolve("silent");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
         session.start();
 
         session.stop();
@@ -350,8 +389,8 @@ class RecordingSessionTest {
     @Test
     void everySegmentAlwaysHasItsFileOnDisk() {
         Path trackDir = tempDir.resolve("files");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), 800L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 800L));
         session.start();
         // Right after start(), before any block: the one listed segment is on disk.
         assertThat(session.getSegments()).hasSize(1);
@@ -373,7 +412,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotRecordWhenInactive() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
 
         session.recordAudioData(block(1000, 0.5f, 0.5f), 1000);
 
@@ -384,7 +423,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotRecordWhenPaused() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
         session.pause();
 
@@ -397,7 +436,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldRecordAudioDataIntoBufferAndOntoDisk() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         session.recordAudioData(block(512, 0.5f, -0.5f), 512);
@@ -417,7 +456,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldAccumulateMultipleAudioDataBlocks() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         session.recordAudioData(block(256, 0.1f, 0.2f), 256);
@@ -437,7 +476,7 @@ class RecordingSessionTest {
     void narrowerRoutedBlocksLeaveTheRemainingChannelsSilentOnDiskAndInRam() throws IOException {
         AudioFormat quad = new AudioFormat(48_000.0, 4, 16, 256);
         Path trackDir = tempDir.resolve("quad");
-        RecordingSession session = new RecordingSession(quad, trackDir);
+        RecordingSession session = tracked(new RecordingSession(quad, trackDir));
         session.start();
 
         session.recordAudioData(block(64, 0.25f, -0.25f), 64);
@@ -456,7 +495,7 @@ class RecordingSessionTest {
     @Test
     void aFailedAppendLeavesMirrorAndCountsMatchingTheDisk() {
         Path trackDir = tempDir.resolve("fault");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
         session.start();
         session.recordAudioData(block(100, 0.1f, 0.1f), 100);
         session.getCurrentWriter().failNextAppend();
@@ -476,7 +515,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotRecordAudioDataWhenInactive() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
 
         float[][] input = new float[2][512];
         session.recordAudioData(input, 512);
@@ -487,7 +526,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotRecordAudioDataWhenPaused() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
         session.pause();
 
@@ -500,7 +539,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldReturnNullCapturedAudioWhenNothingRecorded() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         assertThat(session.getCapturedAudio()).isNull();
@@ -509,7 +548,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldGrowBufferBeyondInitialCapacity() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         // Record enough data to exceed the initial ~10 second buffer
@@ -527,7 +566,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotifyListenersOnStart() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         List<String> events = new ArrayList<>();
 
         session.addListener(new TestRecordingListener(events));
@@ -538,8 +577,8 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotifyListenersOnRotation() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
-                Duration.ofHours(1), 400L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+                Duration.ofHours(1), 400L));
         List<String> events = new ArrayList<>();
         session.addListener(new TestRecordingListener(events));
         session.start();
@@ -551,7 +590,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotifyListenersOnPauseAndResume() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         List<String> events = new ArrayList<>();
         session.addListener(new TestRecordingListener(events));
 
@@ -564,7 +603,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotifyListenersOnStop() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         List<String> events = new ArrayList<>();
         session.addListener(new TestRecordingListener(events));
 
@@ -576,14 +615,14 @@ class RecordingSessionTest {
 
     @Test
     void shouldReturnFormat() {
-        RecordingSession session = new RecordingSession(AudioFormat.STUDIO_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.STUDIO_QUALITY, tempDir));
 
         assertThat(session.getFormat()).isEqualTo(AudioFormat.STUDIO_QUALITY);
     }
 
     @Test
     void shouldReturnDefaultSegmentLimits() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
 
         assertThat(session.getMaxSegmentDuration()).isEqualTo(Duration.ofMinutes(30));
         assertThat(session.getMaxSegmentBytes()).isEqualTo(500L * 1024 * 1024);
@@ -592,8 +631,8 @@ class RecordingSessionTest {
 
     @Test
     void shouldReturnCustomSegmentLimits() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
-                Duration.ofMinutes(10), 100_000_000L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+                Duration.ofMinutes(10), 100_000_000L));
 
         assertThat(session.getMaxSegmentDuration()).isEqualTo(Duration.ofMinutes(10));
         assertThat(session.getMaxSegmentBytes()).isEqualTo(100_000_000L);
@@ -602,8 +641,8 @@ class RecordingSessionTest {
     @Test
     void customForceCadenceAndClockReachTheWriter() {
         AtomicLong clock = new AtomicLong(0);
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir.resolve("cadence"),
-                Duration.ofMinutes(10), DEFAULT_MAX_SEGMENT_BYTES, Duration.ofSeconds(1), clock::get);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir.resolve("cadence"),
+                Duration.ofMinutes(10), DEFAULT_MAX_SEGMENT_BYTES, Duration.ofSeconds(1), clock::get));
         session.start();
 
         assertThat(session.getForceCadence()).isEqualTo(Duration.ofSeconds(1));
@@ -618,8 +657,8 @@ class RecordingSessionTest {
     @Test
     void theCadenceTickForcesAnActiveSessionsUnforcedBytesPausedOrNot() {
         AtomicLong clock = new AtomicLong(0);
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir.resolve("tick"),
-                Duration.ofMinutes(10), DEFAULT_MAX_SEGMENT_BYTES, Duration.ofSeconds(1), clock::get);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir.resolve("tick"),
+                Duration.ofMinutes(10), DEFAULT_MAX_SEGMENT_BYTES, Duration.ofSeconds(1), clock::get));
         assertThat(session.forceIfCadenceElapsed()).as("not started: nothing to force").isFalse();
         session.start();
         SegmentWriter writer = session.getCurrentWriter();
@@ -672,7 +711,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldComputeTotalDuration() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         session.recordAudioData(block(44100, 0.1f, 0.1f), 44100);
@@ -682,7 +721,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldRemoveListener() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         List<String> events = new ArrayList<>();
         TestRecordingListener listener = new TestRecordingListener(events);
 
@@ -695,7 +734,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldReturnUnmodifiableSegments() {
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         assertThatThrownBy(() -> session.getSegments().clear())
@@ -705,15 +744,15 @@ class RecordingSessionTest {
     @Test
     void laterLaneContinuesTheTrackDirectoryNumbering() {
         Path trackDir = tempDir.resolve("lanes");
-        RecordingSession lane0 = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), 800L);
+        RecordingSession lane0 = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 800L));
         lane0.start();
         lane0.recordAudioData(block(250, 0.1f, 0.1f), 250); // 1000 bytes ≥ 800 → segment-000 sealed
         lane0.recordAudioData(block(10, 0.1f, 0.1f), 10);
         lane0.stop();
         assertThat(lane0.getSegments()).extracting(RecordingSegment::index).containsExactly(0, 1);
 
-        RecordingSession lane1 = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
+        RecordingSession lane1 = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
         lane1.setFirstSegmentIndex(lane0.getNextSegmentIndex());
         lane1.start();
 
@@ -725,7 +764,7 @@ class RecordingSessionTest {
     @Test
     void abandonWithoutSealLeavesThePartAndDeactivates() throws IOException {
         Path trackDir = tempDir.resolve("abandoned");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
         session.start();
         session.recordAudioData(block(300, 0.1f, 0.1f), 300);
 
@@ -744,8 +783,8 @@ class RecordingSessionTest {
     @Test
     void discardAllFilesRemovesEverythingTheSessionCreated() {
         Path trackDir = tempDir.resolve("rollback");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), 800L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 800L));
         session.start();
         session.recordAudioData(block(250, 0.1f, 0.1f), 250); // seals segment-000, opens 001
         assertThat(trackDir.resolve("segment-000.wav")).exists();
@@ -762,8 +801,8 @@ class RecordingSessionTest {
     @Test
     void segmentObserverSeesOpenSealAndDiscard() throws IOException {
         Path trackDir = tempDir.resolve("observer");
-        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
-                Duration.ofHours(1), 400L);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 400L));
         List<String> events = new ArrayList<>();
         session.setSegmentObserver(new RecordingSession.SegmentObserver() {
             @Override

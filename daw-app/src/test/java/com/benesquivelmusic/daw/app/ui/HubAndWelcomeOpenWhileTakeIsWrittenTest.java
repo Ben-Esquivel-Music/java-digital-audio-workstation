@@ -126,12 +126,30 @@ class HubAndWelcomeOpenWhileTakeIsWrittenTest {
 
     @AfterEach
     void closeTheOpenProject() throws Exception {
-        runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
+        // Each step runs even if the one before it failed (an FX turn past
+        // its bound, a scan still alive): nested finally blocks.
+        try {
+            runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
+        } finally {
+            try {
+                joinTheCardScans();
+            } finally {
+                try {
+                    projectManager.abandonProject();
+                } finally {
+                    recentProjectsNode.removeNode();
+                }
+            }
+        }
+    }
+
+    /** Joins every card scan the test started, bounded; one still alive fails the test. */
+    private void joinTheCardScans() throws InterruptedException {
         for (Thread scan : cardScans) {
             scan.join(TimeUnit.SECONDS.toMillis(5));
         }
-        projectManager.abandonProject();
-        recentProjectsNode.removeNode();
+        assertThat(cardScans.stream().filter(Thread::isAlive).toList())
+                .as("the Project Hub's card scans ended within 5 s").isEmpty();
     }
 
     @Test

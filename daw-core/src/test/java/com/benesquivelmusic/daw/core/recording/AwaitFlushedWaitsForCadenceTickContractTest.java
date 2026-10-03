@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -44,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * must not pass by {@link #FENCE_PROBE} — a wait that always runs out while
  * the code is right.</p>
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class AwaitFlushedWaitsForCadenceTickContractTest {
 
     private static final long SECOND = 1_000_000_000L;
@@ -62,14 +64,16 @@ class AwaitFlushedWaitsForCadenceTickContractTest {
     private final CountDownLatch held = new CountDownLatch(1);
     private final CountDownLatch release = new CountDownLatch(1);
 
-    /** A held thread is never left behind: released, then given the guard to finish before the directory goes. */
+    /**
+     * A held thread is never left behind: released, then — whether the test
+     * passed or failed before it stopped or cancelled the take — the take is
+     * ended and its flush thread joined within the guard; one still alive
+     * fails the test.
+     */
     @AfterEach
-    void releaseAndJoinTheFlushThread() throws InterruptedException {
+    void releaseAndEndTheTake() throws InterruptedException {
         release.countDown();
-        CaptureFlushService service = pipeline == null ? null : pipeline.getCaptureFlushService();
-        if (service != null) {
-            service.thread().join(HANG_GUARD.toMillis());
-        }
+        PipelineLifecycleTestSupport.endTheTakeAndAssertItsFlushThreadEnded(pipeline);
     }
 
     /** Runs on the flush thread: signals that it is held, then waits for the release (bounded). */

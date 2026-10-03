@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with contiguous sample counts across laps and sample-accurate loop
  * boundaries.
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class RecordingPipelineLoopRecordTest {
 
     @TempDir

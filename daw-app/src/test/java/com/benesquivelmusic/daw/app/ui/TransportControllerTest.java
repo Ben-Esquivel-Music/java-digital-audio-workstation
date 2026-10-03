@@ -46,6 +46,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -150,21 +151,92 @@ class TransportControllerTest {
      * refused before the engine is touched
      * ({@link #recordIsRefusedWithAVisibleErrorWhenTheProjectHasNoDirectory()}).
      * Cleaned up by JUnit after the test's {@code @AfterEach}, by which time
-     * every take started here has been stopped (segments sealed and closed).
+     * every take started here has been stopped (segments sealed and closed)
+     * — by the test, or, when it failed first, by
+     * {@link #stopEveryTakeAndCloseEngine()}.
      */
     @TempDir
     Path projectDirectory;
+
+    /** Every controller {@link #newControllerWithProvision} made for the running test. */
+    private final List<TransportController> controllers = new CopyOnWriteArrayList<>();
+
+    /** The capture-flush threads alive when the running test began. */
+    private CaptureFlushThreadWatch flushThreads;
+
+    @BeforeEach
+    void rememberTheLiveCaptureFlushThreads() {
+        flushThreads = CaptureFlushThreadWatch.snapshot();
+    }
 
     private void giveTheProjectADirectory(DawProject project) {
         project.setMetadata(project.getMetadata().withPath(projectDirectory));
     }
 
+    /**
+     * On every path: releases a held capture thread, then stops each take a
+     * controller of the test left recording or preparing and waits (bounded)
+     * until nothing is in flight or being written — so no capture thread and
+     * no open segment outlives the test or the temporary directory — and only
+     * then closes the engine. Every controller is tried; the first failure
+     * fails the test with the later ones suppressed.
+     */
     @AfterEach
-    void closeEngine() {
-        hold.release();
-        if (audioEngine != null) {
-            audioEngine.stopAudioOutput();
-            audioEngine.stop();
+    void stopEveryTakeAndCloseEngine() throws Exception {
+        AssertionError failure = null;
+        try {
+            hold.release();
+            for (TransportController controller : controllers) {
+                try {
+                    runHandler(() -> {
+                        if (controller.isRecordingInFlight()) {
+                            controller.stop();
+                        }
+                    });
+                    awaitOnFx(() -> !controller.isRecordingInFlight() && !controller.isTakeBeingWritten(),
+                            "a take the test left running is stopped and published");
+                } catch (AssertionError | Exception e) {
+                    if (failure == null) {
+                        failure = new AssertionError("a take the test left running could not be ended", e);
+                    } else {
+                        failure.addSuppressed(e);
+                    }
+                }
+            }
+            AssertionError leak = flushThreads.joinNewThreads();
+            if (leak != null) {
+                if (failure == null) {
+                    failure = leak;
+                } else {
+                    failure.addSuppressed(leak);
+                }
+            }
+        } catch (AssertionError | Exception e) {
+            if (failure == null) {
+                failure = new AssertionError("the takes the test left running could not be ended", e);
+            } else {
+                failure.addSuppressed(e);
+            }
+        } finally {
+            try {
+                for (TransportController controller : controllers) {
+                    runHandler(controller::retire);
+                }
+            } catch (AssertionError | Exception e) {
+                if (failure == null) {
+                    failure = new AssertionError("retiring a controller failed", e);
+                } else {
+                    failure.addSuppressed(e);
+                }
+            }
+            controllers.clear();
+            if (audioEngine != null) {
+                audioEngine.stopAudioOutput();
+                audioEngine.stop();
+            }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 
@@ -233,6 +305,7 @@ class TransportControllerTest {
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        controllers.add(ref.get());
         return ref.get();
     }
 

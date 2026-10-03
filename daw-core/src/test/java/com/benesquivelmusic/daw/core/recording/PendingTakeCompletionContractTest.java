@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code feedRamp} and {@code setDrainPaused}, by
  * {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT}.</p>
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class PendingTakeCompletionContractTest {
 
     private static final long GIB = 1L << 30;
@@ -88,14 +90,16 @@ class PendingTakeCompletionContractTest {
         track = RampCaptureTestSupport.armedMonoTrack("Vocal");
     }
 
-    /** A held thread is never left behind: released, then given the guard to finish before the directory goes. */
+    /**
+     * A held thread is never left behind: released, then — whether the test
+     * passed or failed before it stopped or cancelled the take — the take is
+     * ended and its flush thread joined within the guard; one still alive
+     * fails the test.
+     */
     @AfterEach
-    void releaseAndJoinTheFlushThread() throws InterruptedException {
+    void releaseAndEndTheTake() throws InterruptedException {
         release.countDown();
-        CaptureFlushService service = pipeline == null ? null : pipeline.getCaptureFlushService();
-        if (service != null) {
-            service.thread().join(HANG_GUARD.toMillis());
-        }
+        PipelineLifecycleTestSupport.endTheTakeAndAssertItsFlushThreadEnded(pipeline);
     }
 
     /** The pipeline's warning sink; runs on the flush thread for the manifest-failure warning. */

@@ -139,8 +139,12 @@ class ProjectChangeWhileTakeIsWrittenTest {
 
     @AfterEach
     void closeTheOpenProject() throws Exception {
-        runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
-        projectManager.abandonProject();
+        // The project is abandoned even if the FX turn overruns its bound.
+        try {
+            runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
+        } finally {
+            projectManager.abandonProject();
+        }
     }
 
     @Test

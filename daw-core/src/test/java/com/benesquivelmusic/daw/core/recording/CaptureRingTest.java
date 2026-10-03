@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -128,12 +129,17 @@ class CaptureRingTest {
         CountDownLatch consumerDone = new CountDownLatch(1);
         AtomicInteger consumed = new AtomicInteger();
         AtomicInteger refusals = new AtomicInteger();
+        // Set at teardown: ends a loop still waiting for a block that will never come.
+        AtomicBoolean abandoned = new AtomicBoolean();
 
-        Thread producer = Thread.ofPlatform().name("capture-ring-test-producer").unstarted(() -> {
+        Thread producer = Thread.ofPlatform().name("capture-ring-test-producer").daemon(true).unstarted(() -> {
             float[][] scratch = new float[CHANNELS][SLOT_FRAMES];
-            for (int block = 0; block < total; block++) {
+            for (int block = 0; block < total && !abandoned.get(); block++) {
                 CaptureRing.Slot slot;
                 while ((slot = ring.claim()) == null) {
+                    if (abandoned.get()) {
+                        return;
+                    }
                     // Ring full: every refusal is a counted drop (D3). This test
                     // wants every block delivered, so re-offer the same block
                     // after waiting for the consumer instead of moving on.
@@ -144,9 +150,9 @@ class CaptureRingTest {
                 ring.publish();
             }
         });
-        Thread consumer = Thread.ofPlatform().name("capture-ring-test-consumer").unstarted(() -> {
+        Thread consumer = Thread.ofPlatform().name("capture-ring-test-consumer").daemon(true).unstarted(() -> {
             int expected = 0;
-            while (expected < total) {
+            while (expected < total && !abandoned.get()) {
                 CaptureRing.Slot slot = ring.peek();
                 if (slot == null) {
                     LockSupport.parkNanos(10_000);
@@ -165,10 +171,18 @@ class CaptureRingTest {
 
         consumer.start();
         producer.start();
-        // Guard (20 s) is far larger than any inner wait (10 µs parks).
-        boolean finished = consumerDone.await(20, TimeUnit.SECONDS);
-        producer.join(5_000);
-        consumer.join(5_000);
+        boolean finished;
+        try {
+            // Guard (20 s) is far larger than any inner wait (10 µs parks).
+            finished = consumerDone.await(20, TimeUnit.SECONDS);
+        } finally {
+            // On every path, a loop still waiting is told to end, and both are joined.
+            abandoned.set(true);
+            producer.join(5_000);
+            consumer.join(5_000);
+        }
+        assertThat(producer.isAlive()).as("the producer thread ended").isFalse();
+        assertThat(consumer.isAlive()).as("the consumer thread ended").isFalse();
 
         assertThat(finished).as("consumer drained every block").isTrue();
         assertThat(errors).as("every block's header and payload arrived in order").isEmpty();

@@ -98,14 +98,16 @@ class RecordStartReadinessGateContractTest {
         track = RampCaptureTestSupport.armedMonoTrack("Vocal");
     }
 
-    /** A held thread is never left behind: released, then given the guard to finish before the directory goes. */
+    /**
+     * A held thread is never left behind: released, then — whether the test
+     * passed or failed before it stopped or cancelled the take — the take is
+     * ended and its flush thread joined within the guard; one still alive
+     * fails the test.
+     */
     @AfterEach
-    void releaseAndJoinTheFlushThread() throws InterruptedException {
+    void releaseAndEndTheTake() throws InterruptedException {
         release.countDown();
-        CaptureFlushService service = pipeline == null ? null : pipeline.getCaptureFlushService();
-        if (service != null) {
-            service.thread().join(HANG_GUARD.toMillis());
-        }
+        PipelineLifecycleTestSupport.endTheTakeAndAssertItsFlushThreadEnded(pipeline);
     }
 
     private RecordingPipeline newPipeline(Track... tracks) {

@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest.SealedBy;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * clips — the second without a sealed file behind it. Stereo, 16-bit, 48 kHz,
  * 256-frame blocks, each track on its own input channel.
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class StopSealOfTheSecondOfTwoLanesTest {
 
     private static final int FRAMES = 256;

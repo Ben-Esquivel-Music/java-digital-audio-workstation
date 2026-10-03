@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.event.RecordingListener;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * clip's segment order. Every segment of the take — the first one included —
  * is opened on the flush thread (book §5.1).
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class TakeManifestLifecycleContractTest {
 
     private static final AudioFormat STEREO_16 = new AudioFormat(48_000.0, 2, 16, 512);

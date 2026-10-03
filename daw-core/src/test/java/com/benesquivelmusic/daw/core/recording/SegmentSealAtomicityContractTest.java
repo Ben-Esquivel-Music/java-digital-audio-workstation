@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.recording;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the provisional streaming sentinel — a segment is either a {@code .part}
  * or fully sealed.
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class SegmentSealAtomicityContractTest {
 
     private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;

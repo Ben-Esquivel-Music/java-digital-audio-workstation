@@ -158,8 +158,12 @@ class ProjectChangeWhileRecordingTest {
                 recording.close();
             }
         } finally {
-            runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
-            projectManager.abandonProject();
+            // The project is abandoned even if the FX turn overruns its bound.
+            try {
+                runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
+            } finally {
+                projectManager.abandonProject();
+            }
         }
     }
 
@@ -468,7 +472,14 @@ class ProjectChangeWhileRecordingTest {
             inputCheck.join(TimeUnit.SECONDS.toMillis(5));
             assertThat(inputCheck.isAlive()).as("fixture: the released input check finished").isFalse();
         } finally {
+            // On every path the worker is released and joined before the
+            // engine is closed, so it never outlives the test.
             backend.release.countDown();
+            Thread worker = backend.heldCaller;
+            if (worker != null) {
+                worker.join(TimeUnit.SECONDS.toMillis(5));
+                assertThat(worker.isAlive()).as("the record start's input check ended within 5 s").isFalse();
+            }
         }
     }
 

@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * segment in manifest order, never only {@code segment-000.wav}; in
  * loop-record each lap's take references its own lane's segments only.
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class RotationReferencesEverySegmentContractTest {
 
     private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;

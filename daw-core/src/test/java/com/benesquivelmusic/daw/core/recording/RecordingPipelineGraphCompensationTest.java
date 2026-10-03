@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -28,6 +29,7 @@ import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSuppo
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class RecordingPipelineGraphCompensationTest {
     @TempDir Path directory;
 
