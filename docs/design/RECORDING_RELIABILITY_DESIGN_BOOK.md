@@ -760,25 +760,25 @@ and its transport is still in the post-roll a Stop entered (`Transport.isInPostR
 Shift+Space or Pause then Play clears, and a Pause or a Record inside the tail does not): a
 timer whose tail ended another way, or whose controller was retired, cancels nothing and stops
 nothing when it fires, and `retire()` stops and drops it. On a cancel the flush thread deletes
-the segment and manifest files it created, and each track directory that leaves empty — unless
-it had already ended on its own before the cancel (a
-throwable that escaped its drain loop sealed the take early), when it deletes nothing — and the
-take directory, if that left it empty, is removed on the storage executor once that thread has
-terminated, while one still holding files is left in place (a take cancelled while its
-directory is still being allocated has that directory removed once the allocation returns). A
-failed allocation, pipeline build, preparation, readiness or `beginCapture()` is the guard
-failure — an ERROR toast, the take's files and directory removed the same way, and a transport
-that was STOPPED left STOPPED. Of the failed starts, only a failed allocation or pipeline build
-closes the output stream Record opened, through `stopAudioOutputWhenIdle()`, and not over a
-rolling transport or while an instrument insert keeps it open; after a failed preparation,
-readiness or `beginCapture()` it stays open, and an engine `beginCapture()` started stays
-running (story 325's rollback owns closing the one and stopping the other). A cancelled start,
-or one that failed once its take directory existed, counts as FINALIZING
-(`isTakeBeingWritten()`) until the removal of its files has run, whether or not everything could
-be removed, so Record and the project-replace doors are refused meanwhile; in PREPARING the
-doors are refused too (`isRecordingInFlight()`), Record cancels (above), and Play does nothing. Stop pressed in RECORDING requests the seal without waiting for it, and the take
-is published on the FX turn its flush thread's termination posts — the "Seal + manifest
-complete" row, FINALIZING → IDLE.
+the segment and manifest files it created, and each track directory it created, if that leaves
+it empty — unless it had already ended on its own before the cancel (a throwable that escaped
+its drain loop sealed the take early), when it deletes nothing — and the take directory, if
+that left it empty, is removed on the storage executor once that thread has terminated, while
+one still holding files is left in place (a take cancelled while its directory is still being
+allocated has that directory removed once the allocation returns). A failed allocation,
+pipeline build, preparation, readiness or `beginCapture()` is the guard failure — an ERROR
+toast, the take's files and directory removed the same way, and a transport that was STOPPED
+left STOPPED. Of the failed starts, only a failed allocation or pipeline build closes the
+output stream Record opened, through `stopAudioOutputWhenIdle()`, and not over a rolling
+transport or while an instrument insert keeps it open; after a failed preparation, readiness or
+`beginCapture()` it stays open, and an engine `beginCapture()` started stays running
+(story 325's rollback owns closing the one and stopping the other). A cancelled start, or one
+that failed once its take directory existed, counts as FINALIZING (`isTakeBeingWritten()`)
+until the removal of its files has run, whether or not everything could be removed, so Record
+and the project-replace doors are refused meanwhile; in PREPARING the doors are refused too
+(`isRecordingInFlight()`), Record cancels (above), and Play does nothing. Stop pressed in
+RECORDING requests the seal without waiting for it, and the take is published on the FX turn
+its flush thread's termination posts — the "Seal + manifest complete" row, FINALIZING → IDLE.
 
 MIDI recorders follow the same machine: stop always drains `activeMidiRecorders` and closes
 devices; a second Record press can never re-put a recorder over a live one (§1.3). Timestamp

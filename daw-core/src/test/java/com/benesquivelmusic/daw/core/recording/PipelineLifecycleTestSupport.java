@@ -122,12 +122,13 @@ public final class PipelineLifecycleTestSupport {
      * When readiness fails, it cancels the start, waits (bounded) for the
      * flush thread's termination — by then that thread has deleted the
      * segment and manifest files the take created, and each track directory
-     * that left empty (best-effort: what an I/O error keeps from being
-     * deleted is left and the error logged) — and rethrows the readiness
-     * failure as it was given (an {@link java.io.UncheckedIOException}, any
-     * other unchecked throwable, or a {@link CancellationException}). A
-     * failure of {@code prepare()} or {@code beginCapture()} itself
-     * propagates as thrown; both roll themselves back.
+     * it created, if that left it empty (best-effort: what an I/O
+     * error keeps from being deleted is left and the error logged)
+     * — and rethrows the readiness failure as it was given (an
+     * {@link java.io.UncheckedIOException}, any other unchecked throwable,
+     * or a {@link CancellationException}). A failure of {@code prepare()}
+     * or {@code beginCapture()} itself propagates as thrown; both roll
+     * themselves back.
      *
      * @param pipeline the pipeline to start
      */

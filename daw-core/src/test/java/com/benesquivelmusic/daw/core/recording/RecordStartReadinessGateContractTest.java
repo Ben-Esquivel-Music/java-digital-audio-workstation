@@ -49,16 +49,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * count. A start stays all-or-nothing (story 323 D11): a readiness that
  * fails does so only once the flush thread has rolled back the take's files
  * — deleting the segment and manifest files the take created, and each
- * track directory that left empty (best-effort: what an I/O error keeps
- * from being deleted is left and the error logged) — and has terminated; a
- * cancel ({@link RecordingPipeline#cancelStart()}) and the rollback of a
- * failed {@code beginCapture()} ask that thread to discard the take and
- * return at once, and whichever of a cancel and a readiness comes first,
- * capture never begins and, when no delete fails and the flush thread had
- * not already sealed the take early and ended (a throwable that escaped its
- * drain loop), no file is left. After
- * either, a restart of the same pipeline is refused, touching nothing, until
- * that thread has terminated, so this pipeline never has two flush threads
+ * track directory it created, if that left it empty (best-effort: what an
+ * I/O error keeps from being deleted is left and the error logged) — and
+ * has terminated; a cancel ({@link RecordingPipeline#cancelStart()}) and
+ * the rollback of a failed {@code beginCapture()} ask that thread to
+ * discard the take and return at once, and whichever of a cancel and a
+ * readiness comes first, capture never begins and, when no delete fails and
+ * the flush thread had not already sealed the take early and ended (a
+ * throwable that escaped its drain loop), no file is left. After either, a
+ * restart of the same pipeline is refused, touching nothing, until that
+ * thread has terminated, so this pipeline never has two flush threads
  * working in its take directory (book §2.3). A seek while the take is being
  * prepared over a stopped transport does not move recording away from the
  * take's anchor, and a take prepared over a rolling transport begins capture

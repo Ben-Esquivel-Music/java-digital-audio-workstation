@@ -9,6 +9,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -16,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.assumeSymbolicLinks;
 import static com.benesquivelmusic.daw.core.recording.RecordingSession.DEFAULT_MAX_SEGMENT_BYTES;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -796,6 +799,110 @@ class RecordingSessionTest {
         assertThat(session.getSegments()).isEmpty();
         assertThat(trackDir).doesNotExist();
         session.discardAllFiles(); // idempotent
+    }
+
+    @Test
+    void discardAllFilesLeavesARegularFileThatRefusedTheStart() throws IOException {
+        Path trackDir = tempDir.resolve("occupied");
+        byte[] foreign = "not the session's".getBytes(StandardCharsets.US_ASCII);
+        Files.write(trackDir, foreign);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
+
+        assertThatThrownBy(session::start)
+                .isInstanceOf(UncheckedIOException.class)
+                .hasMessage("cannot create recording directory " + trackDir)
+                .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+        session.discardAllFiles();
+
+        assertThat(trackDir).as("the rollback deletes only what the session created").isRegularFile();
+        assertThat(Files.readAllBytes(trackDir)).isEqualTo(foreign);
+    }
+
+    @Test
+    void discardAllFilesLeavesADanglingLinkThatRefusedTheStart() throws IOException {
+        assumeSymbolicLinks(tempDir);
+        Path target = tempDir.resolve("missing");
+        Path trackDir = Files.createSymbolicLink(tempDir.resolve("dangling"), target);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
+
+        assertThatThrownBy(session::start)
+                .isInstanceOf(UncheckedIOException.class)
+                .hasMessage("cannot create recording directory " + trackDir)
+                .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+        session.discardAllFiles();
+
+        assertThat(Files.isSymbolicLink(trackDir)).as("the rollback deletes only what the session created")
+                .isTrue();
+        assertThat(Files.readSymbolicLink(trackDir)).isEqualTo(target);
+        assertThat(target).as("and the start created nothing through the link").doesNotExist();
+    }
+
+    @Test
+    void aLinkToADirectoryIsStreamedIntoAndOutlivesDiscardAllFiles() throws IOException {
+        assumeSymbolicLinks(tempDir);
+        Path realDir = Files.createDirectory(tempDir.resolve("real"));
+        byte[] foreign = "not the session's".getBytes(StandardCharsets.US_ASCII);
+        Path foreignFile = Files.write(realDir.resolve("notes.txt"), foreign);
+        Path trackDir = Files.createSymbolicLink(tempDir.resolve("linked"), realDir);
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), 800L));
+
+        session.start();
+        session.recordAudioData(block(250, 0.1f, 0.1f), 250); // seals segment-000, opens 001
+        assertThat(realDir.resolve("segment-000.wav")).as("the session streams through the link").exists();
+        assertThat(realDir.resolve("segment-001.wav.part")).exists();
+
+        session.discardAllFiles();
+
+        assertThat(Files.isSymbolicLink(trackDir)).as("the link is not the session's to remove").isTrue();
+        assertThat(Files.readSymbolicLink(trackDir)).isEqualTo(realDir);
+        try (var files = Files.list(realDir)) {
+            assertThat(files.toList()).as("the session's own files are gone, the foreign one is not")
+                    .containsExactly(foreignFile);
+        }
+        assertThat(Files.readAllBytes(foreignFile)).isEqualTo(foreign);
+    }
+
+    @Test
+    void discardAllFilesLeavesAnOutputDirectoryTheStartFoundInPlace() throws IOException {
+        Path trackDir = Files.createDirectory(tempDir.resolve("found"));
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
+
+        session.start();
+        session.discardAllFiles();
+
+        assertThat(trackDir).as("a directory the start did not create is not the session's to remove")
+                .isDirectory();
+        try (var files = Files.list(trackDir)) {
+            assertThat(files.toList()).as("and the session's own file is gone").isEmpty();
+        }
+    }
+
+    @Test
+    void discardAllFilesLeavesAForeignWavThatRefusedTheSeal() throws IOException {
+        Path trackDir = tempDir.resolve("collision");
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
+        session.start();
+        session.recordAudioData(block(100, 0.1f, 0.1f), 100); // frames, so stop() seals instead of discarding
+        RecordingSegment streaming = session.getCurrentSegment();
+        byte[] foreign = "not the session's".getBytes(StandardCharsets.US_ASCII);
+        Files.write(streaming.filePath(), foreign);
+
+        assertThatThrownBy(session::stop)
+                .isInstanceOf(UncheckedIOException.class)
+                .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+        assertThat(session.getSegments()).as("the refused seal leaves the segment in progress")
+                .hasSize(1).allMatch(RecordingSegment::isInProgress);
+        session.discardAllFiles();
+
+        assertThat(streaming.filePath()).as("the .wav the seal refused to overwrite is not the session's")
+                .isRegularFile();
+        assertThat(Files.readAllBytes(streaming.filePath())).isEqualTo(foreign);
+        assertThat(streaming.streamingPath()).as("the session's own .part is gone").doesNotExist();
+        try (var files = Files.list(trackDir)) {
+            assertThat(files.toList()).as("the foreign .wav keeps the directory")
+                    .containsExactly(streaming.filePath());
+        }
     }
 
     @Test

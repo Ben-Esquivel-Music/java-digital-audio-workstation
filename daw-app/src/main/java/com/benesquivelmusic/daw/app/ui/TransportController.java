@@ -2333,21 +2333,22 @@ final class TransportController implements TransportIntentHandler {
      * creates the per-track directories, segments and manifest under it —
      * has terminated, or never got one ({@link #removeFilesOfAbandonedStart}).
      * By then that thread has deleted the segment and manifest files it
-     * created for the take, and each track directory that left empty (D11)
-     * — unless it had already ended on its own before the discard was asked
-     * for (a throwable that escaped its drain loop sealed the take early),
-     * when it deleted nothing — so the directory is normally empty and a
-     * plain delete suffices; no recursive walk is warranted. A directory the
-     * thread did not empty — a file it failed to delete, or the files of a
-     * take it sealed early and never discarded — is not empty, so the delete
-     * fails and it is left in place rather than walked. A {@code .part}
-     * segment or a streaming manifest left in it is what the Recording
-     * Reliability book's §4.7 recovery scan looks for, a scan nothing runs
-     * yet (story 323's Known limitations: story 332's recovery pass is to
-     * invoke it); that scan does not look for sealed segments or an ABORTED
-     * manifest, which is what a take sealed early leaves once its seal and
-     * its final manifest write succeeded, so those stay on disk and no
-     * project refers to them. {@code null} deletes
+     * created for the take, and each track directory it created, if that left
+     * it empty (D11) — unless it had already ended on its own before the
+     * discard was asked for (a throwable that escaped its drain loop sealed
+     * the take early), when it deleted nothing — so the directory is normally
+     * empty and a plain delete suffices; no recursive walk is warranted. A
+     * directory the thread did not empty — a file it failed to delete, the
+     * files of a take it sealed early and never discarded, or what another
+     * process put there, a track directory the take did not create included —
+     * is not empty, so the delete fails and it is left in place rather than
+     * walked. A {@code .part} segment or a streaming manifest left in it is
+     * what the Recording Reliability book's §4.7 recovery scan looks for, a
+     * scan nothing runs yet (story 323's Known limitations: story 332's
+     * recovery pass is to invoke it); that scan does not look for sealed
+     * segments or an ABORTED manifest, which is what a take sealed early
+     * leaves once its seal and its final manifest write succeeded, so those
+     * stay on disk and no project refers to them. {@code null} deletes
      * nothing: it is passed only for a start cancelled while its take
      * directory was being allocated, when that allocation then failed — a
      * cancel does not stop the allocation, which returns a directory or fails.

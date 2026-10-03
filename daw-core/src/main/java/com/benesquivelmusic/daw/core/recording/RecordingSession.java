@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.event.RecordingListener;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.DirectoryNotEmptyException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -169,7 +170,8 @@ public final class RecordingSession {
      * Creates a session with explicit segment limits, force cadence and clock.
      *
      * @param format             the audio format (bit depth 16, 24 or 32)
-     * @param outputDirectory    the directory for segment files (created at {@link #start()})
+     * @param outputDirectory    the directory for segment files (created at
+     *                           {@link #start()} if it is missing)
      * @param maxSegmentDuration the maximum duration per segment; positive
      * @param maxSegmentBytes    the maximum data-chunk size per segment; positive
      *                           and at most {@link SegmentWriter#MAX_DATA_BYTES}
@@ -219,13 +221,26 @@ public final class RecordingSession {
     }
 
     /**
-     * Starts the session: creates the output directory, opens the first
-     * segment ({@code segment-NNN.wav.part}, NNN = the first segment index)
-     * and allocates the RAM mirror.
+     * Starts the session: creates the output directory if it is missing,
+     * opens the first segment ({@code segment-NNN.wav.part}, NNN = the first
+     * segment index) and allocates the RAM mirror.
+     *
+     * <p>The session owns the output directory only if this start created
+     * it (missing parent directories are created first; the session never
+     * removes those), and only then does {@link #discardAllFiles()} remove
+     * it ({@link #createdOutputDirectory()}). A directory already at that
+     * path, or a symbolic link to one, is used as it is and stays someone
+     * else's; anything else there — a regular file, a dangling link, a link
+     * to a file — fails the start and is left as it was. Each start decides
+     * afresh: one that finds the directory in place owns nothing, even if an
+     * earlier start of this session created it.</p>
      *
      * @throws IllegalStateException    if already active
      * @throws UncheckedIOException     if the directory or the segment file
-     *                                  cannot be created
+     *                                  cannot be created; its cause is a
+     *                                  {@link FileAlreadyExistsException}
+     *                                  when something other than a directory
+     *                                  is at the directory's path
      * @throws IllegalArgumentException if the format's bit depth is not 16,
      *                                  24 or 32
      */
@@ -233,9 +248,22 @@ public final class RecordingSession {
         if (active) {
             throw new IllegalStateException("Recording session is already active");
         }
+        createdOutputDirectory = false;
         try {
-            createdOutputDirectory = !Files.isDirectory(outputDirectory);
-            Files.createDirectories(outputDirectory);
+            Path parent = outputDirectory.toAbsolutePath().getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            try {
+                Files.createDirectory(outputDirectory);
+                createdOutputDirectory = true;
+            } catch (FileAlreadyExistsException existing) {
+                // A directory, or a link to one, is used and stays someone
+                // else's; anything else at that name is refused, untouched.
+                if (!Files.isDirectory(outputDirectory)) {
+                    throw existing;
+                }
+            }
         } catch (IOException e) {
             throw new UncheckedIOException("cannot create recording directory " + outputDirectory, e);
         }
@@ -641,11 +669,35 @@ public final class RecordingSession {
     }
 
     /**
+     * Returns whether this session's most recent {@link #start()} created
+     * the output directory: set once that start has created it, and kept if
+     * the start then fails (at its first segment open, say); clear when it
+     * found a directory, or a link to one, already there, when it failed
+     * before creating it, and before any start. A start refused because the
+     * session is already active changes nothing. Reads a field and touches
+     * no storage: {@code TrackCapture} reads it after each lane start to
+     * decide whether the track directory is its to remove.
+     */
+    boolean createdOutputDirectory() {
+        return createdOutputDirectory;
+    }
+
+    /**
      * Start-failure rollback: abandons the writer, deletes the files this
-     * session created (streaming and sealed), forgets the segments and
-     * removes the output directory if this session created it and it is
-     * now empty (best-effort: what an I/O error keeps from being deleted is
-     * left and the error logged). Idempotent.
+     * session created, forgets the segments and removes the output
+     * directory if this session's most recent start created it
+     * ({@link #createdOutputDirectory()}) and it is now empty (best-effort:
+     * what an I/O error keeps from being deleted is left and the error
+     * logged). Idempotent.
+     *
+     * <p>Of each listed segment it deletes the one name this session wrote:
+     * the {@code .part} of a segment still in progress, which the writer
+     * created, refusing an existing file, and the {@code .wav} of a sealed
+     * one, which its seal's rename created. Never the other name: a sealed
+     * segment's {@code .part} was renamed away by its seal, and the writer
+     * never writes an in-progress segment's {@code .wav} — it refuses to
+     * open, or to seal, onto an existing one — so whatever is at that name
+     * is someone else's.</p>
      */
     void discardAllFiles() {
         active = false;
@@ -659,8 +711,7 @@ public final class RecordingSession {
             writer = null;
         }
         for (RecordingSegment segment : segments) {
-            deleteQuietly(segment.streamingPath());
-            deleteQuietly(segment.filePath());
+            deleteQuietly(segment.isInProgress() ? segment.streamingPath() : segment.filePath());
         }
         segments.clear();
         currentSegment = null;
@@ -669,7 +720,7 @@ public final class RecordingSession {
             try {
                 Files.deleteIfExists(outputDirectory);
             } catch (DirectoryNotEmptyException notEmpty) {
-                // Someone else's files: leave them.
+                // Someone else's files, or ones a failed delete left: leave them.
             } catch (IOException e) {
                 LOG.log(Level.WARNING, "could not remove " + outputDirectory, e);
             }

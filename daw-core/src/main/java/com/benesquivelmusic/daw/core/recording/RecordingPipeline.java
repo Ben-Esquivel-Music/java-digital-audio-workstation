@@ -90,8 +90,9 @@ import java.util.function.LongSupplier;
  *       put the transport in recording. Otherwise — readiness failed, or the
  *       user cancelled meanwhile — call {@link #cancelStart()}: the flush
  *       thread deletes the segment and manifest files it created for the
- *       take, and each track directory that leaves empty (best-effort: what
- *       an I/O error keeps from being deleted is left and the error logged);
+ *       take, and each track directory it created, if that leaves it empty
+ *       (best-effort: what an I/O error keeps from being deleted is left and
+ *       the error logged);
  *       the take directory — even one it had to create — is left for its
  *       caller. A start is all-or-nothing: a {@code beginCapture()} that
  *       fails is rolled back the same way, and rethrows. (If a throwable
@@ -291,14 +292,18 @@ public final class RecordingPipeline {
      * without waiting; a flush thread that could not be started created
      * nothing, and its service is terminated already), the recording flags
      * are cleared and the pipeline is idle again; the failure is rethrown,
-     * carrying anything the rollback threw as suppressed. A file
-     * that cannot be created is not thrown here: the stage completes
-     * exceptionally with it, once the flush thread has deleted the segment
-     * and manifest files it created for the take, and each track directory
-     * that leaves empty (best-effort: what an I/O error keeps from being
+     * carrying anything the rollback threw as suppressed. A file that cannot
+     * be created is not thrown here: the stage completes exceptionally with
+     * it, once the flush thread has deleted the segment and manifest files
+     * it created for the take, and each track directory it created, if that
+     * leaves it empty (best-effort: what an I/O error keeps from being
      * deleted is left and the error logged); the take directory — even one
      * it had to create — is left for its caller. The rollback reaches only
-     * what this call created, never an earlier take of the same pipeline.</p>
+     * what this call created, except that, when the take's first manifest
+     * write fails before its rename lands, it also deletes whatever is at
+     * {@code take.manifest} — such as a manifest an earlier take left in the
+     * take directory — and at {@code take.manifest.tmp}, an empty directory
+     * included (story 350).</p>
      *
      * <p>Refused, touching nothing, while a take is being prepared, while one
      * is recording, and while the previous take's
@@ -322,21 +327,22 @@ public final class RecordingPipeline {
      *         every file exists and the thread is draining; or exceptionally,
      *         only once that thread has rolled back this take's files —
      *         deleting the segment and manifest files this take created, and
-     *         each track directory that leaves empty (best-effort: what an
-     *         I/O error keeps from being deleted is left and the error
-     *         logged); the take directory is left for the caller — and has
-     *         terminated, with a {@link java.io.UncheckedIOException}
-     *         (the take directory, a segment or the manifest could not be
+     *         each track directory it created, if that leaves it empty
+     *         (best-effort: what an I/O error keeps from being deleted is
+     *         left and the error logged); the take directory is left for
+     *         the caller — and has terminated, with a
+     *         {@link java.io.UncheckedIOException} (the take directory, a
+     *         track directory, a segment or the manifest could not be
      *         created), an {@link IllegalArgumentException} (a bit depth other
      *         than 16, 24 or 32), another unchecked throwable as thrown, or a
      *         {@link java.util.concurrent.CancellationException} (the
      *         initialisation saw the start cancelled; a cancel it no longer
      *         sees leaves the stage completed normally and the take is
-     *         discarded all the same). A holder cannot
-     *         complete it. A dependent registered with a non-async method runs
-     *         on the {@code capture-flush} thread, or on the registering
-     *         thread if the stage has completed already: one that touches FX
-     *         state only posts to the FX thread
+     *         discarded all the same). A holder cannot complete it. A
+     *         dependent registered with a non-async method runs on the
+     *         {@code capture-flush} thread, or on the registering thread if
+     *         the stage has completed already: one that touches FX state only
+     *         posts to the FX thread
      * @throws IllegalStateException if a take is being prepared, the pipeline is
      *                               active, its previous take's finalisation
      *                               is pending, or the flush thread of a take
@@ -524,16 +530,16 @@ public final class RecordingPipeline {
      * flush service is asked to discard the take
      * ({@link CaptureFlushService#requestAbort()} — without waiting: the
      * {@code capture-flush} thread deletes the segment and manifest files it
-     * created for the take, and each track directory that leaves empty
-     * (best-effort: what an I/O error keeps from being deleted is left and
-     * the error logged), and then terminates, unless a throwable that
-     * escaped its drain loop had already sealed the take early and ended it,
-     * when nothing is deleted ({@link #termination()}); the take directory
-     * is left for the caller),
-     * the recording flags are cleared, the pipeline is idle again, and the
-     * failure is rethrown, carrying anything the rollback threw as
-     * suppressed; the next {@link #prepare()} is refused until that thread
-     * has marked itself terminated ({@link CaptureFlushService#isTerminated()};
+     * created for the take, and each track directory it created, if that
+     * leaves it empty (best-effort: what an I/O error keeps from being
+     * deleted is left and the error logged), and then terminates, unless a
+     * throwable that escaped its drain loop had already sealed the take
+     * early and ended it, when nothing is deleted ({@link #termination()});
+     * the take directory is left for the caller), the recording flags are
+     * cleared, the pipeline is idle again, and the failure is rethrown,
+     * carrying anything the rollback threw as suppressed; the next
+     * {@link #prepare()} is refused until that thread has marked itself
+     * terminated ({@link CaptureFlushService#isTerminated()};
      * {@link #termination()} completes right after). An engine this call
      * started is left running, and a restored position stays restored.</p>
      *
@@ -589,20 +595,22 @@ public final class RecordingPipeline {
      * flush service is asked to discard the take
      * ({@link CaptureFlushService#requestAbort()}): the {@code capture-flush}
      * thread deletes the segment and manifest files it created for the take
-     * — never an earlier take's — and each track directory that leaves
-     * empty (best-effort: what an I/O error keeps from being deleted is left
-     * and the error logged), and then terminates; the take directory — even
-     * one it had to create — is left for its caller. An abort that the take's
-     * initialisation sees fails the readiness; one that comes later — after
-     * the initialisation's last look, or once readiness has completed
-     * normally — ends the drain loop instead, and the take is discarded the
-     * same way. If the flush thread had already ended on its own before the
-     * abort — a throwable that escaped its drain loop sealed the take early —
-     * the abort deletes nothing: the take stays as it was sealed early, and
-     * the termination has already completed. The recording flags are
-     * cleared, the take's captures are dropped and the pipeline is idle
-     * again; its flush service stays reachable until the next
-     * {@link #prepare()}, which is refused until that thread has marked
+     * — and, if the take's first manifest write failed before its rename,
+     * any manifest an earlier take of the same pipeline left in the take
+     * directory (story 350) — and each track directory it created, if that
+     * leaves it empty (best-effort: what an I/O error keeps from being
+     * deleted is left and the error logged), and then terminates; the take
+     * directory — even one it had to create — is left for its caller. An
+     * abort that the take's initialisation sees fails the readiness; one
+     * that comes later — after the initialisation's last look, or once
+     * readiness has completed normally — ends the drain loop instead, and
+     * the take is discarded the same way. If the flush thread had already
+     * ended on its own before the abort — a throwable that escaped its drain
+     * loop sealed the take early — the abort deletes nothing: the take stays
+     * as it was sealed early, and the termination has already completed. The
+     * recording flags are cleared, the take's captures are dropped and the
+     * pipeline is idle again; its flush service stays reachable until the
+     * next {@link #prepare()}, which is refused until that thread has marked
      * itself terminated ({@link CaptureFlushService#isTerminated()};
      * {@link #termination()} completes right after). Nothing was captured,
      * and the engine and the transport were never touched.

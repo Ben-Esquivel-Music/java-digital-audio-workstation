@@ -55,8 +55,8 @@ import static org.assertj.core.api.Assertions.tuple;
 /**
  * {@link RecordingPipeline} × {@link CaptureFlushService} wiring (story 323;
  * context D9/D11): the {@code awaitFlushed} fence, ring overflow and
- * truncation bookkeeping, all-or-nothing start (and what a failed restart
- * must leave alone), the loop-wrap seal failure, manifest write failures
+ * truncation bookkeeping, all-or-nothing start (and what a failed start or
+ * restart must leave alone), the loop-wrap seal failure, manifest write failures
  * that must not end a take, idempotent stop, and the thread's identity.
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
@@ -442,6 +442,87 @@ class RecordingPipelineFlushServiceTest {
         assertThat(Files.readAllBytes(sealed)).isEqualTo(sealedBefore);
         assertThat(tree(takeDir)).as("the failed attempt left nothing and removed nothing").isEqualTo(treeBefore);
         assertThat(TakeManifest.read(manifestPath).sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
+    }
+
+    @Test
+    void aStartRefusedByARegularFileAtTheTrackPathLeavesThatFileAndTheTakeDirectoryAsTheyWere() throws IOException {
+        Path occupied = takeDir.resolve(track.getId());
+        byte[] foreign = "not the take's".getBytes(StandardCharsets.US_ASCII);
+        Files.write(occupied, foreign);
+        List<Path> treeBefore = tree(takeDir);
+        RecordingPipeline pipeline = newPipeline(track);
+
+        assertThatThrownBy(() -> startRecording(pipeline))
+                .isInstanceOf(UncheckedIOException.class)
+                .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+
+        assertThat(occupied).as("the failed start's rollback deletes only what the take created").isRegularFile();
+        assertThat(Files.readAllBytes(occupied)).isEqualTo(foreign);
+        assertThat(tree(takeDir)).as("the failed attempt left nothing and removed nothing").isEqualTo(treeBefore);
+        assertThat(TakeManifest.manifestPath(takeDir)).as("no manifest was written").doesNotExist();
+        assertNothingStarted(pipeline, track);
+        assertThat(pipeline.getCaptureFlushService().isTerminated()).isTrue();
+        assertThreadExits(pipeline.getCaptureFlushService());
+    }
+
+    @Test
+    void aStartRefusedByADanglingLinkAtTheTrackPathLeavesThatLinkAndTheTakeDirectoryAsTheyWere() throws IOException {
+        RampCaptureTestSupport.assumeSymbolicLinks(takeDir);
+        Path target = takeDir.resolve("missing");
+        Path link = Files.createSymbolicLink(takeDir.resolve(track.getId()), target);
+        List<Path> treeBefore = tree(takeDir);
+        RecordingPipeline pipeline = newPipeline(track);
+
+        assertThatThrownBy(() -> startRecording(pipeline))
+                .isInstanceOf(UncheckedIOException.class)
+                .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+
+        assertThat(Files.isSymbolicLink(link)).as("the failed start's rollback deletes only what the take created")
+                .isTrue();
+        assertThat(Files.readSymbolicLink(link)).isEqualTo(target);
+        assertThat(target).as("and nothing was created through the link").doesNotExist();
+        assertThat(tree(takeDir)).as("the failed attempt left nothing and removed nothing").isEqualTo(treeBefore);
+        assertThat(TakeManifest.manifestPath(takeDir)).as("no manifest was written").doesNotExist();
+        assertNothingStarted(pipeline, track);
+        assertThat(pipeline.getCaptureFlushService().isTerminated()).isTrue();
+        assertThreadExits(pipeline.getCaptureFlushService());
+    }
+
+    @Test
+    void aFailedStartsRollbackLeavesATrackDirectoryTheTakeFoundInPlace() throws IOException {
+        Track second = RampCaptureTestSupport.armedMonoTrack("Audio 2");
+        Path foundInPlace = Files.createDirectory(takeDir.resolve(track.getId()));
+        List<Path> opened = new CopyOnWriteArrayList<>();
+        RecordingPipeline pipeline = newPipeline(track, second);
+        pipeline.setSessionFactory((t, dir) -> {
+            RecordingSession session = new RecordingSession(MONO_16, dir);
+            if (t == second) {
+                session.setChannelOpener(path -> {
+                    throw new IOException("injected segment open failure");
+                });
+            } else {
+                session.setChannelOpener(path -> {
+                    opened.add(path);
+                    return SegmentWriter.CREATE_NEW_CHANNEL.open(path);
+                });
+            }
+            return session;
+        });
+
+        assertThatThrownBy(() -> startRecording(pipeline))
+                .isInstanceOf(UncheckedIOException.class)
+                .hasRootCauseMessage("injected segment open failure");
+
+        Path firstSegment = foundInPlace.resolve("segment-000.wav.part");
+        assertThat(opened).as("fixture: the first track's segment was created before the second's start failed")
+                .containsExactly(firstSegment);
+        assertThat(firstSegment).as("the initialisation's rollback deleted it").doesNotExist();
+        assertThat(foundInPlace).as("but not the directory the first track's capture did not create").isDirectory();
+        assertThat(tree(foundInPlace)).as("which is empty again").containsExactly(foundInPlace);
+        assertTakeDirectoryHoldsOnly(foundInPlace);
+        assertNothingStarted(pipeline, track, second);
+        assertThat(pipeline.getCaptureFlushService().isTerminated()).isTrue();
+        assertThreadExits(pipeline.getCaptureFlushService());
     }
 
     @Test

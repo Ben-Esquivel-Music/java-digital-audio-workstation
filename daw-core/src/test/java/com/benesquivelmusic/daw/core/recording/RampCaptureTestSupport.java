@@ -6,11 +6,13 @@ import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import org.junit.jupiter.api.Assumptions;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
@@ -79,6 +81,27 @@ final class RampCaptureTestSupport {
         running.join(HANG_GUARD.toMillis());
         assertThat(running.isAlive()).as("%s returned within %s", threadName, HANG_GUARD).isFalse();
         return outcome.get();
+    }
+
+    /**
+     * Aborts the calling test where this platform will not create a symbolic
+     * link, as Windows refuses without the create-symbolic-link privilege or
+     * Developer Mode. The probe creates a dangling link in {@code dir} and
+     * deletes it again; an {@link IOException} or an
+     * {@link UnsupportedOperationException} from the creation aborts the
+     * test instead of failing it.
+     *
+     * @param dir a directory the test owns ({@code @TempDir})
+     * @throws IOException if the probe link, once created, cannot be deleted
+     */
+    static void assumeSymbolicLinks(Path dir) throws IOException {
+        Path probe = dir.resolve("symbolic-link-probe");
+        try {
+            Files.createSymbolicLink(probe, dir.resolve("symbolic-link-probe-target"));
+        } catch (IOException | UnsupportedOperationException refused) {
+            Assumptions.abort("symbolic links cannot be created here: " + refused);
+        }
+        Files.delete(probe);
     }
 
     static Track armedMonoTrack(String name) {

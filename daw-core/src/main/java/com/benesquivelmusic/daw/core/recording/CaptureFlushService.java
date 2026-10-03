@@ -58,11 +58,11 @@ import java.util.logging.Logger;
  *       after the blocks it drained. When it seals the take on its own it
  *       completes {@link #earlySeal()} and does nothing more about it:
  *       stopping the take is the caller's. When an abort is requested it
- *       deletes the segment and manifest files it created for the take, and
- *       each track directory that leaves empty, instead of sealing it, and
- *       leaves the take directory to its caller; an abort that comes after a
- *       stop request, or after the thread has ended on its own, deletes
- *       nothing ({@link #requestAbort()}).</li>
+ *       deletes, instead of sealing the take, the segment and manifest files
+ *       it created for the take, and each track directory it created, if
+ *       that leaves it empty, and leaves the take directory to its caller;
+ *       an abort that comes after a stop request, or after the thread has
+ *       ended on its own, deletes nothing ({@link #requestAbort()}).</li>
  *   <li>The caller thread (FX in the app) calls {@link #start()}, which only
  *       starts the thread, and the requests {@link #requestStop(SealedBy)}
  *       and {@link #requestAbort()}, which set a flag and wake the thread.
@@ -286,7 +286,13 @@ public final class CaptureFlushService {
     private volatile long manifestWrites;
     private volatile TakeManifest lastManifest;
     private volatile Throwable lastFailure;
-    /** This take has attempted a manifest write, so the manifest files in the take directory are its own. */
+    /**
+     * This take has attempted a manifest write, so the rollback deletes
+     * {@code take.manifest} and its staging file: this take's once one of
+     * its writes has landed, if nothing else writes there, and before that
+     * whatever is at those names — an earlier take's manifest among them
+     * (story 350).
+     */
     private volatile boolean manifestTouched;
     /**
      * The failure of the seal a stop requested; see {@link #stopSealFailure()}.
@@ -452,10 +458,10 @@ public final class CaptureFlushService {
      * writes the initial manifest in a single attempt (class note). All or
      * nothing: when a step fails, or an abort was requested before it began
      * or before its last check, the segment and manifest files this take
-     * created are deleted again, and each track directory that leaves empty
-     * ({@link #discardTake()}; best-effort: what an I/O error keeps from
-     * being deleted is left and the error logged), and the reason is
-     * returned — an {@link IOException} wrapped as an
+     * created are deleted again, and each track directory this take created,
+     * if that leaves it empty ({@link #discardTake()}; best-effort: what an
+     * I/O error keeps from being deleted is left and the error logged), and
+     * the reason is returned — an {@link IOException} wrapped as an
      * {@link UncheckedIOException}, a {@link RuntimeException} or an
      * {@link Error} as thrown, or a {@link CancellationException} for the
      * abort, carrying any other throwable of the rollback as suppressed. The
@@ -491,9 +497,10 @@ public final class CaptureFlushService {
             // The message says what the rollback below does; readiness fails
             // with it only once that rollback has run (runLoop).
             failure = new CancellationException(abortedBeforeReadinessMessage("its rollback deletes the segment"
-                    + " and manifest files it had created, and each track directory that leaves empty, and leaves"
-                    + " the take directory in place (what an I/O error keeps from being deleted is left and the"
-                    + " error logged; any other throwable of the rollback is attached as suppressed)"));
+                    + " and manifest files it had created, and each track directory it had created, if that leaves"
+                    + " it empty, and leaves the take directory in place (what an I/O error keeps from being"
+                    + " deleted is left and the error logged; any other throwable of the rollback is attached as"
+                    + " suppressed)"));
         } catch (IOException e) {
             failure = new UncheckedIOException("cannot start capture under " + config.takeDirectory(), e);
         } catch (RuntimeException | Error e) {
@@ -515,8 +522,9 @@ public final class CaptureFlushService {
 
     /**
      * Deletes the segment and manifest files this take created, and each
-     * track directory that leaves empty: each capture's segments, sealed and
-     * streaming, and its track directory if that is empty afterwards
+     * track directory it created, if that leaves it empty: each capture's
+     * segments, sealed and streaming, and its track directory if the start
+     * of one of its lane sessions created it and it is empty afterwards
      * ({@link TrackCapture#discardAllFiles()}), then the manifest and its
      * staging file, if this take wrote or tried to write them. The take
      * directory is left in place. Every capture gets its turn whatever an
@@ -1314,12 +1322,14 @@ public final class CaptureFlushService {
      * for it. Meant for a start that is abandoned — cancelled before capture
      * began, or rolled back after beginning capture failed. The flush thread
      * deletes the segment and manifest files it created for the take, and
-     * each track directory that leaves empty — each capture's segments,
-     * sealed and streaming, and the manifest if this take wrote or tried to
-     * write it, never an earlier take's files — and then terminates:
-     * {@link #termination()} completes after the deletions. The take
-     * directory, even one the initialisation had to create, is left for its
-     * caller. The abort seals nothing, and {@link #earlySeal()} and
+     * each track directory it created, if that leaves it empty — each
+     * capture's segments, sealed and streaming, and the manifest if this
+     * take wrote or tried to write it (when this take's first manifest write
+     * failed before its rename, in a take directory that held an earlier take's
+     * manifest, the manifest deleted is that earlier take's: story 350) — and
+     * then terminates: {@link #termination()} completes after the deletions.
+     * The take directory, even one the initialisation had to create, is left
+     * for its caller. The abort seals nothing, and {@link #earlySeal()} and
      * {@link #stopSealFailure()} report nothing for it.
      *
      * <p>The initialisation looks at the abort when it begins and once more
@@ -1570,10 +1580,10 @@ public final class CaptureFlushService {
      * initialisation fails or sees an abort ({@link #requestAbort()}), and
      * then only once the flush thread has rolled back the take's files —
      * deleting the segment and manifest files the take created, and each
-     * track directory that leaves empty (best-effort: what an I/O error keeps
-     * from being deleted is left and the error logged); the take directory,
-     * even one the initialisation had to create, is left for its caller —
-     * and has terminated ({@link #isTerminated()},
+     * track directory it created, if that leaves it empty (best-effort: what
+     * an I/O error keeps from being deleted is left and the error logged);
+     * the take directory, even one the initialisation had to create, is left
+     * for its caller — and has terminated ({@link #isTerminated()},
      * {@link #termination()}): with an {@link UncheckedIOException} wrapping
      * the {@link IOException} of a directory, segment or manifest that could
      * not be created; with a {@link RuntimeException} or an {@link Error} as

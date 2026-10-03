@@ -94,6 +94,17 @@ final class TrackCapture {
     private SegmentEvents events;
     /** The session whose lane bookkeeping is done; flush thread only. */
     private RecordingSession finalizedSession;
+    /**
+     * Whether the start of one of this capture's lane sessions created the
+     * track directory: every lane start, one that failed included, adds its
+     * session's {@link RecordingSession#createdOutputDirectory()} if that
+     * session's output directory is the track directory (a session factory
+     * may point it elsewhere), and once set it stays set, so a later lane
+     * whose start found the directory in place does not drop lane 0's claim.
+     * Only then does {@link #discardAllFiles()} remove the directory. Flush
+     * thread only.
+     */
+    private boolean createdTrackDirectory;
 
     /**
      * Takes the snapshot and creates (but does not start) the lane-0 session.
@@ -179,16 +190,42 @@ final class TrackCapture {
         attachObserver(session, lane);
     }
 
-    /** Starts the current lane's session (creates its directory and first {@code .part}). */
+    /**
+     * Starts the current lane's session (it creates its directory if that is
+     * missing, and its first {@code .part}) and records whether that start
+     * created the track directory — also when the start then failed — so
+     * that {@link #discardAllFiles()} removes the directory only if this
+     * capture created it.
+     */
     void startLane() {
-        session.start();
+        startLaneSession(session);
+    }
+
+    /**
+     * Starts {@code laneSession} and, however the start ends, adds its
+     * {@link RecordingSession#createdOutputDirectory()} to the capture's
+     * claim on the track directory: a start that created the directory and
+     * then failed (at its first {@code .part} open, say) still created it.
+     * Only a session whose output directory is the track directory counts;
+     * one that a session factory pointed elsewhere created nothing there.
+     */
+    private void startLaneSession(RecordingSession laneSession) {
+        try {
+            laneSession.start();
+        } finally {
+            createdTrackDirectory |= laneSession.createdOutputDirectory()
+                    && laneSession.getOutputDirectory().equals(trackDirectory);
+        }
     }
 
     /**
      * Seals the current lane: stops its session (exact-count seal), records
      * its sealed segments, optionally appends the lane as a {@link Take}
      * (loop-record) and optionally opens the next lane with the track
-     * directory's segment numbering continued.
+     * directory's segment numbering continued. The next lane's start is
+     * recorded as {@link #startLane()} records lane 0's: whether it created
+     * the track directory is added to the capture's claim, which keeps the
+     * claim of every earlier lane.
      *
      * <p>If the seal fails the take is still built from the RAM mirror and
      * whatever did seal, the next lane is <em>not</em> opened, and the
@@ -261,7 +298,7 @@ final class TrackCapture {
         if (openNext) {
             int nextLane = previousLane + 1;
             RecordingSession next = newSession(nextLane, previous.getNextSegmentIndex());
-            next.start();
+            startLaneSession(next);
             lane = nextLane;
             session = next;
         }
@@ -278,28 +315,34 @@ final class TrackCapture {
 
     /**
      * Start-failure rollback: deletes the files this capture created — the
-     * current lane's files and the sealed segments — and the track directory
-     * if it is empty afterwards (best-effort: what an I/O error keeps from
-     * being deleted is left and the error logged). Idempotent.
+     * current lane's files ({@link RecordingSession#discardAllFiles()}) and
+     * the {@code .wav} of every sealed segment, never its {@code .part}
+     * name, which the seal's rename vacated, so whatever is there now is
+     * someone else's — and the track directory if the start of one of its
+     * lane sessions created it and it is empty afterwards (best-effort: what
+     * an I/O error keeps from being deleted is left and the error logged).
+     * A lane session counts only if its output directory is the track
+     * directory. Idempotent.
      */
     void discardAllFiles() {
         session.discardAllFiles();
         for (SealedSegment sealed : sealedSegments) {
             try {
                 Files.deleteIfExists(sealed.segment().filePath());
-                Files.deleteIfExists(sealed.segment().streamingPath());
             } catch (IOException e) {
                 LOG.log(Level.WARNING, "could not delete " + sealed.segment().filePath(), e);
             }
         }
         sealedSegments.clear();
         takeGroup = TakeGroup.empty();
-        try {
-            Files.deleteIfExists(trackDirectory);
-        } catch (DirectoryNotEmptyException notEmpty) {
-            // Not ours to remove.
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "could not remove " + trackDirectory, e);
+        if (createdTrackDirectory) {
+            try {
+                Files.deleteIfExists(trackDirectory);
+            } catch (DirectoryNotEmptyException notEmpty) {
+                // Someone else's files, or ones a failed delete left: leave them.
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "could not remove " + trackDirectory, e);
+            }
         }
     }
 
