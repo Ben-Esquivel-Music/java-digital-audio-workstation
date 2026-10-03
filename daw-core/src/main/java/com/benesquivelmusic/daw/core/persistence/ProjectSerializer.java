@@ -71,6 +71,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import org.w3c.dom.Node;
@@ -90,11 +91,18 @@ public final class ProjectSerializer {
     /**
      * Serializes the given project to an XML string.
      *
+     * <p>Clip asset references that lie under the project directory
+     * ({@code project.getMetadata().projectPath()}, when set) are written
+     * project-relative with forward slashes; every other reference is
+     * written verbatim — the {@link ProjectPaths} rule (story 323). A
+     * project that has no directory yet relativises nothing.</p>
+     *
      * @param project the project to serialize
      * @return the XML representation of the project
      * @throws IOException if serialization fails
      */
     public String serialize(DawProject project) throws IOException {
+        Path projectRoot = projectRootOf(project);
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
@@ -102,7 +110,7 @@ public final class ProjectSerializer {
             DocumentBuilder builder = factory.newDocumentBuilder();
             Document document = builder.newDocument();
 
-            buildDocument(document, project);
+            buildDocument(document, project, projectRoot);
 
             TransformerFactory transformerFactory = TransformerFactory.newInstance();
             transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
@@ -121,7 +129,16 @@ public final class ProjectSerializer {
         }
     }
 
-    private void buildDocument(Document document, DawProject project) {
+    /**
+     * Returns the directory clip references are relativised against —
+     * the project's saved directory — or {@code null} when the project has
+     * none yet (unit tests, a project never saved).
+     */
+    private static Path projectRootOf(DawProject project) {
+        return project.getMetadata() != null ? project.getMetadata().projectPath() : null;
+    }
+
+    private void buildDocument(Document document, DawProject project, Path projectRoot) {
         Element root = document.createElement("daw-project");
         root.setAttribute("version", Integer.toString(
                 com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION));
@@ -130,7 +147,7 @@ public final class ProjectSerializer {
         buildMetadata(document, root, project);
         buildAudioFormat(document, root, project);
         buildTransport(document, root, project.getTransport());
-        buildTracks(document, root, project);
+        buildTracks(document, root, project, projectRoot);
         buildMixer(document, root, project);
         buildMarkers(document, root, project.getMarkerManager());
         buildTrackGroups(document, root, project);
@@ -256,16 +273,16 @@ public final class ProjectSerializer {
         root.appendChild(elem);
     }
 
-    private void buildTracks(Document document, Element root, DawProject project) {
+    private void buildTracks(Document document, Element root, DawProject project, Path projectRoot) {
         Element tracksElem = document.createElement("tracks");
         root.appendChild(tracksElem);
 
         for (Track track : project.getTracks()) {
-            tracksElem.appendChild(buildTrackElement(document, track));
+            tracksElem.appendChild(buildTrackElement(document, track, projectRoot));
         }
     }
 
-    private Element buildTrackElement(Document document, Track track) {
+    private Element buildTrackElement(Document document, Track track, Path projectRoot) {
         Element elem = document.createElement("track");
         elem.setAttribute("id", track.getId());
         elem.setAttribute("name", track.getName());
@@ -304,7 +321,7 @@ public final class ProjectSerializer {
             Element clipsElem = document.createElement("clips");
             elem.appendChild(clipsElem);
             for (AudioClip clip : clips) {
-                clipsElem.appendChild(buildClipElement(document, clip));
+                clipsElem.appendChild(buildClipElement(document, clip, projectRoot));
             }
         }
 
@@ -355,7 +372,16 @@ public final class ProjectSerializer {
         trackElem.appendChild(chainElem);
     }
 
-    private Element buildClipElement(Document document, AudioClip clip) {
+    /**
+     * Writes one {@code <clip>} element. The {@code source-file} attribute
+     * and — for a recorded take — one {@code <source-segment path="…"/>}
+     * child per entry of {@link AudioClip#getSourceSegmentPaths()}, in
+     * manifest order, pass through {@link ProjectPaths#relativize}: a
+     * reference under {@code projectRoot} is written project-relative with
+     * forward slashes (Recording Reliability book §3.3, §5.3, §9.5), every
+     * other reference verbatim. Children are omitted for a single-file clip.
+     */
+    private Element buildClipElement(Document document, AudioClip clip, Path projectRoot) {
         Element elem = document.createElement("clip");
         elem.setAttribute("name", clip.getName());
         elem.setAttribute("start-beat", String.valueOf(clip.getStartBeat()));
@@ -374,7 +400,13 @@ public final class ProjectSerializer {
         elem.setAttribute("pitch-shift-semitones", String.valueOf(clip.getPitchShiftSemitones()));
         elem.setAttribute("stretch-quality", clip.getStretchQuality().name());
         if (clip.getSourceFilePath() != null) {
-            elem.setAttribute("source-file", clip.getSourceFilePath());
+            elem.setAttribute("source-file",
+                    ProjectPaths.relativize(projectRoot, clip.getSourceFilePath()));
+        }
+        for (String segmentPath : clip.getSourceSegmentPaths()) {
+            Element segmentElem = document.createElement("source-segment");
+            segmentElem.setAttribute("path", ProjectPaths.relativize(projectRoot, segmentPath));
+            elem.appendChild(segmentElem);
         }
         clip.gainEnvelope().ifPresent(env -> {
             Element envElem = document.createElement("gain-envelope");

@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.MonitoringResolution;
 
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -23,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link InputMonitoringMode#TAPE} mode and the pipeline-level
  * "Mute All Inputs" panic switch.
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class PerTrackMonitoringTest {
 
     @TempDir
@@ -215,7 +218,7 @@ class PerTrackMonitoringTest {
         assertThat(pipeline.isInputMonitoringActive(synth)).isTrue();
 
         // Start recording:
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(pipeline.isInputMonitoringActive(vocal)).isTrue();
         assertThat(pipeline.isInputMonitoringActive(synth)).isTrue();
     }
@@ -264,7 +267,7 @@ class PerTrackMonitoringTest {
                 audioEngine, transport, format, tempDir, List.of(vocal, synth),
                 CountInMode.OFF, InputMonitoringMode.AUTO, null);
 
-        pipeline.start();
+        startRecording(pipeline);
 
         // Vocal picked up the pipeline default; synth kept its override.
         assertThat(vocal.getInputMonitoring()).isEqualTo(InputMonitoringMode.AUTO);

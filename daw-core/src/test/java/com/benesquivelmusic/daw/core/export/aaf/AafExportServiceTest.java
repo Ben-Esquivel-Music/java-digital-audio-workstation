@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AafExportServiceTest {
 
@@ -182,6 +183,42 @@ class AafExportServiceTest {
         // labelled frame rate.
         assertThat(lengthAt25).isEqualTo(lengthAt24);
         assertThat(lengthAt30).isEqualTo(lengthAt24);
+    }
+
+    @Test
+    void aMultiSegmentRecordedTakeIsRefusedByNameInsteadOfExportedTruncated() {
+        // Story 323: an AAF source clip names one file; a rotated take spans
+        // several, so referencing only the head would silently drop audio.
+        Track vox = project.createAudioTrack("Vox");
+        AudioClip take = newClip("Take 1", 0.0, 8.0, 0, FadeCurveType.LINEAR, 0, FadeCurveType.LINEAR, 0);
+        take.setSourceSegmentPaths(List.of(
+                "/takes/t1/vox/segment-000.wav", "/takes/t1/vox/segment-001.wav"));
+        vox.addClip(take);
+        AafExportConfig cfg = new AafExportConfig(
+                AafFrameRate.FPS_24, AafTimecode.zero(AafFrameRate.FPS_24), false, List.of(), "Rotated");
+        Path out = tempDir.resolve("rotated.aaf");
+
+        assertThatThrownBy(() -> service.export(project, cfg, out))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Take 1")
+                .hasMessageContaining(take.getId())
+                .hasMessageContaining("2 segments");
+        assertThat(out).doesNotExist();
+    }
+
+    @Test
+    void aOneSegmentRecordedTakeStillExportsWithItsOnlySegmentAsTheReference() throws IOException {
+        Track vox = project.createAudioTrack("Vox");
+        AudioClip take = newClip("Take 1", 0.0, 8.0, 0, FadeCurveType.LINEAR, 0, FadeCurveType.LINEAR, 0);
+        take.setSourceSegmentPaths(List.of("/takes/t1/vox/segment-000.wav"));
+        vox.addClip(take);
+        AafExportConfig cfg = new AafExportConfig(
+                AafFrameRate.FPS_24, AafTimecode.zero(AafFrameRate.FPS_24), false, List.of(), "Short");
+
+        AafComposition comp = service.export(project, cfg, tempDir.resolve("short.aaf"));
+
+        assertThat(comp.clips()).hasSize(1);
+        assertThat(comp.clips().get(0).sourceFile()).isEqualTo("/takes/t1/vox/segment-000.wav");
     }
 
     private long exportAndGetTotalLength(AafFrameRate fr, String fileName) throws IOException {

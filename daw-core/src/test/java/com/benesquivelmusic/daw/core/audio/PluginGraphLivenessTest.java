@@ -18,6 +18,8 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 
+import org.junit.jupiter.api.extension.ExtendWith;
+import com.benesquivelmusic.daw.core.recording.CaptureFlushThreadLeakGuard;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -27,8 +29,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class PluginGraphLivenessTest {
     private static final AudioFormat FORMAT = new AudioFormat(48_000, 2, 24, 256);
     @TempDir Path directory;
@@ -230,16 +235,16 @@ class PluginGraphLivenessTest {
             var output = new float[2][256];
             graph.engine().processBlock(null, output, 256);
             assertThat(peak(output)).as("stopped audition through active engine output").isGreaterThan(0.01f);
-            recording.start();
+            startRecording(recording);
             graph.engine().processBlock(null, output, 256);
             graph.engine().processBlock(null, output, 256);
-            var clips = recording.stop();
+            var clips = stopRecording(recording);
             assertThat(clips).hasSize(1);
             assertThat(peak(clips.getFirst().getAudioData())).as("instrument audio recorded without physical input")
                     .isGreaterThan(0.01f);
             assertThat(graph.engine().hasGraphInstrument(graph.track())).isTrue();
         } finally {
-            if (recording.isActive()) { recording.stop(); }
+            if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();
             plugin.dispose();
         }
@@ -293,7 +298,7 @@ class PluginGraphLivenessTest {
                 directory, List.of(graph.track()));
         try {
             plugin.getProcessor().noteOn(69, 100);
-            recording.start();
+            startRecording(recording);
             var input = new float[3][256];
             java.util.Arrays.fill(input[0], 0.7f);
             java.util.Arrays.fill(input[1], 0.25f);
@@ -302,11 +307,12 @@ class PluginGraphLivenessTest {
             graph.engine().processBlock(input, output, 256);
             assertThat(peak(output)).as("the hosted keyboard is producing a distinct graph signal")
                     .isGreaterThan(0.01f);
+            recording.awaitFlushed();
             var captured = recording.getSession(graph.track()).getCapturedAudio();
             assertThat(captured[0]).containsOnly(0.25f);
             assertThat(captured[1]).containsOnly(inputChannels == 1 ? 0f : -0.5f);
         } finally {
-            if (recording.isActive()) { recording.stop(); }
+            if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();
             plugin.dispose();
         }
@@ -332,18 +338,19 @@ class PluginGraphLivenessTest {
         var recording = new RecordingPipeline(graph.engine(), graph.transport(), FORMAT, directory, tracks);
         try {
             plugin.getProcessor().noteOn(69, 100);
-            recording.start();
+            startRecording(recording);
             var input = new float[2][256];
             java.util.Arrays.fill(input[0], -0.5f);
             java.util.Arrays.fill(input[1], 0.25f);
             graph.engine().processBlock(input, new float[2][256], 256);
+            recording.awaitFlushed();
             var keyboardCapture = recording.getSession(graph.track()).getCapturedAudio();
             assertThat(peak(keyboardCapture)).isGreaterThan(0.01f);
             assertThat(keyboardCapture[0]).isNotEqualTo(input[0]);
             assertThat(recording.getSession(microphone).getCapturedAudio()[0]).containsOnly(0.25f);
             assertThat(recording.getSession(disconnected).getCapturedSampleCount()).isZero();
         } finally {
-            if (recording.isActive()) { recording.stop(); }
+            if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();
             plugin.dispose();
         }

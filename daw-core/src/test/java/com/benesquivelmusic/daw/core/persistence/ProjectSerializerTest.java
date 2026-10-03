@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -205,6 +206,36 @@ class ProjectSerializerTest {
 
         assertThat(xml).contains("name=\"Empty Clip\"");
         assertThat(xml).doesNotContain("source-file=");
+    }
+
+    @Test
+    void shouldSerializeSourceSegmentChildrenInOrderAndVerbatimWhenTheProjectHasNoDirectory()
+            throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = project.createAudioTrack("Vocals");
+        AudioClip clip = new AudioClip("Take 1", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(List.of("/takes/segment-000.wav", "/takes/segment-001.wav"));
+        track.addClip(clip);
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        assertThat(xml).contains("source-file=\"/takes/segment-000.wav\"");
+        int first = xml.indexOf("<source-segment path=\"/takes/segment-000.wav\"/>");
+        int second = xml.indexOf("<source-segment path=\"/takes/segment-001.wav\"/>");
+        assertThat(first).isNotNegative();
+        assertThat(second).isGreaterThan(first);
+    }
+
+    @Test
+    void shouldNotWriteSourceSegmentChildrenForASingleFileClip() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = project.createAudioTrack("Vocals");
+        track.addClip(new AudioClip("Import", 0.0, 4.0, "/audio/import.wav"));
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        assertThat(xml).contains("source-file=\"/audio/import.wav\"");
+        assertThat(xml).doesNotContain("<source-segment");
     }
 
     @Test

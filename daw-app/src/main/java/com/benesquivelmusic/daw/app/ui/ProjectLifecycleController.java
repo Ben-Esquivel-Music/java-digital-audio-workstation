@@ -21,6 +21,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationException;
@@ -59,6 +60,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -81,6 +83,27 @@ final class ProjectLifecycleController {
 
     /** Filename-safe local timestamp stamp shared by the archive-restore and recovery-backup paths. */
     private static final DateTimeFormatter BACKUP_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
+    /**
+     * Story 323 review (Recording Reliability book §5.2): shown as a WARNING
+     * toast when an in-app door that replaces the open project is refused
+     * because a take is still being written to disk. Quitting the application
+     * is not one of those doors — nothing guards it until story 333 — so the
+     * message asks the user to keep it open.
+     */
+    static final String PROJECT_CHANGE_WHILE_WRITING_MESSAGE =
+            "The open project can't be replaced until the last take has finished writing to disk"
+                    + " — keep the application open until it has";
+
+    /**
+     * Story 323 review (Recording Reliability book §5.2): shown as a WARNING
+     * toast when an in-app door that replaces the open project is refused
+     * because a recording is in flight. The take being recorded belongs to
+     * the open project, so the message asks the user to stop the recording
+     * first.
+     */
+    static final String PROJECT_CHANGE_WHILE_RECORDING_MESSAGE =
+            "The open project can't be replaced while recording — stop the recording first";
 
     /**
      * The functional dependencies the composition root supplies — story 294
@@ -207,6 +230,20 @@ final class ProjectLifecycleController {
      * default) skips journal wiring.
      */
     private Consumer<Path> journalOpenHook;
+
+    /**
+     * Story 323 review — whether a take is still being written to disk, set by
+     * {@code MainController} through {@link #setTakeBeingWrittenCheck}; the
+     * pure-unit default never refuses. FX thread.
+     */
+    private BooleanSupplier takeBeingWritten = () -> false;
+
+    /**
+     * Story 323 review — whether a recording is in flight, set by
+     * {@code MainController} through {@link #setRecordingInFlightCheck}; the
+     * pure-unit default never refuses. FX thread.
+     */
+    private BooleanSupplier recordingInFlight = () -> false;
 
     /**
      * Story 296 — the single auxiliary window currently hosting a Hub / Welcome
@@ -379,7 +416,7 @@ final class ProjectLifecycleController {
     }
 
     void onNewProject() {
-        if (!confirmDiscardUnsavedChanges()) {
+        if (!confirmProjectMayClose()) {
             return;
         }
         // §8 / §1.1 — prompt for a real destination once, then write the project
@@ -436,7 +473,7 @@ final class ProjectLifecycleController {
     }
 
     void onOpenProject() {
-        if (!confirmDiscardUnsavedChanges()) {
+        if (!confirmProjectMayClose()) {
             return;
         }
         DirectoryChooser chooser = new DirectoryChooser();
@@ -464,7 +501,7 @@ final class ProjectLifecycleController {
     // ── DAWproject Exchange Import/Export ────────────────────────────────────
 
     void onImportSession() {
-        if (!confirmDiscardUnsavedChanges()) {
+        if (!confirmProjectMayClose()) {
             return;
         }
         FileChooser chooser = new FileChooser();
@@ -641,7 +678,7 @@ final class ProjectLifecycleController {
      * only shown if that load actually succeeds.</p>
      */
     void onRestoreFromArchive() {
-        if (!confirmDiscardUnsavedChanges()) {
+        if (!confirmProjectMayClose()) {
             return;
         }
         FileChooser fileChooser = new FileChooser();
@@ -712,16 +749,7 @@ final class ProjectLifecycleController {
                         postFx(() -> {
                             progress.removeOperation(restoreOp);
                             restoreProgress.close();
-                            boolean loaded = loadProjectFromPath(destination);
-                            if (loaded) {
-                                String message = "Restored archive: " + projectName
-                                        + (missingCount == 0 ? ""
-                                        : " (" + missingCount + " missing assets)");
-                                notificationBar.show(
-                                        missingCount == 0 ? NotificationLevel.SUCCESS
-                                                : NotificationLevel.WARNING,
-                                        message);
-                            }
+                            openRestoredArchive(destination, projectName, missingCount);
                         });
                         LOG.info(() -> "Restored archive " + archivePath
                                 + " into " + destination);
@@ -738,10 +766,46 @@ final class ProjectLifecycleController {
     }
 
     /**
+     * The FX half of {@link #onRestoreFromArchive()}, once the archive has
+     * been extracted into {@code destination}: loads the restored project
+     * and, only if that load succeeded, shows the success notification.
+     * While a recording is in flight or a take is being written the load is
+     * refused (story 323 review) and the one WARNING names
+     * {@code destination}, since the archive is already there.
+     * Package-private so a test can drive it without the choosers. FX
+     * thread.
+     */
+    void openRestoredArchive(Path destination, String projectName, int missingCount) {
+        if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten("The archive was restored to " + destination)) {
+            return;
+        }
+        if (loadProjectFromPath(destination)) {
+            String message = "Restored archive: " + projectName
+                    + (missingCount == 0 ? "" : " (" + missingCount + " missing assets)");
+            notificationBar.show(
+                    missingCount == 0 ? NotificationLevel.SUCCESS : NotificationLevel.WARNING,
+                    message);
+        }
+    }
+
+    /**
      * Walks the project for asset references whose path no longer points
      * at a regular file on disk. Mirrors the iteration order of
-     * {@link ProjectArchiver} so the user sees the same set the archiver
-     * will end up skipping.
+     * {@link ProjectArchiver} so the user sees the set the archiver will end
+     * up skipping, except a blank clip reference, which the archiver writes
+     * into the archive as it is and this list leaves out (see below): a clip
+     * that carries a segment list (a recorded take, story 323) is checked
+     * segment by segment, each missing segment reported once and the head
+     * not a second time; a single-file clip is checked by its source file
+     * path.
+     *
+     * <p>A clip reference that is not an absolute path on this platform names
+     * no file ({@link ProjectPaths#isAbsoluteReference}, story 323): it is
+     * listed as missing without touching the filesystem, and never looked up
+     * against the JVM's working directory. A {@code null} or blank clip
+     * reference is skipped, because the dialog turns every listed path into
+     * an {@code ArchiveAssetDecision}, which refuses a blank path. A
+     * SoundFont path is checked as it is.</p>
      *
      * <p>Package-private for unit tests.</p>
      */
@@ -749,8 +813,17 @@ final class ProjectLifecycleController {
         List<String> missing = new ArrayList<>();
         for (Track track : project.getTracks()) {
             for (AudioClip clip : track.getClips()) {
+                List<String> segments = clip.getSourceSegmentPaths();
+                if (!segments.isEmpty()) {
+                    for (String segment : segments) {
+                        if (!segment.isBlank() && !namesRegularFile(segment)) {
+                            missing.add(segment);
+                        }
+                    }
+                    continue;
+                }
                 String p = clip.getSourceFilePath();
-                if (p != null && !p.isBlank() && !isRegularFile(p)) {
+                if (p != null && !p.isBlank() && !namesRegularFile(p)) {
                     missing.add(p);
                 }
             }
@@ -778,12 +851,14 @@ final class ProjectLifecycleController {
         }
     }
 
-    private static boolean isRegularFile(String path) {
-        try {
-            return Files.isRegularFile(Paths.get(path));
-        } catch (RuntimeException ignored) {
-            return false;
-        }
+    /**
+     * Whether a clip reference names a regular file. A reference that is not
+     * an absolute path on this platform names no file (story 323) and is
+     * answered without touching the filesystem.
+     */
+    private static boolean namesRegularFile(String clipReference) {
+        return ProjectPaths.isAbsoluteReference(clipReference)
+                && Files.isRegularFile(Path.of(clipReference));
     }
 
     private static String safeFileName(String name) {
@@ -803,6 +878,38 @@ final class ProjectLifecycleController {
     }
 
     // ── Supporting methods ───────────────────────────────────────────────────
+
+    /**
+     * The gate the in-app doors that replace the open project pass before
+     * they do anything (replacing the project closes it): New, Open, Import,
+     * Restore from Archive, a Project Hub or Welcome open and (through
+     * {@code SnapshotsController.Deps}) a snapshot restore. Recover and a
+     * migration roll-back, which do not pass it, refuse a recording in
+     * flight and a take being written on their own. Quitting the application
+     * does not pass it either: there is no exit protocol until story 333.
+     *
+     * <p>It first refuses while a recording is in flight or a take is still
+     * being written to disk ({@link #refuseWhileATakeIsRecordingOrBeingWritten()}),
+     * and then asks {@link #confirmDiscardUnsavedChanges()}. The refusal of a
+     * take being written cannot be left to that prompt, which asks only when
+     * the project is dirty and, when it asks, lets the door go ahead once the
+     * user saves or discards: a take still being written is not in the
+     * project yet and has not marked it dirty — {@code TransportController}
+     * marks the project dirty when it publishes the take's clips, which it
+     * does only once the take has been written to disk — and a door that
+     * replaced the project meanwhile would leave the take in no project. FX
+     * thread.</p>
+     *
+     * @return {@code true} if the door may replace the open project,
+     *         {@code false} if a recording is in flight, a take is still being
+     *         written, the user cancelled or saving failed
+     */
+    boolean confirmProjectMayClose() {
+        if (refuseWhileATakeIsRecordingOrBeingWritten()) {
+            return false;
+        }
+        return confirmDiscardUnsavedChanges();
+    }
 
     /**
      * Prompts the user to save unsaved changes before a destructive operation.
@@ -835,13 +942,120 @@ final class ProjectLifecycleController {
     }
 
     /**
-     * Loads a project from the given directory.
+     * Story 323 review (Recording Reliability book §5.2): refuses to replace
+     * the open project while a recording is in flight or a take is still
+     * being written to disk. A recording in flight — an audio take being
+     * prepared (its take directory being allocated or its files being
+     * created) or whose pipeline is active, or a live MIDI recorder —
+     * records into the open project, whose tracks its take is published
+     * into. Every Stop of an audio take leaves the take FINALIZING until the
+     * FX turn posted by its capture thread's termination has published the
+     * take into the project it was recorded in (or reported why it could
+     * not), and a start that was cancelled, or that failed once its take
+     * directory existed, counts as FINALIZING until the FX turn after the
+     * removal of its files has run, whether or not everything could be
+     * removed — the same rule that refuses Record meanwhile. Shows
+     * {@link #PROJECT_CHANGE_WHILE_RECORDING_MESSAGE} or
+     * {@link #PROJECT_CHANGE_WHILE_WRITING_MESSAGE} as a WARNING toast, with
+     * no modal dialog, and logs it. Only the in-app doors that call this are
+     * refused; quitting the application is not (story 333).
+     *
+     * @return {@code true} if a recording is in flight or a take is still
+     *         being written, and the change is refused
+     */
+    private boolean refuseWhileATakeIsRecordingOrBeingWritten() {
+        return refuseWithWarning(PROJECT_CHANGE_WHILE_WRITING_MESSAGE,
+                PROJECT_CHANGE_WHILE_RECORDING_MESSAGE);
+    }
+
+    /**
+     * The refusal of a load that follows work already done off the FX thread
+     * — an archive extracted, recovered changes written, a journal discarded,
+     * a recovery that failed. The same refusal as
+     * {@link #refuseWhileATakeIsRecordingOrBeingWritten()}, but its one
+     * WARNING ({@link #lateLoadRefusalMessage}, or
+     * {@link #lateLoadRefusalWhileRecordingMessage} while a recording is in
+     * flight) says what that work did, since the load it refuses was that
+     * work's outcome. Asked by the caller in the FX turn that would load, so
+     * {@link #loadProjectFromPath} is not reached and does not refuse a
+     * second time.
+     *
+     * @param alreadyDone what the work did, a sentence without its full stop
+     * @return {@code true} if a recording is in flight or a take is still
+     *         being written, and the load is refused
+     */
+    private boolean refuseLateLoadWhileATakeIsRecordingOrBeingWritten(String alreadyDone) {
+        return refuseWithWarning(lateLoadRefusalMessage(alreadyDone),
+                lateLoadRefusalWhileRecordingMessage(alreadyDone));
+    }
+
+    /**
+     * Logs and shows {@code whileWriting} as the WARNING while a take is
+     * still being written, else {@code whileRecording} while a recording is
+     * in flight. The take being written is asked about first, so it is the
+     * one named were both ever true; Record refuses while a take is being
+     * written ({@code TransportController}), so no recording starts then.
+     *
+     * @return {@code true} if the change is refused
+     */
+    private boolean refuseWithWarning(String whileWriting, String whileRecording) {
+        String warning;
+        if (takeBeingWritten.getAsBoolean()) {
+            warning = whileWriting;
+        } else if (recordingInFlight.getAsBoolean()) {
+            warning = whileRecording;
+        } else {
+            return false;
+        }
+        LOG.warning("Project change refused — " + warning);
+        notificationBar.show(NotificationLevel.WARNING, warning);
+        return true;
+    }
+
+    /**
+     * The WARNING of {@link #refuseLateLoadWhileATakeIsRecordingOrBeingWritten}
+     * while a take is being written: what the work already did, that the
+     * project was not opened and why, and that it can be opened once the
+     * take has been written.
+     */
+    static String lateLoadRefusalMessage(String alreadyDone) {
+        return alreadyDone + "; the project was not opened, because the open project can't be replaced"
+                + " until the last take has finished writing to disk — open it once it has,"
+                + " and keep the application open until then";
+    }
+
+    /**
+     * The WARNING of {@link #refuseLateLoadWhileATakeIsRecordingOrBeingWritten}
+     * while a recording is in flight: what the work already did, that the
+     * project was not opened and why, and that it can be opened once the
+     * recording has been stopped.
+     */
+    static String lateLoadRefusalWhileRecordingMessage(String alreadyDone) {
+        return alreadyDone + "; the project was not opened, because the open project can't be replaced"
+                + " while recording — stop the recording, then open it";
+    }
+
+    /**
+     * Loads a project from the given directory. Refused, before the current
+     * project is abandoned, while a recording is in flight or a take is still
+     * being written to disk ({@link #refuseWhileATakeIsRecordingOrBeingWritten()}):
+     * the doors that pass {@link #confirmProjectMayClose()} first have been
+     * refused already, but the recovery flow reaches this after its scan off
+     * the FX thread, and a recording may have started, or a take started
+     * being written, meanwhile. The archive restore, the journal replay and a
+     * journal discard that deleted the journal, whose work off the FX thread
+     * comes before their load, refuse first themselves
+     * ({@link #refuseLateLoadWhileATakeIsRecordingOrBeingWritten}), so the
+     * user is told what that work did.
      *
      * @return {@code true} if the project loaded successfully,
-     *         {@code false} if it failed (error is already surfaced
-     *         in the status bar and notification bar)
+     *         {@code false} if it was refused or failed (the warning or error
+     *         is already surfaced in the notification bar)
      */
     boolean loadProjectFromPath(Path projectDir) {
+        if (refuseWhileATakeIsRecordingOrBeingWritten()) {
+            return false;
+        }
         try {
             resetProjectState();
             projectManager.openProject(projectDir);
@@ -951,6 +1165,13 @@ final class ProjectLifecycleController {
     }
 
     void rollbackMigration(Path projectDir, MigrationReport report, Path selectedBackup) {
+        // Story 323 review: a roll-back reloads or abandons the open project,
+        // so it is refused while a recording is in flight or a take is being
+        // written — before the backup is copied over project.daw, so disk and
+        // memory are left as they are.
+        if (refuseWhileATakeIsRecordingOrBeingWritten()) {
+            return;
+        }
         Path projectFile = projectDir.resolve("project.daw");
         try {
             if (selectedBackup != null && Files.isRegularFile(selectedBackup)) {
@@ -1145,7 +1366,7 @@ final class ProjectLifecycleController {
                 projectManager.getRecentProjectPaths(),
                 new ProjectHealthScanner(d),
                 projectDir -> {
-                    if (projectDir != null && confirmDiscardUnsavedChanges()) {
+                    if (projectDir != null && confirmProjectMayClose()) {
                         dismiss(ref[0]);
                         loadProjectFromPath(projectDir);
                     }
@@ -1220,9 +1441,9 @@ final class ProjectLifecycleController {
         welcomePresenter.accept(buildWelcomeView());
     }
 
-    /** Confirms any unsaved changes, then opens {@code projectDir} (Hub / Welcome action). */
+    /** Opens {@code projectDir} if {@link #confirmProjectMayClose()} lets it (Hub / Welcome action). */
     private void openProjectFromHub(Path projectDir) {
-        if (projectDir != null && confirmDiscardUnsavedChanges()) {
+        if (projectDir != null && confirmProjectMayClose()) {
             loadProjectFromPath(projectDir);
         }
     }
@@ -1250,6 +1471,13 @@ final class ProjectLifecycleController {
      */
     void beginRecovery(Path projectDir) {
         if (projectDir == null) {
+            return;
+        }
+        // Story 323 review: recovery opens a project, so it is refused while
+        // a recording is in flight or a take is being written, before the
+        // scan; its later loads are refused again if a recording has started,
+        // or a take has started being written, meanwhile.
+        if (refuseWhileATakeIsRecordingOrBeingWritten()) {
             return;
         }
         ProjectContext ctx = ProjectContext.forProject(projectDir);
@@ -1309,8 +1537,15 @@ final class ProjectLifecycleController {
     private void discardJournalThenLoad(Path projectDir) {
         Path journalDir = ProjectContext.forProject(projectDir).journalDirectory();
         Thread.ofVirtual().name("daw-recovery-checkpoint-only").start(() -> {
-            deleteJournalDirectory(journalDir);
-            postFx(() -> loadProjectFromPath(projectDir));
+            boolean discarded = deleteJournalDirectory(journalDir);
+            postFx(() -> {
+                // Story 323 review: a refusal says the journal is already gone.
+                if (discarded && refuseLateLoadWhileATakeIsRecordingOrBeingWritten(
+                        "The journal of " + projectDir + " was discarded")) {
+                    return;
+                }
+                loadProjectFromPath(projectDir);
+            });
         });
     }
 
@@ -1336,30 +1571,62 @@ final class ProjectLifecycleController {
                 // fresh journal opens when loadProjectFromPath reopens below.
                 deleteJournalDirectory(ctx.journalDirectory());
                 int applied = result.appliedRecordCount();
-                postFx(() -> {
-                    if (loadProjectFromPath(projectDir)) {
-                        notificationBar.show(NotificationLevel.SUCCESS,
-                                "Recovered " + applied + " change"
-                                        + (applied == 1 ? "" : "s") + " from the journal");
-                    }
-                });
+                postFx(() -> openRecoveredProject(projectDir, ctx.projectFile(), applied));
             } catch (JournalRecoveryException e) {
                 LOG.log(Level.WARNING, "Journal recovery rolled back for " + projectDir, e);
-                postFx(() -> {
-                    notificationBar.show(NotificationLevel.ERROR,
-                            "Recovery failed (" + e.getMessage()
-                                    + "); opened the last clean save instead");
-                    loadProjectFromPath(projectDir);
-                });
+                postFx(() -> openLastCleanSaveAfterFailedReplay(projectDir, e.getMessage()));
             } catch (IOException e) {
                 LOG.log(Level.WARNING, "Failed to persist recovered project for " + projectDir, e);
                 postFx(() -> {
-                    notificationBar.show(NotificationLevel.ERROR,
-                            "Could not write recovered project: " + e.getMessage());
+                    String failed = "Could not write recovered project: " + e.getMessage();
+                    if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(failed)) {
+                        return;
+                    }
+                    notificationBar.show(NotificationLevel.ERROR, failed);
                     loadProjectFromPath(projectDir);
                 });
             }
         });
+    }
+
+    /**
+     * The FX half of a journal replay whose recovered changes have been
+     * written to {@code projectFile}: loads the project and, only if that
+     * load succeeded, shows the success notification. While a recording is
+     * in flight or a take is being written the load is refused (story 323
+     * review) and the one WARNING says that the changes are already in
+     * {@code projectFile}. Package-private so a test can drive it without a
+     * journal. FX thread.
+     */
+    void openRecoveredProject(Path projectDir, Path projectFile, int applied) {
+        if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(applied + " recovered change"
+                + (applied == 1 ? " was" : "s were") + " written to " + projectFile)) {
+            return;
+        }
+        if (loadProjectFromPath(projectDir)) {
+            notificationBar.show(NotificationLevel.SUCCESS,
+                    "Recovered " + applied + " change" + (applied == 1 ? "" : "s") + " from the journal");
+        }
+    }
+
+    /**
+     * The FX half of a journal replay that failed and was rolled back: opens
+     * the last clean save, then says the recovery failed and what the load
+     * did — said after the load, so it never claims an open that did not
+     * happen. While a recording is in flight or a take is being written the
+     * load is refused (story 323 review) and the one WARNING carries the
+     * failure instead. Package-private so a test can drive it without a
+     * journal. FX thread.
+     */
+    void openLastCleanSaveAfterFailedReplay(Path projectDir, String failure) {
+        String failed = "Recovery failed (" + failure + ")";
+        if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(failed)) {
+            return;
+        }
+        boolean opened = loadProjectFromPath(projectDir);
+        notificationBar.show(NotificationLevel.ERROR, failed + (opened
+                ? "; opened the last clean save instead"
+                : "; the last clean save could not be opened either"));
     }
 
     /**
@@ -1662,6 +1929,44 @@ final class ProjectLifecycleController {
      */
     void setJournalOpenHook(Consumer<Path> hook) {
         this.journalOpenHook = hook;
+    }
+
+    /**
+     * Story 323 review — sets the check that tells this controller whether a
+     * take is still being written to disk; while it answers {@code true},
+     * every in-app door that replaces the open project refuses — New, Open,
+     * Import, Restore from Archive, a Project Hub or Welcome open and a
+     * snapshot restore through {@link #confirmProjectMayClose()}, Recover and
+     * a migration roll-back at their start, and the loads the recovery and
+     * archive-restore flows make later (see
+     * {@link #refuseWhileATakeIsRecordingOrBeingWritten()}). Quitting the
+     * application is not refused: there is no exit protocol until story 333.
+     * {@code MainController} supplies the current transport controller's
+     * answer; the default never refuses.
+     *
+     * @param check whether a take is still being written; must not be {@code null}
+     */
+    void setTakeBeingWrittenCheck(BooleanSupplier check) {
+        this.takeBeingWritten = Objects.requireNonNull(check, "check must not be null");
+    }
+
+    /**
+     * Story 323 review — sets the check that tells this controller whether a
+     * recording is in flight; while it answers {@code true}, the doors
+     * {@link #setTakeBeingWrittenCheck} lists refuse at the same points, with
+     * {@link #PROJECT_CHANGE_WHILE_RECORDING_MESSAGE} — or, for the load that
+     * follows an archive extraction, a journal replay (successful or not) or
+     * a journal discard that deleted the journal, with
+     * {@link #lateLoadRefusalWhileRecordingMessage} — unless the
+     * take-being-written check answers {@code true} as well, whose refusal is
+     * shown instead. Quitting the application is not refused: there is no
+     * exit protocol until story 333. {@code MainController} supplies the
+     * current transport controller's answer; the default never refuses.
+     *
+     * @param check whether a recording is in flight; must not be {@code null}
+     */
+    void setRecordingInFlightCheck(BooleanSupplier check) {
+        this.recordingInFlight = Objects.requireNonNull(check, "check must not be null");
     }
 
     /** Invokes the journal-open hook when one is installed (story 298). */

@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.concurrent.DawScope;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -72,10 +73,20 @@ import java.util.zip.ZipOutputStream;
  *       to a relocatable form.</li>
  * </ul>
  *
- * <p>Asset collection walks every {@link AudioClip#getSourceFilePath()} and
- * every {@link Track#getSoundFontAssignment()} on the project. Assets are
- * deduplicated by SHA-256, so the same recording referenced from many clips
- * is stored only once.</p>
+ * <p>Asset collection walks every clip and every
+ * {@link Track#getSoundFontAssignment()} on the project. A single-file clip
+ * contributes its {@link AudioClip#getSourceFilePath()}; a clip that carries a
+ * segment list (a recorded take) contributes every element of
+ * {@link AudioClip#getSourceSegmentPaths()}, in order, so each segment of a
+ * rotated take is archived and the restored clip references all of them.
+ * Assets are deduplicated by SHA-256, so the same recording referenced from
+ * many clips is stored only once. A clip reference that is not an absolute
+ * path on this platform names no file ({@link ProjectPaths#isAbsoluteReference},
+ * story 323): {@link #saveAsArchive} gives it the missing-asset treatment,
+ * {@link #previewAssetSizes} leaves it out and {@link #consolidateInPlace}
+ * leaves it as it is — none of them resolves it against the JVM's working
+ * directory. A SoundFont path is still resolved against the working
+ * directory when it is relative.</p>
  *
  * <p>This class is thread-safe in the sense that distinct {@code ProjectArchiver}
  * instances may be used concurrently; a single instance should not be shared
@@ -91,10 +102,13 @@ public final class ProjectArchiver {
 
     private static final String DEFAULT_DAW_VERSION = "0.1.0-SNAPSHOT";
     private static final int COPY_BUFFER_SIZE = 64 * 1024;
+    private static final int NO_REWRITE_FAULT = 0;
 
     private final ProjectSerializer serializer;
     private final ProjectDeserializer deserializer;
     private final String dawVersion;
+    /** Test seam ({@link #failRewriteAfter(int)}); consumed by the next rewrite that reaches it. */
+    private int failRewriteAfter = NO_REWRITE_FAULT;
 
     public ProjectArchiver() {
         this(new ProjectSerializer(), new ProjectDeserializer(), resolveDawVersion());
@@ -132,7 +146,8 @@ public final class ProjectArchiver {
      * archive at {@code archiveFile} using the supplied options.
      *
      * <p>The in-memory {@code project} is not mutated: original asset paths
-     * are restored before this method returns, even on failure.</p>
+     * are restored before this method returns, even on failure — including a
+     * failure part-way through the rewrite to archive-relative paths.</p>
      *
      * @throws IOException              if the archive cannot be written
      * @throws IllegalArgumentException if {@code archiveFile} does not end in
@@ -170,11 +185,16 @@ public final class ProjectArchiver {
         // 1. Collect all unique assets, keyed by content hash.
         AssetPlan plan = collectAssets(project, options, decisionsByPath(missingAssetDecisions));
 
-        // 2. Rewrite the project's asset paths to archive-relative form, save
-        //    originals so we can restore them after writing.
-        Map<AssetRef, String> originals = applyArchivePaths(project, plan);
+        // 2. Rewrite the project's asset paths to archive-relative form, saving
+        //    each original before its reference is touched. The rewrite runs
+        //    inside the try so that a rewrite that throws part-way through is
+        //    undone by the finally as well: the in-memory project is never
+        //    left half-rewritten to archive-relative references.
+        Map<AssetRef, String> originals = new LinkedHashMap<>();
 
         try {
+            applyArchivePaths(plan, originals);
+
             // 3. Serialize project document with rewritten paths.
             String xml = serializer.serialize(project);
             byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
@@ -336,7 +356,8 @@ public final class ProjectArchiver {
      *
      * <p>Assets already located beneath {@code projectDir} are left in place.
      * Assets are deduplicated by SHA-256 so the same recording referenced
-     * many times costs one copy on disk.</p>
+     * many times costs one copy on disk. A clip reference that is not an
+     * absolute path names no file and is left as it is.</p>
      */
     public ProjectArchiveSummary consolidateInPlace(DawProject project,
                                                      Path projectDir,
@@ -388,13 +409,40 @@ public final class ProjectArchiver {
     // Internal helpers
     // ──────────────────────────────────────────────────────────────────────
 
-    /** Walks every clip and SoundFont assignment, building a list of mutable refs. */
+    /**
+     * Walks every clip and SoundFont assignment, building a list of mutable refs.
+     *
+     * <p>A clip that carries a segment list (a recorded take, story 323 — even
+     * a short take carries a one-element list) contributes one
+     * {@link AudioClipSegmentRef} per segment and <em>no</em>
+     * {@link AudioClipRef}: the list is the authority and
+     * {@link AudioClip#getSourceFilePath()} is only its first element, so a
+     * head-only ref would both miss segments 1…n and be refused by
+     * {@link AudioClip#setSourceFilePath(String)}. A single-file clip keeps
+     * its {@link AudioClipRef}.</p>
+     *
+     * <p>Only a {@code null} or empty clip reference is skipped, the same
+     * test {@code AudioClip.setSourceSegmentPaths} and the project reader
+     * apply. A whitespace-only one gets a ref like any other; it names no
+     * file, and no {@link ArchiveAssetDecision} can name it (its constructor
+     * refuses a blank path), so it gets no payload and is written into the
+     * archive as it is.</p>
+     */
     private List<AssetRef> collectRefs(DawProject project, ArchiveOptions options) {
         List<AssetRef> refs = new ArrayList<>();
         for (Track track : project.getTracks()) {
             for (AudioClip clip : track.getClips()) {
+                List<String> segments = clip.getSourceSegmentPaths();
+                if (!segments.isEmpty()) {
+                    for (int index = 0; index < segments.size(); index++) {
+                        if (!segments.get(index).isEmpty()) {
+                            refs.add(new AudioClipSegmentRef(clip, index));
+                        }
+                    }
+                    continue;
+                }
                 String p = clip.getSourceFilePath();
-                if (p != null && !p.isBlank()) {
+                if (p != null && !p.isEmpty()) {
                     refs.add(new AudioClipRef(clip));
                 }
             }
@@ -480,14 +528,44 @@ public final class ProjectArchiver {
         refToArchivePath.put(ref, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
     }
 
-    private Map<AssetRef, String> applyArchivePaths(DawProject project, AssetPlan plan) {
-        Map<AssetRef, String> originals = new LinkedHashMap<>();
+    /**
+     * Rewrites every planned reference to its archive-relative path, recording
+     * each original in {@code originals} <em>before</em> the reference is
+     * touched — so whatever this method managed to rewrite before a throw is
+     * exactly what {@link #restorePaths} puts back.
+     */
+    private void applyArchivePaths(AssetPlan plan, Map<AssetRef, String> originals) {
+        int rewritten = 0;
         for (Map.Entry<AssetRef, String> e : plan.refToArchivePath().entrySet()) {
             AssetRef ref = e.getKey();
             originals.put(ref, ref.currentPath());
             ref.update(e.getValue());
+            rewritten++;
+            if (rewritten == failRewriteAfter) {
+                failRewriteAfter = NO_REWRITE_FAULT;
+                throw new IllegalStateException("injected archive rewrite failure (test seam) after "
+                        + rewritten + " reference(s); the last one was re-pointed to " + e.getValue());
+            }
         }
-        return originals;
+    }
+
+    /**
+     * Fault seam (test-only): the next {@link #saveAsArchive} throws an
+     * {@link IllegalStateException} from its rewrite to archive-relative
+     * paths, right after the {@code refs}-th reference was re-pointed — the
+     * part-way failure no production reference produces. The message names
+     * the path that reference was re-pointed to. Consumed by the rewrite
+     * that throws; a rewrite of fewer than {@code refs} references leaves it
+     * armed. Same thread as the archive operation.
+     *
+     * @param refs how many references are rewritten before the throw; positive
+     * @throws IllegalArgumentException if {@code refs} is not positive
+     */
+    void failRewriteAfter(int refs) {
+        if (refs <= 0) {
+            throw new IllegalArgumentException("refs must be positive: " + refs);
+        }
+        this.failRewriteAfter = refs;
     }
 
     private void restorePaths(DawProject project, Map<AssetRef, String> originals) {
@@ -840,11 +918,51 @@ public final class ProjectArchiver {
         }
     }
 
+    /**
+     * The file a clip reference names (story 323), and what
+     * {@link AudioClipRef} and {@link AudioClipSegmentRef} return from
+     * {@code absolutePath()}: the reference as a path when it is absolute on
+     * this platform, and {@code null} for every other one — relative, drive-
+     * or root-relative, unparseable, {@code null} or empty — which names no
+     * file ({@link ProjectPaths#isAbsoluteReference}) and is never resolved
+     * against the JVM's working directory. {@link SoundFontRef} keeps the
+     * {@code AssetRef} default, which resolves a relative path against the
+     * working directory.
+     */
+    private static Path clipReferenceFile(String reference) {
+        return ProjectPaths.isAbsoluteReference(reference) ? Path.of(reference) : null;
+    }
+
+    /** The single source file of a clip that carries no segment list. */
     private static final class AudioClipRef implements AssetRef {
         private final AudioClip clip;
         AudioClipRef(AudioClip clip) { this.clip = clip; }
         @Override public String currentPath() { return clip.getSourceFilePath(); }
         @Override public void update(String newPath) { clip.setSourceFilePath(newPath); }
+        @Override public Path absolutePath() { return clipReferenceFile(currentPath()); }
+    }
+
+    /**
+     * One element of a recorded clip's ordered segment list (story 323).
+     * {@link #update} rebuilds the list with only this element replaced, so
+     * the order and the other segments are untouched; replacing element 0
+     * moves {@link AudioClip#getSourceFilePath()} with it, because
+     * {@link AudioClip#setSourceSegmentPaths(List)} derives the head.
+     */
+    private static final class AudioClipSegmentRef implements AssetRef {
+        private final AudioClip clip;
+        private final int index;
+        AudioClipSegmentRef(AudioClip clip, int index) {
+            this.clip = clip;
+            this.index = index;
+        }
+        @Override public String currentPath() { return clip.getSourceSegmentPaths().get(index); }
+        @Override public void update(String newPath) {
+            List<String> segments = new ArrayList<>(clip.getSourceSegmentPaths());
+            segments.set(index, newPath);
+            clip.setSourceSegmentPaths(segments);
+        }
+        @Override public Path absolutePath() { return clipReferenceFile(currentPath()); }
     }
 
     private static final class SoundFontRef implements AssetRef {
@@ -926,8 +1044,9 @@ public final class ProjectArchiver {
     // Exposed for tests — listing assets without committing the archive.
     /**
      * Returns, for the given project, the unique content hashes of every
-     * referenced asset that currently resolves on disk. Useful for UI that
-     * wants to estimate output size without writing.
+     * referenced asset that currently resolves on disk — a clip reference
+     * that is not an absolute path never does. Useful for UI that wants to
+     * estimate output size without writing.
      */
     public Map<String, Long> previewAssetSizes(DawProject project, ArchiveOptions options)
             throws IOException {

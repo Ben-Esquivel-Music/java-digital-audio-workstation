@@ -64,21 +64,25 @@ final class SnapshotsController {
      * Design Book §4.2/§9 "use publish/subscribe, not a callback-up {@code Host}
      * for cross-surface updates") with a record of direct functional deps. The
      * swappable owner stage / current project are {@link Supplier}s read live;
-     * the discard prompt is a {@link BooleanSupplier} (delegated to
-     * {@code ProjectLifecycleController.confirmDiscardUnsavedChanges()}); the
-     * restore cascade is a {@link BiConsumer} that swaps the project, resets the
-     * undo manager, and rebuilds the UI exactly as for an open-from-disk.
+     * the gate a restore passes before it replaces the open project is a
+     * {@link BooleanSupplier} (delegated to
+     * {@code ProjectLifecycleController.confirmProjectMayClose()}, which
+     * refuses while a recording is in flight or a take is being written and
+     * otherwise asks about unsaved changes); the restore cascade is a
+     * {@link BiConsumer} that swaps the
+     * project, resets the undo manager, and rebuilds the UI exactly as for an
+     * open-from-disk.
      */
     record Deps(
             Supplier<Stage> ownerStage,
             Supplier<DawProject> currentProject,
-            BooleanSupplier confirmDiscardUnsavedChanges,
+            BooleanSupplier confirmProjectMayClose,
             BiConsumer<DawProject, String> applyRestoredProject) {
         Deps {
             Objects.requireNonNull(ownerStage, "ownerStage must not be null");
             Objects.requireNonNull(currentProject, "currentProject must not be null");
-            Objects.requireNonNull(confirmDiscardUnsavedChanges,
-                    "confirmDiscardUnsavedChanges must not be null");
+            Objects.requireNonNull(confirmProjectMayClose,
+                    "confirmProjectMayClose must not be null");
             Objects.requireNonNull(applyRestoredProject, "applyRestoredProject must not be null");
         }
     }
@@ -288,7 +292,7 @@ final class SnapshotsController {
         if (entry == null) {
             return;
         }
-        if (!deps.confirmDiscardUnsavedChanges().getAsBoolean()) {
+        if (!deps.confirmProjectMayClose().getAsBoolean()) {
             return;
         }
         try {
@@ -322,10 +326,27 @@ final class SnapshotsController {
      * deserialising the snapshot's stored XML. Visible for tests so the
      * "restore equals direct load" guarantee can be verified without
      * driving the JavaFX dialog.
+     *
+     * <p>A snapshot is a checkpoint of the current project, so its
+     * project-relative clip references (story 323) resolve against the
+     * current project's directory; with no open project directory (unit
+     * tests, an unsaved project) references are kept verbatim.</p>
+     *
+     * <p>When the project directory is known it is also stamped on the
+     * loaded project's metadata, mirroring {@code ProjectManager.openProject}.
+     * A restored snapshot replaces the live project, and a project without a
+     * directory cannot record (the take has no home) and serializes its
+     * clip references absolute in every later checkpoint.</p>
      */
     DawProject loadFromEntry(SnapshotEntry entry) throws IOException {
         Objects.requireNonNull(entry, "entry must not be null");
-        return deserializer.deserialize(entry.loadContent());
+        ProjectMetadata current = projectManager.getCurrentProject();
+        Path projectDirectory = current != null ? current.projectPath() : null;
+        DawProject project = deserializer.deserialize(entry.loadContent(), projectDirectory);
+        if (projectDirectory != null) {
+            project.setMetadata(project.getMetadata().withPath(projectDirectory));
+        }
+        return project;
     }
 
     private void showDiffDialog(SnapshotEntry entry, SnapshotDiff diff) {

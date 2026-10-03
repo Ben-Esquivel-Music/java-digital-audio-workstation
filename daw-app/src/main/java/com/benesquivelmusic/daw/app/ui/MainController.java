@@ -1032,7 +1032,7 @@ public final class MainController {
                                 ? (Stage) rootPane.getScene().getWindow() : null,
                         () -> project,
                         () -> projectLifecycleController == null
-                                || projectLifecycleController.confirmDiscardUnsavedChanges(),
+                                || projectLifecycleController.confirmProjectMayClose(),
                         this::applySnapshotRestoredProject),
                 dispatcher());
         toolbarStateStore = new ToolbarStateStore(prefs);
@@ -1519,6 +1519,9 @@ public final class MainController {
         // Story 315 — the time-ticker runnables are gone (the time display is
         // bound to the beats→time projection by the binder) and the Stop/Loop
         // buttons are binder-owned, so the controller no longer receives them.
+        // Story 323 review — the controller being replaced belongs to the
+        // project being replaced; it is retired below.
+        TransportController previous = transportController;
         transportController = new TransportController(
                 project, audioEngine, undoManager, notificationBar,
                 statusLabel, statusBarLabel, recIndicator,
@@ -1538,6 +1541,34 @@ public final class MainController {
                 sessionInputSelection,
                 this::onOpenAudioSettings,
                 dispatcher());
+        // A take the previous controller is still writing must not be
+        // published into the replaced project when it finishes
+        // (TransportController#retire).
+        if (previous != null) {
+            previous.retire();
+        }
+    }
+
+    /**
+     * Story 323 review — whether the CURRENT transport controller still has a
+     * take being written to disk; read by {@link ProjectLifecycleController}
+     * at every in-app door that replaces the open project, which it refuses
+     * while this is {@code true} (Recording Reliability book §5.2). Quitting
+     * the application does not ask (story 333). FX thread.
+     */
+    private boolean isTakeBeingWritten() {
+        return transportController != null && transportController.isTakeBeingWritten();
+    }
+
+    /**
+     * Story 323 review — whether the CURRENT transport controller has a
+     * recording in flight; read by {@link ProjectLifecycleController} at the
+     * same doors as {@link #isTakeBeingWritten()}, which it refuses while
+     * this is {@code true} (Recording Reliability book §5.2). Quitting the
+     * application does not ask (story 333). FX thread.
+     */
+    private boolean isRecordingInFlight() {
+        return transportController != null && transportController.isRecordingInFlight();
     }
 
     /**
@@ -1656,6 +1687,12 @@ public final class MainController {
                         json -> { if (layoutManager != null) { layoutManager.fromJson(json); } }),
                 new ProjectArchiver(),
                 dispatcher());
+        // Story 323 review — no in-app door replaces the open project while a
+        // recording is in flight or a take is still being written to disk.
+        // Method references, so every check reads the transport controller
+        // that is current at that moment.
+        projectLifecycleController.setTakeBeingWrittenCheck(this::isTakeBeingWritten);
+        projectLifecycleController.setRecordingInFlightCheck(this::isRecordingInFlight);
         // Story 298 — the journal-open hook: on every open / new, atomically
         // close the prior project's journal (sealing its segments into the
         // outgoing session) then open the new one — all off the FX thread on a

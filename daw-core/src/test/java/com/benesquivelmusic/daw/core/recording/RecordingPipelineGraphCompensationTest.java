@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -24,8 +25,11 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class RecordingPipelineGraphCompensationTest {
     @TempDir Path directory;
 
@@ -65,7 +69,7 @@ class RecordingPipelineGraphCompensationTest {
         recording.setReportedLatency(new RoundTripLatency(inputLatency, outputLatency, 0));
         recording.setApplyLatencyCompensation(compensate);
         recording.setLoopRecord(mode.equals("loop"));
-        recording.start();
+        startRecording(recording);
         long expectedPhysical = compensate ? inputLatency + outputLatency : 0;
         try {
             assertThat(recording.getSession(instrument).getCompensationFrames()).isZero();
@@ -73,9 +77,10 @@ class RecordingPipelineGraphCompensationTest {
             float[][] input = new float[2][64];
             for (float[] samples : input) Arrays.fill(samples, 0.5f);
             for (int block = 0; block < 6; block++) engine.processBlock(input, new float[2][64], 64);
+            recording.awaitFlushed();
             assertThat(recording.getSession(instrument).getCompensationFrames()).isZero();
             if (mixed) assertThat(recording.getSession(physical).getCompensationFrames()).isEqualTo(expectedPhysical);
-            recording.stop();
+            stopRecording(recording);
 
             assertThat(instrument.getClips()).hasSize(1);
             assertThat(instrument.getClips().getFirst().getStartBeat()).isEqualTo(4);
@@ -93,7 +98,7 @@ class RecordingPipelineGraphCompensationTest {
                                 .isEqualTo(4 - expectedPhysical / 24_000.0));
             }
         } finally {
-            if (recording.isActive()) recording.stop();
+            if (recording.isActive()) stopRecording(recording);
             engine.stop();
             mixer.getDelayCompensation().close();
         }

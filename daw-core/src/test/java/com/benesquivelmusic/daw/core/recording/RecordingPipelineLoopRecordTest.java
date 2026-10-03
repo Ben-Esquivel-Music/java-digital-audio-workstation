@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -15,6 +16,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -23,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with contiguous sample counts across laps and sample-accurate loop
  * boundaries.
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class RecordingPipelineLoopRecordTest {
 
     @TempDir
@@ -58,10 +62,16 @@ class RecordingPipelineLoopRecordTest {
         transport.setLoopEnabled(true);
     }
 
-    private void processOneBlock() {
+    /**
+     * Feeds one block and waits for the flush thread to apply it (story
+     * 323): capture is asynchronous, and the wrap detection, lane seals and
+     * sample counts these tests assert are all flush-thread facts.
+     */
+    private void processOneBlock(RecordingPipeline pipeline) {
         float[][] input = new float[2][BUFFER_SIZE];
         float[][] output = new float[2][BUFFER_SIZE];
         audioEngine.processBlock(input, output, BUFFER_SIZE);
+        pipeline.awaitFlushed();
         advanceTransportByBufferSize();
     }
 
@@ -81,19 +91,19 @@ class RecordingPipelineLoopRecordTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setLoopRecord(true);
-        pipeline.start();
+        startRecording(pipeline);
 
         // Drive exactly 10 complete loop laps. Each lap is `blocksPerLoop`
         // buffer-sized blocks, so 10 laps need 40 blocks total. We also
         // drive one extra block to ensure the wrap from lap 10 is detected.
         int laps = 10;
         for (int i = 0; i < laps * blocksPerLoop; i++) {
-            processOneBlock();
+            processOneBlock(pipeline);
         }
         // One more block to trigger the wrap detection for lap 10.
-        processOneBlock();
+        processOneBlock(pipeline);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         Map<Track, TakeGroup> groups = pipeline.getTakeGroups();
         assertThat(groups).containsKey(track);
@@ -101,7 +111,7 @@ class RecordingPipelineLoopRecordTest {
 
         // Expect at least ten takes (one per complete lap). The last lap is
         // finalized either by the wrap-detection on the 41st block or by
-        // stop() — we tolerate one extra short take from the trailing frames.
+        // the stop — we tolerate one extra short take from the trailing frames.
         assertThat(group.size()).isGreaterThanOrEqualTo(10);
 
         // Every take references a distinct AudioClip.
@@ -128,16 +138,16 @@ class RecordingPipelineLoopRecordTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setLoopRecord(true);
-        pipeline.start();
+        startRecording(pipeline);
 
         // Drive three full loops.
         for (int i = 0; i < 3 * blocksPerLoop; i++) {
-            processOneBlock();
+            processOneBlock(pipeline);
         }
         // Trigger wrap detection for the 3rd lap.
-        processOneBlock();
+        processOneBlock(pipeline);
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
         TakeGroup group = pipeline.getTakeGroups().get(track);
         assertThat(group).isNotNull();
@@ -170,7 +180,7 @@ class RecordingPipelineLoopRecordTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setLoopRecord(true);
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] output = new float[2][BUFFER_SIZE];
         int totalBlocks = blocksPerLoop * 3 + 1; // 3 full laps + 1 trigger block
@@ -183,10 +193,11 @@ class RecordingPipelineLoopRecordTest {
                 input[1][f] = v;
             }
             audioEngine.processBlock(input, output, BUFFER_SIZE);
+            pipeline.awaitFlushed();
             advanceTransportByBufferSize();
         }
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
         TakeGroup group = pipeline.getTakeGroups().get(track);
         assertThat(group).isNotNull();
@@ -218,13 +229,13 @@ class RecordingPipelineLoopRecordTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         // Deliberately leave loopRecord = false.
-        pipeline.start();
+        startRecording(pipeline);
 
         for (int i = 0; i < 5; i++) {
-            processOneBlock();
+            processOneBlock(pipeline);
         }
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         // No take group should be created when loopRecord is off, even
         // though the transport is looping.

@@ -70,8 +70,11 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiConsumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Deserializes a {@link DawProject} from XML produced by {@link ProjectSerializer}.
@@ -82,12 +85,22 @@ import java.util.function.BiConsumer;
  */
 public final class ProjectDeserializer {
 
+    private static final Logger LOG = Logger.getLogger(ProjectDeserializer.class.getName());
+
     /** Maximum valid azimuth value — just below 360° (exclusive upper bound). */
     private static final double MAX_AZIMUTH_EXCLUSIVE = Math.nextDown(360.0);
 
     private final List<String> missingFiles = new ArrayList<>();
     private final MigrationRegistry migrationRegistry;
     private MigrationReport lastMigrationReport = MigrationReport.noOp(MigrationRegistry.CURRENT_VERSION);
+
+    /**
+     * The directory project-relative clip references resolve against for
+     * the call in progress ({@link #deserialize(String, Path)}); {@code null}
+     * keeps every reference verbatim. Per-call state, like
+     * {@link #missingFiles}: one deserialization at a time per instance.
+     */
+    private Path projectDirectory;
 
     /**
      * Creates a deserializer backed by the production
@@ -123,10 +136,21 @@ public final class ProjectDeserializer {
      * Returns a list of audio file paths referenced by the project that were
      * not found on the file system at the time of deserialization.
      *
-     * <p>This list is populated during {@link #deserialize(String)} and can
-     * be used by the UI layer to present a "missing files" notification with
-     * relinking options. The list is cleared at the start of each
-     * deserialization call.</p>
+     * <p>This list is populated during {@link #deserialize(String, Path)} and
+     * can be used by the UI layer to present a "missing files" notification
+     * with relinking options; no production code reads it yet (story 329
+     * turns it into the missing-assets report). Entries are the references as
+     * held in memory: a clip reference the project directory resolved
+     * appears as its absolute resolved path, every other reference as
+     * written. A clip reference that is
+     * {@linkplain ProjectPaths#unresolvable unresolvable} against the project
+     * directory — it escapes the directory or is the directory itself, it is
+     * not a valid path on this platform, or it is drive- or root-relative on
+     * this platform — is listed whether or not a file exists anywhere it
+     * could name, because the deserializer does not resolve it (see
+     * {@link #deserialize(String, Path)}). A recorded take's segments are
+     * listed one per missing segment file, the head segment once. The list
+     * is cleared at the start of each deserialization call.</p>
      *
      * @return an unmodifiable view of missing file paths
      */
@@ -135,14 +159,82 @@ public final class ProjectDeserializer {
     }
 
     /**
-     * Deserializes a project from an XML string.
+     * Deserializes a project from an XML string with no project directory:
+     * every persisted reference is kept verbatim — a project-relative
+     * reference stays relative in memory and its existence is checked
+     * against the JVM's working directory, while the code that opens clip
+     * references treats a relative one as naming no file
+     * ({@link ProjectPaths#isAbsoluteReference}). Prefer
+     * {@link #deserialize(String, Path)} whenever the project directory is
+     * known.
      *
      * @param xml the XML content produced by {@link ProjectSerializer}
      * @return the reconstructed project
      * @throws IOException if the XML cannot be parsed
      */
     public DawProject deserialize(String xml) throws IOException {
+        return deserialize(xml, null);
+    }
+
+    /**
+     * Deserializes a project from an XML string, resolving project-relative
+     * clip references against {@code projectDirectory} (story 323; Recording
+     * Reliability book §3.3, Persistence Integrity book §3.3).
+     *
+     * <p>A clip's {@code source-file} attribute and its
+     * {@code <source-segment>} children go through the {@link ProjectPaths}
+     * rule shared with the serializer, judged with the {@code Path} semantics
+     * of the platform reading the file (the platform facts are listed on
+     * {@link ProjectPaths}). A reference with no root component whose
+     * normalised target lies strictly under {@code projectDirectory} becomes
+     * that absolute in-memory path, and an absolute reference — a legacy
+     * file's absolute path, or an asset outside the project — is kept
+     * verbatim. Every other non-empty reference is
+     * {@linkplain ProjectPaths#unresolvable unresolvable}: it escapes the
+     * directory ({@code ../outside.wav}) or is the directory itself
+     * ({@code .}), it is not a valid path on this platform, or it is drive-
+     * or root-relative on this platform (on Windows {@code C:x.wav},
+     * {@code \x.wav}, {@code /x.wav}). The deserializer does not resolve such
+     * a reference: it is kept as written, so the next save writes it back
+     * unchanged and a segment list keeps its count, order and head; it is
+     * logged once at WARNING naming the clip and the reason; and it is
+     * reported in {@link #getMissingFiles()} whether or not a file exists
+     * anywhere it could name. With a directory, every clip reference is
+     * therefore absolute or unresolvable after this call, and the code that
+     * opens clip references — {@code ProjectArchiver}, the Archive Project
+     * pre-flight in {@code ProjectLifecycleController} and
+     * {@code ClipProcessingService} — treats an unresolvable one as naming
+     * no file ({@link ProjectPaths#isAbsoluteReference}). A usable reference is
+     * reported missing only when no file exists at its in-memory path. A
+     * clip with segments is checked through its segments only: the head IS
+     * the first segment ({@code AudioClip.setSourceSegmentPaths} makes it
+     * so), and the clip's {@code source-file} attribute is neither resolved
+     * nor checked, warned about or reported. A {@code null} directory gives
+     * the {@link #deserialize(String)} semantics: nothing is
+     * unresolvable.</p>
+     *
+     * <p>The WARNING goes only to {@code java.util.logging}'s default console
+     * handler (standard error); the application installs no handler of its
+     * own until story 336. So in the packaged app the visible trace of an
+     * unresolvable reference is the Archive Project pre-flight, which lists
+     * it as missing unless it is blank. {@link #getMissingFiles()} has no
+     * production reader until story 329.</p>
+     *
+     * <p>Called on whichever thread opens the project (the caller of
+     * {@code ProjectManager.openProject}, a recovery subtask of
+     * {@code JournalReplayer}, the FX thread in
+     * {@code SnapshotsController.loadFromEntry}); one call at a time per
+     * instance.</p>
+     *
+     * @param xml              the XML content produced by {@link ProjectSerializer}
+     * @param projectDirectory the directory project-relative references
+     *                         resolve against, or {@code null}
+     * @return the reconstructed project
+     * @throws IOException if the XML cannot be parsed
+     */
+    public DawProject deserialize(String xml, Path projectDirectory) throws IOException {
         missingFiles.clear();
+        this.projectDirectory = projectDirectory;
         lastMigrationReport = MigrationReport.noOp(migrationRegistry.currentVersion());
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -532,18 +624,21 @@ public final class ProjectDeserializer {
         if (sourceFile.isEmpty()) {
             sourceFile = null;
         }
+        // Resolves and checks each segment once, in order.
+        List<String> segmentPaths = parseSourceSegments(elem);
 
-        if (sourceFile != null) {
-            try {
-                if (!Files.exists(Path.of(sourceFile))) {
-                    missingFiles.add(sourceFile);
-                }
-            } catch (java.nio.file.InvalidPathException ignored) {
-                missingFiles.add(sourceFile);
-            }
+        // The segment list is the authority (AudioClip head invariant): each
+        // segment was checked once, and setSourceSegmentPaths below makes the
+        // first segment the head, so a clip with segments never has its
+        // source-file resolved, checked, warned about or reported.
+        if (segmentPaths.isEmpty() && sourceFile != null) {
+            sourceFile = resolveAndCheck(elem, "source-file", sourceFile);
         }
 
         AudioClip clip = new AudioClip(name, startBeat, durationBeats, sourceFile);
+        if (!segmentPaths.isEmpty()) {
+            clip.setSourceSegmentPaths(segmentPaths);
+        }
         clip.setSourceOffsetBeats(parseDoubleAttr(elem, "source-offset", 0.0));
         clip.setGainDb(parseDoubleAttr(elem, "gain-db", 0.0));
         clip.setReversed(parseBooleanAttr(elem, "reversed"));
@@ -574,6 +669,88 @@ public final class ProjectDeserializer {
         }
 
         return clip;
+    }
+
+    /**
+     * Reads a recorded take's ordered {@code <source-segment path="…"/>}
+     * children (story 323), each resolved and checked once, in order, by
+     * {@link #resolveAndCheck}; empty for a single-file clip and for files
+     * written before story 323. A child whose path is unresolvable against
+     * the project directory stays in its place, as written, so the list
+     * keeps its count, order and head. A child whose {@code path} is empty
+     * or missing is skipped with a WARNING that names the clip — the one
+     * element the list cannot carry ({@code AudioClip.setSourceSegmentPaths}
+     * refuses it).
+     */
+    private List<String> parseSourceSegments(Element clipElem) {
+        List<Element> segmentElements = getDirectChildElements(clipElem, "source-segment");
+        if (segmentElements.isEmpty()) {
+            return List.of();
+        }
+        List<String> paths = new ArrayList<>(segmentElements.size());
+        int position = 0;
+        for (Element segmentElem : segmentElements) {
+            String path = segmentElem.getAttribute("path");
+            if (!path.isEmpty()) {
+                paths.add(resolveAndCheck(clipElem,
+                        "<source-segment> " + position + " of " + segmentElements.size(), path));
+            } else {
+                // A segment that cannot be named cannot be loaded; say so
+                // rather than shorten the take's segment order in silence.
+                LOG.log(Level.WARNING, "Clip '" + clipElem.getAttribute("name")
+                        + "': <source-segment> " + position + " of " + segmentElements.size()
+                        + " has no path; the segment is skipped");
+            }
+            position++;
+        }
+        return paths;
+    }
+
+    /**
+     * Resolves one clip reference through {@link ProjectPaths} and checks it
+     * for {@link #missingFiles}. A reference that is
+     * {@linkplain ProjectPaths#unresolvable unresolvable} against the project
+     * directory — it escapes the directory or is the directory itself, it is
+     * not a valid path on this platform, or it is drive- or root-relative on
+     * this platform — is not resolved: it is kept as written, logged once at
+     * WARNING naming the clip and the reason, and added to
+     * {@link #missingFiles} unconditionally, never through
+     * {@link #noteIfMissing}, whose existence check would judge a relative,
+     * drive-relative or root-relative string from the JVM's working
+     * directory or the current drive. Any other reference goes through
+     * {@link ProjectPaths#resolve} and is added only when the result names no
+     * existing file; with a directory that result is an absolute path.
+     *
+     * @param clipElem  the {@code <clip>} element the warning names
+     * @param what      which reference of the clip this is, for the warning
+     * @param reference the persisted reference; not empty
+     * @return the in-memory form
+     */
+    private String resolveAndCheck(Element clipElem, String what, String reference) {
+        Optional<ProjectPaths.Unresolvable> unresolvable =
+                ProjectPaths.unresolvable(projectDirectory, reference);
+        if (unresolvable.isPresent()) {
+            LOG.log(Level.WARNING, "Clip '" + clipElem.getAttribute("name") + "': " + what + " '"
+                    + reference + "' " + unresolvable.get().reason() + " (project directory "
+                    + projectDirectory + "); it is not resolved, is kept as written and is"
+                    + " reported missing");
+            missingFiles.add(reference);
+            return reference;
+        }
+        String resolved = ProjectPaths.resolve(projectDirectory, reference);
+        noteIfMissing(resolved);
+        return resolved;
+    }
+
+    /** Adds {@code reference} to {@link #missingFiles} unless it names an existing file. */
+    private void noteIfMissing(String reference) {
+        try {
+            if (!Files.exists(Path.of(reference))) {
+                missingFiles.add(reference);
+            }
+        } catch (java.nio.file.InvalidPathException ignored) {
+            missingFiles.add(reference);
+        }
     }
 
     private ClipGainEnvelope parseGainEnvelope(Element envElem) {
