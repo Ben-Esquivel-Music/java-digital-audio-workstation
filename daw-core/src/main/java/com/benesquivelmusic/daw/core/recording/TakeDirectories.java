@@ -28,9 +28,9 @@ import java.util.regex.Pattern;
  * (a concurrent allocation, or a name the scan did not see) simply bumps the
  * ordinal instead of co-occupying an existing take.</p>
  *
- * <p>Thread: any non-real-time thread; in the app the FX thread calls
- * {@link #allocate(Path, Instant)} once per record gesture before the engine
- * is touched. The OS temp directory is never used (book §9.4).</p>
+ * <p>Thread: any non-real-time thread; in the app the storage executor calls
+ * {@link #allocate(Path, Instant)} once per record gesture while the take is
+ * being prepared. The OS temp directory is never used (book §9.4).</p>
  */
 public final class TakeDirectories {
 
