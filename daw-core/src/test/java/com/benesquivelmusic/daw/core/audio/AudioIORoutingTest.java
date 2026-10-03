@@ -9,6 +9,8 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
+import org.junit.jupiter.api.extension.ExtendWith;
+import com.benesquivelmusic.daw.core.recording.CaptureFlushThreadLeakGuard;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,6 +18,8 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -30,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>InputRouting and OutputRouting record behavior</li>
  * </ol>
  */
+@ExtendWith(CaptureFlushThreadLeakGuard.class)
 class AudioIORoutingTest {
 
     // ── InputRouting record ────────────────────────────────────────────────
@@ -263,64 +268,73 @@ class AudioIORoutingTest {
         AudioFormat format = new AudioFormat(44100.0, 4, 16, 512);
         AudioEngine engine = new AudioEngine(format);
         engine.start();
-        Transport transport = new Transport();
+        try {
+            Transport transport = new Transport();
 
-        // Track 1: records from input channels 1-2 (indices 0-1)
-        Track track1 = new Track("Vocals", TrackType.AUDIO);
-        track1.setArmed(true);
-        track1.setInputRouting(new InputRouting(0, 2));
+            // Track 1: records from input channels 1-2 (indices 0-1)
+            Track track1 = new Track("Vocals", TrackType.AUDIO);
+            track1.setArmed(true);
+            track1.setInputRouting(new InputRouting(0, 2));
 
-        // Track 2: records from input channels 3-4 (indices 2-3)
-        Track track2 = new Track("Guitar", TrackType.AUDIO);
-        track2.setArmed(true);
-        track2.setInputRouting(new InputRouting(2, 2));
+            // Track 2: records from input channels 3-4 (indices 2-3)
+            Track track2 = new Track("Guitar", TrackType.AUDIO);
+            track2.setArmed(true);
+            track2.setInputRouting(new InputRouting(2, 2));
 
-        RecordingPipeline pipeline = new RecordingPipeline(
-                engine, transport, format, tempDir, List.of(track1, track2));
-        pipeline.start();
+            RecordingPipeline pipeline = new RecordingPipeline(
+                    engine, transport, format, tempDir, List.of(track1, track2));
+            startRecording(pipeline);
 
-        // Simulate audio input with 4 channels of distinct data
-        float[][] inputBuffer = new float[4][512];
-        Arrays.fill(inputBuffer[0], 0.1f); // ch 1
-        Arrays.fill(inputBuffer[1], 0.2f); // ch 2
-        Arrays.fill(inputBuffer[2], 0.3f); // ch 3
-        Arrays.fill(inputBuffer[3], 0.4f); // ch 4
+            // Simulate audio input with 4 channels of distinct data
+            float[][] inputBuffer = new float[4][512];
+            Arrays.fill(inputBuffer[0], 0.1f); // ch 1
+            Arrays.fill(inputBuffer[1], 0.2f); // ch 2
+            Arrays.fill(inputBuffer[2], 0.3f); // ch 3
+            Arrays.fill(inputBuffer[3], 0.4f); // ch 4
 
-        // Invoke the recording callback directly via processBlock
-        float[][] outputBuffer = new float[4][512];
-        engine.processBlock(inputBuffer, outputBuffer, 512);
+            // Invoke the recording callback directly via processBlock
+            float[][] outputBuffer = new float[4][512];
+            engine.processBlock(inputBuffer, outputBuffer, 512);
 
-        // Get sessions to verify what was captured
-        RecordingSession session1 = pipeline.getSession(track1);
-        RecordingSession session2 = pipeline.getSession(track2);
+            // Capture is applied on the capture-flush thread (story 323): fence
+            // on it before reading session state.
+            pipeline.awaitFlushed();
 
-        assertThat(session1).isNotNull();
-        assertThat(session2).isNotNull();
+            // Get sessions to verify what was captured
+            RecordingSession session1 = pipeline.getSession(track1);
+            RecordingSession session2 = pipeline.getSession(track2);
 
-        // Verify track1 captured 2 channels from input 1-2
-        assertThat(session1.getTotalSamplesRecorded()).isEqualTo(512);
+            assertThat(session1).isNotNull();
+            assertThat(session2).isNotNull();
 
-        // Verify track2 captured 2 channels from input 3-4
-        assertThat(session2.getTotalSamplesRecorded()).isEqualTo(512);
+            // Verify track1 captured 2 channels from input 1-2
+            assertThat(session1.getTotalSamplesRecorded()).isEqualTo(512);
 
-        // Stop and verify clips were created
-        List<AudioClip> clips = pipeline.stop();
-        assertThat(clips).hasSize(2);
+            // Verify track2 captured 2 channels from input 3-4
+            assertThat(session2.getTotalSamplesRecorded()).isEqualTo(512);
 
-        // Verify the captured audio data has correct channel data
-        float[][] captured1 = clips.get(0).getAudioData();
-        float[][] captured2 = clips.get(1).getAudioData();
+            // Stop and verify clips were created
+            List<AudioClip> clips = stopRecording(pipeline);
+            assertThat(clips).hasSize(2);
 
-        if (captured1 != null && captured1.length >= 2) {
-            // Track 1 should have channels 0-1 (values ~0.1, ~0.2)
-            assertThat(captured1[0][0]).isCloseTo(0.1f, org.assertj.core.data.Offset.offset(0.01f));
-            assertThat(captured1[1][0]).isCloseTo(0.2f, org.assertj.core.data.Offset.offset(0.01f));
-        }
+            // Verify the captured audio data has correct channel data
+            float[][] captured1 = clips.get(0).getAudioData();
+            float[][] captured2 = clips.get(1).getAudioData();
 
-        if (captured2 != null && captured2.length >= 2) {
-            // Track 2 should have channels 2-3 (values ~0.3, ~0.4)
-            assertThat(captured2[0][0]).isCloseTo(0.3f, org.assertj.core.data.Offset.offset(0.01f));
-            assertThat(captured2[1][0]).isCloseTo(0.4f, org.assertj.core.data.Offset.offset(0.01f));
+            if (captured1 != null && captured1.length >= 2) {
+                // Track 1 should have channels 0-1 (values ~0.1, ~0.2)
+                assertThat(captured1[0][0]).isCloseTo(0.1f, org.assertj.core.data.Offset.offset(0.01f));
+                assertThat(captured1[1][0]).isCloseTo(0.2f, org.assertj.core.data.Offset.offset(0.01f));
+            }
+
+            if (captured2 != null && captured2.length >= 2) {
+                // Track 2 should have channels 2-3 (values ~0.3, ~0.4)
+                assertThat(captured2[0][0]).isCloseTo(0.3f, org.assertj.core.data.Offset.offset(0.01f));
+                assertThat(captured2[1][0]).isCloseTo(0.4f, org.assertj.core.data.Offset.offset(0.01f));
+            }
+        } finally {
+            // The pipeline itself is ended by CaptureFlushThreadLeakGuard on every path.
+            engine.stop();
         }
     }
 }

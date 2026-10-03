@@ -14,6 +14,12 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -725,5 +731,54 @@ class ProjectDeserializerTest {
         DawProject restored = deserializer.deserialize(xml);
 
         assertThat(restored.getTracks().get(0).getMidiInputDeviceName()).isNull();
+    }
+
+    @Test
+    void shouldWarnNamingTheClipWhenASourceSegmentHasAnEmptyPath() throws IOException {
+        DawProject original = new DawProject("Takes", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Vocal");
+        AudioClip clip = new AudioClip("Verse take 3", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(List.of("/takes/segment-000.wav", "/takes/segment-001.wav",
+                "/takes/segment-002.wav"));
+        track.addClip(clip);
+        String xml = serializer.serialize(original);
+        String damaged = xml.replace("<source-segment path=\"/takes/segment-001.wav\"/>",
+                "<source-segment path=\"\"/>");
+        assertThat(damaged).as("fixture: the middle segment lost its path").isNotEqualTo(xml);
+
+        Logger logger = Logger.getLogger(ProjectDeserializer.class.getName());
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        logger.addHandler(handler);
+        try {
+            // Non-vacuity: the intact file loads all three segments silently.
+            AudioClip intact = deserializer.deserialize(xml).getTracks().getFirst().getClips().getFirst();
+            assertThat(intact.getSourceSegmentPaths()).hasSize(3);
+            assertThat(records).isEmpty();
+
+            AudioClip restored = deserializer.deserialize(damaged).getTracks().getFirst().getClips().getFirst();
+
+            assertThat(restored.getSourceSegmentPaths())
+                    .containsExactly("/takes/segment-000.wav", "/takes/segment-002.wav");
+            assertThat(records).singleElement().satisfies(record -> {
+                assertThat(record.getLevel()).isEqualTo(Level.WARNING);
+                assertThat(record.getMessage()).contains("Verse take 3").contains("source-segment");
+            });
+        } finally {
+            logger.removeHandler(handler);
+        }
     }
 }

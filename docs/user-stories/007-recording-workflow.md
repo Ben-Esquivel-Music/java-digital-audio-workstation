@@ -9,6 +9,8 @@ labels: ["enhancement", "recording", "audio-engine", "ui"]
 
 While `RecordingPipeline`, `RecordingSession`, and `RecordingSegment` classes exist in the core module, the end-to-end recording workflow visible to the user is incomplete. The "Select Audio Input" dialog (shown in the screenshots) presents an empty list because device enumeration may not be fully wired. Users need a seamless workflow: arm a track, select an input, optionally enable count-in, press record, monitor their input in real-time, and have the recorded audio appear as a clip on the track. The current UI shows armed-track indicators but the actual recording pipeline does not create audio clips on the timeline.
 
+**Status (2026-09-28):** the write-to-disk goal — *"Write recorded audio to a WAV file in the project's recording directory"* — is delivered by story 323 (`323-recorded-audio-reaches-disk.md`): a take streams as sealed WAV segments under `<project>/audio/takes/<take>/<trackId>/`; see that story's Resolution.
+
 ## Goals
 
 - Wire the `InputPortSelectionDialog` to enumerate available audio input devices from the active backend

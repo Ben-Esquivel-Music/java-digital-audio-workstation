@@ -466,6 +466,23 @@ holds (§2.4); FINALIZING and DEVICE_LOST both run the *same* seal step (§2.9).
 current state is the single source for the REC indicator, transport-button enablement, the
 status strip cell, and the `EngineState` bridge (§6.5).
 
+As landed (story 323, Copilot review round 5), until story 325's `RecordCoordinator`,
+`TransportController` passes through a PREPARING state between Record pressed and RECORDING
+that the diagram does not draw. Record pressed opens the device on the FX thread; the take
+directory is then allocated off the FX thread, `RecordingPipeline.prepare()` allocates the ring
+and starts the flush thread, whose first act creates the take's files (§5.1), and only once that
+thread reports the take ready does a later FX turn begin capture — callback installed, engine
+started, transport recording — and enter RECORDING. Stop, Record pressed again or the end of a
+post-roll (the deferred half of a Stop, which acts only while its controller is not retired and
+its transport is still in that post-roll, §5.2) during PREPARING cancels the take (the flush
+thread, if it was started, deletes the segment and manifest files it created, unless it had
+already ended on its own, sealing the take early; the take directory, if that left it empty, is
+removed off the FX thread); a failed preparation rolls back the same way and is reported; and the in-app
+doors that replace the open project are refused throughout (§5.2). Of the failed starts, only a
+failed allocation or pipeline build closes the output stream Record opened, and not over a
+rolling transport or while an instrument insert keeps it open; after a failed `prepare()`,
+readiness or `beginCapture()` it stays open until story 325's rollback (§5.2).
+
 ### 3.3 On-disk layout and naming
 
 ```
@@ -578,7 +595,10 @@ the *oldest unwritten block*, increments an atomic overflow counter, and the flu
 records a gap marker in the manifest (audible dropout, but bounded loss and an honest record).
 The counter surfaces through the RT-safe error channel (`FAILURE_SURFACING_DESIGN_BOOK.md`,
 story 337) and the xrun counter (story 338). Rejected: blocking the callback until space frees —
-never; and silently overwriting — a lie in the take.
+never; and silently overwriting — a lie in the take. Stage 1 as landed (story 323) drops the
+*incoming* block instead — see `CaptureRing`'s Javadoc: overwriting the oldest slot is not
+single-producer-safe while the consumer may be copying out of it — and records the drop as a
+`gap=` line in the manifest.
 
 ### 4.3 The flush thread
 
@@ -590,14 +610,32 @@ track's `SegmentWriter`, update the decimated peak mirror, and run the rotation 
 wall-clock reads are fine here). Cadence contracts:
 
 - **Force-to-storage every 5 seconds per active segment** (configurable). With the ring bound,
-  this fixes the §2.1 risk window: crash loss ≤ ring depth + 5 s per track. Rejected: force per
+  this fixes the §2.1 risk window: crash loss ≤ ring depth + 5 s per track, plus the wait for the
+  flush thread's next cadence check. As landed (story 323), that thread checks after every block
+  it applies and at the end of every drain pass — including the pass after each backstop park
+  while the ring is dry — so bytes are forced on cadence even when nothing more is appended to
+  their segment. Rejected: force per
   block (storage-bound, kills long sessions on spinning disks); no force (an OS crash loses
   everything the page cache held — violates §2.1).
 - **Disk-headroom watch**: before each append, a cached free-space figure (refreshed on a slow
   tick) is checked; crossing the low-water mark raises a warning through the notification seam,
   and exhaustion seals the take cleanly (ABORTED with everything captured so far intact) instead
-  of throwing out of a write loop.
-- The flush thread never touches JavaFX; its facts ride `FxDispatcher` channels (§6.1).
+  of throwing out of a write loop. As landed (story 323 review), an early seal — exhaustion, a
+  write failure, a throwable that ends the drain loop — completes the take's
+  `RecordingPipeline.earlySeal()` signal on the flush thread once every lane's seal and the final
+  manifest write have been attempted, and the flush thread does nothing more about it; the app's
+  dependent only posts to the FX thread through `FxDispatcher`, where the ordinary Stop runs
+  unless a Stop got there first, and one ERROR names the cause (story 325's `RecordCoordinator`
+  is to absorb this as a RECORDING → ABORTED transition, a row that story adds to §5.2).
+- The flush thread never touches FX-thread state; its continuous facts are to ride
+  `FxDispatcher` channels (§6.1). As landed (story 323), the three one-shot signals the app
+  listens to — the take's readiness (Copilot review round 5), the early seal, and the end of the
+  thread after every Stop and after a cancelled or failed start — are `CompletionStage`s whose
+  app dependents only post to the FX thread through `FxDispatcher`, on `capture-flush` when the
+  signal completes there (the dependent on the end of a cancelled or failed start's thread first
+  hands the removal of its take directory, if empty, to a storage executor, never the FX thread): an
+  interim departure from §6.1's `EventBus` rule for discrete facts until story 325's
+  `RecordCoordinator`.
 
 ### 4.4 The segment writer and atomic finalize
 
@@ -667,6 +705,24 @@ callback; "FLUSH" = flush thread only; "FX" = FX thread only.
 | Record state transitions; notifications; dialogs     | FX      | `RecordCoordinator` owns the machine |
 | Buffer sizing inputs                                 | engine live format + delivered frame count | §2.7; never `project.getFormat()`, never a captured constant |
 
+Stage 1 as landed (story 323) meets the FLUSH row on file operations since that story's Copilot
+review round 5: the flush thread's first act creates the take's files — each armed track's
+`segment-000.wav.part` and the first `take.manifest` — before it reports the take ready, and it
+deletes them again when the start fails or is cancelled — unless it had already ended on its own
+and sealed the take early, which it then leaves (§5.2) — so a start is all-or-nothing, but for
+that sealed take, with no file work on the caller thread (FX in the app), and no caller-thread
+step of a start or a stop waits for the flush thread (the app allocates the take directory, and
+removes it after a failed or cancelled start if it is empty, on a storage executor, never on the
+FX thread). It departs from the
+take/clip construction row in one place, by design: the normal-path clip is built on the caller
+thread, in `RecordingPipeline.completeStop()`, once the flush thread has terminated — in the app
+on a later FX turn that the thread's termination posts, never behind a join — so that `Track`s
+are mutated by one thread. Every other file operation — appends, forces, rotation opens and
+seals, manifest rewrites — and the loop-lap takes stay on the flush thread. The ring is still
+sized from the format the pipeline is constructed with (the project's format in the app); a
+longer delivered block is truncated, counted and recorded (`truncated-frames`), and story 324
+owns format truth.
+
 ### 5.2 Record state transitions
 
 Every arrow of §3.2. "Rollback" always means: stop anything started, in reverse start order,
@@ -682,8 +738,47 @@ then surface the cause via the notification seam (§6.3).
 | Device lost (event or watchdog) | RECORDING   | —                                                                 | DEVICE_LOST | — (runs §5.5) |
 | Device returned                 | DEVICE_LOST | same device per identity match; reopen succeeds                   | IDLE (armed kept) | stays DEVICE_LOST, notification repeats remediation |
 | Settings apply requested        | RECORDING   | **blocked**: prompt "Stop the take and apply?"; apply proceeds only after FINALIZING completes | — | — (chosen over silent-defer: a deferred apply that fires later surprises; over allow: §1.3's gutted-take bug) |
+| Project replace requested       | RECORDING, FINALIZING | **blocked** (story 323): every in-app door that replaces the open project (New, Open, Import, Restore from Archive, Hub/Welcome open, snapshot restore, Recover, migration roll-back) is refused with a WARNING toast and no prompt until FINALIZING completes; in RECORDING (story 323 review) the same doors are refused the same way while `TransportController.isRecordingInFlight()` — an audio take being prepared (as landed, below the table), an active audio pipeline or a live MIDI recorder — with the WARNING `PROJECT_CHANGE_WHILE_RECORDING_MESSAGE` ("The open project can't be replaced while recording — stop the recording first"; the load that follows an archive extraction, a journal replay — successful or not — or a journal discard that deleted the journal uses `lateLoadRefusalWhileRecordingMessage`, which also says what that work did) | — | — (the take is published into the project it was recorded in; app exit is not a guarded door — story 333's close guard owns it) |
 | Input-open failure mid-arm      | any pre-RECORDING | —                                                           | ABORTED→IDLE | covered by Record guard row |
 | MIDI device missing / open fail | arm-time    | per-track: skip track with visible warning; if *no* track opens, treat as Record guard failure | — | — |
+
+As landed (story 323, Copilot review round 5), until story 325's `RecordCoordinator`: the Record
+pressed row's "ring allocated; flush thread running" guard is a readiness gate in
+`TransportController`. Record opens the device on the FX thread, then enters PREPARING (status
+"Preparing the take…", REC indicator off): the take directory is allocated on a storage
+executor, the FX turn the allocation posts calls `RecordingPipeline.prepare()` — ring
+allocated, flush thread started — and that thread creates the take's files (§5.1) and then reports the take ready; only
+the FX turn that report posts calls `beginCapture()` (callback installed, engine started,
+`Transport.record()`) and enters RECORDING. Record pressed again, Stop, or the end of a post-roll
+(the deferred half of a Stop, which then stops the transport and calls
+`stopAudioOutputWhenIdle()`, as it does with no take being prepared) during PREPARING cancels
+the take (toggle semantics; status "Recording cancelled — no take was started" — except that a
+Stop over a PLAYING transport with a post-roll configured goes on into the post-roll, whose
+"Post-roll: …" text replaces it, and the end of that post-roll shows "Stopped"; nothing is
+announced for the take). The end of a post-roll acts only while its controller is not retired
+and its transport is still in the post-roll a Stop entered (`Transport.isInPostRoll()`, which
+Shift+Space or Pause then Play clears, and a Pause or a Record inside the tail does not): a
+timer whose tail ended another way, or whose controller was retired, cancels nothing and stops
+nothing when it fires, and `retire()` stops and drops it. On a cancel the flush thread deletes
+the segment and manifest files it created, and each track directory it created, if that leaves
+it empty — unless it had already ended on its own before the cancel (a throwable that escaped
+its drain loop sealed the take early), when it deletes nothing — and the take directory, if
+that left it empty, is removed on the storage executor once that thread has terminated, while
+one still holding files is left in place (a take cancelled while its directory is still being
+allocated has that directory removed once the allocation returns). A failed allocation,
+pipeline build, preparation, readiness or `beginCapture()` is the guard failure — an ERROR
+toast, the take's files and directory removed the same way, and a transport that was STOPPED
+left STOPPED. Of the failed starts, only a failed allocation or pipeline build closes the
+output stream Record opened, through `stopAudioOutputWhenIdle()`, and not over a rolling
+transport or while an instrument insert keeps it open; after a failed preparation, readiness or
+`beginCapture()` it stays open, and an engine `beginCapture()` started stays running
+(story 325's rollback owns closing the one and stopping the other). A cancelled start, or one
+that failed once its take directory existed, counts as FINALIZING (`isTakeBeingWritten()`)
+until the removal of its files has run, whether or not everything could be removed, so Record
+and the project-replace doors are refused meanwhile; in PREPARING the doors are refused too
+(`isRecordingInFlight()`), Record cancels (above), and Play does nothing. Stop pressed in
+RECORDING requests the seal without waiting for it, and the take is published on the FX turn
+its flush thread's termination posts — the "Seal + manifest complete" row, FINALIZING → IDLE.
 
 MIDI recorders follow the same machine: stop always drains `activeMidiRecorders` and closes
 devices; a second Record press can never re-put a recorder over a live one (§1.3). Timestamp
@@ -697,7 +792,7 @@ played instead of collapsing to column 0 (§1.8).
 |------|-----------|
 | Creation | A segment file exists on disk before the first frame routed to it is considered captured; `startNewSegment` without a file (§1.1) is forbidden |
 | Self-description | A STREAMING segment is recoverable from its bytes alone: fixed data offset, sample count = (length − offset) ÷ frame size (§3.4) |
-| Bounded risk | Un-forced data ≤ force cadence (5 s default); ring ≤ its allocated depth; both documented in the manifest |
+| Bounded risk | Un-forced data ≤ force cadence (5 s default) plus the wait for the flush thread's next cadence check (§4.3); ring ≤ its allocated depth; both documented in the manifest |
 | Seal atomicity | Patch-then-rename; a reader never observes a `.wav` with provisional sizes |
 | Exactness | Sealed metadata carries exact sample counts — never wall-clock estimates (§1.1) |
 | Rotation | Existing 30 min / 500 MB caps retained; rotation is a flush-thread act (§5.1) |
@@ -761,14 +856,20 @@ flush-side decisions are sample-accurate.
 | Thread            | Owns (writes)                                     | Never does |
 |-------------------|---------------------------------------------------|------------|
 | device callback   | ring slots + headers; health atomics              | anything else in §5.1's "never RT" rows |
-| `capture-flush`   | segment files, manifests, mirror, take model, ring read index | JavaFX access; blocking on FX; unbounded park |
+| `capture-flush`   | segment files, manifests, mirror, take model, ring read index | touching FX-thread state; any JavaFX call but the `FxDispatcher` post below; blocking on FX; unbounded park |
 | FX thread         | record state machine; arm/routing edits; notifications | file I/O; ring access |
 | device-event thread (Book 4 watcher / backend) | publishes device + health events | mutating capture state directly — events route through `RecordCoordinator` on FX |
 
 All cross-thread facts ride the two existing seams: `FxDispatcher` continuous channels for
 continuous values (elapsed, mirror, disk headroom) and the typed `EventBus` for discrete facts
 (take finalized, device lost, rescue registered), per `CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md
-§3.4` — no new bus, no ad-hoc `Platform.runLater`.
+§3.4` — no new bus, no ad-hoc `Platform.runLater`. As landed (story 323), until story 325's
+`RecordCoordinator`, three discrete facts are not `EventBus` events: the take's readiness, the
+early seal and the end of the flush thread (after every Stop, and after a cancelled or failed
+start) are `CompletionStage`s whose app dependents post to the FX thread through `FxDispatcher` —
+an unconditional `Platform.runLater`, made on `capture-flush` when the signal completes there —
+the one on the end of a cancelled or failed start's thread after handing the removal of its
+take directory, if empty, to a storage executor (§4.3).
 
 ### 6.2 Observer rules on the capture path
 
@@ -868,6 +969,8 @@ asserts the seal rename is atomic (no observable provisional-header `.wav`).
 
 **Unblocks.** Story 329 (audio reload) has real files to reload; Stage 5's rescue = this
 stage's seal; the §1.1 "auto-save active" status line stops being a lie.
+
+**Landed 2026-09-28** — see the story's Resolution (`docs/user-stories/323-recorded-audio-reaches-disk.md`).
 
 ### Stage 2 — RT-Safe Capture Path (story 324)
 
@@ -1047,7 +1150,7 @@ Where each construct of this book attaches to today's tree.
 | Reference | Relevance |
 |-----------|-----------|
 | SKILL `dawg-annotations-reflection` | `@RealTimeSafe` (`daw-sdk/.../annotation/RealTimeSafe.java`) contract + the annotation-driven sentinel scanning idiom (§2.2, §5.1) |
-| SKILL `research-daw` §3 (real-time audio) | lock-free hand-off, dedicated I/O threads, never block the callback (§2.2, §4.2-4.3) |
+| SKILL `research-daw` §3 (real-time audio) | its primary source, `docs/research/open-source-daw-tools.md` §3: a lock-free audio thread — "no allocations or locks on the audio thread" — and "Ring buffers: For communication between audio thread and UI thread" (§2.2, §4.2); the dedicated drain thread is this book's own design (§2.3, §4.3), on the `AsioBufferSwitchShim` + `AudioBlockRing` pattern below |
 | SKILL `javafx-application-design` §11 | FX thread is sacred; capture facts marshal through one seam (§6.1) |
 | Repository pattern: `AsioBufferSwitchShim` + `AudioBlockRing` (stories 311-312) | the house ring + drain-thread discipline this book generalises (§1.9, §4.2-4.3); also the `SubmissionPublisher`-off-RT rule (§6.2) |
 | Repository pattern: `RealTimeSafeContractTest` | bytecode-level proof mechanism for §5.1 (Stage 2 proof) |

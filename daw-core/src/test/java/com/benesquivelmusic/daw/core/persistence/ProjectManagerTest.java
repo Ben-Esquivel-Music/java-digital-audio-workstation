@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.recording.SegmentWriter;
+import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.track.Track;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -11,6 +13,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.*;
@@ -46,6 +50,66 @@ class ProjectManagerTest {
         assertThat(metadata.projectPath()).isDirectory();
         assertThat(metadata.projectPath().resolve("audio")).isDirectory();
         assertThat(metadata.projectPath().resolve("project.daw")).exists();
+    }
+
+    @Test
+    void audioDirectoryIsTheProjectsAudioFolderAndCreateProjectCreatesIt() throws IOException {
+        ProjectManager manager = createProjectManager();
+        Path someProject = tempDir.resolve("Some Project");
+
+        assertThat(ProjectManager.audioDirectory(someProject)).isEqualTo(someProject.resolve("audio"));
+        assertThat(ProjectManager.AUDIO_DIR_NAME).isEqualTo("audio");
+        assertThat(ProjectManager.audioDirectory(someProject)).doesNotExist();
+
+        ProjectMetadata metadata = manager.createProject("Some Project", tempDir);
+
+        assertThat(metadata.projectPath()).isEqualTo(someProject);
+        assertThat(ProjectManager.audioDirectory(metadata.projectPath())).isDirectory();
+        manager.abandonProject();
+    }
+
+    @Test
+    void saveWritesARecordedTakeProjectRelativeAndOpenProjectResolvesItAbsoluteAgain()
+            throws IOException {
+        // Story 323: the manager stamps the project directory before every
+        // save (relativising take references) and hands it to the
+        // deserializer on open (resolving them) — the wiring, end to end.
+        ProjectManager manager = createProjectManager();
+        Path projectDir = manager.createProject("Take Project", tempDir).projectPath();
+        DawProject project = new DawProject("Take Project", AudioFormat.CD_QUALITY);
+        Track track = project.createAudioTrack("Vocals");
+        Path takeDir = TakeDirectories.allocate(ProjectManager.audioDirectory(projectDir),
+                Instant.parse("2026-09-28T10:00:00Z"));
+        Path sealed;
+        try (SegmentWriter writer = SegmentWriter.open(
+                takeDir.resolve(track.getId()).resolve("segment-000.wav.part"),
+                44_100.0, 2, 16, Duration.ZERO, System::nanoTime)) {
+            writer.append(new float[2][64], 2, 64);
+            sealed = writer.seal();
+        }
+        AudioClip clip = new AudioClip("Take 1", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(List.of(sealed.toString()));
+        track.addClip(clip);
+
+        manager.saveDawProject(project);
+
+        String relative = "audio/takes/" + takeDir.getFileName() + "/" + track.getId()
+                + "/segment-000.wav";
+        assertThat(Files.readString(projectDir.resolve("project.daw")))
+                .contains("source-file=\"" + relative + "\"")
+                .contains("<source-segment path=\"" + relative + "\"/>")
+                .doesNotContain(projectDir.toString());
+        manager.abandonProject();
+
+        ProjectManager reopened = createProjectManager();
+        reopened.openProject(projectDir);
+        AudioClip loaded = reopened.getCurrentDawProject().getTracks().getFirst().getClips().getFirst();
+        Path head = Path.of(loaded.getSourceFilePath());
+        assertThat(head.isAbsolute()).isTrue();
+        assertThat(head.startsWith(projectDir.toAbsolutePath())).isTrue();
+        assertThat(head).isRegularFile();
+        assertThat(loaded.getSourceSegmentPaths()).containsExactly(head.toString());
+        reopened.abandonProject();
     }
 
     @Test

@@ -56,6 +56,17 @@ class RecordingSegmentTest {
     }
 
     @Test
+    void streamingPathIsTheSealedIdentityPlusPartSuffix() {
+        RecordingSegment segment = RecordingSegment.startNew(3, Path.of("takes", "t", "segment-003.wav"));
+
+        assertThat(segment.streamingPath()).isEqualTo(Path.of("takes", "t", "segment-003.wav.part"));
+        assertThat(segment.streamingPath().getParent()).isEqualTo(segment.filePath().getParent());
+        assertThat(SegmentWriter.sealedPathFor(segment.streamingPath())).isEqualTo(segment.filePath());
+        // Sealing keeps the identity; only the on-disk name changes.
+        assertThat(segment.complete(10, 40).filePath()).isEqualTo(segment.filePath());
+    }
+
+    @Test
     void shouldRejectNegativeSizeBytes() {
         assertThatThrownBy(() -> new RecordingSegment(0, Path.of("/tmp/x.wav"),
                 Instant.now(), null, 0, -1))

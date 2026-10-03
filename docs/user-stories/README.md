@@ -384,6 +384,7 @@ Operationalises [`RECORDING_RELIABILITY_DESIGN_BOOK.md`](../design/RECORDING_REL
 | 326 | [Multi-Channel Input Capture Routing](326-multichannel-input-capture-routing.md) | 🟠 High | Recording |
 | 327 | [Device-Loss Detection and Take Rescue, Live](327-device-loss-detection-and-take-rescue.md) | 🟠 High | Recording |
 | 328 | [Capture Workflows: Count-In, Punch, Loop Takes, Comping](328-capture-workflows-count-in-punch-loop-takes.md) | 🟠 High | Recording |
+| 350 | [Take Directory Ownership for Reused Recording Pipelines](350-take-directory-ownership-for-reused-recording-pipelines.md) | 🟡 Medium | Recording |
 
 ### Persistence Integrity (round-trip fidelity)
 

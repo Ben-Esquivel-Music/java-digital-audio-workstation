@@ -316,6 +316,25 @@ class TakeCompingTest {
     }
 
     @Test
+    void shouldCarryTheTakesSegmentListOntoTheCompClip() {
+        // Story 323: a loop-record lane that rotated references two segments;
+        // the comp clip cut from it must reference both, not only the head.
+        List<String> segments = List.of("/takes/t1/segment-002.wav", "/takes/t1/segment-003.wav");
+        TakeLane lane = new TakeLane("Take 2");
+        AudioClip takeClip = new AudioClip("Recording", 0.0, 16.0, segments.getFirst());
+        takeClip.setSourceSegmentPaths(segments);
+        lane.addClip(takeClip);
+        comping.addTakeLane(lane);
+        comping.addCompRegion(new CompRegion(0, 4.0, 8.0));
+
+        List<AudioClip> compiled = comping.compile();
+
+        assertThat(compiled).hasSize(1);
+        assertThat(compiled.get(0).getSourceSegmentPaths()).containsExactlyElementsOf(segments);
+        assertThat(compiled.get(0).getSourceFilePath()).isEqualTo(segments.getFirst());
+    }
+
+    @Test
     void shouldReturnUnmodifiableCompiledList() {
         TakeLane lane = new TakeLane("Take 1");
         lane.addClip(new AudioClip("Recording", 0.0, 8.0, "/take1.wav"));

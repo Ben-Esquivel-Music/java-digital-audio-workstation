@@ -85,6 +85,11 @@ public final class SessionInterchangeController {
     /**
      * Exports the given project to a DAWproject file.
      *
+     * <p>A session clip names one source file. A recorded take that rotated
+     * spans several segment files (story 323); its clip is exported with the
+     * reference to its first segment, and the result carries one warning per
+     * such clip naming it, so the truncated reference is never silent.</p>
+     *
      * @param project   the project to export
      * @param outputDir the directory to write the exported file
      * @param baseName  the base filename (without extension)
@@ -94,7 +99,33 @@ public final class SessionInterchangeController {
     public SessionExportResult exportSession(DawProject project, Path outputDir, String baseName)
             throws IOException {
         SessionData sessionData = buildSessionData(project);
-        return exporter.exportSession(sessionData, outputDir, baseName);
+        SessionExportResult exported = exporter.exportSession(sessionData, outputDir, baseName);
+        List<String> multiSegmentWarnings = multiSegmentClipWarnings(project);
+        if (multiSegmentWarnings.isEmpty()) {
+            return exported;
+        }
+        List<String> warnings = new ArrayList<>(exported.warnings());
+        warnings.addAll(multiSegmentWarnings);
+        return new SessionExportResult(exported.outputPath(), warnings);
+    }
+
+    /**
+     * One warning per clip whose source is more than one segment file, in
+     * track order then clip order. Package-private for unit tests.
+     */
+    static List<String> multiSegmentClipWarnings(DawProject project) {
+        List<String> warnings = new ArrayList<>();
+        for (Track track : project.getTracks()) {
+            for (AudioClip clip : track.getClips()) {
+                int segments = clip.getSourceSegmentPaths().size();
+                if (segments > 1) {
+                    warnings.add("Clip '" + clip.getName() + "' on track '" + track.getName()
+                            + "' is a recorded take of " + segments
+                            + " segments; only its first segment is referenced in the export");
+                }
+            }
+        }
+        return warnings;
     }
 
     // ── Import ──────────────────────────────────────────────────────────────

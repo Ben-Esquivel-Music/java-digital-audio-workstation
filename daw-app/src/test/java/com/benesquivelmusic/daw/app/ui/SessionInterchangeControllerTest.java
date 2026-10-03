@@ -253,6 +253,38 @@ class SessionInterchangeControllerTest {
         assertThat(summary).contains("Plugin chains skipped");
     }
 
+    // ── Multi-segment recorded takes (story 323) ────────────────────────────
+
+    @Test
+    void exportWarnsByNameAboutAMultiSegmentRecordedTakeAndKeepsTheHeadReference(
+            @TempDir Path tempDir) throws IOException {
+        DawProject project = new DawProject("Rotated", AudioFormat.CD_QUALITY);
+        Track vox = project.createAudioTrack("Vox");
+        AudioClip rotated = new AudioClip("Take 1", 0.0, 8.0, "takes/t1/vox/segment-000.wav");
+        rotated.setSourceSegmentPaths(List.of(
+                "takes/t1/vox/segment-000.wav", "takes/t1/vox/segment-001.wav"));
+        vox.addClip(rotated);
+        AudioClip oneSegment = new AudioClip("Take 2", 8.0, 4.0, "takes/t2/vox/segment-000.wav");
+        oneSegment.setSourceSegmentPaths(List.of("takes/t2/vox/segment-000.wav"));
+        vox.addClip(oneSegment);
+        vox.addClip(new AudioClip("Loop", 12.0, 4.0, "audio/loop.wav"));
+
+        SessionExportResult result = controller.exportSession(project, tempDir, "rotated");
+
+        assertThat(result.outputPath()).exists();
+        assertThat(result.warnings())
+                .as("exactly the rotated take is flagged — not the one-segment take, not the import")
+                .filteredOn(warning -> warning.contains("segment"))
+                .singleElement()
+                .satisfies(warning -> assertThat(warning)
+                        .contains("Take 1")
+                        .contains("Vox")
+                        .contains("2 segments"));
+        // The head reference is kept: the export stays usable for the first segment.
+        SessionClip exported = controller.buildSessionData(project).tracks().get(0).clips().get(0);
+        assertThat(exported.sourceFilePath()).isEqualTo("takes/t1/vox/segment-000.wav");
+    }
+
     // ── Full round-trip through export and import ───────────────────────────
 
     @Test

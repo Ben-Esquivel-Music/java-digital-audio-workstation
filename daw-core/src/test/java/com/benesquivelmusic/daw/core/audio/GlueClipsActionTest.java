@@ -7,6 +7,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -183,6 +185,38 @@ class GlueClipsActionTest {
         assertThat(merged.getSourceOffsetBeats()).isEqualTo(2.0);
         assertThat(merged.getGainDb()).isEqualTo(-3.0);
         assertThat(merged.getSourceFilePath()).isEqualTo("/audio/a.wav");
+    }
+
+    @Test
+    void shouldCarryTheSegmentListOfARotatedTakeOntoTheMergedClip() {
+        // Story 323: splitting a rotated take gives both halves the take's
+        // segment list; gluing them back must not drop it.
+        List<String> segments = List.of("/takes/t1/segment-000.wav", "/takes/t1/segment-001.wav");
+        AudioClip first = new AudioClip("Take", 0.0, 4.0, segments.getFirst());
+        first.setSourceSegmentPaths(segments);
+        AudioClip second = new AudioClip("Take", 4.0, 4.0, segments.getFirst());
+        second.setSourceSegmentPaths(segments);
+        track.addClip(first);
+        track.addClip(second);
+
+        undoManager.execute(new GlueClipsAction(track, first, second));
+
+        AudioClip merged = track.getClips().getFirst();
+        assertThat(merged.getSourceSegmentPaths()).containsExactlyElementsOf(segments);
+        assertThat(merged.getSourceFilePath()).isEqualTo(segments.getFirst());
+    }
+
+    @Test
+    void shouldRejectClipsWhoseSegmentListsDifferEvenWhenTheHeadsAgree() {
+        AudioClip first = new AudioClip("A", 0.0, 4.0, "/takes/t1/segment-000.wav");
+        first.setSourceSegmentPaths(
+                List.of("/takes/t1/segment-000.wav", "/takes/t1/segment-001.wav"));
+        AudioClip second = new AudioClip("B", 4.0, 4.0, "/takes/t1/segment-000.wav");
+        second.setSourceSegmentPaths(List.of("/takes/t1/segment-000.wav"));
+
+        assertThatThrownBy(() -> new GlueClipsAction(track, first, second))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("segment list");
     }
 
     @Test

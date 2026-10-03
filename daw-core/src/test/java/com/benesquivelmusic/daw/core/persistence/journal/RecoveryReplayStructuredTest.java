@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.persistence.journal;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -105,6 +106,53 @@ class RecoveryReplayStructuredTest {
         assertThatThrownBy(() -> replayer.recover(ctx, checkpoint, List.of(segmentPath(ctx, 0))))
                 .as("a corrupt checkpoint must roll the whole recovery back")
                 .isInstanceOf(JournalRecoveryException.class);
+    }
+
+    @Test
+    void recoveredProjectKnowsItsDirectorySoTheRewrittenProjectFileStaysRelative(
+            @TempDir Path projectDir) throws Exception {
+        // Story 323: a checkpoint holds project-relative segment references.
+        // Recovery resolves them to absolute in-memory paths, so the recovered
+        // project must also carry the project directory — otherwise the
+        // project.daw that recovery rewrites would hold absolute paths.
+        ProjectContext ctx = ProjectContext.forProject(projectDir);
+        Path trackDir = Files.createDirectories(
+                projectDir.resolve("audio/takes/2026-09-29T10-00-00_take-0001/track-a"));
+        Path first = Files.write(trackDir.resolve("segment-000.wav"), new byte[]{1});
+        Path second = Files.write(trackDir.resolve("segment-001.wav"), new byte[]{2});
+
+        DawProject live = new DawProject("ProjectDelta", AudioFormat.CD_QUALITY);
+        live.setMetadata(live.getMetadata().withPath(projectDir));
+        AudioClip clip = new AudioClip("Take 1", 0.0, 8.0, first.toString());
+        clip.setSourceSegmentPaths(List.of(first.toString(), second.toString()));
+        live.createAudioTrack("Vocals").addClip(clip);
+        String relativeHead = "audio/takes/2026-09-29T10-00-00_take-0001/track-a/segment-000.wav";
+        String checkpointXml = new ProjectSerializer().serialize(live);
+        assertThat(checkpointXml)
+                .as("fixture: the checkpoint itself is project-relative")
+                .contains("source-file=\"" + relativeHead + "\"");
+        Files.createDirectories(ctx.checkpointDirectory());
+        Path checkpoint = ctx.checkpointDirectory().resolve("checkpoint-001-20260101T000000.daw");
+        Files.writeString(checkpoint, checkpointXml);
+        writeSegment(ctx, 0, 2);
+
+        RecoveryResult result = new JournalReplayer()
+                .recover(ctx, checkpoint, List.of(segmentPath(ctx, 0)));
+
+        DawProject recovered = result.recoveredProject();
+        assertThat(recovered.getMetadata().projectPath())
+                .as("the recovered project knows the directory it was recovered for")
+                .isEqualTo(ctx.projectDirectory());
+        AudioClip recoveredClip = recovered.getTracks().get(0).getClips().get(0);
+        assertThat(recoveredClip.getSourceSegmentPaths()).hasSize(2);
+        assertThat(Path.of(recoveredClip.getSourceFilePath())).isAbsolute().isRegularFile();
+
+        // What the recovery flow writes back as project.daw.
+        String rewritten = new ProjectSerializer().serialize(recovered);
+        assertThat(rewritten)
+                .contains("source-file=\"" + relativeHead + "\"")
+                .doesNotContain(projectDir.toString())
+                .doesNotContain(projectDir.toString().replace('\\', '/'));
     }
 
     // ---- helpers ----------------------------------------------------------

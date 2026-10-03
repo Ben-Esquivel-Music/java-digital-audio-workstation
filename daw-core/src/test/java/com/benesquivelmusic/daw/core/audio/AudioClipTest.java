@@ -439,4 +439,115 @@ class AudioClipTest {
         assertThat(clip.getSourceRateMetadata()).isEqualTo(meta);
         assertThat(second.getSourceRateMetadata()).isEqualTo(meta);
     }
+
+    // ── Segment references (story 323, D5) ───────────────────────────────
+
+    @Test
+    void settingSegmentPathsDerivesTheHeadAndKeepsAnImmutableCopy() {
+        AudioClip clip = new AudioClip("Take", 0.0, 4.0, "/elsewhere.wav");
+        java.util.List<String> segments = new java.util.ArrayList<>(
+                java.util.List.of("/take/a/segment-000.wav", "/take/a/segment-001.wav"));
+
+        clip.setSourceSegmentPaths(segments);
+        segments.add("/take/a/segment-999.wav");
+
+        assertThat(clip.getSourceSegmentPaths())
+                .containsExactly("/take/a/segment-000.wav", "/take/a/segment-001.wav");
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/a/segment-000.wav");
+        assertThatThrownBy(() -> clip.getSourceSegmentPaths().add("x"))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> clip.setSourceSegmentPaths(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void sourceFilePathMustEqualTheHeadWhileSegmentsArePresent() {
+        AudioClip clip = new AudioClip("Take", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(java.util.List.of("/take/segment-000.wav", "/take/segment-001.wav"));
+
+        assertThatThrownBy(() -> clip.setSourceFilePath("/take/segment-001.wav"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("segment-000.wav");
+        assertThatThrownBy(() -> clip.setSourceFilePath(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+
+        clip.setSourceFilePath("/take/segment-000.wav");
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+    }
+
+    @Test
+    void emptySegmentListLeavesSourceFilePathUntouchedAndFreesIt() {
+        AudioClip clip = new AudioClip("Take", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(java.util.List.of("/take/segment-000.wav"));
+
+        clip.setSourceSegmentPaths(java.util.List.of());
+
+        assertThat(clip.getSourceSegmentPaths()).isEmpty();
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+        clip.setSourceFilePath("/bounce.wav");
+        assertThat(clip.getSourceFilePath()).isEqualTo("/bounce.wav");
+    }
+
+    @Test
+    void anEmptySegmentPathIsRefusedAndLeavesTheListAndTheHeadAsTheyWere() {
+        AudioClip clip = new AudioClip("Take", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(java.util.List.of("/take/segment-000.wav", "/take/segment-001.wav"));
+
+        assertThatThrownBy(() -> clip.setSourceSegmentPaths(java.util.List.of("a.wav", "")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("[1]");
+        assertThat(clip.getSourceSegmentPaths())
+                .containsExactly("/take/segment-000.wav", "/take/segment-001.wav");
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+
+        // An empty FIRST element would also have become an empty head.
+        assertThatThrownBy(() -> clip.setSourceSegmentPaths(java.util.List.of("", "b.wav")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("[0]");
+        assertThat(clip.getSourceSegmentPaths())
+                .containsExactly("/take/segment-000.wav", "/take/segment-001.wav");
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+    }
+
+    @Test
+    void aNullSegmentPathIsStillRefusedWithANullPointerException() {
+        AudioClip clip = new AudioClip("Take", 0.0, 4.0, null);
+        clip.setSourceSegmentPaths(java.util.List.of("/take/segment-000.wav", "/take/segment-001.wav"));
+
+        assertThatThrownBy(() -> clip.setSourceSegmentPaths(java.util.Arrays.asList("a.wav", null)))
+                .isInstanceOf(NullPointerException.class);
+        assertThat(clip.getSourceSegmentPaths())
+                .containsExactly("/take/segment-000.wav", "/take/segment-001.wav");
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+    }
+
+    @Test
+    void aWhitespaceOnlySegmentPathIsAccepted() {
+        // Pins the alignment with the reader: ProjectDeserializer skips a
+        // <source-segment> only when its path isEmpty(), so it keeps a
+        // whitespace-only path — and the setter must accept every element
+        // the reader keeps, or a hand-edited project would fail to open.
+        AudioClip clip = new AudioClip("Take", 0.0, 4.0, null);
+
+        clip.setSourceSegmentPaths(java.util.List.of("/take/segment-000.wav", " "));
+
+        assertThat(clip.getSourceSegmentPaths()).containsExactly("/take/segment-000.wav", " ");
+        assertThat(clip.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+    }
+
+    @Test
+    void duplicateAndSplitPropagateTheSegmentList() {
+        AudioClip clip = new AudioClip("Take", 0.0, 8.0, null);
+        clip.setSourceSegmentPaths(java.util.List.of("/take/segment-000.wav", "/take/segment-001.wav"));
+
+        AudioClip copy = clip.duplicate();
+        AudioClip second = clip.splitAt(4.0);
+
+        assertThat(copy.getSourceSegmentPaths()).isEqualTo(clip.getSourceSegmentPaths());
+        assertThat(copy.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+        assertThat(second.getSourceSegmentPaths()).isEqualTo(clip.getSourceSegmentPaths());
+        assertThat(second.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
+        assertThat(clip.getSourceSegmentPaths()).hasSize(2);
+    }
 }
