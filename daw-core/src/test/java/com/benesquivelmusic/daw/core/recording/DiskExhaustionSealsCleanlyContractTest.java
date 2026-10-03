@@ -21,6 +21,8 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.decodedRampValue;
@@ -31,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Story 323 proof (8) — disk exhaustion and write failure (book §4.3): the
  * take seals cleanly with everything captured so far intact and readable,
  * no throw escapes the flush loop, the thread stays alive draining and
- * discarding, and {@code stop()} returns clips referencing the sealed segments.
+ * discarding, and the stop returns clips referencing the sealed segments.
  */
 class DiskExhaustionSealsCleanlyContractTest {
 
@@ -69,7 +71,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         pipeline.setDiskHeadroomWatch(watch);
         pipeline.setWarningSink(warnings::add);
         pipeline.setNanoClock(clock::get);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         int fed = exhaustedAfter + 4;
@@ -93,7 +95,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         assertThat(manifest.sealedBy()).contains(TakeManifest.SealedBy.DISK_EXHAUSTION);
         assertSealedSegmentsHoldExactly(manifest, exhaustedAfter, 4);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getSourceSegmentPaths()).hasSize(4);
@@ -109,7 +111,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         int good = 3;
         long frame = feedRamp(engine, transport, pipeline, 0, good, 1);
@@ -132,7 +134,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         assertThat(manifest.sealedBy()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
         assertSealedSegmentsHoldExactly(manifest, good, 2);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getSourceSegmentPaths()).hasSize(2);
         assertThat(clips.getFirst().getAudioData()[0]).hasSize(good * BLOCK_FRAMES);
@@ -144,7 +146,7 @@ class DiskExhaustionSealsCleanlyContractTest {
      * and then throws (a sink that touches the UI off its thread does). The
      * test gives the same sink to the headroom watch it injects and, through
      * {@code setWarningSink}, to the flush service — the pairing
-     * {@code RecordingPipeline.start()} makes itself when no watch is
+     * {@code RecordingPipeline.prepare()} makes itself when no watch is
      * injected.
      */
     private RecordingPipeline pipelineWithAThrowingSink(DiskHeadroomWatch watch, AtomicLong clock) {
@@ -167,7 +169,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         DiskHeadroomWatch watch = new DiskHeadroomWatch(takeDir, () -> 512 * MIB, GIB, 64 * MIB,
                 Duration.ZERO, clock::get, this::recordThenThrow);
         RecordingPipeline pipeline = pipelineWithAThrowingSink(watch, clock);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         int fed = 3;
@@ -185,7 +187,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).sealStatus())
                 .isEqualTo(TakeManifest.SealStatus.STREAMING);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getAudioData()[0]).hasSize(fed * BLOCK_FRAMES);
@@ -205,7 +207,7 @@ class DiskExhaustionSealsCleanlyContractTest {
                 () -> probes.getAndIncrement() < exhaustedAfter ? 10 * GIB : 1 * MIB,
                 GIB, 64 * MIB, Duration.ZERO, clock::get, this::recordThenThrow);
         RecordingPipeline pipeline = pipelineWithAThrowingSink(watch, clock);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         int fed = exhaustedAfter + 2;
@@ -229,7 +231,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         assertThat(manifest.sealedBy()).contains(TakeManifest.SealedBy.DISK_EXHAUSTION);
         assertSealedSegmentsHoldExactly(manifest, exhaustedAfter, 1);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getAudioData()[0]).hasSize(exhaustedAfter * BLOCK_FRAMES);
@@ -266,7 +268,7 @@ class DiskExhaustionSealsCleanlyContractTest {
                     Duration.ZERO, clock::get)); // no sink
             pipeline.setNanoClock(clock::get);
             pipeline.setRingSlots(8);
-            pipeline.start();                    // no setWarningSink either
+            startRecording(pipeline);                    // no setWarningSink either
             CaptureFlushService service = pipeline.getCaptureFlushService();
             service.setDrainPaused(true);
             float[][] output = new float[1][BLOCK_FRAMES];
@@ -276,7 +278,7 @@ class DiskExhaustionSealsCleanlyContractTest {
             }
             service.setDrainPaused(false);
             pipeline.awaitFlushed();
-            pipeline.stop();
+            stopRecording(pipeline);
 
             assertThat(records).as("the LOW crossing, from the watch's logger").anySatisfy(record -> {
                 assertThat(record.getLevel()).isEqualTo(Level.WARNING);
@@ -299,7 +301,7 @@ class DiskExhaustionSealsCleanlyContractTest {
             withSink.setWarningSink(warnings::add);
             withSink.setNanoClock(clock::get);
             withSink.setRingSlots(8);
-            withSink.start();
+            startRecording(withSink);
             withSink.getCaptureFlushService().setDrainPaused(true);
             for (int b = 0; b < 9; b++) {
                 engine.processBlock(RampCaptureTestSupport.rampBlock((long) b * BLOCK_FRAMES), output, BLOCK_FRAMES);
@@ -307,7 +309,7 @@ class DiskExhaustionSealsCleanlyContractTest {
             }
             withSink.getCaptureFlushService().setDrainPaused(false);
             withSink.awaitFlushed();
-            withSink.stop();
+            stopRecording(withSink);
 
             assertThat(warnings).anySatisfy(w -> assertThat(w).contains("Disk headroom low"));
             assertThat(warnings).anySatisfy(w -> assertThat(w).contains("overflow").contains("1 block(s)"));

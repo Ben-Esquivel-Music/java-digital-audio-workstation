@@ -40,19 +40,16 @@ import java.util.logging.Logger;
  * the {@link RecordingSegment#startTime()}/{@code endTime()} instants are
  * metadata only.</p>
  *
- * <p><strong>Threads.</strong> The session is constructed on the caller
- * thread. {@link #start()} runs on the caller thread inside
- * {@code CaptureFlushService.start()} (before the flush thread is started)
- * for a track's first lane, and on the flush thread for a later loop lane;
+ * <p><strong>Threads.</strong> A track's first-lane session is constructed
+ * on the caller thread (in {@code RecordingPipeline.prepare()}), a later
+ * loop lane's on the flush thread. {@link #start()} runs on the
+ * {@code capture-flush} thread — inside the take's initialisation for a
+ * track's first lane, and when a loop lap opens a later lane — as do
  * {@link #recordAudioData}, the cadence tick
- * ({@code forceIfCadenceElapsed()}) and {@link #stop()} run on the
- * {@code capture-flush} thread — never on the audio callback;
- * {@link #pause()} and {@link #resume()} have no caller in the pipeline this
- * stage and run on whichever thread drives the session.
- * {@link RecordingListener} callbacks therefore fire on the
- * flush thread, except the first lane's start notifications (its
- * {@code onNewSegmentCreated} for the first segment and its
- * {@code onRecordingStarted}), which fire on the caller thread. The
+ * ({@code forceIfCadenceElapsed()}) and {@link #stop()}: never on the audio
+ * callback; {@link #pause()} and {@link #resume()} have no caller in the
+ * pipeline this stage and run on whichever thread drives the session.
+ * {@link RecordingListener} callbacks therefore fire on the flush thread. The
  * counters other threads read ({@link #getTotalSamplesRecorded()},
  * {@link #getCapturedSampleCount()}, {@link #isActive()}) are atomic or
  * volatile; a reader that first passes the flush service's
@@ -644,10 +641,11 @@ public final class RecordingSession {
     }
 
     /**
-     * Start-failure rollback: abandons the writer, deletes every file this
+     * Start-failure rollback: abandons the writer, deletes the files this
      * session created (streaming and sealed), forgets the segments and
      * removes the output directory if this session created it and it is
-     * now empty. Idempotent.
+     * now empty (best-effort: what an I/O error keeps from being deleted is
+     * left and the error logged). Idempotent.
      */
     void discardAllFiles() {
         active = false;

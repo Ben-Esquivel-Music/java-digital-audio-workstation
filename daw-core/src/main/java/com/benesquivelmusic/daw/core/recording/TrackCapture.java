@@ -23,21 +23,20 @@ import java.util.logging.Logger;
  * {@link RecordingSession}, the lane index, every sealed segment across
  * lanes, and the loop-take stack built lap by lap.
  *
- * <p><strong>Threads.</strong> Constructed on the caller thread by
- * {@code RecordingPipeline.start()} (which also reads the {@link Track} once
- * to take the snapshot — the flush thread never touches a {@code Track}).
- * {@link #startLane()} runs on the caller thread for lane 0 (inside
- * {@code CaptureFlushService.start()}, before the flush thread is started);
- * {@link #finalizeLane(boolean, boolean)} — which starts every later lane —
- * and the scratch/session accessors used while routing are flush-thread
- * only. {@link #setSegmentEvents}, {@link #discardAllFiles()} and
- * {@link #abandonWithoutSeal()} run on the caller thread, before the
- * flush thread is started or once it has terminated
- * ({@code CaptureFlushService.isTerminated()}; a join that runs out first
- * leaves them uncalled). The results ({@link #takeGroup()},
- * {@link #sealedSegments()}, {@link #session()}) are volatile or
- * copy-on-write so the pipeline can read them on the caller thread once the
- * flush thread has terminated.</p>
+ * <p><strong>Threads.</strong> Constructed, with its unstarted lane-0
+ * session, on the caller thread by {@code RecordingPipeline.prepare()} (which
+ * also reads the {@link Track} once to take the snapshot — the flush thread
+ * never touches a {@code Track}). Everything else runs on the
+ * {@code capture-flush} thread, which is the only thread that touches the
+ * take's files: {@link #setSegmentEvents} and {@link #startLane()} for lane 0
+ * (the take's initialisation), {@link #finalizeLane(boolean, boolean)} —
+ * which starts every later lane — the scratch/session accessors used while
+ * routing, {@link #discardAllFiles()} (a start that failed or was aborted)
+ * and {@link #abandonWithoutSeal()} (the {@code stopAndAbandon} test seam).
+ * The results ({@link #takeGroup()}, {@link #sealedSegments()},
+ * {@link #session()}) are volatile or copy-on-write so the pipeline can read
+ * them on the caller thread once the flush thread has terminated
+ * ({@code CaptureFlushService.isTerminated()}).</p>
  */
 final class TrackCapture {
 
@@ -278,9 +277,10 @@ final class TrackCapture {
     }
 
     /**
-     * Start-failure rollback: deletes every file this capture created —
-     * the current lane's files and every sealed segment — and the track
-     * directory if it is empty afterwards. Idempotent.
+     * Start-failure rollback: deletes the files this capture created — the
+     * current lane's files and the sealed segments — and the track directory
+     * if it is empty afterwards (best-effort: what an I/O error keeps from
+     * being deleted is left and the error logged). Idempotent.
      */
     void discardAllFiles() {
         session.discardAllFiles();

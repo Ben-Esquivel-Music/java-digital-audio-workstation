@@ -111,7 +111,7 @@ class RecordPathStorageLocationScanTest {
         assertThat(captureTypesAmong(recordingTypes))
                 .as("the types that allocate, capture, write, describe and finish a take are capture types")
                 .contains("TakeDirectories", "RecordingPipeline", "CaptureFlushService", "CaptureRing",
-                        "RecordingSession", "SegmentWriter", "TakeManifest", "TakeFinalizationPendingException")
+                        "RecordingSession", "SegmentWriter", "TakeManifest", "StopSealFailure")
                 .doesNotContainAnyElementsOf(NOT_CAPTURE_TYPES);
     }
 

@@ -36,7 +36,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -212,8 +211,8 @@ class TransportCommandPathTest {
         // the same dishonesty in a form that is harder to notice.
         DawProject project = new DawProject("record-abort", FORMAT);
         // Story 323 — the project has a directory, so the refusal-for-want-of-
-        // a-folder gate is passed and the take directory IS allocated under
-        // audio/takes before the open fails; the abort must remove it again.
+        // a-folder gate is passed and the device open is reached; it fails
+        // before any take directory is allocated under audio/takes.
         project.setMetadata(project.getMetadata().withPath(projectDirectory));
         Transport transport = project.getTransport();
         transport.setPositionInBeats(5.0);
@@ -238,10 +237,11 @@ class TransportCommandPathTest {
                     .as("and never announces Started — the bus must not carry a "
                             + "take that did not begin")
                     .isEmpty();
-            // RecordingPipeline.start() is the only thing that sets active =
-            // true, and it flags every armed track as recording on its way
-            // through; an unflagged track is therefore proof the pipeline was
-            // not started and is not left active for stop() to finalize.
+            // RecordingPipeline.prepare() flags every armed track as
+            // recording, and only beginCapture() sets active = true. Here the
+            // device open fails before any pipeline is built, and an
+            // unflagged track agrees: no pipeline flagged it, and none is
+            // left active for stop() to finalize.
             assertThat(armedAudio.isRecording())
                     .as("no pipeline was started, so nothing is left active")
                     .isFalse();
@@ -257,20 +257,18 @@ class TransportCommandPathTest {
                     .contains("aborted")
                     .doesNotContain("Recording — ")
                     .contains("no audio backend is configured");
-            // Story 323 — the take directory was allocated under the project's
-            // audio/takes BEFORE the open (the allocation is what created the
-            // takes folder), and the abort removed it again: nothing of a take
-            // that never started is left in the project.
+            // Story 323; PR #978 review 5391920205 — the device open comes
+            // BEFORE the take directory is allocated, so a refused open leaves
+            // nothing of the take in the project: audio/takes was never even
+            // created, and no take is being prepared.
             Path takes = TakeDirectories.takesDirectory(
                     ProjectManager.audioDirectory(projectDirectory));
             assertThat(takes)
-                    .as("the allocation reached the project's audio/takes folder")
-                    .isDirectory();
-            try (var entries = Files.list(takes)) {
-                assertThat(entries)
-                        .as("the aborted take's directory was removed from audio/takes")
-                        .isEmpty();
-            }
+                    .as("a refused device open allocates no take directory under audio/takes")
+                    .doesNotExist();
+            assertThat(handler.isPreparingTake())
+                    .as("the refusal leaves no take being prepared")
+                    .isFalse();
         }
 
         // The pipeline reference was cleared too, not merely never started: a

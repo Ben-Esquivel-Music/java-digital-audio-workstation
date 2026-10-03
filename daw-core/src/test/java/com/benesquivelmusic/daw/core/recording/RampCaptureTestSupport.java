@@ -38,12 +38,11 @@ final class RampCaptureTestSupport {
 
     /**
      * Bound of {@link #outcomeWithinTheGuard}. Where a guarded call is meant
-     * to wait out a bound of its own — a join shortened to 200 ms or one
-     * second, a 200 ms fence timeout — that bound lies far inside the guard.
-     * Where a guarded stop's join bound lies beyond it — the production 30 s,
-     * or an hour a test sets so that a stop which joins when it must not
-     * overruns the guard — the stop passes only if it returns without
-     * waiting that bound out.
+     * to wait out a bound of its own — a 200 ms fence timeout — that bound
+     * lies far inside the guard. Where a guarded call must not wait for the
+     * flush thread at all — a prepare, a cancel, a stop request, a rollback —
+     * the tests hold that thread for twice the guard, so the call passes only
+     * if it returns without waiting for the hold.
      */
     static final Duration HANG_GUARD = Duration.ofSeconds(10);
 

@@ -72,9 +72,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * untouched, and once the user has stopped it the same call proceeds.</p>
  *
  * <p>Every FX action runs through {@link Platform#runLater} and is bounded at
- * 5 s, or, for the fixture's Record and Stop, at the longer bound
- * {@link RecordingInFlightFixture} gives them; the waits for a scan are on
- * the test thread and bounded by
+ * 5 s — the fixture's Record and Stop too: {@link RecordingInFlightFixture}
+ * bounds each of its FX actions at 5 s, and waits on the test thread,
+ * bounded at 30 s, for what the take's capture thread does (the take
+ * recording once that thread has created its files; nothing being written
+ * any more after a Stop); the waits for a scan are on the test thread and
+ * bounded by
  * {@link #SCAN_WINDOW}; no dialog is shown.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)

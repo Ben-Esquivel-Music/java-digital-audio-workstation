@@ -14,12 +14,15 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.HANG_GUARD;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
@@ -28,47 +31,41 @@ import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.fee
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Story 323 review probe (Copilot 5365941737, HIGH) — four edges of the
- * pending-finalisation contract the review round's own tests do not reach:
+ * Story 323 review probe (Copilot 5365941737, HIGH; PR #978 review
+ * 5391920205 F1) — four edges of the pending-finalisation contract:
  *
  * <ul>
  *   <li>the flush thread is held <em>after</em> every lane is sealed, in the
  *       final manifest write: the take is still being written (its
- *       manifest), so the Stop is still pending — the thread is terminated
- *       only once it will never touch the take again, manifest included;</li>
- *   <li>a holder of the pending take's completion cannot complete it — the
- *       app posts its deferred stop from that completion, and a forged one
- *       would run that stop, with its bounded join on the FX thread, before
- *       the thread has terminated;</li>
- *   <li>a one-shot side effect of the first {@code stop()} that throws (a
- *       transport listener) leaves the take pending, not orphaned: the next
- *       {@code stop()} stops the flush thread, seals the take and builds it;</li>
- *   <li>a dependent of the termination signal that stops the pipeline runs
- *       on the flush thread, and that stop never joins its own thread: with
- *       a join bound far beyond the guard, it still returns the clips.</li>
+ *       manifest), so the stop cannot be completed yet — the thread is
+ *       terminated only once it will never touch the take again, manifest
+ *       included;</li>
+ *   <li>a holder of the termination signal a stop request returns cannot
+ *       complete it — the app completes the stop from that signal, and a
+ *       forged one would complete it before the thread has terminated;</li>
+ *   <li>a one-shot side effect of the stop request that throws (a transport
+ *       listener) still leaves the seal requested and the take pending, not
+ *       orphaned: the thread seals the take and terminates, a repeated
+ *       request repeats nothing, and the completion builds the take;</li>
+ *   <li>a dependent of the termination signal that completes the stop runs
+ *       on the flush thread, and builds the clips there.</li>
  * </ul>
  *
  * <p>The final-manifest hold: every attempt of the seal's manifest write is
  * refused through {@code CaptureFlushService.failNextManifestWrites}, and
  * the warning the flush thread then hands to the sink holds it on a latch.
- * Every wait is bounded: by {@link RampCaptureTestSupport#HANG_GUARD} — above
- * the {@link #JOIN} a guarded {@code stop()} waits, and below the one-hour
- * bound of the last test, whose stop must never join its own thread at all —
- * or, inside {@code feedRamp} and {@code setDrainPaused}, by
+ * Every wait is bounded: by {@link RampCaptureTestSupport#HANG_GUARD} — a
+ * request that must return at once, and every signal — or, inside
+ * {@code feedRamp} and {@code setDrainPaused}, by
  * {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT}.</p>
  */
 class PendingTakeCompletionContractTest {
 
     private static final long GIB = 1L << 30;
     private static final long MIB = 1L << 20;
-    /**
-     * The shortened join: long enough that the flush thread reaches its hold
-     * (four 20 ms manifest retry pauses after the lane seal) before the join
-     * runs out, and far inside {@link RampCaptureTestSupport#HANG_GUARD}.
-     */
-    private static final Duration JOIN = Duration.ofSeconds(1);
 
     @TempDir
     Path takeDir;
@@ -107,7 +104,7 @@ class PendingTakeCompletionContractTest {
         if (message.contains("could not be written") && holdOnManifestWarning.compareAndSet(true, false)) {
             held.countDown();
             try {
-                release.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+                release.await(2 * HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -126,25 +123,26 @@ class PendingTakeCompletionContractTest {
     }
 
     /**
-     * Records two blocks, then stops with every attempt of the next manifest
-     * write refused — with the ring dry and nothing dirty that is the seal's
-     * final write, made after every lane is sealed — and the flush thread
-     * held in the warning that follows.
+     * Records two blocks, then requests the stop with every attempt of the
+     * next manifest write refused — with the ring dry and nothing dirty that
+     * is the seal's final write, made after every lane is sealed — and the
+     * flush thread held in the warning that follows, for twice the guard.
      *
-     * @return the pending take the stop threw
+     * @return the termination signal the stop request returned
      */
-    private TakeFinalizationPendingException stopHeldInTheFinalManifestWrite() throws Exception {
+    private CompletionStage<Void> stopHeldInTheFinalManifestWrite() throws Exception {
         pipeline = newPipeline();
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 2);
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        service.setStopJoinTimeout(JOIN);
         long manifestWritesBefore = service.manifestWrites();
         service.failNextManifestWrites(CaptureFlushService.MANIFEST_WRITE_ATTEMPTS);
         holdOnManifestWarning.set(true);
 
-        Throwable thrown = outcomeWithinTheGuard("stop", pipeline::stop);
+        AtomicReference<CompletionStage<Void>> written = new AtomicReference<>();
+        Throwable thrown = outcomeWithinTheGuard("stop request", () -> written.set(pipeline.requestStop()));
 
+        assertThat(thrown).as("the stop request returns without waiting for the seal").isNull();
         assertThat(held.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS))
                 .as("fixture: the flush thread is held in the final manifest write").isTrue();
         assertThat(service.isSealed()).as("fixture: the seal has begun").isTrue();
@@ -153,37 +151,39 @@ class PendingTakeCompletionContractTest {
                 .hasSize(1);
         assertThat(service.manifestWrites()).as("fixture: the final manifest has not reached the disk")
                 .isEqualTo(manifestWritesBefore);
-        assertThat(thrown)
-                .as("the thread still writes the take's manifest: the Stop is pending, not built")
-                .isInstanceOf(TakeFinalizationPendingException.class);
-        return (TakeFinalizationPendingException) thrown;
+        return written.get();
     }
 
-    /** Runs a stop that must return within the guard, and returns its clips. */
-    private List<AudioClip> stopThatCompletes() throws InterruptedException {
+    /** Runs a completion that must return within the guard, and returns its clips. */
+    private List<AudioClip> completionThatBuilds() throws InterruptedException {
         List<List<AudioClip>> result = new CopyOnWriteArrayList<>();
-        Throwable thrown = outcomeWithinTheGuard("stop that completes", () -> result.add(pipeline.stop()));
-        assertThat(thrown).as("the stop completes").isNull();
+        Throwable thrown = outcomeWithinTheGuard("stop completion", () -> result.add(pipeline.completeStop()));
+        assertThat(thrown).as("the completion builds the take").isNull();
         return result.getFirst();
     }
 
     @Test
-    void aStopHeldInTheFinalManifestWriteAfterEveryLaneIsSealedIsStillPending() throws Exception {
-        TakeFinalizationPendingException pending = stopHeldInTheFinalManifestWrite();
+    void aStopHeldInTheFinalManifestWriteAfterEveryLaneIsSealedCannotBeCompletedYet() throws Exception {
+        CompletionStage<Void> written = stopHeldInTheFinalManifestWrite();
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         assertThat(service.isTerminated()).as("the thread has the take's manifest still to write").isFalse();
-        assertThat(pending.completion().toCompletableFuture().isDone()).isFalse();
+        assertThat(written.toCompletableFuture().isDone()).isFalse();
+        assertThat(pipeline.isFinalizationPending()).isTrue();
+        assertThatThrownBy(pipeline::completeStop)
+                .as("the thread still writes the take's manifest: the stop is pending, not built")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("still being written");
         assertThat(pipeline.isFinalizationPending()).isTrue();
         assertThat(track.getClips()).as("no clip is built while the flush thread still writes the take").isEmpty();
         assertThat(pipeline.getRecordedClips()).isEmpty();
 
         release.countDown();
-        pending.completion().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        awaitWithinTheGuard(written, "the capture-flush thread's termination");
         assertThat(service.isTerminated()).isTrue();
         assertThat(warnings).anySatisfy(warning -> assertThat(warning).contains("could not be written"));
 
-        List<AudioClip> clips = stopThatCompletes();
+        List<AudioClip> clips = completionThatBuilds();
 
         assertThat(pipeline.isFinalizationPending()).isFalse();
         assertThat(clips).singleElement()
@@ -192,29 +192,31 @@ class PendingTakeCompletionContractTest {
     }
 
     @Test
-    void aHolderOfThePendingTakesCompletionCannotCompleteIt() throws Exception {
-        TakeFinalizationPendingException pending = stopHeldInTheFinalManifestWrite();
+    void aHolderOfTheStopRequestsSignalCannotCompleteIt() throws Exception {
+        CompletionStage<Void> written = stopHeldInTheFinalManifestWrite();
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        AtomicBoolean dependentRan = new AtomicBoolean();
-        pending.completion().thenRun(() -> dependentRan.set(true));
+        CountDownLatch dependentRan = new CountDownLatch(1);
+        written.thenRun(dependentRan::countDown);
 
         // What a holder may try: complete the stage it was handed.
-        pending.completion().toCompletableFuture().complete(null);
+        written.toCompletableFuture().complete(null);
 
-        assertThat(dependentRan).as("no dependent runs on a forged completion").isFalse();
+        assertThat(dependentRan.getCount()).as("no dependent runs on a forged completion").isEqualTo(1);
         assertThat(service.termination().toCompletableFuture().isDone())
                 .as("the service's own signal is not completed by a holder").isFalse();
         assertThat(service.isTerminated()).isFalse();
         assertThat(track.getClips()).isEmpty();
 
         release.countDown();
-        service.termination().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
-        assertThat(dependentRan).as("the real termination runs it").isTrue();
-        assertThat(stopThatCompletes()).hasSize(1);
+        // Waited for itself: another dependent of the signal may wake this thread first.
+        assertThat(dependentRan.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                .as("the real termination runs it").isTrue();
+        assertThat(service.isTerminated()).isTrue();
+        assertThat(completionThatBuilds()).hasSize(1);
     }
 
     @Test
-    void aOneShotStopEffectThatThrowsLeavesTheTakePendingAndTheNextStopSealsIt() throws Exception {
+    void aOneShotStopEffectThatThrowsStillRequestsTheSealAndTheCompletionBuildsTheTake() throws Exception {
         RuntimeException fault = new IllegalStateException("injected transport-listener fault");
         AtomicBoolean throwOnStateChange = new AtomicBoolean();
         transport.addChangeListener(kind -> {
@@ -223,12 +225,12 @@ class PendingTakeCompletionContractTest {
             }
         });
         pipeline = newPipeline();
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 3, 3);
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        throwOnStateChange.set(true); // the transport stop inside pipeline.stop() notifies, and its listener throws
+        throwOnStateChange.set(true); // the transport stop inside requestStop() notifies, and its listener throws
 
-        Throwable thrown = outcomeWithinTheGuard("stop", pipeline::stop);
+        Throwable thrown = outcomeWithinTheGuard("stop request", pipeline::requestStop);
 
         assertThat(thrown).as("the listener's fault reaches the caller").isSameAs(fault);
         assertThat(transport.getState()).as("fixture: the transport stopped before its listener threw")
@@ -238,10 +240,17 @@ class PendingTakeCompletionContractTest {
                 .as("the stop has begun and not finished: the take is pending, not orphaned").isTrue();
         assertThat(track.getClips()).isEmpty();
 
-        List<AudioClip> clips = stopThatCompletes();
-
-        assertThat(service.isTerminated()).as("the next stop stopped the flush thread").isTrue();
+        // The seal was requested all the same: the thread terminates with no further call.
+        awaitWithinTheGuard(service.termination(), "the capture-flush thread's termination");
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.STOP);
+
+        AtomicReference<CompletionStage<Void>> again = new AtomicReference<>();
+        assertThat(outcomeWithinTheGuard("stop request again", () -> again.set(pipeline.requestStop())))
+                .as("a repeated request repeats nothing, so nothing throws").isNull();
+        assertThat(again.get() == service.termination()).as("it returns the same termination signal").isTrue();
+
+        List<AudioClip> clips = completionThatBuilds();
+
         assertThat(pipeline.isFinalizationPending()).isFalse();
         assertThat(clips).singleElement()
                 .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(3 * BLOCK_FRAMES));
@@ -250,21 +259,19 @@ class PendingTakeCompletionContractTest {
     }
 
     @Test
-    void aDependentOfTheTerminationThatStopsThePipelineOnTheFlushThreadNeverJoinsItself() throws Exception {
+    void aDependentOfTheTerminationCompletesTheStopOnTheFlushThread() throws Exception {
         pipeline = newPipeline();
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 2);
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        // A join bound far beyond the guard: only a stop that never joins
-        // its own thread can return within it.
-        service.setStopJoinTimeout(Duration.ofHours(1));
         CompletableFuture<List<AudioClip>> stoppedThere = new CompletableFuture<>();
         AtomicReference<Thread> ranOn = new AtomicReference<>();
         // Non-async: runs on the flush thread as its last act.
         service.termination().thenRun(() -> {
             ranOn.set(Thread.currentThread());
             try {
-                stoppedThere.complete(pipeline.stop());
+                pipeline.requestStop();
+                stoppedThere.complete(pipeline.completeStop());
             } catch (Throwable t) {
                 stoppedThere.completeExceptionally(t);
             }

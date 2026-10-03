@@ -21,15 +21,16 @@ import java.util.function.LongSupplier;
  * seals it by patch-header + atomic rename (Recording Reliability book
  * §3.4, §4.4, §5.3; story 323).
  *
- * <p><strong>Thread.</strong> {@link #append}, {@link #forceIfDue()} and
- * {@link #seal()} run on the {@code capture-flush} thread. {@link #open}
- * runs on the caller thread for a track's first segment (before the flush
- * thread is started) and on the flush thread for every later one. The
- * rollback / abandon seams
- * ({@link #abandon()}, {@link #close()}) run on the caller thread, before
- * the flush thread is started or once it has terminated
- * ({@code CaptureFlushService.isTerminated()}), and on the flush
- * thread when a seal fails or an empty tail is discarded; the fault seams
+ * <p><strong>Thread.</strong> In the pipeline every call runs on the
+ * {@code capture-flush} thread: {@link #open} — for a track's first segment
+ * inside the take's initialisation, and for every later one at a rotation or
+ * a new loop lane — {@link #append}, {@link #forceIfDue()} and
+ * {@link #seal()}, and the rollback / abandon seams ({@link #abandon()},
+ * {@link #close()}) when a seal fails, an empty tail is discarded, a start
+ * that failed or was aborted is rolled back, or the {@code stopAndAbandon}
+ * test seam abandons the writers; a test may also abandon a writer itself
+ * once the flush thread has terminated
+ * ({@code CaptureFlushService.isTerminated()}). The fault seams
  * ({@link #failNextAppend()}, {@link #failNextRename()}) may be set from any
  * thread. One thread at a time writes the file (one writer per byte, book
  * §2.3). The writer is not thread-safe; its counters are plain fields whose
@@ -193,9 +194,13 @@ public final class SegmentWriter implements AutoCloseable {
     }
 
     /**
-     * Creates the streaming file and writes its provisional header. If the
-     * header cannot be written the file is closed and deleted again, so a
-     * failed open leaves nothing behind.
+     * Creates the streaming file and writes its provisional header. If
+     * writing the header throws an {@link IOException} or a
+     * {@link RuntimeException}, the file is closed and deleted again, best
+     * effort: an {@code IOException} from the close or the delete is attached
+     * to the rethrown failure as suppressed (nothing is logged here), and a
+     * file the delete could not remove is left behind. Parent directories
+     * this call created are left in place, even when the open fails.
      *
      * @param partPath     the {@code segment-NNN.wav.part} path; its name must
      *                     end with {@link #PART_SUFFIX}; parent directories are
@@ -262,7 +267,9 @@ public final class SegmentWriter implements AutoCloseable {
             writeFully(fc, provisionalHeader(sampleRate, channels, bitDepth), 0);
         } catch (IOException | RuntimeException e) {
             // The file is ours (the opener refused an existing one) and holds
-            // at most a partial header: a failed open leaves nothing behind.
+            // at most a partial header: close and delete it, best-effort. An
+            // IOException from either is suppressed onto e, and a file the
+            // delete could not remove is left.
             try {
                 fc.close();
             } catch (IOException suppressed) {

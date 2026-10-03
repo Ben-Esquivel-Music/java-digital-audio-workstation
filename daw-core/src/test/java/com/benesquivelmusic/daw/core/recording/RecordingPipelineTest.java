@@ -16,6 +16,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -76,7 +78,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
 
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.isActive()).isTrue();
         assertThat(transport.getState()).isEqualTo(TransportState.RECORDING);
@@ -92,9 +94,9 @@ class RecordingPipelineTest {
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
-        assertThatThrownBy(pipeline::start)
+        assertThatThrownBy(pipeline::prepare)
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -104,9 +106,9 @@ class RecordingPipelineTest {
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(pipeline.isActive()).isFalse();
         assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
@@ -122,7 +124,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).isEmpty();
     }
@@ -133,7 +135,7 @@ class RecordingPipelineTest {
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         // Simulate audio capture by calling processBlock
         float[][] input = new float[2][512];
@@ -142,7 +144,7 @@ class RecordingPipelineTest {
             audioEngine.processBlock(input, output, 512);
         }
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getName()).contains("Audio 1");
@@ -158,14 +160,14 @@ class RecordingPipelineTest {
         track2.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track1, track2));
-        pipeline.start();
+        startRecording(pipeline);
 
         // Simulate audio capture
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(2);
         assertThat(track1.getClips()).hasSize(1);
@@ -210,7 +212,7 @@ class RecordingPipelineTest {
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         RecordingSession session = pipeline.getSession(track);
         assertThat(session).isNotNull();
@@ -225,7 +227,7 @@ class RecordingPipelineTest {
 
         assertThat(session.getTotalSamplesRecorded()).isGreaterThan(0);
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
         assertThat(session.isActive()).isFalse();
     }
@@ -236,13 +238,13 @@ class RecordingPipelineTest {
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
         assertThat(pipeline.getRecordedClips()).containsKey(track);
         assertThat(pipeline.getRecordedClips().get(track)).isNotNull();
@@ -256,7 +258,7 @@ class RecordingPipelineTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.getRecordingStartBeat()).isEqualTo(8.0);
 
@@ -265,7 +267,7 @@ class RecordingPipelineTest {
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         // Clip should be placed at the original start position, not at 0
         assertThat(clips).hasSize(1);
@@ -280,11 +282,11 @@ class RecordingPipelineTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(track.isRecording()).isTrue();
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
         assertThat(track.isRecording()).isFalse();
     }
@@ -368,7 +370,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track),
                 CountInMode.OFF, InputMonitoringMode.OFF, punch);
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.getRecordingStartBeat()).isEqualTo(4.0);
     }
@@ -410,7 +412,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track),
                 CountInMode.OFF, InputMonitoringMode.ALWAYS, null);
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.isInputMonitoringActive()).isTrue();
     }
@@ -436,7 +438,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track),
                 CountInMode.OFF, InputMonitoringMode.AUTO, null);
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.isInputMonitoringActive()).isTrue();
     }
@@ -462,7 +464,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track),
                 CountInMode.OFF, InputMonitoringMode.OFF, null);
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.isInputMonitoringActive()).isFalse();
     }
@@ -495,7 +497,7 @@ class RecordingPipelineTest {
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         // Simulate audio capture with non-zero data
         float[][] input = new float[2][512];
@@ -506,7 +508,7 @@ class RecordingPipelineTest {
         }
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         AudioClip clip = clips.getFirst();
@@ -523,7 +525,7 @@ class RecordingPipelineTest {
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
@@ -534,7 +536,7 @@ class RecordingPipelineTest {
             audioEngine.processBlock(input, output, 512);
         }
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         AudioClip clip = clips.getFirst();
@@ -553,14 +555,14 @@ class RecordingPipelineTest {
         track2.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track1, track2));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
         input[0][0] = 0.75f;
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(2);
         for (AudioClip clip : clips) {
@@ -583,7 +585,7 @@ class RecordingPipelineTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         for (int ch = 0; ch < 2; ch++) {
@@ -600,7 +602,7 @@ class RecordingPipelineTest {
         // Exactly two blocks (512 * 2 = 1024 frames) fall inside the region.
         assertThat(session.getTotalSamplesRecorded()).isEqualTo(1024L);
 
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
@@ -613,7 +615,7 @@ class RecordingPipelineTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
@@ -625,7 +627,7 @@ class RecordingPipelineTest {
         pipeline.awaitFlushed();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(2048L);
 
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
@@ -638,7 +640,7 @@ class RecordingPipelineTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         for (int ch = 0; ch < 2; ch++) {
@@ -651,7 +653,7 @@ class RecordingPipelineTest {
         pipeline.awaitFlushed();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(100L);
 
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
@@ -666,7 +668,7 @@ class RecordingPipelineTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         for (int ch = 0; ch < 2; ch++) {
@@ -700,7 +702,7 @@ class RecordingPipelineTest {
         float midFadeOut = captured[0][lastIdx - fadeFrames / 2];
         assertThat(midFadeOut).isBetween(0.3f, 0.7f);
 
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
@@ -718,7 +720,7 @@ class RecordingPipelineTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
@@ -746,7 +748,7 @@ class RecordingPipelineTest {
         long afterPass2 = pipeline.getSession(track).getTotalSamplesRecorded();
         assertThat(afterPass2).isEqualTo(afterPass1 + 512L);
 
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
@@ -761,7 +763,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track),
                 CountInMode.OFF, InputMonitoringMode.OFF, legacy);
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
@@ -775,6 +777,6 @@ class RecordingPipelineTest {
         pipeline.awaitFlushed();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(1024L);
 
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 }

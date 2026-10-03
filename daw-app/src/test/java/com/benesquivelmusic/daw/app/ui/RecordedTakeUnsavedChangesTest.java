@@ -13,9 +13,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.recording.CaptureFlushService;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
-import com.benesquivelmusic.daw.core.recording.TakeFinalizationPendingException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
@@ -48,7 +46,6 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -65,26 +62,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  * bit is set — on the project, on its {@link ProjectVM} and on the session
  * status strip's model that mirrors it — so a door that would replace the
  * project asks the unsaved-changes prompt, and the Save it offers writes the
- * take's segment into {@code project.daw}. A take whose Stop outlasted its
- * join and that turned out to hold no clip is no change: the deferred
+ * take's segment into {@code project.daw}. A take still being written when
+ * its Stop returned, and that turned out to hold no clip, is no change: its
  * publication leaves the project clean, and the door goes ahead unasked.
  *
  * <p>The recording is real — a {@link TransportController} over a real
  * {@link AudioEngine} on a {@link MockAudioBackend}, streaming a mono 24-bit
  * 96 kHz take into the project's {@code audio/takes} — and the door is a real
- * {@link ProjectLifecycleController} over a real {@link ProjectManager}. The
- * unsaved-changes prompt is answered on the FX thread, inside its
- * {@code showAndWait}, by pressing the button the test chose, or by hiding
- * it (a cancel). Every FX action and every wait is bounded.</p>
+ * {@link ProjectLifecycleController} over a real {@link ProjectManager}.
+ * Neither Record nor Stop waits for the take's capture thread (PR #978 review
+ * 5391920205): the take records, and a stopped take is published, on a later
+ * FX turn, which the test waits for. The unsaved-changes prompt is answered
+ * on the FX thread, inside its {@code showAndWait}, by pressing the button
+ * the test chose, or by hiding it (a cancel). Every FX action and every wait
+ * is bounded.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class RecordedTakeUnsavedChangesTest {
 
     private static final String UNSAVED_CHANGES_TITLE = "Unsaved Changes";
     private static final Duration FX_TURN_BUDGET = Duration.ofSeconds(5);
-    /** A real Stop joins the take's capture thread for up to its join bound. */
-    private static final Duration REAL_STOP_BUDGET = CaptureFlushService.STOP_JOIN_TIMEOUT.plusSeconds(5);
     private static final long WAIT_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(10);
+    /** The hang guard of a wait for a real take's capture thread: its files created, or the take published. */
+    private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
 
     @TempDir
     Path workspace;
@@ -97,6 +97,8 @@ class RecordedTakeUnsavedChangesTest {
     private ProjectLifecycleController lifecycle;
     private ProjectVM projectVM;
     private ProjectOperationProgress progress;
+    /** Holds the take's capture thread for the test that needs its take still being written. */
+    private final CaptureThreadHold hold = new CaptureThreadHold();
 
     /** The text of the prompt button to press; {@code null} hides the prompt, which cancels it. */
     private volatile String promptAnswer;
@@ -161,11 +163,13 @@ class RecordedTakeUnsavedChangesTest {
     @AfterEach
     void stopEverything() throws Exception {
         try {
+            hold.release();
             runOnFx(() -> {
                 if (controller.isRecordingInFlight()) {
                     controller.stop();
                 }
-            }, REAL_STOP_BUDGET);
+            });
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take's files are closed", TAKE_BUDGET_NANOS);
         } finally {
             runOnFx(() -> {
                 Window.getWindows().removeListener(answerUnsavedChangesPrompts);
@@ -185,7 +189,8 @@ class RecordedTakeUnsavedChangesTest {
         assertThat(onFx(projectVM::isDirty)).as("fixture: the saved project starts clean").isFalse();
         Path takeDirectory = recordUntilABlockIsOnDisk();
 
-        runOnFx(controller::stop, REAL_STOP_BUDGET);
+        runOnFx(controller::stop);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the stopped take was published", TAKE_BUDGET_NANOS);
 
         assertThat(onFx(() -> List.copyOf(lead.getClips()))).as("fixture: the Stop published the take")
                 .hasSize(1);
@@ -215,31 +220,32 @@ class RecordedTakeUnsavedChangesTest {
 
     @Test
     void aTakeThatHeldNoClipWhenItsWritingFinishedLeavesTheProjectCleanAndTheDoorUnasked() throws Exception {
-        CompletableFuture<Void> written = new CompletableFuture<>();
-        AtomicInteger stops = new AtomicInteger();
+        AtomicInteger completions = new AtomicInteger();
+        // The take's writing finishes after its Stop has returned, and holds
+        // no clip: the clips the real completion built are taken off again.
+        runOnFx(() -> {
+            hold.installOn(controller);
+            controller.setTakeCompletionForTest(pipeline -> {
+                completions.incrementAndGet();
+                pipeline.completeStop();
+                pipeline.getRecordedClips().forEach(Track::removeClip);
+                return List.<AudioClip>of();
+            });
+        });
         recordUntilABlockIsOnDisk();
-        // The first Stop's join runs out; the take's writing finishes later and
-        // holds no clip: the clips the real stop built are taken off again.
-        runOnFx(() -> controller.setPipelineStopForTest(pipeline -> {
-            if (stops.incrementAndGet() == 1) {
-                pipeline.stop();
-                pipeline.getRecordedClips().keySet().forEach(track ->
-                        track.removeClip(pipeline.getRecordedClips().get(track)));
-                throw new TakeFinalizationPendingException(pipeline.getTakeDirectory(), Duration.ofMillis(1),
-                        written);
-            }
-            return List.<AudioClip>of();
-        }));
+        hold.arm();
+        hold.awaitHolding(Duration.ofSeconds(10));
 
-        runOnFx(controller::stop, REAL_STOP_BUDGET);
-        assertThat(onFx(controller::isTakeBeingWritten)).as("fixture: the take is being written").isTrue();
-        assertThat(onFx(project::isDirty)).isFalse();
+        try {
+            runOnFx(controller::stop);
+            assertThat(onFx(controller::isTakeBeingWritten)).as("fixture: the take is being written").isTrue();
+            assertThat(onFx(project::isDirty)).isFalse();
+        } finally {
+            hold.release(); // the capture thread seals the take and terminates
+        }
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published", TAKE_BUDGET_NANOS);
 
-        written.complete(null);
-        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the deferred half ran");
-        runOnFx(() -> { }); // the turn after the deferred half
-
-        assertThat(stops).as("fixture: the deferred half stopped the pipeline again").hasValue(2);
+        assertThat(completions).as("fixture: the turn that published the take completed it once").hasValue(1);
         assertThat(onFx(() -> List.copyOf(lead.getClips()))).as("fixture: no clip was published").isEmpty();
         assertThat(onFx(project::isDirty)).as("a take that published no clip is no change").isFalse();
         assertThat(onFx(projectVM::isDirty)).isFalse();
@@ -248,9 +254,14 @@ class RecordedTakeUnsavedChangesTest {
         assertThat(prompts).as("without the unsaved-changes prompt").hasValue(0);
     }
 
-    /** Presses Record and waits, bounded, until the take's first segment holds a block; returns the take directory. */
+    /**
+     * Presses Record and waits, bounded, until the take records and its first
+     * segment holds a block; returns the take directory.
+     */
     private Path recordUntilABlockIsOnDisk() throws Exception {
-        runOnFx(controller::toggleRecord, REAL_STOP_BUDGET);
+        runOnFx(controller::toggleRecord);
+        awaitOnFx(() -> !controller.isPreparingTake(), "the take's files were created and capture began",
+                TAKE_BUDGET_NANOS);
         Path takeDirectory = onFx(() -> controller.activeTakeDirectory().orElseThrow(
                 () -> new AssertionError("fixture: the take streams into a take directory")));
         Path part = takeDirectory.resolve(lead.getId()).resolve("segment-000.wav.part");
@@ -288,10 +299,11 @@ class RecordedTakeUnsavedChangesTest {
         }
     }
 
-    private static void awaitOnFx(Supplier<Boolean> condition, String what) throws Exception {
-        long deadline = System.nanoTime() + WAIT_BUDGET_NANOS;
+    private static void awaitOnFx(Supplier<Boolean> condition, String what, long budgetNanos) throws Exception {
+        long deadline = System.nanoTime() + budgetNanos;
         while (!onFx(condition)) {
-            assertThat(System.nanoTime() - deadline < 0).as("%s, within 10 s", what).isTrue();
+            assertThat(System.nanoTime() - deadline < 0)
+                    .as("%s, within %d s", what, TimeUnit.NANOSECONDS.toSeconds(budgetNanos)).isTrue();
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
         }
     }

@@ -53,7 +53,7 @@ class TransportTest {
     void stopWhileAlreadyStoppedIsANoOp() {
         // Story 315 — the "second Stop rewinds to zero" gesture lives in the
         // UI layer; the model-level stop() is idempotent so internal stops
-        // (e.g. RecordingPipeline.stop()) never double-rewind the playhead.
+        // (e.g. RecordingPipeline.requestStop()) never double-rewind the playhead.
         Transport transport = new Transport();
         transport.setPositionInBeats(60.0);
         transport.play();

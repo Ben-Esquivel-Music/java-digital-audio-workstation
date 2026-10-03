@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.SAMPLE_RATE;
@@ -122,7 +123,7 @@ final class EndlessRampRecorder {
         pipeline.setSegmentLimits(Duration.ofHours(1), SEGMENT_BYTES);
         pipeline.setRingSlots(RING_SLOTS);
         pipeline.setWarningSink(message -> report(WARNING + message.replaceAll("\\R", " ")));
-        pipeline.start();
+        startRecording(pipeline);
         // Registered once: the dependent runs on the capture-flush thread as
         // that thread signals, or here if the signal has completed already.
         AtomicReference<EarlySeal> sealedEarly = new AtomicReference<>();

@@ -36,6 +36,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitTermination;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.SAMPLE_RATE;
@@ -243,7 +245,7 @@ class TakeRecoveryAfterJvmKillContractTest {
         pipeline.setNanoClock(() -> 0L);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         // The first manifest write after the start is the rotation's
         // rewrite: every one of its attempts fails.
@@ -251,6 +253,7 @@ class TakeRecoveryAfterJvmKillContractTest {
 
         long fed = feedRamp(engine, transport, pipeline, 0, blocks, EndlessRampRecorder.FENCE_EVERY_BLOCKS);
         service.stopAndAbandon();
+        awaitTermination(service);
 
         AbandonedTake take = new AbandonedTake(takeDir, track.getId(), fed, List.copyOf(warnings));
         assertThat(take.manifestWriteFailed()).as("fixture: the rotation's manifest rewrite failed").isTrue();

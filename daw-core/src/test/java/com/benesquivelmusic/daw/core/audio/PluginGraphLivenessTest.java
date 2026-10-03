@@ -27,6 +27,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PluginGraphLivenessTest {
@@ -230,16 +232,16 @@ class PluginGraphLivenessTest {
             var output = new float[2][256];
             graph.engine().processBlock(null, output, 256);
             assertThat(peak(output)).as("stopped audition through active engine output").isGreaterThan(0.01f);
-            recording.start();
+            startRecording(recording);
             graph.engine().processBlock(null, output, 256);
             graph.engine().processBlock(null, output, 256);
-            var clips = recording.stop();
+            var clips = stopRecording(recording);
             assertThat(clips).hasSize(1);
             assertThat(peak(clips.getFirst().getAudioData())).as("instrument audio recorded without physical input")
                     .isGreaterThan(0.01f);
             assertThat(graph.engine().hasGraphInstrument(graph.track())).isTrue();
         } finally {
-            if (recording.isActive()) { recording.stop(); }
+            if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();
             plugin.dispose();
         }
@@ -293,7 +295,7 @@ class PluginGraphLivenessTest {
                 directory, List.of(graph.track()));
         try {
             plugin.getProcessor().noteOn(69, 100);
-            recording.start();
+            startRecording(recording);
             var input = new float[3][256];
             java.util.Arrays.fill(input[0], 0.7f);
             java.util.Arrays.fill(input[1], 0.25f);
@@ -307,7 +309,7 @@ class PluginGraphLivenessTest {
             assertThat(captured[0]).containsOnly(0.25f);
             assertThat(captured[1]).containsOnly(inputChannels == 1 ? 0f : -0.5f);
         } finally {
-            if (recording.isActive()) { recording.stop(); }
+            if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();
             plugin.dispose();
         }
@@ -333,7 +335,7 @@ class PluginGraphLivenessTest {
         var recording = new RecordingPipeline(graph.engine(), graph.transport(), FORMAT, directory, tracks);
         try {
             plugin.getProcessor().noteOn(69, 100);
-            recording.start();
+            startRecording(recording);
             var input = new float[2][256];
             java.util.Arrays.fill(input[0], -0.5f);
             java.util.Arrays.fill(input[1], 0.25f);
@@ -345,7 +347,7 @@ class PluginGraphLivenessTest {
             assertThat(recording.getSession(microphone).getCapturedAudio()[0]).containsOnly(0.25f);
             assertThat(recording.getSession(disconnected).getCapturedSampleCount()).isZero();
         } finally {
-            if (recording.isActive()) { recording.stop(); }
+            if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();
             plugin.dispose();
         }

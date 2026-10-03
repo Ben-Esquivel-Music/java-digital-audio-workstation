@@ -24,6 +24,8 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RecordingPipelineGraphCompensationTest {
@@ -65,7 +67,7 @@ class RecordingPipelineGraphCompensationTest {
         recording.setReportedLatency(new RoundTripLatency(inputLatency, outputLatency, 0));
         recording.setApplyLatencyCompensation(compensate);
         recording.setLoopRecord(mode.equals("loop"));
-        recording.start();
+        startRecording(recording);
         long expectedPhysical = compensate ? inputLatency + outputLatency : 0;
         try {
             assertThat(recording.getSession(instrument).getCompensationFrames()).isZero();
@@ -76,7 +78,7 @@ class RecordingPipelineGraphCompensationTest {
             recording.awaitFlushed();
             assertThat(recording.getSession(instrument).getCompensationFrames()).isZero();
             if (mixed) assertThat(recording.getSession(physical).getCompensationFrames()).isEqualTo(expectedPhysical);
-            recording.stop();
+            stopRecording(recording);
 
             assertThat(instrument.getClips()).hasSize(1);
             assertThat(instrument.getClips().getFirst().getStartBeat()).isEqualTo(4);
@@ -94,7 +96,7 @@ class RecordingPipelineGraphCompensationTest {
                                 .isEqualTo(4 - expectedPhysical / 24_000.0));
             }
         } finally {
-            if (recording.isActive()) recording.stop();
+            if (recording.isActive()) stopRecording(recording);
             engine.stop();
             mixer.getDelayCompensation().close();
         }

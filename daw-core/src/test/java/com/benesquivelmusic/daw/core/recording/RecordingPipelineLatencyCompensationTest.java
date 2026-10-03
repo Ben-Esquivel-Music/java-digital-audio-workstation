@@ -15,6 +15,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -58,7 +60,7 @@ class RecordingPipelineLatencyCompensationTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setReportedLatency(new RoundTripLatency(64, 128, 16));
-        pipeline.start();
+        startRecording(pipeline);
 
         // 64 + 128 + 16 = 208 frames is the resolved compensation.
         assertThat(pipeline.getResolvedCompensationFrames()).isEqualTo(208);
@@ -68,7 +70,7 @@ class RecordingPipelineLatencyCompensationTest {
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         // 208 frames at 44.1 kHz / 120 BPM = 208/44100 * (120/60) beats earlier.
@@ -93,7 +95,7 @@ class RecordingPipelineLatencyCompensationTest {
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setReportedLatency(new RoundTripLatency(64, 128, 16));
         pipeline.setApplyLatencyCompensation(false);
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.getResolvedCompensationFrames()).isZero();
 
@@ -101,7 +103,7 @@ class RecordingPipelineLatencyCompensationTest {
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         // No shift — clip lands at the original start position.
@@ -126,7 +128,7 @@ class RecordingPipelineLatencyCompensationTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setReportedLatency(new RoundTripLatency(0, 0, 512));
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.getResolvedCompensationFrames()).isEqualTo(512);
 
@@ -134,7 +136,7 @@ class RecordingPipelineLatencyCompensationTest {
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         double compensationBeats =
                 (512.0 / format.sampleRate()) * (transport.getTempo() / 60.0);
@@ -155,7 +157,7 @@ class RecordingPipelineLatencyCompensationTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.getResolvedCompensationFrames()).isZero();
         assertThat(pipeline.getReportedLatency()).isEqualTo(RoundTripLatency.UNKNOWN);
@@ -164,7 +166,7 @@ class RecordingPipelineLatencyCompensationTest {
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips.getFirst().getStartBeat()).isEqualTo(4.0);
     }
 
@@ -183,13 +185,13 @@ class RecordingPipelineLatencyCompensationTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setReportedLatency(new RoundTripLatency(64, 128, 16));
-        pipeline.start();
+        startRecording(pipeline);
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips.getFirst().getStartBeat()).isZero();
     }
 
@@ -201,13 +203,13 @@ class RecordingPipelineLatencyCompensationTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         pipeline.setReportedLatency(new RoundTripLatency(64, 128, 16));
-        pipeline.start();
+        startRecording(pipeline);
 
         pipeline.awaitFlushed();
         RecordingSession session = pipeline.getSession(track);
         assertThat(session).isNotNull();
         assertThat(session.getCompensationFrames()).isEqualTo(208);
 
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 }

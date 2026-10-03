@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.recording.CaptureFlushService;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -57,14 +56,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The controller has a notification bar of its own, so a test's
  * notification history holds what the lifecycle controller shows and none
  * of the transport's toasts. Every FX action runs through
- * {@link Platform#runLater} and is bounded: at 5 s, or — for Record and
- * Stop, which may start or stop a real take — at
- * {@link #REAL_STOP_OR_START_BUDGET}, longer than the join of the take's
- * capture thread; the waits on the test thread — for the first recorded
- * block, for the take to grow — are bounded at 10 s, as in
- * {@code TransportControllerTest}. {@link #close()} stops a recording still
- * in flight, so the take's files are closed before the temporary directory
- * is removed, and then shuts the engine down, even if that Stop failed.</p>
+ * {@link Platform#runLater} and is bounded at 5 s: neither Record nor Stop
+ * waits for the take's capture thread on the FX thread (PR #978 review
+ * 5391920205). An audio take's Record only enters PREPARING; the take
+ * records once its capture thread has created its files, on a later FX turn,
+ * and its Stop publishes it on a later FX turn still, once that thread has
+ * terminated. So the waits on the test thread — for the take to record, for
+ * the first recorded block, for the take to grow, for the stopped take to be
+ * published — are bounded, at 10 s, or at {@link #TAKE_BUDGET_NANOS} for
+ * what waits on a real disk. {@link #close()} stops a recording still in
+ * flight and waits until nothing is being written, so the take's files are
+ * closed before the temporary directory is removed, and then shuts the
+ * engine down, even if that Stop failed.</p>
  */
 final class RecordingInFlightFixture implements AutoCloseable {
 
@@ -73,17 +76,15 @@ final class RecordingInFlightFixture implements AutoCloseable {
 
     private static final long WAIT_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(10);
 
-    /** The bound of an FX action that starts or stops no take. */
-    private static final Duration FX_TURN_BUDGET = Duration.ofSeconds(5);
-
     /**
-     * The bound of an FX action that may start or stop a real take: a real
-     * Stop joins the take's capture thread for up to
-     * {@link CaptureFlushService#STOP_JOIN_TIMEOUT} (30 s), and so does the
-     * rollback of a Record whose pipeline fails to start; this is that bound
-     * plus 5 s for the rest of the FX turn.
+     * The bound of a wait for a real take's capture thread — its files
+     * created, or the take sealed and published: a hang guard, which a
+     * passing wait never comes near.
      */
-    private static final Duration REAL_STOP_OR_START_BUDGET = CaptureFlushService.STOP_JOIN_TIMEOUT.plusSeconds(5);
+    private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
+
+    /** The bound of an FX action. */
+    private static final Duration FX_TURN_BUDGET = Duration.ofSeconds(5);
 
     private final DawProject project;
     private final Track armed;
@@ -162,18 +163,19 @@ final class RecordingInFlightFixture implements AutoCloseable {
     /**
      * Presses Record as the user does and asserts that the take started —
      * without asking {@code isRecordingInFlight()}, the answer the guard
-     * reads: the transport RECORDING and, for an audio take, a take
-     * directory streaming; for a MIDI-only take, the track recording from
+     * reads: for an audio take, that its take is being prepared (it records
+     * on a later FX turn, once its capture thread has created its files —
+     * {@link #awaitTheAudioTakeRecording()}); for a MIDI-only take, which
+     * starts at once, the transport RECORDING and the track recording from
      * the stub input. FX thread.
      */
     void startOnFx() {
         controller.toggleRecord();
-        assertThat(project.getTransport().getState()).as("fixture: the transport records")
-                .isEqualTo(TransportState.RECORDING);
         if (midiInput == null) {
-            takeDirectory = controller.activeTakeDirectory()
-                    .orElseThrow(() -> new AssertionError("fixture: the audio take streams into a take directory"));
+            assertThat(controller.isPreparingTake()).as("fixture: the audio take is being prepared").isTrue();
         } else {
+            assertThat(project.getTransport().getState()).as("fixture: the transport records")
+                    .isEqualTo(TransportState.RECORDING);
             assertThat(armed.isRecording()).as("fixture: the MIDI track records").isTrue();
             assertThat(midiInput.isConnected()).as("fixture: from the stub input").isTrue();
         }
@@ -181,23 +183,47 @@ final class RecordingInFlightFixture implements AutoCloseable {
 
     /**
      * {@link #startOnFx()} on the FX thread; for an audio take, then waits,
-     * bounded, until a recorded block has reached the take's first segment.
+     * bounded, until the take records and a recorded block has reached its
+     * first segment.
      */
     void start() throws Exception {
-        runOnFx(this::startOnFx, REAL_STOP_OR_START_BUDGET);
+        runOnFx(this::startOnFx);
         if (midiInput == null) {
+            awaitTheAudioTakeRecording();
             awaitABlockOnDisk();
         }
     }
 
     /**
+     * Waits, bounded, until the audio take Record started has left PREPARING,
+     * and asserts that it records: the transport RECORDING and a take
+     * directory streaming, which it remembers. Once remembered, returns at
+     * once.
+     */
+    private void awaitTheAudioTakeRecording() throws Exception {
+        if (takeDirectory != null) {
+            return;
+        }
+        await(() -> !onFxUnchecked(controller::isPreparingTake), TAKE_BUDGET_NANOS,
+                "fixture: the audio take's files were created and capture began");
+        assertThat(onFx(() -> project.getTransport().getState())).as("fixture: the transport records")
+                .isEqualTo(TransportState.RECORDING);
+        takeDirectory = onFx(controller::activeTakeDirectory)
+                .orElseThrow(() -> new AssertionError("fixture: the audio take streams into a take directory"));
+    }
+
+    /**
      * Asserts that the recording goes on: still in flight and the transport
-     * still RECORDING; for an audio take, the engine's recording callback
-     * still installed, the same take still active and its segment still
-     * growing; for a MIDI-only take, the track still recording and its input
-     * still connected.
+     * still RECORDING; for an audio take — first waited for, bounded, if it
+     * was started by {@link #startOnFx()} and has not been seen recording
+     * yet — the engine's recording callback still installed, the same take
+     * still active and its segment still growing; for a MIDI-only take, the
+     * track still recording and its input still connected.
      */
     void assertStillRecording() throws Exception {
+        if (midiInput == null) {
+            awaitTheAudioTakeRecording();
+        }
         assertThat(onFx(controller::isRecordingInFlight)).as("the recording is still in flight").isTrue();
         assertThat(onFx(() -> project.getTransport().getState())).as("the transport is still RECORDING")
                 .isEqualTo(TransportState.RECORDING);
@@ -217,19 +243,22 @@ final class RecordingInFlightFixture implements AutoCloseable {
     }
 
     /**
-     * The user's Stop, once an audio take has its first block on disk; then
-     * nothing is in flight or being written any more, an audio take's clip
-     * has been published on its track — which marks the project dirty — and
-     * a MIDI-only take's input has been disconnected (it publishes only the
+     * The user's Stop, once an audio take has its first block on disk; then,
+     * once the take's capture thread has terminated and the take has been
+     * published on a later FX turn (waited for, bounded), nothing is in
+     * flight or being written any more, an audio take's clip has been
+     * published on its track — which marks the project dirty — and a
+     * MIDI-only take's input has been disconnected (it publishes only the
      * notes played through {@link #holdANote()}).
      */
     void stop() throws Exception {
         if (midiInput == null) {
+            awaitTheAudioTakeRecording();
             awaitABlockOnDisk();
         }
-        runOnFx(controller::stop, REAL_STOP_OR_START_BUDGET);
+        runOnFx(controller::stop);
         assertThat(onFx(controller::isRecordingInFlight)).as("fixture: the Stop ended the recording").isFalse();
-        assertThat(onFx(controller::isTakeBeingWritten)).as("fixture: nothing is being written").isFalse();
+        awaitNothingBeingWritten();
         if (midiInput == null) {
             assertThat(onFx(() -> List.copyOf(armed.getClips()))).as("fixture: the Stop published the take")
                     .hasSize(1);
@@ -256,9 +285,11 @@ final class RecordingInFlightFixture implements AutoCloseable {
     }
 
     /**
-     * Stops a recording still in flight, which closes the take's files, and
-     * then shuts the engine down — in a {@code finally}, so a Stop that fails
-     * or outlasts its bound does not skip that.
+     * Stops a recording still in flight — a take still being prepared is
+     * cancelled — and waits, bounded, until nothing is being written, which
+     * closes the take's files, and then shuts the engine down — in a
+     * {@code finally}, so a Stop that fails or a take that outlasts its bound
+     * does not skip that.
      */
     @Override
     public void close() throws Exception {
@@ -267,11 +298,18 @@ final class RecordingInFlightFixture implements AutoCloseable {
                 if (controller.isRecordingInFlight()) {
                     controller.stop();
                 }
-            }, REAL_STOP_OR_START_BUDGET);
+            });
+            awaitNothingBeingWritten();
         } finally {
             engine.stopAudioOutput();
             engine.stop();
         }
+    }
+
+    /** Waits, bounded, until no take of the controller is being written or having its files removed. */
+    private void awaitNothingBeingWritten() {
+        await(() -> !onFxUnchecked(controller::isTakeBeingWritten), TAKE_BUDGET_NANOS,
+                "fixture: the stopped take was published and nothing is being written");
     }
 
     /** Waits, bounded, until the audio take's first segment holds a block past its 44-byte header. */
@@ -296,9 +334,14 @@ final class RecordingInFlightFixture implements AutoCloseable {
     }
 
     private static void await(BooleanSupplier condition, String what) {
-        long deadline = System.nanoTime() + WAIT_BUDGET_NANOS;
+        await(condition, WAIT_BUDGET_NANOS, what);
+    }
+
+    private static void await(BooleanSupplier condition, long budgetNanos, String what) {
+        long deadline = System.nanoTime() + budgetNanos;
         while (!condition.getAsBoolean()) {
-            assertThat(System.nanoTime() - deadline < 0).as("%s, within 10 s", what).isTrue();
+            assertThat(System.nanoTime() - deadline < 0)
+                    .as("%s, within %d s", what, TimeUnit.NANOSECONDS.toSeconds(budgetNanos)).isTrue();
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
         }
     }
@@ -307,6 +350,17 @@ final class RecordingInFlightFixture implements AutoCloseable {
         AtomicReference<T> result = new AtomicReference<>();
         runOnFx(() -> result.set(action.get()));
         return result.get();
+    }
+
+    /** {@link #onFx}, for a condition polled by {@link #await}: a failed FX turn is rethrown unchecked. */
+    private static boolean onFxUnchecked(Supplier<Boolean> action) {
+        try {
+            return onFx(action);
+        } catch (RuntimeException | Error e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** Runs {@code action} on the FX thread and rethrows what it threw; bounded at {@link #FX_TURN_BUDGET}. */

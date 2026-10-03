@@ -944,13 +944,17 @@ final class ProjectLifecycleController {
     /**
      * Story 323 review (Recording Reliability book §5.2): refuses to replace
      * the open project while a recording is in flight or a take is still
-     * being written to disk. A recording in flight — an audio take whose
-     * pipeline is active, or a live MIDI recorder — records into the open
-     * project, whose tracks its take is published into. A Stop whose bounded
-     * join ran out leaves the take FINALIZING, which returns to IDLE only
-     * once the seal has completed and the rest of the Stop has published the
+     * being written to disk. A recording in flight — an audio take being
+     * prepared (its take directory being allocated or its files being
+     * created) or whose pipeline is active, or a live MIDI recorder —
+     * records into the open project, whose tracks its take is published
+     * into. Every Stop of an audio take leaves the take FINALIZING until the
+     * FX turn posted by its capture thread's termination has published the
      * take into the project it was recorded in (or reported why it could
-     * not) — the same rule that refuses Record meanwhile. Shows
+     * not), and a start that was cancelled, or that failed once its take
+     * directory existed, counts as FINALIZING until the FX turn after the
+     * removal of its files has run, whether or not everything could be
+     * removed — the same rule that refuses Record meanwhile. Shows
      * {@link #PROJECT_CHANGE_WHILE_RECORDING_MESSAGE} or
      * {@link #PROJECT_CHANGE_WHILE_WRITING_MESSAGE} as a WARNING toast, with
      * no modal dialog, and logs it. Only the in-app doors that call this are

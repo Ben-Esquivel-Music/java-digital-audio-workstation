@@ -20,6 +20,8 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.advanceOneBlock;
@@ -90,7 +92,7 @@ class SegmentForceCadenceContractTest {
         pipeline.setNanoClock(clock::get);
         ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
         pipeline.setChannelOpener(journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
-        pipeline.start();
+        startRecording(pipeline);
 
         assertThat(pipeline.getSession(track).getForceCadence()).isEqualTo(cadence);
         SegmentWriter writer = pipeline.getSession(track).getCurrentWriter();
@@ -112,7 +114,7 @@ class SegmentForceCadenceContractTest {
 
         assertThat(writer.forceCount()).isEqualTo(3);
         assertThat(writer.bytesSinceForce()).isZero();
-        pipeline.stop();
+        stopRecording(pipeline);
         assertThat(journal.forces(false)).as("the seal adds no cadence force").isEqualTo(3);
     }
 
@@ -155,7 +157,7 @@ class SegmentForceCadenceContractTest {
         assertThat(writer.forceCount()).isEqualTo(1);
         assertThat(writer.lastForceNanos()).isEqualTo(5 * SECOND);
 
-        rig.pipeline().stop();
+        stopRecording(rig.pipeline());
         assertThat(seen).as("force(false) calls on the channel as each block was finished (read once the stop"
                         + " has returned: the thread has terminated)")
                 .containsExactly(
@@ -188,7 +190,7 @@ class SegmentForceCadenceContractTest {
         assertThat(rig.pipeline().getCaptureRing().publishedBlocks()).as("no block was published meanwhile")
                 .isEqualTo(published);
         assertThat(dataWrites(rig.journal())).as("no further append reached the channel").isEqualTo(appends);
-        rig.pipeline().stop();
+        stopRecording(rig.pipeline());
         assertThat(writer.forceCount()).as("one cadence force (read once the stop has returned: the thread has terminated)")
                 .isEqualTo(1);
         assertThat(writer.lastForceNanos()).isEqualTo(5 * SECOND);
@@ -225,7 +227,7 @@ class SegmentForceCadenceContractTest {
         // force(true).
         rig.service().setDrainPaused(true);
         rig.clock().set(20 * SECOND);
-        rig.pipeline().stop();
+        stopRecording(rig.pipeline());
 
         assertThat(writer.isSealed()).isTrue();
         assertThat(writer.frameCount()).isEqualTo(2L * BLOCK_FRAMES);
@@ -259,7 +261,7 @@ class SegmentForceCadenceContractTest {
                 .isEqualTo(5 * SECOND);
         assertThat(writer.frameCount()).isEqualTo(BLOCK_FRAMES);
 
-        rig.pipeline().stop();
+        stopRecording(rig.pipeline());
         assertThat(rig.journal().forces(false)).isEqualTo(1);
         assertThat(rig.journal().forces(true)).isEqualTo(2);
     }
@@ -320,7 +322,7 @@ class SegmentForceCadenceContractTest {
         publishAt(rig.pipeline(), rig.clock(), 7 * SECOND, () -> rig.feed(6L * BLOCK_FRAMES));
         assertThat(service.discardedBlocks()).isEqualTo(2);
 
-        List<AudioClip> clips = rig.pipeline().stop();
+        List<AudioClip> clips = stopRecording(rig.pipeline());
 
         long frames = 5L * BLOCK_FRAMES;
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
@@ -379,7 +381,7 @@ class SegmentForceCadenceContractTest {
         awaitCondition("the early seal that answers the failed cadence force", service::isSealed);
         assertThat(service.isRunning()).as("the failure was not thrown out of the loop").isTrue();
 
-        List<?> clips = rig.pipeline().stop();
+        List<?> clips = stopRecording(rig.pipeline());
         assertThat(clips).as("the take keeps what was captured").hasSize(1);
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
         assertThat(warnings).anySatisfy(w -> assertThat(w).contains("Recording stopped early"));
@@ -418,7 +420,7 @@ class SegmentForceCadenceContractTest {
         // factory builds, which carries cadence, clock and opener to it.
         ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
         pipeline.setChannelOpener(journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(journal.forces(false)).as("no force before the first cadence boundary").isZero();
 
         long cadenceSeconds = cadence.toSeconds();
@@ -457,7 +459,7 @@ class SegmentForceCadenceContractTest {
         TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(manifest.forceCadenceMillis()).isEqualTo(cadence.toMillis());
         assertThat(journal.forces(true)).as("no metadata force while the segment streams").isZero();
-        pipeline.stop();
+        stopRecording(pipeline);
         assertThat(journal.forces(false)).as("the seal adds no cadence force").isEqualTo(forces);
         assertThat(journal.forces(true)).as("the seal forces the data, then the patched header").isEqualTo(2);
         return forces;
@@ -543,7 +545,7 @@ class SegmentForceCadenceContractTest {
                 Duration.ZERO, clock::get, warningSink));
         ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
         pipeline.setChannelOpener(journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(pipeline.getForceCadence()).as("fixture: the default cadence").isEqualTo(Duration.ofSeconds(5));
         return new Rig(engine, transport, track, clock, journal, pipeline);
     }

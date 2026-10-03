@@ -46,10 +46,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Story 323 review (PR #978, Copilot review 5365941737, the fix round's F1):
- * a Stop whose bounded join ran out leaves its take FINALIZING (Recording
+ * every Stop of an audio take leaves the take FINALIZING (Recording
  * Reliability book §5.2 — FINALIZING returns to IDLE only once the seal has
- * completed), and the take is published into the project it was recorded in
- * only then. So no in-app door replaces the open project meanwhile:
+ * completed) until the FX turn its capture thread's termination posts has
+ * run — the only turn that publishes the take, into the project it was
+ * recorded in; a start that was cancelled, or that failed once its take
+ * directory existed, counts the same way until the FX turn after the
+ * removal of its files has run, whether or not everything could be
+ * removed. So no in-app door replaces the open
+ * project meanwhile:
  * {@link ProjectLifecycleController} refuses each of them with a WARNING toast
  * ({@link ProjectLifecycleController#PROJECT_CHANGE_WHILE_WRITING_MESSAGE}),
  * before the unsaved-changes prompt and before anything is abandoned, and

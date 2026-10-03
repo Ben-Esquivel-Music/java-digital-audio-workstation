@@ -19,6 +19,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -48,7 +50,7 @@ class StopSealOfTheSecondOfTwoLanesTest {
         Track right = armedOn("Right", 1);
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, STEREO, takeDirectory,
                 List.of(left, right));
-        pipeline.start();
+        startRecording(pipeline);
         float[][] output = new float[2][FRAMES];
         for (int block = 0; block < 3; block++) {
             engine.processBlock(stereoBlock(block), output, FRAMES);
@@ -58,7 +60,7 @@ class StopSealOfTheSecondOfTwoLanesTest {
         Path rightSealed = takeDirectory.resolve(right.getId()).resolve("segment-000.wav");
         Files.writeString(rightSealed, IN_THE_WAY, StandardCharsets.UTF_8);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         StopSealFailure failure = pipeline.stopSealFailure().orElseThrow(
                 () -> new AssertionError("the stop reports the second lane's failed seal"));

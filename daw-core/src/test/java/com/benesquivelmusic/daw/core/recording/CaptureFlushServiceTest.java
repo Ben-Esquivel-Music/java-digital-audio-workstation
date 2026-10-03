@@ -18,12 +18,17 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitTermination;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.failureWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -32,9 +37,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * context D9): the cases the engine cannot produce on demand — a source
  * that delivers fewer channels than the routed width, an instrument source
  * that goes absent after it has delivered, a take whose very first
- * manifest write is refused, and the termination signal of a thread that
- * never ran; and the rollbacks that must not act while a held thread may
- * still write (story 323 review).
+ * manifest write is refused, and the signals of a thread that never ran;
+ * and the requests that end a take while the flush thread is held in a pass,
+ * which return at once and leave the files to that thread (story 323
+ * review, PR #978).
  */
 class CaptureFlushServiceTest {
 
@@ -53,10 +59,12 @@ class CaptureFlushServiceTest {
     private final List<String> warnings = new CopyOnWriteArrayList<>();
     private CaptureFlushService service;
 
+    /** A thread is never left behind: asked to stop, then given the guard to finish before the directory goes. */
     @AfterEach
     void stopTheFlushThread() {
         if (service != null) {
-            service.close();
+            service.requestStop(TakeManifest.SealedBy.STOP);
+            awaitTermination(service);
         }
     }
 
@@ -76,6 +84,12 @@ class CaptureFlushServiceTest {
         DiskHeadroomWatch watch = new DiskHeadroomWatch(takeDir, () -> 10 * GIB, GIB, 64L << 20,
                 Duration.ZERO, clock::get, warnings::add);
         return new CaptureFlushService(ring, config, List.of(capture), watch, warnings::add, clock::get);
+    }
+
+    /** Starts the service and waits (bounded) for the take to be ready: its files exist and the thread drains. */
+    private void startAndAwaitReadiness() {
+        service.start();
+        awaitWithinTheGuard(service.readiness(), "the take's readiness");
     }
 
     private static float[][] block(int channels, float value) {
@@ -112,7 +126,7 @@ class CaptureFlushServiceTest {
         TrackCapture capture = instrumentCapture(synth);
         CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
         service = newService(ring, capture);
-        service.start();
+        startAndAwaitReadiness();
 
         publish(ring, 0, block(2, 0.5f), 2);  // both instrument channels present
         publish(ring, 1, block(2, 0.25f), 1); // this block delivers ONE channel only
@@ -148,7 +162,7 @@ class CaptureFlushServiceTest {
         });
         CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
         service = newService(ring, capture);
-        service.start();
+        startAndAwaitReadiness();
         List<Long> forcesSeen = new CopyOnWriteArrayList<>();
         service.setBlockObserver((sequence, startFrame, numFrames) -> forcesSeen.add(journal.forces(false)));
 
@@ -172,7 +186,8 @@ class CaptureFlushServiceTest {
         assertThat(writer.frameCount()).as("the absent source appended nothing").isEqualTo(SLOT_FRAMES);
         assertThat(writer.bytesSinceForce()).as("the instrument's bytes are forced").isZero();
         assertThat(writer.forceCount()).isEqualTo(1);
-        service.close(); // returns once the thread has terminated, which publishes the observer's list
+        service.requestStop(TakeManifest.SealedBy.STOP);
+        awaitTermination(service); // the thread has terminated, which publishes the observer's list
         assertThat(forcesSeen).as("force(false) calls on the channel as each block was finished")
                 .containsExactly(0L, 1L, 1L);
         assertThat(journal.forces(false)).as("the seal adds no cadence force").isEqualTo(1);
@@ -187,7 +202,7 @@ class CaptureFlushServiceTest {
         Track synth = new Track("Synth", TrackType.AUDIO);
         CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
         service = newService(ring, instrumentCapture(synth));
-        service.start();
+        startAndAwaitReadiness();
         List<String> order = new CopyOnWriteArrayList<>();
         CountDownLatch inPass = new CountDownLatch(1);
         CountDownLatch holdReturned = new CountDownLatch(1);
@@ -218,49 +233,61 @@ class CaptureFlushServiceTest {
     }
 
     @Test
-    void aRefusedInitialManifestWriteFailsTheStartAtOnceAndLeavesNothing() throws IOException {
+    void aRefusedInitialManifestWriteFailsTheReadinessAtOnceAndLeavesNothing() throws IOException {
         Track synth = new Track("Synth", TrackType.AUDIO);
         TrackCapture capture = instrumentCapture(synth);
         CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
         service = newService(ring, capture);
 
-        // One refused attempt: a retry would get through, so a start that
-        // fails proves the caller thread does not sit in a retry loop.
+        // One refused attempt: a retry would get through, so a readiness
+        // that fails proves the initialisation makes a single attempt.
         service.failNextManifestWrites(1);
+        service.start();
 
-        assertThatThrownBy(service::start).isInstanceOf(UncheckedIOException.class)
+        Throwable notReady = failureWithinTheGuard(service.readiness(), "the take's readiness");
+        assertThat(notReady).isInstanceOf(UncheckedIOException.class)
+                .hasMessage("cannot start capture under " + takeDir)
                 .hasRootCauseMessage("injected manifest write failure (test seam) under " + takeDir);
-        assertThat(service.isRunning()).isFalse();
-        assertThat(service.thread().isAlive()).as("the flush thread was never started").isFalse();
+        assertThat(service.isTerminated()).as("terminated before the readiness failed").isTrue();
+        assertThat(service.termination().toCompletableFuture().isDone()).isTrue();
+        assertThat(service.isRunning()).as("the thread never drained").isFalse();
         assertThat(service.manifestWrites()).isZero();
         try (Stream<Path> entries = Files.list(takeDir)) {
             assertThat(entries).as("the failed start left the take directory empty").isEmpty();
         }
+        assertThat(service.earlySeal().toCompletableFuture().isDone()).as("a take never ready never seals early")
+                .isFalse();
     }
 
     @Test
-    void aServiceWhoseStartFailedHasTerminatedAndItsStopNeverWaits() {
+    void aServiceWhoseInitialisationFailedHasTerminatedAndAStopRequestChangesNothing() {
         Track synth = new Track("Synth", TrackType.AUDIO);
         service = newService(new CaptureRing(SLOT_FRAMES, 2, 2, 8), instrumentCapture(synth));
         service.failNextManifestWrites(1);
-        assertThatThrownBy(service::start).isInstanceOf(UncheckedIOException.class);
+        service.start();
+        assertThat(failureWithinTheGuard(service.readiness(), "the take's readiness"))
+                .isInstanceOf(UncheckedIOException.class);
 
-        assertThat(service.isTerminated()).as("a thread that never ran will never touch the take").isTrue();
-        assertThat(service.termination().toCompletableFuture().isDone()).isTrue();
-        service.setStopJoinTimeout(Duration.ofMillis(1));
-        assertThat(service.stopAndSeal(TakeManifest.SealedBy.STOP)).containsOnlyKeys(synth.getId());
+        assertThat(service.isTerminated()).as("a thread that rolled back will never touch the take").isTrue();
+        service.requestStop(TakeManifest.SealedBy.STOP);
+
+        assertThat(service.isSealed()).as("nothing to seal").isFalse();
+        assertThat(service.sealedSegmentPaths()).containsOnlyKeys(synth.getId());
+        assertThat(service.sealedSegmentPaths().get(synth.getId())).isEmpty();
     }
 
     @Test
-    void aServiceStoppedBeforeItWasStartedHasTerminatedAndRefusesAStart() throws IOException {
+    void aServiceStoppedBeforeItWasStartedHasTerminatedFailsItsReadinessAndRefusesAStart() throws IOException {
         Track synth = new Track("Synth", TrackType.AUDIO);
         service = newService(new CaptureRing(SLOT_FRAMES, 2, 2, 8), instrumentCapture(synth));
         assertThat(service.isTerminated()).as("fixture: an unstarted service may still start").isFalse();
 
-        service.stopAndSeal(TakeManifest.SealedBy.STOP);
+        service.requestStop(TakeManifest.SealedBy.STOP);
 
         assertThat(service.isTerminated()).isTrue();
         assertThat(service.termination().toCompletableFuture().isDone()).isTrue();
+        assertThat(failureWithinTheGuard(service.readiness(), "the take's readiness"))
+                .as("no dependent of the readiness waits forever").isInstanceOf(CancellationException.class);
         assertThatThrownBy(service::start)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("stopped before it was started");
@@ -269,13 +296,30 @@ class CaptureFlushServiceTest {
         }
     }
 
-    /** Holds the flush thread in the block observer until {@code release} (bounded). */
+    @Test
+    void aServiceAbortedBeforeItWasStartedHasTerminatedAndFailsItsReadiness() {
+        Track synth = new Track("Synth", TrackType.AUDIO);
+        service = newService(new CaptureRing(SLOT_FRAMES, 2, 2, 8), instrumentCapture(synth));
+
+        service.requestAbort();
+
+        assertThat(service.isTerminated()).isTrue();
+        assertThat(failureWithinTheGuard(service.readiness(), "the take's readiness"))
+                .isInstanceOf(CancellationException.class);
+        assertThatThrownBy(service::start).isInstanceOf(IllegalStateException.class);
+    }
+
+    /**
+     * Holds the flush thread in the block observer until {@code release} —
+     * for at most twice the guard, so a request that waited for the hold
+     * would still be waiting when {@code outcomeWithinTheGuard} gives up.
+     */
     private CountDownLatch holdTheFlushThreadInItsNextBlock(CountDownLatch release) {
         CountDownLatch held = new CountDownLatch(1);
         service.setBlockObserver((sequence, startFrame, numFrames) -> {
             held.countDown();
             try {
-                release.await(GUARD.toMillis(), TimeUnit.MILLISECONDS);
+                release.await(2 * GUARD.toMillis(), TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -294,12 +338,12 @@ class CaptureFlushServiceTest {
     }
 
     @Test
-    void aStartRollbackWhoseJoinRunsOutDeletesNothingTheThreadMayStillWrite() throws Exception {
+    void anAbortWhileTheThreadIsHeldInAPassReturnsAtOnceAndTheThreadDiscardsTheTakeOnceThePassEnds()
+            throws Exception {
         Track synth = new Track("Synth", TrackType.AUDIO);
         CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
         service = newService(ring, instrumentCapture(synth));
-        service.start();
-        service.setStopJoinTimeout(Duration.ofMillis(200));
+        startAndAwaitReadiness();
         CountDownLatch release = new CountDownLatch(1);
         try {
             CountDownLatch held = holdTheFlushThreadInItsNextBlock(release);
@@ -309,49 +353,52 @@ class CaptureFlushServiceTest {
             assertThat(part).as("fixture: the lane is streaming").exists();
             Map<Path, Long> before = takeFiles();
 
-            assertThatThrownBy(service::abortStart)
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("left in place for recovery");
+            // The guard is far below the hold's own bound: an abort that waited
+            // for the held thread would still be waiting when the guard ran out.
+            assertThat(outcomeWithinTheGuard("abort", service::requestAbort)).as("the abort returns").isNull();
 
-            assertThat(takeFiles()).as("nothing the thread may still write was deleted").isEqualTo(before);
-            assertThat(warnings).anySatisfy(warning -> assertThat(warning).contains("left in place for recovery"));
+            assertThat(takeFiles()).as("nothing the held thread may still write was deleted").isEqualTo(before);
             assertThat(service.isTerminated()).isFalse();
 
             release.countDown();
-            service.termination().toCompletableFuture().get(GUARD.toMillis(), TimeUnit.MILLISECONDS);
-            service.abortStart(); // the thread is gone: now the rollback may delete
+            awaitTermination(service);
 
-            assertThat(part).doesNotExist();
+            assertThat(part).as("the flush thread discarded the take's files itself").doesNotExist();
+            assertThat(takeDir.resolve(synth.getId())).as("and the track directory it left empty").doesNotExist();
             assertThat(TakeManifest.manifestPath(takeDir)).doesNotExist();
+            assertThat(service.isSealed()).as("an abort seals nothing").isFalse();
+            assertThat(service.earlySeal().toCompletableFuture().isDone()).isFalse();
+            assertThat(service.stopSealFailure()).isEmpty();
         } finally {
             release.countDown();
         }
     }
 
     @Test
-    void aStopAndAbandonWhoseJoinRunsOutAbandonsNothing() throws Exception {
+    void anAbandonRequestedWhileTheThreadIsHeldAbandonsNothingUntilThePassEnds() throws Exception {
         Track synth = new Track("Synth", TrackType.AUDIO);
         CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
         TrackCapture capture = instrumentCapture(synth);
         service = newService(ring, capture);
-        service.start();
-        service.setStopJoinTimeout(Duration.ofMillis(200));
+        startAndAwaitReadiness();
         CountDownLatch release = new CountDownLatch(1);
         try {
             CountDownLatch held = holdTheFlushThreadInItsNextBlock(release);
             publish(ring, 0, block(2, 0.5f), 2);
             assertThat(held.await(GUARD.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
 
-            assertThatThrownBy(service::stopAndAbandon)
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("nothing was abandoned");
+            assertThat(outcomeWithinTheGuard("abandon", service::stopAndAbandon)).as("the request returns").isNull();
             assertThat(capture.session().isActive()).as("the session the thread holds was not abandoned").isTrue();
             assertThat(capture.session().getCurrentWriter().isStreaming())
                     .as("the writer the thread holds is still streaming").isTrue();
 
             release.countDown();
-            service.termination().toCompletableFuture().get(GUARD.toMillis(), TimeUnit.MILLISECONDS);
-            service.stopAndAbandon(); // the thread is gone: now the writers may be abandoned
+            awaitTermination(service);
+
+            assertThat(capture.session().isActive()).as("the flush thread abandoned its writer").isFalse();
+            assertThat(takeDir.resolve(synth.getId()).resolve("segment-000.wav.part"))
+                    .as("an abandoned segment stays a .part").exists();
+            assertThat(service.isSealed()).isFalse();
         } finally {
             release.countDown();
         }

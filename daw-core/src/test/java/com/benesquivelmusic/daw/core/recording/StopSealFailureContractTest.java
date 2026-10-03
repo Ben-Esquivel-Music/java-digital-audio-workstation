@@ -20,6 +20,9 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitTermination;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.advanceOneBlock;
@@ -34,15 +37,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * error"; story 323 review): when a lane's seal throws in that seal — a
  * failed rename, an {@link Error} — {@link RecordingPipeline#stopSealFailure()}
  * reports the first throwable a lane threw and whether every segment sealed
- * anyway, once {@code stop()} has returned the clips; the early-seal signal
+ * anyway, once the stop has completed; the early-seal signal
  * stays uncompleted, because that seal is no early seal. It reports nothing
  * for a stop in which no lane's seal threw, for a take the flush thread
  * sealed early — mid-take or in the final sweep of the stop, even when a lane
- * threw in that early seal — for a failed start's rollback, or for the
+ * threw in that early seal — for the rollback of a failed start, or for the
  * {@code stopAndAbandon} test seam. Every wait is bounded: the fences inside
  * {@code feedRamp} and {@code setDrainPaused} by
- * {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT}, and each stop's join by
- * {@link CaptureFlushService#STOP_JOIN_TIMEOUT}.
+ * {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT}, and each start's
+ * readiness and each stop's termination by
+ * {@link PipelineLifecycleTestSupport#LIFECYCLE_GUARD}.
  */
 class StopSealFailureContractTest {
 
@@ -95,11 +99,11 @@ class StopSealFailureContractTest {
     @Test
     void aStopThatSealsEveryLaneReportsNoFailure() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(pipeline.stopSealFailure()).as("nothing before the stop's seal").isEmpty();
         feedRamp(engine, transport, pipeline, 0, 2, 1);
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
 
         assertThat(pipeline.stopSealFailure()).isEmpty();
         assertThat(pipeline.getCaptureFlushService().stopSealFailure()).isEmpty();
@@ -111,14 +115,14 @@ class StopSealFailureContractTest {
     @Test
     void aStopWhoseSegmentRenameFailsReportsTheFailureAndLeavesTheSegmentAsItsPart() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 1);
         Path trackDir = takeDir.resolve(track.getId());
         Path part = trackDir.resolve("segment-000.wav.part");
         // No rotation and no early seal in this take: the stop's seal is the first rename.
         pipeline.getSession(track).getCurrentWriter().failNextRename();
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         CaptureFlushService service = pipeline.getCaptureFlushService();
         assertThat(service.sealReason()).as("fixture: the stop's own seal sealed the take").contains(SealedBy.STOP);
@@ -153,10 +157,10 @@ class StopSealFailureContractTest {
             session.addListener(new StopFaultListener(fault));
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 1);
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
 
         assertThat(pipeline.stopSealFailure()).hasValueSatisfying(failure -> {
             assertThat(failure.failure()).isSameAs(fault);
@@ -183,11 +187,11 @@ class StopSealFailureContractTest {
             }
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 1);
         pipeline.getSession(track).getCurrentWriter().failNextRename();
 
-        assertThat(pipeline.stop()).hasSize(2);
+        assertThat(stopRecording(pipeline)).hasSize(2);
 
         CaptureFlushService service = pipeline.getCaptureFlushService();
         assertThat(service.lastFailure()).as("fixture: the second lane's Error came last").containsSame(fault);
@@ -202,7 +206,7 @@ class StopSealFailureContractTest {
     @Test
     void aTakeSealedEarlyByTheHeadroomFloorHasNoStopSealFailureEvenWhenALaneThrewInThatSeal() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
         pipeline.getSession(track).getCurrentWriter().failNextRename();
 
@@ -210,7 +214,7 @@ class StopSealFailureContractTest {
         feedRamp(engine, transport, pipeline, frame, 1, 1);
         assertThat(isDone(pipeline.earlySeal())).as("fixture: the take was sealed early").isTrue();
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
 
         assertThat(pipeline.earlySeal().toCompletableFuture().join())
                 .isEqualTo(new EarlySeal.DiskExhausted(FLOOR, false, false));
@@ -223,7 +227,7 @@ class StopSealFailureContractTest {
     void aTakeSealedEarlyInTheFinalSweepOfAStopHasNoStopSealFailureEvenWhenALaneThrewInThatSeal()
             throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         // Held between passes: the block below waits in the ring for the stop's final sweep.
@@ -232,7 +236,7 @@ class StopSealFailureContractTest {
         freeBytes.set(MIB);
         feedOne(frame);
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
 
         assertThat(isDone(pipeline.earlySeal())).as("the final sweep sealed the take early").isTrue();
         assertThat(pipeline.earlySeal().toCompletableFuture().join())
@@ -244,13 +248,13 @@ class StopSealFailureContractTest {
     @Test
     void aTakeSealedEarlyByAWriteFailureHasNoStopSealFailure() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
         pipeline.getSession(track).getCurrentWriter().failNextAppend();
         feedRamp(engine, transport, pipeline, frame, 1, 1);
         assertThat(isDone(pipeline.earlySeal())).as("fixture: the failed append sealed the take early").isTrue();
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
 
         assertThat(pipeline.earlySeal().toCompletableFuture().join()).isInstanceOf(EarlySeal.WriteFailed.class);
         assertThat(pipeline.stopSealFailure()).isEmpty();
@@ -259,33 +263,34 @@ class StopSealFailureContractTest {
     @Test
     void aFailedStartsRollbackHasNoStopSealFailure() {
         RecordingPipeline pipeline = newPipeline(track);
-        // transport.record() is the start's last step, after the flush thread
-        // started: a failure there rolls the start back through abortStart.
+        // transport.record() is beginCapture()'s last step, once the take is
+        // ready: a failure there rolls the start back through requestAbort.
         Runnable unsubscribe = transport.addChangeListener(kind -> {
             if (transport.getState() == TransportState.RECORDING) {
                 throw new IllegalStateException("injected record failure");
             }
         });
         try {
-            assertThatThrownBy(pipeline::start).hasMessageContaining("injected record failure");
+            assertThatThrownBy(() -> startRecording(pipeline)).hasMessageContaining("injected record failure");
         } finally {
             unsubscribe.run();
         }
 
         CaptureFlushService service = pipeline.getCaptureFlushService();
         assertThat(service).as("fixture: the start got as far as its flush service").isNotNull();
-        assertThat(service.isTerminated()).as("fixture: the rollback stopped its thread").isTrue();
+        awaitTermination(service); // the rollback asked the thread to discard the take and did not wait
         assertThat(pipeline.stopSealFailure()).isEmpty();
     }
 
     @Test
     void aTakeStoppedWithoutASealHasNoStopSealFailure() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 1);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         service.stopAndAbandon();
+        awaitTermination(service);
 
         assertThat(service.isTerminated()).isTrue();
         assertThat(service.isSealed()).as("fixture: nothing was sealed").isFalse();

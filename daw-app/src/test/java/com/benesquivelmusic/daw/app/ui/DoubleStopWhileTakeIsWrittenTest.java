@@ -8,7 +8,6 @@ import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
-import com.benesquivelmusic.daw.core.recording.TakeFinalizationPendingException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -28,12 +27,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,67 +42,42 @@ import static org.assertj.core.api.Assertions.assertThat;
  * still being written to disk does not count as a recording in flight, so a
  * Stop over the stopped transport meanwhile is the ordinary double-stop
  * gesture — it returns the playhead to zero (the return-to-start
- * preference) and never calls the pipeline — and the take's clips, published
- * later on the FX thread, stay anchored where the take started.
+ * preference) and neither stops nor completes the take again — and the
+ * take's clips, published later on the FX thread, stay anchored where the
+ * take started.
  *
- * <p>The pipeline stop is the controller's package-private seam: the first
- * call throws {@link TakeFinalizationPendingException} with a completion the
- * test completes as "the capture thread has terminated"; the later call is
- * the real {@code RecordingPipeline.stop()} (the core's flush-thread holds
- * are out of this module's reach). That differs from production: the first
- * call never reaches {@code RecordingPipeline.stop()}, so through the
- * pending window the pipeline is still active — its callback installed, the
- * track still flagged recording, its capture thread still running — and the
- * transport is stopped by the controller's own {@code requestStop()}; the
- * later call is then the pipeline's first, complete stop, one-shot side
- * effects included, whose {@code transport.stop()} finds the transport
- * already stopped and leaves the playhead where the rewind put it. A real
- * completing stop repeats none of the one-shot stop (the core's
- * {@code StopFinalizationPendingContractTest} pins that). What this
- * probe pins is the controller's part: the second Stop is the double-stop
- * rewind and never calls the pipeline, and the published clip keeps the
- * take's anchor. FX work runs through
+ * <p>The take is real and so is its Stop: the pipeline's
+ * {@code requestStop()} removes the callback, clears the flags, stops the
+ * transport (back to the take's anchor) and asks the capture thread to seal
+ * the take, and never waits for it (PR #978 review 5391920205). The capture
+ * thread is held mid-pass by {@link CaptureThreadHold}, so the take is still
+ * being written for as long as the test says; the controller's completion of
+ * the take ({@code setTakeCompletionForTest}) is the real
+ * {@code completeStop()}, counted. FX work runs through
  * {@link Platform#runLater} with bounded latches; every wait on the test
  * thread is bounded (5 s per handler, 10 s for the first recorded block and
- * for the deferred stop, as in {@code TransportControllerTest}).</p>
+ * for the capture thread to be held, 30 s for the take's start and its
+ * publication on a real disk).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class DoubleStopWhileTakeIsWrittenTest {
 
     private static final double TAKE_ANCHOR_BEATS = 8.0;
+    private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
 
     @TempDir
     Path projectDirectory;
 
     private AudioEngine audioEngine;
     private Label statusBarLabel;
+    private final CaptureThreadHold hold = new CaptureThreadHold();
 
     @AfterEach
     void closeEngine() {
+        hold.release();
         if (audioEngine != null) {
             audioEngine.stopAudioOutput();
             audioEngine.stop();
-        }
-    }
-
-    /** First call: the take is still being written; later calls: the real stop. */
-    private static final class StillWritingStop implements TransportController.PipelineStop {
-        final CompletableFuture<Void> written = new CompletableFuture<>();
-        final List<RecordingPipeline> calls = new CopyOnWriteArrayList<>();
-        final CountDownLatch deferredCall = new CountDownLatch(1);
-
-        @Override
-        public List<AudioClip> stop(RecordingPipeline pipeline) {
-            calls.add(pipeline);
-            if (calls.size() == 1) {
-                throw new TakeFinalizationPendingException(pipeline.getTakeDirectory(),
-                        Duration.ofSeconds(30), written);
-            }
-            try {
-                return pipeline.stop();
-            } finally {
-                deferredCall.countDown();
-            }
         }
     }
 
@@ -151,6 +126,21 @@ class DoubleStopWhileTakeIsWrittenTest {
         assertThat(thrown.get()).as("the FX handler threw nothing").isNull();
     }
 
+    private static <T> T onFx(Supplier<T> read) throws Exception {
+        AtomicReference<T> value = new AtomicReference<>();
+        runOnFx(() -> value.set(read.get()));
+        return value.get();
+    }
+
+    /** Waits, at most 30 s, polling on the FX thread, until {@code condition} holds there. */
+    private static void awaitOnFx(Supplier<Boolean> condition, String what) throws Exception {
+        long deadline = System.nanoTime() + TAKE_BUDGET_NANOS;
+        while (!onFx(condition)) {
+            assertThat(System.nanoTime() - deadline < 0).as("%s, within 30 s", what).isTrue();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
+    }
+
     @Test
     void aStopWhileTheTakeIsStillBeingWrittenIsTheDoubleStopRewindAndTheClipKeepsItsAnchor() throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
@@ -161,10 +151,18 @@ class DoubleStopWhileTakeIsWrittenTest {
         transport.setPositionInBeats(TAKE_ANCHOR_BEATS);
         assertThat(transport.isReturnToStartOnStop()).as("fixture: the default preference").isTrue();
         TransportController controller = newController(project);
-        StillWritingStop stops = new StillWritingStop();
-        runOnFx(() -> controller.setPipelineStopForTest(stops));
+        List<RecordingPipeline> completions = new CopyOnWriteArrayList<>();
+        runOnFx(() -> {
+            hold.installOn(controller);
+            controller.setStillWritingDelayForTest(new ManualFxDelay());
+            controller.setTakeCompletionForTest(pipeline -> {
+                completions.add(pipeline);
+                return pipeline.completeStop();
+            });
+        });
         runOnFx(controller::toggleRecord);
-        Path part = controller.activeTakeDirectory().orElseThrow()
+        awaitOnFx(() -> !controller.isPreparingTake(), "fixture: the take's files were created and capture began");
+        Path part = onFx(controller::activeTakeDirectory).orElseThrow()
                 .resolve(armed.getId()).resolve("segment-000.wav.part");
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (!Files.exists(part) || Files.size(part) <= 44) {
@@ -172,32 +170,41 @@ class DoubleStopWhileTakeIsWrittenTest {
                     .as("fixture: a recorded block reached %s within 10 s", part).isTrue();
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
         }
+        hold.arm();
+        hold.awaitHolding(Duration.ofSeconds(10));
 
-        runOnFx(controller::stop);
-        assertThat(statusBarLabel.getText()).as("fixture: the take is still being written")
-                .isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
-        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
-        assertThat(transport.getPositionInBeats()).as("fixture: the Stop returned to the take's start")
-                .isEqualTo(TAKE_ANCHOR_BEATS);
+        try {
+            runOnFx(controller::stop);
+            assertThat(onFx(statusBarLabel::getText)).as("fixture: the take is still being written")
+                    .isEqualTo(TransportController.TAKE_FINISHING_MESSAGE);
+            assertThat(onFx(controller::isTakeBeingWritten)).as("fixture: the take is FINALIZING").isTrue();
+            assertThat(onFx(transport::getState)).isEqualTo(TransportState.STOPPED);
+            assertThat(onFx(transport::getPositionInBeats)).as("fixture: the Stop returned to the take's start")
+                    .isEqualTo(TAKE_ANCHOR_BEATS);
 
-        runOnFx(controller::stop);
+            runOnFx(controller::stop);
 
-        assertThat(stops.calls).as("the second Stop never calls the pipeline").hasSize(1);
-        assertThat(transport.getPositionInBeats())
-                .as("a Stop over the stopped transport while the take is written is the double-stop rewind")
-                .isZero();
-        assertThat(statusBarLabel.getText()).isEqualTo("Returned to start");
+            assertThat(completions).as("the second Stop does not complete the take").isEmpty();
+            AtomicBoolean stillPending = new AtomicBoolean();
+            runOnFx(() -> stillPending.set(hold.pipeline().isFinalizationPending()));
+            assertThat(stillPending).as("nor did anything else: the take is still being finished").isTrue();
+            assertThat(onFx(transport::getPositionInBeats))
+                    .as("a Stop over the stopped transport while the take is written is the double-stop rewind")
+                    .isZero();
+            assertThat(onFx(statusBarLabel::getText)).isEqualTo("Returned to start");
+        } finally {
+            hold.release(); // the capture thread seals the take and terminates
+        }
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
 
-        stops.written.complete(null); // the capture thread has terminated
-        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-        runOnFx(() -> { }); // one FX turn after the deferred publication
-
-        assertThat(stops.calls).hasSize(2);
-        assertThat(armed.getClips()).singleElement()
+        assertThat(completions).as("the take was completed once, by the turn that published it").hasSize(1);
+        List<AudioClip> clips = onFx(() -> List.copyOf(armed.getClips()));
+        assertThat(clips).singleElement()
                 .satisfies(clip -> assertThat(clip.getStartBeat())
                         .as("the rewind moved only the playhead: the clip is anchored where the take started")
                         .isEqualTo(TAKE_ANCHOR_BEATS));
-        assertThat(transport.getPositionInBeats()).as("the deferred stop does not move the playhead").isZero();
-        assertThat(statusBarLabel.getText()).isEqualTo("Recording stopped — 1 clip created");
+        assertThat(onFx(transport::getPositionInBeats)).as("publishing the take does not move the playhead")
+                .isZero();
+        assertThat(onFx(statusBarLabel::getText)).isEqualTo("Recording stopped — 1 clip created");
     }
 }

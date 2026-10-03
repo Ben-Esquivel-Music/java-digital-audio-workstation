@@ -22,13 +22,17 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Story 323 proof — the take manifest (book §3.3; context D8): written at
- * take start with the format, start position, compensation and per-track
- * streaming segments; rewritten at every rotation; sealed at stop; never a
- * backslash; and its segment order is the clip's segment order.
+ * take start, by the flush thread, with the format, start position,
+ * compensation and per-track streaming segments; rewritten at every
+ * rotation; sealed at stop; never a backslash; and its segment order is the
+ * clip's segment order. Every segment of the take — the first one included —
+ * is opened on the flush thread (book §5.1).
  */
 class TakeManifestLifecycleContractTest {
 
@@ -52,7 +56,7 @@ class TakeManifestLifecycleContractTest {
         right.setInputRouting(new InputRouting(1, 1));
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, STEREO_16, takeDir, List.of(left, right));
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         // At start.
@@ -123,7 +127,7 @@ class TakeManifestLifecycleContractTest {
         }
 
         // After stop.
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips).hasSize(2);
         String sealedText = Files.readString(manifestPath, StandardCharsets.UTF_8);
         assertThat(sealedText).doesNotContain("\\");
@@ -154,7 +158,7 @@ class TakeManifestLifecycleContractTest {
     }
 
     @Test
-    void theFirstSegmentOpensOnTheCallerThreadAndEveryRotationOnTheFlushThread() {
+    void everySegmentOpensOnTheFlushThreadTheFirstOneWhileTheTakeIsPrepared() {
         AudioEngine engine = new AudioEngine(STEREO_16);
         Transport transport = new Transport();
         Track track = new Track("Overhead", TrackType.AUDIO);
@@ -194,8 +198,9 @@ class TakeManifestLifecycleContractTest {
         assertThat(caller).as("fixture: the test thread is not the flush thread")
                 .isNotEqualTo(CaptureFlushService.THREAD_NAME);
 
-        pipeline.start();
-        assertThat(openedOn).as("start() opened segment 0 itself").containsOnly(Map.entry(0, caller));
+        startRecording(pipeline);
+        assertThat(openedOn).as("the take's initialisation opened segment 0 on the flush thread (book §5.1:"
+                + " file opens are FLUSH)").containsOnly(Map.entry(0, CaptureFlushService.THREAD_NAME));
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
@@ -204,10 +209,10 @@ class TakeManifestLifecycleContractTest {
             RampCaptureTestSupport.advanceOneBlock(transport);
             pipeline.awaitFlushed();
         }
-        pipeline.stop();
+        stopRecording(pipeline);
 
         assertThat(openedOn.keySet()).containsExactlyInAnyOrder(0, 1, 2, 3);
-        assertThat(openedOn.get(0)).isEqualTo(caller);
+        assertThat(openedOn.get(0)).isNotEqualTo(caller).isEqualTo(CaptureFlushService.THREAD_NAME);
         for (int index = 1; index <= 3; index++) {
             assertThat(openedOn.get(index)).as("segment %d was opened by a rotation", index)
                     .isEqualTo(CaptureFlushService.THREAD_NAME)

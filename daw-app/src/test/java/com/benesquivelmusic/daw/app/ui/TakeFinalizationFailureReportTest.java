@@ -5,7 +5,6 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.recording.CaptureFlushService;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -58,20 +57,29 @@ import static org.assertj.core.api.Assertions.tuple;
  * take's first segment is to be sealed, and a segment is never overwritten,
  * so that lane's seal throws and its segment is left as its {@code .part}.
  * When the same take recorded MIDI notes, their SUCCESS toast comes first
- * and the failure last, so the failure is what the notification bar shows.
+ * — the Stop shows it — and the failure last, when the take is published, so
+ * the failure is what the notification bar shows.
  *
  * <p>The recording is real: a {@link TransportController} over a real
  * {@link AudioEngine} on a {@link MockAudioBackend}, streaming a stereo 24-bit
  * take into the project's {@code audio/takes}, with a MIDI input that is a
- * stub with no hardware behind it. Every FX action and every wait is bounded.</p>
+ * stub with no hardware behind it. Neither Record nor Stop waits for the
+ * take's capture thread (PR #978 review 5391920205): the take records, and a
+ * stopped take is published, on a later FX turn, which the test waits for.
+ * The one seam set is the still-writing warning's delay
+ * ({@link ManualFxDelay}, never fired), so that a seal slower than that
+ * delay on a busy disk cannot slip a WARNING into the sequence asserted;
+ * it stands in for nothing of the core. Every FX action and every wait is
+ * bounded.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class TakeFinalizationFailureReportTest {
 
     private static final String KEYS_INPUT = "Keys input with no hardware";
     private static final Duration FX_TURN_BUDGET = Duration.ofSeconds(5);
-    private static final Duration REAL_STOP_BUDGET = CaptureFlushService.STOP_JOIN_TIMEOUT.plusSeconds(5);
     private static final long WAIT_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(10);
+    /** The hang guard of a wait for a real take's capture thread: its files created, or the take published. */
+    private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
     private static final String ALREADY_THERE = "not a segment of this take";
 
     @TempDir
@@ -104,7 +112,8 @@ class TakeFinalizationFailureReportTest {
                 if (controller.isRecordingInFlight()) {
                     controller.stop();
                 }
-            }, REAL_STOP_BUDGET);
+            });
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take's files are closed");
         } finally {
             engine.stopAudioOutput();
             engine.stop();
@@ -118,7 +127,8 @@ class TakeFinalizationFailureReportTest {
         Path sealedPath = occupyTheSealedPathOfTheFirstSegment(takeDirectory);
         int before = shown.size();
 
-        runOnFx(controller::stop, REAL_STOP_BUDGET);
+        runOnFx(controller::stop);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the stopped take was published");
 
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
@@ -149,7 +159,8 @@ class TakeFinalizationFailureReportTest {
         occupyTheSealedPathOfTheFirstSegment(takeDirectory);
         int before = shown.size();
 
-        runOnFx(controller::stop, REAL_STOP_BUDGET);
+        runOnFx(controller::stop);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the stopped take was published");
 
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
@@ -186,15 +197,18 @@ class TakeFinalizationFailureReportTest {
                     () -> true,
                     () -> RoundTripLatency.UNKNOWN,
                     new StubSessionInputSelection());
+            controller.setStillWritingDelayForTest(new ManualFxDelay());
         });
     }
 
     /**
-     * Presses Record, waits, bounded, for the record start's input check and
-     * for the take's first segment to hold a block; returns the take directory.
+     * Presses Record, waits, bounded, for the take to record, for the record
+     * start's input check and for the take's first segment to hold a block;
+     * returns the take directory.
      */
     private Path recordUntilABlockIsOnDisk() throws Exception {
-        runOnFx(controller::toggleRecord, REAL_STOP_BUDGET);
+        runOnFx(controller::toggleRecord);
+        awaitOnFx(() -> !controller.isPreparingTake(), "the take's files were created and capture began");
         Path takeDirectory = onFx(() -> controller.activeTakeDirectory().orElseThrow(
                 () -> new AssertionError("fixture: the take streams into a take directory")));
         Optional<Thread> check = onFx(controller::pendingSessionInputCheck);
@@ -238,6 +252,15 @@ class TakeFinalizationFailureReportTest {
         AtomicReference<T> result = new AtomicReference<>();
         runOnFx(() -> result.set(action.get()));
         return result.get();
+    }
+
+    /** Waits, at most {@link #TAKE_BUDGET_NANOS}, polling on the FX thread, until {@code condition} holds there. */
+    private static void awaitOnFx(Supplier<Boolean> condition, String what) throws Exception {
+        long deadline = System.nanoTime() + TAKE_BUDGET_NANOS;
+        while (!onFx(condition)) {
+            assertThat(System.nanoTime() - deadline < 0).as("%s, within 30 s", what).isTrue();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
     }
 
     private static void runOnFx(Runnable action) throws Exception {

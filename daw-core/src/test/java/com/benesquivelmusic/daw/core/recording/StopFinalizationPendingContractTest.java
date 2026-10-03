@@ -20,12 +20,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitWithinTheGuard;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.HANG_GUARD;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
@@ -41,42 +46,37 @@ import static org.assertj.core.api.Assertions.entry;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * Story 323 review (Copilot 5365941737, HIGH): a Stop whose bounded join
- * runs out while the {@code capture-flush} thread is still finalising the
- * take reads nothing the thread writes, builds no clip, adds no clip or take
- * group to the track and records nothing (the one-shot stop has already
- * cleared the track's recording flag) — it throws
- * {@link TakeFinalizationPendingException} and leaves the pipeline
- * {@linkplain RecordingPipeline#isFinalizationPending()
- * finalization pending}. A later {@code stop()} completes it exactly as an
- * uninterrupted stop would have, without repeating the one-shot side
- * effects the user may have moved past; {@code start()} and the pre-start
- * setters are refused meanwhile. The completion signal completes on every
- * path that ends the thread, and only then. A stop made once the thread has
- * terminated does not wait for it to exit, and one made on the flush thread
- * before then never joins it.
+ * The stop in two halves (story 323 review, Copilot 5365941737 HIGH and PR
+ * #978 review 5391920205 F1): {@link RecordingPipeline#requestStop()} runs the
+ * one-shot side effects, asks the {@code capture-flush} thread to seal the
+ * take and returns that thread's termination signal at once — it never waits
+ * for the seal, however long the thread takes on a slow or stuck filesystem —
+ * and leaves the pipeline
+ * {@linkplain RecordingPipeline#isFinalizationPending() finalization pending}.
+ * {@link RecordingPipeline#completeStop()}, made once that signal has
+ * completed, builds the clips exactly as an uninterrupted stop would have,
+ * without repeating the one-shot side effects the user may have moved past;
+ * made before that, it is refused and reads nothing the thread writes.
+ * {@code prepare()} and the pre-start setters are refused meanwhile. The
+ * signal completes on every path that ends the thread, and only then; a stop
+ * made once the thread has terminated does not wait for it to exit, and one
+ * requested on the flush thread itself never waits for that thread.
  *
  * <p>The thread is held with a latch — inside the seal of the tail segment
  * (the {@code force(true)} that opens it, through the channel opener seam),
  * inside the final sweep (the block observer seam), or, once it has
- * terminated, in a dependent of the termination signal — and the join is
- * shortened with {@code CaptureFlushService.setStopJoinTimeout}, so no test
- * waits the production 30 s; the two tests of stops that must not join at
- * all set it to an hour instead. Every wait is bounded: by
- * {@link RampCaptureTestSupport#HANG_GUARD} — which exceeds the shortened join
- * each guarded {@code stop()} waits out, and which a stop that joined for
- * the hour would overrun — or, inside {@code feedRamp}, {@code awaitFlushed}
- * and {@code setDrainPaused}, by {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT};
- * the holds by the guard, or by twice the guard for the hold a stop must not
- * wait for.</p>
+ * terminated, in a dependent of the termination signal. Every wait is
+ * bounded: a request that must return at once by
+ * {@link RampCaptureTestSupport#HANG_GUARD}, while the hold it must not wait
+ * for lasts twice the guard; the termination signals by the guard as well;
+ * and, inside {@code feedRamp}, {@code awaitFlushed} and
+ * {@code setDrainPaused}, by {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT}.</p>
  */
 class StopFinalizationPendingContractTest {
 
     private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
     private static final long GIB = 1L << 30;
     private static final long MIB = 1L << 20;
-    /** The shortened join: a real wait, far inside {@link RampCaptureTestSupport#HANG_GUARD}. */
-    private static final Duration SHORT_JOIN = Duration.ofMillis(200);
 
     @TempDir
     Path takeDir;
@@ -100,7 +100,7 @@ class StopFinalizationPendingContractTest {
         track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         journal.beforeForce(() -> {
             if (holdNextForce.compareAndSet(true, false)) {
-                holdHere();
+                holdBeyondTheGuard();
             }
         });
     }
@@ -158,13 +158,20 @@ class StopFinalizationPendingContractTest {
         advanceOneBlock(transport);
     }
 
-    private static TakeFinalizationPendingException pendingFrom(Throwable thrown) {
-        assertThat(thrown).isInstanceOf(TakeFinalizationPendingException.class);
-        return (TakeFinalizationPendingException) thrown;
+    /** Runs {@code requestStop()} on its own thread, requires it to return within the guard, and returns its signal. */
+    private CompletionStage<Void> requestStopWithinTheGuard() throws InterruptedException {
+        AtomicReference<CompletionStage<Void>> signal = new AtomicReference<>();
+        Throwable thrown = outcomeWithinTheGuard("stop request", () -> signal.set(pipeline.requestStop()));
+        assertThat(thrown).as("the stop request returns, and throws nothing").isNull();
+        return signal.get();
     }
 
-    private static void awaitTermination(TakeFinalizationPendingException pending) throws Exception {
-        pending.completion().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+    /** Runs {@code completeStop()} on its own thread, requires it to return within the guard, and returns its clips. */
+    private List<AudioClip> completeStopWithinTheGuard() throws InterruptedException {
+        List<List<AudioClip>> result = new CopyOnWriteArrayList<>();
+        Throwable thrown = outcomeWithinTheGuard("stop completion", () -> result.add(pipeline.completeStop()));
+        assertThat(thrown).as("the stop completion builds the take").isNull();
+        return result.getFirst();
     }
 
     /** Every path under the take directory with its size — what "untouched" means here. */
@@ -187,26 +194,27 @@ class StopFinalizationPendingContractTest {
     }
 
     @Test
-    void aStopWhoseJoinRunsOutBuildsNothingAndTheStopAfterTerminationReferencesEverySegment() throws Exception {
+    void aStopRequestWhileTheSealIsHeldReturnsAtOnceAndTheCompletionReferencesEverySealedSegment() throws Exception {
         transport.setPositionInBeats(8.0);
         pipeline = newPipeline(track);
         pipeline.setSegmentLimits(Duration.ofHours(1), 4 * BLOCK_BYTES); // 4 blocks per segment
-        pipeline.start();
+        startRecording(pipeline);
         double anchor = transport.getPositionInBeats();
         feedRamp(engine, transport, pipeline, 0, 10, 4); // 4 + 4 + 2 → 3 segments
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        service.setStopJoinTimeout(SHORT_JOIN);
         Path trackDir = takeDir.resolve(track.getId());
         assertThat(trackDir.resolve("segment-002.wav.part"))
                 .as("fixture: the tail segment is still streaming").exists();
-        holdNextForce.set(true); // the force(true) that opens the tail segment's seal
+        holdNextForce.set(true); // the force(true) that opens the tail segment's seal, held beyond the guard
 
-        TakeFinalizationPendingException pending = pendingFrom(outcomeWithinTheGuard("stop", pipeline::stop));
+        CompletionStage<Void> written = requestStopWithinTheGuard();
 
         assertThat(held.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS))
                 .as("the flush thread is held inside the tail segment's seal").isTrue();
-        assertThat(pending.takeDirectory()).isEqualTo(takeDir);
-        assertThat(pending.completion().toCompletableFuture().isDone()).isFalse();
+        // Compared by reference: AssertJ's CompletionStage assertions convert
+        // the stage, and a minimal stage converts to a fresh copy each time.
+        assertThat(written == service.termination()).as("the request hands out the thread's termination").isTrue();
+        assertThat(written.toCompletableFuture().isDone()).isFalse();
         assertThat(service.isTerminated()).isFalse();
         assertThat(trackDir.resolve("segment-002.wav.part")).as("fixture: the tail is not sealed yet").exists();
         assertThat(service.sealedSegmentPaths().get(track.getId()))
@@ -215,24 +223,29 @@ class StopFinalizationPendingContractTest {
                 .isEmpty();
         assertThat(pipeline.isFinalizationPending()).isTrue();
         assertThat(pipeline.isActive()).isFalse();
-        assertThat(track.getClips()).as("no clip is built from a take still being written").isEmpty();
-        assertThat(pipeline.getRecordedClips()).isEmpty();
         assertThat(engine.getRecordingCallback()).as("the one-shot stop ran: callback removed").isNull();
         assertThat(track.isRecording()).as("the one-shot stop ran: flag cleared").isFalse();
         assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
         assertThat(transport.getPositionInBeats()).as("the one-shot stop ran: back at the anchor").isEqualTo(anchor);
-        assertThat(warnings).anySatisfy(warning -> assertThat(warning)
-                .contains("still being written to disk").contains(takeDir.toString()));
+        assertThat(warnings).as("a stop that waits for nothing has nothing to warn about").isEmpty();
+
+        // A completion made now builds nothing from a take still being written.
+        assertThatThrownBy(pipeline::completeStop)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("still being written");
+        assertThat(pipeline.isFinalizationPending()).isTrue();
+        assertThat(track.getClips()).as("no clip is built from a take still being written").isEmpty();
+        assertThat(pipeline.getRecordedClips()).isEmpty();
 
         // Nothing may restart or reconfigure the pipeline over the pending take.
         Map<Path, Long> before = snapshot();
-        assertThatThrownBy(pipeline::start)
+        assertThatThrownBy(pipeline::prepare)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("still finalising");
         assertThatThrownBy(() -> pipeline.setSegmentLimits(Duration.ofMinutes(1), BLOCK_BYTES))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("still being finalised");
-        assertThat(snapshot()).as("the refused start touched none of the pending take's files").isEqualTo(before);
+        assertThat(snapshot()).as("the refused prepare touched none of the pending take's files").isEqualTo(before);
         assertThat(pipeline.getCaptureFlushService()).as("nor dropped its flush service").isSameAs(service);
         assertThat(engine.getRecordingCallback()).as("nor wired a callback").isNull();
         assertThat(track.isRecording()).as("nor flagged a track").isFalse();
@@ -247,23 +260,21 @@ class StopFinalizationPendingContractTest {
         transport.advancePosition(3.0);
         double playhead = transport.getPositionInBeats();
 
-        TakeFinalizationPendingException again = pendingFrom(outcomeWithinTheGuard("stop again", pipeline::stop));
+        CompletionStage<Void> again = requestStopWithinTheGuard();
 
-        // Compared by reference: AssertJ's CompletionStage assertions convert
-        // the stage, and a minimal stage converts to a fresh copy each time.
-        assertThat(again.completion() == pending.completion()).as("the same termination signal").isTrue();
+        assertThat(again == written).as("the same termination signal").isTrue();
         assertNothingRepeated(otherTake, playhead);
         assertThat(track.getClips()).isEmpty();
         assertThat(pipeline.getRecordedClips()).isEmpty();
 
         release.countDown();
-        awaitTermination(pending);
+        awaitWithinTheGuard(written, "the capture-flush thread's termination");
         assertThat(service.isTerminated()).isTrue();
         assertThat(pipeline.isFinalizationPending())
-                .as("the thread is done, the stop is not: no clip until a stop builds it").isTrue();
+                .as("the thread is done, the stop is not: no clip until the completion builds it").isTrue();
         assertThat(track.getClips()).isEmpty();
 
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        List<AudioClip> clips = completeStopWithinTheGuard();
 
         assertNothingRepeated(otherTake, playhead);
         assertThat(pipeline.isFinalizationPending()).isFalse();
@@ -293,7 +304,7 @@ class StopFinalizationPendingContractTest {
         assertThat(track.getClips()).containsExactly(clip);
         assertThat(pipeline.getRecordedClips()).containsExactly(entry(track, clip));
 
-        assertThat(pipeline.stop()).as("the clips were returned once").isEmpty();
+        assertThat(pipeline.completeStop()).as("the clips were returned once").isEmpty();
         assertThat(track.getClips()).hasSize(1);
         engine.setRecordingCallback(null);
     }
@@ -308,29 +319,19 @@ class StopFinalizationPendingContractTest {
                 .as("the playhead is not yanked back to an anchor").isEqualTo(playhead);
     }
 
-    /** Runs a stop that must return within the guard, and returns its clips. */
-    private static List<AudioClip> outcomeOf(java.util.function.Supplier<List<AudioClip>> stop)
-            throws InterruptedException {
-        List<List<AudioClip>> result = new CopyOnWriteArrayList<>();
-        Throwable thrown = outcomeWithinTheGuard("stop after termination", () -> result.add(stop.get()));
-        assertThat(thrown).as("the stop after termination completes").isNull();
-        return result.getFirst();
-    }
-
     @Test
     void aStopHeldInTheFinalSweepHasSealedNothingYetAndStillCountsAsStarted() throws Exception {
         pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         feedOne(BLOCK_FRAMES);
         pipeline.awaitFlushed();
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        service.setStopJoinTimeout(SHORT_JOIN);
         service.setDrainPaused(true);
         feedOne(2L * BLOCK_FRAMES); // queued: only the final sweep will apply it
-        service.setBlockObserver((sequence, startFrame, numFrames) -> holdHere());
+        service.setBlockObserver((sequence, startFrame, numFrames) -> holdBeyondTheGuard());
 
-        TakeFinalizationPendingException pending = pendingFrom(outcomeWithinTheGuard("stop", pipeline::stop));
+        CompletionStage<Void> written = requestStopWithinTheGuard();
 
         assertThat(held.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS))
                 .as("the flush thread is held in the final sweep").isTrue();
@@ -343,8 +344,8 @@ class StopFinalizationPendingContractTest {
         assertThat(pipeline.getRecordedClips()).isEmpty();
 
         release.countDown();
-        awaitTermination(pending);
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        awaitWithinTheGuard(written, "the capture-flush thread's termination");
+        List<AudioClip> clips = completeStopWithinTheGuard();
 
         assertThat(clips).singleElement().satisfies(clip -> {
             assertThat(clip.getAudioData()[0]).as("the block the final sweep applied is in the clip").hasSize(3 * BLOCK_FRAMES);
@@ -355,7 +356,7 @@ class StopFinalizationPendingContractTest {
     }
 
     @Test
-    void aLoopRecordTakeFinishedAfterTerminationAttachesTheWholeStack() throws Exception {
+    void aLoopRecordTakeCompletedAfterTerminationAttachesTheWholeStack() throws Exception {
         int blocksPerLoop = 4;
         double samplesPerBeat = SAMPLE_RATE * 60.0 / transport.getTempo();
         transport.setLoopRegion(0.0, blocksPerLoop * (double) BLOCK_FRAMES / samplesPerBeat);
@@ -363,14 +364,12 @@ class StopFinalizationPendingContractTest {
         pipeline = newPipeline(track);
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES); // 2 segments per lap
         pipeline.setLoopRecord(true);
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 3 * blocksPerLoop + 1, 1); // 3 laps + one block of the 4th
-        CaptureFlushService service = pipeline.getCaptureFlushService();
-        service.setStopJoinTimeout(SHORT_JOIN);
         int stackedBeforeStop = pipeline.getTakeGroups().get(track).size();
         holdNextForce.set(true); // the seal of the lap in flight
 
-        TakeFinalizationPendingException pending = pendingFrom(outcomeWithinTheGuard("stop", pipeline::stop));
+        CompletionStage<Void> written = requestStopWithinTheGuard();
 
         assertThat(held.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
         assertThat(track.getTakeGroups()).as("no take group is attached while the take is being written").isEmpty();
@@ -378,8 +377,8 @@ class StopFinalizationPendingContractTest {
         assertThat(pipeline.getRecordedClips()).isEmpty();
 
         release.countDown();
-        awaitTermination(pending);
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        awaitWithinTheGuard(written, "the capture-flush thread's termination");
+        List<AudioClip> clips = completeStopWithinTheGuard();
 
         TakeGroup group = pipeline.getTakeGroups().get(track);
         assertThat(group.size()).as("the lap in flight became the last take").isEqualTo(stackedBeforeStop + 1);
@@ -398,7 +397,7 @@ class StopFinalizationPendingContractTest {
     @Test
     void anEarlySealLeavesTheThreadRunningAndTheSignalOpenUntilTheStop() throws Exception {
         pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         pipeline.awaitFlushed();
         CaptureFlushService service = pipeline.getCaptureFlushService();
@@ -412,12 +411,9 @@ class StopFinalizationPendingContractTest {
         assertThat(service.termination().toCompletableFuture().isDone())
                 .as("sealed is not terminated: the signal waits for the thread").isFalse();
 
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(service.isTerminated()).isTrue();
-        // The stop returns once the thread has terminated, which the thread
-        // marks before it completes the signal.
-        service.termination().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
         assertThat(clips).singleElement()
                 .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(BLOCK_FRAMES));
     }
@@ -425,21 +421,23 @@ class StopFinalizationPendingContractTest {
     @Test
     void aThrowableThatEndsTheLoopCompletesTheSignalWithoutAStop() throws Exception {
         pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         service.setBlockObserver((sequence, startFrame, numFrames) -> {
             throw new InjectedFault("injected drain-loop fault");
         });
         feedOne(0);
 
-        service.termination().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        awaitWithinTheGuard(service.termination(), "the capture-flush thread's termination");
 
         assertThat(service.isTerminated()).isTrue();
         assertThat(pipeline.isActive()).as("fixture: nobody has stopped the pipeline").isTrue();
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
         assertThat(warnings).anySatisfy(warning -> assertThat(warning).contains("injected drain-loop fault"));
 
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        CompletionStage<Void> written = requestStopWithinTheGuard();
+        assertThat(written.toCompletableFuture().isDone()).as("the thread had already terminated").isTrue();
+        List<AudioClip> clips = completeStopWithinTheGuard();
 
         assertThat(clips).singleElement()
                 .satisfies(clip -> assertThat(clip.getSourceSegmentPaths()).containsExactlyElementsOf(manifestOrder()));
@@ -447,19 +445,17 @@ class StopFinalizationPendingContractTest {
 
     /**
      * Once the flush thread has terminated, a stop reads the take at once:
-     * it neither wakes nor joins the thread, which may still be running a
-     * non-async dependent of the termination signal (here one that holds
-     * it) or unwinding. The join bound is set far beyond the guard, so a
-     * stop that joined would not return within it.
+     * neither half waits for the thread to exit, which may still be running
+     * a non-async dependent of the termination signal (here one that holds
+     * it beyond the guard) or unwinding.
      */
     @Test
     void aStopAfterTheThreadHasTerminatedDoesNotWaitForTheThreadToExit() throws Exception {
         pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         pipeline.awaitFlushed();
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        service.setStopJoinTimeout(Duration.ofHours(1));
         // Non-async: runs on the flush thread once it has terminated, and holds it there.
         service.termination().thenRun(this::holdBeyondTheGuard);
         // The loop ends without a stop: a throwable escapes it (the block
@@ -475,31 +471,31 @@ class StopFinalizationPendingContractTest {
                 .as("fixture: the terminated thread is held in a dependent of its termination").isTrue();
         assertThat(service.isTerminated()).isTrue();
 
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        requestStopWithinTheGuard();
+        List<AudioClip> clips = completeStopWithinTheGuard();
 
-        assertThat(service.thread().isAlive()).as("the stop returned while the thread was still held").isTrue();
+        assertThat(service.thread().isAlive()).as("the stop completed while the thread was still held").isTrue();
         assertThat(clips).singleElement()
                 .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(2 * BLOCK_FRAMES));
         assertThat(track.getClips()).containsExactlyElementsOf(clips);
     }
 
     /**
-     * A stop made on the flush thread itself before it has terminated — from
-     * the warning sink, say; here from the block observer — cannot wait for
-     * that thread: it throws {@link TakeFinalizationPendingException} at once
-     * instead of joining its own thread for the whole join bound (set far
-     * beyond the guard here), and the stop made once the thread has
-     * terminated builds the take.
+     * A stop requested on the flush thread itself before it has terminated —
+     * from the warning sink, say; here from the block observer — returns at
+     * once, because the request waits for nothing; a completion made there
+     * and then is refused, because the thread has not terminated; and the
+     * completion made once it has builds the take.
      */
     @Test
-    void aStopMadeOnTheFlushThreadBeforeItHasTerminatedIsPendingInsteadOfJoiningItself() throws Exception {
+    void aStopRequestedOnTheFlushThreadReturnsAtOnceAndItsCompletionWaitsForTheTermination() throws Exception {
         pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         pipeline.awaitFlushed();
         CaptureFlushService service = pipeline.getCaptureFlushService();
-        service.setStopJoinTimeout(Duration.ofHours(1));
-        CompletableFuture<Throwable> stopOnTheFlushThread = new CompletableFuture<>();
+        CompletableFuture<CompletionStage<Void>> requestedThere = new CompletableFuture<>();
+        CompletableFuture<Throwable> completionThere = new CompletableFuture<>();
         AtomicBoolean first = new AtomicBoolean(true);
         // Installed while the loop is held between passes, so the pass that
         // applied block 0 has ended and the observer sees block 1 first.
@@ -507,20 +503,28 @@ class StopFinalizationPendingContractTest {
         service.setBlockObserver((sequence, startFrame, numFrames) -> {
             if (first.compareAndSet(true, false)) {
                 try {
-                    pipeline.stop();
-                    stopOnTheFlushThread.complete(null);
+                    requestedThere.complete(pipeline.requestStop());
                 } catch (Throwable thrown) {
-                    stopOnTheFlushThread.complete(thrown);
+                    requestedThere.completeExceptionally(thrown);
+                }
+                try {
+                    pipeline.completeStop();
+                    completionThere.complete(null);
+                } catch (Throwable thrown) {
+                    completionThere.complete(thrown);
                 }
             }
         });
         service.setDrainPaused(false);
         feedOne(BLOCK_FRAMES);
 
-        TakeFinalizationPendingException pending = pendingFrom(
-                stopOnTheFlushThread.get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS));
-        awaitTermination(pending);
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        CompletionStage<Void> written = requestedThere.get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        assertThat(completionThere.get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                .as("the completion is refused on the thread that is still writing the take")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("still being written");
+        awaitWithinTheGuard(written, "the capture-flush thread's termination");
+        List<AudioClip> clips = completeStopWithinTheGuard();
 
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.STOP);
         assertThat(clips).singleElement()
@@ -528,7 +532,7 @@ class StopFinalizationPendingContractTest {
     }
 
     @Test
-    void aLanesErrorRethrownBySealCompletesTheSignalAndTheStopBuildsTheClips() throws Exception {
+    void aLanesErrorRethrownBySealCompletesTheSignalAndTheCompletionBuildsTheClips() throws Exception {
         pipeline = newPipeline(track);
         InjectedFault fault = new InjectedFault("injected stop-listener fault");
         pipeline.setSessionFactory((t, dir) -> {
@@ -536,18 +540,15 @@ class StopFinalizationPendingContractTest {
             session.addListener(new StopFaultListener(fault));
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         feedOne(0);
         pipeline.awaitFlushed();
 
-        List<AudioClip> clips = outcomeOf(pipeline::stop);
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(service.lastFailure()).containsSame(fault);
         assertThat(service.isTerminated()).isTrue();
-        // The stop returns once the thread has terminated, which the thread
-        // marks before it completes the signal.
-        service.termination().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
         assertThat(pipeline.isFinalizationPending()).isFalse();
         assertThat(clips).singleElement()
                 .satisfies(clip -> assertThat(clip.getSourceSegmentPaths()).containsExactlyElementsOf(manifestOrder()));

@@ -23,17 +23,16 @@ import java.util.regex.Pattern;
 
 /**
  * The {@code take.manifest} sidecar of one take directory (Recording
- * Reliability book §3.3; story 323): an immutable value written once on the
- * caller thread at take start (from {@code CaptureFlushService.start()},
- * before the flush thread is started) and thereafter by the
- * {@code capture-flush} thread whenever a segment opens, seals or is
- * discarded (rotation, lane seal), on every overflow episode, at the start
- * of every truncation episode, and at the final seal, so a recovery scan can
- * rebuild the take without the project file.
+ * Reliability book §3.3; story 323): an immutable value written by the
+ * {@code capture-flush} thread at take start (the take's initialisation),
+ * whenever a segment opens, seals or is discarded (rotation, lane seal), on
+ * every overflow episode, at the start of every truncation episode, and at
+ * the final seal, so a recovery scan can rebuild the take without the
+ * project file.
  *
- * <p><strong>Thread.</strong> {@link #write(Path)} is called on the caller
- * thread once, at take start, and on the {@code capture-flush} thread for
- * every later write; {@link #read(Path)} from any non-real-time thread.
+ * <p><strong>Thread.</strong> {@link #write(Path)} is called on the
+ * {@code capture-flush} thread only; {@link #read(Path)} from any
+ * non-real-time thread.
  * Instances are immutable and safe to share.</p>
  *
  * <p><strong>Grammar</strong> (line-oriented UTF-8, {@code key=value}, lines
@@ -593,8 +592,7 @@ public final class TakeManifest {
     /**
      * Atomically writes this manifest as {@code <takeDirectory>/take.manifest}:
      * staging file written and forced to storage, then moved over the
-     * target. Called on the {@code capture-flush} thread, and once on the
-     * caller thread at take start.
+     * target. Called on the {@code capture-flush} thread.
      *
      * @param takeDirectory the take directory (must exist)
      * @return the manifest path

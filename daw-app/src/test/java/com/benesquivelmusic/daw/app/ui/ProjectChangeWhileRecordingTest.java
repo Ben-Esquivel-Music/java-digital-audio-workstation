@@ -82,9 +82,12 @@ import static org.assertj.core.api.Assertions.tuple;
  * {@code true}, give the lifecycle controller checks of their own and record
  * nothing.</p>
  *
- * <p>Every FX action runs through {@link Platform#runLater} and is bounded:
- * at 5 s, or, for the fixture's Record and Stop, at the longer bound
- * {@link RecordingInFlightFixture} gives them. The recovery test polls for
+ * <p>Every FX action runs through {@link Platform#runLater} and is bounded
+ * at 5 s — the fixture's Record and Stop too: {@link RecordingInFlightFixture}
+ * bounds each of its FX actions at 5 s, and waits on the test thread,
+ * bounded at 30 s, for what the take's capture thread does (the take
+ * recording once that thread has created its files; nothing being written
+ * any more after a Stop). The recovery test polls for
  * {@link #SCAN_WINDOW}, one FX turn per poll, and the test thread's other
  * waits — for the recording's blocks, for the record start's input check —
  * are bounded, at 10 s at most. An unsaved-changes prompt shown by a test is

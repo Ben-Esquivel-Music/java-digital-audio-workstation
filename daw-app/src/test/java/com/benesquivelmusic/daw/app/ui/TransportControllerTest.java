@@ -17,7 +17,6 @@ import com.benesquivelmusic.daw.core.recording.EarlySeal;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.StopSealFailure;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
-import com.benesquivelmusic.daw.core.recording.TakeFinalizationPendingException;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -45,6 +44,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -66,6 +66,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -128,6 +129,18 @@ class TransportControllerTest {
     private AtomicInteger audioSettingsOpens;
     /** Story 322 — the session input handed to the latest controller (blank = backend default). */
     private StubSessionInputSelection sessionInputSelection = new StubSessionInputSelection();
+    /**
+     * The still-writing warning's delay handed to the latest controller: fired
+     * only by the tests that fire it, so no assertion here depends on a take
+     * finishing within {@code TAKE_STILL_WRITING_DELAY} of its Stop (the
+     * production delay is exercised in {@code StopPublishesTheTakeOnALaterFxTurnTest}).
+     */
+    private ManualFxDelay stillWritingDelay;
+    /** Holds the latest take's capture thread, for the tests that stop a take still being written. */
+    private final CaptureThreadHold hold = new CaptureThreadHold();
+
+    /** The hang guard of a wait for a real take's capture thread: its files created, or the take published. */
+    private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
 
     /**
      * Story 323 — an audio take streams into the project's own
@@ -148,6 +161,7 @@ class TransportControllerTest {
 
     @AfterEach
     void closeEngine() {
+        hold.release();
         if (audioEngine != null) {
             audioEngine.stopAudioOutput();
             audioEngine.stop();
@@ -214,10 +228,51 @@ class TransportControllerTest {
                     sessionInputSelection,
                     audioSettingsOpens::incrementAndGet,
                     null));
+            stillWritingDelay = new ManualFxDelay();
+            ref.get().setStillWritingDelayForTest(stillWritingDelay);
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
         return ref.get();
+    }
+
+    /**
+     * Presses Record and waits, bounded, until the start has settled: an
+     * audio take's Record only enters PREPARING (PR #978 review 5391920205),
+     * and the take records — or its start fails — on a later FX turn, once its
+     * capture thread has created its files. A start that was refused, failed
+     * at once or is MIDI-only has settled when Record returns.
+     */
+    private static void record(TransportController controller) throws Exception {
+        runHandler(controller::toggleRecord);
+        awaitOnFx(() -> !controller.isPreparingTake(), "the take's start settled");
+    }
+
+    /**
+     * Presses Stop and waits, bounded, until nothing is being written: a
+     * stopped take is published on a later FX turn, once its capture thread
+     * has terminated, and the files of a cancelled start are removed once
+     * that thread has deleted them. Every test that records a real take ends
+     * with it, so the take's files are closed before the temporary directory
+     * is removed.
+     */
+    private static void stopAndAwaitTheTake(TransportController controller) throws Exception {
+        runHandler(controller::stop);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the stopped take was published");
+    }
+
+    /** Waits, at most {@link #TAKE_BUDGET_NANOS}, polling on the FX thread, until {@code condition} holds there. */
+    private static void awaitOnFx(BooleanSupplier condition, String what) throws Exception {
+        long deadline = System.nanoTime() + TAKE_BUDGET_NANOS;
+        while (true) {
+            AtomicReference<Boolean> holds = new AtomicReference<>(false);
+            runHandler(() -> holds.set(condition.getAsBoolean()));
+            if (holds.get()) {
+                return;
+            }
+            assertThat(System.nanoTime() - deadline < 0).as("%s, within 30 s", what).isTrue();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
     }
 
     /** Streaming backend whose selected endpoint always refuses to open. */
@@ -882,7 +937,7 @@ class TransportControllerTest {
         TransportController controller = newController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
-            runHandler(controller::toggleRecord);
+            record(controller);
             awaitSessionInputCheck(controller);
 
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
@@ -892,7 +947,7 @@ class TransportControllerTest {
                     .doesNotContain("Agreeing")
                     .contains("story 326");
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
         }
     }
 
@@ -912,9 +967,9 @@ class TransportControllerTest {
         TransportController controller = newController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
-            runHandler(controller::toggleRecord);
+            record(controller);
             assertThat(backend.enumerationsOnFxThread.get())
-                    .as("the record handler itself enumerated nothing on the FX thread").isZero();
+                    .as("the record handler and its readiness turn enumerated nothing on the FX thread").isZero();
             awaitSessionInputCheck(controller);
 
             assertThat(backend.enumerations.get()).as("the check did enumerate (off-thread)").isPositive();
@@ -923,7 +978,7 @@ class TransportControllerTest {
             assertThat(notificationBar.getMessage())
                     .contains("track(s) Vox chose '" + mockDevice.qualifiedName() + "'");
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
         }
     }
 
@@ -953,13 +1008,13 @@ class TransportControllerTest {
         TransportController controller = newController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
-            runHandler(controller::toggleRecord);
+            record(controller);
             awaitSessionInputCheck(controller);
 
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
             assertThat(notificationBar.getMessage()).contains("Recording started");
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
         }
     }
 
@@ -978,7 +1033,7 @@ class TransportControllerTest {
         var controller = newController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
-            runHandler(controller::toggleRecord);
+            record(controller);
             assertThat(backend.requestedCapture).isEqualTo(physicalInput
                     ? CaptureRequirement.REQUIRED : CaptureRequirement.OPTIONAL);
             boolean started = !physicalInput || captureCapable;
@@ -988,7 +1043,7 @@ class TransportControllerTest {
                     ? com.benesquivelmusic.daw.core.transport.TransportState.RECORDING
                     : com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
             audioEngine.stopAudioOutput();
             project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
         }
@@ -1016,7 +1071,7 @@ class TransportControllerTest {
         var controller = newController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
-            runHandler(controller::toggleRecord);
+            record(controller);
             assertThat(backend.requestedCapture).isEqualTo(CaptureRequirement.REQUIRED);
             assertThat(keyboard.isRecording()).isFalse();
             assertThat(microphone.isRecording()).isFalse();
@@ -1024,7 +1079,7 @@ class TransportControllerTest {
             assertThat(project.getTransport().getState())
                     .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
             audioEngine.stopAudioOutput();
             project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
         }
@@ -1248,8 +1303,9 @@ class TransportControllerTest {
         // STOPPED: a count-in take before its deferred transport.record(), or
         // an internal caller stopping the transport under a running pipeline.
         // (Before story 323 a throw inside RecordingPipeline.start() was a
-        // third way in — its start is now all-or-nothing and onRecord() aborts
-        // the take on it.) This test reproduces exactly that end state — an
+        // third way in — its start is now all-or-nothing, prepare() then
+        // beginCapture(), and a failed start is abandoned on its allocation
+        // turn or its readiness turn.) This test reproduces exactly that end state — an
         // active pipeline over a stopped transport — and asserts Stop finalizes
         // rather than taking the double-stop rewind and leaking the recording
         // sessions, the segment files, the per-track recording flags and the
@@ -1277,7 +1333,7 @@ class TransportControllerTest {
         transport.setPositionInBeats(5.0);
 
         TransportController controller = newController(project, new MockAudioBackend());
-        runHandler(controller::toggleRecord);   // pipeline active; transport RECORDING
+        record(controller);   // pipeline active; transport RECORDING
         assertThat(armed.isRecording())
                 .as("the pipeline armed the track").isTrue();
         assertThat(recIndicator.isVisible())
@@ -1300,6 +1356,7 @@ class TransportControllerTest {
         assertThat(transport.getPositionInBeats())
                 .as("the finalize path does not take the double-stop rewind to zero")
                 .isEqualTo(5.0);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the stopped take was published");
     }
 
     @Test
@@ -1383,14 +1440,16 @@ class TransportControllerTest {
         assertThat(backend.opens.get()).as("the device was never opened").isZero();
         assertThat(audioEngine.isStreamOpen()).as("no stream is open").isFalse();
         assertThat(controller.activeTakeDirectory()).as("no take directory exists").isEmpty();
+        assertThat(controller.isPreparingTake()).as("and no take is being prepared").isFalse();
     }
 
     @Test
     void aStartedTakeLivesUnderTheProjectsAudioTakesDirectory() throws Exception {
         // Story 323 (D6, D12) — the take directory is allocated by
         // TakeDirectories under the project's audio/takes, the pipeline
-        // streams into it from the start (manifest + lane-0 .part), and the
-        // status line names it.
+        // streams into it from the start (manifest + lane-0 .part, created by
+        // the take's capture thread before capture begins), and the status
+        // line names it.
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
@@ -1398,7 +1457,7 @@ class TransportControllerTest {
         OpenCountingBackend backend = new OpenCountingBackend();
         TransportController controller = newController(project, backend);
         try {
-            runHandler(controller::toggleRecord);
+            record(controller);
 
             assertThat(backend.opens.get())
                     .as("non-vacuity of the refusal test's zero: a real take opens the device")
@@ -1422,7 +1481,7 @@ class TransportControllerTest {
                     .isEqualTo("Recording — 1 track armed — streaming to audio/takes/" + takeName);
             assertThat(recIndicator.isVisible()).isTrue();
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
         }
     }
 
@@ -1454,97 +1513,89 @@ class TransportControllerTest {
         }
     }
 
-    // ── Story 323 review: a take still being written when Stop gives up ─────
+    // ── Story 323 review: a take still being written after its Stop ─────────
 
     /**
-     * Stands in for a Stop whose bounded join runs out (the core's join bound
-     * and flush-thread holds are package-private to daw-core, out of this
-     * module's reach). The FIRST call runs the real
-     * {@code RecordingPipeline.stop()} — callback removed, recording flags
-     * cleared, transport stopped (which returns the playhead to the take's
-     * start), take sealed, clips built — then takes the clips it added off
-     * their tracks again and throws {@link TakeFinalizationPendingException}
-     * carrying {@link #written}, which the test completes as "the thread has
-     * terminated". So the controller sees what a pending Stop leaves in
-     * production: an inactive pipeline whose one-shot stop has run, a
-     * stopped transport, and no clip on any track. It differs from production
-     * only in what the controller does not read: the take is already sealed on
-     * disk, and the pipeline is not
-     * {@linkplain RecordingPipeline#isFinalizationPending() finalization
-     * pending} and already lists its clips in {@code getRecordedClips()}. The
-     * SECOND call — the deferred half — puts those clips back on their tracks
-     * and returns them without repeating any of the one-shot stop, as the
-     * real completing stop does (the core's
-     * {@code StopFinalizationPendingContractTest
-     * .aStopWhoseJoinRunsOutBuildsNothingAndTheStopAfterTerminationReferencesEverySegment}
-     * pins that it repeats none of it). Any later call — the Stop of a later
-     * take — is the real {@code RecordingPipeline.stop()}. Every call records
-     * its pipeline and whether it ran on the FX thread.
+     * Counts the controller's completions of a stopped take
+     * ({@code setTakeCompletionForTest}) — each the real
+     * {@code RecordingPipeline.completeStop()} unless the test says
+     * otherwise — recording the pipeline and whether it ran on the FX thread.
+     * The first completion may be made to throw ({@link #firstFailure}) or to
+     * hand back no clip ({@link #firstReturnsNothing}: the clips the real
+     * completion added are taken off their tracks again); any later one is
+     * the real completion.
      */
-    private static final class StillWritingStop implements TransportController.PipelineStop {
-        final CompletableFuture<Void> written = new CompletableFuture<>();
+    private static final class CountingCompletion implements TransportController.TakeCompletion {
         final List<RecordingPipeline> calls = new CopyOnWriteArrayList<>();
         final List<Boolean> onFxThread = new CopyOnWriteArrayList<>();
-        final CountDownLatch deferredCall = new CountDownLatch(1);
-        /** Thrown by the second call instead of its clips. */
-        volatile RuntimeException deferredFailure;
-        /** The second call hands back no clip and puts none back. */
-        volatile boolean deferredReturnsNothing;
-        /** The clips the first call's real stop built, taken off their tracks until the second call. */
-        private volatile List<AudioClip> builtClips = List.of();
+        /** Thrown by the first completion instead of completing the take. */
+        volatile RuntimeException firstFailure;
+        /** The first completion completes the take, takes its clips back off the tracks and hands back none. */
+        volatile boolean firstReturnsNothing;
 
         @Override
-        public List<AudioClip> stop(RecordingPipeline pipeline) {
+        public List<AudioClip> complete(RecordingPipeline pipeline) {
             calls.add(pipeline);
             onFxThread.add(Platform.isFxApplicationThread());
-            if (calls.size() == 1) {
-                builtClips = pipeline.stop();
-                pipeline.getRecordedClips().forEach(Track::removeClip);
-                throw new TakeFinalizationPendingException(pipeline.getTakeDirectory(),
-                        java.time.Duration.ofSeconds(30), written);
+            if (calls.size() > 1) {
+                return pipeline.completeStop();
             }
-            if (calls.size() > 2) {
-                return pipeline.stop();
+            RuntimeException failure = firstFailure;
+            if (failure != null) {
+                throw failure;
             }
-            try {
-                RuntimeException failure = deferredFailure;
-                if (failure != null) {
-                    throw failure;
-                }
-                if (deferredReturnsNothing) {
-                    return List.of();
-                }
-                pipeline.getRecordedClips().forEach(Track::addClip);
-                return builtClips;
-            } finally {
-                deferredCall.countDown();
+            List<AudioClip> clips = pipeline.completeStop();
+            if (!firstReturnsNothing) {
+                return clips;
             }
+            pipeline.getRecordedClips().forEach(Track::removeClip);
+            return List.of();
         }
     }
 
-    /** Records an audio take that has at least one block on disk, with {@code stops} as the pipeline stop. */
+    /**
+     * Records an audio take that has at least one block on disk, with the
+     * {@link #hold} on its capture thread installed (unarmed), {@code completion}
+     * as the way the controller completes it and the production early-seal
+     * signal.
+     */
     private TransportController recordingWithABlockOnDisk(DawProject project, Track armed,
-                                                          StillWritingStop stops) throws Exception {
-        return recordingWithABlockOnDisk(project, armed, stops, RecordingPipeline::earlySeal);
+                                                          TransportController.TakeCompletion completion)
+            throws Exception {
+        return recordingWithABlockOnDisk(project, armed, completion, RecordingPipeline::earlySeal);
     }
 
     /**
-     * Records an audio take that has at least one block on disk, with
-     * {@code stops} as the pipeline stop and {@code earlySeal} as the way
-     * the controller reads the take's early-seal signal.
+     * Records an audio take that has at least one block on disk, with the
+     * {@link #hold} on its capture thread installed (unarmed),
+     * {@code completion} as the way the controller completes it and
+     * {@code earlySeal} as the way the controller reads its early-seal signal.
      */
     private TransportController recordingWithABlockOnDisk(DawProject project, Track armed,
-                                                          TransportController.PipelineStop stops,
+                                                          TransportController.TakeCompletion completion,
                                                           TransportController.EarlySealSignal earlySeal)
             throws Exception {
         TransportController controller = newController(project, new MockAudioBackend());
         runHandler(() -> {
-            controller.setPipelineStopForTest(stops);
+            hold.installOn(controller);
+            controller.setTakeCompletionForTest(completion);
             controller.setEarlySealSignalForTest(earlySeal);
         });
-        runHandler(controller::toggleRecord);
+        record(controller);
         awaitABlockOnDisk(controller, armed);
         return controller;
+    }
+
+    /** Holds the recording take's capture thread mid-pass, so its Stop leaves the take still being written. */
+    private void holdTheCaptureThread() throws InterruptedException {
+        hold.arm();
+        hold.awaitHolding(Duration.ofSeconds(10));
+    }
+
+    /** Releases the take's capture thread and waits, bounded, until the take has been published. */
+    private void releaseAndAwaitThePublication(TransportController controller) throws Exception {
+        hold.release();
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
     }
 
     /** Waits, for at most 10 s, until the active take of {@code controller} has a block of {@code armed} on disk. */
@@ -1572,15 +1623,21 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        CountingCompletion completions = new CountingCompletion();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
         Path takes = TakeDirectories.takesDirectory(ProjectManager.audioDirectory(projectDirectory));
         List<Path> takeDirectories = listing(takes);
+        RecordingPipeline stopped = hold.pipeline();
+        holdTheCaptureThread();
 
         assertThat(runHandlerCatching(controller::stop))
-                .as("the pending take never escapes the Stop handler").isNull();
+                .as("the take still being written never escapes the Stop handler").isNull();
 
-        assertThat(stops.calls).hasSize(1);
+        assertThat(completions.calls).as("nothing is completed while the take is being written").isEmpty();
+        assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_FINISHING_MESSAGE);
+        assertThat(stillWritingDelay.delays()).as("the Stop scheduled the still-writing warning")
+                .containsExactly(TransportController.TAKE_STILL_WRITING_DELAY);
+        runHandler(stillWritingDelay::fireAll); // the delay has passed and the take is still being written
         assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
         assertThat(notificationBar.getMessage()).isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
         assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
@@ -1599,28 +1656,26 @@ class TransportControllerTest {
         assertThat(statusBarLabel.getText()).isEqualTo(TransportController.RECORD_WHILE_WRITING_MESSAGE);
         assertThat(project.getTransport().getState())
                 .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(controller.isPreparingTake()).as("no take is being prepared").isFalse();
         assertThat(controller.activeTakeDirectory()).as("no pipeline was built").isEmpty();
         assertThat(listing(takes)).as("no take directory was allocated").isEqualTo(takeDirectories);
         assertThat(recIndicator.isVisible()).isFalse();
 
-        // A second Stop is an ordinary Stop: it never calls the pipeline again.
+        // A second Stop is an ordinary Stop: it neither stops nor completes the take again.
         assertThat(runHandlerCatching(controller::stop)).isNull();
-        assertThat(stops.calls).as("no second join on the FX thread").hasSize(1);
+        assertThat(completions.calls).as("the second Stop completes nothing").isEmpty();
 
         // Playback started while the take is being written belongs to the
-        // user: the deferred half publishes the take and leaves it alone.
+        // user: the turn that publishes the take leaves it alone.
         runHandler(controller::start);
         assertThat(project.getTransport().getState())
                 .as("fixture: playback started while the take is being written")
                 .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
 
-        stops.written.complete(null); // the capture thread has terminated
-        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-        flushFx();
+        releaseAndAwaitThePublication(controller);
 
-        assertThat(stops.calls).hasSize(2);
-        assertThat(stops.calls.get(1)).as("the same pipeline is finished").isSameAs(stops.calls.getFirst());
-        assertThat(stops.onFxThread.get(1)).as("the deferred stop runs on the FX thread").isTrue();
+        assertThat(completions.calls).as("the stopped take is completed once").containsExactly(stopped);
+        assertThat(completions.onFxThread).as("on the FX thread").containsExactly(true);
         assertThat(armed.getClips()).hasSize(1);
         assertThat(undoManager.undoSize()).isEqualTo(1);
         assertThat(undoManager.undoDescription()).isEqualTo("Record Audio");
@@ -1628,29 +1683,29 @@ class TransportControllerTest {
         assertThat(notificationBar.getMessage()).isEqualTo("Recording stopped — 1 clip created");
         assertThat(statusBarLabel.getText()).isEqualTo("Recording stopped — 1 clip created");
         assertThat(project.getTransport().getState())
-                .as("the deferred half does not stop the playback started while the take was being written")
+                .as("publishing the take does not stop the playback started while the take was being written")
                 .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
         assertThat(controller.isTakeBeingWritten()).as("the take has been published").isFalse();
 
         // Record is available again (from a stopped transport).
         runHandler(controller::stop);
-        runHandler(controller::toggleRecord);
+        record(controller);
         try {
             assertThat(controller.activeTakeDirectory()).as("a new take started").isPresent();
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
         }
     }
 
     @Test
-    void aDeferredStopThatFailsIsLoggedAndShownAsAnErrorAndRecordIsAvailableAgain() throws Exception {
+    void aTakeWhoseCompletionFailsIsLoggedAndShownAsAnErrorAndRecordIsAvailableAgain() throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        stops.deferredFailure = new IllegalStateException("injected deferred-stop failure");
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        CountingCompletion completions = new CountingCompletion();
+        completions.firstFailure = new IllegalStateException("injected completion failure");
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
         List<LogRecord> severe = new CopyOnWriteArrayList<>();
         Handler capture = new Handler() {
             @Override
@@ -1672,26 +1727,25 @@ class TransportControllerTest {
         logger.addHandler(capture);
         try {
             assertThat(runHandlerCatching(controller::stop)).isNull();
-            stops.written.complete(null);
-            assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-            flushFx();
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "the turn that publishes the take ran");
 
+            assertThat(completions.calls).as("fixture: the completion was attempted").hasSize(1);
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
             assertThat(notificationBar.getMessage())
-                    .startsWith("Recording could not be finished — injected deferred-stop failure");
+                    .startsWith("Recording could not be finished — injected completion failure");
             assertThat(statusBarLabel.getText()).isEqualTo(notificationBar.getMessage());
             assertThat(severe).as("the failure is logged, never swallowed")
-                    .anySatisfy(record -> assertThat(record.getThrown()).isSameAs(stops.deferredFailure));
+                    .anySatisfy(record -> assertThat(record.getThrown()).isSameAs(completions.firstFailure));
             assertThat(undoManager.canUndo()).as("nothing was published").isFalse();
         } finally {
             logger.removeHandler(capture);
         }
 
-        runHandler(controller::toggleRecord);
+        record(controller);
         try {
             assertThat(controller.activeTakeDirectory()).as("Record is available again").isPresent();
         } finally {
-            runHandler(controller::stop);
+            stopAndAwaitTheTake(controller);
         }
     }
 
@@ -1701,16 +1755,17 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        stops.deferredReturnsNothing = true;
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        CountingCompletion completions = new CountingCompletion();
+        completions.firstReturnsNothing = true;
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        holdTheCaptureThread();
 
         assertThat(runHandlerCatching(controller::stop)).isNull();
+        runHandler(stillWritingDelay::fireAll);
         assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
-        stops.written.complete(null);
-        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-        flushFx();
+        releaseAndAwaitThePublication(controller);
 
+        assertThat(completions.calls).as("fixture: the take was completed").hasSize(1);
         assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE);
         assertThat(undoManager.canUndo()).isFalse();
     }
@@ -1721,8 +1776,8 @@ class TransportControllerTest {
      * MainController retires a controller when it builds the next project's
      * ({@code createTransportController}); a take that controller was still
      * writing finishes afterwards. Nothing is published into the project it
-     * was recorded in — no clip, no undo entry, no SUCCESS — and the pipeline
-     * is not stopped again; one WARNING, logged and shown, names that project
+     * was recorded in — no clip, no undo entry, no SUCCESS — and the take is
+     * not completed; one WARNING, logged and shown, names that project
      * and the take's directory, and the status bar's promise that the clips
      * will appear is taken back.
      */
@@ -1732,11 +1787,13 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        CountingCompletion completions = new CountingCompletion();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
         assertThat(controller.isTakeBeingWritten()).as("fixture: the take is still being written").isTrue();
-        Path takeDirectory = stops.calls.getFirst().getTakeDirectory();
+        assertThat(statusBarLabel.getText()).as("fixture").isEqualTo(TransportController.TAKE_FINISHING_MESSAGE);
 
         runHandler(controller::retire);
         NotificationHistoryService shown = new NotificationHistoryService();
@@ -1746,8 +1803,8 @@ class TransportControllerTest {
         Logger logger = Logger.getLogger(TransportController.class.getName());
         logger.addHandler(capture);
         try {
-            stops.written.complete(null); // the capture thread has terminated
-            flushFx();
+            releaseAndAwaitThePublication(controller); // the capture thread terminates
+            runHandler(stillWritingDelay::fireAll); // and the delayed warning is retired too
         } finally {
             logger.removeHandler(capture);
         }
@@ -1755,7 +1812,7 @@ class TransportControllerTest {
         String expected = TransportController.takeOfAReplacedProjectMessage("Song A", takeDirectory);
         assertThat(expected).as("the warning names the project and the take's directory")
                 .contains("'Song A'", takeDirectory.toString());
-        assertThat(stops.calls).as("a retired controller does not stop the pipeline again").hasSize(1);
+        assertThat(completions.calls).as("a retired controller does not complete the take").isEmpty();
         assertThat(armed.getClips()).as("no clip on the replaced project's track").isEmpty();
         assertThat(undoManager.canUndo()).as("no undo entry in the replaced project's history").isFalse();
         assertThat(shown.getEntries()).as("one WARNING, and no SUCCESS, once the take has finished")
@@ -1776,30 +1833,40 @@ class TransportControllerTest {
     }
 
     /**
-     * The retirement is read when the deferred half runs, not when it is
-     * posted: a project change that lands between the take's termination and
-     * the FX turn it posted publishes nothing either.
+     * The retirement is read when the turn that publishes the take runs, not
+     * when it is posted: a project change that lands between the take's
+     * termination and the FX turn it posted publishes nothing either.
      */
     @Test
-    void aControllerRetiredAfterItsTakeFinishedButBeforeTheDeferredHalfRanPublishesNothing() throws Exception {
+    void aControllerRetiredAfterItsTakeFinishedButBeforeThePublishingTurnRanPublishesNothing() throws Exception {
         DawProject project = new DawProject("Song B", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        CountingCompletion completions = new CountingCompletion();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline stopped = hold.pipeline();
+        holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
-        Path takeDirectory = stops.calls.getFirst().getTakeDirectory();
 
-        // One FX turn: the completion posts the deferred half, then the
-        // project change retires the controller before that post runs.
+        // One FX turn: the capture thread is released and terminates — its
+        // termination posts the publishing turn — and the project change
+        // retires the controller before that post runs. The wait for the
+        // termination inside this turn is the test's, bounded, and the
+        // capture thread needs nothing from the FX thread to terminate.
         assertThat(runHandlerCatching(() -> {
-            stops.written.complete(null);
+            hold.release();
+            try {
+                stopped.termination().toCompletableFuture().get(4, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                throw new AssertionError("fixture: the released capture thread terminated within 4 s", e);
+            }
             controller.retire();
         })).isNull();
-        flushFx();
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the publishing turn ran");
 
-        assertThat(stops.calls).as("the pipeline is not stopped again").hasSize(1);
+        assertThat(completions.calls).as("the take is not completed").isEmpty();
         assertThat(armed.getClips()).isEmpty();
         assertThat(undoManager.canUndo()).isFalse();
         assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
@@ -1817,21 +1884,20 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
-        assertThat(statusBarLabel.getText()).as("fixture").isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
+        assertThat(statusBarLabel.getText()).as("fixture").isEqualTo(TransportController.TAKE_FINISHING_MESSAGE);
 
         runHandler(() -> {
             statusBarLabel.setText("Metronome: ON");
             controller.retire();
         });
-        stops.written.complete(null);
-        flushFx();
+        releaseAndAwaitThePublication(controller);
 
-        assertThat(notificationBar.getMessage()).as("fixture: the deferred half ran, retired")
-                .isEqualTo(TransportController.takeOfAReplacedProjectMessage(
-                        "Song C", stops.calls.getFirst().getTakeDirectory()));
+        assertThat(notificationBar.getMessage()).as("fixture: the publishing turn ran, retired")
+                .isEqualTo(TransportController.takeOfAReplacedProjectMessage("Song C", takeDirectory));
         assertThat(statusBarLabel.getText()).isEqualTo("Metronome: ON");
     }
 
@@ -1883,19 +1949,6 @@ class TransportControllerTest {
         }
     }
 
-    /** The real {@code RecordingPipeline.stop()}, recording each call and whether it ran on the FX thread. */
-    private static final class CountingStop implements TransportController.PipelineStop {
-        final List<RecordingPipeline> calls = new CopyOnWriteArrayList<>();
-        final List<Boolean> onFxThread = new CopyOnWriteArrayList<>();
-
-        @Override
-        public List<AudioClip> stop(RecordingPipeline pipeline) {
-            calls.add(pipeline);
-            onFxThread.add(Platform.isFxApplicationThread());
-            return pipeline.stop();
-        }
-    }
-
     /** Records every notification shown from now on. */
     private NotificationHistoryService notificationsFromNowOn() throws Exception {
         NotificationHistoryService shown = new NotificationHistoryService();
@@ -1906,10 +1959,11 @@ class TransportControllerTest {
     /**
      * The capture thread seals the take on its own: the take is stopped on a
      * later FX turn exactly as the user's Stop stops it — callback removed,
-     * transport stopped with Stopped announced, REC indicator hidden, the
-     * clip and the "Record Audio" undo entry published — and the seal is
-     * reported once, as an ERROR naming the cause and what was kept, never
-     * as the SUCCESS of a normal Stop.
+     * transport stopped with Stopped announced, REC indicator hidden — and,
+     * once its capture thread has terminated, the clip and the "Record Audio"
+     * undo entry are published and the seal is reported once, as an ERROR
+     * naming the cause and what was kept, never as the SUCCESS of a normal
+     * Stop.
      */
     @Test
     void aTakeSealedEarlyIsStoppedOnAnFxTurnAndReportedAsAnError() throws Exception {
@@ -1917,9 +1971,9 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        CountingStop stops = new CountingStop();
+        CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, earlySeal);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         NotificationHistoryService shown = notificationsFromNowOn();
@@ -1933,8 +1987,6 @@ class TransportControllerTest {
             EventBusPublisher.setDefault(previousBus);
         }
 
-        assertThat(stops.calls).as("the take was stopped once").hasSize(1);
-        assertThat(stops.onFxThread).as("on the FX thread").containsExactly(true);
         assertThat(audioEngine.getRecordingCallback()).as("the recording callback is removed").isNull();
         assertThat(project.getTransport().getState())
                 .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
@@ -1942,6 +1994,9 @@ class TransportControllerTest {
                 .filteredOn(TransportEvent.Stopped.class::isInstance).hasSize(1);
         assertThat(recIndicator.isVisible()).as("the REC indicator is hidden").isFalse();
         assertThat(armed.isRecording()).isFalse();
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
+        assertThat(completions.calls).as("the take was completed once").hasSize(1);
+        assertThat(completions.onFxThread).as("on the FX thread").containsExactly(true);
         assertThat(armed.getClips()).as("the take's clip is published").hasSize(1);
         assertThat(undoManager.undoSize()).isEqualTo(1);
         assertThat(undoManager.undoDescription()).isEqualTo("Record Audio");
@@ -1957,38 +2012,46 @@ class TransportControllerTest {
     }
 
     /**
-     * A signal that had completed before the record handler registered on it
+     * A signal that had completed before the readiness turn registered on it
      * — the capture thread sealed the take while the start was still
      * running — is handled the same way: the registration only posts, and
-     * the take is stopped on a later FX turn, never inside the record handler.
+     * the take is stopped on a later FX turn, never inside the readiness
+     * turn. Had the Stop run inside it, it would have run before that turn's
+     * own announcement: Stopped before Started on the bus, and the REC
+     * indicator lit again after the take was stopped.
      */
     @Test
-    void aSignalThatCompletedBeforeTheRecordHandlerRegisteredStopsTheTakeOnALaterTurn() throws Exception {
+    void aSignalThatCompletedBeforeTheReadinessTurnRegisteredStopsTheTakeOnALaterTurn() throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        CountingStop stops = new CountingStop();
+        CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
         earlySeal.completedBeforeTheFirstRead = DISK_EXHAUSTED;
         TransportController controller = newController(project, new MockAudioBackend());
         runHandler(() -> {
-            controller.setPipelineStopForTest(stops);
+            controller.setTakeCompletionForTest(completions);
             controller.setEarlySealSignalForTest(earlySeal);
         });
-        AtomicReference<Boolean> stillRecordingWhenTheHandlerReturned = new AtomicReference<>();
+        List<BusEvent> published = new CopyOnWriteArrayList<>();
+        var previousBus = EventBusPublisher.getDefault();
+        try {
+            EventBusPublisher.setDefault(new PublishHookEventBus(published::add));
+            runHandler(controller::toggleRecord);
+            awaitOnFx(() -> !controller.isPreparingTake() && !controller.isRecordingInFlight(),
+                    "the take began and was stopped");
+        } finally {
+            EventBusPublisher.setDefault(previousBus);
+        }
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
 
-        runHandler(() -> {
-            controller.toggleRecord();
-            stillRecordingWhenTheHandlerReturned.set(
-                    controller.activeTakeDirectory().isPresent() && stops.calls.isEmpty());
-        });
-        assertThat(stillRecordingWhenTheHandlerReturned.get())
-                .as("the record handler only posted; nothing stopped the take inside it").isTrue();
-        flushFx();
-
-        assertThat(stops.calls).hasSize(1);
-        assertThat(stops.onFxThread).containsExactly(true);
+        assertThat(published).as("the readiness turn announced the take before the later turn stopped it")
+                .filteredOn(event -> event instanceof TransportEvent.Started || event instanceof TransportEvent.Stopped)
+                .extracting(event -> event.getClass().getSimpleName())
+                .containsExactly("Started", "Stopped");
+        assertThat(completions.calls).hasSize(1);
+        assertThat(completions.onFxThread).containsExactly(true);
         assertThat(controller.activeTakeDirectory()).isEmpty();
         assertThat(recIndicator.isVisible()).isFalse();
         assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
@@ -1997,8 +2060,8 @@ class TransportControllerTest {
     }
 
     /**
-     * The user's Stop runs before the early seal's FX turn: that Stop
-     * publishes the take and reports the seal, once, and the turn then does
+     * The user's Stop runs before the early seal's FX turn: that Stop's take
+     * is published and the seal reported, once, and the turn then does
      * nothing — no second stop, no second report.
      */
     @Test
@@ -2007,9 +2070,9 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        CountingStop stops = new CountingStop();
+        CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, earlySeal);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         NotificationHistoryService shown = notificationsFromNowOn();
@@ -2023,8 +2086,9 @@ class TransportControllerTest {
             controller.stop();
         })).isNull();
         flushFx(); // the posted turn
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
 
-        assertThat(stops.calls).as("stopped once, by the user's Stop").hasSize(1);
+        assertThat(completions.calls).as("stopped once, by the user's Stop, and completed once").hasSize(1);
         String expected = TransportController.takeSealedEarlyMessage(seal, 1, takeDirectory);
         assertThat(expected).isEqualTo("Recording stopped — writing the take to disk failed (injected);"
                 + " the audio recorded before that is kept (1 clip created)");
@@ -2049,18 +2113,18 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        CountingStop stops = new CountingStop();
+        CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, earlySeal);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         NotificationHistoryService shown = notificationsFromNowOn();
-        runHandler(controller::stop);
-        assertThat(stops.calls).as("fixture: the user's Stop").hasSize(1);
+        stopAndAwaitTheTake(controller);
+        assertThat(completions.calls).as("fixture: the user's Stop, and its take published").hasSize(1);
 
         earlySeal.sealEarlyOnTheCaptureThread(DISK_EXHAUSTED);
         flushFx();
 
-        assertThat(stops.calls).as("no second stop").hasSize(1);
+        assertThat(completions.calls).as("no second stop").hasSize(1);
         assertThat(shown.getEntries()).as("the user's Stop published its SUCCESS, and nothing followed")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.SUCCESS, "Recording stopped — 1 clip created"));
@@ -2079,9 +2143,9 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        CountingStop stops = new CountingStop();
+        CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, earlySeal);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         runHandler(controller::retire);
         NotificationHistoryService shown = notificationsFromNowOn();
@@ -2089,7 +2153,8 @@ class TransportControllerTest {
             earlySeal.sealEarlyOnTheCaptureThread(DISK_EXHAUSTED);
             flushFx();
 
-            assertThat(stops.calls).as("a retired controller does not stop the take").isEmpty();
+            assertThat(controller.isRecordingInFlight()).as("a retired controller does not stop the take").isTrue();
+            assertThat(controller.isTakeBeingWritten()).isFalse();
             assertThat(audioEngine.getRecordingCallback()).isNotNull();
             assertThat(project.getTransport().getState())
                     .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.RECORDING);
@@ -2097,45 +2162,47 @@ class TransportControllerTest {
             assertThat(undoManager.canUndo()).isFalse();
             assertThat(shown.getEntries()).as("nothing is shown").isEmpty();
         } finally {
-            runHandler(controller::stop); // releases the take's files
+            stopAndAwaitTheTake(controller); // releases the take's files
         }
+        assertThat(completions.calls).as("nor, retired, does it complete the take once it is stopped").isEmpty();
     }
 
     /**
-     * An early seal while a Stop whose join ran out is still pending — the
-     * capture thread sealed the take in its final sweep — causes no second
-     * stop: its FX turn does nothing, and the deferred half of that Stop
-     * reports the seal once, instead of the SUCCESS.
+     * An early seal while a stopped take is still being written — the capture
+     * thread sealed the take in its final sweep — causes no second stop: its
+     * FX turn does nothing, and the turn that publishes the take reports the
+     * seal once, instead of the SUCCESS.
      */
     @Test
-    void anEarlySealWhileTheStopIsPendingIsReportedOnceByTheDeferredHalf() throws Exception {
+    void anEarlySealWhileTheTakeIsStillBeingWrittenIsReportedOnceWhenItIsPublished() throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
+        CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, earlySeal);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         NotificationHistoryService shown = notificationsFromNowOn();
+        holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
-        assertThat(controller.isTakeBeingWritten()).as("fixture: the Stop is pending").isTrue();
+        assertThat(controller.isTakeBeingWritten()).as("fixture: the take is still being written").isTrue();
+        runHandler(stillWritingDelay::fireAll); // the delay has passed and the take is still being written
 
         earlySeal.sealEarlyOnTheCaptureThread(DISK_EXHAUSTED);
         flushFx();
-        assertThat(stops.calls).as("the early seal's turn does not stop the take again").hasSize(1);
+        assertThat(controller.isTakeBeingWritten()).as("the early seal's turn does not stop the take again").isTrue();
+        assertThat(completions.calls).isEmpty();
         assertThat(statusBarLabel.getText())
                 .as("the turn ran no Stop at all: the status bar still says the take is being written")
                 .isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
 
-        stops.written.complete(null); // the capture thread has terminated
-        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-        flushFx();
+        releaseAndAwaitThePublication(controller);
 
-        assertThat(stops.calls).as("only the deferred half called the pipeline again").hasSize(2);
+        assertThat(completions.calls).as("only the publishing turn completed the take").hasSize(1);
         String expected = TransportController.takeSealedEarlyMessage(DISK_EXHAUSTED, 1, takeDirectory);
-        assertThat(shown.getEntries()).as("the pending Stop's WARNING, then one ERROR, and no SUCCESS")
+        assertThat(shown.getEntries()).as("the still-writing WARNING, then one ERROR, and no SUCCESS")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.WARNING, TransportController.TAKE_STILL_WRITING_MESSAGE),
                         tuple(NotificationLevel.ERROR, expected));
@@ -2238,31 +2305,11 @@ class TransportControllerTest {
     // ── Story 323 review: a published take marks the project dirty ──────────
 
     /**
-     * Stands in for a take that produced no clip — the core builds none for a
-     * take that recorded no frame, and a real take's first block arrives at
-     * the device's pace — on its FIRST call: it runs the real
-     * {@code RecordingPipeline.stop()}, takes the clips that stop added off
-     * their tracks again and returns none, so the controller sees what a take
-     * without a clip leaves. Any later call — the Stop of a later take — is
-     * the real {@code RecordingPipeline.stop()}.
-     */
-    private static final class NoClipOnTheFirstStop implements TransportController.PipelineStop {
-        final List<RecordingPipeline> calls = new CopyOnWriteArrayList<>();
-
-        @Override
-        public List<AudioClip> stop(RecordingPipeline pipeline) {
-            calls.add(pipeline);
-            List<AudioClip> clips = pipeline.stop();
-            if (calls.size() > 1) {
-                return clips;
-            }
-            pipeline.getRecordedClips().forEach(Track::removeClip);
-            return List.of();
-        }
-    }
-
-    /**
-     * A take that published no clip leaves the project as it was; the next
+     * A take that published no clip — the core builds none for a take that
+     * recorded no frame, and a real take's first block arrives at the
+     * device's pace, so its completion is made to hand back none
+     * ({@link CountingCompletion#firstReturnsNothing}) — leaves the project as
+     * it was, and the status bar's finishing text is taken back; the next
      * take, which publishes one, marks it dirty, as an undoable edit does
      * (story 294: {@code DawProject} holds the one dirty bit).
      */
@@ -2272,22 +2319,25 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        NoClipOnTheFirstStop stops = new NoClipOnTheFirstStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, RecordingPipeline::earlySeal);
+        CountingCompletion completions = new CountingCompletion();
+        completions.firstReturnsNothing = true;
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
         project.markClean();
 
-        runHandler(controller::stop);
+        stopAndAwaitTheTake(controller);
 
-        assertThat(stops.calls).as("fixture: the take was stopped").hasSize(1);
+        assertThat(completions.calls).as("fixture: the take was completed").hasSize(1);
         assertThat(armed.getClips()).as("fixture: the take published no clip").isEmpty();
         assertThat(undoManager.canUndo()).isFalse();
         assertThat(project.isDirty()).as("a take that published no clip leaves the project clean").isFalse();
+        assertThat(statusBarLabel.getText()).as("the finishing text is taken back")
+                .isEqualTo(TransportController.TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE);
 
-        runHandler(controller::toggleRecord);
+        record(controller);
         awaitABlockOnDisk(controller, armed);
-        runHandler(controller::stop);
+        stopAndAwaitTheTake(controller);
 
-        assertThat(stops.calls).as("fixture: the second take was stopped").hasSize(2);
+        assertThat(completions.calls).as("fixture: the second take was completed").hasSize(2);
         assertThat(armed.getClips()).hasSize(1);
         assertThat(undoManager.undoDescription()).isEqualTo("Record Audio");
         assertThat(project.isDirty()).as("publishing the take's clip marks the project dirty").isTrue();
@@ -2295,27 +2345,25 @@ class TransportControllerTest {
 
     /**
      * A take still being written is not in the project and leaves it clean;
-     * the deferred half that publishes it marks the project dirty.
+     * the turn that publishes it marks the project dirty.
      */
     @Test
-    void aTakePublishedByTheDeferredHalfMarksTheProjectDirtyOnlyThen() throws Exception {
+    void aTakeStillBeingWrittenMarksTheProjectDirtyOnlyWhenItIsPublished() throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
         project.markClean();
+        holdTheCaptureThread();
 
         assertThat(runHandlerCatching(controller::stop)).isNull();
         assertThat(controller.isTakeBeingWritten()).as("fixture: the take is being written").isTrue();
         assertThat(project.isDirty()).as("a take still being written is not in the project yet").isFalse();
 
-        stops.written.complete(null); // the capture thread has terminated
-        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-        flushFx();
+        releaseAndAwaitThePublication(controller);
 
-        assertThat(armed.getClips()).as("fixture: the deferred half published the take").hasSize(1);
+        assertThat(armed.getClips()).as("fixture: the take was published").hasSize(1);
         assertThat(project.isDirty()).as("publishing the take's clip marks the project dirty").isTrue();
     }
 
@@ -2326,15 +2374,17 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        CountingStop stops = new CountingStop();
+        CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, earlySeal);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
         project.markClean();
 
         earlySeal.sealEarlyOnTheCaptureThread(DISK_EXHAUSTED);
         flushFx(); // the auto-Stop's turn
+        assertThat(controller.isRecordingInFlight()).as("fixture: the auto-Stop stopped the take").isFalse();
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
 
-        assertThat(stops.calls).as("fixture: the auto-Stop stopped the take").hasSize(1);
+        assertThat(completions.calls).as("fixture: the stopped take was completed").hasSize(1);
         assertThat(controller.activeTakeDirectory()).isEmpty();
         assertThat(armed.getClips()).hasSize(1);
         assertThat(notificationBar.getCurrentLevel()).as("fixture: the early seal was reported")
@@ -2371,29 +2421,29 @@ class TransportControllerTest {
 
     /**
      * The fallback of a project change that bypassed the guard: a retired
-     * controller's deferred half publishes nothing into the replaced project,
-     * so it marks nothing dirty, and it reports nothing but where the take's
-     * files are — not even a failure of the Stop's own seal.
+     * controller's publishing turn publishes nothing into the replaced
+     * project, so it marks nothing dirty, and it reports nothing but where
+     * the take's files are — not even a failure of the Stop's own seal.
      */
     @Test
-    void aRetiredControllersDeferredHalfLeavesTheProjectCleanAndReportsNoSealFailure() throws Exception {
+    void aRetiredControllersPublishingTurnLeavesTheProjectCleanAndReportsNoSealFailure() throws Exception {
         DawProject project = new DawProject("Song D", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        CountingCompletion completions = new CountingCompletion();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
+        holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
-        Path takeDirectory = stops.calls.getFirst().getTakeDirectory();
         project.markClean();
         runHandler(controller::retire);
         NotificationHistoryService shown = notificationsFromNowOn();
 
-        stops.written.complete(null); // the capture thread has terminated
-        flushFx();
+        releaseAndAwaitThePublication(controller); // the capture thread terminates
 
-        assertThat(stops.calls).as("fixture: a retired controller does not stop the pipeline again").hasSize(1);
+        assertThat(completions.calls).as("fixture: a retired controller does not complete the take").isEmpty();
         assertThat(armed.getClips()).isEmpty();
         assertThat(project.isDirty()).as("nothing was published into the replaced project").isFalse();
         assertThat(shown.getEntries()).as("one WARNING, and no report of the seal").singleElement()
@@ -2426,14 +2476,14 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        CountingStop stops = new CountingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, RecordingPipeline::earlySeal);
+        CountingCompletion completions = new CountingCompletion();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
         awaitSessionInputCheck(controller);
         NotificationHistoryService shown = notificationsFromNowOn();
 
-        runHandler(controller::stop);
+        stopAndAwaitTheTake(controller);
 
-        assertThat(stops.calls.getFirst().stopSealFailure()).as("the core reports no failure of the Stop's seal")
+        assertThat(completions.calls.getFirst().stopSealFailure()).as("the core reports no failure of the Stop's seal")
                 .isEmpty();
         assertThat(shown.getEntries()).extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.SUCCESS, "Recording stopped — 1 clip created"));
@@ -2451,15 +2501,14 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingStop(),
-                RecordingPipeline::earlySeal);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         project.markClean();
         NotificationHistoryService shown = notificationsFromNowOn();
 
-        runHandler(controller::stop);
+        stopAndAwaitTheTake(controller);
 
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory);
         assertThat(expected).isEqualTo("Recording stopped — finishing the take on disk failed (injected rename"
@@ -2485,14 +2534,15 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        NoClipOnTheFirstStop stops = new NoClipOnTheFirstStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops, RecordingPipeline::earlySeal);
+        CountingCompletion completions = new CountingCompletion();
+        completions.firstReturnsNothing = true;
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         NotificationHistoryService shown = notificationsFromNowOn();
 
-        runHandler(controller::stop);
+        stopAndAwaitTheTake(controller);
 
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 0, takeDirectory);
         assertThat(expected).isEqualTo("Recording stopped — finishing the take on disk failed (injected rename"
@@ -2508,31 +2558,30 @@ class TransportControllerTest {
     }
 
     /**
-     * The deferred half of a Stop whose join ran out reports a failure of
-     * that Stop's seal the same way: after the Stop's WARNING, one ERROR, and
-     * no SUCCESS.
+     * A take still being written when the still-writing warning is shown
+     * reports a failure of its Stop's seal the same way when it is
+     * published: after the WARNING, one ERROR, and no SUCCESS.
      */
     @Test
-    void aDeferredStopWhoseSealFailedIsReportedOnceAsAnError() throws Exception {
+    void aTakeStillBeingWrittenWhoseSealFailedIsReportedOnceAsAnError() throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         project.markClean();
         NotificationHistoryService shown = notificationsFromNowOn();
+        holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
+        runHandler(stillWritingDelay::fireAll); // the delay has passed and the take is still being written
 
-        stops.written.complete(null); // the capture thread has terminated
-        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-        flushFx();
+        releaseAndAwaitThePublication(controller);
 
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory);
-        assertThat(shown.getEntries()).as("the pending Stop's WARNING, then one ERROR, and no SUCCESS")
+        assertThat(shown.getEntries()).as("the still-writing WARNING, then one ERROR, and no SUCCESS")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.WARNING, TransportController.TAKE_STILL_WRITING_MESSAGE),
                         tuple(NotificationLevel.ERROR, expected));
@@ -2544,28 +2593,28 @@ class TransportControllerTest {
                 .as("a take whose Stop seal failed still published its clips: an unsaved change").isTrue();
     }
 
-    /** The same for a deferred half whose take produced no clip: one ERROR, which the status text keeps. */
+    /** The same for a take still being written that produced no clip: one ERROR, which the status text keeps. */
     @Test
-    void aDeferredStopWhoseSealFailedWithoutAClipIsReportedOnceAsAnError() throws Exception {
+    void aTakeStillBeingWrittenWhoseSealFailedWithoutAClipIsReportedOnceAsAnError() throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        StillWritingStop stops = new StillWritingStop();
-        stops.deferredReturnsNothing = true;
-        TransportController controller = recordingWithABlockOnDisk(project, armed, stops);
+        CountingCompletion completions = new CountingCompletion();
+        completions.firstReturnsNothing = true;
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         NotificationHistoryService shown = notificationsFromNowOn();
+        holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
+        runHandler(stillWritingDelay::fireAll); // the delay has passed and the take is still being written
 
-        stops.written.complete(null); // the capture thread has terminated
-        assertThat(stops.deferredCall.await(10, TimeUnit.SECONDS)).isTrue();
-        flushFx();
+        releaseAndAwaitThePublication(controller);
 
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 0, takeDirectory);
-        assertThat(shown.getEntries()).as("the pending Stop's WARNING, then one ERROR, and no SUCCESS")
+        assertThat(shown.getEntries()).as("the still-writing WARNING, then one ERROR, and no SUCCESS")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.WARNING, TransportController.TAKE_STILL_WRITING_MESSAGE),
                         tuple(NotificationLevel.ERROR, expected));

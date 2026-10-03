@@ -16,6 +16,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitTermination;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.decodedRampValue;
@@ -60,7 +62,7 @@ class TakeRecoveryAfterAbandonedWritersContractTest {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setSegmentLimits(Duration.ofHours(1), SEGMENT_BYTES);
         pipeline.setRingSlots(256);
-        pipeline.start();
+        startRecording(pipeline);
 
         feedRamp(engine, transport, pipeline, 0, BLOCKS, 64);
         RecordingSession session = pipeline.getSession(track);
@@ -72,6 +74,7 @@ class TakeRecoveryAfterAbandonedWritersContractTest {
         // every writer with no size patch and no rename; this JVM goes on.
         CaptureFlushService service = pipeline.getCaptureFlushService();
         service.stopAndAbandon();
+        awaitTermination(service);
         assertThat(service.isRunning()).isFalse();
         assertThat(service.isSealed()).isFalse();
 

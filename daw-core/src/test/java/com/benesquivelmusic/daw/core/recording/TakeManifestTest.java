@@ -116,7 +116,8 @@ class TakeManifestTest {
         assertThat(text).contains("manifest-version=1\n", "seal-status=streaming\n");
         assertThat(text).doesNotContain("sealed-by=");
         assertThat(text)
-                .as("the header comment names the format and no writer: the first write is the caller thread's")
+                .as("the header comment names the format and no writer thread: every production write,"
+                        + " the initial one included, is the capture-flush thread's")
                 .startsWith("# DAWG take manifest (story 323)\nmanifest-version=1\n");
     }
 

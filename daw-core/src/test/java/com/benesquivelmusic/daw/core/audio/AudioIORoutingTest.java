@@ -16,6 +16,8 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -277,7 +279,7 @@ class AudioIORoutingTest {
 
         RecordingPipeline pipeline = new RecordingPipeline(
                 engine, transport, format, tempDir, List.of(track1, track2));
-        pipeline.start();
+        startRecording(pipeline);
 
         // Simulate audio input with 4 channels of distinct data
         float[][] inputBuffer = new float[4][512];
@@ -308,7 +310,7 @@ class AudioIORoutingTest {
         assertThat(session2.getTotalSamplesRecorded()).isEqualTo(512);
 
         // Stop and verify clips were created
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips).hasSize(2);
 
         // Verify the captured audio data has correct channel data

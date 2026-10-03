@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
@@ -52,7 +54,7 @@ class SegmentSealAtomicityContractTest {
         Track track = RampCaptureTestSupport.armedMonoTrack("Drums");
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
-        pipeline.start();
+        startRecording(pipeline);
         Path trackDir = takeDir.resolve(track.getId());
 
         AtomicBoolean scanning = new AtomicBoolean(true);
@@ -100,7 +102,7 @@ class SegmentSealAtomicityContractTest {
         } finally {
             scanning.set(false);
             scanner.join(GUARD.toMillis());
-            pipeline.stop();
+            stopRecording(pipeline);
         }
 
         assertThat(scanner.isAlive()).isFalse();

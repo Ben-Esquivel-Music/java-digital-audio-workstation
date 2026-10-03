@@ -86,8 +86,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Same fixture as {@code ProjectChangeWhileTakeIsWrittenTest}.
  * Every FX action runs through {@link Platform#runLater} and is bounded at
- * 5 s, or, for the fixture's Stop, at the longer bound
- * {@link RecordingInFlightFixture} gives it; the flow's outcome is polled
+ * 5 s — the fixture's Stop too: {@link RecordingInFlightFixture} bounds each
+ * of its FX actions at 5 s, and waits on the test thread, bounded at 30 s,
+ * for what the take's capture thread does (the take recording once that
+ * thread has created its files; nothing being written any more after a
+ * Stop); the flow's outcome is polled
  * for on the test thread, bounded by
  * {@link #OUTCOME_BUDGET} (the scan, the replay and the discard are small
  * file operations). The dialog is answered on a later FX turn than the one

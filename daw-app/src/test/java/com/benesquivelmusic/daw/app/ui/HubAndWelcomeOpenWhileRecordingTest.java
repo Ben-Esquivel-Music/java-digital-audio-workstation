@@ -62,9 +62,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * on a throwaway preferences node, removed after each test, makes the Hub and
  * the Welcome screen list Song B. Each door is opened as a user does from the
  * keyboard: Enter on Song B's card. Every FX action runs through
- * {@link Platform#runLater} and is bounded at 5 s, or, for the fixture's
- * Record and Stop, at the longer bound {@link RecordingInFlightFixture}
- * gives them; an unsaved-changes prompt
+ * {@link Platform#runLater} and is bounded at 5 s — the fixture's Record and
+ * Stop too: {@link RecordingInFlightFixture} bounds each of its FX actions at
+ * 5 s, and waits on the test thread, bounded at 30 s, for what the take's
+ * capture thread does (the take recording once that thread has created its
+ * files; nothing being written any more after a Stop); an unsaved-changes prompt
  * is counted and hidden on the FX thread, which ends its {@code showAndWait}
  * as a cancel, so no test waits on a dialog. The cards' background scans are
  * joined, bounded, before the temporary directory is removed.</p>

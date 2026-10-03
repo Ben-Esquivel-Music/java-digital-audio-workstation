@@ -306,7 +306,7 @@ public final class Transport {
      * {@link TransportState#STOPPED} is a no-op and fires no signal. The
      * "second Stop rewinds to zero" behaviour is a <em>gesture-level</em>
      * semantic owned by the UI layer, deliberately not implemented here —
-     * internal callers (e.g. {@code RecordingPipeline.stop()}) must be able to
+     * internal callers (e.g. {@code RecordingPipeline.requestStop()}) must be able to
      * stop the transport without a follow-up UI stop yanking the playhead to
      * zero.</p>
      *

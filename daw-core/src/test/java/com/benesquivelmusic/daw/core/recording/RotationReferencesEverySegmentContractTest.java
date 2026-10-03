@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.SAMPLE_RATE;
@@ -53,10 +55,10 @@ class RotationReferencesEverySegmentContractTest {
     void theClipReferencesEverySealedSegmentInManifestOrder() throws IOException {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setSegmentLimits(Duration.ofHours(1), 4 * BLOCK_BYTES); // 4 blocks per segment
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 10, 4); // 4 + 4 + 2 → 3 segments
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         AudioClip clip = clips.getFirst();
@@ -117,10 +119,10 @@ class RotationReferencesEverySegmentContractTest {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(track));
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES); // 2 segments per lap
         pipeline.setLoopRecord(true);
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 3 * blocksPerLoop + 1, 1); // 3 laps + wrap trigger
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
         TakeGroup group = pipeline.getTakeGroups().get(track);
         assertThat(group).isNotNull();

@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.HANG_GUARD;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
@@ -105,7 +107,7 @@ class AwaitFlushedWaitsForCadenceTickContractTest {
         pipeline.setDiskHeadroomWatch(new DiskHeadroomWatch(takeDir, () -> 10 * GIB, GIB, 64L << 20,
                 Duration.ZERO, clock::get, warnings::add));
         pipeline.setChannelOpener(journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         assertThat(pipeline.getForceCadence()).as("fixture: the default cadence").isEqualTo(Duration.ofSeconds(5));
 
@@ -144,7 +146,7 @@ class AwaitFlushedWaitsForCadenceTickContractTest {
         assertThat(journal.forces(false)).isEqualTo(1);
         assertThat(writer.bytesSinceForce()).as("the punched-out bytes are forced").isZero();
         assertThat(writer.lastForceNanos()).isEqualTo(5 * SECOND);
-        assertThat(outcomeWithinTheGuard("stop", pipeline::stop)).as("the stop completes").isNull();
+        assertThat(outcomeWithinTheGuard("stop", () -> stopRecording(pipeline))).as("the stop completes").isNull();
         assertThat(journal.forces(false)).as("the seal adds no cadence force").isEqualTo(1);
     }
 }

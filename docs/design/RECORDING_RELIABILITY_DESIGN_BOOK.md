@@ -466,6 +466,23 @@ holds (§2.4); FINALIZING and DEVICE_LOST both run the *same* seal step (§2.9).
 current state is the single source for the REC indicator, transport-button enablement, the
 status strip cell, and the `EngineState` bridge (§6.5).
 
+As landed (story 323, Copilot review round 5), until story 325's `RecordCoordinator`,
+`TransportController` passes through a PREPARING state between Record pressed and RECORDING
+that the diagram does not draw. Record pressed opens the device on the FX thread; the take
+directory is then allocated off the FX thread, `RecordingPipeline.prepare()` allocates the ring
+and starts the flush thread, whose first act creates the take's files (§5.1), and only once that
+thread reports the take ready does a later FX turn begin capture — callback installed, engine
+started, transport recording — and enter RECORDING. Stop, Record pressed again or the end of a
+post-roll (the deferred half of a Stop, which acts only while its controller is not retired and
+its transport is still in that post-roll, §5.2) during PREPARING cancels the take (the flush
+thread, if it was started, deletes the segment and manifest files it created, unless it had
+already ended on its own, sealing the take early; the take directory, if that left it empty, is
+removed off the FX thread); a failed preparation rolls back the same way and is reported; and the in-app
+doors that replace the open project are refused throughout (§5.2). Of the failed starts, only a
+failed allocation or pipeline build closes the output stream Record opened, and not over a
+rolling transport or while an instrument insert keeps it open; after a failed `prepare()`,
+readiness or `beginCapture()` it stays open until story 325's rollback (§5.2).
+
 ### 3.3 On-disk layout and naming
 
 ```
@@ -611,11 +628,14 @@ wall-clock reads are fine here). Cadence contracts:
   unless a Stop got there first, and one ERROR names the cause (story 325's `RecordCoordinator`
   is to absorb this as a RECORDING → ABORTED transition, a row that story adds to §5.2).
 - The flush thread never touches FX-thread state; its continuous facts are to ride
-  `FxDispatcher` channels (§6.1). As landed (story 323), the two one-shot signals the app
-  listens to — the early seal, and, after a Stop whose join ran out, the end of the thread — are
-  `CompletionStage`s whose app dependents only post to the FX thread through `FxDispatcher`, on
-  `capture-flush` when the signal completes there: an interim departure from §6.1's `EventBus`
-  rule for discrete facts until story 325's `RecordCoordinator`.
+  `FxDispatcher` channels (§6.1). As landed (story 323), the three one-shot signals the app
+  listens to — the take's readiness (Copilot review round 5), the early seal, and the end of the
+  thread after every Stop and after a cancelled or failed start — are `CompletionStage`s whose
+  app dependents only post to the FX thread through `FxDispatcher`, on `capture-flush` when the
+  signal completes there (the dependent on the end of a cancelled or failed start's thread first
+  hands the removal of its take directory, if empty, to a storage executor, never the FX thread): an
+  interim departure from §6.1's `EventBus` rule for discrete facts until story 325's
+  `RecordCoordinator`.
 
 ### 4.4 The segment writer and atomic finalize
 
@@ -685,21 +705,23 @@ callback; "FLUSH" = flush thread only; "FX" = FX thread only.
 | Record state transitions; notifications; dialogs     | FX      | `RecordCoordinator` owns the machine |
 | Buffer sizing inputs                                 | engine live format + delivered frame count | §2.7; never `project.getFormat()`, never a captured constant |
 
-Stage 1 as landed (story 323) departs from the two FLUSH rows on file operations and
-take/clip construction in three places, by design: the *initial* segment and manifest creation
-(each armed track's `segment-000.wav.part` and the first `take.manifest`) runs on the caller
-thread (FX in the app) inside `RecordingPipeline.start()`, before the flush thread is started;
-the rollback of a failed start deletes those files on the caller thread too, once the flush
-thread has terminated if it had been started — together they make a start all-or-nothing, except
-that a rollback whose bounded join runs out deletes nothing and leaves the files for recovery;
-and the normal-path clip is built on the caller thread in `RecordingPipeline.stop()`, once the
-flush thread has terminated (a stop whose bounded join runs out first throws
-`TakeFinalizationPendingException` and builds nothing until a later `stop()` finds the thread
-terminated), so that `Track`s are mutated by one thread. Every other file operation —
-appends, forces, rotation opens and seals, manifest rewrites — and the loop-lap takes stay on the
-flush thread. The ring is still sized from the format the pipeline is constructed with (the
-project's format in the app); a longer delivered block is truncated, counted and recorded
-(`truncated-frames`), and story 324 owns format truth.
+Stage 1 as landed (story 323) meets the FLUSH row on file operations since that story's Copilot
+review round 5: the flush thread's first act creates the take's files — each armed track's
+`segment-000.wav.part` and the first `take.manifest` — before it reports the take ready, and it
+deletes them again when the start fails or is cancelled — unless it had already ended on its own
+and sealed the take early, which it then leaves (§5.2) — so a start is all-or-nothing, but for
+that sealed take, with no file work on the caller thread (FX in the app), and no caller-thread
+step of a start or a stop waits for the flush thread (the app allocates the take directory, and
+removes it after a failed or cancelled start if it is empty, on a storage executor, never on the
+FX thread). It departs from the
+take/clip construction row in one place, by design: the normal-path clip is built on the caller
+thread, in `RecordingPipeline.completeStop()`, once the flush thread has terminated — in the app
+on a later FX turn that the thread's termination posts, never behind a join — so that `Track`s
+are mutated by one thread. Every other file operation — appends, forces, rotation opens and
+seals, manifest rewrites — and the loop-lap takes stay on the flush thread. The ring is still
+sized from the format the pipeline is constructed with (the project's format in the app); a
+longer delivered block is truncated, counted and recorded (`truncated-frames`), and story 324
+owns format truth.
 
 ### 5.2 Record state transitions
 
@@ -716,9 +738,47 @@ then surface the cause via the notification seam (§6.3).
 | Device lost (event or watchdog) | RECORDING   | —                                                                 | DEVICE_LOST | — (runs §5.5) |
 | Device returned                 | DEVICE_LOST | same device per identity match; reopen succeeds                   | IDLE (armed kept) | stays DEVICE_LOST, notification repeats remediation |
 | Settings apply requested        | RECORDING   | **blocked**: prompt "Stop the take and apply?"; apply proceeds only after FINALIZING completes | — | — (chosen over silent-defer: a deferred apply that fires later surprises; over allow: §1.3's gutted-take bug) |
-| Project replace requested       | RECORDING, FINALIZING | **blocked** (story 323): every in-app door that replaces the open project (New, Open, Import, Restore from Archive, Hub/Welcome open, snapshot restore, Recover, migration roll-back) is refused with a WARNING toast and no prompt until FINALIZING completes; in RECORDING (story 323 review) the same doors are refused the same way while `TransportController.isRecordingInFlight()` — an active audio pipeline or a live MIDI recorder — with the WARNING `PROJECT_CHANGE_WHILE_RECORDING_MESSAGE` ("The open project can't be replaced while recording — stop the recording first"; the load that follows an archive extraction, a journal replay — successful or not — or a journal discard that deleted the journal uses `lateLoadRefusalWhileRecordingMessage`, which also says what that work did) | — | — (the take is published into the project it was recorded in; app exit is not a guarded door — story 333's close guard owns it) |
+| Project replace requested       | RECORDING, FINALIZING | **blocked** (story 323): every in-app door that replaces the open project (New, Open, Import, Restore from Archive, Hub/Welcome open, snapshot restore, Recover, migration roll-back) is refused with a WARNING toast and no prompt until FINALIZING completes; in RECORDING (story 323 review) the same doors are refused the same way while `TransportController.isRecordingInFlight()` — an audio take being prepared (as landed, below the table), an active audio pipeline or a live MIDI recorder — with the WARNING `PROJECT_CHANGE_WHILE_RECORDING_MESSAGE` ("The open project can't be replaced while recording — stop the recording first"; the load that follows an archive extraction, a journal replay — successful or not — or a journal discard that deleted the journal uses `lateLoadRefusalWhileRecordingMessage`, which also says what that work did) | — | — (the take is published into the project it was recorded in; app exit is not a guarded door — story 333's close guard owns it) |
 | Input-open failure mid-arm      | any pre-RECORDING | —                                                           | ABORTED→IDLE | covered by Record guard row |
 | MIDI device missing / open fail | arm-time    | per-track: skip track with visible warning; if *no* track opens, treat as Record guard failure | — | — |
+
+As landed (story 323, Copilot review round 5), until story 325's `RecordCoordinator`: the Record
+pressed row's "ring allocated; flush thread running" guard is a readiness gate in
+`TransportController`. Record opens the device on the FX thread, then enters PREPARING (status
+"Preparing the take…", REC indicator off): the take directory is allocated on a storage
+executor, the FX turn the allocation posts calls `RecordingPipeline.prepare()` — ring
+allocated, flush thread started — and that thread creates the take's files (§5.1) and then reports the take ready; only
+the FX turn that report posts calls `beginCapture()` (callback installed, engine started,
+`Transport.record()`) and enters RECORDING. Record pressed again, Stop, or the end of a post-roll
+(the deferred half of a Stop, which then stops the transport and calls
+`stopAudioOutputWhenIdle()`, as it does with no take being prepared) during PREPARING cancels
+the take (toggle semantics; status "Recording cancelled — no take was started" — except that a
+Stop over a PLAYING transport with a post-roll configured goes on into the post-roll, whose
+"Post-roll: …" text replaces it, and the end of that post-roll shows "Stopped"; nothing is
+announced for the take). The end of a post-roll acts only while its controller is not retired
+and its transport is still in the post-roll a Stop entered (`Transport.isInPostRoll()`, which
+Shift+Space or Pause then Play clears, and a Pause or a Record inside the tail does not): a
+timer whose tail ended another way, or whose controller was retired, cancels nothing and stops
+nothing when it fires, and `retire()` stops and drops it. On a cancel the flush thread deletes
+the segment and manifest files it created, and each track directory that leaves empty — unless
+it had already ended on its own before the cancel (a
+throwable that escaped its drain loop sealed the take early), when it deletes nothing — and the
+take directory, if that left it empty, is removed on the storage executor once that thread has
+terminated, while one still holding files is left in place (a take cancelled while its
+directory is still being allocated has that directory removed once the allocation returns). A
+failed allocation, pipeline build, preparation, readiness or `beginCapture()` is the guard
+failure — an ERROR toast, the take's files and directory removed the same way, and a transport
+that was STOPPED left STOPPED. Of the failed starts, only a failed allocation or pipeline build
+closes the output stream Record opened, through `stopAudioOutputWhenIdle()`, and not over a
+rolling transport or while an instrument insert keeps it open; after a failed preparation,
+readiness or `beginCapture()` it stays open, and an engine `beginCapture()` started stays
+running (story 325's rollback owns closing the one and stopping the other). A cancelled start,
+or one that failed once its take directory existed, counts as FINALIZING
+(`isTakeBeingWritten()`) until the removal of its files has run, whether or not everything could
+be removed, so Record and the project-replace doors are refused meanwhile; in PREPARING the
+doors are refused too (`isRecordingInFlight()`), Record cancels (above), and Play does nothing. Stop pressed in RECORDING requests the seal without waiting for it, and the take
+is published on the FX turn its flush thread's termination posts — the "Seal + manifest
+complete" row, FINALIZING → IDLE.
 
 MIDI recorders follow the same machine: stop always drains `activeMidiRecorders` and closes
 devices; a second Record press can never re-put a recorder over a live one (§1.3). Timestamp
@@ -804,10 +864,12 @@ All cross-thread facts ride the two existing seams: `FxDispatcher` continuous ch
 continuous values (elapsed, mirror, disk headroom) and the typed `EventBus` for discrete facts
 (take finalized, device lost, rescue registered), per `CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md
 §3.4` — no new bus, no ad-hoc `Platform.runLater`. As landed (story 323), until story 325's
-`RecordCoordinator`, two discrete facts are not `EventBus` events: the early seal and the end of
-the flush thread after a Stop whose join ran out are `CompletionStage`s whose app dependents
-only post to the FX thread through `FxDispatcher` — an unconditional `Platform.runLater`, made on
-`capture-flush` when the signal completes there (§4.3).
+`RecordCoordinator`, three discrete facts are not `EventBus` events: the take's readiness, the
+early seal and the end of the flush thread (after every Stop, and after a cancelled or failed
+start) are `CompletionStage`s whose app dependents post to the FX thread through `FxDispatcher` —
+an unconditional `Platform.runLater`, made on `capture-flush` when the signal completes there —
+the one on the end of a cancelled or failed start's thread after handing the removal of its
+take directory, if empty, to a storage executor (§4.3).
 
 ### 6.2 Observer rules on the capture path
 

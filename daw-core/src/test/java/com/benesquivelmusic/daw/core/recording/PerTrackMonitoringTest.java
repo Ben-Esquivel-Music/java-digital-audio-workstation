@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -215,7 +216,7 @@ class PerTrackMonitoringTest {
         assertThat(pipeline.isInputMonitoringActive(synth)).isTrue();
 
         // Start recording:
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(pipeline.isInputMonitoringActive(vocal)).isTrue();
         assertThat(pipeline.isInputMonitoringActive(synth)).isTrue();
     }
@@ -264,7 +265,7 @@ class PerTrackMonitoringTest {
                 audioEngine, transport, format, tempDir, List.of(vocal, synth),
                 CountInMode.OFF, InputMonitoringMode.AUTO, null);
 
-        pipeline.start();
+        startRecording(pipeline);
 
         // Vocal picked up the pipeline default; synth kept its override.
         assertThat(vocal.getInputMonitoring()).isEqualTo(InputMonitoringMode.AUTO);

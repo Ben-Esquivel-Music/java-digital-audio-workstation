@@ -36,6 +36,8 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.SAMPLE_RATE;
@@ -109,7 +111,7 @@ class RecordingPipelineFlushServiceTest {
     void awaitFlushedReturnsOnlyAfterEveryPublishedBlockIsApplied() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
         pipeline.setRingSlots(2048);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         CaptureRing ring = pipeline.getCaptureRing();
         int blocks = 1_000;
@@ -156,14 +158,14 @@ class RecordingPipelineFlushServiceTest {
         assertThat(pipeline.getOverflowCount()).isZero();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo((long) blocks * BLOCK_FRAMES);
         assertThat(pipeline.getSession(track).getCurrentWriter().frameCount()).isEqualTo((long) blocks * BLOCK_FRAMES);
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
     void awaitFlushedTimesOutWhileDrainingIsPausedAndReturnsOnceItResumes() throws InterruptedException {
         RecordingPipeline pipeline = newPipeline(track);
         pipeline.setRingSlots(64);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         service.setDrainPaused(true);
         for (int b = 0; b < 10; b++) {
@@ -185,7 +187,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.awaitFlushed();
         assertThat(service.appliedBlocks()).isEqualTo(10);
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(10L * BLOCK_FRAMES);
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     /** One applied block as the flush thread's {@link CaptureFlushService.BlockObserver} saw it. */
@@ -201,7 +203,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.setRingSlots(8);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         CaptureRing ring = pipeline.getCaptureRing();
         assertThat(ring.capacity()).isEqualTo(8);
@@ -281,7 +283,7 @@ class RecordingPipelineFlushServiceTest {
                 .satisfies(w -> assertThat(w).contains("overflow").contains("5 block(s)"));
 
         service.setBlockObserver(null);
-        pipeline.stop();
+        stopRecording(pipeline);
         String text = Files.readString(pipeline.getTakeManifestPath(), StandardCharsets.UTF_8);
         assertThat(text).contains("gap=*|" + (8L * BLOCK_FRAMES) + "|5").contains("overflow-blocks=5");
     }
@@ -322,7 +324,7 @@ class RecordingPipelineFlushServiceTest {
         CollectingHandler logged = new CollectingHandler();
         flushLogger.addHandler(logged);
         try {
-            pipeline.start();
+            startRecording(pipeline);
             CaptureFlushService service = pipeline.getCaptureFlushService();
             service.setDrainPaused(true);
             for (int b = 0; b < 9; b++) { // eight fill the ring, the ninth is dropped
@@ -346,7 +348,7 @@ class RecordingPipelineFlushServiceTest {
             assertThat(streaming.gaps()).containsExactly(
                     new TakeManifest.GapEntry(TakeManifest.GapEntry.ALL_TRACKS, 8L * BLOCK_FRAMES, 1));
 
-            assertThat(pipeline.stop()).hasSize(1);
+            assertThat(stopRecording(pipeline)).hasSize(1);
 
             TakeManifest sealed = TakeManifest.read(pipeline.getTakeManifestPath());
             assertThat(sealed.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
@@ -369,11 +371,11 @@ class RecordingPipelineFlushServiceTest {
     @Test
     void aFailedSecondStartLeavesThePreviousTakeUntouched() throws IOException {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         feedOne(BLOCK_FRAMES);
         pipeline.awaitFlushed();
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips).hasSize(1);
         Path manifestPath = pipeline.getTakeManifestPath();
         Path sealed = takeDir.resolve(track.getId()).resolve("segment-000.wav");
@@ -387,7 +389,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.setSessionFactory((t, dir) -> {
             throw new IllegalStateException("injected factory failure");
         });
-        assertThatThrownBy(pipeline::start)
+        assertThatThrownBy(() -> startRecording(pipeline))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("injected factory failure");
 
@@ -409,28 +411,30 @@ class RecordingPipelineFlushServiceTest {
     void aRestartThatCollidesWithThePreviousTakesSegmentsLeavesThatTakeUntouched() throws IOException {
         // The same pipeline, the same take directory, no fault seam: the
         // second start runs into segment-000.wav of the first take inside
-        // its own flush service's start, and that service's rollback must
-        // not delete a manifest it never wrote.
+        // its own flush thread's initialisation, whose rollback must not
+        // delete a manifest it never wrote; the failure arrives through the
+        // take's readiness, once that rollback is done.
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         feedOne(BLOCK_FRAMES);
         pipeline.awaitFlushed();
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
         Path manifestPath = pipeline.getTakeManifestPath();
         Path sealed = takeDir.resolve(track.getId()).resolve("segment-000.wav");
         byte[] manifestBefore = Files.readAllBytes(manifestPath);
         byte[] sealedBefore = Files.readAllBytes(sealed);
         List<Path> treeBefore = tree(takeDir);
 
-        assertThatThrownBy(pipeline::start)
+        assertThatThrownBy(() -> startRecording(pipeline))
                 .isInstanceOf(UncheckedIOException.class)
                 .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
 
         assertThat(pipeline.isActive()).isFalse();
         assertThat(track.isRecording()).isFalse();
         assertThat(engine.getRecordingCallback()).isNull();
-        assertThat(pipeline.getCaptureFlushService().thread().isAlive()).isFalse();
+        assertThat(pipeline.getCaptureFlushService().isTerminated()).isTrue();
+        assertThreadExits(pipeline.getCaptureFlushService());
         assertThat(manifestPath).as("the first take's manifest survives").exists();
         assertThat(Files.readAllBytes(manifestPath)).isEqualTo(manifestBefore);
         assertThat(Files.readAllBytes(sealed)).isEqualTo(sealedBefore);
@@ -441,18 +445,18 @@ class RecordingPipelineFlushServiceTest {
     @Test
     void aStragglingCallbackAfterAFailedRestartIsHarmless() {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         // The audio thread loads the callback once per block; a block in
-        // flight when stop() removes it still runs the reference it loaded.
+        // flight when the stop request removes it still runs the reference it loaded.
         AudioEngine.RecordingCallback straggler = engine.getRecordingCallback();
         assertThat(straggler).isNotNull();
         feedOne(0);
         pipeline.awaitFlushed();
-        pipeline.stop();
+        stopRecording(pipeline);
         pipeline.setSessionFactory((t, dir) -> {
             throw new IllegalStateException("injected factory failure");
         });
-        assertThatThrownBy(pipeline::start).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> startRecording(pipeline)).isInstanceOf(IllegalStateException.class);
 
         assertThatCode(() -> straggler.onAudioCaptured(rampBlock(0), BLOCK_FRAMES)).doesNotThrowAnyException();
     }
@@ -467,7 +471,7 @@ class RecordingPipelineFlushServiceTest {
             throw new IllegalArgumentException("injected rollback failure");
         });
 
-        assertThatThrownBy(pipeline::start)
+        assertThatThrownBy(() -> startRecording(pipeline))
                 .as("the start failure is what the caller sees; the rollback's own failure rides along")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("injected factory failure")
@@ -483,9 +487,9 @@ class RecordingPipelineFlushServiceTest {
 
         pipeline.setRollbackFault(null);
         pipeline.setSessionFactory((t, dir) -> new RecordingSession(MONO_16, dir));
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(pipeline.isActive()).isTrue();
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
@@ -499,7 +503,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.setLoopRecord(true);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         Path trackDir = takeDir.resolve(track.getId());
 
@@ -516,7 +520,7 @@ class RecordingPipelineFlushServiceTest {
         assertThat(service.isSealed()).isTrue();
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
         assertThat(service.lastFailure()).isPresent().get().isInstanceOf(UncheckedIOException.class);
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         String firstSegment = trackDir.resolve("segment-000.wav").toAbsolutePath().toString();
         TakeGroup group = pipeline.getTakeGroups().get(track);
@@ -555,7 +559,7 @@ class RecordingPipelineFlushServiceTest {
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
         assertThat(pipeline.getTruncatedFrames()).as("before start").isZero();
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(pipeline.getCaptureRing().slotFrames()).isEqualTo(256);
         float[][] output = new float[1][512];
 
@@ -604,7 +608,7 @@ class RecordingPipelineFlushServiceTest {
                 new TakeManifest.GapEntry(TakeManifest.GapEntry.ALL_TRACKS, 256, 0),
                 new TakeManifest.GapEntry(TakeManifest.GapEntry.ALL_TRACKS, 4L * 512 + 256, 0));
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
         TakeManifest sealed = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(sealed.sealStatus()).as("truncation does not end the take").isEqualTo(TakeManifest.SealStatus.SEALED);
@@ -619,14 +623,14 @@ class RecordingPipelineFlushServiceTest {
         RecordingPipeline pipeline = newPipeline(track);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         engine.processBlock(rampBlock(BLOCK_FRAMES), new float[1][BLOCK_FRAMES], 100); // a short block
         pipeline.awaitFlushed();
 
         assertThat(pipeline.getTruncatedFrames()).isZero();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(BLOCK_FRAMES + 100L);
-        pipeline.stop();
+        stopRecording(pipeline);
         TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(manifest.truncatedFrames()).isZero();
         assertThat(manifest.gaps()).isEmpty();
@@ -647,7 +651,7 @@ class RecordingPipelineFlushServiceTest {
         RecordingPipeline pipeline = newPipeline(track);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         feedOne(0);
         feedOne(BLOCK_FRAMES);
@@ -656,7 +660,7 @@ class RecordingPipelineFlushServiceTest {
                 .as("fixture: streaming before the stop").isEqualTo(TakeManifest.SealStatus.STREAMING);
 
         service.failNextManifestWriteWith(new InjectedFault("injected manifest fault"));
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(service.lastFailure()).isPresent().get().isInstanceOf(InjectedFault.class);
         assertThat(service.isRunning()).isFalse();
@@ -723,7 +727,7 @@ class RecordingPipelineFlushServiceTest {
             }
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         Path firstSealed = takeDir.resolve(track.getId()).resolve("segment-000.wav");
         Path secondSealed = takeDir.resolve(second.getId()).resolve("segment-000.wav");
@@ -732,7 +736,7 @@ class RecordingPipelineFlushServiceTest {
             feedOne(BLOCK_FRAMES);
             pipeline.awaitFlushed();
 
-            List<AudioClip> clips = pipeline.stop();
+            List<AudioClip> clips = stopRecording(pipeline);
 
             long fedFrames = 2L * BLOCK_FRAMES;
             assertThat(service.isRunning()).isFalse();
@@ -803,7 +807,7 @@ class RecordingPipelineFlushServiceTest {
             session.addListener(new StopFaultListener(t == track ? firstFault : secondFault));
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         Path firstSealed = takeDir.resolve(track.getId()).resolve("segment-000.wav");
         Path secondSealed = takeDir.resolve(second.getId()).resolve("segment-000.wav");
@@ -812,7 +816,7 @@ class RecordingPipelineFlushServiceTest {
             feedOne(BLOCK_FRAMES);
             pipeline.awaitFlushed();
 
-            assertThat(pipeline.stop()).hasSize(2);
+            assertThat(stopRecording(pipeline)).hasSize(2);
 
             assertThat(service.isRunning()).isFalse();
             assertThat(service.lastFailure()).as("the first lane's Error is the one that went on")
@@ -852,7 +856,7 @@ class RecordingPipelineFlushServiceTest {
             session.addListener(new StopFaultListener(fault));
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         Path firstSealed = takeDir.resolve(track.getId()).resolve("segment-000.wav");
         Path secondSealed = takeDir.resolve(second.getId()).resolve("segment-000.wav");
@@ -861,7 +865,7 @@ class RecordingPipelineFlushServiceTest {
             feedOne(BLOCK_FRAMES);
             pipeline.awaitFlushed();
 
-            assertThat(pipeline.stop()).hasSize(2);
+            assertThat(stopRecording(pipeline)).hasSize(2);
 
             assertThat(service.isRunning()).isFalse();
             assertThat(service.lastFailure()).as("the Error itself went on, not a refusal to suppress it")
@@ -899,7 +903,7 @@ class RecordingPipelineFlushServiceTest {
             }
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         Path firstSealed = takeDir.resolve(track.getId()).resolve("segment-000.wav");
         Path secondSealed = takeDir.resolve(second.getId()).resolve("segment-000.wav");
@@ -939,7 +943,7 @@ class RecordingPipelineFlushServiceTest {
             assertThat(manifest.sealStatus()).isEqualTo(TakeManifest.SealStatus.ABORTED);
             assertThat(manifest.sealedBy()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
 
-            assertThat(pipeline.stop()).hasSize(2);
+            assertThat(stopRecording(pipeline)).hasSize(2);
             assertThat(service.isRunning()).isFalse();
         } finally {
             flushLogger.removeHandler(logged);
@@ -969,7 +973,7 @@ class RecordingPipelineFlushServiceTest {
             session.addListener(new StopFaultListener(fault));
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         try {
             int fed = exhaustedAfter + 2;
@@ -988,7 +992,7 @@ class RecordingPipelineFlushServiceTest {
                     .as("the block that met the exhausted disk, and the one after it")
                     .isEqualTo(fed - exhaustedAfter);
 
-            assertThat(pipeline.stop()).hasSize(1);
+            assertThat(stopRecording(pipeline)).hasSize(1);
         } finally {
             pipeline.getSession(track).abandonWithoutSeal();
         }
@@ -1000,7 +1004,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         long frame = feedRamp(engine, transport, pipeline, 0, 1, 1);
         assertThat(service.manifestWrites()).isEqualTo(1);
@@ -1018,7 +1022,7 @@ class RecordingPipelineFlushServiceTest {
 
         feedRamp(engine, transport, pipeline, frame, 1, 1);
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(3L * BLOCK_FRAMES);
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).sealedBy()).contains(TakeManifest.SealedBy.STOP);
     }
 
@@ -1030,7 +1034,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.setNanoClock(clock::get);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         long frame = feedRamp(engine, transport, pipeline, 0, 1, 1);
         long retryInterval = CaptureFlushService.MANIFEST_RETRY_INTERVAL.toNanos();
@@ -1075,7 +1079,7 @@ class RecordingPipelineFlushServiceTest {
                         tuple(2, TakeManifest.SegmentState.STREAMING));
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(5L * BLOCK_FRAMES);
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
         TakeManifest sealed = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(sealed.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
         assertThat(sealed.sealedBy()).contains(TakeManifest.SealedBy.STOP);
@@ -1089,7 +1093,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.setNanoClock(clock::get);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         long frame = feedRamp(engine, transport, pipeline, 0, 1, 1);
         long retryInterval = CaptureFlushService.MANIFEST_RETRY_INTERVAL.toNanos();
@@ -1130,7 +1134,7 @@ class RecordingPipelineFlushServiceTest {
                 .as("the manifest on disk caught up with the take").isEqualTo(service.lastManifest().orElseThrow());
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(4L * BLOCK_FRAMES);
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
         TakeManifest sealed = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(sealed.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
         assertThat(sealed.sealedBy()).contains(TakeManifest.SealedBy.STOP);
@@ -1140,7 +1144,7 @@ class RecordingPipelineFlushServiceTest {
     @Test
     void theManifestFaultSeamRefusesAThrowableNoWriteCanThrow() {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         assertThatThrownBy(() -> service.failNextManifestWriteWith(new InterruptedException("not a write failure")))
@@ -1149,7 +1153,7 @@ class RecordingPipelineFlushServiceTest {
 
         feedOne(0);
         pipeline.awaitFlushed();
-        assertThat(pipeline.stop()).as("the refused fault was not armed").hasSize(1);
+        assertThat(stopRecording(pipeline)).as("the refused fault was not armed").hasSize(1);
         assertThat(service.lastFailure()).isEmpty();
     }
 
@@ -1165,7 +1169,7 @@ class RecordingPipelineFlushServiceTest {
                 new RecordingPipeline(liveEngine, transport, takeFormat, takeDir, List.of(track)));
         pipeline.setRingSlots(8);
         pipeline.setWarningSink(message -> { });
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         float[][] output = new float[1][512];
         service.setDrainPaused(true);
@@ -1181,7 +1185,7 @@ class RecordingPipelineFlushServiceTest {
         assertThat(pipeline.getCaptureRing()).as("fixture: take 1 has a ring").isNotNull();
         assertThat(pipeline.getOverflowCount()).as("fixture: take 1 dropped a block").isEqualTo(1);
         assertThat(pipeline.getTruncatedFrames()).as("fixture: take 1 truncated a block").isEqualTo(256);
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
         assertThat(pipeline.getOverflowCount()).as("the last take's counters stay readable after stop").isEqualTo(1);
         assertThat(pipeline.getTruncatedFrames()).isEqualTo(256);
 
@@ -1194,7 +1198,7 @@ class RecordingPipelineFlushServiceTest {
         AtomicReference<Throwable> outcome = new AtomicReference<>();
         Thread starting = Thread.ofPlatform().name("story323-oversized-start").daemon(true).start(() -> {
             try {
-                pipeline.start();
+                startRecording(pipeline);
             } catch (Throwable thrown) {
                 outcome.set(thrown);
             }
@@ -1219,7 +1223,7 @@ class RecordingPipelineFlushServiceTest {
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
         List<String> warnings = new CopyOnWriteArrayList<>();
         pipeline.setWarningSink(warnings::add);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         byte[] startManifest = Files.readAllBytes(pipeline.getTakeManifestPath());
 
@@ -1231,7 +1235,7 @@ class RecordingPipelineFlushServiceTest {
         assertThat(service.discardedBlocks()).isZero();
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(7L * BLOCK_FRAMES);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getSourceSegmentPaths()).as("3 full segments and the tail").hasSize(4);
@@ -1260,15 +1264,15 @@ class RecordingPipelineFlushServiceTest {
         transport.setLoopEnabled(true);
         RecordingPipeline pipeline = newPipeline(track);
         pipeline.setLoopRecord(true);
-        pipeline.start();
+        startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2 * blocksPerLap + 1, 1);
 
         // The setter refuses a change mid-take, so move the live field behind
-        // its back: stop() must still finish the take it started.
+        // its back: the stop must still finish the take it started.
         Field live = RecordingPipeline.class.getDeclaredField("loopRecord");
         live.setAccessible(true);
         live.setBoolean(pipeline, false);
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         TakeGroup group = pipeline.getTakeGroups().get(track);
         assertThat(group).isNotNull();
@@ -1308,20 +1312,21 @@ class RecordingPipelineFlushServiceTest {
                 ? new RecordingSession(MONO_16, blocker.resolve("cannot-exist"))
                 : new RecordingSession(MONO_16, dir));
 
-        assertThatThrownBy(pipeline::start).isInstanceOf(UncheckedIOException.class);
+        assertThatThrownBy(() -> startRecording(pipeline)).isInstanceOf(UncheckedIOException.class);
 
         assertNothingStarted(pipeline, track, second);
         assertThat(pipeline.getCaptureFlushService()).isNotNull();
         assertThat(pipeline.getCaptureFlushService().isRunning()).isFalse();
-        assertThat(pipeline.getCaptureFlushService().thread().isAlive()).isFalse();
+        assertThat(pipeline.getCaptureFlushService().isTerminated()).isTrue();
+        assertThreadExits(pipeline.getCaptureFlushService());
         assertTakeDirectoryHoldsOnly(blocker);
 
         // The pipeline is reusable once the cause is gone.
         pipeline.setSessionFactory((t, dir) -> new RecordingSession(MONO_16, dir));
-        pipeline.start();
+        startRecording(pipeline);
         assertThat(pipeline.isActive()).isTrue();
         assertThat(pipeline.getCaptureFlushService().isRunning()).isTrue();
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 
     @Test
@@ -1335,7 +1340,7 @@ class RecordingPipelineFlushServiceTest {
             return new RecordingSession(MONO_16, dir);
         });
 
-        assertThatThrownBy(pipeline::start)
+        assertThatThrownBy(() -> startRecording(pipeline))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("injected");
 
@@ -1355,6 +1360,20 @@ class RecordingPipelineFlushServiceTest {
         assertThatThrownBy(pipeline::awaitFlushed).isInstanceOf(IllegalStateException.class);
     }
 
+    /**
+     * A terminated flush thread may still be running the dependents of its
+     * signals: the bounded join waits that out before the thread is
+     * required to be gone.
+     */
+    private static void assertThreadExits(CaptureFlushService service) {
+        try {
+            service.thread().join(RampCaptureTestSupport.HANG_GUARD.toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        assertThat(service.thread().isAlive()).as("the capture-flush thread has exited").isFalse();
+    }
+
     private void assertTakeDirectoryHoldsOnly(Path... expected) throws IOException {
         List<Path> present = new ArrayList<>();
         try (DirectoryStream<Path> entries = Files.newDirectoryStream(takeDir)) {
@@ -1368,12 +1387,12 @@ class RecordingPipelineFlushServiceTest {
     @Test
     void stopIsIdempotent() {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         feedOne(0);
         pipeline.awaitFlushed();
 
-        List<AudioClip> first = pipeline.stop();
-        List<AudioClip> second = pipeline.stop();
+        List<AudioClip> first = stopRecording(pipeline);
+        List<AudioClip> second = stopRecording(pipeline);
 
         assertThat(first).hasSize(1);
         assertThat(second).isEmpty();
@@ -1385,7 +1404,7 @@ class RecordingPipelineFlushServiceTest {
     @Test
     void theFlushThreadIsNamedDaemonAndDeadAfterStop() throws InterruptedException {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
         Thread thread = service.thread();
 
@@ -1394,11 +1413,11 @@ class RecordingPipelineFlushServiceTest {
         assertThat(thread.isAlive()).isTrue();
         assertThat(service.isRunning()).isTrue();
 
-        pipeline.stop();
+        stopRecording(pipeline);
 
-        assertThat(service.isTerminated()).as("the stop returns once the thread has terminated").isTrue();
-        // A thread that terminated before the stop looked is not joined by
-        // it and may still be exiting: the bounded join here waits that out.
+        assertThat(service.isTerminated()).as("the stop completes once the thread has terminated").isTrue();
+        // Nothing in the pipeline joins the thread, and termination is
+        // signalled before it exits: the bounded join here waits that out.
         thread.join(CaptureFlushService.DEFAULT_AWAIT_TIMEOUT.toMillis());
         assertThat(thread.isAlive()).isFalse();
         assertThat(service.isRunning()).isFalse();
@@ -1409,7 +1428,7 @@ class RecordingPipelineFlushServiceTest {
     @Test
     void preStartSeamsRefuseChangesWhileRecording() {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         AtomicLong clock = new AtomicLong();
 
         assertThatThrownBy(() -> pipeline.setSegmentLimits(Duration.ofMinutes(1), 1)).isInstanceOf(IllegalStateException.class);
@@ -1426,6 +1445,6 @@ class RecordingPipelineFlushServiceTest {
         assertThat(pipeline.isLoopRecord()).as("the refused change left the flag alone").isFalse();
         assertThat(pipeline.getTakeDirectory()).isEqualTo(takeDir);
         assertThat(pipeline.getTakeManifestPath()).isEqualTo(takeDir.resolve(TakeManifest.FILE_NAME));
-        pipeline.stop();
+        stopRecording(pipeline);
     }
 }

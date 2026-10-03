@@ -26,6 +26,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.awaitTermination;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
+import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLOCK_FRAMES;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.HANG_GUARD;
@@ -45,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the reason and whether every segment sealed, once every lane's seal and the
  * final manifest write have been attempted (in every test here that write
  * lands, so the final manifest is on disk when it completes); never for the
- * seal a stop requests, a failed start's rollback or the
+ * seal a stop requests, the rollback of a failed start or the
  * {@code stopAndAbandon} test seam, which stops the take without a seal and
  * abandons its writers.
  * The flush thread only signals: the take is the caller's to stop, and that stop
@@ -53,7 +56,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * kept. Every wait is bounded: a signal that never comes by
  * {@link RampCaptureTestSupport#HANG_GUARD}, the fences inside {@code feedRamp}
  * and {@code setDrainPaused} by {@link CaptureFlushService#DEFAULT_AWAIT_TIMEOUT},
- * and each stop's join by its own {@link CaptureFlushService#STOP_JOIN_TIMEOUT}.
+ * and each start's readiness and each stop's termination by
+ * {@link PipelineLifecycleTestSupport#LIFECYCLE_GUARD}.
  */
 class EarlySealSignalContractTest {
 
@@ -153,7 +157,7 @@ class EarlySealSignalContractTest {
     @Test
     void theHeadroomFloorSignalsOnceOnTheFlushThreadAfterTheAbortedManifestIsOnDisk() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 3, 1);
         assertThat(isDone(pipeline.earlySeal())).as("fixture: nothing sealed yet").isFalse();
@@ -174,7 +178,7 @@ class EarlySealSignalContractTest {
         assertThat(engine.getRecordingCallback()).isNotNull();
         assertThat(transport.getState()).isEqualTo(TransportState.RECORDING);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(witness.runs).as("signalled once").hasSize(1);
         assertThat(clips).singleElement()
@@ -188,7 +192,7 @@ class EarlySealSignalContractTest {
     @Test
     void aFreeSpaceProbeThatKeepsFailingIsReportedAsFreeSpaceUnknown() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
 
@@ -200,7 +204,7 @@ class EarlySealSignalContractTest {
         assertThat(observed.seal()).isEqualTo(new EarlySeal.DiskExhausted(FLOOR, true, true));
         assertThat(observed.status()).isEqualTo(SealStatus.ABORTED);
         assertThat(observed.sealedBy()).isEqualTo(SealedBy.DISK_EXHAUSTION);
-        assertThat(pipeline.stop()).singleElement()
+        assertThat(stopRecording(pipeline)).singleElement()
                 .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(3 * BLOCK_FRAMES));
         assertThat(witness.runs).hasSize(1);
     }
@@ -208,7 +212,7 @@ class EarlySealSignalContractTest {
     @Test
     void aFailedAppendSignalsAWriteFailureCarryingTheThrowableThatEndedTheTake() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
 
@@ -229,7 +233,7 @@ class EarlySealSignalContractTest {
         assertThat(observed.status()).isEqualTo(SealStatus.ABORTED);
         assertThat(observed.sealedBy()).isEqualTo(SealedBy.WRITE_FAILURE);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(witness.runs).hasSize(1);
         assertThat(clips).singleElement()
@@ -242,7 +246,7 @@ class EarlySealSignalContractTest {
         ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
         RecordingPipeline pipeline = newPipeline(track);
         pipeline.setChannelOpener(journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         clock.set(SECOND);
         feedRamp(engine, transport, pipeline, 0, 1, 1);
@@ -263,7 +267,7 @@ class EarlySealSignalContractTest {
         assertThat(observed.status()).isEqualTo(SealStatus.ABORTED);
         assertThat(observed.sealedBy()).isEqualTo(SealedBy.WRITE_FAILURE);
 
-        assertThat(pipeline.stop()).singleElement()
+        assertThat(stopRecording(pipeline)).singleElement()
                 .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(BLOCK_FRAMES));
         assertThat(witness.runs).hasSize(1);
     }
@@ -271,7 +275,7 @@ class EarlySealSignalContractTest {
     @Test
     void aThrowableThatEscapesTheDrainLoopSignalsAWriteFailureBeforeTheThreadTerminates() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
         CaptureFlushService service = pipeline.getCaptureFlushService();
@@ -294,7 +298,7 @@ class EarlySealSignalContractTest {
         service.termination().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
         assertThat(pipeline.isActive()).as("the take stays the caller's to stop").isTrue();
 
-        assertThat(pipeline.stop()).singleElement()
+        assertThat(stopRecording(pipeline)).singleElement()
                 .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(3 * BLOCK_FRAMES));
         assertThat(witness.runs).hasSize(1);
     }
@@ -314,7 +318,7 @@ class EarlySealSignalContractTest {
             }
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         Path secondSealed = takeDir.resolve(second.getId()).resolve("segment-000.wav");
         AtomicBoolean secondLaneSealedAtTheSignal = new AtomicBoolean();
         pipeline.earlySeal().thenRun(() -> secondLaneSealedAtTheSignal.set(secondSealed.toFile().isFile()));
@@ -334,14 +338,14 @@ class EarlySealSignalContractTest {
         assertThat(observed.sealedBy()).as("a lane threw, so the manifest says write-failure")
                 .isEqualTo(SealedBy.WRITE_FAILURE);
 
-        assertThat(pipeline.stop()).hasSize(2);
+        assertThat(stopRecording(pipeline)).hasSize(2);
         assertThat(witness.runs).hasSize(1);
     }
 
     @Test
     void aSegmentWhoseSealFailsIsReportedAsLeftForRecovery() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
         Path part = takeDir.resolve(track.getId()).resolve("segment-000.wav.part");
@@ -358,7 +362,7 @@ class EarlySealSignalContractTest {
         assertThat(observed.status()).isEqualTo(SealStatus.ABORTED);
         assertThat(observed.sealedBy()).isEqualTo(SealedBy.WRITE_FAILURE);
 
-        pipeline.stop();
+        stopRecording(pipeline);
         assertThat(witness.runs).hasSize(1);
     }
 
@@ -390,7 +394,7 @@ class EarlySealSignalContractTest {
             throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
         pipeline.setSegmentLimits(Duration.ofHours(1), segmentBytes);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
         Path trackDir = takeDir.resolve(track.getId());
@@ -414,7 +418,7 @@ class EarlySealSignalContractTest {
                     .containsExactly(part);
         }
 
-        assertThat(pipeline.stop()).singleElement()
+        assertThat(stopRecording(pipeline)).singleElement()
                 .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(keptBlocks * BLOCK_FRAMES));
         assertThat(witness.runs).hasSize(1);
     }
@@ -423,7 +427,7 @@ class EarlySealSignalContractTest {
     void anExhaustionInTheFinalSweepOfARequestedStopSignalsAndThatStopReturnsTheTakeSealedEarly()
             throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         long frame = feedRamp(engine, transport, pipeline, 0, 2, 1);
         CaptureFlushService service = pipeline.getCaptureFlushService();
@@ -433,7 +437,7 @@ class EarlySealSignalContractTest {
         feedOne(frame);
         feedOne(frame + BLOCK_FRAMES);
 
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(isDone(pipeline.earlySeal())).as("the early seal in the final sweep is signalled").isTrue();
         Observed observed = witness.awaitFirst();
@@ -453,11 +457,11 @@ class EarlySealSignalContractTest {
     @Test
     void theSealAStopRequestsNeverSignals() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 1);
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
 
         assertThat(pipeline.getCaptureFlushService().isTerminated()).isTrue();
         assertThat(isDone(pipeline.earlySeal())).isFalse();
@@ -479,11 +483,11 @@ class EarlySealSignalContractTest {
             session.addListener(new StopFaultListener(fault));
             return session;
         });
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 1);
 
-        assertThat(pipeline.stop()).hasSize(1);
+        assertThat(stopRecording(pipeline)).hasSize(1);
 
         CaptureFlushService service = pipeline.getCaptureFlushService();
         assertThat(service.lastFailure()).as("fixture: the lane's Error reached the loop").containsSame(fault);
@@ -498,34 +502,35 @@ class EarlySealSignalContractTest {
     @Test
     void aFailedStartsRollbackNeverSignals() {
         RecordingPipeline pipeline = newPipeline(track);
-        // transport.record() is the start's last step, after the flush thread
-        // started: a failure there rolls the start back through abortStart.
+        // transport.record() is beginCapture()'s last step, once the take is
+        // ready: a failure there rolls the start back through requestAbort.
         Runnable unsubscribe = transport.addChangeListener(kind -> {
             if (transport.getState() == TransportState.RECORDING) {
                 throw new IllegalStateException("injected record failure");
             }
         });
         try {
-            assertThatThrownBy(pipeline::start).hasMessageContaining("injected record failure");
+            assertThatThrownBy(() -> startRecording(pipeline)).hasMessageContaining("injected record failure");
         } finally {
             unsubscribe.run();
         }
 
         CaptureFlushService service = pipeline.getCaptureFlushService();
         assertThat(service).as("fixture: the start got as far as its flush service").isNotNull();
-        assertThat(service.isTerminated()).as("fixture: the rollback stopped its thread").isTrue();
+        awaitTermination(service); // the rollback asked the thread to discard the take and did not wait
         assertThat(isDone(pipeline.earlySeal())).isFalse();
     }
 
     @Test
     void aStopThatAbandonsTheWritersWithoutASealNeverSignals() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.start();
+        startRecording(pipeline);
         SignalWitness witness = new SignalWitness(pipeline);
         feedRamp(engine, transport, pipeline, 0, 2, 1);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         service.stopAndAbandon();
+        awaitTermination(service);
 
         assertThat(service.isTerminated()).isTrue();
         assertThat(isDone(pipeline.earlySeal())).isFalse();
@@ -536,17 +541,17 @@ class EarlySealSignalContractTest {
     void aPipelineStartedAgainHandsOutItsNewTakesSignalNeverThePreviousTakes() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
         freeBytes.set(MIB); // the first take meets the floor at its first block and writes nothing
-        pipeline.start();
+        startRecording(pipeline);
         CompletionStage<EarlySeal> firstTake = pipeline.earlySeal();
         feedRamp(engine, transport, pipeline, 0, 1, 1);
         assertThat(isDone(firstTake)).as("fixture: the first take was sealed early").isTrue();
-        assertThat(pipeline.stop()).as("fixture: it recorded nothing").isEmpty();
+        assertThat(stopRecording(pipeline)).as("fixture: it recorded nothing").isEmpty();
 
         freeBytes.set(10 * GIB);
-        pipeline.start(); // the same take directory: the first take left no segment file behind
+        startRecording(pipeline); // the same take directory: the first take left no segment file behind
         CompletionStage<EarlySeal> secondTake = pipeline.earlySeal();
         feedRamp(engine, transport, pipeline, 0, 2, 1);
-        List<AudioClip> clips = pipeline.stop();
+        List<AudioClip> clips = stopRecording(pipeline);
 
         // Compared as references: AssertJ's CompletionStage assertions wrap
         // the stage in a new future, and its failure message cannot print a

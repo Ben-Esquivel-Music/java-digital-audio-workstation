@@ -23,7 +23,6 @@ import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.StopSealFailure;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
-import com.benesquivelmusic.daw.core.recording.TakeFinalizationPendingException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -55,12 +54,16 @@ import javax.sound.midi.MidiDevice;
 import javax.sound.midi.MidiSystem;
 import javax.sound.midi.MidiUnavailableException;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -103,20 +106,56 @@ final class TransportController implements TransportIntentHandler {
             "Recording needs a project folder — save the project first";
 
     /**
-     * Story 323 review: a Stop that gave up waiting for the take to be
-     * written ({@link TakeFinalizationPendingException}). Shown as the
-     * WARNING toast and the status-bar text; the clips are published when
-     * the take's capture thread has finished.
+     * PR #978 review 5391920205 (F2): the status-bar text while Record's take
+     * is being prepared — its take directory allocated, then its files
+     * created by the take's capture thread — before capture begins. The REC
+     * indicator stays off meanwhile: nothing is being recorded yet.
+     */
+    static final String TAKE_PREPARING_MESSAGE = "Preparing the take…";
+
+    /**
+     * PR #978 review 5391920205 (F2): the status-bar text when Stop, Record
+     * pressed again, or the end of a post-roll — the deferred half of a
+     * Stop — cancels a take that was still being prepared (Recording
+     * Reliability book §5.2, toggle semantics). Nothing was recorded.
+     */
+    static final String RECORDING_CANCELLED_MESSAGE = "Recording cancelled — no take was started";
+
+    /**
+     * PR #978 review 5391920205 (F1): the status-bar text from a Stop until
+     * the take is published — the take's capture thread is sealing its
+     * segments and writing its manifest, and the clips appear once it has
+     * terminated.
+     */
+    static final String TAKE_FINISHING_MESSAGE = "Recording stopped — finishing the take on disk…";
+
+    /**
+     * How long after a Stop a take that has still not been published is
+     * reported as {@link #TAKE_STILL_WRITING_MESSAGE}.
+     */
+    static final java.time.Duration TAKE_STILL_WRITING_DELAY = java.time.Duration.ofSeconds(2);
+
+    /**
+     * Story 323 review: a take that has still not been published
+     * {@link #TAKE_STILL_WRITING_DELAY} after its Stop. Shown as the WARNING
+     * toast and, in place of {@link #TAKE_FINISHING_MESSAGE}, as the
+     * status-bar text; the clips are published when the take's capture
+     * thread has finished.
      */
     static final String TAKE_STILL_WRITING_MESSAGE =
             "Recording stopped — the take is still being written to disk; its clips will appear when it finishes";
 
-    /** Replaces {@link #TAKE_STILL_WRITING_MESSAGE} in the status bar when that take produced no clip. */
+    /**
+     * Replaces {@link #TAKE_FINISHING_MESSAGE} or
+     * {@link #TAKE_STILL_WRITING_MESSAGE} in the status bar when that take
+     * produced no clip.
+     */
     static final String TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE =
             "Recording stopped — the take has been written to disk; it holds no audio";
 
     /**
-     * Replaces {@link #TAKE_STILL_WRITING_MESSAGE} in the status bar when a
+     * Replaces {@link #TAKE_FINISHING_MESSAGE} or
+     * {@link #TAKE_STILL_WRITING_MESSAGE} in the status bar when a
      * {@linkplain #retire() retired} controller's take has finished: the
      * short form of {@link #takeOfAReplacedProjectMessage}.
      */
@@ -125,9 +164,11 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Story 323 review: Record while the previous take is still being
-     * written (Recording Reliability book §5.2 — Record is valid only from
-     * IDLE, and FINALIZING returns to IDLE once the seal and the manifest
-     * are complete). Shown as the WARNING toast and the status-bar text.
+     * written, or while the files of a cancelled or failed start are still
+     * being removed (Recording Reliability book §5.2 — Record is valid only
+     * from IDLE, and FINALIZING returns to IDLE once the seal and the
+     * manifest are complete). Shown as the WARNING toast and the status-bar
+     * text.
      */
     static final String RECORD_WHILE_WRITING_MESSAGE =
             "Record is unavailable until the last take has finished writing to disk";
@@ -204,14 +245,37 @@ final class TransportController implements TransportIntentHandler {
      */
     private volatile Thread sessionInputCheck;
 
+    /**
+     * The audio take being recorded (RECORDING): set by the readiness turn
+     * ({@link #onTakeReady}) once capture has begun, cleared by
+     * {@link #stop()}. FX thread.
+     */
     private RecordingPipeline recordingPipeline;
     /**
-     * Story 323 review — the pipeline whose Stop gave up waiting for its take
-     * to be written: set when {@link #stop()} catches the
-     * {@link TakeFinalizationPendingException}, cleared on the FX turn that
-     * finishes that stop once the take's capture thread has terminated.
-     * While set, {@link #onRecord()} refuses and {@link #isTakeBeingWritten()}
-     * is {@code true}. FX thread.
+     * PR #978 review 5391920205 (F2) — the audio take Record started that has
+     * not begun capture yet (PREPARING): set by {@link #onRecord()}, cleared
+     * when capture begins, when the start fails, and when Stop, Record
+     * pressed again, the end of a post-roll ({@link #finishPostRoll()}) or
+     * {@link #retire()} cancels it. While set,
+     * {@link #isRecordingInFlight()} is {@code true}. FX thread.
+     */
+    private PendingStart pendingStart;
+    /**
+     * PR #978 review 5391920205 (F2) — a start that was cancelled or failed
+     * and whose files are still being removed: its capture thread, if it got
+     * one, has not terminated yet, or the removal of the take directory it
+     * allocated has not run yet. Cleared on the FX turn that follows that
+     * removal. While set, {@link #onRecord()} refuses and
+     * {@link #isTakeBeingWritten()} is {@code true} — FINALIZING, as for
+     * {@link #writingPipeline}. FX thread.
+     */
+    private PendingStart abandonedStart;
+    /**
+     * Story 323 review — the take whose Stop has run and whose clips are not
+     * published yet: set by {@link #stop()}, cleared on the FX turn that
+     * publishes the take once its capture thread has terminated
+     * ({@link #finishWrittenTake}). While set, {@link #onRecord()} refuses
+     * and {@link #isTakeBeingWritten()} is {@code true}. FX thread.
      */
     private RecordingPipeline writingPipeline;
     /**
@@ -219,8 +283,33 @@ final class TransportController implements TransportIntentHandler {
      * has replaced this controller with the next project's. FX thread.
      */
     private boolean retired;
-    /** How a pipeline is stopped — {@code RecordingPipeline::stop}; replaced only by {@link #setPipelineStopForTest}. */
-    private PipelineStop pipelineStop = RecordingPipeline::stop;
+    /**
+     * Where the controller's own storage work for a take runs: allocating
+     * its take directory under {@code audio/takes}, and removing the take
+     * directory of a start that was cancelled or failed, if it is empty
+     * ({@link #deleteEmptyTakeDirectory}). Production: a
+     * new virtual thread per task ({@link #onAVirtualThread}), never the FX
+     * thread; replaced only by {@link #setStorageExecutorForTest}.
+     */
+    private Executor storageExecutor = TransportController::onAVirtualThread;
+    /**
+     * What is done to a take's pipeline after it is built and before its
+     * {@code prepare()} — nothing in production; replaced only by
+     * {@link #setPipelineSetupForTest}.
+     */
+    private Consumer<RecordingPipeline> pipelineSetup = _ -> { };
+    /**
+     * How a stopped take is completed once its capture thread has
+     * terminated — {@code RecordingPipeline::completeStop}; replaced only by
+     * {@link #setTakeCompletionForTest}.
+     */
+    private TakeCompletion takeCompletion = RecordingPipeline::completeStop;
+    /**
+     * How the still-writing warning is scheduled after a Stop — a
+     * {@link PauseTransition} ({@link #afterOnFx}); replaced only by
+     * {@link #setStillWritingDelayForTest}.
+     */
+    private FxDelay stillWritingDelay = TransportController::afterOnFx;
     /**
      * How a take's early-seal signal is read — {@code RecordingPipeline::earlySeal};
      * replaced only by {@link #setEarlySealSignalForTest}.
@@ -264,7 +353,8 @@ final class TransportController implements TransportIntentHandler {
      * Story 134 — Post-roll completion timer. Schedules
      * {@link #finishPostRoll()} after the configured post-roll duration
      * has elapsed. Kept as a field so a second stop request can cancel
-     * a pending timer before rescheduling.
+     * a pending timer before rescheduling, and {@link #retire()} can stop
+     * it; dropped when it fires.
      */
     private PauseTransition postRollTimer;
 
@@ -382,14 +472,15 @@ final class TransportController implements TransportIntentHandler {
      *
      * <p>VALIDATE mirrors the retired {@code onPlay} guard: a no-op while
      * already PLAYING (a stale Start intent) and while RECORDING (Stop is the
-     * only way out of record). The Play-toggles-pause pairing is resolved by
+     * only way out of record) — and while a take is being prepared, which is
+     * on its way to RECORDING. The Play-toggles-pause pairing is resolved by
      * {@link #togglePlayPause()} — the gesture layer raises the toggle intent
      * and never decides for itself (story 315 review).</p>
      */
     @Override
     public void start() {
         TransportState state = project.getTransport().getState();
-        if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
+        if (pendingStart != null || state == TransportState.PLAYING || state == TransportState.RECORDING) {
             return;
         }
         if (!startAudioOutputOrRefuse("Playback")) {
@@ -490,9 +581,14 @@ final class TransportController implements TransportIntentHandler {
      * raises the same {@code TogglePlayPauseCommand} into here, so none of them
      * can decide from the async {@code TransportVM} mirror and drop a click into
      * the one-FX-turn lag window (§2.8 "one path").</p>
+     *
+     * <p>A no-op while a take is being prepared, as Play is while RECORDING.</p>
      */
     @Override
     public void togglePlayPause() {
+        if (pendingStart != null) {
+            return;
+        }
         if (project.getTransport().getState() == TransportState.PLAYING) {
             pause();
         } else {
@@ -508,7 +604,7 @@ final class TransportController implements TransportIntentHandler {
      * transport is already STOPPED <em>and nothing is recording</em> rewinds the
      * playhead to zero. This is a gesture-level semantic deliberately NOT in
      * {@link Transport#stop()} — internal callers (e.g.
-     * {@code RecordingPipeline.stop()}) must be able to stop the transport
+     * {@code RecordingPipeline.requestStop()}) must be able to stop the transport
      * without a follow-up UI stop yanking recordings to zero. No
      * {@link TransportEvent.Stopped} is announced for the rewind: the transport
      * did not stop again.</p>
@@ -523,10 +619,11 @@ final class TransportController implements TransportIntentHandler {
      * pipeline can be ACTIVE while the transport is still STOPPED — an internal
      * caller that stopped the transport underneath a running pipeline (count-in
      * does not defer {@code Transport.record()} today; story 328 owns
-     * count-in). (Before story 323 a throw inside
-     * {@code RecordingPipeline.start()} was a second way in; its start is now
-     * all-or-nothing and {@link #onRecord()} aborts the take on it, so no
-     * active pipeline is left behind.) Returning early on that
+     * count-in). (Before story 323 a throw inside the pipeline's start was a
+     * second way in; its start is now all-or-nothing — {@code prepare()},
+     * then {@code beginCapture()} — and a failed start is abandoned
+     * ({@link #abandonStart}), so no active pipeline is left behind.)
+     * Returning early on that
      * state would leak recording sessions and segment files, leave per-track
      * recording flags set and the REC indicator lit forever — every further
      * Stop hitting the same early return.
@@ -537,43 +634,69 @@ final class TransportController implements TransportIntentHandler {
      *
      * <p>{@link TransportEvent.Stopped} carries the position at which the
      * transport actually stopped, captured <em>before</em> any internal
-     * {@code Transport.stop()} (the recording pipeline's, or the one inside
+     * {@code Transport.stop()} (the one inside the recording pipeline's
+     * {@code requestStop()}, or the one inside the transport's own
      * {@code requestStop()}) rewinds the playhead to the play-start anchor. It
      * is announced only when the transport was actually rolling on entry: on the
      * aborted-record path above it never started, so announcing would put a
      * fiction — an unmatched Stopped — on the bus (the same {@code wasRolling}
      * rule {@link #finishPostRoll()} follows).</p>
      *
-     * <p><strong>A take still being written</strong> (story 323 review). When
-     * {@code RecordingPipeline.stop()} gives up waiting for the capture thread
-     * — its bounded join ran out on a slow or stuck disk — it throws
-     * {@link TakeFinalizationPendingException} and has built no clip. That is
-     * caught here: the rest of this Stop runs as always (MIDI stop,
-     * {@code requestStop()}, the Stopped announce, the UI reset, the REC
-     * indicator), a WARNING toast and the status bar say the take is still
-     * being written to disk, and nothing is registered for undo. No post-roll
-     * follows on this path: the pipeline's own stop has already stopped the
-     * transport, so {@code requestStop()} finds it stopped. When
-     * the thread has terminated, the exception's completion hands the rest to
-     * the FX thread through {@link #postFx}: {@code stop()} is called again on
-     * that same pipeline and its clips are published exactly as on the normal
-     * path ({@link #publishRecordedTake}) — or, if that call fails, the failure
-     * is logged and shown as an ERROR toast. Nothing on the FX thread waits
-     * for the completion: the deferred half is posted only once the thread
-     * has terminated, so its {@code stop()} neither wakes nor joins that
-     * thread. Until then {@link #onRecord()} refuses, and
-     * {@link #isTakeBeingWritten()} tells {@code ProjectLifecycleController}
-     * to refuse the in-app doors that replace the open project; a Stop
-     * meanwhile is an ordinary Stop with no recording in flight (see
-     * {@link #isRecordingInFlight()}) and never calls the pipeline again.</p>
+     * <p><strong>A take being prepared</strong> (PR #978 review 5391920205,
+     * F2). A Stop while Record's take is still being prepared cancels it
+     * ({@link #cancelPendingStartByUser}): nothing was captured, the cancel
+     * writes {@link #RECORDING_CANCELLED_MESSAGE} into the status bar, and
+     * the removal of the take's files is arranged off the FX thread
+     * ({@link #cancelPendingStart}). Over a STOPPED transport the Stop then
+     * closes the output stream Record opened, as every other Stop does
+     * ({@link #stopAudioOutputWhenIdle}), and that is the whole Stop — no
+     * rewind, nothing announced, the transport untouched. Over a transport
+     * that is not STOPPED the Stop then goes on as an ordinary Stop of that
+     * playback. When it enters no post-roll — the transport is PAUSED, or no
+     * post-roll is configured — it stops the transport and hands the stream
+     * to {@link #stopAudioOutputWhenIdle} at once, and the cancel's text
+     * stays in the status bar. Over a PLAYING transport with a post-roll
+     * configured it plays the tail instead: the "Post-roll: …" text
+     * replaces the cancel's, and the end of that post-roll
+     * ({@link #finishPostRoll}) stops the transport, hands the stream to
+     * {@link #stopAudioOutputWhenIdle} and writes "Stopped" unless the
+     * status bar shows what became of a recording
+     * ({@link #statusShowsARecordingOutcome}), which the tail's text does
+     * not. The end of a post-roll, the deferred half of a Stop, cancels a
+     * take being prepared the same way ({@link #finishPostRoll}).</p>
      *
-     * <p>The "Record Audio" undo entry of such a take is pushed when its clips
-     * are published, not when Stop was pressed: it lands on top of any edit
-     * made while the take was being written, and — as every
+     * <p><strong>Stop never waits for the take</strong> (PR #978 review
+     * 5391920205, F1). {@code RecordingPipeline.requestStop()} removes the
+     * recording callback, clears the recording flags, stops the transport and
+     * asks the take's capture thread to seal the take, and returns that
+     * thread's termination signal at once; this Stop never joins it. The rest
+     * of this Stop runs at once (MIDI stop, the transport's
+     * {@code requestStop()}, the Stopped announce, the UI reset, the REC
+     * indicator), and the status bar says
+     * {@link #TAKE_FINISHING_MESSAGE}; no post-roll follows a recorded take:
+     * the pipeline has already stopped the transport, so the transport's
+     * {@code requestStop()} finds it stopped. When the capture thread has
+     * terminated, its signal hands the rest to the FX thread through
+     * {@link #postFx} ({@link #publishWhenWritten}): on that later turn
+     * {@link #finishWrittenTake} completes the take and publishes its clips
+     * ({@link #publishRecordedTake}) — or, if that fails, the failure is
+     * logged and shown as an ERROR toast. If the take has still not been
+     * published {@link #TAKE_STILL_WRITING_DELAY} after this Stop, a WARNING
+     * toast says {@link #TAKE_STILL_WRITING_MESSAGE}
+     * ({@link #warnTakeStillWriting}). Until the take is published
+     * {@link #onRecord()} refuses, and {@link #isTakeBeingWritten()} tells
+     * {@code ProjectLifecycleController} to refuse the in-app doors that
+     * replace the open project; a Stop meanwhile is an ordinary Stop with no
+     * recording in flight (see {@link #isRecordingInFlight()}) and never calls
+     * the pipeline again.</p>
+     *
+     * <p>The "Record Audio" undo entry of a take is pushed when its clips are
+     * published, not when Stop was pressed: it lands on top of any edit made
+     * while the take was being written, and — as every
      * {@link UndoManager#execute} does — clears the redo stack. The project
      * is marked dirty then too, and not before: a take still being written is
      * not in the project yet. A controller {@linkplain #retire() retired}
-     * before that deferred half runs publishes nothing at all.</p>
+     * before that turn runs publishes nothing at all.</p>
      *
      * <p><strong>A take the capture thread sealed early</strong> (story 323
      * review). When the capture thread seals the take on its own — its
@@ -586,18 +709,25 @@ final class TransportController implements TransportIntentHandler {
      * 323 review): the capture thread sealed it early, or a lane threw in
      * the seal this Stop requested ({@link StopSealFailure}) — a segment
      * whose own seal failed is then left as its {@code .part} file.
-     * Whichever Stop publishes such a take — this one, or the deferred half
-     * of one whose join ran out — reads how its finalisation ended once
+     * The FX turn that publishes such a take ({@link #finishWrittenTake})
+     * reads how its finalisation ended once
      * ({@link #finalizationFailureReport}), publishes its clips, the "Record
      * Audio" undo entry and the dirty mark as always, but instead of the
      * SUCCESS toast and its status text it shows that report once, as the
-     * ERROR toast — here after the MIDI toast — and as the status text:
+     * ERROR toast — after this Stop's MIDI toast — and as the status text:
      * {@link #takeSealedEarlyMessage}, or {@link #stopSealFailedMessage}.</p>
      */
     @Override
     public void stop() {
         Transport transport = project.getTransport();
         boolean wasRolling = transport.getState() != TransportState.STOPPED;
+        if (pendingStart != null) {
+            cancelPendingStartByUser();
+            if (!wasRolling) {
+                stopAudioOutputWhenIdle();
+                return;
+            }
+        }
         if (!wasRolling && !isRecordingInFlight()) {
             stopAudioOutputWhenIdle();
             // Double-stop: second Stop returns to zero, if the preference says
@@ -614,44 +744,22 @@ final class TransportController implements TransportIntentHandler {
         // Captured before the rewind-to-anchor inside any stop() below.
         long stoppedAtFrames = core.beatsToFrames(transport.getPositionInBeats());
 
-        // Finalize recording if a recording pipeline is active
-        TakeFinalizationPendingException stillWriting = null;
-        String finalizationFailure = null;
+        // Stop the audio take, if one is recording: the seal is requested and
+        // the take is published on a later FX turn, once its capture thread
+        // has terminated. Nothing here waits for that thread.
         if (recordingPipeline != null && recordingPipeline.isActive()) {
             RecordingPipeline stopping = recordingPipeline;
-            try {
-                List<AudioClip> clips = pipelineStop.stop(stopping);
-                Optional<String> failureReport = finalizationFailureReport(stopping, clips.size());
-                publishRecordedTake(stopping, clips);
-                if (failureReport.isEmpty()) {
-                    showTakePublished(clips.size());
-                }
-                finalizationFailure = failureReport.orElse(null);
-            } catch (TakeFinalizationPendingException pending) {
-                // The pipeline built nothing: its capture thread is still
-                // writing the take. The rest of this Stop runs; the clips
-                // follow when the thread has terminated.
-                LOG.log(Level.WARNING, "Stop gave up waiting for the take under "
-                        + pending.takeDirectory() + " to be written; its clips are published when it is", pending);
-                stillWriting = pending;
-                statusBarLabel.setText(TAKE_STILL_WRITING_MESSAGE);
-                publishWhenWritten(stopping, pending);
-            }
             recordingPipeline = null;
+            CompletionStage<Void> written = requestTakeStop(stopping);
+            statusBarLabel.setText(TAKE_FINISHING_MESSAGE);
+            publishWhenWritten(stopping, written);
+            stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
         }
 
-        // Finalize MIDI recording if any MIDI recorders are active
+        // Finalize MIDI recording if any MIDI recorders are active. Its toast
+        // comes before the audio take's SUCCESS or report, which the later
+        // publication shows.
         stopMidiRecording();
-
-        // After the MIDI toast, so that the take still being written — or the
-        // early seal or failed seal that ended the take — is what the
-        // notification bar shows.
-        if (stillWriting != null) {
-            notificationBar.show(NotificationLevel.WARNING, TAKE_STILL_WRITING_MESSAGE);
-        }
-        if (finalizationFailure != null) {
-            reportTakeFinalizationFailure(finalizationFailure);
-        }
 
         // Story 134 — use requestStop() so that a configured post-roll
         // keeps the transport running for postBars × barLength before
@@ -683,17 +791,16 @@ final class TransportController implements TransportIntentHandler {
 
         // ANNOUNCE (story 315): the transport actually stopped on this path —
         // either just now inside requestStop(), or earlier inside
-        // RecordingPipeline.stop() (whose internal Transport.stop() makes the
-        // requestStop() above an idempotent no-op). Suppressed when the
-        // transport was already STOPPED on entry (the aborted-record finalize):
-        // nothing transitioned, so nothing may be announced.
+        // RecordingPipeline.requestStop() (whose internal Transport.stop()
+        // makes the requestStop() above an idempotent no-op). Suppressed when
+        // the transport was already STOPPED on entry (the aborted-record
+        // finalize): nothing transitioned, so nothing may be announced.
         if (wasRolling) {
             EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
         }
         stopAudioOutputWhenIdle();
         updateStatus();
-        if (statusBarLabel.getText() == null
-                || !stripCellSeparator(statusBarLabel.getText()).startsWith("Recording stopped")) {
+        if (!statusShowsARecordingOutcome()) {
             statusBarLabel.setText("Stopped");
         }
         statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
@@ -705,8 +812,55 @@ final class TransportController implements TransportIntentHandler {
         recIndicator.setManaged(false);
     }
 
+    /**
+     * Asks {@code pipeline} to stop its take and returns its capture thread's
+     * termination signal, without waiting for it. When a step of the
+     * pipeline's one-shot stop throws (a transport listener, say), the seal
+     * has been requested all the same: the failure is logged, and a repeat
+     * request — which repeats none of those steps — hands back the same
+     * signal, so the take is still published. FX thread.
+     */
+    private static CompletionStage<Void> requestTakeStop(RecordingPipeline pipeline) {
+        try {
+            return pipeline.requestStop();
+        } catch (RuntimeException oneShotFailure) {
+            LOG.log(Level.WARNING, "A step of the stop of the take under " + pipeline.getTakeDirectory()
+                    + " failed; the take is sealed all the same", oneShotFailure);
+            return pipeline.requestStop();
+        }
+    }
+
+    /**
+     * Whether the status bar shows what became of a recording — a stopped
+     * take ("Recording stopped …") or a cancelled one — which the end of a
+     * Stop leaves in place instead of writing "Stopped". FX thread.
+     */
+    private boolean statusShowsARecordingOutcome() {
+        String text = statusBarLabel.getText();
+        if (text == null) {
+            return false;
+        }
+        String cell = stripCellSeparator(text);
+        return cell.startsWith("Recording stopped") || cell.equals(RECORDING_CANCELLED_MESSAGE);
+    }
+
     private void stopAudioOutputWhenIdle() {
         if (!hasGraphInstruments()) audioEngine.stopAudioOutput();
+    }
+
+    /**
+     * {@link #stopAudioOutputWhenIdle()}, unless the transport is rolling —
+     * PLAYING or RECORDING — when the stream is left running. Run when
+     * an audio take Record started ends before capture began: Record pressed
+     * again cancels it ({@link #toggleRecord()}), its take directory could not
+     * be allocated, or its pipeline could not be built
+     * ({@link #onTakeDirectoryAllocated}). FX thread.
+     */
+    private void stopAudioOutputUnlessRolling() {
+        TransportState state = project.getTransport().getState();
+        if (state != TransportState.PLAYING && state != TransportState.RECORDING) {
+            stopAudioOutputWhenIdle();
+        }
     }
 
     private boolean hasGraphInstruments() {
@@ -718,12 +872,13 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * Whether a recording is in flight and still needs finalizing — an active
-     * audio pipeline or any live MIDI recorder. Read by {@link #stop()} to
-     * decide between the double-stop rewind gesture and the full stop flow: the
-     * pipeline can be active while the transport is STOPPED (see {@link #stop()}:
-     * an internal caller can stop the transport underneath a running
-     * pipeline), and only the full flow finalizes it.
+     * Whether a recording is in flight and still needs finalizing — an audio
+     * take being prepared ({@link #pendingStart}), an active audio pipeline
+     * or any live MIDI recorder. Read by {@link #stop()} to decide between
+     * the double-stop rewind gesture and the full stop flow: the pipeline can
+     * be active while the transport is STOPPED (see {@link #stop()}: an
+     * internal caller can stop the transport underneath a running pipeline),
+     * and only the full flow finalizes it.
      * {@code MainController} also feeds the current controller's answer to
      * {@code ProjectLifecycleController}, which refuses the in-app doors that
      * replace the open project while it is {@code true} (story 323 review);
@@ -731,21 +886,31 @@ final class TransportController implements TransportIntentHandler {
      *
      * <p>A take still being written to disk ({@link #writingPipeline}) does not
      * count (story 323 review). Its Stop has already run — callback removed,
-     * flags cleared, transport stopped — and what remains is finished by the
-     * take's completion, never by another Stop: a Stop that called the
-     * pipeline again would only sit in another bounded join on the FX thread.
-     * So a Stop over a stopped transport while the take is being written is
-     * the ordinary double-stop gesture; the rewind moves only the playhead,
-     * and the take's clips are anchored where the take started.</p>
+     * flags cleared, transport stopped, seal requested — and what remains is
+     * finished by the FX turn its capture thread's termination posts, never by
+     * another Stop. So a Stop over a stopped transport while the take is being
+     * written is the ordinary double-stop gesture; the rewind moves only the
+     * playhead, and the take's clips are anchored where the take started.</p>
      */
     boolean isRecordingInFlight() {
-        return (recordingPipeline != null && recordingPipeline.isActive())
+        return pendingStart != null
+                || (recordingPipeline != null && recordingPipeline.isActive())
                 || !activeMidiRecorders.isEmpty();
     }
 
     /**
-     * The one publication of a stopped take's clips, on the normal path and
-     * on the deferred one ({@link #finishWrittenTake}): registers the
+     * Whether Record's audio take is being prepared — its take directory
+     * being allocated or its files being created — and capture has not begun
+     * (PREPARING). Package-visible so a test can wait for the start to
+     * settle. FX thread.
+     */
+    boolean isPreparingTake() {
+        return pendingStart != null;
+    }
+
+    /**
+     * The one publication of a stopped take's clips, on the FX turn that
+     * completes the take ({@link #finishWrittenTake}): registers the
      * "Record Audio" undo action over the pipeline's recorded clips and marks
      * the project dirty, so the unsaved-changes prompt asks for the Save that
      * writes the clips' references into {@code project.daw} — as
@@ -755,8 +920,8 @@ final class TransportController implements TransportIntentHandler {
      * either way. The caller then shows the SUCCESS toast
      * ({@link #showTakePublished}) or the report of a finalisation that did
      * not end cleanly ({@link #finalizationFailureReport}). Nothing when the
-     * take produced no clip: the pipeline's stop then added nothing to any
-     * track. FX thread.
+     * take produced no clip: the pipeline's {@code completeStop()} then added
+     * nothing to any track. FX thread.
      */
     private void publishRecordedTake(RecordingPipeline pipeline, List<AudioClip> recordedClips) {
         if (recordedClips.isEmpty()) {
@@ -805,38 +970,39 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Remembers {@code pipeline} as the take still being written and, when
-     * its capture thread has terminated, posts {@link #finishWrittenTake} to
-     * the FX thread. The dependent registered here only posts — it may run
-     * on the capture thread as its last act, or at once on this thread if
-     * the thread has already terminated; the work itself always runs on a
-     * later FX turn. FX thread.
+     * its capture thread has terminated ({@code written}, the signal the
+     * pipeline's {@code requestStop()} returned), posts
+     * {@link #finishWrittenTake} to the FX thread. The dependent registered
+     * here only posts — it may run on the capture thread as its last act, or
+     * at once on this thread if the thread has already terminated; the work
+     * itself always runs on a later FX turn. FX thread.
      */
-    private void publishWhenWritten(RecordingPipeline pipeline, TakeFinalizationPendingException pending) {
+    private void publishWhenWritten(RecordingPipeline pipeline, CompletionStage<Void> written) {
         writingPipeline = pipeline;
-        pending.completion().whenComplete((_, _) -> postFx(() -> finishWrittenTake(pipeline)));
+        written.whenComplete((_, _) -> postFx(() -> finishWrittenTake(pipeline)));
     }
 
     /**
-     * The deferred half of a Stop whose take was still being written: calls
-     * {@code stop()} again on that same pipeline — the thread has terminated,
-     * so the pipeline builds the clips without repeating its one-shot stop —
-     * and publishes them through {@link #publishRecordedTake}, exactly as the
-     * normal path does: the "Record Audio" undo entry, the dirty mark, and
-     * the SUCCESS toast and status text of a take whose finalisation ended
-     * cleanly. A take that produced no clip and whose finalisation ended
-     * cleanly only takes back the status bar's "still being written", if it
-     * still says so, and leaves the project as it was. A take whose
-     * finalisation did not end cleanly — sealed early by the capture thread,
-     * or a lane that threw in the seal the Stop requested — is reported
-     * here, as {@link #stop()} reports one: the report of
-     * {@link #finalizationFailureReport} as the ERROR toast and the status
-     * text, with or without clips. A failure of the stop itself is
-     * logged SEVERE and shown as an ERROR toast. After a publication or a
-     * failure, Record is available again. A controller {@linkplain #retire()
-     * retired} by then does none of this — it publishes nothing, marks
-     * nothing dirty and reports no seal: it only reports where the take's
-     * files are, and takes back the status bar's "still being written" in the
-     * same way. FX thread.
+     * The FX turn that publishes a stopped take, once its capture thread has
+     * terminated: completes the take on that same pipeline
+     * ({@code RecordingPipeline.completeStop()}, through {@link TakeCompletion},
+     * which builds the clips without repeating the Stop's one-shot steps) and
+     * publishes them through {@link #publishRecordedTake}: the "Record Audio"
+     * undo entry, the dirty mark, and the SUCCESS toast and status text of a
+     * take whose finalisation ended cleanly. A take that produced no clip and
+     * whose finalisation ended cleanly only takes back the status bar's
+     * {@link #TAKE_FINISHING_MESSAGE} or {@link #TAKE_STILL_WRITING_MESSAGE},
+     * if it still says one of them, and leaves the project as it was. A take
+     * whose finalisation did not end cleanly — sealed early by the capture
+     * thread, or a lane that threw in the seal the Stop requested — is
+     * reported here: the report of {@link #finalizationFailureReport} as the
+     * ERROR toast and the status text, with or without clips. A failure of
+     * the completion itself is logged SEVERE and shown as an ERROR toast.
+     * After a publication or a failure, Record is available again. A
+     * controller {@linkplain #retire() retired} by then does none of this —
+     * it publishes nothing, marks nothing dirty and reports no seal: it only
+     * reports where the take's files are, and takes back the status bar's
+     * finishing or still-writing text in the same way. FX thread.
      */
     private void finishWrittenTake(RecordingPipeline pipeline) {
         if (writingPipeline == pipeline) {
@@ -844,30 +1010,23 @@ final class TransportController implements TransportIntentHandler {
         }
         if (retired) {
             // The project the take was recorded in has been replaced.
-            // Stopping the pipeline again is not needed for the files: the
-            // capture thread has terminated, so it writes nothing more, and
-            // RecordingPipeline.stop() would then only build clips onto the
-            // tracks of a project that is no longer open.
+            // Completing the take is not needed for the files: the capture
+            // thread has terminated, so it writes nothing more, and
+            // completeStop() would then only build clips onto the tracks of a
+            // project that is no longer open.
             String message = takeOfAReplacedProjectMessage(project.getName(), pipeline.getTakeDirectory());
             LOG.warning(message);
             notificationBar.show(NotificationLevel.WARNING, message);
             // Nothing on the replacement path rewrites the shared status bar,
             // so its promise that the clips will appear is taken back here.
-            if (statusBarStillSays(TAKE_STILL_WRITING_MESSAGE)) {
+            if (statusBarSaysTheTakeIsBeingFinished()) {
                 statusBarLabel.setText(TAKE_OF_A_REPLACED_PROJECT_STATUS);
             }
             return;
         }
         List<AudioClip> clips;
         try {
-            clips = pipelineStop.stop(pipeline);
-        } catch (TakeFinalizationPendingException stillPending) {
-            // Only if the completion fired while the thread still ran, which
-            // the pipeline's own signal never does: wait for it again.
-            LOG.log(Level.WARNING, "The take under " + stillPending.takeDirectory()
-                    + " is still being written; its clips are published when it is", stillPending);
-            publishWhenWritten(pipeline, stillPending);
-            return;
+            clips = takeCompletion.complete(pipeline);
         } catch (RuntimeException failure) {
             LOG.log(Level.SEVERE, "Could not finish the take under " + pipeline.getTakeDirectory()
                     + " after it was written", failure);
@@ -883,11 +1042,32 @@ final class TransportController implements TransportIntentHandler {
         }
         int clipCount = clips.size();
         Optional<String> failureReport = finalizationFailureReport(pipeline, clipCount);
-        if (clipCount == 0 && failureReport.isEmpty() && statusBarStillSays(TAKE_STILL_WRITING_MESSAGE)) {
+        if (clipCount == 0 && failureReport.isEmpty() && statusBarSaysTheTakeIsBeingFinished()) {
             statusBarLabel.setText(TAKE_WRITTEN_WITHOUT_CLIPS_MESSAGE);
         }
         publishRecordedTake(pipeline, clips);
         failureReport.ifPresentOrElse(this::reportTakeFinalizationFailure, () -> showTakePublished(clipCount));
+    }
+
+    /**
+     * The delayed half of a Stop's status: when {@code pipeline}'s take has
+     * still not been published {@link #TAKE_STILL_WRITING_DELAY} after its
+     * Stop, a WARNING toast says {@link #TAKE_STILL_WRITING_MESSAGE}, and so
+     * does the status bar if it still says {@link #TAKE_FINISHING_MESSAGE}.
+     * Nothing once the take has been published, or once the controller has
+     * been {@linkplain #retire() retired}. Scheduled by {@link #stop()}
+     * through {@link FxDelay}; runs on the FX thread and waits for nothing.
+     */
+    private void warnTakeStillWriting(RecordingPipeline pipeline) {
+        if (retired || writingPipeline != pipeline) {
+            return;
+        }
+        LOG.warning(() -> "The take under " + pipeline.getTakeDirectory() + " is still being written "
+                + TAKE_STILL_WRITING_DELAY.toMillis() + " ms after its Stop; its clips are published when it is");
+        if (statusBarStillSays(TAKE_FINISHING_MESSAGE)) {
+            statusBarLabel.setText(TAKE_STILL_WRITING_MESSAGE);
+        }
+        notificationBar.show(NotificationLevel.WARNING, TAKE_STILL_WRITING_MESSAGE);
     }
 
     /** Whether the status bar still shows {@code text} (its cell separator aside). FX thread. */
@@ -897,13 +1077,23 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
+     * Whether the status bar still says that a stopped take is being
+     * finished — {@link #TAKE_FINISHING_MESSAGE} or
+     * {@link #TAKE_STILL_WRITING_MESSAGE}. FX thread.
+     */
+    private boolean statusBarSaysTheTakeIsBeingFinished() {
+        return statusBarStillSays(TAKE_FINISHING_MESSAGE) || statusBarStillSays(TAKE_STILL_WRITING_MESSAGE);
+    }
+
+    /**
      * The WARNING a {@linkplain #retire() retired} controller logs and shows
      * once a take it stopped has been written: it names the project the take
      * was recorded in and the take's directory, which lies under that
      * project's {@code audio/takes}. It claims no order between the
      * replacement and the end of the writing — the retirement is read when
-     * the deferred half runs, which may be after the take had finished —
-     * only that the replacement came before the take could be added.
+     * the turn that would publish the take runs, which may be after the take
+     * had finished — only that the replacement came before the take could be
+     * added.
      */
     static String takeOfAReplacedProjectMessage(String projectName, Path takeDirectory) {
         return "The take recorded in '" + projectName + "' was not added to any project because that project"
@@ -928,12 +1118,13 @@ final class TransportController implements TransportIntentHandler {
     /**
      * The FX turn of the auto-Stop: runs {@link #stop()} — the user's Stop,
      * whole: callback removed, recording flags cleared, transport stopped and
-     * Stopped announced, MIDI recorders stopped, REC indicator hidden, clips
-     * and the "Record Audio" undo entry published and the project marked
-     * dirty, the early seal reported —
+     * Stopped announced, MIDI recorders stopped, REC indicator hidden, and the
+     * take handed to the turn that publishes it once its capture thread has
+     * terminated — clips and the "Record Audio" undo entry published, the
+     * project marked dirty, the early seal reported —
      * while {@code pipeline} is still this controller's active recording
      * pipeline and the controller is not {@linkplain #retire() retired}.
-     * Otherwise it does nothing: a Stop got there first, and the Stop that
+     * Otherwise it does nothing: a Stop got there first, and the turn that
      * publishes the take reports the seal, or the take belongs to a project
      * that was replaced. FX thread.
      */
@@ -948,10 +1139,10 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * The early seal of {@code pipeline}'s take, if its capture thread sealed
-     * it on its own. Read by the Stop that publishes the take, once the
-     * pipeline's stop has returned the clips: its capture thread has
-     * terminated then, and that thread completes the signal, if at all,
-     * before it terminates. FX thread.
+     * it on its own. Read by the turn that publishes the take
+     * ({@link #finishWrittenTake}), once the take's completion has returned
+     * the clips: its capture thread has terminated then, and that thread
+     * completes the signal, if at all, before it terminates. FX thread.
      */
     private Optional<EarlySeal> earlySealOf(RecordingPipeline pipeline) {
         return Optional.ofNullable(earlySealSignal.of(pipeline).toCompletableFuture().getNow(null));
@@ -959,8 +1150,8 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Story 323 review — how the finalisation of {@code pipeline}'s take
-     * ended, read once by the Stop that publishes the take, once the
-     * pipeline's stop has returned the clips: its capture thread has
+     * ended, read once by the turn that publishes the take, once the take's
+     * completion has returned the clips: its capture thread has
      * terminated then, and before it terminated that thread completed the
      * early-seal signal, if it ever will, and recorded the failure of the
      * seal the Stop requested, if there was one. The report of a take the
@@ -994,7 +1185,7 @@ final class TransportController implements TransportIntentHandler {
     /**
      * Story 323 review — the ERROR toast and status text of a take the
      * capture thread sealed on its own ({@link EarlySeal}), shown once by
-     * the Stop that publishes the take. It names the cause — free disk space
+     * the turn that publishes the take. It names the cause — free disk space
      * below the headroom watch's floor; free space that could not be read; a
      * failed write to disk, for a throwable that is an {@link IOException} or
      * has one in its cause chain, with the reason the innermost one gives
@@ -1037,7 +1228,7 @@ final class TransportController implements TransportIntentHandler {
     /**
      * Story 323 review — the ERROR toast and status text of a take whose
      * Stop requested a seal in which a lane threw ({@link StopSealFailure}),
-     * shown once by the Stop that publishes the take, instead of the SUCCESS.
+     * shown once by the turn that publishes the take, instead of the SUCCESS.
      * It names the cause as a failure of finishing the take, not of capturing
      * it, which had ended: finishing it on disk, for a throwable that is an
      * {@link IOException} or has one in its cause chain, with the reason the
@@ -1164,18 +1355,19 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * Whether a take this controller stopped is still being written to disk:
-     * its Stop gave up waiting ({@link TakeFinalizationPendingException}) and
-     * the deferred half ({@link #finishWrittenTake}) has not run yet — the
-     * FINALIZING state of Recording Reliability book §5.2, which returns to
-     * IDLE only once the seal has completed. {@code MainController} feeds the
-     * current controller's answer to {@code ProjectLifecycleController}, which
-     * refuses the in-app doors that replace the open project while it is
-     * {@code true}; quitting the application does not ask (story 333). FX
-     * thread.
+     * Whether a take this controller stopped is still being written to disk —
+     * its Stop has run and the turn that publishes it
+     * ({@link #finishWrittenTake}) has not run yet — or a start that was
+     * cancelled or failed is still having its files removed
+     * ({@link #abandonedStart}): the FINALIZING state of Recording Reliability
+     * book §5.2, which returns to IDLE only once the seal has completed.
+     * {@code MainController} feeds the current controller's answer to
+     * {@code ProjectLifecycleController}, which refuses the in-app doors that
+     * replace the open project while it is {@code true}; quitting the
+     * application does not ask (story 333). FX thread.
      */
     boolean isTakeBeingWritten() {
-        return writingPipeline != null;
+        return writingPipeline != null || abandonedStart != null;
     }
 
     /**
@@ -1188,55 +1380,117 @@ final class TransportController implements TransportIntentHandler {
      * cannot be removed from it, so retiring neutralises them. The auto-Stop
      * of a take the capture thread seals early ({@link #stopWhenSealedEarly})
      * is retired: its posted FX turn does nothing — the take's pipeline is
-     * left as it is, and nothing is published or shown. So is the deferred
-     * half of a Stop whose take was still being written:
+     * left as it is, and nothing is published or shown. So is the turn that
+     * publishes a take this controller stopped:
      * when that take's capture thread has terminated,
-     * {@link #finishWrittenTake} neither stops the pipeline
-     * again nor publishes anything — no clip on the replaced project's tracks,
+     * {@link #finishWrittenTake} neither completes the take nor publishes
+     * anything — no clip on the replaced project's tracks,
      * no undo entry, no dirty mark, no SUCCESS toast, no report of an early
      * seal or of a failed seal — and instead logs and shows the
      * WARNING of {@link #takeOfAReplacedProjectMessage}, and replaces a status
-     * bar that still says {@link #TAKE_STILL_WRITING_MESSAGE} with
-     * {@link #TAKE_OF_A_REPLACED_PROJECT_STATUS}. Since
+     * bar that still says {@link #TAKE_FINISHING_MESSAGE} or
+     * {@link #TAKE_STILL_WRITING_MESSAGE} with
+     * {@link #TAKE_OF_A_REPLACED_PROJECT_STATUS}; the delayed still-writing
+     * warning does nothing. Since
      * {@code ProjectLifecycleController} refuses the in-app doors that replace
      * the open project while {@link #isRecordingInFlight()} or
      * {@link #isTakeBeingWritten()}, this is the fallback for a take being
-     * written when a replacement bypasses that guard. For a recording still
-     * in flight it is no fallback: retiring stops nothing — an audio take's
+     * written when a replacement bypasses that guard. A take still being
+     * prepared is cancelled ({@link #cancelPendingStart}): capture never
+     * begins, and the removal of its files is arranged off the FX thread;
+     * nothing is shown. For a recording that has begun
+     * it is no fallback: retiring stops nothing — an audio take's
      * pipeline stays active with its recording callback installed on the
      * engine, a MIDI recorder stays started on its input, and nothing
-     * publishes their clips or notes — and its only effect is that an audio
-     * take's auto-Stop does nothing. Quitting the
+     * publishes their clips or notes — and its only effects are that an audio
+     * take's auto-Stop does nothing and that the end of a post-roll it was
+     * recorded in never comes (below). A post-roll still running is retired
+     * too: its timer is stopped and dropped, and the end of a post-roll does
+     * nothing once this controller is retired ({@link #finishPostRoll}). The
+     * replaced project's transport is left as it is — PLAYING, in its
+     * post-roll — as the transport of a project replaced while it is simply
+     * PLAYING is left PLAYING: neither this controller nor
+     * {@code MainController} stops it. So the engine's output stream, which
+     * the next project's controller shares, and the status bar and REC
+     * indicator, which it shares too, are not touched; a take that
+     * controller is preparing keeps its stream. Quitting the
      * application retires nothing: it replaces no controller. Nothing else is
-     * retired: a post-roll still running, or a record-start input check still
-     * waiting for its device list, finishes as it would have. Cannot be
-     * undone. FX thread.
+     * retired: a record-start input check still waiting for its device list
+     * finishes as it would have. Cannot be undone. FX thread.
      */
     void retire() {
         retired = true;
+        if (pendingStart != null) {
+            cancelPendingStart();
+        }
+        if (postRollTimer != null) {
+            postRollTimer.stop();
+            postRollTimer = null;
+        }
     }
 
     /**
-     * How {@link #stop()} and {@link #finishWrittenTake} stop a pipeline.
-     * Production: {@code RecordingPipeline::stop}. A test seam — the core's
-     * own seams (the join bound, a held flush thread) are not reachable from
-     * this module.
+     * How {@link #finishWrittenTake} completes a stopped take once its
+     * capture thread has terminated. Production:
+     * {@code RecordingPipeline::completeStop}. A test seam for the
+     * completions this module cannot cause through the real pipeline — one
+     * that throws, or one that hands back no clip.
      */
     @FunctionalInterface
-    interface PipelineStop {
-        List<AudioClip> stop(RecordingPipeline pipeline);
+    interface TakeCompletion {
+        List<AudioClip> complete(RecordingPipeline pipeline);
     }
 
     /**
-     * Test seam: replaces how pipelines are stopped (see {@link PipelineStop}).
-     * FX thread.
+     * Test seam: replaces how a stopped take is completed (see
+     * {@link TakeCompletion}). FX thread, before the take is stopped.
      */
-    void setPipelineStopForTest(PipelineStop stop) {
-        pipelineStop = Objects.requireNonNull(stop, "stop must not be null");
+    void setTakeCompletionForTest(TakeCompletion completion) {
+        takeCompletion = Objects.requireNonNull(completion, "completion must not be null");
     }
 
     /**
-     * How {@link #stopWhenSealedEarly} and the Stop that publishes a take
+     * How {@link #stop()} schedules the still-writing warning
+     * ({@link #warnTakeStillWriting}) {@link #TAKE_STILL_WRITING_DELAY} after
+     * a Stop. Production: {@link #afterOnFx}, a {@link PauseTransition}
+     * played on the FX thread, which runs {@code action} on a later FX pulse
+     * and never blocks the FX thread. A test seam, so that a test runs the
+     * action when it chooses instead of when a clock says.
+     */
+    @FunctionalInterface
+    interface FxDelay {
+        void after(java.time.Duration delay, Runnable action);
+    }
+
+    /**
+     * Test seam: replaces how the still-writing warning is scheduled (see
+     * {@link FxDelay}). FX thread, before the take is stopped.
+     */
+    void setStillWritingDelayForTest(FxDelay delay) {
+        stillWritingDelay = Objects.requireNonNull(delay, "delay must not be null");
+    }
+
+    /**
+     * Test seam: replaces where the controller's own storage work for a take
+     * runs (see {@link #storageExecutor}), so that a test can hold the
+     * allocation of a take directory. FX thread, before the take starts.
+     */
+    void setStorageExecutorForTest(Executor executor) {
+        storageExecutor = Objects.requireNonNull(executor, "executor must not be null");
+    }
+
+    /**
+     * Test seam: {@code setup} runs on each take's pipeline once it is built
+     * and before its {@code prepare()} — so that a test can configure the
+     * real pipeline through its public setters (its clock, say). FX thread,
+     * before the take starts.
+     */
+    void setPipelineSetupForTest(Consumer<RecordingPipeline> setup) {
+        pipelineSetup = Objects.requireNonNull(setup, "setup must not be null");
+    }
+
+    /**
+     * How {@link #stopWhenSealedEarly} and the turn that publishes a take
      * read the take's early-seal signal. Production:
      * {@code RecordingPipeline::earlySeal}. A test seam — the core's ways of
      * sealing a take early (an injected disk-headroom watch, a writer set to
@@ -1256,10 +1510,10 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * How the Stop that publishes a take reads the outcome of the seal that
-     * Stop requested ({@link #finalizationFailureReport}). Production:
-     * {@code RecordingPipeline::stopSealFailure}, read once the pipeline's
-     * stop has returned the clips. A test seam for the failures this module
+     * How the turn that publishes a take reads the outcome of the seal the
+     * take's Stop requested ({@link #finalizationFailureReport}). Production:
+     * {@code RecordingPipeline::stopSealFailure}, read once the take's
+     * completion has returned the clips. A test seam for the failures this module
      * cannot cause on disk — an {@link Error}, a failure after every
      * segment was sealed, a reason of the test's choosing; a real one, a
      * file already at a segment's sealed path, fails the seal through the
@@ -1297,9 +1551,47 @@ final class TransportController implements TransportIntentHandler {
      * position at which the tail actually stopped, captured before
      * {@link Transport#finishPostRoll()} rewinds to the play-start anchor
      * (story 315); nothing is announced if the transport was already stopped.
+     *
+     * <p>Being the deferred half of a Stop, it first cancels an audio take
+     * that Record started inside the tail and that is still being prepared,
+     * exactly as a Stop cancels it ({@link #cancelPendingStartByUser}).
+     * Otherwise that take's readiness turn would still call
+     * {@code RecordingPipeline.beginCapture()} after this has stopped the
+     * transport and, without an instrument insert, closed the output stream:
+     * the transport would go RECORDING, and the take be announced, over a
+     * stream that delivers no block. As at the end of a Stop, a status bar
+     * that says what became of a recording
+     * ({@link #statusShowsARecordingOutcome}) is left as it is instead of
+     * saying "Stopped".</p>
+     *
+     * <p>The cancel and the stop happen only while this controller's tail is
+     * still running: the controller is not {@linkplain #retire() retired},
+     * and its transport is still in the post-roll a Stop entered
+     * ({@link Transport#isInPostRoll()}). The transport leaves that post-roll
+     * when the tail ends some other way — for example, Shift+Space
+     * ({@link #playWithPreRoll}) or Pause then Play replays, and a Stop over
+     * the paused tail, a Stop once the post-roll has been turned off, or the
+     * Stop of an audio or mixed take recorded inside the tail stops the
+     * transport — but not on a Pause or a Record inside the tail. While a
+     * post-roll is still configured, a Stop over the playing tail, or the
+     * Stop of a MIDI-only take recorded inside it, does not take the
+     * transport out of post-roll either: that Stop enters a new post-roll,
+     * stopping this timer and starting the new tail's own. A timer
+     * whose tail already ended, or whose controller was retired, does
+     * nothing when it fires: no take is cancelled, no transport stopped,
+     * nothing announced, and the output stream, the status bar and the REC
+     * indicator are left alone. Whatever it does, the timer is
+     * dropped.</p>
      */
     private void finishPostRoll() {
+        postRollTimer = null;
         Transport transport = project.getTransport();
+        if (retired || !transport.isInPostRoll()) {
+            return;
+        }
+        if (pendingStart != null) {
+            cancelPendingStartByUser();
+        }
         long stoppedAtFrames = core.beatsToFrames(transport.getPositionInBeats());
         boolean wasRolling = transport.getState() != TransportState.STOPPED;
         transport.finishPostRoll();
@@ -1308,7 +1600,9 @@ final class TransportController implements TransportIntentHandler {
         }
         stopAudioOutputWhenIdle();
         updateStatus();
-        statusBarLabel.setText("Stopped");
+        if (!statusShowsARecordingOutcome()) {
+            statusBarLabel.setText("Stopped");
+        }
         statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
@@ -1322,10 +1616,19 @@ final class TransportController implements TransportIntentHandler {
      * the recording finalize + Stopped announce); otherwise starts the
      * recording flow below.
      *
+     * <p>While an audio take is being prepared (PREPARING), Record pressed
+     * again cancels it (Recording Reliability book §5.2, toggle semantics:
+     * "second press stops cleanly"), as Stop does — see
+     * {@link #cancelPendingStartByUser}. Over a transport that is not rolling
+     * (STOPPED or PAUSED) it then closes the output stream Record opened, as
+     * a Stop does ({@link #stopAudioOutputWhenIdle}); over a rolling one
+     * (PLAYING) it leaves playback, and the stream, running.</p>
+     *
      * <p>ANNOUNCE (story 315): {@link TransportEvent.Started} is published at
      * the end of the start flow, and only once the transport is actually in
      * RECORDING — the audio path mutates the state inside
-     * {@code RecordingPipeline.start()}, the MIDI-only path via
+     * {@code RecordingPipeline.beginCapture()}, on the readiness turn
+     * ({@link #onTakeReady}), the MIDI-only path via
      * {@link Transport#record()}; announcing on the actual transition keeps the
      * bus truthful for both, and declines only when an internal caller stopped
      * the transport underneath a running pipeline (count-in does not defer
@@ -1333,6 +1636,11 @@ final class TransportController implements TransportIntentHandler {
      */
     @Override
     public void toggleRecord() {
+        if (pendingStart != null) {
+            cancelPendingStartByUser();
+            stopAudioOutputUnlessRolling();
+            return;
+        }
         if (project.getTransport().getState() == TransportState.RECORDING) {
             stop();
             return;
@@ -1340,13 +1648,29 @@ final class TransportController implements TransportIntentHandler {
         onRecord();
     }
 
+    /**
+     * The Record gesture (book §5.2 "Record pressed"). It validates and
+     * refuses exactly as before; a MIDI-only take starts at once. An audio
+     * take opens the device, then enters PREPARING and returns: the take
+     * directory is allocated on the storage executor
+     * ({@link #onTakeDirectoryAllocated}), the take's capture thread creates
+     * its files ({@code RecordingPipeline.prepare()}), and capture begins on
+     * the readiness turn ({@link #onTakeReady}). This handler does no storage
+     * I/O and never waits for the take's capture thread (PR #978 review
+     * 5391920205, F2; {@code javafx-application-design} §11); its one
+     * synchronous device call, the open below, predates that review. FX
+     * thread.
+     */
     private void onRecord() {
         // Story 323 review (book §5.2): Record is valid only from IDLE, and a
         // take still being written to disk is FINALIZING until its capture
-        // thread has terminated and its clips are published. Refused before
-        // anything is touched: no pipeline, no device, no MIDI recorder, and
-        // the transport stays where it is.
-        if (writingPipeline != null) {
+        // thread has terminated and its clips are published — as is a start
+        // that was cancelled, or failed once its take directory existed,
+        // until the FX turn after the removal of its files has run, whether
+        // or not everything could be removed. Refused before anything is
+        // touched: no pipeline, no device, no MIDI recorder, and the
+        // transport stays where it is.
+        if (isTakeBeingWritten()) {
             LOG.warning("Recording refused — the last take is still being written to disk");
             statusBarLabel.setText(RECORD_WHILE_WRITING_MESSAGE);
             statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
@@ -1412,114 +1736,90 @@ final class TransportController implements TransportIntentHandler {
             return;
         }
 
-        // The take directory of this audio take (empty for a MIDI-only take);
-        // named in the status line below.
-        Path takeDirectory = null;
-
-        // Start audio recording pipeline for non-MIDI armed tracks
-        if (!armedAudioTracks.isEmpty()) {
-            // Allocate this take's directory under the project's audio/takes
-            // folder (story 323, D6). On the FX thread this ensures audio/takes
-            // exists, lists it, and makes one Files.createDirectory per
-            // attempt, followed below by the pipeline's per-track segment
-            // opens and its manifest write (the manifest write includes one
-            // force(true) of its staging file) — small, bounded, synchronous
-            // I/O in the record handler
-            // (a javafx-application-design §11 deviation, the same class as the
-            // temp-dir call it replaces). The OS temp directory is never used
-            // (Recording Reliability book §9.4).
-            Path outputDir;
-            try {
-                outputDir = TakeDirectories.allocate(
-                        ProjectManager.audioDirectory(projectDirectory.get()), Instant.now());
-            } catch (IOException e) {
-                LOG.log(Level.SEVERE,
-                        "Failed to create a take directory under the project's audio/takes folder", e);
-                String message = "Recording failed — could not create a take folder under the project's "
-                        + ProjectManager.AUDIO_DIR_NAME + "/" + TakeDirectories.TAKES_DIR_NAME;
-                statusBarLabel.setText(message);
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
-                notificationBar.show(NotificationLevel.ERROR, message);
-                return;
-            }
-            takeDirectory = outputDir;
-
-            recordingPipeline = new RecordingPipeline(
-                    audioEngine, project.getTransport(), project.getFormat(), outputDir,
-                    armedAudioTracks, countIn, InputMonitoringMode.OFF, null);
-            recordingPipeline.setReportedLatency(reportedLatency.get());
-            recordingPipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());
-
-            // Open audio I/O through the engine's provisioned device (story
-            // 316): the settings-configured device identity is honoured on
-            // every open — a per-track input device index no longer reaches
-            // the open path. Per-track input CHANNEL routing stays on
-            // Track.getInputRouting(); multi-device capture is story 326.
-            //
-            // The open runs BEFORE RecordingPipeline.start() (story 316
-            // review). Story 316 made startAudioInputOutput() genuinely
-            // ENFORCE capture — it walks the ladder with
-            // CaptureRequirement.REQUIRED, refuses any rung that opens with
-            // zero input channels, and throws when every rung fails or no
-            // streaming provision is configured at all — so the throw below
-            // is now the honest "nothing can be captured" signal it never
-            // used to be, and starting the pipeline first meant acting on it
-            // too late to matter.
-            //
-            // Reordering costs nothing recordable. RecordingPipeline.start()
-            // is what installs the engine's recording callback
-            // (audioEngine.setRecordingCallback), starts the engine and calls
-            // transport.record(), and it computes the take's anchor
-            // (recordingStartBeat — from the punch region when one is
-            // enabled, otherwise the transport's position) inside itself. The
-            // take therefore begins wherever the PIPELINE starts and the
-            // anchor is read at that same moment, so opening first cannot
-            // desynchronize the two. Blocks the device delivers between the
-            // open and the pipeline start reach a recording callback that is
-            // still null: they were never part of any take.
-            //
-            // RecordingPipeline.start() is all-or-nothing (story 323, D11): on
-            // any failure it rolls itself back — flush thread stopped, every
-            // segment and the manifest it created deleted, recording flags
-            // cleared — and rethrows, so the same abort path applies and the
-            // take directory is empty again for deleteEmptyTakeDirectory.
-            // The exception: a flush thread that does not stop within the
-            // bounded join is only asked to stop, nothing is deleted (it may
-            // still be writing those files), and the rollback's failure is
-            // attached to the rethrown one as suppressed; the files are left
-            // for recovery, and deleteEmptyTakeDirectory then leaves the
-            // directory in place.
-            try {
-                if (armedAudioTracks.stream().allMatch(track ->
-                        track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track))) {
-                    audioEngine.startAudioOutput();
-                } else {
-                    audioEngine.startAudioInputOutput();
-                }
-                recordingPipeline.start();
-            } catch (RuntimeException e) {
-                abortRecordingTake(outputDir, e);
-                return;
-            }
-            // Story 323 review: a take the capture thread seals on its own
-            // (disk exhaustion, a write failure) is stopped like the user's
-            // Stop, on a later FX turn.
-            stopWhenSealedEarly(recordingPipeline);
-        }
-
-        // Start MIDI recording for armed MIDI tracks
-        if (!armedMidiTracks.isEmpty()) {
-            startMidiRecording(armedMidiTracks, countIn);
-        }
-
-        // If no audio pipeline was started, the output stream was already
-        // proved RUNNING above; now the transport may enter recording.
         if (armedAudioTracks.isEmpty()) {
+            // MIDI-only: the output stream was proved RUNNING above, and the
+            // take writes no audio files, so it starts at once and the
+            // transport may enter recording.
+            startMidiRecording(armedMidiTracks, countIn);
             project.getTransport().record();
+            announceRecordingStarted(armedTracks.size(), null);
+            return;
         }
 
+        // Open audio I/O through the engine's provisioned device (story 316):
+        // the settings-configured device identity is honoured on every open —
+        // a per-track input device index no longer reaches the open path.
+        // Per-track input CHANNEL routing stays on Track.getInputRouting();
+        // multi-device capture is story 326. Story 316 made
+        // startAudioInputOutput() ENFORCE capture — it walks the ladder with
+        // CaptureRequirement.REQUIRED, refuses any rung that opens with zero
+        // input channels, and throws when every rung fails or no streaming
+        // provision is configured — so a throw here is the honest "nothing
+        // can be captured" signal. It comes before anything of the take is
+        // allocated, so a refusal leaves no take directory, pipeline or file
+        // behind.
+        //
+        // The open stays on the FX thread: the engine opens the driver and
+        // starts its stream before it returns, which takes as long as the
+        // driver takes. That synchronous device call predates PR #978 review
+        // 5391920205 and lies outside it — the review's findings are the
+        // take's storage I/O and the Stop's join, and neither is left in this
+        // handler — so it is not moved here.
+        //
+        // Blocks the device delivers before capture begins reach a recording
+        // callback that is still null: they were never part of any take.
+        try {
+            if (armedAudioTracks.stream().allMatch(track ->
+                    track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track))) {
+                audioEngine.startAudioOutput();
+            } else {
+                audioEngine.startAudioInputOutput();
+            }
+        } catch (RuntimeException e) {
+            abortRecordingTake(e);
+            return;
+        }
+
+        // PREPARING (PR #978 review 5391920205, F2). The take directory is
+        // allocated under the project's audio/takes folder (story 323, D6;
+        // the OS temp directory is never used, Recording Reliability book
+        // §9.4) on the storage executor, never on the FX thread; the take's
+        // files are then created by its capture thread (prepare()), and
+        // capture begins only once they exist (onTakeReady): by default the
+        // capture ring holds the blocks covering
+        // CaptureRing.DEFAULT_HANDOFF_TOLERANCE (250 ms), rounded up to a
+        // power-of-two slot count (about 341 ms at 48 kHz with 256-frame
+        // blocks), which a slow disk would overflow if capture began first.
+        PendingStart start = new PendingStart(armedTracks.size(), List.copyOf(armedAudioTracks),
+                List.copyOf(armedMidiTracks), countIn);
+        pendingStart = start;
+        statusBarLabel.setText(TAKE_PREPARING_MESSAGE);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+        recIndicator.setVisible(false);
+        recIndicator.setManaged(false);
+        updateStatus();
+        Path audioDirectory = ProjectManager.audioDirectory(projectDirectory.get());
+        Instant requested = Instant.now();
+        CompletableFuture.supplyAsync(() -> allocateTakeDirectory(audioDirectory, requested), storageExecutor)
+                .whenComplete((takeDirectory, failure) ->
+                        postFx(() -> onTakeDirectoryAllocated(start, takeDirectory, failure)));
+    }
+
+    /**
+     * The ANNOUNCE and UI tail of a take whose recording has begun — the
+     * transport is RECORDING: {@link TransportEvent.Started}, the status
+     * line, the INFO toast, the REC indicator and, for an audio take, the
+     * session-input check. Run by {@link #onRecord()} for a MIDI-only take
+     * and by the readiness turn ({@link #onTakeReady}) for an audio take. FX
+     * thread.
+     *
+     * @param trackCount    every armed track of the take, audio and MIDI
+     * @param takeDirectory the audio take's directory under
+     *                      {@code audio/takes}; {@code null} for a MIDI-only take
+     */
+    private void announceRecordingStarted(int trackCount, Path takeDirectory) {
         // ANNOUNCE (story 315) — only once the transport actually transitioned.
-        // Both paths above call Transport.record(), so the guard declines only
+        // Both paths call Transport.record(), so the guard declines only
         // when an internal caller stopped the transport underneath a running
         // pipeline; announcing then would put a fiction on the bus (count-in
         // does not defer Transport.record() today; story 328 owns count-in).
@@ -1528,7 +1828,6 @@ final class TransportController implements TransportIntentHandler {
                     core.beatsToFrames(project.getTransport().getPositionInBeats()), Instant.now()));
         }
         updateStatus();
-        int trackCount = armedTracks.size();
         // Status line truth (story 323, D12): an audio take names the take
         // directory its segments are streaming into; a MIDI-only take writes
         // no audio files, so it names none. Neither claims an "auto-save".
@@ -1548,8 +1847,303 @@ final class TransportController implements TransportIntentHandler {
         // input is never silently ignored — one WARNING names the tracks and
         // both devices. Its enumeration runs off the FX thread, so the toast
         // lands on a later FX turn than the INFO above and stays visible over it.
-        if (!armedAudioTracks.isEmpty()) {
+        if (takeDirectory != null) {
             warnOnSessionInputMismatchOffFx();
+        }
+    }
+
+    /**
+     * The FX turn that follows the allocation of {@code start}'s take
+     * directory on the storage executor. A start cancelled meanwhile is
+     * already {@link #abandonedStart}: the directory just allocated, if any,
+     * is removed off the FX thread. A failed allocation ends the start with
+     * the ERROR "Recording failed — could not create a take folder under the
+     * project's audio/takes". Otherwise the take's pipeline is built and
+     * prepared ({@code RecordingPipeline.prepare()}, which touches no storage
+     * and waits for nothing: the take's capture thread creates the files),
+     * and the readiness turn ({@link #onTakeReady}) is posted once that
+     * thread reports. A failure before the pipeline is prepared ends the
+     * start with the ERROR of {@link #abortRecordingTake}, and the take
+     * directory is removed off the FX thread; a failure of {@code prepare()}
+     * itself abandons the start ({@link #abandonStart}).
+     *
+     * <p>Of the failures that end the start here, two — the allocation and
+     * the building of the pipeline — also hand the output stream Record
+     * opened to {@link #stopAudioOutputWhenIdle()}, unless the transport is
+     * rolling ({@link #stopAudioOutputUnlessRolling}); that call keeps the
+     * stream open while an instrument insert exists
+     * ({@link #hasGraphInstruments()}). Record opens the device before it
+     * allocates, and until PR #978 review 5391920205 both came before the
+     * device open. The third, a failed {@code prepare()}, goes to
+     * {@link #abandonStart} and, like a failed readiness or
+     * {@code beginCapture()}, leaves the stream open
+     * ({@link #abortRecordingTake}). FX thread.</p>
+     */
+    private void onTakeDirectoryAllocated(PendingStart start, Path takeDirectory, Throwable failure) {
+        start.takeDirectory = takeDirectory;
+        if (start.cancelled) {
+            removeFilesOfAbandonedStart(start, CompletableFuture.completedStage(null));
+            return;
+        }
+        if (failure != null) {
+            pendingStart = null;
+            Throwable cause = causeOf(failure);
+            LOG.log(Level.SEVERE, "Failed to create a take directory under the project's audio/takes folder",
+                    cause instanceof UncheckedIOException unchecked ? unchecked.getCause() : cause);
+            String message = "Recording failed — could not create a take folder under the project's "
+                    + ProjectManager.AUDIO_DIR_NAME + "/" + TakeDirectories.TAKES_DIR_NAME;
+            statusBarLabel.setText(message);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+            notificationBar.show(NotificationLevel.ERROR, message);
+            recIndicator.setVisible(false);
+            recIndicator.setManaged(false);
+            stopAudioOutputUnlessRolling();
+            updateStatus();
+            return;
+        }
+        RecordingPipeline pipeline;
+        try {
+            pipeline = new RecordingPipeline(
+                    audioEngine, project.getTransport(), project.getFormat(), takeDirectory,
+                    start.armedAudioTracks, start.countIn, InputMonitoringMode.OFF, null);
+            pipeline.setReportedLatency(reportedLatency.get());
+            pipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());
+            pipelineSetup.accept(pipeline);
+        } catch (RuntimeException e) {
+            // No capture thread exists yet: only the take directory is left
+            // to remove, off the FX thread.
+            pendingStart = null;
+            removeFilesOfAbandonedStart(start, CompletableFuture.completedStage(null));
+            stopAudioOutputUnlessRolling();
+            abortRecordingTake(e);
+            return;
+        }
+        start.pipeline = pipeline;
+        CompletionStage<Void> readiness;
+        try {
+            readiness = pipeline.prepare();
+        } catch (RuntimeException e) {
+            // prepare() rolled itself back without waiting and rethrew.
+            abandonStart(start, e);
+            return;
+        }
+        readiness.whenComplete((_, readinessFailure) -> postFx(() -> onTakeReady(start, readinessFailure)));
+    }
+
+    /**
+     * The readiness turn: the FX turn that follows the take's capture thread
+     * reporting that the take's files exist, or that they could not be
+     * created. It acts only while {@code start} is still the pending start —
+     * a cancel or a {@link #retire()} that got there first has already
+     * handed the take back to its capture thread, and the controller's own
+     * state, written on this thread, decides: a readiness that completed
+     * normally is never proof that capture should begin. A failed readiness
+     * abandons the start ({@link #abandonStart}). Otherwise capture begins
+     * ({@code RecordingPipeline.beginCapture()}: callback installed, engine
+     * started, transport recording — all or nothing, and a failure abandons
+     * the start too), and then what Record did once RECORDING was real: the
+     * auto-Stop of a take sealed early is registered, the armed MIDI tracks
+     * of a mixed take start recording, and the take is announced
+     * ({@link #announceRecordingStarted}). FX thread.
+     */
+    private void onTakeReady(PendingStart start, Throwable failure) {
+        if (start.cancelled) {
+            return;
+        }
+        RecordingPipeline pipeline = start.pipeline;
+        if (failure != null) {
+            abandonStart(start, causeOf(failure));
+            return;
+        }
+        try {
+            pipeline.beginCapture();
+        } catch (RuntimeException e) {
+            abandonStart(start, e);
+            return;
+        }
+        pendingStart = null;
+        recordingPipeline = pipeline;
+        // Story 323 review: a take the capture thread seals on its own
+        // (disk exhaustion, a write failure) is stopped like the user's
+        // Stop, on a later FX turn.
+        stopWhenSealedEarly(pipeline);
+        if (!start.armedMidiTracks.isEmpty()) {
+            startMidiRecording(start.armedMidiTracks, start.countIn);
+        }
+        announceRecordingStarted(start.trackCount, start.takeDirectory);
+    }
+
+    /**
+     * Stop, Record pressed again, or the end of a post-roll — the deferred
+     * half of a Stop — while the take is being prepared: cancels it
+     * ({@link #cancelPendingStart}) and says so in the status bar. No take
+     * was recorded and nothing is announced: capture never began, so the
+     * transport was never put in recording. The device is left to the
+     * caller, which hands the output stream Record opened to
+     * {@link #stopAudioOutputWhenIdle()}: {@link #toggleRecord()} only when
+     * the transport is not rolling, and {@link #stop()} and
+     * {@link #finishPostRoll()} once the transport is stopped, as every Stop
+     * does. FX thread.
+     */
+    private void cancelPendingStartByUser() {
+        cancelPendingStart();
+        LOG.info("Recording cancelled while its take was being prepared");
+        statusBarLabel.setText(RECORDING_CANCELLED_MESSAGE);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+        recIndicator.setVisible(false);
+        recIndicator.setManaged(false);
+        updateStatus();
+    }
+
+    /**
+     * Cancels the take being prepared, without waiting for anything: it is
+     * marked cancelled — so its allocation turn and its readiness turn do
+     * nothing more for it — and becomes the {@link #abandonedStart}. If its
+     * pipeline exists, it is handed back to the take's capture thread
+     * ({@link #discardTake}: {@code RecordingPipeline.cancelStart()}), which
+     * deletes the segment and manifest files it created for the take —
+     * unless that thread had already ended on its own (a throwable that
+     * escaped its drain loop sealed the take early), when it deletes
+     * nothing — and the take directory, if that left it empty, is removed
+     * off the FX thread once that thread has terminated; if its take
+     * directory is still being allocated, the allocation turn removes it. FX
+     * thread.
+     */
+    private void cancelPendingStart() {
+        PendingStart start = pendingStart;
+        pendingStart = null;
+        start.cancelled = true;
+        abandonedStart = start;
+        if (start.pipeline != null) {
+            removeFilesOfAbandonedStart(start, discardTake(start.pipeline));
+        }
+    }
+
+    /**
+     * Ends a start that failed after its take directory was allocated — its
+     * pipeline's {@code prepare()} threw, its readiness failed, or its
+     * {@code beginCapture()} threw — with the take's files handed back to
+     * its capture thread ({@link #discardTake}), and the take directory, if
+     * that thread left it empty, removed off the FX thread once that thread
+     * has terminated. Then the
+     * user is told, as for a device that could not be opened
+     * ({@link #abortRecordingTake}). FX thread.
+     */
+    private void abandonStart(PendingStart start, Throwable failure) {
+        pendingStart = null;
+        removeFilesOfAbandonedStart(start, discardTake(start.pipeline));
+        abortRecordingTake(failure);
+    }
+
+    /**
+     * Hands a take that will not be recorded back to its capture thread,
+     * without waiting, and returns that thread's termination: a pipeline
+     * still preparing is cancelled ({@code RecordingPipeline.cancelStart()}:
+     * the thread deletes the segment and manifest files it created for the
+     * take, unless it had already ended on its own); one whose own rollback
+     * already ran — a failed {@code prepare()} or {@code beginCapture()},
+     * which asked the thread the same — is followed through its
+     * {@code termination()}. FX thread.
+     */
+    private static CompletionStage<Void> discardTake(RecordingPipeline pipeline) {
+        return pipeline.isPreparing() ? pipeline.cancelStart() : pipeline.termination();
+    }
+
+    /**
+     * Makes {@code start} the {@link #abandonedStart} until the removal of
+     * its take directory has run: once {@code termination} — its capture
+     * thread's — has completed, the take directory it allocated is removed,
+     * if it is empty, on the storage executor
+     * ({@link #deleteEmptyTakeDirectory}), never on the FX thread, and then
+     * {@link #abandonedStartCleanedUp} is posted to the FX thread. The
+     * dependents registered here only hand off: the removal runs on the
+     * storage executor even when {@code termination} has completed already,
+     * and the last one only posts. FX thread.
+     */
+    private void removeFilesOfAbandonedStart(PendingStart start, CompletionStage<Void> termination) {
+        abandonedStart = start;
+        Path takeDirectory = start.takeDirectory;
+        termination.thenRunAsync(() -> deleteEmptyTakeDirectory(takeDirectory), storageExecutor)
+                .whenComplete((_, _) -> postFx(() -> abandonedStartCleanedUp(start)));
+    }
+
+    /**
+     * The FX turn after the removal of an abandoned start's take directory
+     * has run: Record and the project-replacing doors are available again.
+     * FX thread.
+     */
+    private void abandonedStartCleanedUp(PendingStart start) {
+        if (abandonedStart == start) {
+            abandonedStart = null;
+        }
+    }
+
+    /**
+     * Allocates a take's directory under {@code <project>/audio/takes}
+     * (story 323, D6): ensures {@code audio/takes} exists, lists it, and makes
+     * one {@code Files.createDirectory} per attempt. Storage I/O: run on the
+     * storage executor, never on the FX thread.
+     *
+     * @throws UncheckedIOException if the directory cannot be created
+     */
+    private static Path allocateTakeDirectory(Path audioDirectory, Instant requested) {
+        try {
+            return TakeDirectories.allocate(audioDirectory, requested);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** The cause a {@link CompletionStage} dependent was handed, unwrapped from its {@link CompletionException}. */
+    private static Throwable causeOf(Throwable failure) {
+        return failure instanceof CompletionException completion && completion.getCause() != null
+                ? completion.getCause()
+                : failure;
+    }
+
+    /** The production {@link #storageExecutor}: each task on a new virtual thread. */
+    private static void onAVirtualThread(Runnable task) {
+        Thread.ofVirtual().name("daw-take-storage").start(task);
+    }
+
+    /**
+     * The production {@link FxDelay}: a {@link PauseTransition} of
+     * {@code delay}, played on the FX thread, whose end runs {@code action}
+     * on a later FX pulse. FX thread.
+     */
+    private static void afterOnFx(java.time.Duration delay, Runnable action) {
+        PauseTransition pause = new PauseTransition(Duration.millis(delay.toMillis()));
+        pause.setOnFinished(_ -> action.run());
+        pause.play();
+    }
+
+    /**
+     * One Record gesture's audio take from Record until capture begins or
+     * the start ends (PREPARING), and afterwards — when it was cancelled, or
+     * failed once its take directory existed — until the FX turn after the
+     * removal of its files has run, whatever that removal could not delete
+     * ({@link #abandonedStartCleanedUp}). Written on the FX thread only.
+     */
+    private static final class PendingStart {
+        /** Every armed track of the take, audio and MIDI. */
+        final int trackCount;
+        final List<Track> armedAudioTracks;
+        /** The armed MIDI tracks of a mixed take, which start recording once capture begins. */
+        final List<Track> armedMidiTracks;
+        final CountInMode countIn;
+        /** The take's directory, once its allocation has returned; {@code null} before, and if it failed. */
+        Path takeDirectory;
+        /** The take's pipeline, once built; {@code null} while the take directory is being allocated. */
+        RecordingPipeline pipeline;
+        /** Set by a cancel or a retirement; the start's later turns then do nothing more for it. */
+        boolean cancelled;
+
+        PendingStart(int trackCount, List<Track> armedAudioTracks, List<Track> armedMidiTracks,
+                     CountInMode countIn) {
+            this.trackCount = trackCount;
+            this.armedAudioTracks = armedAudioTracks;
+            this.armedMidiTracks = armedMidiTracks;
+            this.countIn = countIn;
         }
     }
 
@@ -1636,25 +2230,38 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Abandons a record gesture whose capture device could not be opened
-     * (story 316 review) or whose pipeline could not start (story 323), and
-     * tells the user the take did not start. It leaves no take behind: the
-     * take directory {@link #onRecord()} allocated is deleted if it is empty,
-     * which it is unless a pipeline's rollback could not stop its flush
-     * thread in time (see {@code outputDirectory} below). It does not close
-     * the device: when the open succeeded and {@code RecordingPipeline.start()}
-     * then threw, the stream that open started stays open. This controller
+     * (story 316 review) or whose take could not start (story 323), and
+     * tells the user the take did not start. It leaves no take behind,
+     * unless the take's capture thread had already sealed it early: a
+     * refused device open comes before anything of the take is allocated,
+     * and for a take that failed later the removal of its files has been
+     * arranged off the FX thread before this is called
+     * ({@link #removeFilesOfAbandonedStart}): its capture thread, if it got
+     * one, deletes the segment and manifest files it created — unless it had
+     * already ended on its own (a throwable that escaped its drain loop
+     * sealed the take early), when it deletes nothing and that take stays on
+     * disk — and the take directory, if that left it empty, is then removed
+     * on the storage executor. It
+     * does not close the device. When the open succeeded and the take's start
+     * then failed, the turn that ends the start calls
+     * {@link #stopAudioOutputWhenIdle()} only when the take's pipeline could
+     * not be built — or, without coming here, its take directory could not be
+     * allocated — and the transport is not rolling
+     * ({@link #onTakeDirectoryAllocated}, {@link #stopAudioOutputUnlessRolling});
+     * after a failed {@code prepare()}, readiness or {@code beginCapture()}
+     * the stream that open started stays open. This controller
      * leaves a stream closed only through {@link #stopAudioOutputWhenIdle()}
      * (a later Record's {@code startAudioInputOutput()} also closes the open
      * stream, but only to open a new full-duplex one), which a
-     * later Stop calls and which closes it only while
+     * later Stop calls too, and which closes it only while
      * {@link #hasGraphInstruments()} is false: while a mixer channel, a return
      * bus or the master channel holds an instrument insert, bypassed or not,
      * the stream is kept open so the instrument can be auditioned while
-     * stopped. Closing it on abort belongs to story 325's rollback of
-     * everything already started, in reverse start order (story 323's Known
-     * limitations). No input-monitoring mode is left to restore: this
+     * stopped. Closing it after those later failures belongs to story 325's
+     * rollback of everything already started, in reverse start order (story
+     * 323's Known limitations). No input-monitoring mode is left to restore: this
      * controller builds its pipeline with {@link InputMonitoringMode#OFF},
-     * which {@code start()} applies to no track.
+     * which {@code prepare()} applies to no track.
      *
      * <p><strong>The WHOLE take is abandoned, armed MIDI tracks included.</strong>
      * That is deliberate, not collateral damage. Silently continuing with the
@@ -1678,40 +2285,33 @@ final class TransportController implements TransportIntentHandler {
      * phantom announce, is the reason to stay away from it.</p>
      *
      * <p>The REC indicator is cleared rather than merely left alone. It is lit
-     * only by the tail of {@link #onRecord()} and cleared by {@link #stop()} /
+     * only by {@link #announceRecordingStarted} and cleared by {@link #stop()} /
      * {@link #finishPostRoll()}, so in the pipeline-active-over-STOPPED-transport
      * state {@link #stop()} documents it can still be burning when the user
      * presses Record again; leaving it lit over a take that never started is
      * the same lie in miniature. {@link #updateStatus()} then re-reads the
-     * authoritative {@link Transport#getState()}, which this path does not
-     * touch &mdash; on the audio-armed branch the only thing that moves the
-     * transport is {@code RecordingPipeline.start()}, whose last step is
-     * {@code transport.record()}: it either never ran (the open failed) or
-     * threw at or before that step, and its rollback leaves the transport
-     * alone &mdash; so the status label and the Play enablement report
-     * whatever the transport actually is.</p>
+     * authoritative {@link Transport#getState()} &mdash; on the audio-armed
+     * branch the only thing that moves the transport is
+     * {@code RecordingPipeline.beginCapture()}, whose last step is
+     * {@code transport.record()}: it either never ran (the open, the
+     * allocation, the pipeline's {@code prepare()} or the take's readiness
+     * failed) or threw, and its rollback stops a transport the failed step
+     * left recording &mdash; so the status label and the Play enablement
+     * report whatever the transport actually is.</p>
      *
-     * @param outputDirectory the take directory {@link #onRecord()} had just
-     *                        allocated under the project's {@code audio/takes}
-     *                        for this take's segments (story 323); empty again,
-     *                        because the pipeline that would have populated it
-     *                        either never started or rolled itself back (D11)
-     *                        — unless that rollback's bounded join ran out,
-     *                        which leaves the files it created in place for
-     *                        recovery
-     * @param failure         the open failure, whose message names the actual
-     *                        cause (story 316 makes it specific: every ladder
-     *                        rung refused for want of capture channels, an
-     *                        ambiguous device selection, or no backend
-     *                        configured at all), or the pipeline's own start
-     *                        failure (a segment or the manifest could not be
-     *                        created, or an unsupported bit depth)
+     * @param failure the open failure, whose message names the actual cause
+     *                (story 316 makes it specific: every ladder rung refused
+     *                for want of capture channels, an ambiguous device
+     *                selection, or no backend configured at all), or the
+     *                take's own start failure: its pipeline could not be
+     *                built, its {@code prepare()} threw, its readiness failed (the take
+     *                directory, a segment or the manifest could not be
+     *                created, or an unsupported bit depth), or its
+     *                {@code beginCapture()} threw
      */
-    private void abortRecordingTake(Path outputDirectory, RuntimeException failure) {
+    private void abortRecordingTake(Throwable failure) {
         LOG.log(Level.WARNING,
                 "Recording aborted — the take could not be started", failure);
-        recordingPipeline = null;
-        deleteEmptyTakeDirectory(outputDirectory);
 
         String reason = failure.getMessage() == null || failure.getMessage().isBlank()
                 ? failure.getClass().getSimpleName()
@@ -1727,26 +2327,42 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Best-effort removal of the take directory allocated under the project's
-     * {@code audio/takes} for a record gesture that then aborted (story 316
-     * review; story 323). It is empty unless a rollback could not empty it:
-     * either {@code RecordingPipeline.start()} — what creates the per-track
-     * directories, segments and manifest under it — never ran (the device
-     * open failed first), or it failed and rolled itself back to an empty
-     * directory (D11). A plain delete therefore suffices and no recursive
-     * walk is warranted; a directory a rollback could not empty — its flush
-     * thread did not stop within the bounded join, so nothing was deleted
-     * and the rollback's failure rides on the start failure as suppressed —
-     * is not empty, so the delete fails and it is left in place for recovery
-     * (story 332) rather than walked.
+     * {@code audio/takes} for a start that was cancelled or failed (story 316
+     * review; story 323). Storage I/O: it runs on the storage executor, never
+     * on the FX thread, and only once the take's capture thread — what
+     * creates the per-track directories, segments and manifest under it —
+     * has terminated, or never got one ({@link #removeFilesOfAbandonedStart}).
+     * By then that thread has deleted the segment and manifest files it
+     * created for the take, and each track directory that left empty (D11)
+     * — unless it had already ended on its own before the discard was asked
+     * for (a throwable that escaped its drain loop sealed the take early),
+     * when it deleted nothing — so the directory is normally empty and a
+     * plain delete suffices; no recursive walk is warranted. A directory the
+     * thread did not empty — a file it failed to delete, or the files of a
+     * take it sealed early and never discarded — is not empty, so the delete
+     * fails and it is left in place rather than walked. A {@code .part}
+     * segment or a streaming manifest left in it is what the Recording
+     * Reliability book's §4.7 recovery scan looks for, a scan nothing runs
+     * yet (story 323's Known limitations: story 332's recovery pass is to
+     * invoke it); that scan does not look for sealed segments or an ABORTED
+     * manifest, which is what a take sealed early leaves once its seal and
+     * its final manifest write succeeded, so those stay on disk and no
+     * project refers to them. {@code null} deletes
+     * nothing: it is passed only for a start cancelled while its take
+     * directory was being allocated, when that allocation then failed — a
+     * cancel does not stop the allocation, which returns a directory or fails.
      *
      * <p>A failure here is logged at FINE and swallowed on purpose: an
      * undeleted take directory is housekeeping, and escalating it would
-     * replace the device message the user actually needs with a filesystem
-     * complaint about a directory they never asked for. (The start failure
-     * itself, suppressed rollback failure included, is logged at WARNING by
-     * {@link #abortRecordingTake}.)</p>
+     * replace the message the user actually needs with a filesystem
+     * complaint about a directory they never asked for. (A start failure
+     * itself, any suppressed rollback failure included, is logged at WARNING
+     * by {@link #abortRecordingTake}.)</p>
      */
     private static void deleteEmptyTakeDirectory(Path outputDirectory) {
+        if (outputDirectory == null) {
+            return;
+        }
         try {
             Files.deleteIfExists(outputDirectory);
         } catch (IOException | RuntimeException e) {
@@ -1853,8 +2469,9 @@ final class TransportController implements TransportIntentHandler {
     @Override
     public void playWithPreRoll() {
         // Story 315 review — VALIDATE before touching the engine (mirrors
-        // start()): Shift+Space while RECORDING must not leave record.
-        if (project.getTransport().getState() == TransportState.RECORDING) {
+        // start()): Shift+Space while RECORDING must not leave record, nor
+        // start playback under a take that is being prepared.
+        if (pendingStart != null || project.getTransport().getState() == TransportState.RECORDING) {
             return;
         }
         if (!startAudioOutputOrRefuse("Pre-roll playback")) {
