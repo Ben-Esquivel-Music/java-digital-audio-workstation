@@ -60,6 +60,7 @@ import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -389,6 +390,7 @@ final class RecordCoordinator {
      * {@link #setMidiInputDeviceResolverForTest}.
      */
     private Function<String, MidiDevice> midiInputDeviceResolver = RecordCoordinator::resolveMidiDevice;
+    private LongSupplier midiMonotonicNanos = System::nanoTime;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
 
     /**
@@ -1283,6 +1285,11 @@ final class RecordCoordinator {
         midiInputDeviceResolver = Objects.requireNonNull(resolver, "resolver must not be null");
     }
 
+    /** Supplies the shared capture origin and every MIDI receipt timestamp. FX thread, before Record. */
+    void setMidiMonotonicClockForTest(LongSupplier clock) {
+        midiMonotonicNanos = Objects.requireNonNull(clock, "clock must not be null");
+    }
+
     /**
      * Toggles recording (§5.2 "Record"): while RECORDING, delegates to
      * {@code transport.stop()} (Stop is the only way out of record — which also runs
@@ -1420,6 +1427,7 @@ final class RecordCoordinator {
                 }
                 transition(RecordState.COUNT_IN);
                 project.getTransport().record();
+                activateMidiRecording();
             } catch (RuntimeException | Error failure) {
                 abortRecordingTake(failure);
                 return;
@@ -1651,13 +1659,13 @@ final class RecordCoordinator {
             finishUnannouncedTake(start);
             return;
         }
-        if (!start.armedMidiTracks.isEmpty()) startMidiRecording(start.armedMidiTracks, start.countIn);
-        if (earlySealOf(pipeline).isPresent() || !pipeline.hasViableCaptureService()) {
-            finishUnannouncedTake(start);
-            return;
-        }
         try {
-            pipeline.beginCapture();
+            if (!start.armedMidiTracks.isEmpty()) startMidiRecording(start.armedMidiTracks, start.countIn);
+            if (earlySealOf(pipeline).isPresent() || !pipeline.hasViableCaptureService()) {
+                finishUnannouncedTake(start);
+                return;
+            }
+            pipeline.beginCapture(this::activateMidiRecording);
         } catch (RuntimeException | Error e) {
             if (pipeline.isPreparing() && !pipeline.hasViableCaptureService()) finishUnannouncedTake(start);
             else abandonStart(start, e);
@@ -2091,7 +2099,9 @@ final class RecordCoordinator {
     // ── MIDI recording helpers ───────────────────────────────────────────────
 
     /**
-     * Creates and starts a {@link MidiRecorder} for each armed MIDI track.
+     * Prepares a {@link MidiRecorder} for each armed MIDI track. Receivers
+     * discard all events until {@link #activateMidiRecording()} activates the
+     * successful inputs together at the transport's recording transition.
      *
      * <p>When a count-in mode is active, the recorder's count-in duration is
      * set so that notes played during the pre-roll are discarded. An event
@@ -2131,7 +2141,7 @@ final class RecordCoordinator {
             }
 
             MidiRecorder recorder = new MidiRecorder(
-                    device, track.getMidiClip(), transport.getTempo(), 0);
+                    device, track.getMidiClip(), transport.getTempo(), 0, midiMonotonicNanos);
             recorder.setStartColumnOffset(startColumnOffset);
             recorder.setCountInDurationUs(countInDurationUs);
 
@@ -2143,10 +2153,9 @@ final class RecordCoordinator {
                     () -> flashMidiActivity.accept(track)));
 
             try {
-                recorder.startRecording();
-                track.setRecording(true);
+                recorder.prepareRecording();
                 activeMidiRecorders.put(track, recorder);
-                LOG.fine(() -> "Started MIDI recording on track: " + track.getName());
+                LOG.fine(() -> "Prepared MIDI recording on track: " + track.getName());
             } catch (MidiUnavailableException | RuntimeException e) {
                 LOG.log(Level.WARNING, "Failed to start MIDI recording on track: "
                         + track.getName(), e);
@@ -2154,6 +2163,19 @@ final class RecordCoordinator {
                 notificationBar.show(NotificationLevel.WARNING,
                         "MIDI recording skipped track: " + track.getName() + " — " + shortDescription(e));
             }
+        }
+    }
+
+    /** No device calls: every ready input receives the same capture origin. */
+    private void activateMidiRecording() {
+        if (project.getTransport().getState() != TransportState.RECORDING) {
+            throw new IllegalStateException("Transport recording precondition failed — the transport stopped during start");
+        }
+        if (activeMidiRecorders.isEmpty()) return;
+        long originNanos = midiMonotonicNanos.getAsLong();
+        for (Map.Entry<Track, MidiRecorder> entry : activeMidiRecorders.entrySet()) {
+            entry.getValue().beginRecording(originNanos);
+            entry.getKey().setRecording(true);
         }
     }
 

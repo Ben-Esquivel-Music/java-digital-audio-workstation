@@ -464,7 +464,11 @@ As landed (story 325), `RecordCoordinator` is the only owner of these FX-thread 
 Audio Record opens the device, enters PREPARING with REC off, allocates its take directory on
 the storage executor, and calls `RecordingPipeline.prepare()`. Its flush thread creates the
 take's files and reports readiness; only the posted FX continuation begins capture and enters
-RECORDING. MIDI-only Record requires at least one successfully opened recorder. COUNT_IN is
+RECORDING. MIDI inputs are opened and validated without accepting events; after every input
+has completed preparation and the transport's recording transition succeeds, all successful
+recorders activate with one shared monotonic origin. Mixed-take activation participates in
+`RecordingPipeline.beginCapture(Runnable)`'s start rollback. MIDI-only Record requires at least
+one successfully prepared recorder. COUNT_IN is
 an integration state; all modes currently pass this integration state immediately; the audible gate and transport-anchored window remain story 328.
 
 Every arrow is covered by §5.2. Failed starts stop the transport, drain MIDI inputs, discard the
@@ -817,10 +821,14 @@ lock; the configuration lock remains held to serialize background workers. A mod
 invalidates an outstanding request. The controller-wide transaction flag prevents a freshly
 created project coordinator from recording while a previously granted settings lease applies.
 
-MIDI recorders follow the same machine: stop always drains `activeMidiRecorders` and closes
-devices; a second Record press can never re-put a recorder over a live one (§1.3). Timestamp
+MIDI recorders follow the same machine: `prepareRecording()` opens each input with its receiver
+inactive; `beginRecording(originNanos)` activates the prepared set with a shared capture origin
+after all device setup. Events received during preparation are discarded. Stop drains prepared
+and active `activeMidiRecorders` and closes devices; shared inputs stay open until their last
+recorder releases them, and externally opened devices remain borrowed. A second Record press
+can never re-put a recorder over a live one (§1.3). Timestamp
 sentinel: when a device delivers timestamp -1 (permitted by the `javax.sound.midi` contract),
-event times fall back to a monotonic-clock capture at receipt, so notes land where they were
+event times fall back to monotonic time at receipt relative to that shared origin, so notes land where they were
 played instead of collapsing to column 0 (§1.8).
 
 ### 5.3 Segment lifecycle contract

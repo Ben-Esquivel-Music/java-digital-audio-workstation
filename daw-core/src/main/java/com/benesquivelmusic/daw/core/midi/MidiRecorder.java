@@ -81,6 +81,7 @@ public final class MidiRecorder {
     private final ReentrantLock lifecycleLock = new ReentrantLock();
     private Transmitter transmitter;
     private SharedInput input;
+    private boolean prepared;
     private boolean recording;
     private long recordingStartTimeUs;
     private final LongSupplier monotonicNanos;
@@ -110,8 +111,18 @@ public final class MidiRecorder {
         this(device, clip, tempo, channel, System::nanoTime);
     }
 
-    MidiRecorder(MidiDevice device, MidiClip clip, double tempo, int channel,
-                 LongSupplier monotonicNanos) {
+    /**
+     * Creates a recorder with a monotonic nanosecond clock. Recorders activated
+     * with a shared origin must use the same clock source.
+     *
+     * @param device the MIDI input device
+     * @param clip the clip receiving recorded notes
+     * @param tempo the project tempo in BPM
+     * @param channel the MIDI channel (0–15)
+     * @param monotonicNanos the monotonic nanosecond clock
+     */
+    public MidiRecorder(MidiDevice device, MidiClip clip, double tempo, int channel,
+                        LongSupplier monotonicNanos) {
         this.monotonicNanos = Objects.requireNonNull(monotonicNanos);
         this.device = Objects.requireNonNull(device, "device must not be null");
         this.clip = Objects.requireNonNull(clip, "clip must not be null");
@@ -198,8 +209,8 @@ public final class MidiRecorder {
      * they do not appear in the recorded clip.
      *
      * <p>The duration is specified in microseconds and measured relative to
-     * the first MIDI message received after {@link #startRecording()} is
-     * called. A value of {@code 0} disables count-in filtering.</p>
+     * capture activation for events without device timestamps, or the first
+     * timestamped MIDI message. A value of {@code 0} disables count-in filtering.</p>
      *
      * @param durationUs the count-in duration in microseconds (must be &ge; 0)
      */
@@ -229,13 +240,32 @@ public final class MidiRecorder {
     public void startRecording() throws MidiUnavailableException {
         lifecycleLock.lock();
         try {
+            prepareRecording();
+            try {
+                beginRecording(monotonicNanos.getAsLong());
+            } catch (RuntimeException | Error failure) {
+                synchronized (this) { prepared = false; }
+                closeInput(failure);
+                throw failure;
+            }
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    /**
+     * Opens and validates the input without accepting events or starting its clock.
+     * Call {@link #beginRecording(long)} once every input of the take is ready, or
+     * {@link #stopRecording()} to release a preparation that will not record.
+     *
+     * @throws MidiUnavailableException if the device or transmitter is unavailable
+     * @throws IllegalStateException if already prepared or recording
+     */
+    public void prepareRecording() throws MidiUnavailableException {
+        lifecycleLock.lock();
+        try {
             synchronized (this) {
-                if (recording) throw new IllegalStateException("Already recording");
-                monotonicOriginNanos = monotonicNanos.getAsLong();
-                recordingStartTimeUs = -1;
-                lastRelativeUs = 0;
-                deviceOriginRelativeUs = 0;
-                usedFallbackTime = false;
+                if (prepared || recording) throw new IllegalStateException("Already prepared or recording");
                 sessionNotes.clear();
                 for (int i = 0; i < 128; i++) {
                     activeNoteStarts[i] = -1;
@@ -245,10 +275,9 @@ public final class MidiRecorder {
             try {
                 input = acquireInput(device);
                 transmitter = device.getTransmitter();
-                synchronized (this) { recording = true; }
                 transmitter.setReceiver(new MidiInputReceiver());
-            } catch (MidiUnavailableException | RuntimeException failure) {
-                synchronized (this) { recording = false; }
+                synchronized (this) { prepared = true; }
+            } catch (MidiUnavailableException | RuntimeException | Error failure) {
                 closeInput(failure);
                 throw failure;
             }
@@ -257,11 +286,35 @@ public final class MidiRecorder {
         }
     }
 
+    /**
+     * Activates a prepared input at the take's shared monotonic origin. This call
+     * performs no provider I/O. Events delivered during preparation are discarded.
+     *
+     * @param originNanos the capture origin, from this recorder's clock source
+     * @throws IllegalStateException if not prepared or already recording
+     */
+    public void beginRecording(long originNanos) {
+        lifecycleLock.lock();
+        try {
+            synchronized (this) {
+                if (!prepared || recording) throw new IllegalStateException("Not prepared or already recording");
+                monotonicOriginNanos = originNanos;
+                recordingStartTimeUs = -1;
+                lastRelativeUs = 0;
+                deviceOriginRelativeUs = 0;
+                usedFallbackTime = false;
+                recording = true;
+            }
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
     private void closeInput(Throwable primary) {
-        RuntimeException closeFailure = null;
+        Throwable closeFailure = null;
         try {
             if (transmitter != null) transmitter.close();
-        } catch (RuntimeException failure) {
+        } catch (RuntimeException | Error failure) {
             closeFailure = failure;
         } finally {
             transmitter = null;
@@ -271,14 +324,19 @@ public final class MidiRecorder {
                     input = null;
                     releaseInput(acquired);
                 }
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | Error failure) {
                 if (closeFailure == null) closeFailure = failure;
-                else closeFailure.addSuppressed(failure);
+                else if (closeFailure != failure) closeFailure.addSuppressed(failure);
             }
         }
         if (closeFailure != null) {
-            if (primary != null) primary.addSuppressed(closeFailure);
-            else throw closeFailure;
+            if (primary != null) {
+                if (primary != closeFailure) primary.addSuppressed(closeFailure);
+            } else if (closeFailure instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            } else {
+                throw (Error) closeFailure;
+            }
         }
     }
 
@@ -294,9 +352,11 @@ public final class MidiRecorder {
             if (owned) {
                 try {
                     device.open();
-                } catch (MidiUnavailableException | RuntimeException failure) {
+                } catch (MidiUnavailableException | RuntimeException | Error failure) {
                     try { device.close(); }
-                    catch (RuntimeException closeFailure) { failure.addSuppressed(closeFailure); }
+                    catch (RuntimeException | Error closeFailure) {
+                        if (failure != closeFailure) failure.addSuppressed(closeFailure);
+                    }
                     throw failure;
                 }
             }
@@ -333,7 +393,7 @@ public final class MidiRecorder {
     }
 
     /**
-     * Stops recording and closes the transmitter.
+     * Stops recording, or cancels a prepared input, and closes the transmitter.
      *
      * <p>Any notes that were still held (note-on without note-off) are
      * finalized at the stop time.</p>
@@ -341,14 +401,19 @@ public final class MidiRecorder {
     public void stopRecording() {
         lifecycleLock.lock();
         try {
+            boolean wasRecording;
             synchronized (this) {
-                if (!recording) return;
+                if (!prepared) return;
+                wasRecording = recording;
                 recording = false;
+                prepared = false;
             }
-            RuntimeException failure = null;
+            Throwable failure = null;
             try {
-                synchronized (this) { finalizeHeldNotes(); }
-            } catch (RuntimeException finishingFailure) {
+                if (wasRecording) {
+                    synchronized (this) { finalizeHeldNotes(); }
+                }
+            } catch (RuntimeException | Error finishingFailure) {
                 failure = finishingFailure;
                 throw finishingFailure;
             } finally {

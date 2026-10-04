@@ -139,6 +139,153 @@ class MidiRecorderTest {
     }
 
     @Test
+    void preparedInputsIgnoreSetupEventsAndUseOneOriginDespiteLaterActivation() throws Exception {
+        var clock = new java.util.concurrent.atomic.AtomicLong(-1_000_000_000L);
+        CapturingMidiDevice firstDevice = new CapturingMidiDevice();
+        CapturingMidiDevice secondDevice = new CapturingMidiDevice();
+        MidiRecorder first = new MidiRecorder(firstDevice, new MidiClip(), 120, 0, clock::get);
+        MidiRecorder second = new MidiRecorder(secondDevice, new MidiClip(), 120, 0, clock::get);
+        var events = new java.util.concurrent.atomic.AtomicInteger();
+        first.addEventListener(_ -> events.incrementAndGet());
+        first.prepareRecording();
+        try {
+            clock.addAndGet(2_000_000_000L);
+            firstDevice.send(javax.sound.midi.ShortMessage.NOTE_ON, 59, 100, -1);
+            firstDevice.send(javax.sound.midi.ShortMessage.NOTE_OFF, 59, 0, -1);
+            second.prepareRecording();
+            assertThat(first.isRecording()).isFalse();
+            assertThat(second.isRecording()).isFalse();
+            assertThat(first.getRecordedNotes()).isEmpty();
+            assertThat(events).hasValue(0);
+            long origin = clock.get();
+            first.beginRecording(origin);
+            // Even a callback between sequential activations cannot give the second a later origin.
+            clock.addAndGet(250_000_000L);
+            firstDevice.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+            second.beginRecording(origin);
+            secondDevice.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+            clock.addAndGet(250_000_000L);
+            firstDevice.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+            secondDevice.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+            assertThat(first.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
+            assertThat(second.getRecordedNotes()).isEqualTo(first.getRecordedNotes());
+        } finally {
+            second.stopRecording();
+            first.stopRecording();
+        }
+    }
+
+    @Test
+    void cancellingPreparedSharedInputsReleasesOnlyOwnedResourcesAndCanRestart() throws Exception {
+        SharedMidiDevice device = new SharedMidiDevice();
+        MidiRecorder first = new MidiRecorder(device, new MidiClip(), 120, 0);
+        MidiRecorder second = new MidiRecorder(device, new MidiClip(), 120, 0);
+        first.prepareRecording();
+        try {
+            second.prepareRecording();
+            first.stopRecording();
+            assertThat(device.isOpen()).isTrue();
+            assertThat(device.transmitters.get(0).closed).isTrue();
+            assertThat(device.transmitters.get(1).closed).isFalse();
+            second.stopRecording();
+            assertThat(device.closes).isEqualTo(1);
+            assertThat(first.getRecordedNotes()).isEmpty();
+            assertThat(second.getRecordedNotes()).isEmpty();
+            first.startRecording();
+            assertThat(first.isRecording()).isTrue();
+            first.stopRecording();
+            assertThat(device.closes).isEqualTo(2);
+
+            device.open(); // An external opening remains borrowed on cancellation.
+            second.prepareRecording();
+            second.stopRecording();
+            assertThat(device.isOpen()).isTrue();
+            assertThat(device.closes).isEqualTo(2);
+        } finally {
+            second.stopRecording();
+            first.stopRecording();
+            if (device.isOpen()) device.close();
+        }
+    }
+
+    @Test
+    void failedSharedPreparationLeavesTheFirstInputReadyForActivation() throws Exception {
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        SharedMidiDevice device = new SharedMidiDevice();
+        MidiRecorder first = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        MidiRecorder second = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        first.prepareRecording();
+        try {
+            device.failNextTransmitter = true;
+            assertThatThrownBy(second::prepareRecording)
+                    .isInstanceOf(javax.sound.midi.MidiUnavailableException.class);
+            assertThat(device.closes).isZero();
+            clock.set(2_000_000_000L);
+            first.beginRecording(clock.get());
+            clock.addAndGet(250_000_000L);
+            device.send(0, javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+            clock.addAndGet(250_000_000L);
+            device.send(0, javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+            assertThat(first.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
+        } finally {
+            second.stopRecording();
+            first.stopRecording();
+        }
+        assertThat(device.closes).isEqualTo(1);
+    }
+
+    @Test
+    void failedPreparationWithAnErrorClosesTheTransmitterAndDeviceAndCanRestart() throws Exception {
+        var failOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        CapturingMidiDevice device = new CapturingMidiDevice() {
+            @Override public javax.sound.midi.Transmitter getTransmitter() {
+                var delegate = super.getTransmitter();
+                return new javax.sound.midi.Transmitter() {
+                    @Override public void setReceiver(javax.sound.midi.Receiver receiver) {
+                        delegate.setReceiver(receiver);
+                        if (failOnce.getAndSet(false)) throw new AssertionError("receiver failed");
+                    }
+                    @Override public javax.sound.midi.Receiver getReceiver() { return delegate.getReceiver(); }
+                    @Override public void close() { delegate.close(); }
+                };
+            }
+        };
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0);
+        assertThatThrownBy(recorder::prepareRecording).isInstanceOf(AssertionError.class).hasMessage("receiver failed");
+        assertThat(device.open).isFalse();
+        assertThat(device.closedTransmitter).isTrue();
+        assertThat(recorder.isRecording()).isFalse();
+        recorder.startRecording();
+        try {
+            assertThat(recorder.isRecording()).isTrue();
+        } finally {
+            recorder.stopRecording();
+        }
+    }
+
+    @Test
+    void directStartExcludesDeviceOpeningDelayFromFallbackTime() throws Exception {
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice() {
+            @Override public void open() {
+                super.open();
+                clock.set(2_000_000_000L);
+            }
+        };
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        recorder.startRecording();
+        try {
+            clock.addAndGet(250_000_000L);
+            device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+            clock.addAndGet(250_000_000L);
+            device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+            assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
+        } finally {
+            recorder.stopRecording();
+        }
+    }
+
+    @Test
     void unknownTimestampsUseElapsedMonotonicTimeIncludingDelayedFirstNote() throws Exception {
         java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong(-1_000_000_000L);
         CapturingMidiDevice device = new CapturingMidiDevice();

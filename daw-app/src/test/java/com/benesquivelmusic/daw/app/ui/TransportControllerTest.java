@@ -1688,6 +1688,204 @@ class TransportControllerTest {
     }
 
     @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void allMidiInputsArePreparedBeforeAnyCaptureClockStarts(boolean mixed) throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        if (mixed) {
+            giveTheProjectADirectory(project);
+            project.createAudioTrack("Vox").setArmed(true);
+        }
+        Track first = new Track("First", TrackType.MIDI);
+        Track second = new Track("Second", TrackType.MIDI);
+        first.setArmed(true); second.setArmed(true);
+        first.setMidiInputDeviceName("first"); second.setMidiInputDeviceName("second");
+        project.addTrack(first); project.addTrack(second);
+        var clock = new java.util.concurrent.atomic.AtomicLong(-1_000_000_000L);
+        CountingMidiInput input1 = new CountingMidiInput(false);
+        CountingMidiInput input2 = new CountingMidiInput(false);
+        input2.onOpen = () -> {
+            assertThat(input1.isConnected()).isTrue();
+            assertThat(first.isRecording()).as("earlier input is only prepared").isFalse();
+            clock.addAndGet(2_000_000_000L); // A slow later input, without a sleep.
+            sendMidi(input1, javax.sound.midi.ShortMessage.NOTE_ON, 59, 100);
+            sendMidi(input1, javax.sound.midi.ShortMessage.NOTE_OFF, 59, 0);
+            assertThat(first.getMidiClip().size()).isZero();
+        };
+        TransportController controller = newController(project);
+        runStrictHandler(() -> {
+            controller.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input2);
+            controller.recordCoordinator().setMidiMonotonicClockForTest(clock::get);
+        });
+        Runnable removeListener = project.getTransport().addChangeListener(kind -> {
+            if (kind != Transport.ChangeKind.STATE || project.getTransport().getState() != TransportState.RECORDING) return;
+            assertThat(input1.isConnected()).isTrue();
+            assertThat(input2.isConnected()).isTrue();
+            clock.addAndGet(3_000_000_000L); // Capture activation follows successful startup notification.
+            for (CountingMidiInput input : List.of(input1, input2)) {
+                sendMidi(input, javax.sound.midi.ShortMessage.NOTE_ON, 58, 100);
+                sendMidi(input, javax.sound.midi.ShortMessage.NOTE_OFF, 58, 0);
+            }
+        });
+        try {
+            record(controller);
+        } finally {
+            removeListener.run();
+        }
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.RECORDING);
+        assertThat(first.isRecording()).isTrue();
+        assertThat(second.isRecording()).isTrue();
+        assertThat(first.getMidiClip().size()).isZero();
+        assertThat(second.getMidiClip().size()).isZero();
+        clock.addAndGet(250_000_000L);
+        sendMidi(input1, javax.sound.midi.ShortMessage.NOTE_ON, 60, 100);
+        sendMidi(input2, javax.sound.midi.ShortMessage.NOTE_ON, 60, 100);
+        clock.addAndGet(250_000_000L);
+        sendMidi(input1, javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0);
+        sendMidi(input2, javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0);
+        var expected = new com.benesquivelmusic.daw.core.midi.MidiNoteData(60, 2, 2, 100, 0);
+        assertThat(first.getMidiClip().getNotes()).containsExactly(expected);
+        assertThat(second.getMidiClip().getNotes()).containsExactly(expected);
+        stopAndAwaitTheTake(controller);
+        for (CountingMidiInput input : List.of(input1, input2)) {
+            assertThat(input.closes).isEqualTo(1);
+            assertThat(input.transmitterCloses).isEqualTo(1);
+            assertThat(input.isConnected()).isFalse();
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void midiActivationFailureRollsBackPreparedInputsAndTheEntireTake(boolean mixed, boolean error) throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        if (mixed) {
+            giveTheProjectADirectory(project);
+            project.createAudioTrack("Vox").setArmed(true);
+        }
+        Track first = new Track("First", TrackType.MIDI);
+        Track second = new Track("Second", TrackType.MIDI);
+        first.setArmed(true); second.setArmed(true);
+        first.setMidiInputDeviceName("first"); second.setMidiInputDeviceName("second");
+        project.addTrack(first); project.addTrack(second);
+        CountingMidiInput input1 = new CountingMidiInput(false);
+        CountingMidiInput input2 = new CountingMidiInput(false);
+        TransportController controller = newController(project);
+        runStrictHandler(() -> {
+            controller.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input2);
+            controller.recordCoordinator().setMidiMonotonicClockForTest(() -> {
+                if (error) throw new AssertionError("capture clock unavailable");
+                throw new IllegalStateException("capture clock unavailable");
+            });
+        });
+        record(controller);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the failed activation's rollback settles");
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.IDLE);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(audioEngine.isStreamOpen()).isFalse();
+        assertThat(audioEngine.isRunning()).isFalse();
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(undoManager.undoSize()).isZero();
+        assertThat(project.isDirty()).isFalse();
+        for (Track track : project.getTracks()) {
+            assertThat(track.isRecording()).isFalse();
+            assertThat(track.getClips()).isEmpty();
+        }
+        for (CountingMidiInput input : List.of(input1, input2)) {
+            assertThat(input.opens).isEqualTo(1);
+            assertThat(input.closes).isEqualTo(1);
+            assertThat(input.transmitterCloses).isEqualTo(1);
+            assertThat(input.isConnected()).isFalse();
+        }
+        assertThat(notificationBar.getMessage()).contains("capture clock unavailable");
+        if (mixed) assertThat(takeDirectories()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void errorOpeningALaterMidiInputDrainsEarlierPreparationAndTheEntireTake(boolean mixed) throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        if (mixed) {
+            giveTheProjectADirectory(project);
+            project.createAudioTrack("Vox").setArmed(true);
+        }
+        Track first = new Track("First", TrackType.MIDI);
+        Track second = new Track("Second", TrackType.MIDI);
+        first.setArmed(true); second.setArmed(true);
+        first.setMidiInputDeviceName("first"); second.setMidiInputDeviceName("second");
+        project.addTrack(first); project.addTrack(second);
+        CountingMidiInput input1 = new CountingMidiInput(false);
+        CountingMidiInput input2 = new CountingMidiInput(false);
+        input2.onOpen = () -> { throw new AssertionError("later input open failed"); };
+        TransportController controller = newController(project);
+        runStrictHandler(() -> controller.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input2));
+        record(controller);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the failed input's rollback settles");
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.IDLE);
+        assertThat(input1.closes).isEqualTo(1);
+        assertThat(input1.transmitterCloses).isEqualTo(1);
+        assertThat(input2.closes).isEqualTo(1);
+        assertThat(input1.isConnected()).isFalse();
+        assertThat(input2.isOpen()).isFalse();
+        assertThat(audioEngine.isStreamOpen()).isFalse();
+        assertThat(audioEngine.isRunning()).isFalse();
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(undoManager.undoSize()).isZero();
+        assertThat(first.getMidiClip().size()).isZero();
+        assertThat(second.getMidiClip().size()).isZero();
+        assertThat(notificationBar.getMessage()).contains("later input open failed");
+        if (mixed) assertThat(takeDirectories()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void transportStoppedByAStartListenerCannotActivateMidiOrAnnounceRecording(boolean mixed) throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        if (mixed) {
+            giveTheProjectADirectory(project);
+            project.createAudioTrack("Vox").setArmed(true);
+        }
+        Track midi = new Track("Keys", TrackType.MIDI);
+        midi.setArmed(true); project.addTrack(midi);
+        CountingMidiInput input = new CountingMidiInput(false);
+        TransportController controller = newController(project);
+        runStrictHandler(() -> controller.setMidiInputDeviceResolverForTest(_ -> input));
+        Transport transport = project.getTransport();
+        Runnable removeListener = transport.addChangeListener(kind -> {
+            if (kind == Transport.ChangeKind.STATE && transport.getState() == TransportState.RECORDING) transport.stop();
+        });
+        try {
+            record(controller);
+        } finally {
+            removeListener.run();
+        }
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the interrupted start settles");
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.IDLE);
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(midi.isRecording()).isFalse();
+        assertThat(midi.getMidiClip().size()).isZero();
+        assertThat(input.closes).isEqualTo(1);
+        assertThat(input.transmitterCloses).isEqualTo(1);
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(audioEngine.isStreamOpen()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).contains("transport stopped during start");
+        if (mixed) assertThat(takeDirectories()).isEmpty();
+    }
+
+    private static void sendMidi(RecordingInFlightFixture.StubMidiInput input, int command, int note, int velocity) {
+        try {
+            input.getTransmitters().getFirst().getReceiver().send(
+                    new javax.sound.midi.ShortMessage(command, 0, note, velocity), -1);
+        } catch (javax.sound.midi.InvalidMidiDataException invalid) {
+            throw new AssertionError(invalid);
+        }
+    }
+
+    private List<Path> takeDirectories() throws IOException {
+        return listing(TakeDirectories.takesDirectory(ProjectManager.audioDirectory(projectDirectory)));
+    }
+
+    @ParameterizedTest
     @CsvSource({"false,false,false", "true,false,false", "true,true,false", "true,false,true"})
     void midiCaptureStartListenerFailureAbortsAndKeepsTheOriginalCauseDespiteCleanupFailures(
             boolean failCleanup, boolean closeWithError, boolean failNotification) throws Exception {
@@ -2406,13 +2604,14 @@ class TransportControllerTest {
         boolean closeWithError;
         boolean transmitterCloseWithError;
         Runnable onClose = () -> { };
+        Runnable onOpen = () -> { };
         int opens, transmitters, closes, transmitterCloses;
         CountingMidiInput(boolean failClose) { this(failClose, false); }
         CountingMidiInput(boolean failClose, boolean closeWithError) {
             this.failClose = failClose;
             this.closeWithError = closeWithError;
         }
-        @Override public void open() { opens++; super.open(); }
+        @Override public void open() { opens++; super.open(); onOpen.run(); }
         @Override public javax.sound.midi.Transmitter getTransmitter() {
             transmitters++;
             var delegate = super.getTransmitter();

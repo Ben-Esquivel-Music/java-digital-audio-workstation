@@ -655,6 +655,20 @@ public final class RecordingPipeline {
      *                               readiness has not completed normally
      */
     public void beginCapture() {
+        beginCapture(() -> { });
+    }
+
+    /**
+     * Begins capture and activates other prepared inputs after the transport's
+     * record transition succeeds. Activation runs once on the caller thread,
+     * must perform no storage or provider I/O, and participates in the same
+     * complete start rollback if it throws a runtime exception or error.
+     *
+     * @param captureActivation the activation of the take's other prepared inputs
+     * @throws IllegalStateException if this take is not ready to begin
+     */
+    public void beginCapture(Runnable captureActivation) {
+        Objects.requireNonNull(captureActivation, "captureActivation must not be null");
         if (!preparing) {
             throw new IllegalStateException("Recording pipeline has no take being prepared; call prepare() first");
         }
@@ -685,6 +699,7 @@ public final class RecordingPipeline {
 
             // Transition transport to recording
             transport.record();
+            captureActivation.run();
         } catch (RuntimeException | Error e) {
             // The gate first: later entries claim nothing, and a callback
             // already inside drops its block if its final read sees the close.
