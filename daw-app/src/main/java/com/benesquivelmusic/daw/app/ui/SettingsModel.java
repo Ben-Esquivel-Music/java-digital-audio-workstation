@@ -171,7 +171,7 @@ public final class SettingsModel {
     private String themeId;
     private String pluginScanPaths;
     private String audioBackend;
-    private String audioInputDevice;
+    private volatile String audioInputDevice;
     private String audioOutputDevice;
     private boolean applyLatencyCompensation;
     private QualityTier srcQuality;

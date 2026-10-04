@@ -104,7 +104,15 @@ public final class TransportControlBinder {
      */
     public void bindRecord(ButtonBase record) {
         Objects.requireNonNull(record, "record must not be null");
-        bindActiveState(record, TransportState.RECORDING);
+        updateActive(record, vm.recordStateProperty().get() == com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING);
+        ChangeListener<com.benesquivelmusic.daw.app.ui.recording.RecordState> listener =
+                (_, _, now) -> updateActive(record, now == com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING);
+        vm.recordStateProperty().addListener(listener);
+        record.disableProperty().bind(vm.recordAvailableProperty().not());
+        disposers.add(() -> {
+            vm.recordStateProperty().removeListener(listener);
+            record.disableProperty().unbind();
+        });
         onAction(record, new ToggleRecordCommand());
     }
 

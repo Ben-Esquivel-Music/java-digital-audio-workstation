@@ -5,6 +5,9 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.Transport.ChangeKind;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 
+import com.benesquivelmusic.daw.app.ui.recording.RecordState;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.ReadOnlyDoubleProperty;
 import javafx.beans.property.ReadOnlyDoubleWrapper;
 import javafx.beans.property.ReadOnlyObjectProperty;
@@ -60,6 +63,18 @@ public final class TransportVM {
 
     private final ReadOnlyObjectWrapper<TransportState> state =
             new ReadOnlyObjectWrapper<>(this, "state");
+    private final ReadOnlyObjectWrapper<RecordState> recordState = new ReadOnlyObjectWrapper<>(RecordState.IDLE);
+    private final ReadOnlyBooleanWrapper recordAvailable = new ReadOnlyBooleanWrapper(true);
+
+    public ReadOnlyObjectProperty<RecordState> recordStateProperty() { return recordState.getReadOnlyProperty(); }
+    public ReadOnlyBooleanProperty recordAvailableProperty() { return recordAvailable.getReadOnlyProperty(); }
+    public void bindRecordState(ReadOnlyObjectProperty<RecordState> source, ReadOnlyBooleanProperty availability) {
+        recordState.unbind();
+        recordAvailable.unbind();
+        recordState.bind(source);
+        recordAvailable.bind(availability);
+    }
+
     private final ReadOnlyDoubleWrapper tempo =
             new ReadOnlyDoubleWrapper(this, "tempo");
     private final ReadOnlyObjectWrapper<TimeSignature> timeSignature =
@@ -217,6 +232,8 @@ public final class TransportVM {
      * signals; its properties retain their last values.
      */
     public void dispose() {
+        recordState.unbind();
+        recordAvailable.unbind();
         if (disposed) {
             return;
         }

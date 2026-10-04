@@ -306,6 +306,51 @@ class EarlySealSignalContractTest {
     }
 
     @Test
+    void aPreparedTakeThatSealsEarlyCannotBeginCaptureAndPreservesItsPartialPublication() throws Exception {
+        RecordingPipeline pipeline = newPipeline(track);
+        pipeline.prepare().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        assertThat(pipeline.hasViableCaptureService()).isTrue();
+        CaptureFlushService service = pipeline.getCaptureFlushService();
+        IllegalStateException fault = new IllegalStateException("prepared drain-loop failure");
+        service.setDrainPaused(true);
+        service.setBlockObserver((sequence, startFrame, frames) -> { throw fault; });
+        CaptureRing.Slot slot = pipeline.getCaptureRing().claim();
+        slot.setNumFrames(BLOCK_FRAMES);
+        slot.copySource(0, rampBlock(0), 1, BLOCK_FRAMES);
+        pipeline.getCaptureRing().publish();
+        service.setDrainPaused(false);
+        service.signal();
+        assertThat(pipeline.earlySeal().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                .isEqualTo(new EarlySeal.WriteFailed(fault, true));
+        pipeline.termination().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        assertThat(pipeline.hasViableCaptureService()).isFalse();
+        assertThatThrownBy(pipeline::beginCapture).isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("sealed or terminated");
+        assertThat(pipeline.isPreparing()).isTrue();
+        assertThat(engine.getRecordingCallback()).isNull();
+        assertThat(engine.isRunning()).isFalse();
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+
+        pipeline.requestStopBeforeCapture().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        assertThat(pipeline.isPreparing()).isFalse();
+        assertThat(pipeline.isFinalizationPending()).isTrue();
+        assertThat(track.isRecording()).isFalse();
+        assertThat(pipeline.getCaptureRing().isProducerClosed()).as("prepared-stop closes the producer gate").isTrue();
+        assertThat(pipeline.getCaptureRing().producerOpen()).as("the callback cannot publish another block").isFalse();
+        assertThat(pipeline.completeStop()).singleElement().satisfies(clip -> {
+            assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(BLOCK_FRAMES);
+            assertThat(clip.getSourceSegmentPaths()).isNotEmpty();
+        });
+        assertThat(pipeline.completeStop()).isEmpty();
+        TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
+        assertThat(manifest.sealStatus()).isEqualTo(SealStatus.ABORTED);
+        assertThat(manifest.sealedBy()).contains(SealedBy.WRITE_FAILURE);
+        assertThat(engine.getRecordingCallback()).isNull();
+        assertThat(engine.isRunning()).isFalse();
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+    }
+
+    @Test
     void aHeadroomSealThatRethrowsALanesErrorSignalsOnlyOnceEveryLaneAndTheManifestAreDone() throws Exception {
         // The first track's stop notification dies with an Error after its
         // segment sealed; the seal goes on to the second lane, writes the

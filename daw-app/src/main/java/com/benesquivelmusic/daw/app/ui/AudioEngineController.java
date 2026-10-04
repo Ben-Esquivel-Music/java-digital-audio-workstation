@@ -28,6 +28,16 @@ import java.util.concurrent.Flow;
  */
 public interface AudioEngineController {
 
+    /** Exclusive recording guard, acquired on a worker before any audio-setting mutation. */
+    interface ConfigurationLease extends AutoCloseable {
+        @Override void close();
+    }
+
+    /** Waits off FX for explicit stop consent and complete take publication/cleanup. */
+    default ConfigurationLease beginConfigurationChange() {
+        return () -> { };
+    }
+
     /**
      * Constant backend name meaning "no backend answers this question".
      *

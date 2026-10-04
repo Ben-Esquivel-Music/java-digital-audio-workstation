@@ -66,6 +66,127 @@ class SessionInputSelectionTest {
     }
 
     @Test
+    void declinedConsentKeepsThePreviousInputAndTheDeclinedChoiceCanBeRetried() throws Exception {
+        SettingsModel settings = newSettings();
+        settings.setAudioInputDevice(MIC.qualifiedName());
+        RecordingController controller = new RecordingController();
+        controller.guardFailure = new IllegalStateException("configuration declined");
+        List<String> notifications = new CopyOnWriteArrayList<>();
+        SettingsBackedSessionInputSelection selection = new SettingsBackedSessionInputSelection(
+                settings, controller, (_, message, _, _) -> notifications.add(message), () -> { });
+
+        assertThat(selection.selectAndApply(USB).orElseThrow().join(JOIN)).isTrue();
+        assertThat(settings.getAudioInputDevice()).isEqualTo(MIC.qualifiedName());
+        assertThat(new SettingsModel(prefs).getAudioInputDevice()).isEqualTo(MIC.qualifiedName());
+        assertThat(selection.currentDeviceName()).isEqualTo(MIC.qualifiedName());
+        assertThat(controller.applies).hasValue(0);
+        assertThat(controller.guards).hasValue(1);
+
+        controller.guardFailure = null;
+        assertThat(selection.selectAndApply(USB).orElseThrow().join(JOIN)).isTrue();
+        assertThat(controller.guards).hasValue(2);
+        assertThat(controller.applies).hasValue(1);
+        assertThat(settings.getAudioInputDevice()).isEqualTo(USB.qualifiedName());
+        assertThat(controller.leasesClosed).hasValue(1);
+    }
+
+    @Test
+    void consentIsAcquiredBeforePersistenceAndAnOlderPendingChoiceCannotOverwriteTheLatest() throws Exception {
+        SettingsModel settings = newSettings();
+        settings.setAudioInputDevice(MIC.qualifiedName());
+        RecordingController controller = new RecordingController();
+        controller.parkFirstGuard = true;
+        SettingsBackedSessionInputSelection selection = new SettingsBackedSessionInputSelection(
+                settings, controller, (_, _, _, _) -> { }, () -> { });
+
+        Thread first = selection.selectAndApply(USB).orElseThrow();
+        assertThat(controller.guardEntered.await(JOIN.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(settings.getAudioInputDevice()).as("unconfirmed input is not persisted").isEqualTo(MIC.qualifiedName());
+        Thread latest = selection.selectAndApply(LINE).orElseThrow();
+        controller.guardRelease.countDown();
+
+        assertThat(first.join(JOIN)).isTrue();
+        assertThat(latest.join(JOIN)).isTrue();
+        assertThat(controller.completed).containsExactly(LINE.qualifiedName());
+        assertThat(settings.getAudioInputDevice()).isEqualTo(LINE.qualifiedName());
+        assertThat(controller.leasesClosed).hasValue(2);
+    }
+
+    @Test
+    void selectingTheAcceptedInputCancelsAnotherInputWaitingForConsent() throws Exception {
+        SettingsModel settings = newSettings();
+        settings.setAudioInputDevice(MIC.qualifiedName());
+        RecordingController controller = new RecordingController();
+        controller.parkFirstGuard = true;
+        SettingsBackedSessionInputSelection selection = new SettingsBackedSessionInputSelection(
+                settings, controller, (_, _, _, _) -> { }, () -> { });
+
+        Thread pending = selection.selectAndApply(USB).orElseThrow();
+        assertThat(controller.guardEntered.await(JOIN.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(selection.selectAndApply(MIC)).isEmpty();
+        controller.guardRelease.countDown();
+
+        assertThat(pending.join(JOIN)).isTrue();
+        assertThat(controller.applies).hasValue(0);
+        assertThat(settings.getAudioInputDevice()).isEqualTo(MIC.qualifiedName());
+        assertThat(controller.leasesClosed).hasValue(1);
+    }
+
+    @Test
+    void reselectingAnApplyingInputReportsItsFailureAfterCancellingADifferentPendingChoice() throws Exception {
+        SettingsModel settings = newSettings();
+        RecordingController controller = new RecordingController();
+        controller.parkFirstApply();
+        controller.failParkedApplyOnRelease = new IllegalStateException("device is busy");
+        List<String> notifications = new CopyOnWriteArrayList<>();
+        SettingsBackedSessionInputSelection selection = new SettingsBackedSessionInputSelection(
+                settings, controller, (_, message, _, _) -> notifications.add(message), () -> { });
+
+        Thread applying = selection.selectAndApply(USB).orElseThrow();
+        assertThat(controller.entered.await(JOIN.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
+        Thread superseded = selection.selectAndApply(MIC).orElseThrow();
+        assertThat(selection.selectAndApply(USB)).isEmpty();
+        controller.release.countDown();
+
+        assertThat(applying.join(JOIN)).isTrue();
+        assertThat(superseded.join(JOIN)).isTrue();
+        assertThat(settings.getAudioInputDevice()).isEqualTo(USB.qualifiedName());
+        assertThat(controller.requests).extracting(AudioEngineController.Request::inputDeviceName)
+                .containsExactly(USB.qualifiedName());
+        assertThat(notifications).singleElement().asString().contains(USB.qualifiedName(), "device is busy");
+    }
+
+    @Test
+    void cancellingAPendingChoiceReportsTheAlreadyFailedAcceptedInputExactlyOnce() throws Exception {
+        SettingsModel settings = newSettings();
+        RecordingController controller = new RecordingController();
+        controller.parkFirstApply();
+        controller.failParkedApplyOnRelease = new IllegalStateException("device is busy");
+        controller.parkFirstGuard = true;
+        controller.parkGuardNumber = 2;
+        List<String> notifications = new CopyOnWriteArrayList<>();
+        SettingsBackedSessionInputSelection selection = new SettingsBackedSessionInputSelection(
+                settings, controller, (_, message, _, _) -> notifications.add(message), () -> { });
+
+        Thread applying = selection.selectAndApply(USB).orElseThrow();
+        assertThat(controller.entered.await(JOIN.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
+        Thread superseded = selection.selectAndApply(MIC).orElseThrow();
+        controller.release.countDown();
+        assertThat(applying.join(JOIN)).isTrue();
+        assertThat(controller.guardEntered.await(JOIN.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(notifications).as("another input is still pending").isEmpty();
+        assertThat(selection.selectAndApply(USB)).isEmpty();
+        assertThat(selection.selectAndApply(USB)).as("a repeated no-op does not repeat the error").isEmpty();
+        controller.guardRelease.countDown();
+
+        assertThat(superseded.join(JOIN)).isTrue();
+        assertThat(settings.getAudioInputDevice()).isEqualTo(USB.qualifiedName());
+        assertThat(controller.requests).extracting(AudioEngineController.Request::inputDeviceName)
+                .containsExactly(USB.qualifiedName());
+        assertThat(notifications).singleElement().asString().contains(USB.qualifiedName(), "device is busy");
+    }
+
+    @Test
     void selectPersistsTheDeviceAndAppliesTheConfigurationWithItsName() throws Exception {
         SettingsModel settings = newSettings();
         settings.setAudioBackend("ASIO");
@@ -210,7 +331,8 @@ class SessionInputSelectionTest {
                 .as("A is inside applyConfiguration").isTrue();
         Thread b = selection.selectAndApply(MIC).orElseThrow();
         Thread c = selection.selectAndApply(LINE).orElseThrow();
-        assertThat(settings.getAudioInputDevice()).as("the persist is synchronous").isEqualTo("Line In [WASAPI]");
+        assertThat(settings.getAudioInputDevice()).as("C waits for its configuration permit")
+                .isEqualTo("USB In [WASAPI]");
         controller.release.countDown();
 
         assertThat(a.join(JOIN)).isTrue();
@@ -508,6 +630,13 @@ class SessionInputSelectionTest {
         final List<String> completed = new CopyOnWriteArrayList<>();
         final AtomicReference<Thread> applyThread = new AtomicReference<>();
         final AtomicInteger applies = new AtomicInteger();
+        final AtomicInteger guards = new AtomicInteger();
+        final AtomicInteger leasesClosed = new AtomicInteger();
+        final CountDownLatch guardEntered = new CountDownLatch(1);
+        final CountDownLatch guardRelease = new CountDownLatch(1);
+        volatile boolean parkFirstGuard;
+        volatile int parkGuardNumber = 1;
+        volatile RuntimeException guardFailure;
         /** Thrown by every apply while set. */
         volatile RuntimeException failure;
         /** Counted down once the parked first apply is inside {@link #applyConfiguration}. */
@@ -539,6 +668,23 @@ class SessionInputSelectionTest {
         }
 
         @Override public double getCpuLoadPercent() { return 0; }
+
+        @Override
+        public ConfigurationLease beginConfigurationChange() {
+            if (guards.incrementAndGet() == parkGuardNumber && parkFirstGuard) {
+                guardEntered.countDown();
+                try {
+                    if (!guardRelease.await(JOIN.toMillis(), TimeUnit.MILLISECONDS)) {
+                        throw new IllegalStateException("pending consent was never released");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
+            if (guardFailure != null) throw guardFailure;
+            return leasesClosed::incrementAndGet;
+        }
 
         @Override
         public void applyConfiguration(Request request) {

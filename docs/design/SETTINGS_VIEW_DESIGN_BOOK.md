@@ -620,6 +620,19 @@ Practical sequencing. Each stage ships independently; the tree never
 freezes and the four existing dialogs keep working until their category
 absorbs them.
 
+### Audio Apply preconditions (story 325)
+
+| Precondition | Required behavior | Failure / decline |
+|---|---|---|
+| A take is preparing or recording | Before any sample-rate/driver, mix, SRC, engine or persisted-value mutation, ask “Stop the take and apply?”. On acceptance, stop through `RecordCoordinator` and resume the captured immutable request only after flush termination, readback, clip/undo/dirty publication or cancelled-start cleanup settles. The worker waits off FX without the controller monitor or dialog operation lock; its configuration lock serializes workers. | Decline leaves the same stream/take/runtime and persisted settings unchanged; pending edits and dirty footer remain. Confirmation failure completes Apply exceptionally and releases its owned reservation. |
+| A previous take is finalizing or an aborted start is cleaning up | Wait for all publication/cleanup settlement before any mutation, without another Stop prompt. | Apply remains pending and preserves the take outcome. |
+| Another audio configuration transaction owns the controller | Serialize background workers; block Record across project replacement until the configuration lease releases. | No overlapping driver mutation or unowned reservation. |
+
+The dialog acquires this lease before its first driver setter; the engine controller also
+guards direct `applyConfiguration` calls. Success alone persists audio values. Asynchronous
+Apply completion remains pending through the recording publication fence, so the footer
+cannot report a declined or unfinished operation as applied.
+
 ### Stage 1 — Descriptor model, no UI change
 
 Introduce the §3.4 setting descriptor and back the *existing*

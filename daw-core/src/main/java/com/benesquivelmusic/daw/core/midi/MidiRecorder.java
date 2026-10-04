@@ -5,9 +5,13 @@ import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import javax.sound.midi.*;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -32,6 +36,8 @@ import java.util.logging.Logger;
 public final class MidiRecorder {
 
     private static final Logger LOG = Logger.getLogger(MidiRecorder.class.getName());
+    private static final ReentrantLock INPUT_LOCK = new ReentrantLock();
+    private static final Map<MidiDevice, SharedInput> INPUTS = new IdentityHashMap<>();
 
     /**
      * Listener for real-time notification of recorded MIDI notes.
@@ -72,9 +78,17 @@ public final class MidiRecorder {
     private final List<RecordingNoteListener> noteListeners = new CopyOnWriteArrayList<>();
     private final List<RecordingEventListener> eventListeners = new CopyOnWriteArrayList<>();
 
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
     private Transmitter transmitter;
+    private SharedInput input;
+    private boolean prepared;
     private boolean recording;
     private long recordingStartTimeUs;
+    private final LongSupplier monotonicNanos;
+    private long monotonicOriginNanos;
+    private long deviceOriginRelativeUs;
+    private long lastRelativeUs;
+    private boolean usedFallbackTime;
 
     // Active note tracking: index = MIDI note number, value = start column (-1 = inactive)
     private final int[] activeNoteStarts = new int[128];
@@ -94,6 +108,22 @@ public final class MidiRecorder {
      * @param channel the MIDI channel to record (0–15)
      */
     public MidiRecorder(MidiDevice device, MidiClip clip, double tempo, int channel) {
+        this(device, clip, tempo, channel, System::nanoTime);
+    }
+
+    /**
+     * Creates a recorder with a monotonic nanosecond clock. Recorders activated
+     * with a shared origin must use the same clock source.
+     *
+     * @param device the MIDI input device
+     * @param clip the clip receiving recorded notes
+     * @param tempo the project tempo in BPM
+     * @param channel the MIDI channel (0–15)
+     * @param monotonicNanos the monotonic nanosecond clock
+     */
+    public MidiRecorder(MidiDevice device, MidiClip clip, double tempo, int channel,
+                        LongSupplier monotonicNanos) {
+        this.monotonicNanos = Objects.requireNonNull(monotonicNanos);
         this.device = Objects.requireNonNull(device, "device must not be null");
         this.clip = Objects.requireNonNull(clip, "clip must not be null");
         if (tempo <= 0) {
@@ -179,8 +209,8 @@ public final class MidiRecorder {
      * they do not appear in the recorded clip.
      *
      * <p>The duration is specified in microseconds and measured relative to
-     * the first MIDI message received after {@link #startRecording()} is
-     * called. A value of {@code 0} disables count-in filtering.</p>
+     * capture activation for events without device timestamps, or the first
+     * timestamped MIDI message. A value of {@code 0} disables count-in filtering.</p>
      *
      * @param durationUs the count-in duration in microseconds (must be &ge; 0)
      */
@@ -208,40 +238,191 @@ public final class MidiRecorder {
      * @throws IllegalStateException    if already recording
      */
     public void startRecording() throws MidiUnavailableException {
-        if (recording) {
-            throw new IllegalStateException("Already recording");
-        }
-        if (!device.isOpen()) {
-            device.open();
-        }
-        transmitter = device.getTransmitter();
-        transmitter.setReceiver(new MidiInputReceiver());
-        recording = true;
-        recordingStartTimeUs = -1;
-        sessionNotes.clear();
-        for (int i = 0; i < 128; i++) {
-            activeNoteStarts[i] = -1;
-            activeNoteVelocities[i] = 0;
+        lifecycleLock.lock();
+        try {
+            prepareRecording();
+            try {
+                beginRecording(monotonicNanos.getAsLong());
+            } catch (RuntimeException | Error failure) {
+                synchronized (this) { prepared = false; }
+                closeInput(failure);
+                throw failure;
+            }
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
     /**
-     * Stops recording and closes the transmitter.
+     * Opens and validates the input without accepting events or starting its clock.
+     * Call {@link #beginRecording(long)} once every input of the take is ready, or
+     * {@link #stopRecording()} to release a preparation that will not record.
+     *
+     * @throws MidiUnavailableException if the device or transmitter is unavailable
+     * @throws IllegalStateException if already prepared or recording
+     */
+    public void prepareRecording() throws MidiUnavailableException {
+        lifecycleLock.lock();
+        try {
+            synchronized (this) {
+                if (prepared || recording) throw new IllegalStateException("Already prepared or recording");
+                sessionNotes.clear();
+                for (int i = 0; i < 128; i++) {
+                    activeNoteStarts[i] = -1;
+                    activeNoteVelocities[i] = 0;
+                }
+            }
+            try {
+                input = acquireInput(device);
+                transmitter = device.getTransmitter();
+                transmitter.setReceiver(new MidiInputReceiver());
+                synchronized (this) { prepared = true; }
+            } catch (MidiUnavailableException | RuntimeException | Error failure) {
+                closeInput(failure);
+                throw failure;
+            }
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    /**
+     * Activates a prepared input at the take's shared monotonic origin. This call
+     * performs no provider I/O. Events delivered during preparation are discarded.
+     *
+     * @param originNanos the capture origin, from this recorder's clock source
+     * @throws IllegalStateException if not prepared or already recording
+     */
+    public void beginRecording(long originNanos) {
+        lifecycleLock.lock();
+        try {
+            synchronized (this) {
+                if (!prepared || recording) throw new IllegalStateException("Not prepared or already recording");
+                monotonicOriginNanos = originNanos;
+                recordingStartTimeUs = -1;
+                lastRelativeUs = 0;
+                deviceOriginRelativeUs = 0;
+                usedFallbackTime = false;
+                recording = true;
+            }
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    private void closeInput(Throwable primary) {
+        Throwable closeFailure = null;
+        try {
+            if (transmitter != null) transmitter.close();
+        } catch (RuntimeException | Error failure) {
+            closeFailure = failure;
+        } finally {
+            transmitter = null;
+            try {
+                if (input != null) {
+                    SharedInput acquired = input;
+                    input = null;
+                    releaseInput(acquired);
+                }
+            } catch (RuntimeException | Error failure) {
+                if (closeFailure == null) closeFailure = failure;
+                else if (closeFailure != failure) closeFailure.addSuppressed(failure);
+            }
+        }
+        if (closeFailure != null) {
+            if (primary != null) {
+                if (primary != closeFailure) primary.addSuppressed(closeFailure);
+            } else if (closeFailure instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            } else {
+                throw (Error) closeFailure;
+            }
+        }
+    }
+
+    private static SharedInput acquireInput(MidiDevice device) throws MidiUnavailableException {
+        INPUT_LOCK.lock();
+        try {
+            SharedInput shared = INPUTS.get(device);
+            if (shared != null) {
+                shared.users++;
+                return shared;
+            }
+            boolean owned = !device.isOpen();
+            if (owned) {
+                try {
+                    device.open();
+                } catch (MidiUnavailableException | RuntimeException | Error failure) {
+                    try { device.close(); }
+                    catch (RuntimeException | Error closeFailure) {
+                        if (failure != closeFailure) failure.addSuppressed(closeFailure);
+                    }
+                    throw failure;
+                }
+            }
+            shared = new SharedInput(device, owned);
+            INPUTS.put(device, shared);
+            return shared;
+        } finally {
+            INPUT_LOCK.unlock();
+        }
+    }
+
+    private static void releaseInput(SharedInput shared) {
+        INPUT_LOCK.lock();
+        try {
+            if (--shared.users == 0) {
+                INPUTS.remove(shared.device);
+                if (shared.owned) shared.device.close();
+            }
+        } finally {
+            INPUT_LOCK.unlock();
+        }
+    }
+
+    /** Recorder-owned openings live until the last recorder leaves; external openings remain borrowed. */
+    private static final class SharedInput {
+        private final MidiDevice device;
+        private final boolean owned;
+        private int users = 1;
+
+        private SharedInput(MidiDevice device, boolean owned) {
+            this.device = device;
+            this.owned = owned;
+        }
+    }
+
+    /**
+     * Stops recording, or cancels a prepared input, and closes the transmitter.
      *
      * <p>Any notes that were still held (note-on without note-off) are
      * finalized at the stop time.</p>
      */
     public void stopRecording() {
-        if (!recording) {
-            return;
+        lifecycleLock.lock();
+        try {
+            boolean wasRecording;
+            synchronized (this) {
+                if (!prepared) return;
+                wasRecording = recording;
+                recording = false;
+                prepared = false;
+            }
+            Throwable failure = null;
+            try {
+                if (wasRecording) {
+                    synchronized (this) { finalizeHeldNotes(); }
+                }
+            } catch (RuntimeException | Error finishingFailure) {
+                failure = finishingFailure;
+                throw finishingFailure;
+            } finally {
+                // A provider may wait for its receiver during close; the receiver monitor is free.
+                closeInput(failure);
+            }
+        } finally {
+            lifecycleLock.unlock();
         }
-        recording = false;
-        if (transmitter != null) {
-            transmitter.close();
-            transmitter = null;
-        }
-        // Finalize any held notes
-        finalizeHeldNotes();
     }
 
     /**
@@ -249,7 +430,7 @@ public final class MidiRecorder {
      *
      * @return {@code true} if recording
      */
-    public boolean isRecording() {
+    public synchronized boolean isRecording() {
         return recording;
     }
 
@@ -268,7 +449,7 @@ public final class MidiRecorder {
      *
      * @return the session-recorded note list
      */
-    public List<MidiNoteData> getRecordedNotes() {
+    public synchronized List<MidiNoteData> getRecordedNotes() {
         return Collections.unmodifiableList(new ArrayList<>(sessionNotes));
     }
 
@@ -290,8 +471,8 @@ public final class MidiRecorder {
         for (int noteNumber = 0; noteNumber < 128; noteNumber++) {
             if (activeNoteStarts[noteNumber] >= 0) {
                 int startColumn = activeNoteStarts[noteNumber];
-                int endColumn = clip.isEmpty() ? startColumn + 1
-                        : Math.max(startColumn + 1, startColumn + 1);
+                long elapsedUs = Math.max(lastRelativeUs, elapsedMonotonicUs());
+                int endColumn = timestampToColumn(Math.max(0, elapsedUs - countInDurationUs)) + startColumnOffset;
                 int duration = Math.max(1, endColumn - startColumn);
                 MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                         duration, activeNoteVelocities[noteNumber], channel);
@@ -301,6 +482,10 @@ public final class MidiRecorder {
                 activeNoteStarts[noteNumber] = -1;
             }
         }
+    }
+
+    private long elapsedMonotonicUs() {
+        return Math.max(0, (monotonicNanos.getAsLong() - monotonicOriginNanos) / 1_000);
     }
 
     private void notifyNoteRecorded(MidiNoteData note) {
@@ -331,6 +516,12 @@ public final class MidiRecorder {
 
         @Override
         public void send(MidiMessage message, long timeStamp) {
+            synchronized (MidiRecorder.this) {
+                receive(message, timeStamp);
+            }
+        }
+
+        private void receive(MidiMessage message, long timeStamp) {
             if (!recording) {
                 return;
             }
@@ -338,12 +529,24 @@ public final class MidiRecorder {
                 return;
             }
 
-            // Initialize start time on first message
-            if (recordingStartTimeUs < 0) {
-                recordingStartTimeUs = timeStamp;
+            long relativeUs;
+            if (timeStamp < 0) {
+                usedFallbackTime = true;
+                relativeUs = elapsedMonotonicUs();
+            } else {
+                if (recordingStartTimeUs < 0) {
+                    recordingStartTimeUs = timeStamp;
+                    if (usedFallbackTime) {
+                        deviceOriginRelativeUs = Math.max(lastRelativeUs, elapsedMonotonicUs());
+                    } else {
+                        // Device-timed sessions keep their first-event origin for fallback and Stop too.
+                        monotonicOriginNanos = monotonicNanos.getAsLong();
+                    }
+                }
+                relativeUs = Math.max(0, timeStamp - recordingStartTimeUs + deviceOriginRelativeUs);
             }
-
-            long relativeUs = timeStamp - recordingStartTimeUs;
+            lastRelativeUs = Math.max(lastRelativeUs, relativeUs);
+            relativeUs = lastRelativeUs;
             int command = shortMsg.getCommand();
             int msgChannel = shortMsg.getChannel();
             int noteNumber = shortMsg.getData1();

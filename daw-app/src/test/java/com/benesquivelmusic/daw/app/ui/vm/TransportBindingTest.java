@@ -86,6 +86,10 @@ class TransportBindingTest {
         Transport transport = new Transport();
         FxDispatcher dispatcher = new FxDispatcher();
         TransportVM vm = new TransportVM(transport, dispatcher);
+        var recordState = new javafx.beans.property.ReadOnlyObjectWrapper<com.benesquivelmusic.daw.app.ui.recording.RecordState>(
+                com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+        var recordAvailable = new javafx.beans.property.ReadOnlyBooleanWrapper(true);
+        vm.bindRecordState(recordState.getReadOnlyProperty(), recordAvailable.getReadOnlyProperty());
 
         Button play = computeOnFx(Button::new);
         Button record = computeOnFx(Button::new);
@@ -112,6 +116,10 @@ class TransportBindingTest {
             assertThat(computeOnFx(() -> isActive(record))).isFalse();
 
             transport.record();
+            flushFx();
+            assertThat(computeOnFx(() -> isActive(record)))
+                    .as("transport state alone cannot claim a coordinator recording").isFalse();
+            computeOnFx(() -> { recordState.set(com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING); return null; });
             flushFx();
             assertThat(computeOnFx(() -> isActive(record)))
                     .as("record button :active follows state == RECORDING").isTrue();
@@ -227,6 +235,10 @@ class TransportBindingTest {
         transport.setTempo(120.0);
         FxDispatcher dispatcher = new FxDispatcher();
         TransportVM vm = new TransportVM(transport, dispatcher);
+        var recordState = new javafx.beans.property.ReadOnlyObjectWrapper<com.benesquivelmusic.daw.app.ui.recording.RecordState>(
+                com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+        var recordAvailable = new javafx.beans.property.ReadOnlyBooleanWrapper(true);
+        vm.bindRecordState(recordState.getReadOnlyProperty(), recordAvailable.getReadOnlyProperty());
 
         // The production wiring: a control gesture raises a command that runs
         // against the validating handler, which throws IllegalArgumentException

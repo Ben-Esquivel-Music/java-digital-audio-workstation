@@ -9,6 +9,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
@@ -396,6 +398,38 @@ class RecordStartReadinessGateContractTest {
     }
 
     // (f)
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aFailedPreparedInputActivationUsesTheCompleteCaptureStartRollback(boolean error) throws Exception {
+        pipeline = newPipeline(track);
+        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        CaptureFlushService service = pipeline.getCaptureFlushService();
+        holdTheFlushThreadInAPass(service);
+        Throwable original = error ? new AssertionError("input activation failed")
+                : new IllegalStateException("input activation failed");
+        var activations = new java.util.concurrent.atomic.AtomicInteger();
+        Thread caller = Thread.currentThread();
+        assertThatThrownBy(() -> pipeline.beginCapture(() -> {
+            activations.incrementAndGet();
+            assertThat(Thread.currentThread()).isSameAs(caller);
+            assertThat(transport.getState()).isEqualTo(TransportState.RECORDING);
+            if (original instanceof Error activationError) throw activationError;
+            throw (RuntimeException) original;
+        })).isSameAs(original);
+        assertThat(activations).hasValue(1);
+        assertThat(pipeline.getCaptureRing().isProducerClosed()).isTrue();
+        assertThat(engine.getRecordingCallback()).isNull();
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(pipeline.isActive()).isFalse();
+        assertThat(pipeline.isPreparing()).isFalse();
+        assertThat(track.isRecording()).isFalse();
+        assertThat(service.isTerminated()).isFalse();
+        assertThatThrownBy(pipeline::prepare).isInstanceOf(IllegalStateException.class);
+        release.countDown();
+        awaitWithinTheGuard(service.termination(), "the rolled-back take's termination");
+        assertThat(takeDirectoryEntries()).isEmpty();
+    }
+
     @Test
     void aSeekWhileTheTakeIsPreparedLeavesTheTakeAnchoredWhereRecordWasPressed() throws Exception {
         transport.setPositionInBeats(8.0);

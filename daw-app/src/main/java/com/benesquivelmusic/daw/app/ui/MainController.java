@@ -666,6 +666,10 @@ public final class MainController {
         // read from the VM by the per-frame tickArrangementOverlays() (the ruler
         // grid has no discrete trigger).
         transportVM = new TransportVM(project.getTransport(), disp);
+        if (transportController != null) {
+            transportVM.bindRecordState(transportController.recordCoordinator().stateProperty(),
+                    transportController.recordCoordinator().recordAvailableProperty());
+        }
         vmDisposers.add(transportVM::dispose);
         TransportControlBinder transportBinder =
                 new TransportControlBinder(transportVM, this::dispatchTransportCommand);
@@ -1541,6 +1545,17 @@ public final class MainController {
                 sessionInputSelection,
                 this::onOpenAudioSettings,
                 dispatcher());
+        if (audioEngineController instanceof DefaultAudioEngineController controller) {
+            controller.setRecordConfigurationGuard(() -> transportController.recordCoordinator().requestConfigurationChange());
+            controller.setConfigurationActivityCallback(() -> {
+                if (transportController != null) transportController.recordCoordinator().refreshRecordAvailability();
+            });
+            transportController.recordCoordinator().setConfigurationInProgressCheck(controller::isConfigurationChangeInProgress);
+        }
+        if (transportVM != null) {
+            transportVM.bindRecordState(transportController.recordCoordinator().stateProperty(),
+                    transportController.recordCoordinator().recordAvailableProperty());
+        }
         // A take the previous controller is still writing must not be
         // published into the replaced project when it finishes
         // (TransportController#retire).

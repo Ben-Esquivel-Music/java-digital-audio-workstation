@@ -1998,6 +1998,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
         boolean srcQualityApplied = false;
         boolean reconfigureAttempted = false;
         AudioRuntimeState previousState = null;
+        AudioEngineController.ConfigurationLease configurationLease = null;
         // Story 316 re-review — the REQUESTED endpoint is read FIRST of the
         // two, for the same reason its capability sibling is read before the
         // lock: a dialog detached mid-apply nulls both fields, and the
@@ -2008,6 +2009,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
         RequestedAudioEndpoint previousRequestedEndpoint = appliedRequestedEndpoint;
         LiveAudioEndpoint previousEndpoint = liveAudioEndpoint;
         try {
+            configurationLease = snapshot.controller().beginConfigurationChange();
             audioControllerOperationLock.lockInterruptibly();
             locked = true;
             if (snapshot.enumerationTask() != null) {
@@ -2083,6 +2085,22 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     effectiveBufferFrames, effectiveBitDepth, effectiveWorkerPoolSize,
                     effectiveMixPrecision, effectiveSrcQuality);
             return null;
+        } catch (AudioConfigurationDeclinedException declined) {
+            audioQueueFailed.set(true);
+            for (Map.Entry<String, Object> edit : snapshot.deferredEdits().entrySet()) {
+                asynchronousPersistedValues.remove(edit.getKey(), edit.getValue());
+            }
+            FxDispatcher.runOnFx(() -> {
+                for (String id : snapshot.deferredEdits().keySet()) {
+                    shell.settingRow(id).ifPresent(row -> {
+                        Object pending = row.getValue();
+                        shell.refreshSettingFromPersisted(id);
+                        row.setValue(pending);
+                    });
+                }
+                shell.showOperationNotice(declined.getMessage());
+            });
+            return declined;
         } catch (AudioBackendException rejected) {
             audioQueueFailed.set(true);
             restoreAudioRuntime(snapshot, previousState, previousEndpoint,
@@ -2131,8 +2149,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
             }
             return failure;
         } finally {
-            if (locked) {
-                audioControllerOperationLock.unlock();
+            try {
+                if (configurationLease != null) configurationLease.close();
+            } finally {
+                if (locked) audioControllerOperationLock.unlock();
             }
         }
     }

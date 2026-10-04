@@ -91,7 +91,8 @@ final class TransportSingleClockScanTest {
 
     @Test
     void theTransportControllerKeepsNoCopyOfTheFrameConversion() throws IOException {
-        String code = codeOf(mainSource("ui/TransportController.java"));
+        for (String owner : List.of("ui/TransportController.java", "ui/RecordCoordinator.java")) {
+        String code = codeOf(mainSource(owner));
 
         assertThat(code)
                 .as("the controller must convert through the handler that owns the "
@@ -104,6 +105,7 @@ final class TransportSingleClockScanTest {
         assertThat(code)
                 .as("the duplicated sampleRate field went with the duplicated conversion")
                 .doesNotContain("double sampleRate;");
+        }
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

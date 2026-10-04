@@ -49,23 +49,20 @@ import java.util.logging.Logger;
  * one apply — what every confirm did before the gate existed) and a
  * differently-qualified pick persists and applies.</p>
  *
- * <p><strong>Latest selection wins</strong> (PR #977 review). An ASIO reopen
- * takes seconds — long enough for a second input-port dialog to be confirmed
- * — and {@code applyConfiguration} serialises concurrent callers in
- * unspecified order, so two independent workers could leave settings and the
- * UI naming B while the engine runs A. Each selection therefore bumps a
- * {@linkplain #generation generation} on the caller's thread together with
- * the persist, and every worker applies under one {@linkplain #applyLock
- * lock}, skipping its apply when its generation is no longer the latest. In
- * every interleaving the device the engine is asked to end on is the one last
- * persisted (a failed apply is reported, not repaired): A applies only when
- * it read the generation before B was selected — it was already applying,
- * and B applies after it; otherwise A reads B's newer generation under the
- * lock and skips, so a worker never applies from a waiting state once
- * superseded. A superseded worker's failure is stale and is logged but
- * never shown — the newer worker reports its own outcome. A lock rather than
- * a single-thread executor because this class has no dispose/shutdown seam
- * and the worker is handed back to callers as a plain {@link Thread}.</p>
+ * <p>Each worker acquires the recording configuration lease before persisting
+ * its choice. Declining consent leaves the accepted session input intact;
+ * confirmed changes wait for the take's publication and cleanup. Once permitted,
+ * a backend apply failure retains the user's accepted choice and reports it.</p>
+ *
+ * <p><strong>Latest selection wins</strong> (PR #977 review). Each choice bumps
+ * {@link #generation} before starting its worker. Workers serialize under
+ * {@link #applyLock} and recheck their generation after waiting for consent.
+ * The brief {@link #selectionLock} makes that check and persistence atomic
+ * with a new choice. Selecting the accepted input also supersedes a different
+ * pending choice. An apply already in progress finishes before the latest
+ * worker applies; stale workers neither persist nor apply, and stale failures
+ * are logged without a notification. A failure of the accepted input remains
+ * available if the user cancels its replacement by reselecting that input.</p>
  */
 public final class SettingsBackedSessionInputSelection implements SessionInputSelection {
 
@@ -93,22 +90,16 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
     private final NotificationSink notifications;
     private final Runnable openAudioSettings;
 
-    /**
-     * The selection counter: bumped on the caller's thread in
-     * {@link #selectAndApply} right where the persist happens, so "the latest
-     * selection" and "the persisted device" are always the same one. The
-     * persist and the bump are two steps; they name the same device only
-     * because {@link #select} is called from one thread — the FX thread, per
-     * the interface's threading contract — so no second selection can land
-     * between them. A worker captures its own value and compares it under
-     * {@link #applyLock}.
-     */
+    /** Latest requested choice, checked again after consent before committing preferences. */
     private final AtomicLong generation = new AtomicLong();
+    private final Object selectionLock = new Object();
+    private String pendingInput;
+    private long acceptedGeneration;
+    private String deferredApplyFailure;
 
     /**
      * Serialises the apply section across workers. Virtual threads park on it
-     * cheaply; the FX thread never takes it (the persist and the bump happen
-     * before the worker starts).
+     * cheaply; the FX thread never takes it.
      */
     private final ReentrantLock applyLock = new ReentrantLock();
 
@@ -133,7 +124,9 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
 
     @Override
     public String currentDeviceName() {
-        return settings.getAudioInputDevice();
+        synchronized (selectionLock) {
+            return settings.getAudioInputDevice();
+        }
     }
 
     @Override
@@ -143,12 +136,12 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
 
     /**
      * {@link #select(AudioDeviceInfo)} exposing the worker so a caller (a test)
-     * can wait for the apply to finish. The persist and the generation bump
-     * happen synchronously before this method returns; only the engine
-     * reconfiguration is deferred. When {@code device.qualifiedName()} equals
+     * can wait for consent, persistence and the apply to finish. Only the
+     * generation bump happens synchronously; persistence waits for the recording
+     * configuration lease on the worker. When {@code device.qualifiedName()} equals
      * {@link #currentDeviceName()} — exactly, never by the bare-name tolerance
-     * of {@link #isSessionDevice} — nothing happens and no worker exists (see
-     * the class Javadoc).
+     * of {@link #isSessionDevice} — no worker exists, and a different pending
+     * selection is cancelled (see the class Javadoc).
      *
      * @param device the device the user chose; must not be {@code null}
      * @return the started virtual thread performing the apply — it skips its
@@ -159,13 +152,27 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
     public Optional<Thread> selectAndApply(AudioDeviceInfo device) {
         Objects.requireNonNull(device, "device must not be null");
         String inputDevice = device.qualifiedName();
-        if (inputDevice.equals(currentDeviceName())) {
-            return Optional.empty();
+        final Thread worker;
+        final String restoredFailure;
+        synchronized (selectionLock) {
+            if (inputDevice.equals(settings.getAudioInputDevice())) {
+                if (pendingInput != null && !inputDevice.equals(pendingInput)) {
+                    generation.incrementAndGet();
+                    pendingInput = null;
+                }
+                restoredFailure = deferredApplyFailure;
+                deferredApplyFailure = null;
+                worker = null;
+            } else {
+                long mine = generation.incrementAndGet();
+                pendingInput = inputDevice;
+                restoredFailure = null;
+                worker = Thread.ofVirtual().name("daw-session-input-apply")
+                        .unstarted(() -> applyUnlessSuperseded(mine, inputDevice));
+            }
         }
-        settings.setAudioInputDevice(inputDevice);
-        long mine = generation.incrementAndGet();
-        Thread worker = Thread.ofVirtual().name("daw-session-input-apply")
-                .unstarted(() -> applyUnlessSuperseded(mine, inputDevice));
+        if (restoredFailure != null) showApplyFailure(restoredFailure);
+        if (worker == null) return Optional.empty();
         worker.start();
         return Optional.of(worker);
     }
@@ -174,8 +181,8 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
      * The worker body: under {@link #applyLock}, applies {@code inputDevice}
      * unless a newer selection has bumped {@link #generation} past
      * {@code mine} — that selection's own worker applies its device. A failure
-     * is always logged but shown only while {@code mine} is still the latest;
-     * a superseded failure is stale.
+     * is always logged; the accepted input's outcome is retained while another
+     * choice waits for consent, so cancelling that replacement can report it.
      */
     private void applyUnlessSuperseded(long mine, String inputDevice) {
         applyLock.lock();
@@ -185,7 +192,15 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
                 return;
             }
             String backend = "<configured backend>";
-            try {
+            try (AudioEngineController.ConfigurationLease ignored = controller.beginConfigurationChange()) {
+                synchronized (selectionLock) {
+                    if (mine != generation.get()) {
+                        return;
+                    }
+                    settings.setAudioInputDevice(inputDevice);
+                    acceptedGeneration = mine;
+                    deferredApplyFailure = null;
+                }
                 String persistedBackend = settings.getAudioBackend();
                 backend = persistedBackend.isBlank()
                         ? controller.getProvisionedBackendName() : persistedBackend;
@@ -199,22 +214,29 @@ public final class SettingsBackedSessionInputSelection implements SessionInputSe
                         settings.getWorkerPoolSize()));
             } catch (RuntimeException failure) {
                 LOG.log(Level.WARNING, "Failed to apply the session input device '" + inputDevice + "'", failure);
-                if (mine != generation.get()) {
-                    return; // stale: a newer selection was made meanwhile and reports its own outcome
-                }
                 String reason = failure.getMessage() == null || failure.getMessage().isBlank()
                         ? "the configuration was rejected"
                         : failure.getMessage();
-                notifications.show(
-                        NotificationLevel.ERROR,
-                        "Session input '" + inputDevice + "' could not be applied on backend '"
-                                + backend + "': " + reason
-                                + ". Reconnect the device or choose another in Audio Settings.",
-                        "Open Audio Settings",
-                        openAudioSettings);
+                String message = "Session input '" + inputDevice + "' could not be applied on backend '"
+                        + backend + "': " + reason
+                        + ". Reconnect the device or choose another in Audio Settings.";
+                synchronized (selectionLock) {
+                    boolean accepted = mine == acceptedGeneration;
+                    boolean current = mine == generation.get() || (accepted && pendingInput == null);
+                    if (accepted) deferredApplyFailure = current ? null : message;
+                    if (!current) return;
+                }
+                showApplyFailure(message);
             }
         } finally {
+            synchronized (selectionLock) {
+                if (mine == generation.get()) pendingInput = null;
+            }
             applyLock.unlock();
         }
+    }
+
+    private void showApplyFailure(String message) {
+        notifications.show(NotificationLevel.ERROR, message, "Open Audio Settings", openAudioSettings);
     }
 }

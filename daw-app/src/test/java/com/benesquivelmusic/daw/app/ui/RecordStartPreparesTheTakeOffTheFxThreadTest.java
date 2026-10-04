@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -46,6 +47,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -592,7 +595,8 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 .isTrue();
         awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
 
-        String message = "Recording failed — could not create a take folder under the project's audio/takes";
+        String message = onFx(statusBar::getText);
+        assertThat(message).startsWith("Recording aborted — no take was started: Take-directory precondition failed:");
         assertThat(entries()).as("one ERROR").singleElement().satisfies(entry -> {
             assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
             assertThat(entry.message()).isEqualTo(message);
@@ -607,13 +611,11 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
     }
 
     /**
-     * The same failed allocation over a playing transport: the failure turn
-     * leaves the stream playback runs on open, and playback goes on. The
-     * project holds no instrument insert, so only the transport's state
-     * keeps that stream open.
+     * A failed allocation over playback must satisfy the Record guard contract:
+     * STOPPED with its stream closed, just as a failed attempt from idle.
      */
     @Test
-    void aTakeFolderThatCannotBeCreatedDuringPlaybackLeavesPlaybackAndItsStreamRunning() throws Exception {
+    void aTakeFolderThatCannotBeCreatedDuringPlaybackStopsPlaybackAndClosesItsStream() throws Exception {
         assertThatNoGraphInstrumentKeepsTheStreamOpenWhileStopped();
         makeTheTakesFolderImpossibleToCreate();
         runOnFx(controller::start);
@@ -624,15 +626,16 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 .isTrue();
         awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
 
-        String message = "Recording failed — could not create a take folder under the project's audio/takes";
+        String message = onFx(statusBar::getText);
+        assertThat(message).startsWith("Recording aborted — no take was started: Take-directory precondition failed:");
         assertThat(entries()).as("one ERROR").singleElement().satisfies(entry -> {
             assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
             assertThat(entry.message()).isEqualTo(message);
         });
-        assertThat(onFx(() -> project.getTransport().getState())).as("playback goes on")
-                .isEqualTo(TransportState.PLAYING);
-        assertThat(onFx(engine::isStreamOpen)).as("the failed allocation left the stream playback runs on open")
-                .isTrue();
+        assertThat(onFx(() -> project.getTransport().getState())).as("failed record preconditions stop playback")
+                .isEqualTo(TransportState.STOPPED);
+        assertThat(onFx(engine::isStreamOpen)).as("the failed allocation closes its stream")
+                .isFalse();
         assertThat(onFx(controller::isTakeBeingWritten)).as("nothing was allocated, nothing is owed").isFalse();
         assertThat(onFx(recIndicator::isVisible)).isFalse();
     }
@@ -670,7 +673,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 // Nothing to release.
             }
         };
-        Logger log = Logger.getLogger(TransportController.class.getName());
+        Logger log = Logger.getLogger(RecordCoordinator.class.getName());
         log.addHandler(severe);
         try {
             runOnFx(controller::toggleRecord);
@@ -691,7 +694,8 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                     assertThat(frame.getMethodName()).isEqualTo("run");
                 });
         assertThat(frames).as("and never inside the Record handler, on the FX thread")
-                .noneMatch(frame -> frame.getClassName().equals(TransportController.class.getName())
+                .noneMatch(frame -> (frame.getClassName().equals(TransportController.class.getName())
+                            || frame.getClassName().equals(RecordCoordinator.class.getName()))
                         && (frame.getMethodName().equals("onRecord") || frame.getMethodName().equals("toggleRecord")));
     }
 
@@ -759,13 +763,11 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
     }
 
     /**
-     * The same failed build over a playing transport: the failure turn
-     * leaves the stream playback runs on open, and playback goes on. The
-     * project holds no instrument insert, so only the transport's state
-     * keeps that stream open.
+     * A failed pipeline build over playback stops the transport and closes the
+     * attempt's stream after the allocated directory has been cleaned up.
      */
     @Test
-    void aTakeWhosePipelineCannotBeBuiltDuringPlaybackLeavesPlaybackAndItsStreamRunning() throws Exception {
+    void aTakeWhosePipelineCannotBeBuiltDuringPlaybackStopsPlaybackAndClosesItsStream() throws Exception {
         assertThatNoGraphInstrumentKeepsTheStreamOpenWhileStopped();
         runOnFx(() -> controller.setPipelineSetupForTest(_ -> {
             throw new IllegalStateException("injected pipeline set-up failure");
@@ -784,10 +786,10 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                     .isEqualTo("Recording aborted — no take was started: injected pipeline set-up failure");
         });
         assertThat(takeDirectories()).as("the allocated take directory was removed").isEmpty();
-        assertThat(onFx(() -> project.getTransport().getState())).as("playback goes on")
-                .isEqualTo(TransportState.PLAYING);
-        assertThat(onFx(engine::isStreamOpen)).as("the failed build left the stream playback runs on open")
-                .isTrue();
+        assertThat(onFx(() -> project.getTransport().getState())).as("failed record preconditions stop playback")
+                .isEqualTo(TransportState.STOPPED);
+        assertThat(onFx(engine::isStreamOpen)).as("the failed build closes its stream after cleanup")
+                .isFalse();
         assertThat(onFx(armed::isRecording)).isFalse();
     }
 
@@ -801,14 +803,23 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
      * directory, and that the start still counts as being written, while
      * that thread is held in a pass with the take's files on disk.
      */
-    @Test
-    void aTakeWhoseCaptureCannotBeginIsAbortedAndItsDirectoryRemovedOnlyOnceItsCaptureThreadIsDone()
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aTakeWhoseCaptureCannotBeginIsAbortedAndItsDirectoryRemovedOnlyOnceItsCaptureThreadIsDone(boolean failStop)
             throws Exception {
         HeldExecutor storage = new HeldExecutor();
         runOnFx(() -> controller.setStorageExecutorForTest(storage));
         Transport transport = project.getTransport();
+        Track midi = new Track("Keys", com.benesquivelmusic.daw.core.track.TrackType.MIDI);
+        midi.setArmed(true); midi.setMidiInputDeviceName("keys"); project.addTrack(midi);
+        var midiInput = new RecordingInFlightFixture.StubMidiInput();
+        runOnFx(() -> controller.setMidiInputDeviceResolverForTest(_ -> midiInput));
         AtomicBoolean failedOnce = new AtomicBoolean();
         AtomicBoolean heldInAPassWhenItFailed = new AtomicBoolean();
+        IllegalStateException original = new IllegalStateException("injected failure of the transport's record()");
+        IllegalStateException stopFailure = new IllegalStateException("injected failure of the transport's stop()");
+        List<RecordState> states = new CopyOnWriteArrayList<>();
+        runOnFx(() -> controller.recordCoordinator().stateProperty().addListener((_, _, next) -> states.add(next)));
         // beginCapture()'s last step is the transport's record(), after the recording
         // callback is installed and the engine started. This listener fails it, once,
         // on the FX thread — but first it holds the capture thread at its next clock
@@ -825,7 +836,10 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
-                throw new IllegalStateException("injected failure of the transport's record()");
+                throw original;
+            }
+            if (failStop && kind == Transport.ChangeKind.STATE && transport.getState() == TransportState.STOPPED) {
+                throw stopFailure;
             }
         });
         try {
@@ -843,7 +857,13 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                             "Recording aborted — no take was started: injected failure of the transport's record()");
                 });
                 assertThat(onFx(controller::isTakeBeingWritten)).as("the failed start is being written").isTrue();
+                assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.ABORTED);
+                assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isFalse();
 
+                assertThat(midiInput.isConnected()).as("last-started MIDI has been drained before flush cleanup").isFalse();
+                assertThat(midiInput.isOpen()).isFalse();
+                assertThat(onFx(midi::isRecording)).isFalse();
+                assertThat(onFx(engine::isStreamOpen)).as("the first-started stream stays open until flush termination and directory cleanup").isTrue();
                 storage.runPendingOffTheFxThread(); // whatever storage work is due while the capture thread runs
                 runOnFx(() -> { });                 // and whatever FX turn that work posted
 
@@ -857,6 +877,8 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             hold.awaitTheHeldThreadEnded(Duration.ofSeconds(30));
             assertThat(onFx(controller::isTakeBeingWritten)).as("and until its directory has been removed too")
                     .isTrue();
+            assertThat(onFx(engine::isStreamOpen)).as("terminated flush still owes directory cleanup before stream rollback").isTrue();
+            assertThat(takeDirectory).isDirectory();
             runHeldStorageUntilNothingIsBeingWritten(storage); // the removal of the take directory
         } finally {
             hold.release();
@@ -864,15 +886,31 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         }
 
         assertThat(takeDirectories()).as("nothing of the take is left under audio/takes").isEmpty();
+        assertThat(onFx(engine::isStreamOpen)).as("the stream closes last, after MIDI, flush and directory cleanup").isFalse();
         assertThat(onFx(transport::getState)).as("the rollback stopped the transport")
                 .isEqualTo(TransportState.STOPPED);
         assertThat(onFx(engine::getRecordingCallback)).as("the rollback removed the recording callback").isNull();
         assertThat(onFx(armed::isRecording)).as("the track is no longer flagged recording").isFalse();
         assertThat(onFx(controller::isRecordingInFlight)).isFalse();
         assertThat(onFx(recIndicator::isVisible)).isFalse();
+        assertThat(states).containsExactly(RecordState.PREPARING, RecordState.ABORTED, RecordState.IDLE);
+        assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isTrue();
+        if (failStop) assertThat(original.getSuppressed()).contains(stopFailure);
+        else assertThat(original.getSuppressed()).isEmpty();
         assertThat(entries()).as("still the one ERROR").hasSize(1);
+        assertThat(onFx(statusBar::getText)).isEqualTo(entries().getFirst().message());
+        assertThat(onFx(notificationBar::getCurrentLevel)).isEqualTo(NotificationLevel.ERROR);
+        assertThat(onFx(notificationBar::getMessage)).isEqualTo(entries().getFirst().message());
         assertThat(announced).as("no Started for a take that did not begin")
                 .noneMatch(TransportEvent.Started.class::isInstance);
+
+        runOnFx(controller::toggleRecord);
+        runHeldStorageUntilTheStartHasSettled(storage);
+        assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.RECORDING);
+        assertThat(midiInput.isConnected()).isTrue();
+        runOnFx(controller::stop);
+        runHeldStorageUntilTheStartHasSettled(storage);
+        assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.IDLE);
     }
 
     @Test

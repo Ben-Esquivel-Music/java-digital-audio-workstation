@@ -396,7 +396,7 @@ final class RecordingInFlightFixture implements AutoCloseable {
      * out a transmitter that keeps the receiver set on it and records whether
      * it has been closed.
      */
-    private static final class StubMidiInput implements MidiDevice {
+    static class StubMidiInput implements MidiDevice {
         private final Info info = new Info(STUB_MIDI_INPUT, "Test", "A MIDI input with no hardware", "1.0") { };
         private volatile boolean open;
         private volatile StubTransmitter transmitter;

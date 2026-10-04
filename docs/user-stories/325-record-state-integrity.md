@@ -63,3 +63,51 @@ Host-level tests driving the transport (the in-process substitute pattern — `M
 - Story 323 hands three one-shot facts from the capture-flush thread to the app as `CompletionStage`s: the take's readiness (the stage `RecordingPipeline.prepare()` returns), the early seal (`RecordingPipeline.earlySeal()`) and the end of that thread, after every Stop and after a cancelled or failed start (the stage `requestStop()` and `cancelStart()` return, also `RecordingPipeline.termination()`). Their app dependents only post to the FX thread through `FxDispatcher`, except that the one on the end of a cancelled or failed start's thread first hands the removal of its take directory, if empty, to a storage executor. The book's §4.3 and §6.1 record this as an interim departure from §6.1's `EventBus` rule for discrete facts, until this story's `RecordCoordinator`. A fourth fact, the failure of the seal a Stop requested (`RecordingPipeline.stopSealFailure()`), is no signal: the FX turn that publishes the take reads it once the thread has terminated.
 - A PREPARING state landed in story 323's review (its Copilot review round 5) between Record pressed and RECORDING, which the book's §3.2 diagram does not draw: `TransportController` opens the device on the FX thread, allocates the take directory on a storage executor and calls `RecordingPipeline.prepare()`, whose capture-flush thread creates the take's files and then completes the readiness stage; only the FX turn that readiness posts calls `beginCapture()` (callback installed, engine started, transport recording). Stop, Record pressed again or the end of a post-roll while preparing cancels the take (once its pipeline exists, `cancelStart()`: the flush thread deletes the segment and manifest files it created, unless it had already ended on its own, sealing the take early, and the take directory, if that left it empty, is removed off the FX thread once that thread has terminated; a take cancelled while its directory is still being allocated has that directory removed once the allocation returns), and a failed preparation rolls back the same way with an ERROR. A cancelled start, or one that failed once its take directory existed, counts as FINALIZING (`isTakeBeingWritten()`) until the removal of its files has run, and `isRecordingInFlight()` is true while preparing, so the in-app doors are refused throughout; Stop in RECORDING never waits for the seal, and the take is published on the FX turn its flush thread's termination posts. `RecordCoordinator` must absorb PREPARING: readiness is the "ring allocated; flush thread running" guard of the §5.2 Record-pressed row, Record pressed again and Stop cancel it through FINALIZING to IDLE, and a failed readiness is that row's guard failure. Two pieces stay with the coordinator: the device open still runs synchronously on the FX thread at Record (story 316's open, which predates the round), and Record is still accepted over a rolling transport, where `beginCapture()` seeks nothing and a take anchored at the transport's position keeps the anchor `prepare()` read, about the preparation time before where capture begins (story 323's Known limitations; story 328's capture-start gate owns the fix).
 - Testing note: capture-and-rethrow FX assertions and headless-platform setup per the repo's JavaFX headless conventions; drive the coordinator through the in-process controller substitute, not FXML loading.
+
+## Resolution
+
+`RecordCoordinator` now owns the FX-thread record machine, including asynchronous PREPARING
+and the existing FINALIZING/fence behavior. Transport intents delegate recording to it;
+read-only state/recording/availability/status feeds drive REC, Record active/disabled and
+transport status. A second Record stops the same take, while finalization prevents replacement.
+Guard failures end STOPPED, report the named cause and unwind MIDI, flush/file cleanup and
+stream ownership in reverse order. Story 316's existing no-backend hard refusal is retained.
+Early seals and failed Stop seals retain partial takes and show ERROR after publication.
+Readiness also checks the flush service's current viability. A seal already known before
+capture is refused before installation; a seal detected before announcement follows ABORTED
+and ordinary publication without REC or Started. A narrow prepared-stop operation retains
+captures/files, and the coordinator rechecks after MIDI device opening and capture startup.
+
+Audio Apply acquires a controller-wide configuration lease before the first sample-rate,
+mix/SRC or engine mutation. Consent leaves the exact request waiting off FX without the controller monitor or dialog operation lock
+until all take publication/cleanup settles. Decline leaves the live take and persisted/runtime
+settings untouched and restores pending edits as dirty. Reservation identity, modal reentry,
+retirement and replacement-project Record attempts remain guarded.
+
+MIDI inputs are opened per viable track; skipped tracks remain visibly warned and all-input
+failure refuses Record. Stop attempts every transmitter/device close, retains finalized notes
+and undo/dirty state even when a provider close fails, and keeps that error visible after a
+mixed audio take publishes. Negative timestamps use injected monotonic receipt time, including
+signed nanoTime origins, delayed first notes, held-note stop durations and mixed timestamp feeds.
+
+The private readiness, early-seal and termination `CompletionStage` protocols from stories
+323/324 are retained behind the coordinator and post through `FxDispatcher`; this change
+does not claim an EventBus migration. Audible count-in, device-loss detection/rescue and
+the strip/EngineState consumer remain stories 328, 327 and 338 respectively.
+
+## Verification
+
+Host substitutes use strict capture-and-rethrow FX actions. Regression tests cover one-take
+toggle behavior, absent/unopenable backends, preparation cancellation and stale callbacks,
+real flush termination/directory/stream rollback order, actual SettingsDialog sample-rate and
+buffer Apply consent/decline and persistence fences, bound Record/REC/status surfaces, MIDI
+close failures with retained notes/undo/dirty state, and a stale post-roll timer after an
+accepted take. Core tests cover deterministic monotonic timestamp placement. Extraction-aware
+storage/thread/clock sentinels continue to enforce the 323/324 contracts.
+
+On 2026-10-04, `mvn -B -DskipNativeBuild=true verify` completed all six reactor modules
+with BUILD SUCCESS (exit 0) in 07:15, finishing at 11:47:14-04:00. The default-profile
+run reported 12,576 tests, 18 skipped, zero failures and zero errors: SDK 1,330 (2 skipped),
+acoustics 106, core 7,686 (13 skipped), FX 29 and app 3,425 (3 skipped). Native builds
+were disabled by `skipNativeBuild=true`; no additional opt-in profiles were enabled.
+The complete verification log is `target/story325-final-verify.log`.
