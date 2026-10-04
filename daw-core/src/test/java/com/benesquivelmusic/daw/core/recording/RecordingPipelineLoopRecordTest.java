@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
@@ -158,9 +159,11 @@ class RecordingPipelineLoopRecordTest {
         int expectedFrames = blocksPerLoop * BUFFER_SIZE;
         for (int i = 0; i < 3; i++) {
             AudioClip clip = group.takes().get(i).clip();
-            float[][] data = clip.getAudioData();
-            assertThat(data).as("take %d has audio data", i).isNotNull();
+            float[][] data = RecordedAudioTestSupport.audioOnDisk(clip);
             assertThat(data[0].length).as("take %d frame count", i).isEqualTo(expectedFrames);
+            assertThat(clip.getSourceRateMetadata())
+                    .as("take %d declares what its lap captured", i)
+                    .isEqualTo(new SourceRateMetadata(44_100, 2, expectedFrames));
         }
     }
 
@@ -168,7 +171,10 @@ class RecordingPipelineLoopRecordTest {
     void takesAreContiguousAcrossLoopWrap() {
         // Feed a ramp so we can verify that no input frames are dropped at
         // the loop seam: concatenating take N's tail with take N+1's head
-        // should preserve a monotonically-increasing ramp.
+        // should preserve a monotonically-increasing ramp. The ramp steps by
+        // one 16-bit code per frame, so each frame's value survives the
+        // segment files exactly: frame n is written as code n and decodes
+        // to n / 32768.
         Track track = new Track("Audio 1", TrackType.AUDIO);
         track.setArmed(true);
 
@@ -188,7 +194,7 @@ class RecordingPipelineLoopRecordTest {
         for (int b = 0; b < totalBlocks; b++) {
             float[][] input = new float[2][BUFFER_SIZE];
             for (int f = 0; f < BUFFER_SIZE; f++) {
-                float v = (float) nextSample++;
+                float v = nextSample++ / 32767f;
                 input[0][f] = v;
                 input[1][f] = v;
             }
@@ -204,16 +210,17 @@ class RecordingPipelineLoopRecordTest {
         assertThat(group.size()).isGreaterThanOrEqualTo(3);
 
         // Concatenate the first three takes and verify the samples form a
-        // contiguous ramp (0, 1, 2, ...). This proves no frames were dropped
-        // at loop wrap boundaries.
+        // contiguous ramp (codes 0, 1, 2, ...). This proves no frames were
+        // dropped at loop wrap boundaries.
+        assertThat(nextSample).as("fixture: the ramp stays inside 16 bits").isLessThan(32_768);
         int cursor = 0;
         for (int i = 0; i < 3; i++) {
-            float[][] data = group.takes().get(i).clip().getAudioData();
-            assertThat(data).isNotNull();
+            float[][] data = RecordedAudioTestSupport.audioOnDisk(group.takes().get(i).clip());
+            assertThat(data[0]).as("take %d holds one lap", i).hasSize(blocksPerLoop * BUFFER_SIZE);
             for (int f = 0; f < data[0].length; f++) {
                 assertThat(data[0][f])
                         .as("sample %d of take %d", f, i)
-                        .isEqualTo((float) cursor);
+                        .isEqualTo(cursor / 32768f);
                 cursor++;
             }
         }

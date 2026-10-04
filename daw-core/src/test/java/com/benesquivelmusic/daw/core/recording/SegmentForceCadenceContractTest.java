@@ -294,9 +294,9 @@ class SegmentForceCadenceContractTest {
      * The force that fails is the append's own cadence check: the block
      * that lands on the boundary is written, then forced, and the force
      * throws. The early seal then seals that block too, so the session's
-     * counters, its RAM mirror (the clip's audio), the clip's duration, the
-     * sealed segment and the manifest must all hold the same frames — the
-     * block included.
+     * counter, the frames the clip declares, the clip's duration, the
+     * sealed segment the clip lists and the manifest must all hold the same
+     * frames — the block included.
      */
     @Test
     void anAppendWhoseCadenceForceFailsEndsTheTakeWithSessionClipSegmentAndManifestAgreeing() throws IOException {
@@ -349,11 +349,18 @@ class SegmentForceCadenceContractTest {
 
         assertThat(session.getTotalSamplesRecorded()).as("the session reports what the segment holds")
                 .isEqualTo(frames);
-        assertThat(session.getCapturedSampleCount()).isEqualTo((int) frames);
         assertThat(clips).hasSize(1);
         AudioClip clip = clips.getFirst();
         assertThat(clip.getSourceSegmentPaths()).containsExactly(writer.sealedPath().toAbsolutePath().toString());
-        assertThat(clip.getAudioData()[0]).as("the clip's audio, from the RAM mirror").hasSize((int) frames);
+        assertThat(clip.getSourceRateMetadata().framesPerChannel()).as("the frames the clip declares")
+                .isEqualTo(frames);
+        float[][] clipAudio = RecordedAudioTestSupport.audioOnDisk(clip);
+        assertThat(clipAudio[0]).as("the clip's audio, from the segment it lists").hasSize((int) frames);
+        for (int i = 0; i < frames; i++) {
+            if (clipAudio[0][i] != RampCaptureTestSupport.decodedRampValue(i)) {
+                assertThat(clipAudio[0][i]).as("frame %d", i).isEqualTo(RampCaptureTestSupport.decodedRampValue(i));
+            }
+        }
         double seconds = frames / MONO_16.sampleRate();
         assertThat(clip.getDurationBeats()).as("the clip's duration")
                 .isEqualTo(seconds * (rig.transport().getTempo() / 60.0));

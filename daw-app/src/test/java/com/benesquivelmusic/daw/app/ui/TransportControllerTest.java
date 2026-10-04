@@ -325,9 +325,11 @@ class TransportControllerTest {
      * Presses Stop and waits, bounded, until nothing is being written: a
      * stopped take is published on a later FX turn, once its capture thread
      * has terminated, and the files of a cancelled start are removed once
-     * that thread has deleted them. Every test that records a real take ends
-     * with it, so the take's files are closed before the temporary directory
-     * is removed.
+     * that thread has deleted them. A stopped take's audio is read back
+     * from its segments off the FX thread before it is published, and the
+     * take is being written until then, so this waits for that read too.
+     * Every test that records a real take ends with it, so the take's
+     * files are closed before the temporary directory is removed.
      */
     private static void stopAndAwaitTheTake(TransportController controller) throws Exception {
         runHandler(controller::stop);
@@ -1591,7 +1593,7 @@ class TransportControllerTest {
     /**
      * Counts the controller's completions of a stopped take
      * ({@code setTakeCompletionForTest}) — each the real
-     * {@code RecordingPipeline.completeStop()} unless the test says
+     * {@code RecordingPipeline.completeStop(Function)} unless the test says
      * otherwise — recording the pipeline and whether it ran on the FX thread.
      * The first completion may be made to throw ({@link #firstFailure}) or to
      * hand back no clip ({@link #firstReturnsNothing}: the clips the real
@@ -1607,17 +1609,18 @@ class TransportControllerTest {
         volatile boolean firstReturnsNothing;
 
         @Override
-        public List<AudioClip> complete(RecordingPipeline pipeline) {
+        public List<AudioClip> complete(RecordingPipeline pipeline,
+                                        java.util.function.Function<List<String>, float[][]> loadedAudio) {
             calls.add(pipeline);
             onFxThread.add(Platform.isFxApplicationThread());
             if (calls.size() > 1) {
-                return pipeline.completeStop();
+                return pipeline.completeStop(loadedAudio);
             }
             RuntimeException failure = firstFailure;
             if (failure != null) {
                 throw failure;
             }
-            List<AudioClip> clips = pipeline.completeStop();
+            List<AudioClip> clips = pipeline.completeStop(loadedAudio);
             if (!firstReturnsNothing) {
                 return clips;
             }
@@ -2356,7 +2359,7 @@ class TransportControllerTest {
 
     /**
      * A throwable with no {@link IOException} in its cause chain — an
-     * {@link OutOfMemoryError} from growing the RAM mirror, say — is
+     * {@link OutOfMemoryError} on the capture-flush thread, say — is
      * reported as a failed capture, by its type and message, and the disk is
      * not blamed for it.
      */

@@ -15,10 +15,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.assumeSymbolicLinks;
+import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.audioOnDisk;
+import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.decoded16;
 import static com.benesquivelmusic.daw.core.recording.RecordingSession.DEFAULT_MAX_SEGMENT_BYTES;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -26,8 +29,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@link RecordingSession} — the per-track streaming capture of story 323
  * (book §4.4, §5.3; context D10). Every block fed through
- * {@code recordAudioData} must land on disk as well as in the RAM mirror,
- * counts are exact, and every {@link RecordingSegment} names a real file.
+ * {@code recordAudioData} must land on disk — the only place the audio is
+ * kept — counts are exact, and every {@link RecordingSegment} names a real
+ * file.
  */
 class RecordingSessionTest {
 
@@ -200,19 +204,16 @@ class RecordingSessionTest {
         assertThat(sealed.filePath()).isEqualTo(trackDir.resolve("segment-000.wav")).exists();
         assertThat(sealed.streamingPath()).doesNotExist();
         assertThat(session.getTotalSamplesRecorded()).isEqualTo(fed);
-        assertThat(session.getCapturedSampleCount()).isEqualTo(fed);
         assertThat(session.getCurrentSegment()).isNull();
 
         SegmentFile.Description description = SegmentFile.describe(sealed.filePath());
         assertThat(description.sealed()).isTrue();
         assertThat(description.frameCount()).isEqualTo(fed);
         float[][] onDisk = SegmentFile.readFrames(sealed.filePath());
-        float[][] mirror = session.getCapturedAudio();
         assertThat(onDisk[0]).hasSize(fed);
         for (int i = 0; i < fed; i++) {
             assertThat(onDisk[0][i]).as("frame %d", i).isEqualTo(i / 32768f);
             assertThat(onDisk[1][i]).as("frame %d", i).isEqualTo(-i / 32768f);
-            assertThat(mirror[0][i]).isEqualTo(i / 32767f);
         }
     }
 
@@ -247,9 +248,9 @@ class RecordingSessionTest {
         assertThat(SegmentFile.describe(first.filePath()).frameCount()).isEqualTo(300);
         assertThat(SegmentFile.describe(second.streamingPath()).frameCount()).isZero();
 
-        // The mirror spans both segments; the next block lands in segment-001.
+        // The count spans both segments; the next block lands in segment-001.
         session.recordAudioData(block(50, 0.4f, -0.4f), 50);
-        assertThat(session.getCapturedSampleCount()).isEqualTo(350);
+        assertThat(session.getTotalSamplesRecorded()).isEqualTo(350);
         assertThat(SegmentFile.describe(second.streamingPath()).frameCount()).isEqualTo(50);
 
         session.stop();
@@ -420,8 +421,8 @@ class RecordingSessionTest {
         session.recordAudioData(block(1000, 0.5f, 0.5f), 1000);
 
         assertThat(session.getTotalSamplesRecorded()).isZero();
-        assertThat(session.getCapturedSampleCount()).isZero();
-        assertThat(session.getCapturedAudio()).isNull();
+        assertThat(session.getSegments()).as("no segment, so no file holds a frame").isEmpty();
+        assertThat(session.getCurrentWriter()).isNull();
     }
 
     @Test
@@ -433,28 +434,25 @@ class RecordingSessionTest {
         session.recordAudioData(block(1000, 0.5f, 0.5f), 1000);
 
         assertThat(session.getTotalSamplesRecorded()).isZero();
-        assertThat(session.getCapturedSampleCount()).isZero();
         assertThat(session.getCurrentWriter().frameCount()).isZero();
     }
 
     @Test
-    void shouldRecordAudioDataIntoBufferAndOntoDisk() {
+    void shouldRecordAudioDataOntoDisk() {
         RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
         session.recordAudioData(block(512, 0.5f, -0.5f), 512);
 
-        assertThat(session.getCapturedSampleCount()).isEqualTo(512);
         assertThat(session.getTotalSamplesRecorded()).isEqualTo(512);
         assertThat(session.getCurrentWriter().frameCount()).isEqualTo(512);
         assertThat(session.getCurrentWriter().dataBytes()).isEqualTo(512L * BYTES_PER_FRAME);
 
-        float[][] captured = session.getCapturedAudio();
-        assertThat(captured).isNotNull();
+        float[][] captured = audioOnDisk(session);
         assertThat(captured).hasNumberOfRows(2);
-        assertThat(captured[0]).hasSize(512);
-        assertThat(captured[0][0]).isEqualTo(0.5f);
-        assertThat(captured[1][0]).isEqualTo(-0.5f);
+        assertThat(captured[0]).hasSize(512).containsOnly(decoded16(0.5f));
+        assertThat(captured[1]).hasSize(512).containsOnly(decoded16(-0.5f));
+        assertThat(decoded16(0.5f)).as("fixture: 0.5 survives 16 bits exactly").isEqualTo(0.5f);
     }
 
     @Test
@@ -465,18 +463,18 @@ class RecordingSessionTest {
         session.recordAudioData(block(256, 0.1f, 0.2f), 256);
         session.recordAudioData(block(256, 0.3f, 0.4f), 256);
 
-        assertThat(session.getCapturedSampleCount()).isEqualTo(512);
-        float[][] captured = session.getCapturedAudio();
-        assertThat(captured).isNotNull();
+        assertThat(session.getTotalSamplesRecorded()).isEqualTo(512);
+        float[][] captured = audioOnDisk(session);
         assertThat(captured[0]).hasSize(512);
-        assertThat(captured[0][0]).isEqualTo(0.1f);
-        assertThat(captured[0][256]).isEqualTo(0.3f);
-        assertThat(captured[1][0]).isEqualTo(0.2f);
-        assertThat(captured[1][256]).isEqualTo(0.4f);
+        assertThat(captured[0][0]).isEqualTo(decoded16(0.1f));
+        assertThat(captured[0][255]).isEqualTo(decoded16(0.1f));
+        assertThat(captured[0][256]).isEqualTo(decoded16(0.3f));
+        assertThat(captured[1][0]).isEqualTo(decoded16(0.2f));
+        assertThat(captured[1][256]).isEqualTo(decoded16(0.4f));
     }
 
     @Test
-    void narrowerRoutedBlocksLeaveTheRemainingChannelsSilentOnDiskAndInRam() throws IOException {
+    void narrowerRoutedBlocksLeaveTheRemainingChannelsSilentOnDisk() throws IOException {
         AudioFormat quad = new AudioFormat(48_000.0, 4, 16, 256);
         Path trackDir = tempDir.resolve("quad");
         RecordingSession session = tracked(new RecordingSession(quad, trackDir));
@@ -485,18 +483,39 @@ class RecordingSessionTest {
         session.recordAudioData(block(64, 0.25f, -0.25f), 64);
         session.stop();
 
-        float[][] mirror = session.getCapturedAudio();
-        assertThat(mirror).hasNumberOfRows(4);
-        assertThat(mirror[0]).containsOnly(0.25f);
-        assertThat(mirror[2]).containsOnly(0f);
         float[][] disk = SegmentFile.readFrames(trackDir.resolve("segment-000.wav"));
         assertThat(disk).hasNumberOfRows(4);
+        assertThat(disk[0]).hasSize(64).containsOnly(0.25f);
         assertThat(disk[1]).containsOnly(-0.25f); // round(-0.25 * 32767) = -8192 → exactly -0.25
+        assertThat(disk[2]).containsOnly(0f);
         assertThat(disk[3]).containsOnly(0f);
     }
 
     @Test
-    void aFailedAppendLeavesMirrorAndCountsMatchingTheDisk() {
+    void aChannelOrATailTheBlockDoesNotProvideIsSilentNotTheBlockBeforeIt() throws IOException {
+        // The staging block is reused: what an earlier block left in it must
+        // never reach the file under a later, narrower or shorter one.
+        Path trackDir = tempDir.resolve("stale");
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
+        session.start();
+
+        session.recordAudioData(block(64, 0.5f, 0.5f), 64);
+        session.recordAudioData(new float[][] {new float[64]}, 64);      // one row only
+        float[][] shortRows = block(16, 0.25f, 0.25f);
+        session.recordAudioData(shortRows, 64);                           // rows end at frame 16
+        session.stop();
+
+        float[][] disk = SegmentFile.readFrames(trackDir.resolve("segment-000.wav"));
+        assertThat(disk[0]).hasSize(192);
+        assertThat(Arrays.copyOfRange(disk[1], 0, 64)).containsOnly(0.5f);
+        assertThat(Arrays.copyOfRange(disk[1], 64, 128)).as("the row the second block lacks").containsOnly(0f);
+        assertThat(Arrays.copyOfRange(disk[0], 128, 144)).containsOnly(0.25f);
+        assertThat(Arrays.copyOfRange(disk[0], 144, 192)).as("past the end of a short row").containsOnly(0f);
+        assertThat(Arrays.copyOfRange(disk[1], 144, 192)).containsOnly(0f);
+    }
+
+    @Test
+    void aFailedAppendLeavesTheCountsMatchingTheDisk() throws IOException {
         Path trackDir = tempDir.resolve("fault");
         RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir));
         session.start();
@@ -506,14 +525,17 @@ class RecordingSessionTest {
         assertThatThrownBy(() -> session.recordAudioData(block(100, 0.2f, 0.2f), 100))
                 .isInstanceOf(UncheckedIOException.class);
 
-        assertThat(session.getCapturedSampleCount()).isEqualTo(100);
         assertThat(session.getTotalSamplesRecorded()).isEqualTo(100);
         assertThat(session.getCurrentWriter().frameCount()).isEqualTo(100);
         assertThat(session.isActive()).as("the session itself stays usable; the flush service decides").isTrue();
         session.recordAudioData(block(100, 0.3f, 0.3f), 100);
-        assertThat(session.getCapturedAudio()[0][100]).isEqualTo(0.3f);
         session.stop();
         assertThat(session.getSegments().getFirst().sampleCount()).isEqualTo(200);
+        float[][] disk = SegmentFile.readFrames(trackDir.resolve("segment-000.wav"));
+        assertThat(disk[0][99]).isEqualTo(decoded16(0.1f));
+        assertThat(disk[0][100]).as("the refused block left nothing; the next one follows the first")
+                .isEqualTo(decoded16(0.3f));
+        assertThat(Arrays.copyOfRange(disk[0], 100, 200)).containsOnly(decoded16(0.3f));
     }
 
     @Test
@@ -523,12 +545,12 @@ class RecordingSessionTest {
         float[][] input = new float[2][512];
         session.recordAudioData(input, 512);
 
-        assertThat(session.getCapturedSampleCount()).isZero();
-        assertThat(session.getCapturedAudio()).isNull();
+        assertThat(session.getTotalSamplesRecorded()).isZero();
+        assertThat(session.getSegments()).isEmpty();
     }
 
     @Test
-    void shouldNotRecordAudioDataWhenPaused() {
+    void shouldNotRecordAudioDataWhenPaused() throws IOException {
         RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
         session.pause();
@@ -537,34 +559,88 @@ class RecordingSessionTest {
         input[0][0] = 0.5f;
         session.recordAudioData(input, 512);
 
-        assertThat(session.getCapturedSampleCount()).isZero();
+        assertThat(session.getTotalSamplesRecorded()).isZero();
+        assertThat(SegmentFile.describe(session.getCurrentSegment().streamingPath()).frameCount()).isZero();
     }
 
     @Test
-    void shouldReturnNullCapturedAudioWhenNothingRecorded() {
+    void aStartedSessionHoldsNoFramesUntilABlockArrives() throws IOException {
         RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
-        assertThat(session.getCapturedAudio()).isNull();
-        assertThat(session.getCapturedSampleCount()).isZero();
+        assertThat(session.getTotalSamplesRecorded()).isZero();
+        assertThat(audioOnDisk(session)[0]).isEmpty();
+        assertThat(SegmentFile.describe(session.getCurrentSegment().streamingPath()).frameCount()).isZero();
     }
 
     @Test
-    void shouldGrowBufferBeyondInitialCapacity() {
+    void twelveSecondsOfBlocksLandOnDiskThroughOneFixedStagingBlock() throws IOException {
         RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, tempDir));
         session.start();
 
-        // Record enough data to exceed the initial ~10 second buffer
+        // Each block is longer than the staging block, so each is staged in chunks.
+        assertThat(44100).isGreaterThan(RecordingSession.STAGING_FRAMES);
         float[][] block = new float[2][44100];
+        for (int i = 0; i < 44100; i++) {
+            block[0][i] = (i % 4001 - 2000) / 32767f;
+        }
         for (int i = 0; i < 12; i++) {
             session.recordAudioData(block, 44100);
         }
 
-        assertThat(session.getCapturedSampleCount()).isEqualTo(44100 * 12);
-        float[][] captured = session.getCapturedAudio();
-        assertThat(captured).isNotNull();
-        assertThat(captured[0]).hasSize(44100 * 12);
+        assertThat(session.getTotalSamplesRecorded()).isEqualTo(44100L * 12);
         assertThat(session.getCurrentWriter().frameCount()).isEqualTo(44100L * 12);
+        assertThat(session.getSegmentCount()).as("no rotation between the chunks of a block").isEqualTo(1);
+        session.stop();
+        float[][] disk = SegmentFile.readFrames(session.getSegments().getFirst().filePath());
+        assertThat(disk[0]).hasSize(44100 * 12);
+        for (int i = 0; i < disk[0].length; i++) {
+            if (disk[0][i] != (i % 44100 % 4001 - 2000) / 32768f) {
+                assertThat(disk[0][i]).as("frame %d", i).isEqualTo((i % 44100 % 4001 - 2000) / 32768f);
+            }
+        }
+    }
+
+    @Test
+    void aBlockLongerThanTheStagingBlockRotatesBetweenItsChunks() throws IOException {
+        // Cap = 1.5 staging blocks. A block of 2.5 staging blocks is three
+        // chunks: the second would pass the cap, so the first seals alone;
+        // the second and the half-size third fit together and end exactly on
+        // the cap, which rotates again.
+        int staging = RecordingSession.STAGING_FRAMES;
+        long cap = (long) staging * BYTES_PER_FRAME * 3 / 2;
+        Path trackDir = tempDir.resolve("chunks");
+        RecordingSession session = tracked(new RecordingSession(AudioFormat.CD_QUALITY, trackDir,
+                Duration.ofHours(1), cap));
+        session.start();
+        int frames = staging * 5 / 2;
+        float[][] block = new float[2][frames];
+        for (int i = 0; i < frames; i++) {
+            block[0][i] = (i % 4001 - 2000) / 32767f;
+        }
+        // The second row ends inside the first chunk: the later chunks start past its end.
+        block[1] = new float[100];
+        Arrays.fill(block[1], 0.25f);
+
+        session.recordAudioData(block, frames);
+        session.stop();
+
+        assertThat(session.getSegments()).extracting(RecordingSegment::sampleCount)
+                .containsExactly((long) staging, (long) staging * 3 / 2);
+        assertThat(session.getSegments()).allSatisfy(
+                segment -> assertThat(segment.sizeBytes()).isLessThanOrEqualTo(cap));
+        assertThat(session.getTotalSamplesRecorded()).isEqualTo(frames);
+        float[][] disk = SegmentFile.readFrames(session.getSegments().stream()
+                .map(RecordingSegment::filePath).toList());
+        assertThat(disk[0]).hasSize(frames);
+        for (int i = 0; i < frames; i++) {
+            if (disk[0][i] != (i % 4001 - 2000) / 32768f) {
+                assertThat(disk[0][i]).as("frame %d", i).isEqualTo((i % 4001 - 2000) / 32768f);
+            }
+        }
+        assertThat(Arrays.copyOfRange(disk[1], 0, 100)).containsOnly(0.25f);
+        assertThat(Arrays.copyOfRange(disk[1], 100, frames)).as("silent past the short row's end, in every chunk")
+                .containsOnly(0f);
     }
 
     @Test

@@ -436,6 +436,7 @@ public final class Transport {
     }
 
     /** Returns the current playback position in beats. */
+    @RealTimeSafe
     public double getPositionInBeats() {
         return positionInBeats;
     }
@@ -715,6 +716,7 @@ public final class Transport {
     }
 
     /** Returns {@code true} if loop mode is enabled. */
+    @RealTimeSafe
     public boolean isLoopEnabled() {
         return loopWindow.enabled();
     }
@@ -1054,6 +1056,7 @@ public final class Transport {
      *
      * @return the punch region, or {@code null}
      */
+    @RealTimeSafe
     public PunchRegion getPunchRegion() {
         return punchRegion;
     }

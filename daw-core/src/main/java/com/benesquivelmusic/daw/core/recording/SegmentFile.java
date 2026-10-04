@@ -9,6 +9,7 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -125,31 +126,111 @@ public final class SegmentFile {
                 throw new IOException(file + " holds " + frameCount
                         + " frames, more than a single in-memory clip can carry");
             }
-            int channels = header.channels();
-            int bytesPerFrame = header.bytesPerFrame();
-            boolean ieeeFloat = header.formatCode() == PcmSampleEncoding.FORMAT_IEEE_FLOAT;
-            float[][] audio = new float[channels][(int) frameCount];
-            ByteBuffer chunk = ByteBuffer.allocate(READ_CHUNK_FRAMES * bytesPerFrame)
-                    .order(ByteOrder.LITTLE_ENDIAN);
-            long position = HEADER_BYTES;
-            int decoded = 0;
-            while (decoded < frameCount) {
-                int frames = (int) Math.min(READ_CHUNK_FRAMES, frameCount - decoded);
-                int bytes = frames * bytesPerFrame;
-                chunk.clear().limit(bytes);
-                readFully(fc, chunk, position);
-                chunk.flip();
-                for (int f = 0; f < frames; f++) {
-                    for (int ch = 0; ch < channels; ch++) {
-                        audio[ch][decoded + f] = ieeeFloat
-                                ? chunk.getFloat()
-                                : decodePcm(chunk, header.bitDepth());
-                    }
-                }
-                position += bytes;
-                decoded += frames;
-            }
+            float[][] audio = new float[header.channels()][(int) frameCount];
+            decodeInto(fc, header, audio, 0, (int) frameCount);
             return audio;
+        }
+    }
+
+    /**
+     * Reads the segments of one take, in the order given, into a single
+     * {@code [channel][frame]} array: the frames of each segment follow the
+     * frames of the one before it, as they were captured. Every segment is
+     * described first; the array is then allocated once at the summed frame
+     * count and each segment is decoded straight into its place in it.
+     * Sealed {@code .wav} and streaming {@code .part} files may be mixed.
+     *
+     * <p>A {@code .part} that is still being written contributes the whole
+     * frames it held when it was described.</p>
+     *
+     * @param segments the segment files in playback order; at least one
+     * @return the decoded frames (each row as long as the segments' frame
+     *         counts added up)
+     * @throws IllegalArgumentException if {@code segments} is empty: with no
+     *                                  file there is no channel count to
+     *                                  shape the result by
+     * @throws IOException              on the conditions of
+     *                                  {@link #describe(Path)} for any
+     *                                  segment; if a segment's channel count
+     *                                  or sample rate differs from the first
+     *                                  segment's; if the segments together
+     *                                  hold more than {@link Integer#MAX_VALUE}
+     *                                  frames; or if a segment ends before
+     *                                  the frames it was described with
+     */
+    public static float[][] readFrames(List<Path> segments) throws IOException {
+        List<Path> files = List.copyOf(Objects.requireNonNull(segments, "segments must not be null"));
+        if (files.isEmpty()) {
+            throw new IllegalArgumentException("segments must not be empty");
+        }
+        Description[] descriptions = new Description[files.size()];
+        long totalFrames = 0;
+        for (int i = 0; i < descriptions.length; i++) {
+            Path file = files.get(i);
+            Description description = describe(file);
+            Description first = descriptions[0] == null ? description : descriptions[0];
+            if (description.channels() != first.channels()) {
+                throw new IOException(file + " has " + description.channels()
+                        + " channel(s) but " + files.getFirst() + " has " + first.channels()
+                        + ": the segments of one take share a channel count");
+            }
+            if (description.sampleRate() != first.sampleRate()) {
+                throw new IOException(file + " has a sample rate of " + (int) description.sampleRate()
+                        + " Hz but " + files.getFirst() + " has " + (int) first.sampleRate()
+                        + " Hz: the segments of one take share a sample rate");
+            }
+            descriptions[i] = description;
+            totalFrames += description.frameCount();
+        }
+        if (totalFrames > Integer.MAX_VALUE) {
+            throw new IOException("the " + files.size() + " segments from " + files.getFirst()
+                    + " hold " + totalFrames + " frames, more than a single in-memory clip can carry");
+        }
+        float[][] audio = new float[descriptions[0].channels()][(int) totalFrames];
+        int offset = 0;
+        for (int i = 0; i < descriptions.length; i++) {
+            Path file = files.get(i);
+            int frames = (int) descriptions[i].frameCount();
+            try (FileChannel fc = FileChannel.open(file, StandardOpenOption.READ)) {
+                Header header = readHeader(file, fc);
+                if (header.channels() != audio.length) {
+                    throw new IOException(file + " changed its channel count while it was being read");
+                }
+                decodeInto(fc, header, audio, offset, frames);
+            }
+            offset += frames;
+        }
+        return audio;
+    }
+
+    /**
+     * Decodes the first {@code frameCount} frames of an open segment into
+     * {@code audio[ch][offset .. offset + frameCount)}.
+     */
+    private static void decodeInto(FileChannel fc, Header header, float[][] audio,
+                                   int offset, int frameCount) throws IOException {
+        int channels = header.channels();
+        int bytesPerFrame = header.bytesPerFrame();
+        boolean ieeeFloat = header.formatCode() == PcmSampleEncoding.FORMAT_IEEE_FLOAT;
+        ByteBuffer chunk = ByteBuffer.allocate(READ_CHUNK_FRAMES * bytesPerFrame)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        long position = HEADER_BYTES;
+        int decoded = 0;
+        while (decoded < frameCount) {
+            int frames = Math.min(READ_CHUNK_FRAMES, frameCount - decoded);
+            int bytes = frames * bytesPerFrame;
+            chunk.clear().limit(bytes);
+            readFully(fc, chunk, position);
+            chunk.flip();
+            for (int f = 0; f < frames; f++) {
+                for (int ch = 0; ch < channels; ch++) {
+                    audio[ch][offset + decoded + f] = ieeeFloat
+                            ? chunk.getFloat()
+                            : decodePcm(chunk, header.bitDepth());
+                }
+            }
+            position += bytes;
+            decoded += frames;
         }
     }
 

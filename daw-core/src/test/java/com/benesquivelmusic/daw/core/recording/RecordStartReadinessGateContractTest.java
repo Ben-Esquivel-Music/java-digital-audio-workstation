@@ -279,7 +279,7 @@ class RecordStartReadinessGateContractTest {
         feedOne(0);
         pipeline.awaitFlushed();
         assertThat(stopRecording(pipeline)).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(BLOCK_FRAMES));
     }
 
     // (b)
@@ -547,7 +547,7 @@ class RecordStartReadinessGateContractTest {
         feedOne(0);
         pipeline.awaitFlushed();
         assertThat(stopRecording(pipeline)).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(BLOCK_FRAMES));
     }
 
     // (h), after a rolled-back beginCapture

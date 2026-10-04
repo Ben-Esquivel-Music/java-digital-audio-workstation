@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.recording;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
@@ -119,6 +120,30 @@ final class RampCaptureTestSupport {
     static float decodedRampValue(long frame) {
         int k = (int) (frame % 4001) - 2000;
         return k / 32768f;
+    }
+
+    /**
+     * Asserts that {@code decoded} holds exactly {@code frames} frames and
+     * that frame {@code i} of it is the ramp's global frame
+     * {@code firstFrame + i} as a 16-bit segment decodes it.
+     */
+    static void assertDecodedRamp(float[] decoded, long firstFrame, long frames) {
+        assertThat(decoded.length).as("decoded frames").isEqualTo((int) frames);
+        for (int i = 0; i < decoded.length; i++) {
+            float expected = decodedRampValue(firstFrame + i);
+            if (decoded[i] != expected) {
+                assertThat(decoded[i]).as("frame %d (ramp frame %d)", i, firstFrame + i).isEqualTo(expected);
+            }
+        }
+    }
+
+    /**
+     * Asserts that the segment files {@code clip} lists hold exactly
+     * {@code frames} frames — the frames the clip declares — and that they
+     * are the ramp from global frame {@code firstFrame}.
+     */
+    static void assertClipHoldsRamp(AudioClip clip, long firstFrame, long frames) {
+        assertDecodedRamp(RecordedAudioTestSupport.audioOnDisk(clip)[0], firstFrame, frames);
     }
 
     /** Fills a mono block with the ramp starting at global frame {@code firstFrame}. */

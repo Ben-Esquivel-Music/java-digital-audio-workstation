@@ -865,7 +865,12 @@ public final class TakeManifest {
          * Removes the entry with the same (trackId, lane, index), if any. The
          * flush thread uses this when a zero-frame tail segment is discarded
          * at seal time instead of being sealed (its file is deleted, so the
-         * manifest must stop naming it).
+         * manifest must stop naming it), when a pre-opened loop lane is
+         * discarded — also if its empty file could not be deleted: the file
+         * is no segment of the take — and when such a lane hands its open,
+         * empty file to the lane before it at a rotation: the file is not
+         * deleted then, and the same index is listed again under that
+         * lane.
          *
          * @return whether an entry was removed
          */

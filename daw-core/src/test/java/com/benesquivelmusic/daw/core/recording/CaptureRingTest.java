@@ -538,6 +538,131 @@ class CaptureRingTest {
     }
 
     @Test
+    void theProducerGateIsOpenUntilItIsClosedAndStaysClosed() {
+        CaptureRing ring = ring(8);
+        assertThat(ring.isProducerClosed()).isFalse();
+        assertThat(ring.enterProducer()).as("an open gate lets the callback in").isTrue();
+        assertThat(ring.producerOpen()).isTrue();
+        ring.exitProducer();
+
+        ring.closeProducer();
+        ring.closeProducer();
+
+        assertThat(ring.isProducerClosed()).isTrue();
+        assertThat(ring.producerOpen()).isFalse();
+        assertThat(ring.enterProducer()).as("a closed gate turns the callback away").isFalse();
+        ring.exitProducer();
+        assertThat(ring.awaitProducerQuiescent(0)).as("every entry was paired with an exit").isTrue();
+    }
+
+    @Test
+    void aCallbackThatEnteredBeforeTheGateClosedReadsItClosedBeforeItsPublish() {
+        CaptureRing ring = ring(8);
+        assertThat(ring.enterProducer()).isTrue();
+        CaptureRing.Slot slot = ring.claim();
+        assertThat(slot).isNotNull();
+
+        ring.closeProducer();
+
+        assertThat(ring.producerOpen()).as("the read the callback makes right before its publish").isFalse();
+        ring.exitProducer();
+        assertThat(ring.publishedBlocks()).as("the block was never published").isZero();
+        assertThat(ring.peek()).isNull();
+    }
+
+    @Test
+    void awaitProducerQuiescentReturnsAtOnceWhenNoCallbackIsInside() throws InterruptedException {
+        CaptureRing ring = ring(8);
+        // A bound of twice the guard: only a return that does not wait passes.
+        long bound = RampCaptureTestSupport.HANG_GUARD.multipliedBy(2).toNanos();
+        AtomicBoolean quiescent = new AtomicBoolean();
+        Throwable thrown = RampCaptureTestSupport.outcomeWithinTheGuard("await-nobody-inside",
+                () -> quiescent.set(ring.awaitProducerQuiescent(bound)));
+        assertThat(thrown).isNull();
+        assertThat(quiescent).isTrue();
+
+        ring.enterProducer();
+        ring.exitProducer();
+        thrown = RampCaptureTestSupport.outcomeWithinTheGuard("await-after-a-callback-left",
+                () -> quiescent.set(ring.awaitProducerQuiescent(bound)));
+        assertThat(thrown).isNull();
+        assertThat(quiescent).as("a callback that has left is not waited for").isTrue();
+    }
+
+    @Test
+    void awaitProducerQuiescentGivesUpAtItsBoundWhileACallbackIsInside() throws InterruptedException {
+        CaptureRing ring = ring(8);
+        ring.enterProducer();
+        AtomicBoolean quiescent = new AtomicBoolean(true);
+
+        Throwable thrown = RampCaptureTestSupport.outcomeWithinTheGuard("await-bound",
+                () -> quiescent.set(ring.awaitProducerQuiescent(Duration.ofMillis(50).toNanos())));
+
+        assertThat(thrown).isNull();
+        assertThat(quiescent).as("the callback never left: the wait reports it").isFalse();
+        assertThat(ring.awaitProducerQuiescent(0)).as("a single look says the same").isFalse();
+        assertThat(ring.awaitProducerQuiescent(-1)).isFalse();
+    }
+
+    @Test
+    void awaitProducerQuiescentReturnsOnceTheCallbackInsideHasLeft() throws InterruptedException {
+        CaptureRing ring = ring(8);
+        ring.enterProducer();
+        long bound = RampCaptureTestSupport.HANG_GUARD.multipliedBy(2).toNanos();
+        AtomicBoolean quiescent = new AtomicBoolean();
+        CountDownLatch waiting = new CountDownLatch(1);
+        Thread waiter = Thread.ofPlatform().name("await-callback-exit").daemon(true).start(() -> {
+            waiting.countDown();
+            quiescent.set(ring.awaitProducerQuiescent(bound));
+        });
+        assertThat(waiting.await(10, TimeUnit.SECONDS)).isTrue();
+
+        ring.exitProducer();
+
+        waiter.join(RampCaptureTestSupport.HANG_GUARD.toMillis());
+        assertThat(waiter.isAlive()).as("the wait ended with the callback's exit, not with its bound").isFalse();
+        assertThat(quiescent).isTrue();
+    }
+
+    @Test
+    void aSlotClaimedAndLeftUnpublishedIsHandedOutAgainReset() {
+        CaptureRing ring = ring(8);
+        float[][] block = new float[CHANNELS][SLOT_FRAMES];
+        for (float[] row : block) {
+            Arrays.fill(row, 0.5f);
+        }
+        CaptureRing.Slot abandoned = ring.claim();
+        abandoned.setStartFrame(4096);
+        abandoned.setBeatPosition(7.5);
+        abandoned.setNumFrames(SLOT_FRAMES);
+        abandoned.setTruncatedFrames(3);
+        abandoned.setPunchEnabled(true);
+        abandoned.setPunchStartFrames(10);
+        abandoned.setPunchEndFrames(20);
+        abandoned.setLoopEnabled(true);
+        abandoned.copySource(0, block, CHANNELS, SLOT_FRAMES);
+        abandoned.copySource(1, block, CHANNELS, SLOT_FRAMES);
+        long sequence = abandoned.sequence();
+
+        CaptureRing.Slot again = ring.claim();
+
+        assertThat(again).as("the same slot: nothing was published in between").isSameAs(abandoned);
+        assertThat(again.sequence()).isEqualTo(sequence);
+        assertThat(again.startFrame()).isZero();
+        assertThat(again.beatPosition()).isZero();
+        assertThat(again.numFrames()).isZero();
+        assertThat(again.truncatedFrames()).isZero();
+        assertThat(again.punchEnabled()).isFalse();
+        assertThat(again.punchStartFrames()).isZero();
+        assertThat(again.punchEndFrames()).isZero();
+        assertThat(again.loopEnabled()).isFalse();
+        assertThat(again.sourceChannels(0)).as("no source is present until it is copied again").isZero();
+        assertThat(again.sourceChannels(1)).isZero();
+        assertThat(ring.publishedBlocks()).isZero();
+        assertThat(ring.overflowCount()).isZero();
+    }
+
+    @Test
     void slotsRealTimeSafeSurfaceObeysTheRulesTheModuleScannerCannotReach() {
         // RealTimeSafeContractTest discovers classes through ModuleClassScanner,
         // which skips every nested ('$') class — so the type-level annotation on

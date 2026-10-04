@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest.SealedBy;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.SegmentEntry;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.SegmentState;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.TrackEntry;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -44,16 +45,22 @@ import java.util.logging.Logger;
  *   <li>The audio callback calls only {@link #signal()} (one unpark) after
  *       publishing a slot; it never enters this class otherwise.</li>
  *   <li>The flush thread is the only writer of segment files, the manifest,
- *       the sessions' RAM mirrors, the loop-take stacks and the ring's read
+ *       the sessions' staging blocks, the lanes' peak mirrors, the loop-take
+ *       stacks and the ring's read
  *       index — and the only thread that creates or deletes the take's
- *       segment and manifest files. Its first act is the take's
+ *       segment and manifest files, and the only one that calls the peak
+ *       sink. Its first act is the take's
  *       initialisation: it creates the take directory, starts every lane-0
- *       session (each creates {@code <trackId>/segment-000.wav.part}) and
+ *       session (each creates {@code <trackId>/segment-000.wav.part}), in
+ *       loop-record pre-opens every track's lane 1
+ *       ({@code segment-001.wav.part}, empty) and
  *       writes the initial manifest, and only then completes
  *       {@link #readiness()} and begins draining. Modeled on the ASIO shim's
  *       {@code asio-input-drain}: park when the ring is dry with a bounded
- *       {@link #PARK_BACKSTOP} backstop, drain in order, final sweep after
- *       the stop flag, then seal. Every pass — including one that finds the
+ *       {@link #PARK_BACKSTOP} backstop, drain in order, and after the stop
+ *       flag a bounded wait for the callback in flight to leave the ring's
+ *       producer gate ({@link #PRODUCER_QUIESCENCE_BOUND}), the final
+ *       sweep, then the seal. Every pass — including one that finds the
  *       ring still dry after a park — runs the cadence tick (below) once more
  *       after the blocks it drained. When it seals the take on its own it
  *       completes {@link #earlySeal()} and does nothing more about it:
@@ -78,7 +85,8 @@ import java.util.logging.Logger;
  *
  * <p><strong>Per block</strong> (context D9): (a) loop-wrap check from the
  * slot header — beat decreased while looping — seals the lane, builds the
- * lap's {@link Take} and opens the next lane; (b) the disk-headroom check
+ * lap's {@link Take} and makes the pre-opened next lane the current one
+ * (below); (b) the disk-headroom check
  * ({@link DiskHeadroomWatch#check(long)}; EXHAUSTED seals the take before
  * the block is written); (c) punch gating with the header's start frame,
  * beat and punch snapshot — the sample-accurate slicing, 5 ms cosine fades,
@@ -92,10 +100,39 @@ import java.util.logging.Logger;
  * discarded, or a truncation episode began; (h) the cadence tick, before the
  * block is released and counted.</p>
  *
+ * <p><strong>Loop lanes are opened ahead</strong> (book §4.6). In
+ * loop-record every track holds a started, empty session for its next lane
+ * — a <em>standby</em>, listed in the manifest as a streaming segment of
+ * that lane. It is opened by the take's initialisation and, after a wrap
+ * has made it the current lane or a rotation of the current lane has taken
+ * over its file, once the block that did so has been applied, before that
+ * block is released and counted.
+ * So a wrap seals, stacks and swaps, and opens no file; only when no
+ * standby is held at the index the sealed lane left free — its start was
+ * refused, or the lane ended on an empty segment — is the next lane opened
+ * at the wrap. Whatever ends the take discards the standby no lap reached:
+ * the seal deletes its file and removes its entry before the final manifest
+ * is written — the entry also when the file cannot be deleted, which is
+ * reported through the warning sink ({@link #discardStandbyLanes()}) — an
+ * abort deletes it with the take's other files. Outside
+ * loop-record no standby is opened.</p>
+ *
+ * <p><strong>Peak mirror</strong> (book §4.5). The frames each lane's
+ * session records are folded into the lane's bounded peak mirror, and an
+ * immutable {@link CapturePeakSnapshot} of every lane that gained frames is
+ * handed to the peak sink at most once per {@link #PEAK_PUBLISH_INTERVAL}
+ * of the take's clock, and once more when the lane is finalized — at a
+ * loop wrap and at the seal. The sink is called on this thread only; like
+ * the warning sink it is foreign code; whatever it throws — an
+ * {@link Error} included — is logged, once per track, and goes no
+ * further: it ends no take and replaces no seal's failure. With no peak
+ * sink no snapshot is built.</p>
+ *
  * <p><strong>Force cadence</strong> (book §2.1, §4.3). A segment's
  * un-forced bytes are {@code force(false)}d at the first check made once
  * the force cadence has elapsed, on the writer's clock, since its last
- * force (or its open) — by the append that finds it elapsed, and otherwise
+ * force (or its open; for a pre-opened loop lane, the wrap that made it
+ * current) — by the append that finds it elapsed, and otherwise
  * by the cadence tick, which runs after every block and at the end of every
  * pass. So bytes are forced on cadence when their track records nothing
  * more — a block outside the punch region or the legacy range, or one
@@ -126,7 +163,12 @@ import java.util.logging.Logger;
  * of frames; the first such block of a run is recorded as a
  * {@code gap=*|<end of its kept frames>|0} line with a warning, and the
  * running total goes into {@code truncated-frames} with every later
- * manifest write (exact at the seal).</p>
+ * manifest write (exact at the seal). A block published behind the final
+ * sweep of a stop — possible only when the wait for the callback in flight
+ * timed out, or the stop was requested without the ring's producer gate
+ * being closed — is recorded as a {@code gap=} line at the end of the last
+ * block applied, with a warning, if it is in the ring once the lanes have
+ * been sealed.</p>
  *
  * <p><strong>Failure.</strong> An {@link UncheckedIOException} from a
  * session or any other {@link Throwable} while a block is applied or while
@@ -175,6 +217,18 @@ public final class CaptureFlushService {
     /** Bounded park when the ring is dry; the callback's unpark normally wakes the thread sooner. */
     public static final Duration PARK_BACKSTOP = Duration.ofMillis(50);
 
+    /**
+     * Longest wait, after a stop request, for a callback in flight to leave
+     * the ring's producer gate before the final sweep: four
+     * {@link #PARK_BACKSTOP} periods (200 ms). A callback is inside the gate
+     * for one bounded copy — microseconds — so the wait normally ends at its
+     * first look; the bound only matters for an audio thread that was
+     * preempted inside the callback, which several backstop periods outlast,
+     * or one that died or hangs there, which must not keep the take from
+     * being sealed (book §6.1: no unbounded park on this thread).
+     */
+    public static final Duration PRODUCER_QUIESCENCE_BOUND = PARK_BACKSTOP.multipliedBy(4);
+
     /** Default bound for {@link #awaitFlushed(Duration)} callers that pass none. */
     public static final Duration DEFAULT_AWAIT_TIMEOUT = Duration.ofSeconds(10);
 
@@ -187,6 +241,13 @@ public final class CaptureFlushService {
     /** Minimum spacing, on the take's clock, of the single-attempt retries that follow a failed manifest write. */
     public static final Duration MANIFEST_RETRY_INTERVAL = Duration.ofSeconds(1);
 
+    /**
+     * Least spacing, on the take's clock, of the peak snapshots handed to
+     * the peak sink while a lane records (about 30 per second); a lane's
+     * last snapshot, when it is finalized, does not wait for it.
+     */
+    public static final Duration PEAK_PUBLISH_INTERVAL = Duration.ofMillis(33);
+
     /** Duration, in seconds, of the cosine crossfade at the punch-in and punch-out boundaries. */
     static final double PUNCH_CROSSFADE_SECONDS = 0.005;
 
@@ -195,6 +256,7 @@ public final class CaptureFlushService {
     private static final long AWAIT_POLL_NANOS = 200_000L;
     private static final long MANIFEST_RETRY_PAUSE_NANOS = MANIFEST_RETRY_PAUSE.toNanos();
     private static final long MANIFEST_RETRY_INTERVAL_NANOS = MANIFEST_RETRY_INTERVAL.toNanos();
+    private static final long PEAK_PUBLISH_INTERVAL_NANOS = PEAK_PUBLISH_INTERVAL.toNanos();
 
     /**
      * The immutable per-take configuration the flush thread works from.
@@ -233,6 +295,7 @@ public final class CaptureFlushService {
     private final List<TrackCapture> captures;
     private final DiskHeadroomWatch headroom;
     private final Consumer<String> warningSink;
+    private final Consumer<CapturePeakSnapshot> peakSink;
     private final LongSupplier nanoClock;
     private final Thread thread;
     private final TakeManifest.Builder manifest;
@@ -299,10 +362,18 @@ public final class CaptureFlushService {
      * Written at most once, by the flush thread, before it terminates.
      */
     private volatile StopSealFailure stopSealFailure;
+    /**
+     * The flush thread has left its drain loop for a stop and is waiting for
+     * the callback in flight to leave the ring's producer gate; see
+     * {@link #isAwaitingProducerExit()}.
+     */
+    private volatile boolean awaitingProducerExit;
     /** Test seams; see {@link #setBlockObserver}, {@link #failNextManifestWrites}, {@link #failNextManifestWriteWith}. */
     private volatile BlockObserver blockObserver;
     private volatile int injectedManifestFaults;
     private volatile Throwable injectedManifestFault;
+    /** Bound of the wait before the final sweep; see {@link #setProducerQuiescenceBound}. */
+    private volatile long producerQuiescenceBoundNanos = PRODUCER_QUIESCENCE_BOUND.toNanos();
 
     // Flush-thread state.
     private boolean manifestDirty;
@@ -313,6 +384,10 @@ public final class CaptureFlushService {
     private boolean finalManifestWritten;
     /** The final sweep after the stop flag is running: the cadence tick stands down for the seal. */
     private boolean finalSweep;
+    /** The final sweep has drained the ring: a block published from here on is left behind. */
+    private boolean finalSweepDone;
+    /** {@link #noteBlocksLeftBehind()} has taken its one look at the ring. */
+    private boolean leftBehindNoted;
     private boolean sealFailed;
     /** The lanes were sealed by {@link #sealEarly}, not by the seal a stop requested. */
     private boolean sealedEarly;
@@ -327,6 +402,9 @@ public final class CaptureFlushService {
     private boolean truncationEpisodeOpen;
     private double previousBeat = -1.0;
     private boolean wasInsidePunchRegion;
+    /** A rate-limited peak publication has happened; {@link #lastPeakPublishNanos} is its clock reading. */
+    private boolean peaksPublished;
+    private long lastPeakPublishNanos;
 
     private final TrackCapture.SegmentEvents segmentEvents = new TrackCapture.SegmentEvents() {
         @Override
@@ -348,10 +426,26 @@ public final class CaptureFlushService {
             manifest.removeSegment(capture.trackId(), lane, segment.index());
             manifestDirty = true;
         }
+
+        /**
+         * The file a standby lane held is now the rotating lane's next
+         * segment: the manifest is written here, before the lane appends
+         * its first frame to that file, so the manifest on disk does not go
+         * on naming the file as lane + 1's while it fills with the lane's
+         * audio. The write follows the retry rule of every other one
+         * ({@link #flushManifest()}): while a manifest failure is being
+         * retried it is one attempt per retry interval, so the manifest on
+         * disk can then stay behind until a retry lands.
+         */
+        @Override
+        public void onStandbyFileAdopted(TrackCapture capture, int lane, RecordingSegment segment) {
+            flushManifest();
+        }
     };
 
     /**
-     * Creates the service and its (unstarted) thread. Caller thread.
+     * Creates the service and its (unstarted) thread, with no sink for peak
+     * snapshots: none are delivered. Caller thread.
      *
      * @param ring        the capture ring the callback fills
      * @param config      the take configuration
@@ -362,6 +456,27 @@ public final class CaptureFlushService {
      */
     CaptureFlushService(CaptureRing ring, TakeConfig config, List<TrackCapture> captures,
                         DiskHeadroomWatch headroom, Consumer<String> warningSink, LongSupplier nanoClock) {
+        this(ring, config, captures, headroom, warningSink, null, nanoClock);
+    }
+
+    /**
+     * Creates the service and its (unstarted) thread, with a sink for the
+     * lanes' peak snapshots. Caller thread.
+     *
+     * @param ring        the capture ring the callback fills
+     * @param config      the take configuration
+     * @param captures    the armed tracks' captures, in armed order, with unstarted lane-0 sessions
+     * @param headroom    the disk-headroom watch to tick per block
+     * @param warningSink warning sink, or {@code null} to log at WARNING
+     * @param peakSink    receives every peak snapshot, on the flush thread, or
+     *                    {@code null} for none: no snapshot is then built at all
+     * @param nanoClock   monotonic clock for the headroom tick, the manifest retry interval
+     *                    and the peak publication interval
+     */
+    CaptureFlushService(CaptureRing ring, TakeConfig config, List<TrackCapture> captures,
+                        DiskHeadroomWatch headroom, Consumer<String> warningSink,
+                        Consumer<CapturePeakSnapshot> peakSink, LongSupplier nanoClock) {
+        this.peakSink = peakSink;
         this.ring = Objects.requireNonNull(ring, "ring must not be null");
         this.config = Objects.requireNonNull(config, "config must not be null");
         this.captures = List.copyOf(Objects.requireNonNull(captures, "captures must not be null"));
@@ -403,6 +518,8 @@ public final class CaptureFlushService {
      * app): it touches no storage and never waits. The take's files are
      * created by the thread itself, as its first act — the take directory,
      * every lane-0 session (each creates {@code <trackId>/segment-000.wav.part}),
+     * in loop-record each track's pre-opened lane-1 standby as well
+     * ({@code segment-001.wav.part}, listed in the manifest),
      * the initial manifest — and {@link #readiness()} reports how that went.
      * If the thread cannot be started, the service is marked terminated,
      * {@link #readiness()} completes exceptionally with the same throwable,
@@ -484,9 +601,19 @@ public final class CaptureFlushService {
             Files.createDirectories(config.takeDirectory());
             for (TrackCapture capture : captures) {
                 capture.setSegmentEvents(segmentEvents);
+                if (peakSink != null) {
+                    // With no sink the captures keep none, and build no snapshot.
+                    capture.setPeakSink(peakSink);
+                }
             }
             for (TrackCapture capture : captures) {
                 capture.startLane();
+            }
+            if (config.loopRecord()) {
+                // Lane 1 is opened here, long before the first wrap needs it.
+                for (TrackCapture capture : captures) {
+                    capture.prepareStandby();
+                }
             }
             writeManifestOnce(manifest.build());
             if (!abortRequested) {
@@ -559,6 +686,7 @@ public final class CaptureFlushService {
      * Wakes the flush thread. Audio-callback side: one {@code unpark}, no
      * allocation, never blocks — the same call the ASIO shim's callback makes.
      */
+    @RealTimeSafe
     public void signal() {
         LockSupport.unpark(thread);
     }
@@ -568,7 +696,10 @@ public final class CaptureFlushService {
      * the exit the stop flag asked for — the final sweep and the seal, the
      * discard of the take's segment and manifest files
      * ({@link #requestAbort()}), or the abandonment of the writers
-     * ({@link #stopAndAbandon()}).
+     * ({@link #stopAndAbandon()}). Only the seal reads the ring once more,
+     * so only it waits for the callback in flight first
+     * ({@link #awaitProducerQuiescence()}); a discard and an abandonment
+     * read nothing a callback writes.
      *
      * <p>Once the thread runs, readiness is decided here and nowhere else. An
      * initialisation that failed or was aborted has rolled back by the time
@@ -599,11 +730,15 @@ public final class CaptureFlushService {
                 }
             }
             if (!abortRequested && !abandonRequested) {
+                // The fence: the sweep below is the last look at the ring,
+                // so it waits for the callback in flight to be out first.
+                awaitProducerQuiescence();
                 // The seal right behind this sweep opens with a force(true)
                 // of every segment it seals; a cadence tick in the sweep
                 // would only put a force(false) in front of it.
                 finalSweep = true;
                 drainOnce();
+                finalSweepDone = true;
                 sealAll(requestedReason);
             }
         } catch (Throwable t) {
@@ -649,7 +784,78 @@ public final class CaptureFlushService {
     }
 
     /**
-     * Closes every lane's writer with no seal and no rename
+     * The flush thread's half of the stop fence (book §5.2 FINALIZING:
+     * deregister → drain → seal): waits, for at most the quiescence bound
+     * ({@link #PRODUCER_QUIESCENCE_BOUND}), until no callback is inside the
+     * ring's producer gate ({@link CaptureRing#awaitProducerQuiescent(long)}).
+     * The pipeline closes that gate before it requests the stop, so once the
+     * wait has succeeded nothing is published again and the final sweep that
+     * follows drains every block of the take. If the bound elapses with a
+     * callback still inside, the sink is warned and the thread goes on to
+     * sweep and seal. Which blocks the take then holds is decided by the
+     * final sweep, not by the warning: a block that callback publishes
+     * before the sweep's last look at the ring is applied and is part of
+     * the take; one it publishes after that look is not, and is recorded as
+     * a gap by {@link #noteBlocksLeftBehind()} if it is in the ring when
+     * that method looks. The warning says the same. Flush thread; the
+     * thread that requested the stop never waits.
+     */
+    private void awaitProducerQuiescence() {
+        awaitingProducerExit = true;
+        boolean quiescent;
+        try {
+            quiescent = ring.awaitProducerQuiescent(producerQuiescenceBoundNanos);
+        } finally {
+            awaitingProducerExit = false;
+        }
+        if (!quiescent) {
+            warn("The audio callback had not left the capture ring "
+                    + Duration.ofNanos(producerQuiescenceBoundNanos).toMillis() + " ms after the capture-flush thread"
+                    + " began waiting for it; the take under " + config.takeDirectory() + " is swept and sealed"
+                    + " without waiting any longer: a block it publishes before the final sweep has read the ring"
+                    + " is still part of the take, and one it publishes after that is not and is recorded in the"
+                    + " take manifest as a gap if it has arrived by the time the lanes are sealed");
+        }
+    }
+
+    /**
+     * Records the blocks the final sweep did not get: published to the ring
+     * after the sweep had drained it. That can only happen when the wait for
+     * the callback in flight timed out ({@link #awaitProducerQuiescence()}),
+     * or when the stop was requested without the ring's producer gate being
+     * closed. Each such block is audio the take does not hold, so it is
+     * recorded the way a ring overflow is — one {@code gap=} line at the end
+     * of the last block applied, and a warning — and goes into the final
+     * manifest, which is written right after. Does nothing unless the final
+     * sweep has completed, and nothing a second time. Flush thread, once
+     * every lane has had its seal attempt: a block published while the lanes
+     * were being sealed is counted too; one published after this look is
+     * not, and nothing ever reads it. Only published blocks are counted
+     * here: the ring's overflow counter is not read again, so on the
+     * timeout path a block the late callback had to drop because the ring
+     * was full, counted after the final sweep's overflow accounting, goes
+     * unrecorded — no gap line, and the manifest's overflow count stays at
+     * what the sweep last saw.
+     */
+    private void noteBlocksLeftBehind() {
+        if (!finalSweepDone || leftBehindNoted) {
+            return;
+        }
+        leftBehindNoted = true;
+        long leftBehind = ring.publishedBlocks() - ring.releasedBlocks();
+        if (leftBehind <= 0) {
+            return;
+        }
+        long gapStart = Math.max(0L, lastAppliedEndFrame);
+        manifest.addGap(new GapEntry(GapEntry.ALL_TRACKS, gapStart, leftBehind));
+        manifestDirty = true;
+        warn(leftBehind + " capture block(s) were published after the final sweep of the stop and are not part of"
+                + " the take, which ends at frame " + gapStart + "; the take manifest records the gap");
+    }
+
+    /**
+     * Closes every lane's writer — a pre-opened standby lane's too — with
+     * no seal and no rename
      * ({@link TrackCapture#abandonWithoutSeal()}): a writer still streaming
      * leaves its segment a {@code .part} carrying the streaming sentinel.
      * Every lane gets its turn. Flush thread, at the exit of a drain loop
@@ -678,6 +884,7 @@ public final class CaptureFlushService {
             applyBlock(slot);
             // Before the release and the count, so awaitFlushed covers it.
             forceDueSegments();
+            prepareStandbyLanes();
             // Header values are read before the release: the producer may
             // reuse the slot as soon as the read index has moved.
             long sequence = slot.sequence();
@@ -708,7 +915,8 @@ public final class CaptureFlushService {
      * The cadence tick (book §2.1, §4.3): forces every active segment whose
      * un-forced bytes are due — bytes appended since its last force, and the
      * force cadence elapsed on the writer's clock since that force (or the
-     * open) ({@link RecordingSession#forceIfCadenceElapsed()}) — whether or
+     * open, or the wrap that made a pre-opened lane current)
+     * ({@link RecordingSession#forceIfCadenceElapsed()}) — whether or
      * not the block just applied appended anything to it. It runs after
      * every block and at the end of every pass ({@link #drainOnce()}), so
      * bytes are forced on cadence when their track records nothing more (a
@@ -737,6 +945,63 @@ public final class CaptureFlushService {
         }
     }
 
+    /**
+     * Loop-record's pre-open (book §4.6): gives every track whose current
+     * lane has no standby one ({@link TrackCapture#prepareStandby()}) — the
+     * lane a wrap has just swapped in, or one whose rotation took over the
+     * standby's file — and writes the manifest that lists the new segment.
+     * It runs after each block, once the block is on its way to disk and
+     * before it is released and counted, so the open is never between a
+     * lane's seal and the first block of the next lane. It stands down
+     * outside loop-record, once the take is sealed, and in the final sweep,
+     * whose seal would only discard the standby again. A start that throws
+     * is answered like a failed append ({@link #failAndSeal(Throwable)}).
+     * Flush thread.
+     */
+    private void prepareStandbyLanes() {
+        if (!config.loopRecord() || sealed || finalSweep) {
+            return;
+        }
+        try {
+            for (TrackCapture capture : captures) {
+                capture.prepareStandby();
+            }
+            if (manifestDirty) {
+                flushManifest();
+            }
+        } catch (Throwable failure) {
+            failAndSeal(failure);
+        }
+    }
+
+    /**
+     * The rate-limited peak publication: if {@link #PEAK_PUBLISH_INTERVAL}
+     * has elapsed at {@code now} since the last one (or there was none),
+     * every lane whose mirror gained frames since its last snapshot hands
+     * the sink a new one. A call that finds no lane changed publishes
+     * nothing and leaves the interval running. The sink is foreign code,
+     * and the peaks are a picture of the take, not the take: whatever it
+     * throws — a {@link RuntimeException} or an {@link Error} — is
+     * contained by the capture ({@link TrackCapture#publishPeaksIfChanged()}),
+     * logged once per track, and never ends a take; the attempt counts as
+     * a publication, so a sink that throws is still called at most once per
+     * interval. With no sink this does nothing. Flush thread, after a block
+     * was applied; {@code now} is the block's one clock reading.
+     */
+    private void publishPeaksIfDue(long now) {
+        if (peaksPublished && now - lastPeakPublishNanos < PEAK_PUBLISH_INTERVAL_NANOS) {
+            return;
+        }
+        boolean published = false;
+        for (TrackCapture capture : captures) {
+            published |= capture.publishPeaksIfChanged();
+        }
+        if (published) {
+            peaksPublished = true;
+            lastPeakPublishNanos = now;
+        }
+    }
+
     private void applyBlock(CaptureRing.Slot slot) {
         if (sealed) {
             discardedBlocks = discardedBlocks + 1;
@@ -759,7 +1024,8 @@ public final class CaptureFlushService {
             }
             previousBeat = currentBeatPosition;
 
-            if (headroom.check(nanoClock.getAsLong()) == DiskHeadroomWatch.State.EXHAUSTED) {
+            long now = nanoClock.getAsLong();
+            if (headroom.check(now) == DiskHeadroomWatch.State.EXHAUSTED) {
                 // Counted before the seal: the seal may rethrow a lane's Error.
                 discardedBlocks = discardedBlocks + 1;
                 sealEarly(SealedBy.DISK_EXHAUSTION, null);
@@ -783,6 +1049,7 @@ public final class CaptureFlushService {
                 recordToSessions(slot, 0, numFrames, false, 0, 0);
             }
             lastAppliedEndFrame = blockEnd;
+            publishPeaksIfDue(now);
             noteTruncation(slot, blockEnd);
             if (manifestDirty) {
                 flushManifest();
@@ -904,7 +1171,16 @@ public final class CaptureFlushService {
                 applyCosineFades(routed, chCount, sliceFrames, fadeInFrames, fadeOutFrames);
             }
 
-            session.recordAudioData(routed, sliceFrames);
+            long framesBefore = session.getTotalSamplesRecorded();
+            try {
+                session.recordAudioData(routed, sliceFrames);
+            } finally {
+                // The mirror gets the frames the session counted, however the
+                // append ended: none while it is paused, the written part of
+                // a block whose append failed.
+                int counted = (int) Math.min(sliceFrames, session.getTotalSamplesRecorded() - framesBefore);
+                capture.notePeaks(Math.clamp(chCount, 0, routed.length), counted);
+            }
         }
     }
 
@@ -938,10 +1214,35 @@ public final class CaptureFlushService {
         }
     }
 
-    /** Loop wrap: every track seals its lane, stacks the lap as a take, and opens the next lane. */
+    /**
+     * Loop wrap: every track seals its lane, stacks the lap as a take, and
+     * makes its pre-opened standby the current lane — or opens the next
+     * lane here when it holds none at the right index
+     * ({@link TrackCapture#finalizeLane}). A standby that had to be
+     * discarded at the wrap and whose empty file could not be deleted does
+     * not end the take: it is handled as the same failure is at the stop
+     * ({@link #discardStandbyLanes()}) — the entry is gone from the
+     * manifest, the capture keeps the session for a later retry of the
+     * delete, the warning sink is told — and the track's next lane is
+     * recording, opened past that file.
+     */
     private void finalizeLoopLap() {
         for (TrackCapture capture : captures) {
-            capture.finalizeLane(true, true);
+            try {
+                capture.finalizeLane(true, true);
+            } finally {
+                RuntimeException undeletable = capture.takeStandbyDiscardFailure();
+                if (undeletable != null) {
+                    manifestDirty = true;
+                    LOG.log(Level.WARNING, "could not delete the pre-opened, empty loop lane of track "
+                            + capture.trackId() + " at a loop wrap; its file is left in " + capture.trackDirectory()
+                            + ", no longer listed in the manifest, and the take goes on", undeletable);
+                    warn("The empty, pre-opened loop lane file of track " + capture.trackName() + " could not be"
+                            + " deleted at a loop wrap — " + describe(undeletable) + "; a zero-frame .part file is"
+                            + " left under " + capture.trackDirectory() + " that the take manifest does not list."
+                            + " Recording continues.");
+                }
+            }
         }
     }
 
@@ -1040,7 +1341,8 @@ public final class CaptureFlushService {
 
     /**
      * Seals every track's current lane (stacking it as the final take in
-     * loop-record), then writes the final manifest. A lane whose seal fails
+     * loop-record), discards the pre-opened lanes no lap reached
+     * ({@link #discardStandbyLanes()}), then writes the final manifest. A lane whose seal fails
      * is logged and left as its {@code .part} for recovery; the manifest
      * then reads {@code aborted}/{@code write-failure} whatever the
      * requested reason, because the record must not claim more than the disk holds.
@@ -1108,6 +1410,7 @@ public final class CaptureFlushService {
                             + "; the remaining lanes are sealed before it goes on", e);
                 }
             }
+            discardStandbyLanes();
             if (firstLaneFailure != null && !sealedEarly) {
                 // The seal a stop requested: earlySeal() never completes for
                 // it, so this is how its failure reaches the caller.
@@ -1116,6 +1419,7 @@ public final class CaptureFlushService {
             }
         }
         if (!finalManifestWritten) {
+            noteBlocksLeftBehind();
             SealedBy first = sealReason;
             if (first == SealedBy.STOP && !sealFailed) {
                 manifest.sealed(SealedBy.STOP);
@@ -1130,6 +1434,39 @@ public final class CaptureFlushService {
         }
         if (firstLaneError != null) {
             throw firstLaneError;
+        }
+    }
+
+    /**
+     * Discards the pre-opened lane no lap reached, for every track that
+     * holds one ({@link TrackCapture#discardStandby()}): its empty file is
+     * deleted and its segment entry removed, so the final manifest and the
+     * directory agree. A file that cannot be deleted is the one case where
+     * they do not, and it is reported, not hidden: the entry is removed all
+     * the same — the file holds no frame and is no segment of the take, so
+     * the final manifest lists only the take's own segments and its seal
+     * status stays what the lanes' seals made it — the warning sink is told
+     * that a zero-frame {@code .part} is left in the track directory, and
+     * the capture keeps the session so that a discard of the take
+     * ({@link TrackCapture#discardAllFiles()}) tries the delete again. It
+     * does not make the seal a failed one: every frame of the take is in a
+     * sealed segment. Flush thread, inside the seal, once every lane has
+     * had its seal attempt.
+     */
+    private void discardStandbyLanes() {
+        for (TrackCapture capture : captures) {
+            try {
+                capture.discardStandby();
+            } catch (RuntimeException e) {
+                manifestDirty = true;
+                LOG.log(Level.WARNING, "could not delete the pre-opened, empty loop lane of track "
+                        + capture.trackId() + "; its file is left in " + capture.trackDirectory()
+                        + ", no longer listed in the manifest", e);
+                warn("The empty, pre-opened loop lane file of track " + capture.trackName() + " could not be"
+                        + " deleted — " + describe(e) + "; a zero-frame .part file is left under "
+                        + capture.trackDirectory() + " that the take manifest does not list. The take itself is"
+                        + " complete.");
+            }
         }
     }
 
@@ -1288,8 +1625,11 @@ public final class CaptureFlushService {
     /**
      * Asks the flush thread to stop and seal the take, and returns at once:
      * it sets the stop flag and wakes the thread, and it never waits for it.
-     * The thread ends its drain loop at the next pass boundary; its final
-     * sweep drains the ring, seals every active writer and writes the final
+     * The thread ends its drain loop at the next pass boundary and waits, for
+     * at most {@link #PRODUCER_QUIESCENCE_BOUND}, for a callback in flight to
+     * leave the ring's producer gate — which the pipeline closed before this
+     * request ({@link CaptureRing#closeProducer()}); its final sweep then
+     * drains the ring, seals every active writer and writes the final
      * manifest (a final manifest that cannot be written is logged SEVERE and
      * leaves the last written one on disk; the segments are sealed
      * regardless), and then it terminates — {@link #termination()} completes,
@@ -1452,6 +1792,31 @@ public final class CaptureFlushService {
     }
 
     /**
+     * Test seam: replaces the bound of the wait for the callback in flight
+     * before the final sweep (default {@link #PRODUCER_QUIESCENCE_BOUND}).
+     * Read by the flush thread when that wait begins. Any thread.
+     *
+     * @param bound the longest wait; not negative
+     * @throws IllegalArgumentException if {@code bound} is negative
+     */
+    void setProducerQuiescenceBound(Duration bound) {
+        Objects.requireNonNull(bound, "bound must not be null");
+        if (bound.isNegative()) {
+            throw new IllegalArgumentException("bound must not be negative: " + bound);
+        }
+        producerQuiescenceBoundNanos = bound.toNanos();
+    }
+
+    /**
+     * Returns whether the flush thread has left its drain loop for a stop
+     * and is waiting for the callback in flight to leave the ring's producer
+     * gate — the wait that precedes the final sweep. Any thread.
+     */
+    boolean isAwaitingProducerExit() {
+        return awaitingProducerExit;
+    }
+
+    /**
      * Fault seam (test-only): the next {@code attempts} manifest write
      * attempts throw an {@link IOException} before touching the disk — the
      * shape of a staging file or a rename the OS refuses. Any thread.
@@ -1574,7 +1939,9 @@ public final class CaptureFlushService {
      * Returns the readiness signal of the take: it completes normally, at
      * most once, on the flush thread, once the take's initialisation is done
      * — the take directory created if it was missing, every lane-0 session
-     * started (each {@code <trackId>/segment-000.wav.part} exists) and the
+     * started (each {@code <trackId>/segment-000.wav.part} exists), in
+     * loop-record each track's lane-1 standby started too
+     * ({@code segment-001.wav.part}), and the
      * initial manifest written — and the thread is draining
      * ({@link #isRunning()}). It completes exceptionally instead when the
      * initialisation fails or sees an abort ({@link #requestAbort()}), and

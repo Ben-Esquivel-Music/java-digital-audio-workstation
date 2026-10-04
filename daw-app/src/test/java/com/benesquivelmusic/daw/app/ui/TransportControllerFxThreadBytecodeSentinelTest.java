@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
+import com.benesquivelmusic.daw.core.recording.SegmentFile;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 
 import org.junit.jupiter.api.Test;
@@ -77,7 +78,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * prepared), the allocation and readiness turns
  * ({@code onTakeDirectoryAllocated}, {@code onTakeReady}), the cancels
  * ({@code cancelPendingStartByUser}, {@code cancelPendingStart},
- * {@code abandonStart}), the publishing turn ({@code finishWrittenTake}),
+ * {@code abandonStart}), the turn that follows a stopped take's capture
+ * thread and hands the read of its audio to the storage executor
+ * ({@code finishWrittenTake}), the publishing turn that read posts
+ * ({@code publishWrittenTake}),
  * the delayed warning ({@code warnTakeStillWriting}), the end of an
  * abandoned start ({@code abandonedStartCleanedUp}), {@code retire}, and
  * the production storage executor ({@code onAVirtualThread}): that method
@@ -91,7 +95,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code postFx} — or is a dependent that only posts. The one exception is a
  * <em>storage hand-off</em>: a lambda whose body calls one of the
  * controller's storage tasks ({@code allocateTakeDirectory},
- * {@code deleteEmptyTakeDirectory}) is not followed only if the next
+ * {@code deleteEmptyTakeDirectory}, {@code readRecordedAudio}) is not followed only if the next
  * invocation after the lambda is created, with no other lambda created
  * before it, is an {@code *Async} method taking an {@link Executor}, and the
  * controller's {@code storageExecutor} field is read between the two; any
@@ -101,7 +105,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <ul>
  *   <li>invoke {@code java.nio.file.Files}, {@code java.nio.channels.FileChannel}
- *       or {@code java.io.File}, or {@code TakeDirectories.allocate};</li>
+ *       or {@code java.io.File}, {@code TakeDirectories.allocate}, or any
+ *       method of {@code SegmentFile}, which opens and reads segment
+ *       files;</li>
  *   <li>wait: {@code Thread.join}/{@code sleep}, {@code Object.wait},
  *       {@code LockSupport.park*}, {@code Future.get},
  *       {@code CompletableFuture.join}/{@code get},
@@ -113,15 +119,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Non-vacuity: every root exists exactly once with code; the walk reaches
  * the pipeline's {@code prepare}, {@code beginCapture}, {@code cancelStart},
  * {@code requestStop} and {@code termination}, the completion seam and the
- * {@code postFx} hand-off; both storage tasks exist, each makes its storage
- * call, neither is reached, and each is handed off exactly once, through
+ * {@code postFx} hand-off; the three storage tasks exist, each makes its
+ * storage call, none is reached, and each is handed off exactly once, through
  * {@code storageExecutor}. And
  * {@link #theWalkReportsEveryForbiddenKindAndPermitsOnlyAStorageExecutorHandOffOnAFixture}
  * runs the same detector over a compiled fixture that makes one call of
  * every kind listed above: {@code Files.exists} through a same-class helper
  * and {@code Files.deleteIfExists} in a storage task;
  * {@code FileChannel.force}; {@code File.exists};
- * {@code TakeDirectories.allocate}; {@code Thread.sleep} and {@code join};
+ * {@code TakeDirectories.allocate}; {@code SegmentFile.readFrames};
+ * {@code Thread.sleep} and {@code join};
  * {@code Object.wait}; {@code LockSupport.parkNanos}; {@code Future.get};
  * {@code CompletableFuture.join}, inside a lambda run inline, and
  * {@code get}; {@code CountDownLatch.await}; and
@@ -130,8 +137,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and to a lambda run inline once. It asserts the exact list of findings,
  * the one hand-off, and that each entry of the detector's tables — every
  * storage owner, every wait, the {@code park} prefix,
- * {@code TakeDirectories.allocate} and {@code RecordingPipeline.awaitFlushed}
- * — is among the findings.</p>
+ * {@code TakeDirectories.allocate}, {@code SegmentFile} and
+ * {@code RecordingPipeline.awaitFlushed} — is among the findings.</p>
  *
  * <p>The production storage executor itself is pinned too
  * ({@link #theProductionStorageExecutorStartsEachTaskOnANewVirtualThread}):
@@ -146,15 +153,17 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
     private static final List<String> FX_ENTRY_POINTS = List.of(
             "toggleRecord", "stop", "finishPostRoll", "onTakeDirectoryAllocated", "onTakeReady",
             "cancelPendingStartByUser", "cancelPendingStart", "abandonStart", "finishWrittenTake",
-            "warnTakeStillWriting", "abandonedStartCleanedUp", "retire", "onAVirtualThread");
+            "publishWrittenTake", "warnTakeStillWriting", "abandonedStartCleanedUp", "retire", "onAVirtualThread");
 
-    private static final Set<String> STORAGE_TASKS = Set.of("allocateTakeDirectory", "deleteEmptyTakeDirectory");
+    private static final Set<String> STORAGE_TASKS = Set.of(
+            "allocateTakeDirectory", "deleteEmptyTakeDirectory", "readRecordedAudio");
 
     /** The field the storage tasks must be handed to. */
     private static final String STORAGE_EXECUTOR_FIELD = "storageExecutor";
 
     private static final String PIPELINE = "com/benesquivelmusic/daw/core/recording/RecordingPipeline";
     private static final String TAKE_DIRECTORIES = "com/benesquivelmusic/daw/core/recording/TakeDirectories";
+    private static final String SEGMENT_FILE = "com/benesquivelmusic/daw/core/recording/SegmentFile";
     private static final String LOCK_SUPPORT = "java/util/concurrent/locks/LockSupport";
 
     /** Owners every invocation of which is storage I/O. */
@@ -214,13 +223,33 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
         assertThat(walk.handOffs()).as("each storage task is handed to the storage executor, once")
                 .containsExactlyInAnyOrder(
                         "allocateTakeDirectory via java/util/concurrent/CompletableFuture#supplyAsync",
-                        "deleteEmptyTakeDirectory via java/util/concurrent/CompletionStage#thenRunAsync");
+                        "deleteEmptyTakeDirectory via java/util/concurrent/CompletionStage#thenRunAsync",
+                        "readRecordedAudio via java/util/concurrent/CompletableFuture#supplyAsync");
+        assertThat(walk.calls()).as("the walk saw the turn that asks for the segment lists a stopped take is read from")
+                .contains(PIPELINE + "#recordedSegmentPaths");
+        // publishWrittenTake is a walk root, so that the walk reached it says
+        // nothing about who calls it. The call edges are read instead: the
+        // turn that follows the capture thread's termination asks for the
+        // lists and publishes — itself when there is nothing to read, and
+        // from the lambdas of its read hand-off when there is.
+        String self = model.thisClass().asInternalName();
+        assertThat(callsOf(model, "finishWrittenTake"))
+                .as("finishWrittenTake itself asks for the segment lists and publishes a take with nothing to read")
+                .contains(PIPELINE + "#recordedSegmentPaths", self + "#publishWrittenTake");
+        assertThat(callsOfTheLambdasOf(model, "finishWrittenTake"))
+                .as("the lambdas of finishWrittenTake read the take's audio and then publish the take")
+                .contains(self + "#readRecordedAudio", self + "#publishWrittenTake");
+        assertThat(walk.reached()).as("the walk went on from the turn that publishes the take into what it does")
+                .anyMatch(key -> key.startsWith("publishRecordedTake("))
+                .anyMatch(key -> key.startsWith("unloadedAudioReport("));
         assertThat(walk.reached()).as("no storage task is reached on the FX thread")
                 .noneMatch(key -> STORAGE_TASKS.contains(key.substring(0, key.indexOf('('))));
         assertThat(callsOf(model, "allocateTakeDirectory")).as("non-vacuity: the allocation is storage I/O")
                 .contains(TAKE_DIRECTORIES + "#allocate");
         assertThat(callsOf(model, "deleteEmptyTakeDirectory")).as("non-vacuity: the removal is storage I/O")
                 .contains("java/nio/file/Files#deleteIfExists");
+        assertThat(callsOf(model, "readRecordedAudio")).as("non-vacuity: the read of a take's audio is storage I/O")
+                .contains(SEGMENT_FILE + "#readFrames");
     }
 
     /**
@@ -290,6 +319,7 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
                         "handler: storage I/O java/nio/channels/FileChannel#force",
                         "handler: storage I/O java/io/File#exists",
                         "handler: storage I/O " + TAKE_DIRECTORIES + "#allocate",
+                        "handler: storage I/O " + SEGMENT_FILE + "#readFrames",
                         "handler: waits for the capture thread in " + PIPELINE + "#awaitFlushed");
         assertThat(walk.handOffs()).as("the proper hand-off is recognised as one, and only it")
                 .containsExactly("storageTask via java/util/concurrent/CompletableFuture#runAsync");
@@ -307,6 +337,8 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
                 .anyMatch(finding -> finding.contains(": waits in " + LOCK_SUPPORT + "#park"));
         assertThat(walk.findings()).as("the fixture allocates a take directory")
                 .anyMatch(finding -> finding.endsWith(": storage I/O " + TAKE_DIRECTORIES + "#allocate"));
+        assertThat(walk.findings()).as("the fixture reads a segment file")
+                .anyMatch(finding -> finding.endsWith(": storage I/O " + SEGMENT_FILE + "#readFrames"));
         assertThat(walk.findings()).as("the fixture waits for the capture thread")
                 .anyMatch(finding -> finding.endsWith(" in " + PIPELINE + "#awaitFlushed"));
     }
@@ -343,6 +375,7 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
             channel.force(true);
             path.toFile().exists();
             TakeDirectories.allocate(path, Instant.EPOCH);
+            SegmentFile.readFrames(List.of(path));
             pipeline.awaitFlushed();
         }
 
@@ -445,6 +478,9 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
         if (owner.equals(TAKE_DIRECTORIES) && name.equals("allocate")) {
             findings.add(where + ": storage I/O " + owner + "#" + name);
         }
+        if (owner.equals(SEGMENT_FILE)) {
+            findings.add(where + ": storage I/O " + owner + "#" + name);
+        }
         Set<String> waits = WAITS.get(owner);
         if ((waits != null && waits.contains(name)) || (owner.equals(LOCK_SUPPORT) && name.startsWith("park"))) {
             findings.add(where + ": waits in " + owner + "#" + name);
@@ -512,6 +548,43 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
             }
         }
         assertThat(found).as("%s exists exactly once with code", methodName).isEqualTo(1);
+        return calls;
+    }
+
+    /**
+     * Every {@code owner#name} invoked from the same-class lambdas the
+     * method named {@code methodName} creates, and from the lambdas those
+     * create — not from the method's own body, and not from any method the
+     * lambdas call.
+     */
+    private static Set<String> callsOfTheLambdasOf(ClassModel model, String methodName) {
+        String self = model.thisClass().asInternalName();
+        List<MethodModel> named = model.methods().stream()
+                .filter(mm -> mm.methodName().stringValue().equals(methodName) && codeOf(mm) != null).toList();
+        assertThat(named).as("%s exists exactly once with code", methodName).hasSize(1);
+        Set<String> calls = new LinkedHashSet<>();
+        Set<String> seen = new LinkedHashSet<>();
+        Deque<MethodModel> pending = new ArrayDeque<>(named);
+        while (!pending.isEmpty()) {
+            MethodModel mm = pending.poll();
+            boolean aLambda = mm != named.getFirst();
+            for (CodeElement element : codeOf(mm)) {
+                if (aLambda && element instanceof InvokeInstruction invoke) {
+                    calls.add(invoke.owner().asInternalName() + "#" + invoke.name().stringValue());
+                } else if (element instanceof InvokeDynamicInstruction indy) {
+                    MemberRefEntry target = lambdaTarget(indy);
+                    if (target == null || !target.owner().asInternalName().equals(self)
+                            || !target.name().stringValue().startsWith("lambda$")) {
+                        continue;
+                    }
+                    MethodModel lambda = findMethod(model, target.name().stringValue(), target.type().stringValue());
+                    if (lambda != null && codeOf(lambda) != null
+                            && seen.add(target.name().stringValue() + target.type().stringValue())) {
+                        pending.add(lambda);
+                    }
+                }
+            }
+        }
         return calls;
     }
 

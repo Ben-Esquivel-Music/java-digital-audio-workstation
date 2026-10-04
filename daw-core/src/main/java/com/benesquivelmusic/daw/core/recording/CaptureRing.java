@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Preallocated, allocation-free, single-producer / single-consumer ring of raw
@@ -15,19 +16,64 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p><strong>Threads.</strong> Exactly one producer and one consumer:</p>
  * <ul>
- *   <li>The audio callback ({@code RecordingPipeline.onAudioCaptured}) calls
- *       {@link #claim()}, fills the returned {@link Slot} (header + payload
- *       copies), then {@link #publish()}, and counts what it had to cut off
- *       with {@link #noteTruncatedFrames(int)}. Those, plus the read-only
+ *   <li>The audio callback ({@code CaptureCallback.onAudioCaptured}) enters
+ *       the producer gate ({@link #enterProducer()}), calls {@link #claim()},
+ *       fills the returned {@link Slot} (header + payload copies), calls
+ *       {@link #publish()} if the gate is still open
+ *       ({@link #producerOpen()}), and leaves the gate
+ *       ({@link #exitProducer()}); it counts what it had to cut off with
+ *       {@link #noteTruncatedFrames(int)}. Those, plus the read-only
  *       {@link #overflowCount()} / {@link #droppedAfterSequence()} /
  *       {@link #truncatedFrames()} / {@link #size()} / {@link #isEmpty()},
- *       are the {@link RealTimeSafe} surface: bounded arithmetic, release
- *       stores, no allocation, no locks, no throwing paths reachable from a
- *       well-formed call.</li>
+ *       are the {@link RealTimeSafe} surface: bounded arithmetic, volatile
+ *       and release stores, no allocation, no locks, no throwing paths
+ *       reachable from a well-formed call.</li>
  *   <li>The flush thread calls {@link #peek()} to read the oldest published
  *       slot in place and {@link #release()} once it has finished with it. It
- *       is the only writer of the read index.</li>
+ *       is the only writer of the read index. Before the final sweep of a
+ *       stop it waits, bounded, for a callback in flight to leave the gate
+ *       ({@link #awaitProducerQuiescent(long)}).</li>
+ *   <li>The thread that ends the take closes the gate
+ *       ({@link #closeProducer()}): one volatile store, no waiting.</li>
  * </ul>
+ *
+ * <p><strong>Producer gate — the stop fence</strong> (book §5.2 FINALIZING:
+ * deregister → drain → seal). Removing the engine's recording callback does
+ * not stop a callback the audio thread has already loaded, so the ring
+ * carries a per-take gate of two volatile words: {@code producerClosed},
+ * written by the thread that ends the take, and {@code producerPhase},
+ * written only by the callback and odd while it is inside. The callback
+ * stores an odd phase and then loads the closed flag; the stopping side
+ * stores the closed flag and then — on the flush thread — loads the phase.
+ * Volatile accesses are totally ordered, so one of two things holds for
+ * every callback. Either its phase store comes before the flush thread's
+ * phase load: the flush thread then reads that odd phase and waits for the
+ * exit store, which the callback makes after its publish, or it reads the
+ * even phase of that exit already — and the publish is visible to it either
+ * way. Or the phase store comes after that load, and so after the close:
+ * every load of the closed flag the callback then makes — at entry, and
+ * again right before {@link #publish()} — reads closed, and it publishes
+ * nothing. So once {@link #awaitProducerQuiescent(long)} has returned
+ * {@code true}, no block is published to this ring again, and the drain that
+ * follows is complete. A callback that finds the gate closed after it
+ * claimed a slot leaves the slot claimed and unpublished: the block that
+ * straddles the stop is dropped whole, never torn. The gate is never
+ * reopened — a ring serves one take, a later take has its own ring, and a
+ * callback left over from this take can only ever find this ring's gate
+ * closed. Both words are plain volatile loads and stores; the phase is
+ * advanced with a load and a store, not an atomic read-modify-write,
+ * because the callback is its only writer.</p>
+ *
+ * <p><strong>Precondition: one callback thread at a time.</strong> The
+ * phase word, and with it the whole argument above, is correct only while
+ * at most one thread is between {@link #enterProducer()} and
+ * {@link #exitProducer()} at any moment — the engine's single render
+ * thread, which loads the recording callback once per block. Two callers
+ * that overlap can lose one of the unsynchronised increments and leave the
+ * parity wrong for the rest of the take: stuck odd, every stop waits out the
+ * whole bound and warns; stuck even while a callback is inside, the wait
+ * reports quiescence that does not hold and the final sweep can miss a
+ * block. Nothing here detects that; the gate does not guard against it.</p>
  *
  * <p><strong>Slot layout</strong> (book §4.2 / context D2). Each slot carries a
  * primitives-only header stamped on the callback — start frame, transport
@@ -41,16 +87,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * ({@code 0} = absent).</p>
  *
  * <p><strong>Sizing.</strong> {@code slotFrames} is the block size of the
- * format the pipeline was constructed with (the live stream's block may be
+ * format the pipeline was constructed with (a delivered block may be
  * longer — see "Over-long blocks"); the slot count is {@link #slotCountFor(double, int, Duration)}: enough
  * blocks to cover {@link #DEFAULT_HANDOFF_TOLERANCE} (250 ms) of audio, never
  * fewer than {@link #MIN_SLOTS}, rounded up to a power of two so the index
  * wrap is a mask — the {@code AudioBlockRing} discipline the ASIO shim
  * already proves.</p>
  *
- * <p><strong>Overflow policy — deliberate deviation from book §4.2.</strong>
- * The book says the callback "drops the oldest unwritten block". This ring
- * drops the <em>incoming</em> block instead: {@link #claim()} returns
+ * <p><strong>Overflow policy</strong> (book §4.2). This ring drops the
+ * <em>incoming</em> block, not the oldest queued one: {@link #claim()} returns
  * {@code null}, {@link #overflowCount()} advances, and the callback returns
  * at once. Overwriting the oldest slot is not single-producer-safe — the
  * consumer may be copying out of exactly that slot at that moment (the same
@@ -92,6 +137,9 @@ public final class CaptureRing {
     /** Value of {@link #droppedAfterSequence()} while no block has ever been dropped. */
     public static final long NO_DROP = -1L;
 
+    /** Park step of {@link #awaitProducerQuiescent(long)} while a callback is inside the producer gate. */
+    static final long QUIESCENCE_POLL_NANOS = 100_000L;
+
     private final Slot[] slots;
     private final int mask;
     private final int capacity;
@@ -104,6 +152,10 @@ public final class CaptureRing {
     private final AtomicLong droppedAfterSequence = new AtomicLong(NO_DROP); // producer-only writer
     private final AtomicLong truncatedFrames = new AtomicLong(0);            // producer-only writer
     private boolean claimed;                                    // producer-only
+    /** The take is ending: no block is to be published any more. Written by the thread that ends the take. */
+    private volatile boolean producerClosed;
+    /** Odd while the callback is between {@link #enterProducer()} and {@link #exitProducer()}; the callback is the only writer. */
+    private volatile long producerPhase;
 
     /**
      * Creates a ring of at least {@code requestedSlots} slots (rounded up to a
@@ -209,13 +261,101 @@ public final class CaptureRing {
     }
 
     /**
+     * Enters the producer gate: marks the callback as inside and reports
+     * whether the gate is open. Audio-callback side, first call of every
+     * callback; every call is paired with one {@link #exitProducer()},
+     * whatever this returns. The phase store is a full volatile store and
+     * precedes the load of the closed flag — the order the class note's
+     * argument rests on.
+     *
+     * @return {@code true} if the gate is open; {@code false} once
+     *         {@link #closeProducer()} has been called — the callback then
+     *         claims nothing and only leaves
+     */
+    @RealTimeSafe
+    public boolean enterProducer() {
+        producerPhase = producerPhase + 1;
+        return !producerClosed;
+    }
+
+    /**
+     * Returns whether the gate is still open: one volatile load.
+     * Audio-callback side, between {@link #enterProducer()} and
+     * {@link #exitProducer()}, right before {@link #publish()} — a block
+     * whose callback reads {@code false} here is not published.
+     */
+    @RealTimeSafe
+    public boolean producerOpen() {
+        return !producerClosed;
+    }
+
+    /**
+     * Leaves the producer gate: marks the callback as outside again.
+     * Audio-callback side, last call of every callback that called
+     * {@link #enterProducer()}.
+     */
+    @RealTimeSafe
+    public void exitProducer() {
+        producerPhase = producerPhase + 1;
+    }
+
+    /**
+     * Closes the producer gate for good: one volatile store, no waiting. The
+     * thread that ends the take calls it before it removes the recording
+     * callback and before it moves the transport, so a block is either
+     * published by a callback that read the gate open before this store —
+     * and stamped its header before that — or not published at all.
+     * Idempotent. Any thread but the audio callback.
+     */
+    public void closeProducer() {
+        producerClosed = true;
+    }
+
+    /** Returns whether {@link #closeProducer()} has been called. Any thread. */
+    public boolean isProducerClosed() {
+        return producerClosed;
+    }
+
+    /**
+     * Waits until no callback is inside the producer gate, for at most
+     * {@code boundNanos}. Flush-thread side, after {@link #closeProducer()}
+     * and before the final drain: once it has returned {@code true}, no
+     * block is published to this ring again (class note). It returns at
+     * once when no callback is inside; otherwise it parks in
+     * {@link #QUIESCENCE_POLL_NANOS} steps — a callback is inside for the
+     * length of one bounded copy — until the callback has left or the bound
+     * has elapsed. Only the flush thread calls it; the thread that ends the
+     * take never waits.
+     *
+     * @param boundNanos the longest wait, in nanoseconds; non-positive means
+     *                   no waiting — the phase is read without parking
+     * @return {@code true} if no callback is inside; {@code false} if one
+     *         was still inside when the bound elapsed — it may publish one
+     *         more block if it read the gate open before it was closed
+     */
+    public boolean awaitProducerQuiescent(long boundNanos) {
+        if ((producerPhase & 1L) == 0L) {
+            return true;
+        }
+        long deadline = System.nanoTime() + Math.max(0L, boundNanos);
+        while (System.nanoTime() - deadline < 0) {
+            LockSupport.parkNanos(this, QUIESCENCE_POLL_NANOS);
+            if ((producerPhase & 1L) == 0L) {
+                return true;
+            }
+        }
+        return (producerPhase & 1L) == 0L;
+    }
+
+    /**
      * Claims the next free slot for the producer to fill. Audio-callback
      * side.
      *
      * <p>The returned slot's header and per-source channel counts are reset;
      * its payload is stale until written. The slot is not visible to the
      * consumer until {@link #publish()}. Claiming again without publishing
-     * simply returns the same slot again.</p>
+     * simply returns the same slot again, reset — which is what a callback
+     * that found the producer gate closed before its publish leaves behind.</p>
      *
      * @return the slot to fill, or {@code null} when the ring is full — in
      *         which case the incoming block is dropped,
@@ -411,10 +551,12 @@ public final class CaptureRing {
      * exception path is reachable from the callback for a source index
      * within {@link #sourceCount()} and a block whose rows are non-null;
      * source indices are not clamped, and an index outside that range or a
-     * {@code null} row throws. {@code RealTimeSafeContractTest} does not
-     * reach this nested class (its scanner skips {@code $} names); the same
-     * reflection-visible rules, and the bytecode rule that no public method
-     * holds a monitor instruction, are pinned by {@code CaptureRingTest}.</p>
+     * {@code null} row throws. The reflection sweeps of
+     * {@code RealTimeSafeContractTest} do not reach this nested class (their
+     * scanner skips {@code $} names); the same reflection-visible rules, and
+     * the bytecode rule that no public method holds a monitor instruction,
+     * are pinned by {@code CaptureRingTest}. The methods the recording
+     * callback calls are walked by that suite's capture-path sentinel.</p>
      */
     @RealTimeSafe
     public static final class Slot {

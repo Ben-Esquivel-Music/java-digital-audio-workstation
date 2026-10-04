@@ -600,6 +600,16 @@ never; and silently overwriting — a lie in the take. Stage 1 as landed (story 
 single-producer-safe while the consumer may be copying out of it — and records the drop as a
 `gap=` line in the manifest.
 
+As landed (story 324): dropping the incoming block is the policy, not a Stage 1 stopgap; the
+"oldest unwritten block" wording above is superseded. The ring is allocated when the take is
+prepared (`RecordingPipeline.doPrepare`) from the format the pipeline was constructed with, which
+in the app is the engine's live format (`audioEngine.getFormat()`). Slot frames are fixed there:
+a delivered block longer than a slot keeps its first `slotFrames` frames, and the excess is
+stamped on the slot, counted on the ring and recorded in the manifest (`truncated-frames`). The
+ring also carries the stop fence — a per-take producer gate of two volatile words, closed by the
+thread that ends the take before it removes the callback (§5.2 FINALIZING); see `CaptureRing`'s
+class note for the argument and its single-callback-thread precondition.
+
 ### 4.3 The flush thread
 
 `CaptureFlushService` owns one platform thread (`capture-flush`), started at record-start,
@@ -655,6 +665,14 @@ memory cost, which is deliberately out of scope here: streamed/paged clip playba
 the engine's playback architecture (`AUDIO_ENGINE_WIRING_DESIGN_BOOK.md`) and the reload seam of
 story 329. This book's obligation ends at correct, complete, referenced files (§2.1).
 
+As landed (story 324): the load comes before the publication. Once the flush thread has
+terminated, an FX turn takes the segment-path list of every clip the take will publish
+(`RecordingPipeline.recordedSegmentPaths()`), a storage executor reads those segments
+(`SegmentFile.readFrames`), and the FX turn that follows completes the stop with what was read
+(`RecordingPipeline.completeStop(Function)`), which attaches each clip's audio before the clip is
+added to its track. The take counts as being written until that turn. A clip whose segments
+could not be read is published without audio and reported once.
+
 ### 4.5 The UI mirror
 
 The unbounded in-RAM `capturedAudio` array (§1.2) is replaced by a bounded, decimated peak
@@ -662,6 +680,17 @@ mirror (min/max pairs per fixed frame bucket) maintained by the flush thread and
 through an `FxDispatcher` continuous channel for live waveform drawing during capture. Full
 fidelity lives on disk; the UI needs only enough to draw. Rejected: keeping the full-resolution
 RAM copy "for convenience" — it is the 2.8 GB/2 h defect with a friendlier name.
+
+As landed (story 324): `capturedAudio` and its accessors are gone from `RecordingSession`. Each
+armed track's `TrackCapture` owns one `CapturePeakMirror` — 2048 min/max buckets in one array
+allocated at construction; when the buckets are full, neighbours are merged in place and the
+frames per bucket double — written and read by the flush thread only. The flush thread hands an
+immutable `CapturePeakSnapshot` to the sink set with `RecordingPipeline.setPeakSnapshotSink`, at
+most once per 33 ms (`CaptureFlushService.PEAK_PUBLISH_INTERVAL`) while a lane gains frames and
+once more when the lane is finalized; with no sink no snapshot is built. The app's sink is
+`LiveCapturePeaks`: one `FxDispatcher` continuous channel per armed audio track, whose pulse
+delivers the newest snapshot on the FX thread. No renderer draws from it yet; the live capture
+waveform is not owned by a filed story.
 
 ### 4.6 Loop-take rotation off the callback
 
@@ -671,6 +700,20 @@ lane's segments, append the take to the unified model (§3.5), open the next lan
 all on the flush thread, with pre-opened next-lane writers so the seam adds no gap. This
 replaces `finalizeLoopTake`'s inline-on-callback construction (§1.2) and gives the no-op
 executor hand-off (`RecordingPipeline.java:954-961`) its intended real body.
+
+As landed (stories 323 and 324): wrap detection and lap finalization run on the flush thread
+(`CaptureFlushService.applyBlock`, `finalizeLoopLap`; `TrackCapture.finalizeLane`); the inline
+construction and the no-op hand-off named above no longer exist. The pre-opened lane is a
+*standby* session per armed track (`TrackCapture.prepareStandby`): lane + 1's `.part` is
+created and its header written away from the seam, and it is listed in the manifest. The wrap
+seals the lane, stacks the lap and swaps the standby in without opening a file. A lane that
+rotates takes over the standby's empty file, and the manifest is rewritten before the first
+frame lands in it. Whatever ends the take discards a standby no lap reached — file deleted,
+entry removed. A standby file that cannot be deleted then is left as an unlisted zero-frame
+`.part` and reported through the warning sink; §3.4 has no row for that state yet. The same
+holds for a standby discarded at a wrap because the sealed lane ended on an empty segment: if
+its file cannot be deleted the take goes on, and the next lane is opened one index past that
+file.
 
 ### 4.7 Recovery scan
 
@@ -722,6 +765,19 @@ seals, manifest rewrites — and the loop-lap takes stay on the flush thread. Th
 sized from the format the pipeline is constructed with (the project's format in the app); a
 longer delivered block is truncated, counted and recorded (`truncated-frames`), and story 324
 owns format truth.
+
+As landed (story 324): the "never RT" rows are enforced by `RealTimeSafeContractTest`'s walk from
+`CaptureCallback.onAudioCaptured` across the capture-path classes, which denies by default —
+every call is into a class the walk follows, or on an exact allow-list of external members. The
+callback's RT work is the first four rows plus the producer gate (volatile loads of the closed
+flag, and loads and stores of a phase word only it writes) and one `LockSupport.unpark` of the
+flush thread. Tempo is
+not read on the callback: the take's start frames use the tempo read when the take was prepared.
+The buffer-sizing row holds with one qualification: the app constructs the pipeline with the
+engine's live format, never `project.getFormat()`, but slot frames are fixed when the take is
+prepared, and a longer delivered block is truncated, counted and recorded rather than resizing
+anything. The take/clip construction departure above stands: clips are still built on the caller
+thread, now by `RecordingPipeline.completeStop(Function)` with the audio read beforehand (§4.4).
 
 ### 5.2 Record state transitions
 
@@ -871,6 +927,15 @@ an unconditional `Platform.runLater`, made on `capture-flush` when the signal co
 the one on the end of a cancelled or failed start's thread after handing the removal of its
 take directory, if empty, to a storage executor (§4.3).
 
+As landed (story 324): the device callback also writes the producer gate's phase word on the
+ring, and the thread that ends the take (FX in the app) writes the gate's closed flag — its one
+ring access, a volatile store. `capture-flush` waits at most 200 ms
+(`CaptureFlushService.PRODUCER_QUIESCENCE_BOUND`) for a callback in flight before the final sweep
+of a stop. The mirror rides an `FxDispatcher` channel: `capture-flush` publishes peak snapshots into one continuous channel per armed track
+(`LiveCapturePeaks`), and the dispatcher's pulse delivers them on the FX thread. Reading a
+stopped take's audio back from its segments runs on the app's storage executor, between two FX
+turns (§4.4).
+
 ### 6.2 Observer rules on the capture path
 
 Nothing on the callback iterates a listener list — not even a copy-on-write one (iteration
@@ -996,6 +1061,15 @@ tail. (4) Heap assertion: resident capture memory is flat over a long simulated 
 documented §2.1 bound; the mirror gives `INTERACTION_COMPLETENESS_DESIGN_BOOK.md` its live
 capture waveform feed.
 
+**Landed with story 324** — see the story's Resolution
+(`docs/user-stories/324-rt-safe-capture-path.md`). Where it differs from the scope above: the
+fence is a producer gate on the ring, and its order is close the gate → deregister the callback →
+bounded wait on the flush thread → drain → seal, with the block that straddles the stop dropped
+whole (§4.2); overflow drops the incoming block (§4.2); slot frames are fixed when the take is
+prepared, with truncation recorded (§5.1); post-stop audio is read before the take is published
+(§4.4); and proof (4) is a structural walk over the capture objects' arrays, buffers and
+collections, not a heap measurement.
+
 ### Stage 3 — Record-State Integrity: Guards Against Lying States (story 325)
 
 **Scope.** Introduce `RecordCoordinator` and the §3.2 machine with the §5.2 transition table:
@@ -1116,7 +1190,8 @@ closing this book.
 13. **Anchoring time windows to the first observed event** instead of the authoritative clock —
     the MIDI count-in defect (§1.8).
 14. **Blocking the audio callback to avoid data loss.** Overflow drops oldest, counts, and
-    flags — the callback never waits (§4.2).
+    flags — the callback never waits (§4.2). As landed (stories 323 and 324): the block dropped
+    is the incoming one, not the oldest (§4.2).
 
 ---
 
@@ -1127,15 +1202,15 @@ Where each construct of this book attaches to today's tree.
 | This book | Today's code | What changes |
 |-----------|--------------|--------------|
 | `RecordCoordinator` + state machine (§3.2, §5.2) | `TransportController.onRecord/onStop` inline orchestration (`TransportController.java:399-492,281-317`); false guard comment (`:891-895`) | Orchestration extracted; toggle-stop; rollback on failed preconditions; comment becomes true |
-| `CaptureRing` (§4.2) | none — capture writes straight into `RecordingSession` from the render block (`RenderPipeline.java:495-497`) | New; modeled on `AudioBlockRing` (`daw-sdk/.../audio/AudioBlockRing.java`) |
+| `CaptureRing` (§4.2) | none — capture writes straight into `RecordingSession` from the render block (`RenderPipeline.java:495-497`) | New; modeled on `AudioBlockRing` (`daw-sdk/.../audio/AudioBlockRing.java`). As landed (story 324): the ring write is made by the per-take `CaptureCallback`; `RenderPipeline` still calls the recording callback interface and is unchanged |
 | `CaptureFlushService` (§4.3) | no flush thread exists; rotation on callback (`RecordingSession.java:382-405`) | New thread `capture-flush`; modeled on `AsioBufferSwitchShim`'s `asio-input-drain` (`AsioBufferSwitchShim.java:99`) |
 | `SegmentWriter` + atomic seal (§4.4) | `startNewSegment`/`finalizeCurrentSegment` metadata-only (`RecordingSession.java:395-423`) | Real streaming WAV with `.part` → rename; exact counts |
 | `TakeManifest` (§3.3) | nothing; clip stamped with first segment only (`RecordingPipeline.java:306-308`) | New sidecar; clips reference all segments |
 | On-disk home (§3.3) | `Files.createTempDirectory("daw-recording-")` (`TransportController.java:433`); unused `audio/` dir (`ProjectManager.java:39,160`) | `<project>/audio/takes/…`; temp path deleted |
-| UI mirror (§4.5) | full-take in-RAM `capturedAudio` (`RecordingSession.java:68-70,201-240`) | Bounded decimated peaks via `FxDispatcher` continuous channel (`FxDispatcher.java:390`) |
-| Loop-lane rotation (§4.6) | `finalizeLoopTake` inline on callback; no-op executor (`RecordingPipeline.java:895-964`) | Flush-thread seal + pre-opened next lane |
+| UI mirror (§4.5) | full-take in-RAM `capturedAudio` (`RecordingSession.java:68-70,201-240`) | Bounded decimated peaks via `FxDispatcher` continuous channel (`FxDispatcher.java:390`). As landed (story 324): `CapturePeakMirror`, `CapturePeakSnapshot`, `LiveCapturePeaks`; `capturedAudio` is deleted |
+| Loop-lane rotation (§4.6) | `finalizeLoopTake` inline on callback; no-op executor (`RecordingPipeline.java:895-964`) | Flush-thread seal + pre-opened next lane. As landed (stories 323, 324): `CaptureFlushService.finalizeLoopLap`, `TrackCapture.finalizeLane` and `prepareStandby` |
 | Unified take model (§3.5) | `Track.takeComping` + `Track.takeGroups` both (`Track.java:98-99`); serializer persists neither | One model; capture ingests, comping reads; persistence via story 334 |
-| Format truth (§2.7) | pipeline built with `project.getFormat()` (`TransportController.java:443-445`); buffers at project size (`RecordingPipeline.java:226,236`) | Engine live format + delivered frame counts |
+| Format truth (§2.7) | pipeline built with `project.getFormat()` (`TransportController.java:443-445`); buffers at project size (`RecordingPipeline.java:226,236`) | Engine live format + delivered frame counts. As landed (story 324): the app passes `audioEngine.getFormat()` (`TransportController.onTakeDirectoryAllocated`); slot frames are fixed at prepare and a longer block is truncated and recorded; the clip declares its rate through `AudioClip.setSourceRateMetadata` |
 | Routing contract (§5.4) | project-channel open (`AudioEngine.java:510-517`); first-armed device (`TransportController.java:452-457`); skip-but-record (`RecordingPipeline.java:781-790`) | Union width, per-device validation, zero-and-flag |
 | Rescue registry (§2.9, §5.5) | `IncompleteTakeStore` (working WAV writer, `IncompleteTakeStore.java:130-155`) fed by never-called `captureRecordingFrames` (`DefaultAudioEngineController.java:652`), rooted at tmpdir (`:148-152`) | Fed by flush-service seal; project-rooted; registry role |
 | Device-loss reaction (§5.5) | `onDeviceRemoved/onDeviceArrived` built but unreachable (`DefaultAudioEngineController.java:676-744`); mock-only events (`MockAudioBackend.java:190-192`) | Fed by story 316 events + story 338 watchdog; notifications via story 339 |
@@ -1143,7 +1218,7 @@ Where each construct of this book attaches to today's tree.
 | Punch creation (§5.6) | actions declared unhandled (`DawAction.java:32-36`; `KeyboardShortcutController.java:185`); ruler draw-only (`TimelineRuler.java:403,422,581-599`); deserializer sole caller (`ProjectDeserializer.java:385`) | Handlers + ruler gestures; gating engine (`RecordingPipeline.java:724-755`) unchanged |
 | Count-in (§5.6) | `generateCountInAudio` test-only (`RecordingPipeline.java:516`); MIDI first-event anchor (`MidiRecorder.java:342-372`) | Transport-clocked gate + audible click; transport-anchored MIDI window |
 | MIDI timestamp fallback (§5.2) | -1 sentinel kept forever (`MidiRecorder.java:220,342-343`) | Monotonic-clock fallback |
-| RT sentinel (§5.1, Stage 2) | `RealTimeSafeContractTest` scanning render/ASIO paths (`daw-core/src/test/.../annotation/RealTimeSafeContractTest.java`) | Extended over the capture path |
+| RT sentinel (§5.1, Stage 2) | `RealTimeSafeContractTest` scanning render/ASIO paths (`daw-core/src/test/.../annotation/RealTimeSafeContractTest.java`) | Extended over the capture path. As landed (story 324): a deny-by-default walk rooted at `CaptureCallback.onAudioCaptured` |
 
 ## Appendix B — Cross-references
 

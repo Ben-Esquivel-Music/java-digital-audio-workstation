@@ -9,12 +9,17 @@ import org.junit.jupiter.api.TestFactory;
 
 import java.io.IOException;
 import java.lang.classfile.ClassFile;
+import java.lang.classfile.Attributes;
 import java.lang.classfile.ClassModel;
+import java.lang.classfile.Instruction;
 import java.lang.classfile.MethodModel;
+import java.lang.classfile.Opcode;
 import java.lang.classfile.attribute.CodeAttribute;
 import java.lang.classfile.constantpool.LoadableConstantEntry;
 import java.lang.classfile.constantpool.MemberRefEntry;
 import java.lang.classfile.constantpool.MethodHandleEntry;
+import java.lang.classfile.instruction.ConstantInstruction;
+import java.lang.classfile.instruction.FieldInstruction;
 import java.lang.classfile.instruction.InvokeDynamicInstruction;
 import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.MonitorInstruction;
@@ -23,6 +28,7 @@ import java.lang.classfile.instruction.NewObjectInstruction;
 import java.lang.classfile.instruction.NewPrimitiveArrayInstruction;
 import java.lang.classfile.instruction.NewReferenceArrayInstruction;
 import java.lang.foreign.MemorySegment;
+import java.lang.reflect.AccessFlag;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
@@ -48,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reflection-based verification of the {@link RealTimeSafe} contract.
  *
  * <p>This suite discovers every class under {@code com.benesquivelmusic.daw}
- * at test time and enforces seven invariants:</p>
+ * at test time and enforces eight invariants:</p>
  * <ol>
  *   <li>Critical-path methods carry {@code @RealTimeSafe}
  *       ({@code Mixer.mixDown}, {@code EffectsChain.process},
@@ -93,6 +99,32 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       allow-list of pre-existing sites; and the metering RT classes are
  *       annotated bidirectionally — every producer-side public method
  *       carries {@code @RealTimeSafe}, every consumer-side one does not.</li>
+ *   <li>The capture path (Recording Reliability book §5.1): from the
+ *       recording callback the engine runs —
+ *       {@code CaptureCallback.onAudioCaptured}, which
+ *       {@code RecordingPipeline.beginCapture} installs and
+ *       {@code RenderPipeline.renderBlock} invokes — the reachable bytecode,
+ *       followed across the capture-path classes
+ *       ({@link #CAPTURE_PATH_FOLLOWED}), allocates nothing (no {@code new},
+ *       no array, no {@code invokedynamic}) modulo an exact allow-list,
+ *       enters no monitor, reaches no {@code synchronized} method, and
+ *       invokes no boxing {@code valueOf}, no string operation, no clock, no
+ *       storage, no {@code java.util} collection, no lock, no publisher, no
+ *       atomic read-modify-write and no {@code core.recording} code beyond
+ *       the producer side — the ring's producer methods, the slot and the
+ *       flush service's {@code signal} — so no finalization code is
+ *       reachable from the callback. Beyond those named kinds the walk
+ *       denies by default: every call it reaches is into a followed class,
+ *       and its body walked, or is on an exact allow-list of external
+ *       members ({@link #CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST}); there is
+ *       no call on an array type, no followed method without a scanned
+ *       body, and no static field outside the followed classes. The root
+ *       is the engine's: the one {@code setRecordingCallback} call that
+ *       installs a callback passes a {@code CaptureCallback} constructed in
+ *       place, and no class nested in {@code RecordingPipeline} implements
+ *       the callback interface. The two instruction orders the producer
+ *       gate rests on are pinned. The callback-side methods carry
+ *       {@code @RealTimeSafe}.</li>
  * </ol>
  *
  * <p>These checks run as part of {@code mvn test} and fail the build if
@@ -886,11 +918,27 @@ class RealTimeSafeContractTest {
      * @param invokeFindings       invocations the invoke predicate rejected
      * @param allocationFindings   allocation / invokedynamic sites
      * @param monitorFindings      MONITORENTER / MONITOREXIT sites
+     * @param synchronizedFindings reached methods that declare the
+     *                             {@code synchronized} modifier
+     * @param invoked              every {@code owner#name} (internal owner
+     *                             name) any reached method invokes, followed
+     *                             or not
+     * @param unresolved           every {@code owner#name} whose owner the
+     *                             walk follows but whose body it could not
+     *                             scan: the class was not loadable, or it
+     *                             declares no such method with code (an
+     *                             inherited, abstract or interface method)
+     * @param staticFields         every {@code owner#name} of a static field
+     *                             a reached method reads or writes
      */
     private record ReachableScan(int scannedRoots, Set<String> reached,
                                  List<Finding> invokeFindings,
                                  List<Finding> allocationFindings,
-                                 List<Finding> monitorFindings) {
+                                 List<Finding> monitorFindings,
+                                 List<Finding> synchronizedFindings,
+                                 Set<String> invoked,
+                                 Set<String> unresolved,
+                                 Set<String> staticFields) {
     }
 
     /**
@@ -910,6 +958,23 @@ class RealTimeSafeContractTest {
      */
     private static ReachableScan walkReachable(Class<?> rootClass, Predicate<MethodModel> isRoot,
                                                BiPredicate<String, String> invokeOffender)
+            throws Exception {
+        String rootInternal = rootClass.getName().replace('.', '/');
+        return walkReachable(rootClass, isRoot, invokeOffender,
+                owner -> owner.equals(rootInternal) || owner.startsWith(METERING_INTERNAL_PREFIX));
+    }
+
+    /**
+     * The walk of {@link #walkReachable(Class, Predicate, BiPredicate)} with
+     * the follow rule as a parameter: a callee is walked when
+     * {@code followOwner} accepts the internal name of its owner, and never
+     * otherwise. Besides the findings of the three-argument form it records
+     * every reached method that declares the {@code synchronized} modifier
+     * and every {@code owner#name} the reached methods invoke.
+     */
+    private static ReachableScan walkReachable(Class<?> rootClass, Predicate<MethodModel> isRoot,
+                                               BiPredicate<String, String> invokeOffender,
+                                               Predicate<String> followOwner)
             throws Exception {
         Map<String, ClassModel> models = new HashMap<>();
         ClassModel rootModel = modelOf(rootClass.getName().replace('.', '/'), models);
@@ -933,24 +998,33 @@ class RealTimeSafeContractTest {
         List<Finding> invokes = new ArrayList<>();
         List<Finding> allocations = new ArrayList<>();
         List<Finding> monitors = new ArrayList<>();
+        List<Finding> synchronizedMethods = new ArrayList<>();
+        Set<String> invoked = new TreeSet<>();
+        Set<String> unresolved = new TreeSet<>();
+        Set<String> staticFields = new TreeSet<>();
         while (!pending.isEmpty()) {
             MethodRef ref = pending.poll();
             ClassModel model = modelOf(ref.owner(), models);
             MethodModel mm = model == null ? null : findMethod(model, ref.name(), ref.descriptor());
             CodeAttribute code = mm == null ? null : codeOf(mm);
             if (code == null) {
+                unresolved.add(ref.owner() + "#" + ref.name());
                 continue;
             }
             String where = ref.label();
+            if (mm.flags().has(AccessFlag.SYNCHRONIZED)) {
+                synchronizedMethods.add(new Finding(where, "declares synchronized"));
+            }
             for (var element : code) {
                 switch (element) {
                     case InvokeInstruction invoke -> {
                         String owner = invoke.owner().asInternalName();
                         String name = invoke.name().stringValue();
+                        invoked.add(owner + "#" + name);
                         if (invokeOffender.test(owner, name)) {
                             invokes.add(new Finding(where, "invokes " + owner + "#" + name));
                         }
-                        if (owner.equals(rootInternal) || owner.startsWith(METERING_INTERNAL_PREFIX)) {
+                        if (followOwner.test(owner)) {
                             MethodRef callee = new MethodRef(owner, name, invoke.type().stringValue());
                             if (reached.add(callee.key())) {
                                 pending.add(callee);
@@ -972,12 +1046,18 @@ class RealTimeSafeContractTest {
                                     "new multi array " + n.arrayType().asInternalName()));
                     case MonitorInstruction m ->
                             monitors.add(new Finding(where, "MONITORENTER/EXIT"));
+                    case FieldInstruction field -> {
+                        if (field.opcode() == Opcode.GETSTATIC || field.opcode() == Opcode.PUTSTATIC) {
+                            staticFields.add(field.owner().asInternalName() + "#" + field.name().stringValue());
+                        }
+                    }
                     default -> {
                     }
                 }
             }
         }
-        return new ReachableScan(scannedRoots, reached, invokes, allocations, monitors);
+        return new ReachableScan(scannedRoots, reached, invokes, allocations, monitors,
+                synchronizedMethods, invoked, unresolved, staticFields);
     }
 
     /**
@@ -1295,6 +1375,684 @@ class RealTimeSafeContractTest {
                 .filter(m -> !m.isSynthetic() && !m.isBridge())
                 .sorted((a, b) -> a.getName().compareTo(b.getName()))
                 .toList();
+    }
+
+    // ------------------------------------------------------------------
+    // The capture path: everything the recording callback reaches
+    // ------------------------------------------------------------------
+
+    private static final String RECORDING_INTERNAL_PREFIX = "com/benesquivelmusic/daw/core/recording/";
+    private static final String CAPTURE_CALLBACK = RECORDING_INTERNAL_PREFIX + "CaptureCallback";
+    private static final String CAPTURE_RING = RECORDING_INTERNAL_PREFIX + "CaptureRing";
+    private static final String CAPTURE_SLOT = CAPTURE_RING + "$Slot";
+    private static final String CAPTURE_FLUSH = RECORDING_INTERNAL_PREFIX + "CaptureFlushService";
+    private static final String RECORDING_PIPELINE = RECORDING_INTERNAL_PREFIX + "RecordingPipeline";
+    private static final String AUDIO_ENGINE = "com/benesquivelmusic/daw/core/audio/AudioEngine";
+    private static final String RENDER_PIPELINE = "com/benesquivelmusic/daw/core/audio/RenderPipeline";
+    private static final String RECORDING_CALLBACK = AUDIO_ENGINE + "$RecordingCallback";
+    private static final String TRANSPORT = "com/benesquivelmusic/daw/core/transport/Transport";
+    private static final String CAPTURE_CALLBACK_ROOT = "onAudioCaptured";
+
+    /**
+     * The classes the capture-path walk follows callees into: the per-take
+     * callback, the ring and its slot, the flush service, the engine and
+     * render-pipeline lookups the callback makes, the transport and the
+     * types its getters hand out, and the tempo map — which the callback
+     * must not reach, and which is listed so that a call back into
+     * {@code Transport.getTempo} is walked and reported. Only the methods
+     * actually reached are scanned, so listing {@code AudioEngine} does not
+     * scan the whole class.
+     */
+    private static final Set<String> CAPTURE_PATH_FOLLOWED = Set.of(
+            CAPTURE_CALLBACK, CAPTURE_RING, CAPTURE_SLOT, CAPTURE_FLUSH,
+            AUDIO_ENGINE, RENDER_PIPELINE,
+            "com/benesquivelmusic/daw/core/audio/AudioFormat",
+            TRANSPORT, TRANSPORT + "$LoopWindow",
+            "com/benesquivelmusic/daw/core/transport/TempoMap",
+            "com/benesquivelmusic/daw/core/transport/TempoChangeEvent",
+            "com/benesquivelmusic/daw/sdk/transport/PunchRegion");
+
+    /** The {@code CaptureRing} methods that are the callback's; every other one is the flush thread's or the caller's. */
+    private static final Set<String> CAPTURE_RING_PRODUCER_METHODS = Set.of(
+            "enterProducer", "producerOpen", "exitProducer", "claim", "publish", "noteTruncatedFrames");
+
+    /** Owners every {@code valueOf} of which boxes a primitive. */
+    private static final Set<String> BOXING_OWNERS = Set.of(
+            "java/lang/Boolean", "java/lang/Byte", "java/lang/Character", "java/lang/Short",
+            "java/lang/Integer", "java/lang/Long", "java/lang/Float", "java/lang/Double");
+
+    /** Owners every invocation of which is a string operation. */
+    private static final Set<String> STRING_OWNERS = Set.of(
+            "java/lang/String", "java/lang/StringBuilder", "java/lang/StringBuffer",
+            "java/lang/invoke/StringConcatFactory", "java/util/Formatter");
+
+    /**
+     * A {@code core.recording} invocation that is not the callback's own:
+     * everything in the package is forbidden unless it is the callback
+     * itself, a slot, a producer-side ring method or the flush service's
+     * {@code signal}. A prefix rule, so a recording type added later —
+     * a session, a writer, a manifest, a take, a mirror — is forbidden on
+     * the audio thread by default.
+     */
+    private static boolean isRecordingCallOutsideTheProducerSide(String owner, String name) {
+        if (!owner.startsWith(RECORDING_INTERNAL_PREFIX)) {
+            return false;
+        }
+        return !(owner.equals(CAPTURE_CALLBACK)
+                || owner.equals(CAPTURE_SLOT)
+                || (owner.equals(CAPTURE_RING) && CAPTURE_RING_PRODUCER_METHODS.contains(name))
+                || (owner.equals(CAPTURE_FLUSH) && name.equals("signal")));
+    }
+
+    /**
+     * The capture-path invoke predicate (Recording Reliability book §5.1,
+     * the "never RT" rows): the render-path rule, plus boxing, string
+     * operations, wall-clock and monotonic-clock reads, storage, every
+     * {@code java.util} owner but {@code Arrays} and {@code Objects} — a
+     * collection or a listener list is never touched on the callback —
+     * with the atomics' plain loads and stores and
+     * {@code LockSupport.unpark} left to the render-path rule, and every
+     * {@code core.recording} call that is not the producer side.
+     */
+    private static final BiPredicate<String, String> CAPTURE_PATH_INVOKE_OFFENDER = (owner, name) ->
+            RENDER_PATH_INVOKE_OFFENDER.test(owner, name)
+                    || (BOXING_OWNERS.contains(owner) && name.equals("valueOf"))
+                    || STRING_OWNERS.contains(owner)
+                    || owner.startsWith("java/time/")
+                    || (owner.equals("java/lang/System")
+                            && (name.equals("currentTimeMillis") || name.equals("nanoTime")))
+                    || owner.startsWith("java/nio/file/")
+                    || owner.startsWith("java/nio/channels/")
+                    || owner.startsWith("java/io/")
+                    || owner.equals("java/lang/Iterable")
+                    || (owner.startsWith("java/util/")
+                            && !owner.equals("java/util/Arrays")
+                            && !owner.equals("java/util/Objects")
+                            && !owner.startsWith("java/util/concurrent/atomic/")
+                            && !owner.equals("java/util/concurrent/locks/LockSupport"))
+                    || isRecordingCallOutsideTheProducerSide(owner, name);
+
+    /**
+     * Allocation sites reachable from the capture callback, keyed
+     * {@code Owner#method: what} with the reason each is tolerated. Asserted
+     * exactly, like {@link #RENDER_PATH_ALLOCATION_ALLOWLIST}. There is no
+     * allow-list for invocations, monitors or {@code synchronized} methods.
+     */
+    private static final Map<String, String> CAPTURE_PATH_ALLOCATION_ALLOWLIST = Map.of(
+            "CaptureRing#publish: new java/lang/IllegalStateException",
+            "throw path of the publish-without-claim guard: a programming error, never reached "
+                    + "from the callback's claim → fill → publish sequence");
+
+    /** The methods the capture walk must reach, or it is scanning something else. */
+    private static final List<String> CAPTURE_PATH_REQUIRED_REACH = List.of(
+            CAPTURE_CALLBACK + "#fillBlock", CAPTURE_CALLBACK + "#publishAndLeave",
+            CAPTURE_RING + "#enterProducer", CAPTURE_RING + "#producerOpen", CAPTURE_RING + "#exitProducer",
+            CAPTURE_RING + "#claim", CAPTURE_RING + "#publish", CAPTURE_SLOT + "#copySource",
+            CAPTURE_FLUSH + "#signal", AUDIO_ENGINE + "#graphInstrumentRecordingBuffer",
+            RENDER_PIPELINE + "#graphInstrumentRecordingBuffer", TRANSPORT + "#getPositionInBeats",
+            TRANSPORT + "#getPunchRegion", TRANSPORT + "#isLoopEnabled");
+
+    private static ReachableScan walkCapturePath() throws Exception {
+        return walkReachable(Class.forName(CAPTURE_CALLBACK.replace('/', '.')), named(CAPTURE_CALLBACK_ROOT),
+                CAPTURE_PATH_INVOKE_OFFENDER, CAPTURE_PATH_FOLLOWED::contains);
+    }
+
+    /**
+     * The capture-path walk is rooted at the callback the engine really
+     * runs. Every {@code AudioEngine.setRecordingCallback} call of
+     * {@code RecordingPipeline} passes either {@code null} or a
+     * {@code CaptureCallback} constructed right there as the argument — the
+     * instruction before the call is that constructor's — and
+     * {@code beginCapture} makes exactly one such installing call; no
+     * lambda or method reference of the pipeline implements the callback
+     * interface, and no class nested in the pipeline — named, local or
+     * anonymous — does, so nothing can stand between the engine and the
+     * {@code CaptureCallback}. {@code RenderPipeline.renderBlock} invokes
+     * the interface method the root implements. The behavioural half —
+     * the object the engine holds after {@code beginCapture} is a
+     * {@code CaptureCallback} itself — is pinned by
+     * {@code StopFenceTailIntegrityContractTest}.
+     */
+    @Test
+    void theCaptureWalkIsRootedAtTheCallbackTheEngineRuns() throws Exception {
+        Map<String, ClassModel> models = new HashMap<>();
+        ClassModel pipeline = modelOf(RECORDING_PIPELINE, models);
+        Class<?> callback = Class.forName(CAPTURE_CALLBACK.replace('/', '.'));
+        Class<?> callbackInterface = Class.forName(RECORDING_CALLBACK.replace('/', '.'));
+        List<String> installsInBeginCapture = new ArrayList<>();
+        List<String> otherArguments = new ArrayList<>();
+        int removals = 0;
+        for (MethodModel mm : pipeline.methods()) {
+            CodeAttribute code = codeOf(mm);
+            if (code == null) {
+                continue;
+            }
+            String method = mm.methodName().stringValue();
+            Instruction previous = null;
+            for (var element : code) {
+                if (element instanceof InvokeDynamicInstruction indy) {
+                    assertThat(indy.name().stringValue())
+                            .as("RecordingPipeline#%s must not implement the recording callback with a lambda or a "
+                                    + "method reference: the capture sentinel walks CaptureCallback", method)
+                            .isNotEqualTo(CAPTURE_CALLBACK_ROOT);
+                }
+                if (element instanceof InvokeInstruction invoke
+                        && invoke.owner().asInternalName().equals(AUDIO_ENGINE)
+                        && invoke.name().stringValue().equals("setRecordingCallback")) {
+                    // The argument is whatever the instruction before the call left on the stack.
+                    if (previous instanceof InvokeInstruction constructed
+                            && constructed.owner().asInternalName().equals(CAPTURE_CALLBACK)
+                            && constructed.name().stringValue().equals("<init>")) {
+                        (method.equals("beginCapture") ? installsInBeginCapture : otherArguments).add(method);
+                    } else if (previous instanceof ConstantInstruction constant
+                            && constant.opcode() == Opcode.ACONST_NULL) {
+                        removals++;
+                    } else {
+                        otherArguments.add(method + " passes what " + previous + " left on the stack");
+                    }
+                }
+                if (element instanceof Instruction instruction) {
+                    previous = instruction;
+                }
+            }
+        }
+        assertThat(installsInBeginCapture)
+                .as("RecordingPipeline#beginCapture installs, once, a CaptureCallback it constructs as the argument")
+                .hasSize(1);
+        assertThat(otherArguments)
+                .as("every other setRecordingCallback call of RecordingPipeline passes null: an argument that is "
+                        + "not a CaptureCallback constructed in place — a wrapper, a variable — is not walked")
+                .isEmpty();
+        assertThat(removals).as("the walk saw the calls that remove the callback").isGreaterThanOrEqualTo(2);
+        List<String> nestedCallbacks = new ArrayList<>();
+        var nestMembers = pipeline.findAttribute(Attributes.nestMembers());
+        if (nestMembers.isPresent()) {
+            for (var member : nestMembers.get().nestMembers()) {
+                Class<?> nested = Class.forName(member.asInternalName().replace('/', '.'), false,
+                        Thread.currentThread().getContextClassLoader());
+                if (callbackInterface.isAssignableFrom(nested)) {
+                    nestedCallbacks.add(nested.getName());
+                }
+            }
+        }
+        assertThat(nestedCallbacks)
+                .as("no class nested in RecordingPipeline implements the recording callback")
+                .isEmpty();
+        assertThat(callbackInterface.isAssignableFrom(callback))
+                .as("CaptureCallback implements AudioEngine.RecordingCallback").isTrue();
+        assertThat(Modifier.isFinal(callback.getModifiers())).as("CaptureCallback has no subclass").isTrue();
+
+        ReachableScan renderBlock = walkReachable(Class.forName(RENDER_PIPELINE.replace('/', '.')),
+                named("renderBlock"), RENDER_PATH_INVOKE_OFFENDER, owner -> owner.equals(RENDER_PIPELINE));
+        assertThat(renderBlock.scannedRoots()).isGreaterThanOrEqualTo(1);
+        assertThat(renderBlock.invoked())
+                .as("RenderPipeline#renderBlock hands the block to the recording callback")
+                .contains(RECORDING_CALLBACK + "#" + CAPTURE_CALLBACK_ROOT);
+    }
+
+    /**
+     * Recording Reliability book §5.1 — from the recording callback, nothing
+     * reachable across the capture-path classes allocates, enters a monitor,
+     * declares {@code synchronized}, boxes, touches a string, a clock, a
+     * file, a collection, a lock, a publisher or an atomic
+     * read-modify-write, or calls recording code that is not the producer
+     * side — modulo {@link #CAPTURE_PATH_ALLOCATION_ALLOWLIST}.
+     */
+    @Test
+    void theCaptureCallbackReachesNothingForbiddenOnTheAudioThread() throws Exception {
+        ReachableScan scan = walkCapturePath();
+        assertThat(scan.scannedRoots())
+                .as("CaptureCallback#%s exists with code", CAPTURE_CALLBACK_ROOT).isEqualTo(1);
+        for (String required : CAPTURE_PATH_REQUIRED_REACH) {
+            assertThat(scan.reached())
+                    .as("the capture walk reaches %s; reached: %s", required, scan.reached())
+                    .anyMatch(key -> key.startsWith(required + "("));
+        }
+        assertThat(scan.invokeFindings().stream().map(Finding::toString).distinct().sorted().toList())
+                .as("the capture callback (reached: %s) must not box, build a string, read a clock, touch "
+                        + "storage, a collection, a lock, a publisher or an atomic read-modify-write, or call "
+                        + "recording code beyond the producer side", scan.reached())
+                .isEmpty();
+        assertThat(notAllowed(scan.allocationFindings(), CAPTURE_PATH_ALLOCATION_ALLOWLIST))
+                .as("the capture callback (reached: %s) must not allocate (new / array / invokedynamic)",
+                        scan.reached())
+                .isEmpty();
+        assertThat(scan.monitorFindings())
+                .as("the capture callback (reached: %s) must not enter a monitor", scan.reached())
+                .isEmpty();
+        assertThat(scan.synchronizedFindings())
+                .as("no method the capture callback reaches (reached: %s) may declare synchronized",
+                        scan.reached())
+                .isEmpty();
+    }
+
+    /**
+     * No finalization code is reachable from the callback: of the recording
+     * package it calls the ring's producer side, the slot and the flush
+     * service's {@code signal}, and nothing else — no session, writer,
+     * manifest, take or capture type, and never the ring's consumer side.
+     */
+    @Test
+    void theCaptureCallbackCallsOnlyTheProducerSideOfTheRecordingPackage() throws Exception {
+        ReachableScan scan = walkCapturePath();
+        Set<String> recordingCalls = scan.invoked().stream()
+                .filter(call -> call.startsWith(RECORDING_INTERNAL_PREFIX))
+                .collect(Collectors.toCollection(TreeSet::new));
+        assertThat(recordingCalls).as("the walk saw the callback's recording calls").isNotEmpty();
+        assertThat(recordingCalls.stream().filter(call -> call.startsWith(CAPTURE_FLUSH + "#")).toList())
+                .as("the callback's only call into the flush service is signal")
+                .containsExactly(CAPTURE_FLUSH + "#signal");
+        assertThat(recordingCalls)
+                .as("the callback never reaches the ring's consumer side")
+                .doesNotContain(CAPTURE_RING + "#peek", CAPTURE_RING + "#release",
+                        CAPTURE_RING + "#awaitProducerQuiescent", CAPTURE_RING + "#closeProducer");
+        assertThat(recordingCalls.stream()
+                .filter(call -> {
+                    int split = call.indexOf('#');
+                    return isRecordingCallOutsideTheProducerSide(call.substring(0, split), call.substring(split + 1));
+                }).toList())
+                .as("recording code beyond the producer side reached from the callback")
+                .isEmpty();
+    }
+
+    /** {@link #CAPTURE_PATH_ALLOCATION_ALLOWLIST} is exact: every entry is still observed by the walk. */
+    @Test
+    void theCapturePathAllowListIsExact() throws Exception {
+        Set<String> observed = walkCapturePath().allocationFindings().stream().map(Finding::toString)
+                .filter(CAPTURE_PATH_ALLOCATION_ALLOWLIST::containsKey)
+                .collect(Collectors.toCollection(TreeSet::new));
+        assertThat(observed)
+                .as("every CAPTURE_PATH_ALLOCATION_ALLOWLIST entry must still be observed")
+                .containsExactlyInAnyOrderElementsOf(CAPTURE_PATH_ALLOCATION_ALLOWLIST.keySet());
+    }
+
+    /**
+     * The calls the capture path makes whose callee is not walked, keyed
+     * {@code owner#name} (internal owner name) with the reason each is safe
+     * on the audio thread. Deny by default: a call from the reached set is
+     * either into a followed class — and then its body is walked — or it is
+     * listed here, or it is a finding
+     * ({@link #capturePathCallsNeitherWalkedNorAllowed}). Asserted exactly:
+     * an entry the walk no longer sees fails
+     * {@link #theCapturePathExternalCallAllowListIsExact}.
+     */
+    private static final Map<String, String> CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST = Map.ofEntries(
+            Map.entry("java/lang/Math#round", "pure arithmetic intrinsic: the start frame from the beat position"),
+            Map.entry("java/lang/Math#min", "pure arithmetic intrinsic: bounds of the slot copy"),
+            Map.entry("java/lang/Math#max", "pure arithmetic intrinsic: bounds of the slot copy"),
+            Map.entry("java/lang/System#arraycopy", "the one bounded copy into the preallocated slot"),
+            Map.entry("java/util/Arrays#fill", "zeroes the rest of a preallocated slot row; writes in place"),
+            Map.entry("java/util/concurrent/atomic/AtomicLong#get", "a volatile load of a ring index or counter"),
+            Map.entry("java/util/concurrent/atomic/AtomicLong#lazySet",
+                    "a release store of a ring index or counter; the callback is its only writer"),
+            Map.entry("java/util/concurrent/locks/LockSupport#unpark",
+                    "wakes the flush thread: no lock, no allocation, never blocks"),
+            Map.entry("java/lang/IllegalStateException#<init>",
+                    "throw path of the publish-without-claim guard (CAPTURE_PATH_ALLOCATION_ALLOWLIST): never "
+                            + "reached from the callback's claim → fill → publish sequence"));
+
+    /**
+     * The deny-by-default half of the capture sentinel: every
+     * {@code owner#name} the scanned methods invoke whose owner
+     * {@code followed} does not accept — so its body was not walked — and
+     * which is not on {@link #CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST}. That
+     * covers what no deny-list names: a project class outside the followed
+     * set (a {@code Track} getter), a JDK method that allocates inside
+     * itself ({@code Arrays.copyOf}, {@code Integer.toString}), and a call
+     * on an array type ({@code clone()}, whose owner is the array's
+     * descriptor).
+     */
+    private static List<String> capturePathCallsNeitherWalkedNorAllowed(ReachableScan scan,
+                                                                        Predicate<String> followed) {
+        return scan.invoked().stream()
+                .filter(call -> !followed.test(call.substring(0, call.indexOf('#'))))
+                .filter(call -> !CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST.containsKey(call))
+                .toList();
+    }
+
+    /**
+     * Recording Reliability book §5.1, deny by default — every call
+     * reachable from the recording callback is into a class the walk
+     * follows, and was walked, or is on the exact allow-list of external
+     * members. No call on an array type, no method the walk could not
+     * resolve to a body, and no static field outside the followed classes
+     * (reading one could run a class initialiser on the audio thread; the
+     * followed classes are initialised before the callback first runs,
+     * because the callback holds an instance of each or reaches it through
+     * one).
+     */
+    @Test
+    void everyCallOnTheCapturePathIsWalkedOrOnTheExactAllowListOfExternalMembers() throws Exception {
+        ReachableScan scan = walkCapturePath();
+        assertThat(scan.scannedRoots()).isEqualTo(1);
+        assertThat(capturePathCallsNeitherWalkedNorAllowed(scan, CAPTURE_PATH_FOLLOWED::contains))
+                .as("calls reachable from the recording callback (reached: %s) whose body the capture sentinel "
+                        + "does not walk and which are not on CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST: follow the "
+                        + "owner, allow the member with a reason, or take the call off the audio thread",
+                        scan.reached())
+                .isEmpty();
+        assertThat(scan.invoked().stream().filter(call -> call.startsWith("[")).toList())
+                .as("calls on an array type reachable from the recording callback: clone() allocates without "
+                        + "an allocation instruction")
+                .isEmpty();
+        assertThat(scan.unresolved())
+                .as("followed methods the capture walk could not resolve to a body, so never scanned")
+                .isEmpty();
+        assertThat(scan.staticFields().stream()
+                .filter(field -> !CAPTURE_PATH_FOLLOWED.contains(field.substring(0, field.indexOf('#'))))
+                .toList())
+                .as("static fields outside the followed classes read or written on the capture path")
+                .isEmpty();
+    }
+
+    /** {@link #CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST} is exact: every entry is a call the walk still sees. */
+    @Test
+    void theCapturePathExternalCallAllowListIsExact() throws Exception {
+        Set<String> observed = walkCapturePath().invoked().stream()
+                .filter(CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST::containsKey)
+                .collect(Collectors.toCollection(TreeSet::new));
+        assertThat(observed)
+                .as("every CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST entry must still be observed")
+                .containsExactlyInAnyOrderElementsOf(CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST.keySet());
+        assertThat(CAPTURE_PATH_EXTERNAL_CALL_ALLOWLIST.keySet().stream()
+                .filter(call -> CAPTURE_PATH_FOLLOWED.contains(call.substring(0, call.indexOf('#')))).toList())
+                .as("an allow-list entry of a followed class would be dead: such a call is walked")
+                .isEmpty();
+    }
+
+    /**
+     * The two instruction orders the producer gate's soundness argument
+     * rests on ({@code CaptureRing} class note), pinned where they are
+     * decided — in the bytecode. No test can hold a thread between two
+     * adjacent field accesses of one method, so an interleaving cannot show
+     * them; their order can be read.
+     *
+     * <ul>
+     *   <li>{@code CaptureRing.enterProducer} stores the odd phase before it
+     *       loads the closed flag: a callback whose phase store the flush
+     *       thread did not see then reads the gate closed.</li>
+     *   <li>{@code CaptureCallback.publishAndLeave} reads the gate
+     *       ({@code producerOpen}), then publishes, then leaves the gate
+     *       ({@code exitProducer}): the flush thread that saw the callback
+     *       leave sees its block.</li>
+     * </ul>
+     */
+    @Test
+    void theProducerGateKeepsTheTwoInstructionOrdersItsSoundnessRestsOn() throws Exception {
+        Map<String, ClassModel> models = new HashMap<>();
+        List<String> enter = new ArrayList<>();
+        for (var element : codeOfTheOneMethodNamed(modelOf(CAPTURE_RING, models), "enterProducer")) {
+            if (element instanceof FieldInstruction field) {
+                enter.add(field.opcode() + " " + field.name().stringValue());
+            }
+        }
+        assertThat(enter)
+                .as("CaptureRing#enterProducer: the phase is loaded and stored before the closed flag is loaded")
+                .containsExactly("GETFIELD producerPhase", "PUTFIELD producerPhase", "GETFIELD producerClosed");
+
+        List<String> leave = new ArrayList<>();
+        for (var element : codeOfTheOneMethodNamed(modelOf(CAPTURE_CALLBACK, models), "publishAndLeave")) {
+            if (element instanceof InvokeInstruction invoke) {
+                leave.add(invoke.owner().asInternalName() + "#" + invoke.name().stringValue());
+            }
+        }
+        assertThat(leave)
+                .as("CaptureCallback#publishAndLeave: the gate is read, the block published, the flush thread "
+                        + "woken, and only then is the gate left")
+                .containsExactly(CAPTURE_RING + "#producerOpen", CAPTURE_RING + "#publish",
+                        CAPTURE_FLUSH + "#signal", CAPTURE_RING + "#exitProducer");
+
+        List<String> exit = new ArrayList<>();
+        for (var element : codeOfTheOneMethodNamed(modelOf(CAPTURE_RING, models), "exitProducer")) {
+            if (element instanceof FieldInstruction field) {
+                exit.add(field.opcode() + " " + field.name().stringValue());
+            }
+        }
+        assertThat(exit).as("CaptureRing#exitProducer only advances the phase")
+                .containsExactly("GETFIELD producerPhase", "PUTFIELD producerPhase");
+    }
+
+    /**
+     * The two instruction orders above mean something only between
+     * volatile accesses: each side of the gate stores its own word and then
+     * loads the other's, and it is the total order of volatile accesses
+     * that keeps both from missing the other's store ({@code CaptureRing}
+     * class note). With either word a plain field the orders, and every
+     * latch-driven fence test, stay as they are and the gate is unsound. So
+     * the modifier is pinned: {@code producerClosed} and
+     * {@code producerPhase} are each declared once in {@code CaptureRing},
+     * as a volatile instance field of the type the gate uses.
+     */
+    @Test
+    void theTwoWordsOfTheProducerGateAreVolatileInstanceFields() throws Exception {
+        ClassModel ring = modelOf(CAPTURE_RING, new HashMap<>());
+        Map<String, String> gateWords = Map.of("producerClosed", "Z", "producerPhase", "J");
+        for (Map.Entry<String, String> word : gateWords.entrySet()) {
+            var declared = ring.fields().stream()
+                    .filter(field -> field.fieldName().stringValue().equals(word.getKey())).toList();
+            assertThat(declared).as("CaptureRing declares the gate word %s once", word.getKey()).hasSize(1);
+            var field = declared.getFirst();
+            assertThat(field.fieldType().stringValue()).as("CaptureRing#%s has the gate's type", word.getKey())
+                    .isEqualTo(word.getValue());
+            assertThat(field.flags().has(AccessFlag.VOLATILE))
+                    .as("CaptureRing#%s must be volatile: the gate is a store-then-load handshake on both sides",
+                            word.getKey())
+                    .isTrue();
+            assertThat(field.flags().has(AccessFlag.STATIC))
+                    .as("CaptureRing#%s is a word of one take's ring, not a static", word.getKey())
+                    .isFalse();
+        }
+    }
+
+    private static CodeAttribute codeOfTheOneMethodNamed(ClassModel model, String name) {
+        List<MethodModel> named = model.methods().stream()
+                .filter(mm -> mm.methodName().stringValue().equals(name)).toList();
+        assertThat(named).as("%s#%s is declared once", model.thisClass().asInternalName(), name).hasSize(1);
+        CodeAttribute code = codeOf(named.getFirst());
+        assertThat(code).as("%s#%s has code", model.thisClass().asInternalName(), name).isNotNull();
+        return code;
+    }
+
+    /**
+     * The callback-side methods carry {@code @RealTimeSafe}, so the
+     * signature and own-body sweeps of this suite cover them.
+     * {@code getDeclaredMethod} throws rather than passing vacuously when one
+     * is renamed. {@code Transport.getTempo} must stay without it: it reads
+     * the tempo map's list.
+     */
+    @Test
+    void theCapturePathMethodsShouldBeRealTimeSafe() throws Exception {
+        Class<?> callback = Class.forName(CAPTURE_CALLBACK.replace('/', '.'));
+        Class<?> ring = Class.forName(CAPTURE_RING.replace('/', '.'));
+        Class<?> flush = Class.forName(CAPTURE_FLUSH.replace('/', '.'));
+        Class<?> engine = Class.forName(AUDIO_ENGINE.replace('/', '.'));
+        Class<?> transport = Class.forName(TRANSPORT.replace('/', '.'));
+        Class<?> track = Class.forName("com.benesquivelmusic.daw.core.track.Track");
+        List<Method> expected = List.of(
+                callback.getDeclaredMethod(CAPTURE_CALLBACK_ROOT, float[][].class, int.class),
+                callback.getDeclaredMethod("fillBlock", float[][].class, int.class),
+                callback.getDeclaredMethod("publishAndLeave", boolean.class),
+                ring.getDeclaredMethod("enterProducer"),
+                ring.getDeclaredMethod("producerOpen"),
+                ring.getDeclaredMethod("exitProducer"),
+                ring.getDeclaredMethod("claim"),
+                ring.getDeclaredMethod("publish"),
+                ring.getDeclaredMethod("noteTruncatedFrames", int.class),
+                flush.getDeclaredMethod("signal"),
+                engine.getDeclaredMethod("graphInstrumentRecordingBuffer", track),
+                Class.forName(RECORDING_CALLBACK.replace('/', '.'))
+                        .getDeclaredMethod(CAPTURE_CALLBACK_ROOT, float[][].class, int.class),
+                transport.getDeclaredMethod("getPositionInBeats"),
+                transport.getDeclaredMethod("getPunchRegion"),
+                transport.getDeclaredMethod("isLoopEnabled"));
+        for (Method method : expected) {
+            assertThat(method.isAnnotationPresent(RealTimeSafe.class))
+                    .as("%s must be annotated @RealTimeSafe", method).isTrue();
+        }
+        assertThat(REAL_TIME_SAFE_METHODS)
+                .as("the suite's sweeps see the callback and the flush service's signal")
+                .contains(expected.get(0), expected.get(9));
+        for (String flushThreadSide : List.of("peek", "release", "closeProducer")) {
+            assertThat(ring.getDeclaredMethod(flushThreadSide).isAnnotationPresent(RealTimeSafe.class))
+                    .as("CaptureRing#%s is not the callback's and must not carry @RealTimeSafe", flushThreadSide)
+                    .isFalse();
+        }
+        assertThat(ring.getDeclaredMethod("awaitProducerQuiescent", long.class).isAnnotationPresent(RealTimeSafe.class))
+                .as("CaptureRing#awaitProducerQuiescent waits and must not carry @RealTimeSafe").isFalse();
+        assertThat(transport.getDeclaredMethod("getTempo").isAnnotationPresent(RealTimeSafe.class))
+                .as("Transport#getTempo reads the tempo map's list and must not carry @RealTimeSafe").isFalse();
+    }
+
+    /**
+     * Non-vacuity of the capture walk's detector: the same walk, with the
+     * same predicate, over a fixture that is never run and makes one call or
+     * instruction of each forbidden kind, reports every one of them.
+     */
+    @Test
+    void theCaptureWalkReportsEveryForbiddenKindOnAFixture() throws Exception {
+        String self = RealTimeSafeContractTest.class.getName().replace('.', '/');
+        ReachableScan scan = walkReachable(RealTimeSafeContractTest.class, named("capturePathForbiddenFixture"),
+                CAPTURE_PATH_INVOKE_OFFENDER, owner -> owner.equals(self));
+        assertThat(scan.scannedRoots()).isEqualTo(1);
+        String fixture = "RealTimeSafeContractTest#capturePathForbiddenFixture: ";
+        assertThat(scan.allocationFindings().stream().map(Finding::toString).toList())
+                .as("every allocation kind is reported")
+                .contains(fixture + "new java/lang/Object",
+                        fixture + "new primitive array INT",
+                        fixture + "new reference array java/lang/Object",
+                        fixture + "new multi array [[I")
+                .anyMatch(finding -> finding.startsWith(fixture + "invokedynamic run -> "))
+                .anyMatch(finding -> finding.startsWith(fixture + "invokedynamic makeConcatWithConstants"));
+        assertThat(scan.monitorFindings().stream().map(Finding::toString).toList())
+                .as("a synchronized block is reported").contains(fixture + "MONITORENTER/EXIT");
+        assertThat(scan.synchronizedFindings().stream().map(Finding::toString).toList())
+                .as("a reached synchronized method is reported")
+                .containsExactly("RealTimeSafeContractTest#capturePathSynchronizedFixture: declares synchronized");
+        assertThat(scan.invokeFindings().stream().map(Finding::toString).distinct().toList())
+                .as("every forbidden invocation is reported, and nothing else of the fixture")
+                .containsExactlyInAnyOrder(
+                        fixture + "invokes java/lang/Long#valueOf",
+                        fixture + "invokes java/lang/String#length",
+                        fixture + "invokes java/lang/StringBuilder#<init>",
+                        fixture + "invokes java/lang/StringBuilder#append",
+                        fixture + "invokes java/time/Instant#now",
+                        fixture + "invokes java/lang/System#currentTimeMillis",
+                        fixture + "invokes java/lang/System#nanoTime",
+                        fixture + "invokes java/nio/file/Files#exists",
+                        fixture + "invokes java/nio/channels/FileChannel#force",
+                        fixture + "invokes java/io/File#exists",
+                        fixture + "invokes java/util/List#size",
+                        fixture + "invokes java/lang/Iterable#iterator",
+                        fixture + "invokes java/util/concurrent/locks/ReentrantLock#lock",
+                        fixture + "invokes java/util/concurrent/atomic/AtomicLong#incrementAndGet",
+                        fixture + "invokes java/util/concurrent/SubmissionPublisher#offer",
+                        fixture + "invokes java/lang/Object#wait",
+                        fixture + "invokes " + RECORDING_INTERNAL_PREFIX + "RecordingSession#stop",
+                        fixture + "invokes " + CAPTURE_RING + "#peek",
+                        fixture + "invokes " + CAPTURE_RING + "#release",
+                        fixture + "invokes " + CAPTURE_FLUSH + "#requestStop");
+
+        // Deny by default: what no deny-list names is still reported — a
+        // project class the walk does not follow, a JDK method that
+        // allocates inside itself, a call on an array type — and the
+        // allow-listed external members are not.
+        List<String> unwalked = capturePathCallsNeitherWalkedNorAllowed(scan,
+                owner -> owner.equals(self) || CAPTURE_PATH_FOLLOWED.contains(owner));
+        assertThat(unwalked)
+                .as("calls that are neither walked nor allow-listed are reported")
+                .contains("com/benesquivelmusic/daw/core/track/Track#getClips",
+                        "[I#clone",
+                        "java/util/Arrays#copyOf",
+                        "java/lang/Integer#toString",
+                        "java/lang/Thread#currentThread",
+                        "java/util/List#size",
+                        "java/util/concurrent/atomic/AtomicLong#incrementAndGet")
+                .doesNotContain("java/util/Arrays#fill",
+                        "java/util/concurrent/atomic/AtomicLong#get",
+                        "java/util/concurrent/atomic/AtomicLong#lazySet",
+                        "java/util/concurrent/locks/LockSupport#unpark",
+                        "java/lang/Math#max",
+                        "java/lang/System#arraycopy",
+                        CAPTURE_FLUSH + "#signal");
+        assertThat(scan.staticFields()).as("a static field read is recorded")
+                .contains("java/lang/Integer#TYPE");
+    }
+
+    /**
+     * Fixture of {@link #theCaptureWalkReportsEveryForbiddenKindOnAFixture}:
+     * one instruction or call of each kind the capture walk forbids; the
+     * calls the walk must leave alone — an atomic's plain load and store,
+     * {@code LockSupport.unpark}, {@code Arrays.fill}, the flush service's
+     * {@code signal}, {@code Math.max} and {@code System.arraycopy}; and
+     * five calls no deny-list names, which only the deny-by-default rule
+     * reports — a {@code Track} getter, an array's {@code clone()},
+     * {@code Arrays.copyOf}, {@code Integer.toString} and
+     * {@code Thread.currentThread} — with one static field read. Never
+     * called.
+     */
+    @SuppressWarnings({"unused", "SynchronizationOnLocalVariableOrMethodParameter", "ResultOfMethodCallIgnored"})
+    private static void capturePathForbiddenFixture(
+            Object lock, long value, java.util.List<String> list, Iterable<String> iterable,
+            java.nio.file.Path path, java.io.File file, java.nio.channels.FileChannel channel,
+            java.util.concurrent.locks.ReentrantLock reentrant, java.util.concurrent.atomic.AtomicLong counter,
+            java.util.concurrent.SubmissionPublisher<String> publisher, Thread other,
+            com.benesquivelmusic.daw.core.recording.RecordingSession session,
+            com.benesquivelmusic.daw.core.recording.CaptureRing ring,
+            com.benesquivelmusic.daw.core.recording.CaptureFlushService service,
+            com.benesquivelmusic.daw.core.track.Track track) throws Exception {
+        Object object = new Object();
+        int[] primitives = new int[1];
+        Object[] references = new Object[1];
+        int[][] multi = new int[1][1];
+        Runnable lambda = () -> { };
+        synchronized (lock) {
+            primitives[0] = 1;
+        }
+        capturePathSynchronizedFixture();
+
+        Long boxed = Long.valueOf(value);
+        String concatenated = "x" + value;
+        int length = concatenated.length();
+        StringBuilder builder = new StringBuilder();
+        builder.append(value);
+        java.time.Instant.now();
+        System.currentTimeMillis();
+        System.nanoTime();
+        java.nio.file.Files.exists(path);
+        channel.force(false);
+        file.exists();
+        list.size();
+        iterable.iterator();
+        reentrant.lock();
+        counter.incrementAndGet();
+        publisher.offer("x", null);
+        lock.wait(1);
+        session.stop();
+        ring.peek();
+        ring.release();
+        service.requestStop(com.benesquivelmusic.daw.core.recording.TakeManifest.SealedBy.STOP);
+
+        // Allowed on the callback: none of these may be reported.
+        counter.get();
+        counter.lazySet(value);
+        java.util.concurrent.locks.LockSupport.unpark(other);
+        Arrays.fill(primitives, 0);
+        service.signal();
+        int larger = Math.max(primitives[0], 1);
+        System.arraycopy(primitives, 0, primitives, 0, 1);
+
+        // Named by no deny-list, and still not the callback's to make: only
+        // the deny-by-default rule reports these.
+        Object clips = track.getClips();
+        int[] cloned = primitives.clone();
+        int[] copied = Arrays.copyOf(primitives, 1);
+        String text = Integer.toString(larger);
+        Thread current = Thread.currentThread();
+        Class<?> primitive = Integer.TYPE;
+    }
+
+    @SuppressWarnings("unused")
+    private static synchronized void capturePathSynchronizedFixture() {
     }
 
     // ------------------------------------------------------------------

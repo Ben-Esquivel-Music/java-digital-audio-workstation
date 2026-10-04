@@ -184,7 +184,7 @@ class EarlySealSignalContractTest {
 
         assertThat(witness.runs).as("signalled once").hasSize(1);
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(3 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(3 * BLOCK_FRAMES));
         TakeManifest afterStop = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(afterStop.sealStatus()).isEqualTo(SealStatus.ABORTED);
         assertThat(afterStop.sealedBy()).as("the stop keeps the early seal's reason").contains(SealedBy.DISK_EXHAUSTION);
@@ -207,7 +207,7 @@ class EarlySealSignalContractTest {
         assertThat(observed.status()).isEqualTo(SealStatus.ABORTED);
         assertThat(observed.sealedBy()).isEqualTo(SealedBy.DISK_EXHAUSTION);
         assertThat(stopRecording(pipeline)).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(3 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(3 * BLOCK_FRAMES));
         assertThat(witness.runs).hasSize(1);
     }
 
@@ -239,7 +239,7 @@ class EarlySealSignalContractTest {
 
         assertThat(witness.runs).hasSize(1);
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(2 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(2 * BLOCK_FRAMES));
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).sealedBy()).contains(SealedBy.WRITE_FAILURE);
     }
 
@@ -270,7 +270,7 @@ class EarlySealSignalContractTest {
         assertThat(observed.sealedBy()).isEqualTo(SealedBy.WRITE_FAILURE);
 
         assertThat(stopRecording(pipeline)).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(BLOCK_FRAMES));
         assertThat(witness.runs).hasSize(1);
     }
 
@@ -301,7 +301,7 @@ class EarlySealSignalContractTest {
         assertThat(pipeline.isActive()).as("the take stays the caller's to stop").isTrue();
 
         assertThat(stopRecording(pipeline)).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(3 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(3 * BLOCK_FRAMES));
         assertThat(witness.runs).hasSize(1);
     }
 
@@ -420,8 +420,15 @@ class EarlySealSignalContractTest {
                     .containsExactly(part);
         }
 
-        assertThat(stopRecording(pipeline)).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(keptBlocks * BLOCK_FRAMES));
+        // No segment sealed, so the clip lists none and carries no audio; it
+        // declares the frames the take captured, and those are in the .part.
+        assertThat(stopRecording(pipeline)).singleElement().satisfies(clip -> {
+            assertThat(clip.getSourceSegmentPaths()).isEmpty();
+            assertThat(clip.getAudioData()).isNull();
+            assertThat(clip.getSourceRateMetadata().framesPerChannel()).isEqualTo((long) keptBlocks * BLOCK_FRAMES);
+        });
+        RampCaptureTestSupport.assertDecodedRamp(SegmentFile.readFrames(List.of(part))[0],
+                0, (long) keptBlocks * BLOCK_FRAMES);
         assertThat(witness.runs).hasSize(1);
     }
 
@@ -451,7 +458,7 @@ class EarlySealSignalContractTest {
                 .contains(SealedBy.DISK_EXHAUSTION);
         assertThat(service.discardedBlocks()).isEqualTo(2);
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(2 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(2 * BLOCK_FRAMES));
         assertThat(pipeline.isActive()).isFalse();
         assertThat(witness.runs).hasSize(1);
     }

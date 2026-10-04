@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -191,5 +192,135 @@ class SegmentFileTest {
         Path wav = writer.seal();
 
         assertThat(SegmentFile.readFrames(wav)).isEqualTo(audio);
+    }
+
+    /** Stereo ramp of 16-bit codes: frame {@code n} is code {@code n} left, {@code -n} right. */
+    private static float[][] codeRamp(int firstCode, int frames) {
+        float[][] audio = new float[2][frames];
+        for (int i = 0; i < frames; i++) {
+            audio[0][i] = (firstCode + i) / 32767f;
+            audio[1][i] = -(firstCode + i) / 32767f;
+        }
+        return audio;
+    }
+
+    @Test
+    void aRotatedTakeIsReadBackAsOneArrayWithEverySegmentInItsPlace() throws IOException {
+        // A session capped at 400 frames per segment and fed blocks that do
+        // not fit twice: every block rotates into a segment of its own. The
+        // codes run on across the three seams.
+        Path trackDir = tempDir.resolve("rotated");
+        RecordingSession session = new RecordingSession(
+                new com.benesquivelmusic.daw.core.audio.AudioFormat(SAMPLE_RATE, 2, 16, 256),
+                trackDir, Duration.ofHours(1), 400L * 4);
+        session.start();
+        int fed = 0;
+        for (int frames : new int[] {250, 250, 250, 200}) {
+            session.recordAudioData(codeRamp(fed, frames), frames);
+            fed += frames;
+        }
+        session.stop();
+        assertThat(session.getSegments()).extracting(RecordingSegment::sampleCount)
+                .as("fixture: the take rotated three times").containsExactly(250L, 250L, 250L, 200L);
+        List<Path> segments = session.getSegments().stream().map(RecordingSegment::filePath).toList();
+
+        float[][] whole = SegmentFile.readFrames(segments);
+
+        assertThat(whole).hasDimensions(2, 950);
+        for (int i = 0; i < 950; i++) {
+            assertThat(whole[0][i]).as("left frame %d", i).isEqualTo(i / 32768f);
+            assertThat(whole[1][i]).as("right frame %d", i).isEqualTo(-i / 32768f);
+        }
+    }
+
+    @Test
+    void sealedSegmentsAndAStreamingPartAreReadTogether() throws IOException {
+        SegmentWriter first = open("segment-000.wav.part", 2, 16);
+        first.append(codeRamp(0, 20_000), 2, 20_000); // longer than one read chunk
+        Path sealed = first.seal();
+        SegmentWriter second = open("segment-001.wav.part", 2, 16);
+        second.append(codeRamp(20_000, 37), 2, 37);
+        try {
+            float[][] whole = SegmentFile.readFrames(List.of(sealed, second.partPath()));
+
+            assertThat(whole).hasDimensions(2, 20_037);
+            for (int i = 0; i < 20_037; i++) {
+                if (whole[0][i] != i / 32768f || whole[1][i] != -i / 32768f) {
+                    assertThat(whole[0][i]).as("left frame %d", i).isEqualTo(i / 32768f);
+                    assertThat(whole[1][i]).as("right frame %d", i).isEqualTo(-i / 32768f);
+                }
+            }
+            assertThat(SegmentFile.readFrames(List.of(sealed)))
+                    .as("a one-segment list reads as the single-file reader does")
+                    .isEqualTo(SegmentFile.readFrames(sealed));
+        } finally {
+            second.abandon();
+        }
+    }
+
+    @Test
+    void segmentsOfDifferentBitDepthsDecodeIntoOneArray() throws IOException {
+        SegmentWriter sixteen = open("a.wav.part", 1, 16);
+        sixteen.append(new float[][] {{0.25f, -0.25f}}, 1, 2);
+        SegmentWriter floats = open("b.wav.part", 1, 32);
+        floats.append(new float[][] {{0.1f, 0.2f, 0.3f}}, 1, 3);
+
+        float[][] whole = SegmentFile.readFrames(List.of(sixteen.seal(), floats.seal()));
+
+        assertThat(whole).hasDimensions(1, 5);
+        assertThat(whole[0]).containsExactly(0.25f, -0.25f, 0.1f, 0.2f, 0.3f);
+    }
+
+    @Test
+    void aSegmentWithAnotherChannelCountIsRefusedNamingBothFiles() throws IOException {
+        SegmentWriter stereo = open("segment-000.wav.part", 2, 16);
+        stereo.append(codeRamp(0, 10), 2, 10);
+        Path first = stereo.seal();
+        SegmentWriter mono = open("segment-001.wav.part", 1, 16);
+        mono.append(codeRamp(0, 10), 1, 10);
+        Path second = mono.seal();
+
+        assertThatThrownBy(() -> SegmentFile.readFrames(List.of(first, second)))
+                .isInstanceOf(IOException.class)
+                .hasMessage(second + " has 1 channel(s) but " + first + " has 2"
+                        + ": the segments of one take share a channel count");
+    }
+
+    @Test
+    void aSegmentWithAnotherSampleRateIsRefusedNamingBothFiles() throws IOException {
+        SegmentWriter atSessionRate = open("segment-000.wav.part", 2, 16);
+        atSessionRate.append(codeRamp(0, 10), 2, 10);
+        Path first = atSessionRate.seal();
+        SegmentWriter atAnotherRate = SegmentWriter.open(tempDir.resolve("segment-001.wav.part"), 44_100.0, 2, 16,
+                Duration.ofSeconds(5), () -> 0L);
+        atAnotherRate.append(codeRamp(0, 10), 2, 10);
+        Path second = atAnotherRate.seal();
+
+        assertThatThrownBy(() -> SegmentFile.readFrames(List.of(first, second)))
+                .isInstanceOf(IOException.class)
+                .hasMessage(second + " has a sample rate of 44100 Hz but " + first + " has 48000 Hz"
+                        + ": the segments of one take share a sample rate");
+    }
+
+    @Test
+    void anEmptySegmentListIsRefusedBecauseNothingGivesTheResultAShape() {
+        assertThatThrownBy(() -> SegmentFile.readFrames(List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("segments must not be empty");
+        assertThatThrownBy(() -> SegmentFile.readFrames((List<Path>) null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("segments");
+    }
+
+    @Test
+    void aMissingSegmentFailsTheWholeReadInsteadOfLeavingAHole() throws IOException {
+        SegmentWriter writer = open("segment-000.wav.part", 2, 16);
+        writer.append(codeRamp(0, 10), 2, 10);
+        Path first = writer.seal();
+        Path missing = tempDir.resolve("segment-001.wav");
+
+        assertThatThrownBy(() -> SegmentFile.readFrames(List.of(first, missing)))
+                .isInstanceOf(java.nio.file.NoSuchFileException.class)
+                .hasMessageContaining("segment-001.wav");
     }
 }

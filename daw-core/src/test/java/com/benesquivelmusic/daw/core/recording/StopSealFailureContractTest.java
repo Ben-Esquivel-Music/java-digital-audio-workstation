@@ -140,8 +140,19 @@ class StopSealFailureContractTest {
         assertThat(manifest.sealedBy()).contains(SealedBy.WRITE_FAILURE);
         assertThat(part).as("the segment is left as its .part for recovery").isRegularFile();
         assertThat(part.resolveSibling("segment-000.wav")).doesNotExist();
-        assertThat(clips).as("the stop still returns the clip it built").singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(2 * BLOCK_FRAMES));
+        // The clip says what is true and no more: the take's place and
+        // length, no segment (none sealed), no audio. The frames are in the
+        // .part, readable, for recovery to seal.
+        assertThat(clips).as("the stop still returns the clip it built").singleElement().satisfies(clip -> {
+            assertThat(clip.getSourceSegmentPaths()).as("no segment sealed, so the clip lists none").isEmpty();
+            assertThat(clip.getSourceFilePath()).isNull();
+            assertThat(clip.getAudioData()).as("no audio is invented for the clip").isNull();
+            assertThat(clip.getSourceRateMetadata().framesPerChannel())
+                    .as("the clip declares the frames the take captured").isEqualTo(2L * BLOCK_FRAMES);
+            assertThat(clip.getDurationBeats())
+                    .isEqualTo(2L * BLOCK_FRAMES / MONO_16.sampleRate() * (transport.getTempo() / 60.0));
+        });
+        RampCaptureTestSupport.assertDecodedRamp(SegmentFile.readFrames(List.of(part))[0], 0, 2L * BLOCK_FRAMES);
         assertThat(pipeline.isActive()).isFalse();
         assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
     }

@@ -191,7 +191,7 @@ class PendingTakeCompletionContractTest {
 
         assertThat(pipeline.isFinalizationPending()).isFalse();
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(2 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(2 * BLOCK_FRAMES));
         assertThat(track.getClips()).containsExactlyElementsOf(clips);
     }
 
@@ -257,7 +257,7 @@ class PendingTakeCompletionContractTest {
 
         assertThat(pipeline.isFinalizationPending()).isFalse();
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(3 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(3 * BLOCK_FRAMES));
         TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(manifest.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
     }
@@ -298,7 +298,7 @@ class PendingTakeCompletionContractTest {
         assertThat(service.isTerminated()).isTrue();
         assertThat(pipeline.isFinalizationPending()).isFalse();
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0])
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0])
                         .as("the block applied before the fault is in the take").hasSize(3 * BLOCK_FRAMES));
     }
 }
