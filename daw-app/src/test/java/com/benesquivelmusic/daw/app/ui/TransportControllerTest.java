@@ -1686,6 +1686,48 @@ class TransportControllerTest {
     }
 
     @Test
+    void story325SharedMidiStartupFailureLeavesTheOtherTrackRecordingAndPublishable() throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        Track first = new Track("First", TrackType.MIDI), second = new Track("Second", TrackType.MIDI);
+        first.setArmed(true); second.setArmed(true);
+        first.setMidiInputDeviceName("shared"); second.setMidiInputDeviceName("shared");
+        project.addTrack(first); project.addTrack(second);
+        AtomicInteger closes = new AtomicInteger();
+        var input = new RecordingInFlightFixture.StubMidiInput() {
+            @Override public javax.sound.midi.Transmitter getTransmitter() {
+                if (isConnected()) throw new IllegalStateException("only one transmitter available");
+                return super.getTransmitter();
+            }
+            @Override public void close() { closes.incrementAndGet(); super.close(); }
+        };
+        TransportController controller = newController(project);
+        runStrictHandler(() -> controller.setMidiInputDeviceResolverForTest(_ -> input));
+        record(controller);
+        assertThat(controller.recordCoordinator().getState())
+                .isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING);
+        assertThat(first.isRecording()).isTrue();
+        assertThat(second.isRecording()).isFalse();
+        assertThat(input.isOpen()).isTrue();
+        assertThat(input.isConnected()).isTrue();
+        assertThat(notificationBar.getMessage()).contains("Second", "skipped");
+        var receiver = input.getTransmitters().getFirst().getReceiver();
+        receiver.send(new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_ON, 0, 60, 100), 1_000_000);
+        receiver.send(new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_OFF, 0, 60, 0), 1_250_000);
+        runStrictHandler(controller::toggleRecord);
+        flushFx();
+        assertThat(first.getMidiClip().size()).isEqualTo(1);
+        assertThat(second.getMidiClip().size()).isZero();
+        assertThat(project.isDirty()).isTrue();
+        assertThat(undoManager.undoSize()).isEqualTo(1);
+        assertThat(closes).hasValue(1);
+        assertThat(input.isConnected()).isFalse();
+        assertThat(input.isOpen()).isFalse();
+        assertThat(controller.isRecordingInFlight()).isFalse();
+        runStrictHandler(undoManager::undo);
+        assertThat(first.getMidiClip().size()).isZero();
+    }
+
+    @Test
     void story325NoUsableMidiDeviceFailsTheGuardAndShowsAnError() throws Exception {
         DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
         Track midi = new Track("Keys", TrackType.MIDI);
@@ -1876,6 +1918,84 @@ class TransportControllerTest {
         } finally {
             hold.release();
             runStrictHandler(() -> { if (dialog.get() != null) dialog.get().close(); });
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void story325SessionInputDeclinePreservesTheLiveTakeAndDoesNotPersistTheRejectedInput() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        TransportController recording = newController(project);
+        record(recording);
+        Path take = recording.activeTakeDirectory().orElseThrow();
+        DefaultAudioEngineController controller = story325SettingsController(recording);
+        SettingsModel model = story325SettingsModel();
+        model.setAudioInputDevice("Old input");
+        var device = AudioDeviceInfo.unprobed(1, "New input", "Mock");
+        AtomicInteger confirmations = new AtomicInteger();
+        var selection = new com.benesquivelmusic.daw.app.ui.recording.SettingsBackedSessionInputSelection(
+                model, controller, (_, _, _, _) -> { }, () -> { });
+        AtomicReference<Thread> worker = new AtomicReference<>();
+        try {
+            runStrictHandler(() -> {
+                recording.recordCoordinator().setStopAndApplyConfirmationForTest(() -> {
+                    confirmations.incrementAndGet();
+                    return false;
+                });
+                worker.set(selection.selectAndApply(device).orElseThrow());
+            });
+            assertThat(worker.get().join(Duration.ofSeconds(10))).isTrue();
+            assertThat(model.getAudioInputDevice()).isEqualTo("Old input");
+            assertThat(selection.currentDeviceName()).isEqualTo("Old input");
+            runStrictHandler(() -> worker.set(selection.selectAndApply(device).orElseThrow()));
+            assertThat(worker.get().join(Duration.ofSeconds(10))).isTrue();
+            assertThat(confirmations).hasValue(2);
+            assertThat(recording.activeTakeDirectory()).contains(take);
+            assertThat(audioEngine.isStreamOpen()).isTrue();
+            assertThat(recIndicator.isVisible()).isTrue();
+            assertThat(recording.recordCoordinator().getState())
+                    .isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING);
+        } finally {
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void story325SessionInputConfirmationWaitsForPublicationBeforePersistingAndApplying() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        CountingCompletion completion = new CountingCompletion();
+        TransportController recording = recordingWithABlockOnDisk(project, track, completion);
+        holdTheCaptureThread();
+        DefaultAudioEngineController controller = story325SettingsController(recording);
+        SettingsModel model = story325SettingsModel();
+        model.setAudioInputDevice("Old input");
+        var device = AudioDeviceInfo.unprobed(1, "New input", "Mock");
+        List<String> errors = new CopyOnWriteArrayList<>();
+        var selection = new com.benesquivelmusic.daw.app.ui.recording.SettingsBackedSessionInputSelection(
+                model, controller, (_, message, _, _) -> errors.add(message), () -> { });
+        AtomicReference<Thread> worker = new AtomicReference<>();
+        try {
+            runStrictHandler(() -> {
+                recording.recordCoordinator().setStopAndApplyConfirmationForTest(() -> true);
+                worker.set(selection.selectAndApply(device).orElseThrow());
+            });
+            awaitOnFx(() -> !recording.isRecordingInFlight(), "confirmed input change stops capture");
+            assertThat(worker.get().isAlive()).isTrue();
+            assertThat(model.getAudioInputDevice()).isEqualTo("Old input");
+            assertThat(completion.calls).isEmpty();
+            releaseAndAwaitThePublication(recording);
+            assertThat(worker.get().join(Duration.ofSeconds(10))).isTrue();
+            assertThat(completion.calls).hasSize(1);
+            assertThat(track.getClips()).hasSize(1);
+            assertThat(model.getAudioInputDevice()).isEqualTo(device.qualifiedName());
+            assertThat(errors).isEmpty();
+            assertThat(controller.isConfigurationChangeInProgress()).isFalse();
+        } finally {
+            hold.release();
             controller.shutdown();
         }
     }

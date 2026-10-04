@@ -60,11 +60,13 @@ public interface SessionInputSelection {
     String currentDeviceName();
 
     /**
-     * Makes {@code device} the session input: persists the choice and applies
-     * it to the running engine. Selecting the device whose
+     * Makes {@code device} the session input: obtains recording-stop consent,
+     * then persists the choice and applies it to the running engine on a worker.
+     * Declined consent leaves the accepted session input intact. Selecting the device whose
      * {@link AudioDeviceInfo#qualifiedName() qualified name} already equals
      * {@link #currentDeviceName()} is a <strong>no-op</strong> — nothing is
-     * persisted and the engine is not reconfigured: the per-track dialogs
+     * persisted and the engine is not reconfigured; a different pending choice
+     * is superseded. The per-track dialogs
      * preselect the session device, so confirming that preselection (the
      * common "Add Audio Track → OK" gesture) must not stop the transport and
      * reopen the stream. The no-op rule is that exact compare, not

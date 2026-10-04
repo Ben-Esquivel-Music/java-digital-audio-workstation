@@ -200,6 +200,198 @@ class MidiRecorderTest {
         assertThat(recorder.isRecording()).isFalse();
     }
 
+    @Test
+    void failedSharedTransmitterAcquisitionLeavesTheFirstRecorderConnected() throws Exception {
+        SharedMidiDevice device = new SharedMidiDevice();
+        MidiRecorder first = new MidiRecorder(device, new MidiClip(), 120, 0);
+        MidiRecorder second = new MidiRecorder(device, new MidiClip(), 120, 0);
+        first.startRecording();
+        device.failNextTransmitter = true;
+        try {
+            assertThatThrownBy(second::startRecording)
+                    .isInstanceOf(javax.sound.midi.MidiUnavailableException.class);
+            assertThat(second.isRecording()).isFalse();
+            assertThat(first.isRecording()).isTrue();
+            assertThat(device.isOpen()).isTrue();
+            device.send(0, javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 1_000_000);
+            device.send(0, javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, 1_250_000);
+            assertThat(first.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 2, 100, 0));
+        } finally {
+            first.stopRecording();
+        }
+        assertThat(device.closes).isEqualTo(1);
+    }
+
+    @Test
+    void failedSharedReceiverInstallationClosesOnlyItsTransmitter() throws Exception {
+        SharedMidiDevice device = new SharedMidiDevice();
+        MidiRecorder first = new MidiRecorder(device, new MidiClip(), 120, 0);
+        MidiRecorder second = new MidiRecorder(device, new MidiClip(), 120, 0);
+        first.startRecording();
+        device.failNextReceiver = true;
+        try {
+            assertThatThrownBy(second::startRecording).hasMessage("receiver unavailable");
+            assertThat(device.isOpen()).isTrue();
+            assertThat(device.transmitters.get(0).closed).isFalse();
+            assertThat(device.transmitters.get(1).closed).isTrue();
+        } finally {
+            first.stopRecording();
+        }
+        assertThat(device.closes).isEqualTo(1);
+    }
+
+    @Test
+    void sharedDeviceStaysOpenWhenItsOpeningRecorderStopsFirst() throws Exception {
+        SharedMidiDevice device = new SharedMidiDevice();
+        MidiRecorder first = new MidiRecorder(device, new MidiClip(), 120, 0);
+        MidiRecorder second = new MidiRecorder(device, new MidiClip(), 120, 0);
+        first.startRecording();
+        second.startRecording();
+        try {
+            first.stopRecording();
+            assertThat(device.isOpen()).isTrue();
+            assertThat(device.transmitters.get(0).closed).isTrue();
+            assertThat(device.transmitters.get(1).closed).isFalse();
+            device.send(1, javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 1_000_000);
+            device.send(1, javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, 1_250_000);
+            assertThat(second.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 2, 100, 0));
+        } finally {
+            second.stopRecording();
+        }
+        assertThat(device.closes).isEqualTo(1);
+        assertThat(device.isOpen()).isFalse();
+    }
+
+    @Test
+    void borrowedDeviceIsNotClosedOnSuccessfulOrFailedRecording() throws Exception {
+        SharedMidiDevice device = new SharedMidiDevice();
+        device.open();
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0);
+        recorder.startRecording();
+        recorder.stopRecording();
+        device.failNextTransmitter = true;
+        assertThatThrownBy(recorder::startRecording)
+                .isInstanceOf(javax.sound.midi.MidiUnavailableException.class);
+        assertThat(device.isOpen()).isTrue();
+        assertThat(device.closes).isZero();
+    }
+
+    @Test
+    void ownedStartupFailureClosesTheDeviceAndAllowsAnotherAttempt() throws Exception {
+        SharedMidiDevice device = new SharedMidiDevice();
+        device.failNextTransmitter = true;
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0);
+        assertThatThrownBy(recorder::startRecording)
+                .isInstanceOf(javax.sound.midi.MidiUnavailableException.class);
+        assertThat(device.isOpen()).isFalse();
+        assertThat(device.closes).isEqualTo(1);
+        recorder.startRecording();
+        recorder.stopRecording();
+        assertThat(device.closes).isEqualTo(2);
+    }
+
+    @Test
+    void timestampedFirstNoteAndFallbackNoteOffUseTheSameOrigin() throws Exception {
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        recorder.startRecording();
+        clock.set(500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 1_000_000);
+        clock.set(750_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 2, 100, 0));
+    }
+
+    @Test
+    void stoppingAHeldTimestampedNoteUsesItsCalibratedOrigin() throws Exception {
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        recorder.setStartColumnOffset(16);
+        recorder.startRecording();
+        clock.set(500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 1_000_000);
+        clock.set(750_000_000L);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 16, 2, 100, 0));
+    }
+
+    @Test
+    void switchingBackToDeviceTimestampsKeepsTheSameNoteTimeline() throws Exception {
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        recorder.startRecording();
+        clock.set(500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 1_000_000);
+        clock.set(750_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+        clock.set(1_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 62, 90, -1);
+        clock.set(1_250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 62, 0, 1_750_000);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(
+                new MidiNoteData(60, 0, 2, 100, 0), new MidiNoteData(62, 4, 2, 90, 0));
+    }
+
+    @Test
+    void timestampOnlyRecordingStillStartsAtTheFirstDeviceEvent() throws Exception {
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        recorder.startRecording();
+        clock.set(500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 1_000_000);
+        clock.set(750_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, 1_250_000);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 2, 100, 0));
+    }
+
+    private static final class SharedMidiDevice extends StubMidiDevice {
+        boolean open;
+        int closes;
+        boolean failNextTransmitter;
+        boolean failNextReceiver;
+        final java.util.List<InputTransmitter> transmitters = new java.util.ArrayList<>();
+
+        @Override public void open() { open = true; }
+        @Override public boolean isOpen() { return open; }
+        @Override public void close() { open = false; closes++; }
+        @Override public javax.sound.midi.Transmitter getTransmitter() throws javax.sound.midi.MidiUnavailableException {
+            if (failNextTransmitter) {
+                failNextTransmitter = false;
+                throw new javax.sound.midi.MidiUnavailableException("transmitter unavailable");
+            }
+            InputTransmitter transmitter = new InputTransmitter(failNextReceiver);
+            failNextReceiver = false;
+            transmitters.add(transmitter);
+            return transmitter;
+        }
+        void send(int input, int command, int note, int velocity, long timestamp) throws Exception {
+            assertThat(open).as("provider is connected").isTrue();
+            InputTransmitter transmitter = transmitters.get(input);
+            assertThat(transmitter.closed).isFalse();
+            transmitter.receiver.send(new javax.sound.midi.ShortMessage(command, 0, note, velocity), timestamp);
+        }
+
+        private static final class InputTransmitter implements javax.sound.midi.Transmitter {
+            private final boolean failReceiver;
+            private javax.sound.midi.Receiver receiver;
+            private boolean closed;
+            InputTransmitter(boolean failReceiver) { this.failReceiver = failReceiver; }
+            @Override public void setReceiver(javax.sound.midi.Receiver value) {
+                if (failReceiver) throw new IllegalStateException("receiver unavailable");
+                receiver = value;
+            }
+            @Override public javax.sound.midi.Receiver getReceiver() { return receiver; }
+            @Override public void close() { closed = true; }
+        }
+    }
+
     private static class CapturingMidiDevice extends StubMidiDevice {
         boolean open;
         boolean closedTransmitter;
@@ -277,7 +469,7 @@ class MidiRecorderTest {
         }
 
         @Override
-        public javax.sound.midi.Transmitter getTransmitter() {
+        public javax.sound.midi.Transmitter getTransmitter() throws javax.sound.midi.MidiUnavailableException {
             return new javax.sound.midi.Transmitter() {
                 private javax.sound.midi.Receiver receiver;
 

@@ -5,9 +5,13 @@ import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import javax.sound.midi.*;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -32,6 +36,8 @@ import java.util.logging.Logger;
 public final class MidiRecorder {
 
     private static final Logger LOG = Logger.getLogger(MidiRecorder.class.getName());
+    private static final ReentrantLock INPUT_LOCK = new ReentrantLock();
+    private static final Map<MidiDevice, SharedInput> INPUTS = new IdentityHashMap<>();
 
     /**
      * Listener for real-time notification of recorded MIDI notes.
@@ -72,12 +78,13 @@ public final class MidiRecorder {
     private final List<RecordingNoteListener> noteListeners = new CopyOnWriteArrayList<>();
     private final List<RecordingEventListener> eventListeners = new CopyOnWriteArrayList<>();
 
-    private final java.util.concurrent.locks.ReentrantLock lifecycleLock = new java.util.concurrent.locks.ReentrantLock();
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
     private Transmitter transmitter;
+    private SharedInput input;
     private boolean recording;
     private long recordingStartTimeUs;
-    private final java.util.function.LongSupplier monotonicNanos;
-    private long recordingStartNanos;
+    private final LongSupplier monotonicNanos;
+    private long monotonicOriginNanos;
     private long deviceOriginRelativeUs;
     private long lastRelativeUs;
     private boolean usedFallbackTime;
@@ -104,7 +111,7 @@ public final class MidiRecorder {
     }
 
     MidiRecorder(MidiDevice device, MidiClip clip, double tempo, int channel,
-                 java.util.function.LongSupplier monotonicNanos) {
+                 LongSupplier monotonicNanos) {
         this.monotonicNanos = Objects.requireNonNull(monotonicNanos);
         this.device = Objects.requireNonNull(device, "device must not be null");
         this.clip = Objects.requireNonNull(clip, "clip must not be null");
@@ -224,7 +231,7 @@ public final class MidiRecorder {
         try {
             synchronized (this) {
                 if (recording) throw new IllegalStateException("Already recording");
-                recordingStartNanos = monotonicNanos.getAsLong();
+                monotonicOriginNanos = monotonicNanos.getAsLong();
                 recordingStartTimeUs = -1;
                 lastRelativeUs = 0;
                 deviceOriginRelativeUs = 0;
@@ -236,7 +243,7 @@ public final class MidiRecorder {
                 }
             }
             try {
-                if (!device.isOpen()) device.open();
+                input = acquireInput(device);
                 transmitter = device.getTransmitter();
                 synchronized (this) { recording = true; }
                 transmitter.setReceiver(new MidiInputReceiver());
@@ -259,7 +266,11 @@ public final class MidiRecorder {
         } finally {
             transmitter = null;
             try {
-                device.close();
+                if (input != null) {
+                    SharedInput acquired = input;
+                    input = null;
+                    releaseInput(acquired);
+                }
             } catch (RuntimeException failure) {
                 if (closeFailure == null) closeFailure = failure;
                 else closeFailure.addSuppressed(failure);
@@ -268,6 +279,56 @@ public final class MidiRecorder {
         if (closeFailure != null) {
             if (primary != null) primary.addSuppressed(closeFailure);
             else throw closeFailure;
+        }
+    }
+
+    private static SharedInput acquireInput(MidiDevice device) throws MidiUnavailableException {
+        INPUT_LOCK.lock();
+        try {
+            SharedInput shared = INPUTS.get(device);
+            if (shared != null) {
+                shared.users++;
+                return shared;
+            }
+            boolean owned = !device.isOpen();
+            if (owned) {
+                try {
+                    device.open();
+                } catch (MidiUnavailableException | RuntimeException failure) {
+                    try { device.close(); }
+                    catch (RuntimeException closeFailure) { failure.addSuppressed(closeFailure); }
+                    throw failure;
+                }
+            }
+            shared = new SharedInput(device, owned);
+            INPUTS.put(device, shared);
+            return shared;
+        } finally {
+            INPUT_LOCK.unlock();
+        }
+    }
+
+    private static void releaseInput(SharedInput shared) {
+        INPUT_LOCK.lock();
+        try {
+            if (--shared.users == 0) {
+                INPUTS.remove(shared.device);
+                if (shared.owned) shared.device.close();
+            }
+        } finally {
+            INPUT_LOCK.unlock();
+        }
+    }
+
+    /** Recorder-owned openings live until the last recorder leaves; external openings remain borrowed. */
+    private static final class SharedInput {
+        private final MidiDevice device;
+        private final boolean owned;
+        private int users = 1;
+
+        private SharedInput(MidiDevice device, boolean owned) {
+            this.device = device;
+            this.owned = owned;
         }
     }
 
@@ -345,7 +406,7 @@ public final class MidiRecorder {
         for (int noteNumber = 0; noteNumber < 128; noteNumber++) {
             if (activeNoteStarts[noteNumber] >= 0) {
                 int startColumn = activeNoteStarts[noteNumber];
-                long elapsedUs = Math.max(lastRelativeUs, (monotonicNanos.getAsLong() - recordingStartNanos) / 1_000);
+                long elapsedUs = Math.max(lastRelativeUs, elapsedMonotonicUs());
                 int endColumn = timestampToColumn(Math.max(0, elapsedUs - countInDurationUs)) + startColumnOffset;
                 int duration = Math.max(1, endColumn - startColumn);
                 MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
@@ -356,6 +417,10 @@ public final class MidiRecorder {
                 activeNoteStarts[noteNumber] = -1;
             }
         }
+    }
+
+    private long elapsedMonotonicUs() {
+        return Math.max(0, (monotonicNanos.getAsLong() - monotonicOriginNanos) / 1_000);
     }
 
     private void notifyNoteRecorded(MidiNoteData note) {
@@ -402,13 +467,16 @@ public final class MidiRecorder {
             long relativeUs;
             if (timeStamp < 0) {
                 usedFallbackTime = true;
-                relativeUs = Math.max(0, (monotonicNanos.getAsLong() - recordingStartNanos) / 1_000);
+                relativeUs = elapsedMonotonicUs();
             } else {
                 if (recordingStartTimeUs < 0) {
                     recordingStartTimeUs = timeStamp;
-                    deviceOriginRelativeUs = usedFallbackTime
-                            ? Math.max(lastRelativeUs, (monotonicNanos.getAsLong() - recordingStartNanos) / 1_000)
-                            : 0;
+                    if (usedFallbackTime) {
+                        deviceOriginRelativeUs = Math.max(lastRelativeUs, elapsedMonotonicUs());
+                    } else {
+                        // Device-timed sessions keep their first-event origin for fallback and Stop too.
+                        monotonicOriginNanos = monotonicNanos.getAsLong();
+                    }
                 }
                 relativeUs = Math.max(0, timeStamp - recordingStartTimeUs + deviceOriginRelativeUs);
             }
