@@ -23,8 +23,9 @@ import java.util.function.LongSupplier;
  *
  * <p><strong>Thread.</strong> In the pipeline every call runs on the
  * {@code capture-flush} thread: {@link #open} — for a track's first segment
- * inside the take's initialisation, and for every later one at a rotation or
- * a new loop lane — {@link #append}, {@link #forceIfDue()} and
+ * inside the take's initialisation, and for every later one at a rotation,
+ * at a loop wrap, or — the pre-opened lanes of a loop-record take — ahead
+ * of either — {@link #append}, {@link #forceIfDue()} and
  * {@link #seal()}, and the rollback / abandon seams ({@link #abandon()},
  * {@link #close()}) when a seal fails, an empty tail is discarded, a start
  * that failed or was aborted is rolled back, or the {@code stopAndAbandon}
@@ -60,7 +61,8 @@ import java.util.function.LongSupplier;
  *   <li>Force cadence: the channel is {@code force(false)}d when bytes have
  *       been appended since the last cadence force and {@code now −
  *       lastForce ≥ cadence} ({@code lastForce} is the open time until the
- *       first force). The check runs after every append and in
+ *       first force, or the moment a pre-opened loop lane became the
+ *       current one: {@link #restartForceCadence()}). The check runs after every append and in
  *       {@link #forceIfDue()}, which the {@code capture-flush} thread calls,
  *       while the take streams, after every block it applies and at the end
  *       of every drain pass — so a segment that nothing more is appended to
@@ -331,8 +333,8 @@ public final class SegmentWriter implements AutoCloseable {
      * Appends {@code numFrames} frames read from {@code frames[ch][frameOffset
      * ..frameOffset + numFrames)} — the same contract as
      * {@link #append(float[][], int, int)} with a starting frame, so a caller
-     * holding a larger buffer (the session's RAM mirror) can append its newest
-     * region without copying it out first.
+     * holding a larger buffer can append a region of it without copying it
+     * out first.
      *
      * <p>{@link #frameCount()} and {@link #dataBytes()} advance chunk by
      * chunk (a block is written in chunks of at most 8192 frames), each
@@ -403,8 +405,9 @@ public final class SegmentWriter implements AutoCloseable {
     /**
      * The force-cadence check on its own, with no append (book §2.1, §4.3):
      * if bytes have been appended since the last cadence force and the
-     * cadence has elapsed on the injected clock since that force (or since
-     * the open, before the first one), the channel is {@code force(false)}d.
+     * cadence has elapsed on the injected clock since that force (or, before
+     * the first one, since the open or the last
+     * {@link #restartForceCadence()}), the channel is {@code force(false)}d.
      * {@link #append} makes the same check after every append; the
      * {@code capture-flush} thread also makes it between appends, so bytes
      * that nothing more is appended after are forced on cadence too. With
@@ -418,6 +421,23 @@ public final class SegmentWriter implements AutoCloseable {
     public boolean forceIfDue() throws IOException {
         requireStreaming("forceIfDue");
         return forceIfCadenceElapsed();
+    }
+
+    /**
+     * Restarts the cadence interval of a writer that holds no un-forced
+     * bytes: the cadence then counts from this call instead of from the
+     * open or the last force. For a segment opened ahead of its use — a
+     * pre-opened loop lane — so that its first append is not forced at once
+     * for time that passed while nothing was written. With un-forced bytes
+     * it changes nothing: their deadline stands.
+     *
+     * @throws IllegalStateException if the writer is sealed or abandoned
+     */
+    void restartForceCadence() {
+        requireStreaming("restartForceCadence");
+        if (bytesSinceForce == 0) {
+            lastForceNanos = nanoClock.getAsLong();
+        }
     }
 
     private boolean forceIfCadenceElapsed() throws IOException {
@@ -558,7 +578,11 @@ public final class SegmentWriter implements AutoCloseable {
         return forceCount;
     }
 
-    /** Returns the clock reading of the last cadence force (the open time until the first force). */
+    /**
+     * Returns the clock reading of the last cadence force or, later than
+     * that, of a {@link #restartForceCadence()} that took effect (the open
+     * time until the first of either).
+     */
     public long lastForceNanos() {
         return lastForceNanos;
     }
@@ -615,9 +639,14 @@ public final class SegmentWriter implements AutoCloseable {
         }
     }
 
+    /** Returns the whole-Hz sample rate a segment opened at {@code sampleRate} carries in its header. */
+    static int headerSampleRate(double sampleRate) {
+        return (int) Math.round(sampleRate);
+    }
+
     private static ByteBuffer provisionalHeader(double sampleRate, int channels, int bitDepth) {
         int bytesPerSample = bitDepth / 8;
-        int rate = (int) Math.round(sampleRate);
+        int rate = headerSampleRate(sampleRate);
         short formatCode = bitDepth == 32
                 ? PcmSampleEncoding.FORMAT_IEEE_FLOAT : PcmSampleEncoding.FORMAT_PCM;
         ByteBuffer header = ByteBuffer.allocate(DATA_OFFSET).order(ByteOrder.LITTLE_ENDIAN);

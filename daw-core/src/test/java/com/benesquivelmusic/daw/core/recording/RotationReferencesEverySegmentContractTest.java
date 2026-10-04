@@ -81,7 +81,7 @@ class RotationReferencesEverySegmentContractTest {
             framesOnDisk += description.frameCount();
         }
         assertThat(framesOnDisk).isEqualTo(10L * BLOCK_FRAMES);
-        assertThat(clip.getAudioData()[0]).hasSize(10 * BLOCK_FRAMES);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(10 * BLOCK_FRAMES);
 
         RecordingSession session = pipeline.getSession(track);
         assertThat(session.getSegments()).hasSize(3);
@@ -144,7 +144,7 @@ class RotationReferencesEverySegmentContractTest {
                 frames += SegmentFile.describe(Path.of(path)).frameCount();
             }
             assertThat(frames).as("a lap's segments hold exactly the lap").isEqualTo((long) blocksPerLoop * BLOCK_FRAMES);
-            assertThat(clip.getAudioData()[0]).hasSize(blocksPerLoop * BLOCK_FRAMES);
+            assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(blocksPerLoop * BLOCK_FRAMES);
 
             List<String> laneFromManifest = new ArrayList<>();
             for (TakeManifest.SegmentEntry entry : manifest.segmentsFor(track.getId())) {

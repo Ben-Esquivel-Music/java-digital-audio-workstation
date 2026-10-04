@@ -207,9 +207,9 @@ class DoubleStopWhileTakeIsWrittenTest {
         runOnFx(() -> {
             hold.installOn(controller);
             controller.setStillWritingDelayForTest(new ManualFxDelay());
-            controller.setTakeCompletionForTest(pipeline -> {
+            controller.setTakeCompletionForTest((pipeline, loadedAudio) -> {
                 completions.add(pipeline);
-                return pipeline.completeStop();
+                return pipeline.completeStop(loadedAudio);
             });
         });
         runOnFx(controller::toggleRecord);

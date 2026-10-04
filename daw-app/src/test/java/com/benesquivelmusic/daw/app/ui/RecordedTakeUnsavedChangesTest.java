@@ -225,9 +225,9 @@ class RecordedTakeUnsavedChangesTest {
         // no clip: the clips the real completion built are taken off again.
         runOnFx(() -> {
             hold.installOn(controller);
-            controller.setTakeCompletionForTest(pipeline -> {
+            controller.setTakeCompletionForTest((pipeline, loadedAudio) -> {
                 completions.incrementAndGet();
-                pipeline.completeStop();
+                pipeline.completeStop(loadedAudio);
                 pipeline.getRecordedClips().forEach(Track::removeClip);
                 return List.<AudioClip>of();
             });

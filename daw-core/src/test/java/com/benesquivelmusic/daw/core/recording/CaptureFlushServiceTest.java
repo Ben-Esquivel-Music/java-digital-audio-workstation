@@ -133,7 +133,8 @@ class CaptureFlushServiceTest {
         service.awaitFlushed(GUARD);
 
         assertThat(ring.peek()).isNull();
-        float[][] captured = capture.session().getCapturedAudio();
+        // Both values are exact at 16 bits, so the streaming segment decodes to them.
+        float[][] captured = RecordedAudioTestSupport.audioOnDisk(capture.session());
         assertThat(captured).hasNumberOfRows(2);
         assertThat(captured[0]).hasSize(2 * SLOT_FRAMES);
         assertThat(Arrays.copyOfRange(captured[0], 0, SLOT_FRAMES)).containsOnly(0.5f);

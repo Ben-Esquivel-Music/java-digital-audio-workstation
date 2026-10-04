@@ -18,8 +18,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * about — {@code force(false)}, {@code force(true)}, positional writes and
  * {@code close} — so a test observes the syscalls themselves rather than the
  * writer's bookkeeping. It can also fail the next writes outright, the shape
- * of a disk that refuses the bytes, or the next forces, the shape of a flush
- * to storage that fails.
+ * of a disk that refuses the bytes, the next forces, the shape of a flush
+ * to storage that fails, or the next closes.
  *
  * <p>Thread-safe enough for the tests: the journal is copy-on-write and the
  * fault counters atomic, so a test thread can read while the
@@ -33,6 +33,7 @@ final class ObservedFileChannel extends FileChannel {
         private final List<String> events = new CopyOnWriteArrayList<>();
         private final AtomicInteger writesToFail = new AtomicInteger();
         private final AtomicInteger forcesToFail = new AtomicInteger();
+        private final AtomicInteger closesToFail = new AtomicInteger();
         private volatile Runnable beforeForce;
 
         /** Returns an opener that wraps whatever {@code real} opens. */
@@ -53,6 +54,17 @@ final class ObservedFileChannel extends FileChannel {
          */
         void failNextForces(int count) {
             forcesToFail.set(count);
+        }
+
+        /**
+         * The next {@code count} {@code close} calls throw an {@link IOException}
+         * after the real channel was closed and the close journalled: no
+         * handle is left open, and the caller sees a close that failed — the
+         * portable way to make a writer's abandon-and-delete fail before its
+         * delete, so the file stays where it is.
+         */
+        void failNextCloses(int count) {
+            closesToFail.set(count);
         }
 
         /** Runs {@code hook} on the forcing thread immediately before every delegated {@code force}. */
@@ -151,6 +163,9 @@ final class ObservedFileChannel extends FileChannel {
     protected void implCloseChannel() throws IOException {
         delegate.close();
         journal.events.add("close");
+        if (claimFault(journal.closesToFail)) {
+            throw new IOException("injected close failure (test double)");
+        }
     }
 
     @Override

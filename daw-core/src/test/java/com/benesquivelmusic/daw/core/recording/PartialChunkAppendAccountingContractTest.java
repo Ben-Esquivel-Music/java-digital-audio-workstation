@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link RecordingSession#recordAudioData} (the fix round's "Disk first")
  * advances its counters "by exactly the frames it added to the writer's
  * count". Two failures are pinned already: a refusal before any write
- * ({@code RecordingSessionTest.aFailedAppendLeavesMirrorAndCountsMatchingTheDisk},
+ * ({@code RecordingSessionTest.aFailedAppendLeavesTheCountsMatchingTheDisk},
  * nothing counted) and a failed cadence force after a one-chunk block
  * ({@code SegmentForceCadenceContractTest.anAppendWhoseCadenceForceFailsEndsTheTakeWithSessionClipSegmentAndManifestAgreeing},
  * the whole block counted). In both, what the writer counted is nothing or
@@ -93,6 +93,10 @@ class PartialChunkAppendAccountingContractTest {
         RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, trackDir);
         session.setChannelOpener(fault::wrap);
         session.start();
+        assertThat(CHUNK_FRAMES + TAIL_FRAMES)
+                .as("fixture: the session hands the block to the writer in ONE append, so the failing"
+                        + " write is the second chunk of that append and not an append of its own")
+                .isLessThanOrEqualTo(RecordingSession.STAGING_FRAMES);
 
         assertThatThrownBy(() -> session.recordAudioData(twoChunkBlock(), CHUNK_FRAMES + TAIL_FRAMES))
                 .isInstanceOf(UncheckedIOException.class)
@@ -101,10 +105,10 @@ class PartialChunkAppendAccountingContractTest {
 
         assertThat(session.getCurrentWriter().frameCount()).as("the writer counts the first chunk")
                 .isEqualTo(CHUNK_FRAMES);
-        assertThat(session.getCapturedSampleCount())
+        assertThat(session.getTotalSamplesRecorded())
                 .as("the session counts what the writer counted, not the whole block").isEqualTo(CHUNK_FRAMES);
-        assertThat(session.getTotalSamplesRecorded()).isEqualTo(CHUNK_FRAMES);
-        assertThat(session.getCapturedAudio()[0]).as("the RAM mirror holds the same frames")
+        assertThat(RecordedAudioTestSupport.audioOnDisk(session)[0])
+                .as("the streaming segment holds the same frames")
                 .hasSize(CHUNK_FRAMES)
                 .containsOnly(FIRST_CHUNK_SAMPLE);
 

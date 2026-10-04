@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.OutputRouting;
+import com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.RecordingSession;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -317,21 +318,17 @@ class AudioIORoutingTest {
             List<AudioClip> clips = stopRecording(pipeline);
             assertThat(clips).hasSize(2);
 
-            // Verify the captured audio data has correct channel data
-            float[][] captured1 = clips.get(0).getAudioData();
-            float[][] captured2 = clips.get(1).getAudioData();
+            // Verify the audio each clip's segment holds has the routed channel data
+            float[][] captured1 = RecordedAudioTestSupport.audioOnDisk(clips.get(0));
+            float[][] captured2 = RecordedAudioTestSupport.audioOnDisk(clips.get(1));
 
-            if (captured1 != null && captured1.length >= 2) {
-                // Track 1 should have channels 0-1 (values ~0.1, ~0.2)
-                assertThat(captured1[0][0]).isCloseTo(0.1f, org.assertj.core.data.Offset.offset(0.01f));
-                assertThat(captured1[1][0]).isCloseTo(0.2f, org.assertj.core.data.Offset.offset(0.01f));
-            }
+            // Track 1 should have channels 0-1 (values 0.1, 0.2 as 16 bits decode them)
+            assertThat(captured1[0]).hasSize(512).containsOnly(RecordedAudioTestSupport.decoded16(0.1f));
+            assertThat(captured1[1]).hasSize(512).containsOnly(RecordedAudioTestSupport.decoded16(0.2f));
 
-            if (captured2 != null && captured2.length >= 2) {
-                // Track 2 should have channels 2-3 (values ~0.3, ~0.4)
-                assertThat(captured2[0][0]).isCloseTo(0.3f, org.assertj.core.data.Offset.offset(0.01f));
-                assertThat(captured2[1][0]).isCloseTo(0.4f, org.assertj.core.data.Offset.offset(0.01f));
-            }
+            // Track 2 should have channels 2-3 (values 0.3, 0.4)
+            assertThat(captured2[0]).hasSize(512).containsOnly(RecordedAudioTestSupport.decoded16(0.3f));
+            assertThat(captured2[1]).hasSize(512).containsOnly(RecordedAudioTestSupport.decoded16(0.4f));
         } finally {
             // The pipeline itself is ended by CaptureFlushThreadLeakGuard on every path.
             engine.stop();

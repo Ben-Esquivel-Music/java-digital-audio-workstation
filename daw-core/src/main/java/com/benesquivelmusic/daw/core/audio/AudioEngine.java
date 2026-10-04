@@ -4476,6 +4476,7 @@ public final class AudioEngine {
     }
 
     /** Current post-insert track buffer; consumed only during the recording callback. */
+    @RealTimeSafe
     public float[][] graphInstrumentRecordingBuffer(Track track) {
         return renderPipeline.graphInstrumentRecordingBuffer(track);
     }
@@ -4975,6 +4976,7 @@ public final class AudioEngine {
          * @param inputBuffer the input audio data {@code [channel][frame]}
          * @param numFrames   the number of sample frames captured
          */
+        @RealTimeSafe
         void onAudioCaptured(float[][] inputBuffer, int numFrames);
     }
 }

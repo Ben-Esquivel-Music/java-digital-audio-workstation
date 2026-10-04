@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -26,18 +27,23 @@ import java.util.logging.Logger;
  * book §4.4, §5.3, Appendix A; story 323).
  *
  * <p>Every frame handed to {@link #recordAudioData(float[][], int)} goes to
- * two places: the RAM mirror that feeds today's post-stop playback attach
- * (retained this stage; story 324 replaces it with a bounded peak mirror)
- * and a {@link SegmentWriter} streaming a real WAV segment under the
+ * one place: a {@link SegmentWriter} streaming a real WAV segment under the
  * session's output directory — {@code <take>/<trackId>/segment-NNN.wav.part}
- * while streaming, {@code segment-NNN.wav} once sealed. Long sessions are
+ * while streaming, {@code segment-NNN.wav} once sealed. The session keeps no
+ * copy of the audio: what it holds in memory is one staging block of
+ * {@link #STAGING_FRAMES} frames, allocated at {@link #start()}, whose size
+ * does not depend on the length of the take (Recording Reliability book
+ * §4.5). The segment files are the take's audio; {@link SegmentFile} reads
+ * them back. Long sessions are
  * split into segments by exact counts (context D4): a segment rotates —
  * seal, then open {@code segment-(n+1)} — after the append that takes its
  * frame count to {@link #getMaxSegmentDuration()} worth of audio <em>or</em>
  * its data chunk to {@link #getMaxSegmentBytes()}, and <em>before</em> an
  * append that would take a segment already holding audio past the byte cap.
  * A sealed segment therefore never exceeds the byte cap, except when one
- * block alone is larger than the cap. No wall-clock read decides rotation;
+ * block alone is larger than the cap (a block longer than
+ * {@link #STAGING_FRAMES} frames counts as several, see
+ * {@link #recordAudioData}). No wall-clock read decides rotation;
  * the {@link RecordingSegment#startTime()}/{@code endTime()} instants are
  * metadata only.</p>
  *
@@ -45,15 +51,15 @@ import java.util.logging.Logger;
  * on the caller thread (in {@code RecordingPipeline.prepare()}), a later
  * loop lane's on the flush thread. {@link #start()} runs on the
  * {@code capture-flush} thread — inside the take's initialisation for a
- * track's first lane, and when a loop lap opens a later lane — as do
+ * track's first lane, and for a later loop lane ahead of its lap, or at the
+ * loop wrap when no lane was started ahead — as do
  * {@link #recordAudioData}, the cadence tick
  * ({@code forceIfCadenceElapsed()}) and {@link #stop()}: never on the audio
  * callback; {@link #pause()} and {@link #resume()} have no caller in the
  * pipeline this stage and run on whichever thread drives the session.
  * {@link RecordingListener} callbacks therefore fire on the flush thread. The
  * counters other threads read ({@link #getTotalSamplesRecorded()},
- * {@link #getCapturedSampleCount()}, {@link #isActive()}) are atomic or
- * volatile; a reader that first passes the flush service's
+ * {@link #isActive()}) are atomic or volatile; a reader that first passes the flush service's
  * {@code awaitFlushed} fence sees every block published before its call.</p>
  *
  * <p><strong>Files and metadata agree.</strong> {@link #getSegments()} never
@@ -66,7 +72,7 @@ import java.util.logging.Logger;
  * the flush service turns that into a clean early seal.</p>
  *
  * <p>Capture width this stage is the stream width ({@link AudioFormat#channels()}):
- * the mirror and the segment both carry that many channels, rows the routed
+ * the segment carries that many channels, rows the routed
  * block does not provide staying silent — exactly today's routing shape
  * (story 326 narrows capture to the routed width). Bit depths 16, 24 and 32
  * are accepted; any other {@code AudioFormat#bitDepth()} fails at
@@ -85,11 +91,21 @@ public final class RecordingSession {
     private static final String SEGMENT_NAME_FORMAT = "segment-%03d.wav";
 
     /**
+     * Frames of the staging block: a block handed to
+     * {@link #recordAudioData(float[][], int)} is widened to the stream
+     * width and appended in chunks of at most this many frames.
+     */
+    static final int STAGING_FRAMES = 16_384;
+
+    /**
      * Segment lifecycle observer for the flush service's manifest
      * bookkeeping. Fires on whichever thread drives the session (see the
-     * class note): opened when a {@code .part} is created, sealed when its
+     * class note): opened when a {@code .part} is created — or an open,
+     * empty one is taken over from another session — sealed when its
      * {@code .wav} lands with exact counts, discarded when a zero-frame tail
-     * is deleted instead of sealed.
+     * is deleted instead of sealed, or handed to another session
+     * ({@link #surrenderEmptySegment()}). {@code onSegmentSealed} at a
+     * rotation fires before the next segment is opened.
      */
     interface SegmentObserver {
         void onSegmentOpened(RecordingSegment segment);
@@ -115,6 +131,8 @@ public final class RecordingSession {
     private volatile Instant sessionStartTime;
     private RecordingSegment currentSegment;
     private SegmentWriter writer;
+    /** An open, empty writer the next {@code openSegment()} uses instead of creating the file; see {@link #adoptAsNextSegment}. */
+    private SegmentWriter adoptedWriter;
     private SegmentObserver segmentObserver;
     private SegmentWriter.ChannelOpener channelOpener = SegmentWriter.CREATE_NEW_CHANNEL;
     private int firstSegmentIndex;
@@ -136,9 +154,10 @@ public final class RecordingSession {
      */
     private volatile long compensationFrames;
 
-    // RAM mirror: [channel][sample]; grown on the flush thread, read after a fence.
-    private float[][] capturedAudio;
-    private volatile int capturedSampleCount;
+    // Staging block [format.channels()][STAGING_FRAMES]: the routed block is
+    // widened to the stream width here on its way to the writer. Allocated
+    // by start(), never grown; touched only by the thread driving the session.
+    private float[][] staging;
 
     /**
      * Creates a new recording session with the default force cadence and
@@ -223,7 +242,7 @@ public final class RecordingSession {
     /**
      * Starts the session: creates the output directory if it is missing,
      * opens the first segment ({@code segment-NNN.wav.part}, NNN = the first
-     * segment index) and allocates the RAM mirror.
+     * segment index) and allocates the staging block.
      *
      * <p>The session owns the output directory only if this start created
      * it (missing parent directories are created first; the session never
@@ -269,10 +288,7 @@ public final class RecordingSession {
         }
         sessionStartTime = Instant.now();
 
-        // Initialize the audio capture buffer with a reasonable initial capacity
-        int initialCapacity = (int) format.sampleRate() * 10; // ~10 seconds
-        capturedAudio = new float[format.channels()][initialCapacity];
-        capturedSampleCount = 0;
+        staging = new float[format.channels()][STAGING_FRAMES];
         totalSamplesRecorded.set(0);
         nextSegmentIndex = firstSegmentIndex;
 
@@ -335,22 +351,29 @@ public final class RecordingSession {
     }
 
     /**
-     * Captures one block: copies the block into the RAM mirror, rotates
-     * first if the block would take a segment that already holds audio past
-     * the byte cap, appends that mirror region to the streaming segment,
-     * advances the exact counters and rotates the segment when a limit is
-     * reached. Ignored while inactive or paused.
+     * Captures one block: widens it to the stream width in the staging
+     * block, rotates first if it would take a segment that already holds
+     * audio past the byte cap, appends it to the streaming segment, advances
+     * the exact counter and rotates the segment when a limit is reached.
+     * Ignored while inactive or paused.
      *
-     * <p>Disk first: the counters advance after the append, whether or not
+     * <p>A block longer than {@link #STAGING_FRAMES} frames is captured as
+     * consecutive chunks of at most that many frames, each handled as a
+     * block of its own — so a rotation can fall between two chunks of one
+     * call, and a failure ends the call at the chunk that failed, with the
+     * chunks before it written and counted.</p>
+     *
+     * <p>Disk first: the counter advances after each append, whether or not
      * it throws, by exactly the frames it added to the writer's
-     * {@link SegmentWriter#frameCount() count} — the whole block when only
+     * {@link SegmentWriter#frameCount() count} — the whole chunk when only
      * the cadence force after its writes fails, none when it fails before
-     * writing — so the session's counters, its RAM mirror and the segments
-     * its writers seal hold the same frames.</p>
+     * writing — so the session's counter and the segments its writers seal
+     * hold the same frames.</p>
      *
      * @param inputBuffer the routed audio {@code [channel][frame]}; rows
      *                    beyond the stream width are ignored, missing rows
-     *                    stay silent
+     *                    stay silent, and a row shorter than
+     *                    {@code numFrames} is silent past its end
      * @param numFrames   the number of sample frames to capture
      * @throws UncheckedIOException if the segment append or a rotation seal fails
      */
@@ -361,25 +384,44 @@ public final class RecordingSession {
         if (inputBuffer == null || numFrames <= 0) {
             return;
         }
-
-        int at = capturedSampleCount;
-        ensureMirrorCapacity(at + numFrames);
-
-        // Copy the routed block into the mirror region [at, at + numFrames);
-        // that region is beyond the counted frames; after a failed append
-        // it may hold the failed block's samples, which a narrower retry
-        // would not overwrite.
-        int channels = Math.min(inputBuffer.length, capturedAudio.length);
-        for (int ch = 0; ch < channels; ch++) {
-            int framesToCopy = Math.min(numFrames, inputBuffer[ch].length);
-            System.arraycopy(inputBuffer[ch], 0, capturedAudio[ch], at, framesToCopy);
+        int offset = 0;
+        while (offset < numFrames) {
+            int chunk = Math.min(STAGING_FRAMES, numFrames - offset);
+            stage(inputBuffer, offset, chunk);
+            appendStaged(chunk);
+            offset += chunk;
         }
+    }
 
+    /**
+     * Fills {@code staging[ch][0..frames)} from {@code inputBuffer[ch][offset..)}
+     * for every stream channel: silence for a channel the routed block does
+     * not provide and for the frames a provided row is too short to hold, so
+     * nothing of an earlier chunk is appended again.
+     */
+    private void stage(float[][] inputBuffer, int offset, int frames) {
+        for (int ch = 0; ch < staging.length; ch++) {
+            int provided = 0;
+            if (ch < inputBuffer.length) {
+                float[] row = inputBuffer[ch];
+                provided = Math.max(0, Math.min(frames, row.length - offset));
+                if (provided > 0) {
+                    System.arraycopy(row, offset, staging[ch], 0, provided);
+                }
+            }
+            if (provided < frames) {
+                Arrays.fill(staging[ch], provided, frames, 0f);
+            }
+        }
+    }
+
+    /** Appends {@code staging[..][0..frames)} to the current segment, rotating around it as the limits ask. */
+    private void appendStaged(int frames) {
         // Byte cap, checked BEFORE the append: a segment that already holds
         // audio rotates rather than grow past the cap, so no sealed segment
         // exceeds it (a single block larger than the cap is the one
         // exception: it goes into the empty segment, which then rotates).
-        long incomingBytes = (long) numFrames * writer.bytesPerFrame();
+        long incomingBytes = (long) frames * writer.bytesPerFrame();
         if (writer.frameCount() > 0 && writer.dataBytes() + incomingBytes > maxSegmentBytes) {
             sealCurrentSegment();
             openSegment();
@@ -388,17 +430,15 @@ public final class RecordingSession {
         SegmentWriter w = writer;
         long framesBefore = w.frameCount();
         try {
-            w.append(capturedAudio, capturedAudio.length, at, numFrames);
+            w.append(staging, staging.length, 0, frames);
         } catch (IOException e) {
             throw new UncheckedIOException("write failed on " + w.partPath(), e);
         } finally {
             // Disk first, however the append ends: count exactly the frames
-            // it added to the writer's count — the whole block when only the
+            // it added to the writer's count — the whole chunk when only the
             // cadence force after its writes failed, none when it failed
             // before writing.
-            int appended = (int) (w.frameCount() - framesBefore);
-            capturedSampleCount = at + appended;
-            totalSamplesRecorded.addAndGet(appended);
+            totalSamplesRecorded.addAndGet(w.frameCount() - framesBefore);
         }
 
         if (shouldRotateSegment()) {
@@ -436,48 +476,6 @@ public final class RecordingSession {
         } catch (IOException e) {
             throw new UncheckedIOException("force failed on " + w.partPath(), e);
         }
-    }
-
-    private void ensureMirrorCapacity(int requiredCapacity) {
-        if (requiredCapacity <= capturedAudio[0].length) {
-            return;
-        }
-        int newCapacity = Math.max(requiredCapacity, capturedAudio[0].length * 2);
-        float[][] expanded = new float[capturedAudio.length][newCapacity];
-        int count = capturedSampleCount;
-        for (int ch = 0; ch < capturedAudio.length; ch++) {
-            System.arraycopy(capturedAudio[ch], 0, expanded[ch], 0, count);
-        }
-        capturedAudio = expanded;
-    }
-
-    /**
-     * Returns the captured audio data, trimmed to the actual recorded length.
-     *
-     * <p>Returns {@code null} if no audio has been captured.</p>
-     *
-     * @return audio data as {@code [channel][sample]} in [-1.0, 1.0], or {@code null}
-     */
-    public float[][] getCapturedAudio() {
-        int count = capturedSampleCount;
-        float[][] mirror = capturedAudio;
-        if (mirror == null || count == 0) {
-            return null;
-        }
-        float[][] trimmed = new float[mirror.length][count];
-        for (int ch = 0; ch < mirror.length; ch++) {
-            System.arraycopy(mirror[ch], 0, trimmed[ch], 0, count);
-        }
-        return trimmed;
-    }
-
-    /**
-     * Returns the number of audio sample frames captured so far.
-     *
-     * @return the captured sample count
-     */
-    public int getCapturedSampleCount() {
-        return capturedSampleCount;
     }
 
     /**
@@ -645,6 +643,75 @@ public final class RecordingSession {
         this.channelOpener = Objects.requireNonNull(opener, "opener must not be null");
     }
 
+    /**
+     * Gives up this session's open segment, which holds no frames, without
+     * closing or deleting its file: the segment leaves {@link #getSegments()},
+     * the observer is told it was discarded, the session becomes inactive
+     * (its listeners are told it stopped), and the writer is returned for
+     * another session of the same directory to continue
+     * ({@link #adoptAsNextSegment}). A pre-opened loop lane hands its file
+     * to the lane before it this way when that lane rotates.
+     * {@code capture-flush} thread.
+     *
+     * @return the open writer, at frame 0
+     * @throws IllegalStateException if the session is not active, or its
+     *                               current segment holds frames
+     */
+    SegmentWriter surrenderEmptySegment() {
+        SegmentWriter w = writer;
+        RecordingSegment segment = currentSegment;
+        if (!active || w == null || segment == null || w.frameCount() != 0) {
+            throw new IllegalStateException("only an active session's empty segment can be surrendered");
+        }
+        writer = null;
+        currentSegment = null;
+        segments.remove(segment);
+        nextSegmentIndex = segment.index();
+        active = false;
+        paused = false;
+        if (segmentObserver != null) {
+            segmentObserver.onSegmentDiscarded(segment);
+        }
+        for (RecordingListener listener : listeners) {
+            listener.onRecordingStopped();
+        }
+        return w;
+    }
+
+    /**
+     * Makes {@code preOpened} the writer of the next segment this session
+     * opens, instead of creating the file: it must be streaming, hold no
+     * frames, and sit at exactly the path that segment takes. Called from
+     * the segment observer between a rotation's seal and its open
+     * ({@link SegmentObserver#onSegmentSealed}), so the rotation opens no
+     * file. {@code capture-flush} thread.
+     *
+     * @throws IllegalArgumentException if the writer holds frames or is at another path
+     */
+    void adoptAsNextSegment(SegmentWriter preOpened) {
+        Objects.requireNonNull(preOpened, "preOpened must not be null");
+        Path expected = SegmentWriter.partPathFor(sealedPathOf(nextSegmentIndex));
+        if (preOpened.frameCount() != 0 || !preOpened.partPath().equals(expected)) {
+            throw new IllegalArgumentException("the next segment is " + expected + ", empty; cannot adopt "
+                    + preOpened.partPath() + " holding " + preOpened.frameCount() + " frame(s)");
+        }
+        adoptedWriter = preOpened;
+    }
+
+    /**
+     * Restarts the force cadence of the current segment's writer
+     * ({@link SegmentWriter#restartForceCadence()}): a loop lane that was
+     * started ahead of its lap counts the cadence from the moment the lap
+     * begins. Does nothing when no segment is open. {@code capture-flush}
+     * thread.
+     */
+    void restartForceCadence() {
+        SegmentWriter w = writer;
+        if (w != null) {
+            w.restartForceCadence();
+        }
+    }
+
     /** Returns the active segment writer, or {@code null} when no segment is open. */
     SegmentWriter getCurrentWriter() {
         return writer;
@@ -735,14 +802,26 @@ public final class RecordingSession {
         return seconds >= maxSegmentSeconds || writer.dataBytes() >= maxSegmentBytes;
     }
 
+    private Path sealedPathOf(int index) {
+        return outputDirectory.resolve(String.format(Locale.ROOT, SEGMENT_NAME_FORMAT, index));
+    }
+
     private void openSegment() {
         int index = nextSegmentIndex;
-        Path sealedPath = outputDirectory.resolve(String.format(Locale.ROOT, SEGMENT_NAME_FORMAT, index));
-        try {
-            writer = SegmentWriter.open(SegmentWriter.partPathFor(sealedPath), format.sampleRate(),
-                    format.channels(), format.bitDepth(), forceCadence, nanoClock, channelOpener);
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot open segment " + sealedPath, e);
+        Path sealedPath = sealedPathOf(index);
+        SegmentWriter adopted = adoptedWriter;
+        adoptedWriter = null;
+        if (adopted != null) {
+            // Already open, empty, at this segment's path: nothing to create.
+            adopted.restartForceCadence();
+            writer = adopted;
+        } else {
+            try {
+                writer = SegmentWriter.open(SegmentWriter.partPathFor(sealedPath), format.sampleRate(),
+                        format.channels(), format.bitDepth(), forceCadence, nanoClock, channelOpener);
+            } catch (IOException e) {
+                throw new UncheckedIOException("cannot open segment " + sealedPath, e);
+            }
         }
         nextSegmentIndex = index + 1;
         currentSegment = RecordingSegment.startNew(index, sealedPath);

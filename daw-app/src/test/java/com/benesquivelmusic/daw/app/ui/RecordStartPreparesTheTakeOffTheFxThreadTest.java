@@ -1011,7 +1011,8 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         assertThat(onFx(engine::isStreamOpen)).as("over an open stream").isTrue();
         assertThat(onFx(engine::getRecordingCallback)).as("the recording callback is installed").isNotNull();
         runOnFx(controller::stop);
-        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was written");
+        // The read of the take's audio, which comes before its publication, is held too.
+        runHeldStorageUntilTheStartHasSettled(storage);
     }
 
     /**
@@ -1097,8 +1098,10 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                         next.stop();
                     }
                 });
-                awaitOnFx(() -> !next.isRecordingInFlight() && !next.isTakeBeingWritten(),
-                        "the next project's take was written");
+                // The read of the take's audio, which comes before its
+                // publication, is held in the storage executor too.
+                runHeldStorageUntilTheStartHasSettled(next, storage);
+                assertThat(onFx(next::isRecordingInFlight)).as("the next project's take was ended").isFalse();
             } finally {
                 runOnFx(next::retire);
             }
@@ -1321,8 +1324,9 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
     /**
      * Runs what {@code storage} holds, off the FX thread, until
-     * {@code recorder} prepares no take and has no start still having its
-     * files removed — at most 30 s.
+     * {@code recorder} prepares no take, has no start still having its
+     * files removed and no stopped take still to be read back and
+     * published — at most 30 s.
      */
     private static void runHeldStorageUntilTheStartHasSettled(TransportController recorder, HeldExecutor storage)
             throws Exception {

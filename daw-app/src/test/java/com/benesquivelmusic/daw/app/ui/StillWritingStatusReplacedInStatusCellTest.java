@@ -170,9 +170,9 @@ class StillWritingStatusReplacedInStatusCellTest {
         runOnFx(() -> {
             hold.installOn(controller);
             controller.setStillWritingDelayForTest(stillWritingDelay);
-            controller.setTakeCompletionForTest(pipeline -> {
+            controller.setTakeCompletionForTest((pipeline, loadedAudio) -> {
                 completions.add(pipeline);
-                pipeline.completeStop();
+                pipeline.completeStop(loadedAudio);
                 pipeline.getRecordedClips().forEach(Track::removeClip);
                 return List.<AudioClip>of();
             });

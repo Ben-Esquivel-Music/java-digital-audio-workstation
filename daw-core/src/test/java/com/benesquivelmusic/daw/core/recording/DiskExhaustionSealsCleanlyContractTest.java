@@ -101,7 +101,7 @@ class DiskExhaustionSealsCleanlyContractTest {
 
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getSourceSegmentPaths()).hasSize(4);
-        assertThat(clips.getFirst().getAudioData()[0]).hasSize(exhaustedAfter * BLOCK_FRAMES);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(clips.getFirst())[0]).hasSize(exhaustedAfter * BLOCK_FRAMES);
         assertThat(service.isRunning()).isFalse();
         TakeManifest afterStop = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(afterStop.sealedBy()).as("stop keeps the early-seal reason").contains(TakeManifest.SealedBy.DISK_EXHAUSTION);
@@ -139,7 +139,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips).hasSize(1);
         assertThat(clips.getFirst().getSourceSegmentPaths()).hasSize(2);
-        assertThat(clips.getFirst().getAudioData()[0]).hasSize(good * BLOCK_FRAMES);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(clips.getFirst())[0]).hasSize(good * BLOCK_FRAMES);
         assertThat(service.isRunning()).isFalse();
     }
 
@@ -192,7 +192,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
-        assertThat(clips.getFirst().getAudioData()[0]).hasSize(fed * BLOCK_FRAMES);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(clips.getFirst())[0]).hasSize(fed * BLOCK_FRAMES);
         TakeManifest sealed = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(sealed.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
         assertThat(sealed.sealedBy()).contains(TakeManifest.SealedBy.STOP);
@@ -236,7 +236,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(1);
-        assertThat(clips.getFirst().getAudioData()[0]).hasSize(exhaustedAfter * BLOCK_FRAMES);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(clips.getFirst())[0]).hasSize(exhaustedAfter * BLOCK_FRAMES);
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).sealedBy())
                 .as("stop keeps the early-seal reason").contains(TakeManifest.SealedBy.DISK_EXHAUSTION);
     }

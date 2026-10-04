@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,6 +20,8 @@ import java.util.List;
 
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
+import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.audioOnDisk;
+import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.decoded16;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -494,7 +497,7 @@ class RecordingPipelineTest {
     }
 
     @Test
-    void shouldAttachAudioDataToRecordedClips() {
+    void aRecordedClipListsTheSegmentThatHoldsItsAudioAndDeclaresWhatWasCaptured() {
         Track track = new Track("Audio 1", TrackType.AUDIO);
         track.setArmed(true);
         RecordingPipeline pipeline = new RecordingPipeline(
@@ -514,11 +517,15 @@ class RecordingPipelineTest {
 
         assertThat(clips).hasSize(1);
         AudioClip clip = clips.getFirst();
-        assertThat(clip.getAudioData()).isNotNull();
-        assertThat(clip.getAudioData()).hasNumberOfRows(2);
-        assertThat(clip.getAudioData()[0]).hasSize(512);
-        assertThat(clip.getAudioData()[0][0]).isEqualTo(0.25f);
-        assertThat(clip.getAudioData()[1][0]).isEqualTo(-0.25f);
+        assertThat(clip.getAudioData()).as("the pipeline keeps no copy of the take to attach").isNull();
+        assertThat(clip.getSourceRateMetadata()).isEqualTo(new SourceRateMetadata(44_100, 2, 512L));
+        assertThat(clip.getSourceRateMetadata().requiresConversion(44_100))
+                .as("a take played back at the rate it was captured at is not resampled").isFalse();
+        float[][] audio = audioOnDisk(clip);
+        assertThat(audio).hasNumberOfRows(2);
+        // ±0.25 is exact at 16 bits: round(0.25 x 32767) / 32768 == 0.25.
+        assertThat(audio[0]).hasSize(512).containsOnly(0.25f);
+        assertThat(audio[1]).hasSize(512).containsOnly(-0.25f);
     }
 
     @Test
@@ -542,11 +549,12 @@ class RecordingPipelineTest {
 
         assertThat(clips).hasSize(1);
         AudioClip clip = clips.getFirst();
-        assertThat(clip.getAudioData()).isNotNull();
-        assertThat(clip.getAudioData()[0]).hasSize(512 * 5);
-        // Verify data from first and last blocks
-        assertThat(clip.getAudioData()[0][0]).isEqualTo(0.5f);
-        assertThat(clip.getAudioData()[0][512 * 4]).isEqualTo(0.5f);
+        float[][] audio = audioOnDisk(clip);
+        assertThat(audio[0]).hasSize(512 * 5);
+        // Verify data from first and last blocks (0.5 is exact at 16 bits)
+        assertThat(audio[0][0]).isEqualTo(0.5f);
+        assertThat(audio[0][512 * 4]).isEqualTo(0.5f);
+        assertThat(audio[0]).containsOnly(0.5f);
     }
 
     @Test
@@ -567,9 +575,14 @@ class RecordingPipelineTest {
         List<AudioClip> clips = stopRecording(pipeline);
 
         assertThat(clips).hasSize(2);
+        assertThat(clips.get(0).getSourceSegmentPaths())
+                .as("each track's clip lists its own track's segment")
+                .doesNotContainAnyElementsOf(clips.get(1).getSourceSegmentPaths());
         for (AudioClip clip : clips) {
-            assertThat(clip.getAudioData()).isNotNull();
-            assertThat(clip.getAudioData()[0][0]).isEqualTo(0.75f);
+            float[][] audio = audioOnDisk(clip);
+            assertThat(audio[0]).hasSize(512);
+            assertThat(audio[0][0]).isEqualTo(decoded16(0.75f));
+            assertThat(audio[0][1]).isZero();
         }
     }
 
@@ -683,8 +696,8 @@ class RecordingPipelineTest {
         }
 
         pipeline.awaitFlushed();
-        float[][] captured = pipeline.getSession(track).getCapturedAudio();
-        assertThat(captured).isNotNull();
+        // Behind the fence: the streaming segment holds every block published so far.
+        float[][] captured = audioOnDisk(pipeline.getSession(track));
         assertThat(captured[0].length).isGreaterThanOrEqualTo(1024);
 
         int fadeFrames = (int) Math.round(0.005 * format.sampleRate());
@@ -694,8 +707,8 @@ class RecordingPipelineTest {
         // Half-way through the ramp the gain is 0.5.
         float midFadeIn = captured[0][fadeFrames / 2];
         assertThat(midFadeIn).isBetween(0.3f, 0.7f);
-        // After the ramp the signal should be at full gain.
-        assertThat(captured[0][fadeFrames + 10]).isEqualTo(1.0f);
+        // After the ramp the signal should be at full gain (full scale as 16 bits decode it).
+        assertThat(captured[0][fadeFrames + 10]).isEqualTo(decoded16(1.0f));
 
         // Fade-out: final sample should be near zero; the middle of the
         // tail ramp should be around 0.5.

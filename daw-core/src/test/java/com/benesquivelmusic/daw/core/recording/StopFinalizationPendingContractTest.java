@@ -300,7 +300,7 @@ class StopFinalizationPendingContractTest {
             framesOnDisk += description.frameCount();
         }
         assertThat(framesOnDisk).isEqualTo(10L * BLOCK_FRAMES);
-        assertThat(clip.getAudioData()[0]).hasSize(10 * BLOCK_FRAMES);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(10 * BLOCK_FRAMES);
         assertThat(clip.getStartBeat()).isEqualTo(anchor);
         assertThat(clip.getDurationBeats())
                 .as("built at the tempo read when the stop began (120 bpm), not today's 60")
@@ -352,7 +352,7 @@ class StopFinalizationPendingContractTest {
         List<AudioClip> clips = completeStopWithinTheGuard();
 
         assertThat(clips).singleElement().satisfies(clip -> {
-            assertThat(clip.getAudioData()[0]).as("the block the final sweep applied is in the clip").hasSize(3 * BLOCK_FRAMES);
+            assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).as("the block the final sweep applied is in the clip").hasSize(3 * BLOCK_FRAMES);
             assertThat(clip.getSourceSegmentPaths()).containsExactlyElementsOf(manifestOrder());
         });
         assertThat(SegmentFile.describe(takeDir.resolve(track.getId()).resolve("segment-000.wav")).frameCount())
@@ -419,7 +419,7 @@ class StopFinalizationPendingContractTest {
 
         assertThat(service.isTerminated()).isTrue();
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(BLOCK_FRAMES));
     }
 
     @Test
@@ -480,7 +480,7 @@ class StopFinalizationPendingContractTest {
 
         assertThat(service.thread().isAlive()).as("the stop completed while the thread was still held").isTrue();
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(2 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(2 * BLOCK_FRAMES));
         assertThat(track.getClips()).containsExactlyElementsOf(clips);
     }
 
@@ -532,7 +532,7 @@ class StopFinalizationPendingContractTest {
 
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.STOP);
         assertThat(clips).singleElement()
-                .satisfies(clip -> assertThat(clip.getAudioData()[0]).hasSize(2 * BLOCK_FRAMES));
+                .satisfies(clip -> assertThat(RecordedAudioTestSupport.audioOnDisk(clip)[0]).hasSize(2 * BLOCK_FRAMES));
     }
 
     @Test

@@ -87,12 +87,13 @@ final class ProjectLifecycleController {
     /**
      * Story 323 review (Recording Reliability book §5.2): shown as a WARNING
      * toast when an in-app door that replaces the open project is refused
-     * because a take is still being written to disk. Quitting the application
+     * because a take is still being written to disk or read back from it for
+     * its publication. Quitting the application
      * is not one of those doors — nothing guards it until story 333 — so the
      * message asks the user to keep it open.
      */
     static final String PROJECT_CHANGE_WHILE_WRITING_MESSAGE =
-            "The open project can't be replaced until the last take has finished writing to disk"
+            "The open project can't be replaced until the last take has been finished"
                     + " — keep the application open until it has";
 
     /**
@@ -232,7 +233,12 @@ final class ProjectLifecycleController {
     private Consumer<Path> journalOpenHook;
 
     /**
-     * Story 323 review — whether a take is still being written to disk, set by
+     * Story 323 review — whether a take is still being written, in the sense
+     * of {@code TransportController.isTakeBeingWritten()}: a stopped take
+     * whose capture thread is still sealing it, or whose audio the storage
+     * executor is still reading back from the sealed segments before the
+     * take is published (story 324), or a start that was cancelled or
+     * failed and is still having its files removed. Set by
      * {@code MainController} through {@link #setTakeBeingWrittenCheck}; the
      * pure-unit default never refuses. FX thread.
      */
@@ -1016,11 +1022,11 @@ final class ProjectLifecycleController {
      * The WARNING of {@link #refuseLateLoadWhileATakeIsRecordingOrBeingWritten}
      * while a take is being written: what the work already did, that the
      * project was not opened and why, and that it can be opened once the
-     * take has been written.
+     * take has been finished — written and, for its publication, read back.
      */
     static String lateLoadRefusalMessage(String alreadyDone) {
         return alreadyDone + "; the project was not opened, because the open project can't be replaced"
-                + " until the last take has finished writing to disk — open it once it has,"
+                + " until the last take has been finished — open it once it has,"
                 + " and keep the application open until then";
     }
 

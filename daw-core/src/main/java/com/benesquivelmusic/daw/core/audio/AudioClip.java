@@ -44,7 +44,9 @@ public final class AudioClip implements TimelineRegion, Clip {
     private double timeStretchRatio;
     private double pitchShiftSemitones;
     private StretchQuality stretchQuality;
-    private float[][] audioData;
+    // Volatile: a recorded clip is already on its track, where the audio
+    // thread reads this field, when another thread attaches its audio.
+    private volatile float[][] audioData;
     private SourceRateMetadata sourceRateMetadata;
     private ClipGainEnvelope gainEnvelope;
 
@@ -392,6 +394,18 @@ public final class AudioClip implements TimelineRegion, Clip {
      * Returns the raw audio sample data, or {@code null} if this clip
      * references an external file rather than an in-memory buffer.
      *
+     * <p>A clip the recording pipeline builds names its segment files
+     * ({@link #getSourceSegmentPaths()}) and declares what was captured
+     * ({@link #getSourceRateMetadata()}); the pipeline itself never reads
+     * them. Its audio is what the caller read back from those files, off
+     * the capture path: handed to the pipeline before the stop is completed,
+     * it is attached before the clip is added to its track; otherwise — no
+     * audio was handed over, or the read failed — the clip is in that state
+     * and plays as silence until someone attaches it. The field is volatile, so
+     * a reader on any thread — the audio thread reads it each time it
+     * renders the clip — sees either {@code null} or the array a completed
+     * {@link #setAudioData} published.</p>
+     *
      * @return audio data as {@code [channel][sample]} in [-1.0, 1.0], or {@code null}
      */
     public float[][] getAudioData() {
@@ -399,7 +413,9 @@ public final class AudioClip implements TimelineRegion, Clip {
     }
 
     /**
-     * Sets the raw audio sample data for this clip.
+     * Sets the raw audio sample data for this clip. The array is published
+     * as it is, not copied: fill it before the call and do not write to it
+     * afterwards.
      *
      * @param audioData audio data as {@code [channel][sample]}, or {@code null}
      */

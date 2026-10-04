@@ -215,7 +215,9 @@ class RecordingPipelineFlushServiceTest {
         // callback publishes block 13 into it, and the same drain pass then
         // applies 1..7 and 13 before it looks at the overflow counter. The
         // observer holds the flush thread after its first release until the
-        // producer (this thread, always) has published that block.
+        // producer has published that block. There is one producer at a
+        // time: the guarded thread for the first thirteen blocks, joined
+        // before this thread feeds the late one.
         List<Applied> applied = new CopyOnWriteArrayList<>();
         CountDownLatch firstSlotFreed = new CountDownLatch(1);
         CountDownLatch lateBlockPublished = new CountDownLatch(1);
@@ -234,9 +236,14 @@ class RecordingPipelineFlushServiceTest {
         });
         service.setDrainPaused(true);
         int offered = 13;
-        for (int b = 0; b < offered; b++) {
-            feedOne((long) b * BLOCK_FRAMES);
-        }
+        // Off the JUnit thread and under the guard: a callback that blocked
+        // on the full ring instead of dropping would fail here, not hang.
+        Throwable fedIntoTheFullRing = outcomeWithinTheGuard("callback-on-a-full-ring", () -> {
+            for (int b = 0; b < offered; b++) {
+                feedOne((long) b * BLOCK_FRAMES);
+            }
+        });
+        assertThat(fedIntoTheFullRing).as("the callback returned from every block, full ring or not").isNull();
         assertThat(pipeline.getOverflowCount()).as("13 offered into 8 slots").isEqualTo(5);
         assertThat(ring.publishedBlocks()).isEqualTo(8);
         assertThat(ring.droppedAfterSequence()).isEqualTo(7);
@@ -526,11 +533,36 @@ class RecordingPipelineFlushServiceTest {
     }
 
     @Test
+    void withNoRingSizeRequestedTheRingCoversTheDefaultHandoffToleranceOfTheFormat() {
+        // 96 kHz in 256-frame blocks: 250 ms is 93.75 blocks, so the default is not the 8-slot minimum.
+        AudioFormat format = new AudioFormat(96_000.0, 1, 16, 256);
+        AudioEngine formatEngine = new AudioEngine(format);
+        RecordingPipeline pipeline = withFixedHeadroom(
+                new RecordingPipeline(formatEngine, transport, format, takeDir, List.of(track)));
+        startRecording(pipeline);
+        CaptureRing ring = pipeline.getCaptureRing();
+
+        int expectedSlots = CaptureRing.slotCountFor(format.sampleRate(), format.bufferSize(),
+                CaptureRing.DEFAULT_HANDOFF_TOLERANCE);
+        assertThat(ring.capacity()).isEqualTo(expectedSlots).isEqualTo(128);
+        assertThat(ring.capacity()).isGreaterThanOrEqualTo(CaptureRing.MIN_SLOTS);
+        assertThat(ring.capacity() * (double) format.bufferSize() / format.sampleRate())
+                .as("seconds of audio the ring holds").isGreaterThanOrEqualTo(0.250);
+        assertThat(ring.slotFrames()).isEqualTo(format.bufferSize());
+        assertThat(pipeline.getCaptureFlushService().lastManifest().orElseThrow().ringSlots())
+                .as("the manifest records the ring the take really has").isEqualTo(expectedSlots);
+        stopRecording(pipeline);
+    }
+
+    @Test
     void aStragglingCallbackAfterAFailedRestartIsHarmless() {
         RecordingPipeline pipeline = newPipeline(track);
         startRecording(pipeline);
         // The audio thread loads the callback once per block; a block in
-        // flight when the stop request removes it still runs the reference it loaded.
+        // flight when the stop request removes it still runs the reference
+        // it loaded. That callback carries its own take's ring, whose gate
+        // the stop closed: it claims nothing, whatever the pipeline has
+        // done since — here a restart that failed and rolled back.
         AudioEngine.RecordingCallback straggler = engine.getRecordingCallback();
         assertThat(straggler).isNotNull();
         feedOne(0);
@@ -610,8 +642,16 @@ class RecordingPipelineFlushServiceTest {
         assertThat(group).isNotNull();
         assertThat(group.size()).as("the lap is stacked once, not once per finalize call").isEqualTo(1);
         AudioClip lap = group.takes().getFirst().clip();
-        assertThat(lap.getSourceSegmentPaths()).containsExactly(firstSegment);
-        assertThat(lap.getAudioData()[0]).hasSize(blocksPerLap * BLOCK_FRAMES);
+        assertThat(lap.getSourceSegmentPaths()).as("the lap lists the segment that sealed, and only that one")
+                .containsExactly(firstSegment);
+        assertThat(lap.getAudioData()).as("no audio is invented for the lap").isNull();
+        assertThat(lap.getSourceRateMetadata().framesPerChannel()).as("the lap declares every frame it captured")
+                .isEqualTo((long) blocksPerLap * BLOCK_FRAMES);
+        RampCaptureTestSupport.assertDecodedRamp(SegmentFile.readFrames(List.of(Path.of(firstSegment)))[0],
+                0, 2L * BLOCK_FRAMES);
+        RampCaptureTestSupport.assertDecodedRamp(
+                SegmentFile.readFrames(List.of(trackDir.resolve("segment-001.wav.part")))[0],
+                2L * BLOCK_FRAMES, BLOCK_FRAMES); // the frames the list does not hold are in the .part
         assertThat(clips).containsExactly(lap);
         assertThat(track.getClips()).containsExactly(lap);
         assertThat(service.sealedSegmentPaths().get(track.getId()))
@@ -662,11 +702,8 @@ class RecordingPipelineFlushServiceTest {
                 .contains("gap=*|256|0\n").contains("truncated-frames=256\n");
         assertThat(warnings).as("one warning for the episode").hasSize(1);
         assertThat(warnings.getFirst()).contains("512").contains("256").contains("truncated");
-        float[][] captured = pipeline.getSession(track).getCapturedAudio();
-        assertThat(captured[0]).hasSize(256);
-        for (int i = 0; i < 256; i++) {
-            assertThat(captured[0][i]).as("frame %d", i).isEqualTo(RampCaptureTestSupport.rampValue(i));
-        }
+        RampCaptureTestSupport.assertDecodedRamp(
+                RecordedAudioTestSupport.audioOnDisk(pipeline.getSession(track))[0], 0, 256);
 
         // Two more over-long blocks belong to the same episode: counted, but
         // no further gap line and no further warning.
@@ -1326,7 +1363,7 @@ class RecordingPipelineFlushServiceTest {
             assertThat(Path.of(path)).exists();
             assertThat(SegmentFile.describe(Path.of(path)).sealed()).isTrue();
         });
-        assertThat(clips.getFirst().getAudioData()[0]).hasSize(7 * BLOCK_FRAMES);
+        RampCaptureTestSupport.assertClipHoldsRamp(clips.getFirst(), 0, 7L * BLOCK_FRAMES);
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.STOP);
         assertThat(service.lastFailure()).isPresent().get().isInstanceOf(IOException.class);
         assertThat(service.manifestWrites()).isEqualTo(1);

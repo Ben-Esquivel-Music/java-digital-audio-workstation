@@ -55,7 +55,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <ul>
  *   <li>{@code RecordingPipeline}: {@code prepare}, {@code beginCapture},
- *       {@code cancelStart}, {@code requestStop}, {@code completeStop}, and
+ *       {@code cancelStart}, {@code requestStop}, {@code completeStop} (both
+ *       forms), {@code recordedSegmentPaths}, and
  *       {@code newSession} — which builds each lane-0 session on the caller
  *       thread during {@code prepare}, through the session factory;</li>
  *   <li>{@code CaptureFlushService}: {@code start}, {@code requestAbort},
@@ -69,16 +70,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code RecordingPipeline} or {@code CaptureFlushService}
  * ({@code lambda$…}): the start's rollback runs its steps through lambdas, on
  * the caller thread. It does not follow a method reference to a named method
- * ({@code this::runLoop} is the flush thread's body, handed to the thread,
- * and {@code this::onAudioCaptured} is the audio callback), nor a lambda of
- * another class: the free-space probe {@code DiskHeadroomWatch} creates on
+ * ({@code this::runLoop} is the flush thread's body, handed to the thread),
+ * nor the methods of the {@code CaptureCallback} {@code beginCapture}
+ * creates (the audio callback; {@code RealTimeSafeContractTest} walks it),
+ * nor a lambda of another class: the free-space probe {@code DiskHeadroomWatch} creates on
  * the caller thread is called on the flush thread. Nothing reachable may:</p>
  *
  * <ul>
  *   <li>invoke {@code java.nio.file.Files}, {@code java.nio.channels.FileChannel}
  *       or {@code java.io.File};</li>
  *   <li>create, write, seal, abandon or delete a segment — {@code TrackCapture}'s
- *       {@code startLane}, {@code finalizeLane}, {@code discardAllFiles},
+ *       {@code startLane}, {@code prepareStandby}, {@code discardStandby},
+ *       {@code finalizeLane}, {@code discardAllFiles},
  *       {@code abandonWithoutSeal}; {@code RecordingSession}'s {@code start},
  *       {@code stop}, {@code discardAllFiles}, {@code abandonWithoutSeal};
  *       {@code SegmentWriter}'s {@code open}, {@code seal}, {@code abandon} —
@@ -102,7 +105,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code CompletableFuture#join} only inside a lambda; every
  * {@link #FILE_WORK} method, on its real owner; and the two
  * {@link #FLUSH_THREAD_ONLY} methods that are not private,
- * {@code awaitFlushed} and {@code setDrainPaused}. The other nine are
+ * {@code awaitFlushed} and {@code setDrainPaused}. The other thirteen are
  * private, so a class built with the Class-File API stands in for them: its
  * one method invokes each of them by its name and the descriptor
  * {@code CaptureFlushService} declares for it, and the fixture is built only
@@ -141,7 +144,8 @@ class RecordingLifecycleCallerThreadSentinelTest {
 
     /** Methods that create, write, seal, abandon or delete the take's files, by owner. */
     private static final Map<String, Set<String>> FILE_WORK = Map.of(
-            TRACK_CAPTURE, Set.of("startLane", "finalizeLane", "discardAllFiles", "abandonWithoutSeal"),
+            TRACK_CAPTURE, Set.of("startLane", "finalizeLane", "discardAllFiles", "abandonWithoutSeal",
+                    "prepareStandby", "discardStandby"),
             SESSION, Set.of("start", "stop", "discardAllFiles", "abandonWithoutSeal"),
             SEGMENT_WRITER, Set.of("open", "seal", "abandon"),
             MANIFEST, Set.of("write"));
@@ -149,7 +153,8 @@ class RecordingLifecycleCallerThreadSentinelTest {
     /** {@code CaptureFlushService} methods that run on the flush thread and do its file work, or wait. */
     private static final Set<String> FLUSH_THREAD_ONLY = Set.of(
             "runLoop", "initialiseTake", "discardTake", "abandonWriters", "sealAll", "writeManifest",
-            "writeManifestOnce", "flushManifest", "deleteManifestFiles", "awaitFlushed", "setDrainPaused");
+            "writeManifestOnce", "flushManifest", "deleteManifestFiles", "awaitProducerQuiescence",
+            "noteBlocksLeftBehind", "prepareStandbyLanes", "discardStandbyLanes", "awaitFlushed", "setDrainPaused");
 
     /** Waits, by owner. */
     private static final Map<String, Set<String>> WAITS = Map.of(
@@ -168,7 +173,8 @@ class RecordingLifecycleCallerThreadSentinelTest {
      */
     private static final List<String> PRIVATE_FLUSH_THREAD_METHODS = List.of(
             "runLoop", "initialiseTake", "discardTake", "abandonWriters", "sealAll", "writeManifest",
-            "writeManifestOnce", "flushManifest", "deleteManifestFiles");
+            "writeManifestOnce", "flushManifest", "deleteManifestFiles", "awaitProducerQuiescence",
+            "noteBlocksLeftBehind", "prepareStandbyLanes", "discardStandbyLanes");
     /** Internal name and method of the class {@link #flushThreadFixture()} builds. */
     private static final String FLUSH_THREAD_FIXTURE = "com/benesquivelmusic/daw/core/recording/FlushThreadCallsFixture";
     private static final String FLUSH_THREAD_FIXTURE_ROOT = "callsTheFlushThreadsPrivateMethods";
@@ -194,9 +200,11 @@ class RecordingLifecycleCallerThreadSentinelTest {
     void thePipelinesCallerThreadStepsTouchNoStorageAndNeverWait() throws IOException {
         Map<String, Walk> walks = new HashMap<>();
         for (String root : List.of("prepare", "beginCapture", "cancelStart", "requestStop", "completeStop",
-                "newSession")) {
+                "recordedSegmentPaths", "newSession")) {
             Walk walk = walk(PIPELINE, root);
-            assertThat(walk.roots()).as("RecordingPipeline#%s exists with code", root).isEqualTo(1);
+            // completeStop has two forms: with and without a lookup of audio read back beforehand.
+            assertThat(walk.roots()).as("RecordingPipeline#%s exists with code", root)
+                    .isEqualTo(root.equals("completeStop") ? 2 : 1);
             assertThat(walk.findings())
                     .as("storage I/O or waits reachable from RecordingPipeline#%s; reached: %s", root, walk.reached())
                     .isEmpty();
@@ -217,7 +225,25 @@ class RecordingLifecycleCallerThreadSentinelTest {
         assertThat(walks.get("cancelStart").calls()).contains(FLUSH + "#requestAbort", FLUSH + "#termination");
         assertThat(walks.get("requestStop").calls())
                 .contains(FLUSH + "#requestStop", "com/benesquivelmusic/daw/core/transport/Transport#stop");
+        // The stop fence's caller-thread half is a store; its wait is the flush thread's.
+        String ring = "com/benesquivelmusic/daw/core/recording/CaptureRing";
+        assertThat(walks.get("requestStop").calls()).contains(ring + "#closeProducer");
+        assertThat(walks.get("requestStop").reached()).anyMatch(key -> key.startsWith(ring + "#closeProducer"));
+        for (Walk walk : walks.values()) {
+            assertThat(walk.calls()).as("no caller-thread step waits for the callback in flight")
+                    .doesNotContain(ring + "#awaitProducerQuiescent", FLUSH + "#awaitProducerQuiescence");
+        }
         assertThat(walks.get("completeStop").reached()).anyMatch(key -> key.startsWith(PIPELINE + "#buildClips"));
+        assertThat(walks.get("completeStop").reached())
+                .as("the walk went through the attaching of audio that was read back beforehand")
+                .anyMatch(key -> key.startsWith(PIPELINE + "#attachLoadedAudio"));
+        assertThat(walks.get("completeStop").calls())
+                .as("the lookup is called on the caller thread; what it does is its caller's, and documented "
+                        + "as a pure lookup")
+                .contains("java/util/function/Function#apply");
+        assertThat(walks.get("recordedSegmentPaths").calls())
+                .as("the lists are read from what the flush thread left")
+                .contains(TRACK_CAPTURE + "#sealedSegmentPaths", FLUSH + "#isTerminated");
         assertThat(walks.get("newSession").calls()).contains(SESSION + "#<init>");
     }
 
@@ -269,6 +295,8 @@ class RecordingLifecycleCallerThreadSentinelTest {
                         fixture + "file work " + TRACK_CAPTURE + "#finalizeLane",
                         fixture + "file work " + TRACK_CAPTURE + "#discardAllFiles",
                         fixture + "file work " + TRACK_CAPTURE + "#abandonWithoutSeal",
+                        fixture + "file work " + TRACK_CAPTURE + "#prepareStandby",
+                        fixture + "file work " + TRACK_CAPTURE + "#discardStandby",
                         fixture + "file work " + SESSION + "#start",
                         fixture + "file work " + SESSION + "#stop",
                         fixture + "file work " + SESSION + "#discardAllFiles",
@@ -347,6 +375,8 @@ class RecordingLifecycleCallerThreadSentinelTest {
         capture.finalizeLane(false, false);
         capture.discardAllFiles();
         capture.abandonWithoutSeal();
+        capture.prepareStandby();
+        capture.discardStandby();
         session.start();
         session.stop();
         session.discardAllFiles();

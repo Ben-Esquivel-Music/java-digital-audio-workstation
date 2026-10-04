@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.plugin.MetronomePlugin;
 import com.benesquivelmusic.daw.core.plugin.SignalGeneratorPlugin;
 import com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin;
 import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -37,6 +38,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PluginGraphLivenessTest {
     private static final AudioFormat FORMAT = new AudioFormat(48_000, 2, 24, 256);
     @TempDir Path directory;
+
+    /** What a 24-bit segment decodes for a sample captured as {@code value}: {@code round(value x (2^23 - 1)) / 2^23}. */
+    private static float decoded24(float value) {
+        return Math.round((double) value * 8_388_607.0) / 8_388_608.0f;
+    }
 
     @Test
     void keyboardIsAudibleOnTheConfiguredBackendWithoutAJavaSoundDevice() throws Exception {
@@ -240,7 +246,9 @@ class PluginGraphLivenessTest {
             graph.engine().processBlock(null, output, 256);
             var clips = stopRecording(recording);
             assertThat(clips).hasSize(1);
-            assertThat(peak(clips.getFirst().getAudioData())).as("instrument audio recorded without physical input")
+            var recorded = RecordedAudioTestSupport.audioOnDisk(clips.getFirst());
+            assertThat(recorded[0]).as("both blocks are in the clip's segment").hasSize(2 * 256);
+            assertThat(peak(recorded)).as("instrument audio recorded without physical input")
                     .isGreaterThan(0.01f);
             assertThat(graph.engine().hasGraphInstrument(graph.track())).isTrue();
         } finally {
@@ -308,9 +316,10 @@ class PluginGraphLivenessTest {
             assertThat(peak(output)).as("the hosted keyboard is producing a distinct graph signal")
                     .isGreaterThan(0.01f);
             recording.awaitFlushed();
-            var captured = recording.getSession(graph.track()).getCapturedAudio();
-            assertThat(captured[0]).containsOnly(0.25f);
-            assertThat(captured[1]).containsOnly(inputChannels == 1 ? 0f : -0.5f);
+            // Behind the fence the block is in the streaming segment; 0.25 is exact at 24 bits.
+            var captured = RecordedAudioTestSupport.audioOnDisk(recording.getSession(graph.track()));
+            assertThat(captured[0]).hasSize(256).containsOnly(0.25f);
+            assertThat(captured[1]).hasSize(256).containsOnly(inputChannels == 1 ? 0f : decoded24(-0.5f));
         } finally {
             if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();
@@ -344,11 +353,15 @@ class PluginGraphLivenessTest {
             java.util.Arrays.fill(input[1], 0.25f);
             graph.engine().processBlock(input, new float[2][256], 256);
             recording.awaitFlushed();
-            var keyboardCapture = recording.getSession(graph.track()).getCapturedAudio();
+            var keyboardCapture = RecordedAudioTestSupport.audioOnDisk(recording.getSession(graph.track()));
             assertThat(peak(keyboardCapture)).isGreaterThan(0.01f);
-            assertThat(keyboardCapture[0]).isNotEqualTo(input[0]);
-            assertThat(recording.getSession(microphone).getCapturedAudio()[0]).containsOnly(0.25f);
-            assertThat(recording.getSession(disconnected).getCapturedSampleCount()).isZero();
+            var deviceChannelAsRecorded = new float[256];
+            java.util.Arrays.fill(deviceChannelAsRecorded, decoded24(-0.5f));
+            assertThat(keyboardCapture[0]).hasSize(256).isNotEqualTo(deviceChannelAsRecorded);
+            assertThat(RecordedAudioTestSupport.audioOnDisk(recording.getSession(microphone))[0])
+                    .hasSize(256).containsOnly(0.25f);
+            assertThat(recording.getSession(disconnected).getTotalSamplesRecorded()).isZero();
+            assertThat(RecordedAudioTestSupport.audioOnDisk(recording.getSession(disconnected))[0]).isEmpty();
         } finally {
             if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();

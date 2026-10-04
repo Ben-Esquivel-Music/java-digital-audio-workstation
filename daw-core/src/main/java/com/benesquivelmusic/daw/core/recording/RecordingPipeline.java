@@ -23,6 +23,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
@@ -38,8 +39,9 @@ import java.util.function.LongSupplier;
  *                                                             SegmentWriter → segment-NNN.wav + take.manifest)
  * </pre>
  * The callback writes ring slots only. The flush thread creates, writes and
- * deletes the take's segment files and its manifest, and writes the RAM
- * mirrors and the ring's read index. The caller thread (FX in the app) runs
+ * deletes the take's segment files and its manifest, and writes the
+ * sessions' staging blocks and the ring's read index; no thread keeps a copy
+ * of the captured audio in memory. The caller thread (FX in the app) runs
  * the take's lifecycle — {@link #prepare()}, {@link #beginCapture()} or
  * {@link #cancelStart()}, then {@link #requestStop()} and
  * {@link #completeStop()} — and none of those touches storage or waits for
@@ -134,10 +136,26 @@ public final class RecordingPipeline {
     private final Map<Track, AudioClip> recordedClips = new LinkedHashMap<>();
     private final Map<Track, Long> trackCompensationFrames = new LinkedHashMap<>();
 
-    private CaptureRing ring;
-    private CaptureFlushService flush;
-    /** Armed tracks recording their graph instrument; ring source {@code i + 1} — preallocated for the callback. */
+    /**
+     * The current take's ring and flush service, or the last take's until
+     * the next {@link #prepare()}. Written on the caller thread; volatile
+     * for the getters any thread may call. The audio thread reads neither:
+     * each take's {@link CaptureCallback} carries its own.
+     */
+    private volatile CaptureRing ring;
+    private volatile CaptureFlushService flush;
+    /**
+     * Armed tracks recording their graph instrument; ring source
+     * {@code i + 1}. Caller thread only: {@link #beginCapture()} hands the
+     * take's {@link CaptureCallback} a copy.
+     */
     private Track[] instrumentTracks = new Track[0];
+    /**
+     * The tempo read when {@link #prepare()} ran — the one the take's anchor
+     * frame is computed at, and the one the take's {@link CaptureCallback}
+     * converts each block's beat position to a start frame with.
+     */
+    private double takeTempoBpm;
     private boolean loopRecord;
     /**
      * A take is being prepared: set by {@link #prepare()}, cleared by
@@ -159,6 +177,8 @@ public final class RecordingPipeline {
      * as it was stopped, even if the tempo has changed since.
      */
     private double clipTempoBpm;
+    /** The lookup of {@link #completeStop()}: no clip has audio that was read back. */
+    private static final Function<List<String>, float[][]> NO_RECORDED_AUDIO = segmentPaths -> null;
     private boolean allInputsMuted;
     private double recordingStartBeat;
     private long recordingStartFrame;
@@ -175,6 +195,8 @@ public final class RecordingPipeline {
     private Duration forceCadence = SegmentWriter.DEFAULT_FORCE_CADENCE;
     private LongSupplier nanoClock = System::nanoTime;
     private Consumer<String> warningSink;
+    /** Where the lanes' peak snapshots go; {@code null} until one is set — no snapshot is built then. */
+    private Consumer<CapturePeakSnapshot> peakSnapshotSink;
     private DiskHeadroomWatch diskHeadroomWatch;
     private int ringSlots;
     private SegmentWriter.ChannelOpener channelOpener = SegmentWriter.CREATE_NEW_CHANNEL;
@@ -210,7 +232,15 @@ public final class RecordingPipeline {
      *
      * @param audioEngine     the audio engine providing input audio
      * @param transport       the transport controlling playback/recording state
-     * @param format          the audio format for recording sessions
+     * @param format          the format the engine is streaming — the stream's,
+     *                        not the project's, where the two differ. The
+     *                        take is built from it: each ring slot holds its
+     *                        {@code bufferSize} frames, so a delivered block
+     *                        that is longer is truncated to that (counted,
+     *                        and recorded in the manifest); the segment
+     *                        headers, the rate each clip declares, the clip
+     *                        lengths and every frame position are computed
+     *                        at its sample rate
      * @param outputDirectory the take directory for recording segment files
      * @param armedTracks     the tracks armed for recording (must not be empty)
      */
@@ -226,7 +256,15 @@ public final class RecordingPipeline {
      *
      * @param audioEngine     the audio engine providing input audio
      * @param transport       the transport controlling playback/recording state
-     * @param format          the audio format for recording sessions
+     * @param format          the format the engine is streaming — the stream's,
+     *                        not the project's, where the two differ. The
+     *                        take is built from it: each ring slot holds its
+     *                        {@code bufferSize} frames, so a delivered block
+     *                        that is longer is truncated to that (counted,
+     *                        and recorded in the manifest); the segment
+     *                        headers, the rate each clip declares, the clip
+     *                        lengths and every frame position are computed
+     *                        at its sample rate
      * @param outputDirectory the take directory for recording segment files
      * @param armedTracks     the tracks armed for recording (must not be empty)
      * @param countInMode     the count-in mode (number of bars before recording)
@@ -396,20 +434,23 @@ public final class RecordingPipeline {
         // restores it if it moved while the take was being prepared — only
         // over a transport that is stopped or paused then; a rolling one is
         // left where it has rolled to.
+        // The tempo is read once: the anchor frame, the captures, the take's
+        // configuration and the callback's start frames all use this value.
+        double tempo = transport.getTempo();
+        takeTempoBpm = tempo;
         preparedPositionBeats = transport.getPositionInBeats();
         PunchRegion transportPunch = transport.isPunchEnabled()
                 ? transport.getPunchRegion()
                 : null;
         if (transportPunch != null) {
-            double bpm = transport.getTempo();
             double startSeconds = transportPunch.startFrames() / format.sampleRate();
-            recordingStartBeat = startSeconds * (bpm / 60.0);
+            recordingStartBeat = startSeconds * (tempo / 60.0);
         } else if (punchRange != null) {
             recordingStartBeat = punchRange.punchInBeat();
         } else {
             recordingStartBeat = preparedPositionBeats;
         }
-        recordingStartFrame = beatsToFrames(recordingStartBeat);
+        recordingStartFrame = beatsToFrames(recordingStartBeat, tempo);
 
         // Set recording indicator on armed tracks, and apply the
         // pipeline-level monitoring mode as the default for any armed
@@ -460,7 +501,6 @@ public final class RecordingPipeline {
 
         // One TrackCapture per armed track: routing snapshot, routed scratch,
         // compensation, and an unstarted lane-0 session.
-        double tempo = transport.getTempo();
         int instrumentIndex = 0;
         for (Track track : armedTracks) {
             InputRouting routing = track.getInputRouting();
@@ -485,7 +525,7 @@ public final class RecordingPipeline {
                 outputDirectory, format, tempo, recordingStartBeat, recordingStartFrame,
                 punchRange, loopRecord, forceCadence, Instant.now());
         flush = new CaptureFlushService(ring, config, List.copyOf(captures.values()), watch,
-                warningSink, nanoClock);
+                warningSink, peakSnapshotSink, nanoClock);
         // Starts the thread only: the take's files are its first act.
         flush.start();
     }
@@ -498,9 +538,10 @@ public final class RecordingPipeline {
      * the transport is not rolling, put it back at the position
      * {@code prepare()} read, if it has moved since — only the transport's
      * position: a take anchored at a punch region or range keeps that
-     * anchor — then wire the recording callback, start the audio engine if
-     * it is not running, and transition the transport to recording. The
-     * pipeline is then {@linkplain #isActive() active}.
+     * anchor — then create the take's {@link CaptureCallback} and wire it as
+     * the engine's recording callback, start the audio engine if it is not
+     * running, and transition the transport to recording. The pipeline is
+     * then {@linkplain #isActive() active}.
      *
      * <p>The restore is a {@link Transport#setPositionInBeats(double)}, made
      * only on a transport that is stopped or paused — Record from idle —
@@ -525,7 +566,9 @@ public final class RecordingPipeline {
      * thread between reading the anchor and {@code Transport.record()}.
      * Story 328's transport-clocked capture-start gate owns the fix.</p>
      *
-     * <p>All or nothing: if a step fails, the callback is removed, a
+     * <p>All or nothing: if a step fails, the take's producer gate is closed
+     * ({@link CaptureRing#closeProducer()} — a callback the audio thread had
+     * already loaded publishes nothing more), the callback is removed, a
      * transport that the failed step left recording is stopped, the take's
      * flush service is asked to discard the take
      * ({@link CaptureFlushService#requestAbort()} — without waiting: the
@@ -555,7 +598,9 @@ public final class RecordingPipeline {
         if (!preparing) {
             throw new IllegalStateException("Recording pipeline has no take being prepared; call prepare() first");
         }
-        if (!flush.isReady()) {
+        CaptureRing takeRing = ring;
+        CaptureFlushService service = flush;
+        if (!service.isReady()) {
             throw new IllegalStateException("The take under " + outputDirectory + " is not ready: capture begins"
                     + " only once the stage prepare() returned has completed normally");
         }
@@ -568,8 +613,11 @@ public final class RecordingPipeline {
                 transport.setPositionInBeats(preparedPositionBeats);
             }
 
-            // Wire the recording callback on the audio engine
-            audioEngine.setRecordingCallback(this::onAudioCaptured);
+            // Wire the take's own recording callback on the audio engine: it
+            // carries the take's ring, flush service and tempo in final
+            // fields, so the audio thread reads nothing of this pipeline.
+            audioEngine.setRecordingCallback(new CaptureCallback(takeRing, service, instrumentTracks,
+                    transport, audioEngine, format.sampleRate(), takeTempoBpm));
 
             // Start the audio engine if it is not already running
             audioEngine.start();
@@ -577,6 +625,9 @@ public final class RecordingPipeline {
             // Transition transport to recording
             transport.record();
         } catch (RuntimeException | Error e) {
+            // The gate first: a callback the audio thread already loaded
+            // publishes nothing more into the take being discarded.
+            rollbackStep(e, () -> takeRing.closeProducer());
             rollbackStep(e, () -> audioEngine.setRecordingCallback(null));
             rollbackStep(e, () -> {
                 if (transport.getState() == TransportState.RECORDING) {
@@ -631,6 +682,9 @@ public final class RecordingPipeline {
             throw new IllegalStateException("Recording pipeline has no take being prepared");
         }
         CaptureFlushService service = flush;
+        // No callback was installed for this take; the gate is closed all
+        // the same, so the take's ring can never be published to.
+        ring.closeProducer();
         service.requestAbort();
         captures.clear();
         for (Track track : armedTracks) {
@@ -648,11 +702,14 @@ public final class RecordingPipeline {
      * Every step runs even if an earlier one throws; whatever the steps
      * throw is attached to {@code cause} as suppressed, so the caller sees
      * the failure that ended the start, and the pipeline always ends idle.
-     * {@code ring} and {@code instrumentTracks} are left as they are: a
-     * callback the audio thread loaded before it was removed may still be
-     * running. The flush service stays reachable through
-     * {@link #getCaptureFlushService()} so a caller can follow its thread;
-     * the next start replaces it.
+     * The take's ring, if this start allocated one, has its producer gate
+     * closed (a {@code beginCapture()} that failed closed it before it
+     * removed the callback; closing it again changes nothing): a callback
+     * the audio thread loaded before it was removed carries that ring and
+     * may still run, and then finds the gate closed and publishes nothing.
+     * The ring and the flush service stay reachable through
+     * {@link #getCaptureRing()} and {@link #getCaptureFlushService()} so a
+     * caller can follow the thread; the next start replaces them.
      */
     private void releaseFailedStart(Throwable cause) {
         try {
@@ -661,8 +718,13 @@ public final class RecordingPipeline {
                 rollbackStep(cause, fault);
             }
             rollbackStep(cause, () -> {
-                if (flush != null) {
-                    flush.requestAbort();
+                CaptureRing takeRing = ring;
+                if (takeRing != null) {
+                    takeRing.closeProducer();
+                }
+                CaptureFlushService service = flush;
+                if (service != null) {
+                    service.requestAbort();
                 }
             });
             rollbackStep(cause, captures::clear);
@@ -700,32 +762,46 @@ public final class RecordingPipeline {
     /**
      * Stops the take — the first half of a stop. Caller thread (FX in the
      * app); no storage I/O, and it never waits for the flush thread (what the
-     * transport's stop does is the transport's). It removes the recording
-     * callback, clears the recording flags and stops the transport (story
-     * 315: that returns the playhead to the record-start anchor, per
+     * transport's stop does is the transport's). It closes the take's
+     * producer gate ({@link CaptureRing#closeProducer()}), removes the
+     * recording callback, clears the recording flags and stops the transport
+     * (story 315: that returns the playhead to the record-start anchor, per
      * {@link Transport#isReturnToStartOnStop()}), then asks the flush thread
      * to seal the take ({@link CaptureFlushService#requestStop(TakeManifest.SealedBy)}):
-     * its final sweep drains the ring, every lane is sealed — in loop-record
+     * it waits, bounded, for a callback in flight to leave the gate, its
+     * final sweep drains the ring, every lane is sealed — in loop-record
      * the lap in flight becomes the last take — and the final manifest is
      * written, and then the thread terminates. The seal is requested even if
      * one of the steps before it throws; that throwable then propagates. From
      * here until {@link #completeStop()} returns the clips the pipeline is
      * {@linkplain #isFinalizationPending() finalization pending}.
      *
-     * <p>The removal of the callback, the clearing of the flags and the
-     * transport stop happen once: a further call while the finalisation is
-     * pending repeats none of them — by then the callback slot, the flags and
-     * the transport may belong to whatever the user did next — and only
-     * returns the same termination signal. On a pipeline that is neither
-     * active nor finalising — never started, cancelled, or whose clips were
-     * returned — it does nothing and returns a completed stage.</p>
+     * <p>The closing of the gate, the removal of the callback, the clearing
+     * of the flags and the transport stop happen once: a further call while
+     * the finalisation is pending repeats none of them — by then the
+     * callback slot, the flags and the transport may belong to whatever the
+     * user did next — and only returns the same termination signal. On a
+     * pipeline that is neither active nor finalising — never started,
+     * cancelled, or whose clips were returned — it does nothing and returns
+     * a completed stage.</p>
      *
-     * <p>Removing the callback does not wait for the audio thread: a block
-     * whose callback was already running when it was removed may be
-     * published after the flush thread's final sweep. That one block stays
-     * in the ring and is not part of the take — the loss at Stop is bounded
-     * to the single block in flight (story 325 owns a drained-callback
-     * handshake).</p>
+     * <p><strong>The fence</strong> (book §5.2 FINALIZING: deregister →
+     * drain → seal). Removing the callback does not wait for the audio
+     * thread, and neither does this method: the gate does the work. It is
+     * closed first, so the take ends at a block boundary — the last block
+     * whose callback read the gate open right before it published. A
+     * callback that was inside when the gate closed and reads it closed
+     * drops its block whole; one that enters later claims nothing. Every
+     * block that is published is in the sealed take, because the flush
+     * thread makes its final sweep only once the callback in flight has left
+     * the gate ({@link CaptureRing#awaitProducerQuiescent(long)}, bounded by
+     * {@link CaptureFlushService#PRODUCER_QUIESCENCE_BOUND}), and each was
+     * stamped before the transport stop here moved the playhead. If the
+     * callback has not left when that bound elapses — an audio thread that
+     * died or hangs inside it — the flush thread warns, sweeps and seals
+     * all the same, and a block published behind that sweep is recorded in
+     * the manifest as a gap if it is in the ring once the lanes have been
+     * sealed.</p>
      *
      * @return the flush thread's termination ({@link CaptureFlushService#termination()}):
      *         once it has completed, {@link #completeStop()} builds the
@@ -756,6 +832,12 @@ public final class RecordingPipeline {
         finalizationPending = true;
         clipTempoBpm = transport.getTempo();
         try {
+            // The fence, first: from this store on no callback publishes a
+            // block it had not already decided to publish — and every block
+            // that is published was stamped before the transport stop below
+            // moves the playhead.
+            ring.closeProducer();
+
             // Remove the recording callback
             audioEngine.setRecordingCallback(null);
 
@@ -787,6 +869,22 @@ public final class RecordingPipeline {
      * {@link #getRecordedClips()} and ends the finalisation. It repeats none
      * of {@code requestStop()}'s one-shot steps.
      *
+     * <p>The clips carry no audio data ({@link AudioClip#getAudioData()} is
+     * {@code null}): the pipeline keeps no copy of what it captured. Each
+     * clip — every take's clip in a loop-record stack too — lists its
+     * sealed segment files ({@link AudioClip#getSourceSegmentPaths()}) and
+     * declares the sample rate, channel count and frame count it was
+     * captured with ({@link AudioClip#getSourceRateMetadata()}). A caller
+     * that wants the clips published with their audio reads it back first —
+     * {@link #recordedSegmentPaths()}, then {@link SegmentFile#readFrames(List)}
+     * off this thread — and completes the stop with
+     * {@link #completeStop(Function)} instead. A
+     * clip whose take ended with a segment that did not seal lists only the
+     * segments that did — none, when its only segment is the one that
+     * failed — and still declares every frame captured: the frames the list
+     * does not hold are in the {@code .part} the failed seal left for
+     * recovery.</p>
+     *
      * <p>Idempotent once the clips have been returned: a further call
      * returns an empty list, as does a call on a pipeline that was never
      * started or whose start was cancelled — an empty list always means
@@ -800,6 +898,42 @@ public final class RecordingPipeline {
      *                               or a take is being prepared
      */
     public List<AudioClip> completeStop() {
+        return completeStop(NO_RECORDED_AUDIO);
+    }
+
+    /**
+     * Completes the stop as {@link #completeStop()} does, and gives each
+     * clip the audio the caller has already read back for it: for every
+     * clip the take publishes — the plain take's clip of each armed track,
+     * and in loop-record the clip of <em>every</em> take of each track's
+     * stack, not only the active one — {@code loadedAudio} is asked once,
+     * with the clip's segment-path list
+     * ({@link AudioClip#getSourceSegmentPaths()}, one of the lists
+     * {@link #recordedSegmentPaths()} returned), and what it returns is
+     * attached with {@link AudioClip#setAudioData} <em>before</em> the clip
+     * is added to its track ({@code addClip}, {@code putTakeGroup}). So no
+     * clip of the take is ever visible on a track without its audio, unless
+     * the lookup had none for it.
+     *
+     * <p>The lookup is called on this thread — the caller thread, FX in the
+     * app — and must not block, wait or touch storage: it hands over arrays
+     * that were read earlier, off this thread, from the lists
+     * {@code recordedSegmentPaths()} returned (a map lookup). It returns
+     * {@code null} for "no audio": the clip is then published exactly as
+     * {@code completeStop()} publishes it, without audio data. A clip whose
+     * segment-path list is empty — its only segment did not seal — has
+     * nothing that could have been read; the lookup is not asked for it and
+     * it is published without audio. The array is attached as it is, not
+     * copied. If the lookup throws, the exception propagates: the clips
+     * published before it stay published, and the finalisation has ended.</p>
+     *
+     * @param loadedAudio from a clip's segment-path list to its audio
+     *                    {@code [channel][frame]}, or {@code null} for none
+     * @return the list of {@link AudioClip}s created on armed tracks
+     * @throws IllegalStateException as {@link #completeStop()}
+     */
+    public List<AudioClip> completeStop(Function<List<String>, float[][]> loadedAudio) {
+        Objects.requireNonNull(loadedAudio, "loadedAudio must not be null");
         if (preparing) {
             throw new IllegalStateException("Recording pipeline is still preparing its take under "
                     + outputDirectory + "; there is no stop to complete");
@@ -816,17 +950,103 @@ public final class RecordingPipeline {
                     + " to disk: call completeStop() once the stage requestStop() returned has completed");
         }
         finalizationPending = false;
-        return buildClips(service);
+        return buildClips(service, loadedAudio);
+    }
+
+    /**
+     * Returns the segment-path list of every clip the {@link #completeStop()}
+     * that follows will publish with at least one sealed segment, so that
+     * the caller can read their audio back
+     * ({@link SegmentFile#readFrames(List)}) off this thread <em>before</em>
+     * it completes the stop, and hand it to
+     * {@link #completeStop(Function)}. Caller thread; it reads what the
+     * flush thread left and touches no storage and never waits.
+     *
+     * <p>One list per clip, in publication order: for each armed track, in
+     * armed order, the plain take's clip — every sealed segment of the
+     * track, in manifest order — or, in loop-record, one list per take of
+     * the track's stack, lap by lap, each holding that lap's sealed
+     * segments. Each list equals the {@link AudioClip#getSourceSegmentPaths()}
+     * of the clip it stands for. A clip with no sealed segment — its only
+     * segment did not seal — is left out: there is nothing to read for it,
+     * and {@code completeStop} publishes it without audio. A track that
+     * recorded nothing gets no clip and no list.</p>
+     *
+     * <p>Meaningful between the completion of the stage
+     * {@link #requestStop()} returned and {@code completeStop}: on a
+     * pipeline with no finalisation pending — never started, cancelled, or
+     * whose clips were returned — the list is empty.</p>
+     *
+     * @return the lists, unmodifiable; possibly empty
+     * @throws IllegalStateException if the flush thread has not terminated
+     *                               yet, or a take is being prepared
+     */
+    public List<List<String>> recordedSegmentPaths() {
+        if (preparing) {
+            throw new IllegalStateException("Recording pipeline is still preparing its take under "
+                    + outputDirectory + "; there is no recorded take yet");
+        }
+        if (!finalizationPending) {
+            return Collections.emptyList();
+        }
+        CaptureFlushService service = flush;
+        if (!service.isTerminated()) {
+            throw new IllegalStateException("The take under " + outputDirectory + " is still being written"
+                    + " to disk: its segment lists are final once the stage requestStop() returned has completed");
+        }
+        boolean loopRecorded = service.config().loopRecord();
+        List<List<String>> lists = new ArrayList<>();
+        for (Track track : armedTracks) {
+            TrackCapture capture = captures.get(track);
+            if (capture == null) {
+                continue;
+            }
+            if (loopRecorded) {
+                for (Take take : capture.takeGroup().takes()) {
+                    List<String> lapPaths = take.clip().getSourceSegmentPaths();
+                    if (!lapPaths.isEmpty()) {
+                        lists.add(List.copyOf(lapPaths));
+                    }
+                }
+                continue;
+            }
+            RecordingSession session = capture.session();
+            if (session != null && session.getTotalSamplesRecorded() > 0) {
+                List<String> segmentPaths = capture.sealedSegmentPaths();
+                if (!segmentPaths.isEmpty()) {
+                    lists.add(segmentPaths);
+                }
+            }
+        }
+        return Collections.unmodifiableList(lists);
+    }
+
+    /**
+     * Gives {@code clip} the audio {@code loadedAudio} has for its
+     * segment-path list, if the list is not empty and the lookup returns
+     * one. Called before the clip is added to a track.
+     */
+    private static void attachLoadedAudio(AudioClip clip, Function<List<String>, float[][]> loadedAudio) {
+        List<String> segmentPaths = clip.getSourceSegmentPaths();
+        if (segmentPaths.isEmpty()) {
+            return;
+        }
+        float[][] audio = loadedAudio.apply(segmentPaths);
+        if (audio != null) {
+            clip.setAudioData(audio);
+        }
     }
 
     /**
      * Builds the take's clips on the caller thread once the flush thread has
      * terminated — a plain take's from the captured start position at
      * {@link #clipTempoBpm}, a loop-record take's from the stacks the flush
-     * thread built — adds them to the armed tracks and records them in
+     * thread built — gives each the audio {@code loadedAudio} has for it,
+     * and only then adds them to the armed tracks and records them in
      * {@link #recordedClips}.
      */
-    private List<AudioClip> buildClips(CaptureFlushService service) {
+    private List<AudioClip> buildClips(CaptureFlushService service,
+                                       Function<List<String>, float[][]> loadedAudio) {
         // The take ends the way it began: the mode the flush thread worked
         // from, not whatever the field holds now.
         boolean loopRecorded = service.config().loopRecord();
@@ -845,6 +1065,11 @@ public final class RecordingPipeline {
             if (loopRecorded) {
                 TakeGroup group = capture.takeGroup();
                 if (!group.isEmpty()) {
+                    // Every lap's clip gets its audio before any of them
+                    // can be seen through the track.
+                    for (Take take : group.takes()) {
+                        attachLoadedAudio(take.clip(), loadedAudio);
+                    }
                     AudioClip activeClip = group.activeClip();
                     track.addClip(activeClip);
                     track.putTakeGroup(group);
@@ -869,12 +1094,13 @@ public final class RecordingPipeline {
                         durationBeats,
                         segmentPaths.isEmpty() ? null : segmentPaths.getFirst());
                 clip.setSourceSegmentPaths(segmentPaths);
-
-                // Attach the captured audio data to the clip for playback
-                float[][] capturedAudio = session.getCapturedAudio();
-                if (capturedAudio != null) {
-                    clip.setAudioData(capturedAudio);
-                }
+                // Nothing is read here: the clip names its segment files and
+                // declares what was captured; reading them back is storage
+                // I/O, which is not this thread's to do. What the caller
+                // read beforehand is attached before the track sees the clip.
+                clip.setSourceRateMetadata(
+                        TrackCapture.declaredRate(session, session.getTotalSamplesRecorded()));
+                attachLoadedAudio(clip, loadedAudio);
 
                 track.addClip(clip);
                 recordedClips.put(track, clip);
@@ -1251,7 +1477,8 @@ public final class RecordingPipeline {
 
     /**
      * Sets the monotonic clock the writers' force cadence, the headroom
-     * watch and the manifest retry interval read (default
+     * watch, the manifest retry interval and the peak publication interval
+     * read (default
      * {@code System::nanoTime}). Test/diagnostic seam; must be called before
      * {@link #prepare()}.
      */
@@ -1273,6 +1500,32 @@ public final class RecordingPipeline {
     public void setWarningSink(Consumer<String> warningSink) {
         requireInactive("warning sink");
         this.warningSink = warningSink;
+    }
+
+    /**
+     * Sets the sink for the peak snapshots of the lanes being captured
+     * (Recording Reliability book §4.5; default: none are delivered, and
+     * none are built). For
+     * each armed track the sink receives an immutable
+     * {@link CapturePeakSnapshot} of the current lane's bounded, decimated
+     * peak mirror: at most once per
+     * {@link CaptureFlushService#PEAK_PUBLISH_INTERVAL} while the lane gains
+     * frames, and once more when the lane is finalized — at each loop wrap
+     * in loop-record, and when the take is sealed. Called on the
+     * {@code capture-flush} thread only, never on the audio callback; a sink
+     * that touches the UI must marshal itself. Whatever a sink throws — a
+     * {@link RuntimeException} or an {@link Error} — is logged, once per
+     * track of a take, and ignored; it can never end a take, and it never
+     * replaces the failure of a seal. Must be called before
+     * {@link #prepare()}.
+     *
+     * @param peakSnapshotSink the sink; not {@code null}
+     * @throws IllegalStateException if a take is being prepared or is recording, or the
+     *                               previous take is still being finalised
+     */
+    public void setPeakSnapshotSink(Consumer<CapturePeakSnapshot> peakSnapshotSink) {
+        requireInactive("peak snapshot sink");
+        this.peakSnapshotSink = Objects.requireNonNull(peakSnapshotSink, "peakSnapshotSink must not be null");
     }
 
     /** Injects the disk-headroom watch the flush thread ticks (default: the take directory's file store). */
@@ -1349,8 +1602,9 @@ public final class RecordingPipeline {
      * Refuses a pre-start setting while a take is being prepared or is
      * recording, and while one is still finalising: the
      * {@code capture-flush} thread starts lane 0's sessions while the take is
-     * being prepared, and a loop lap that wraps — also in the final sweep —
-     * opens its next lane on that thread through {@link #newSession}, which
+     * being prepared, and in loop-record it creates each later lane on that
+     * thread — ahead of the lap, or at a wrap, also in the final sweep —
+     * through {@link #newSession}, which
      * reads the segment limits, the force cadence, the clock and the channel
      * opener. The other settings wait for the take in the same way.
      */
@@ -1598,83 +1852,7 @@ public final class RecordingPipeline {
         return armed;
     }
 
-    /**
-     * The recording callback — audio thread. Does exactly one thing: hands
-     * the block to the ring. Claim a slot (a {@code null} claim is a counted
-     * overflow and an immediate return — the callback never blocks), copy
-     * the device block and each armed graph-instrument buffer (only valid
-     * inside this callback), stamp the header with the transport's beat
-     * position, the derived start frame, the punch snapshot and the loop
-     * flag, publish, and wake the flush thread. No allocation, no locks, no
-     * collection iteration beyond the preallocated instrument-track array.
-     * Routing, gating, wrap detection and every file write happen on the
-     * flush thread from this header.
-     *
-     * <p><strong>Block length.</strong> The engine delivers
-     * {@code numFrames} frames per call; this pipeline's ring slots hold
-     * {@code format.bufferSize()} frames, the size it was constructed with.
-     * Nothing guarantees {@code numFrames <= format.bufferSize()} — the
-     * live stream's block size is the engine's, not the pipeline's — so a
-     * longer block is not an error here: its first
-     * {@code format.bufferSize()} frames are captured, and the excess is
-     * stamped on the slot and counted on the ring
-     * ({@link #getTruncatedFrames()}) for the flush thread to record in the
-     * manifest and report. A shorter block is captured as delivered.</p>
-     *
-     * <p>A callback the audio thread loaded before {@link #requestStop()} or
-     * the rollback of a failed {@link #beginCapture()} removed it may still
-     * run once, and must not fail: it returns at once when the pipeline holds
-     * no ring or no flush service (a restart that failed early), and it never
-     * addresses a ring source the slot does not have.</p>
-     */
-    private void onAudioCaptured(float[][] inputBuffer, int numFrames) {
-        CaptureRing currentRing = ring;
-        CaptureFlushService currentFlush = flush;
-        if (currentRing == null || currentFlush == null) {
-            return;
-        }
-        CaptureRing.Slot slot = currentRing.claim();
-        if (slot == null) {
-            return;
-        }
-        slot.setNumFrames(numFrames);
-        int excess = numFrames - slot.slotFrames();
-        if (excess > 0) {
-            slot.setTruncatedFrames(excess);
-            currentRing.noteTruncatedFrames(excess);
-        }
-        slot.copySource(0, inputBuffer, inputBuffer.length, numFrames);
-        Track[] instruments = instrumentTracks;
-        int instrumentSources = Math.min(instruments.length, slot.sourceCount() - 1);
-        for (int i = 0; i < instrumentSources; i++) {
-            float[][] instrument = audioEngine.graphInstrumentRecordingBuffer(instruments[i]);
-            if (instrument == null) {
-                slot.clearSource(i + 1);
-            } else {
-                slot.copySource(i + 1, instrument, instrument.length, numFrames);
-            }
-        }
-
-        // The recording callback fires *before* advancePosition(), so
-        // getPositionInBeats() still reflects this block's start.
-        double beat = transport.getPositionInBeats();
-        slot.setBeatPosition(beat);
-        slot.setStartFrame(beatsToFrames(beat));
-        PunchRegion punch = transport.isPunchEnabled() ? transport.getPunchRegion() : null;
-        if (punch != null) {
-            slot.setPunchEnabled(true);
-            slot.setPunchStartFrames(punch.startFrames());
-            slot.setPunchEndFrames(punch.endFrames());
-        } else {
-            slot.setPunchEnabled(false);
-        }
-        slot.setLoopEnabled(transport.isLoopEnabled());
-        currentRing.publish();
-        currentFlush.signal();
-    }
-
-    private long beatsToFrames(double beats) {
-        double bpm = transport.getTempo();
+    private long beatsToFrames(double beats, double bpm) {
         double seconds = beats * 60.0 / bpm;
         return Math.round(seconds * format.sampleRate());
     }
