@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
@@ -31,7 +32,7 @@ import static org.assertj.core.api.Assertions.within;
  * of the format the pipeline was given — the rate the engine streams at
  * (Recording Reliability book §2.7) — and from no other: the clip's length
  * and its latency-compensated start in beats, the manifest's anchor frame,
- * the record start a punch region names in frames, each loop lap's clip, the
+ * a project punch region's anchor translated into capture frames, each loop lap's clip, the
  * rate a clip declares, the rate in the segment's WAV header and in the
  * manifest, and the rate a peak snapshot carries.
  *
@@ -67,6 +68,10 @@ class TakeMathFollowsTheStreamRateContractTest {
 
     private RecordingPipeline newPipeline(AudioEngine engine, Transport transport, AudioFormat format, Track track) {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, format, tempDir, List.of(track));
+        return configurePipeline(pipeline);
+    }
+
+    private RecordingPipeline configurePipeline(RecordingPipeline pipeline) {
         // Headroom that never warns, whatever the machine's disk holds.
         pipeline.setDiskHeadroomWatch(new DiskHeadroomWatch(tempDir, () -> 10 * GIB, GIB, 64 * MIB,
                 Duration.ZERO, System::nanoTime, warnings::add));
@@ -169,6 +174,101 @@ class TakeMathFollowsTheStreamRateContractTest {
                 .isEqualTo(new SourceRateMetadata((int) rate, 2, frames));
         assertThat(clip.getStartBeat()).isCloseTo(punchInBeat, within(1e-9));
         assertThat(clip.getDurationBeats()).isCloseTo(frames / rate * (BPM / 60.0), within(1e-9));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "96000, 48000, 96601, 100201, 48301, 50101",
+            "24000, 48000, 24150, 25050, 48300, 50100",
+            "48000, 48000, 48300, 50100, 48300, 50100",
+            "96000, 44100, 96601, 100201, 44376, 46030"
+    })
+    void projectPunchBoundsAreRoundedIntoCaptureFramesAtEitherRateRatio(
+            double projectRate, double captureRate, long projectIn, long projectOut,
+            long captureIn, long captureOut) throws Exception {
+        AudioFormat format = stereo24(captureRate);
+        AudioEngine engine = new AudioEngine(format);
+        Transport transport = new Transport();
+        transport.setTempo(BPM);
+        transport.setPositionInBeats(BPM / 60.0); // one second
+        transport.setPunchRegion(PunchRegion.enabled(projectIn, projectOut));
+        Track track = armedStereoTrack();
+        RecordingPipeline pipeline = configurePipeline(
+                new RecordingPipeline(engine, transport, format, projectRate, tempDir, List.of(track)));
+
+        startRecording(pipeline);
+        feed(engine, transport, pipeline, format, 6);
+        List<AudioClip> clips = stopRecording(pipeline);
+
+        double punchBeat = projectIn / projectRate * (BPM / 60.0);
+        long capturedFrames = captureOut - captureIn;
+        assertThat(pipeline.getRecordingStartBeat()).isCloseTo(punchBeat, within(1e-9));
+        assertThat(pipeline.getRecordingStartFrame()).isEqualTo(captureIn);
+        assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).startFrame()).isEqualTo(captureIn);
+        assertThat(clips).hasSize(1);
+        AudioClip clip = clips.getFirst();
+        assertThat(clip.getStartBeat()).isCloseTo(punchBeat, within(1e-9));
+        assertThat(clip.getSourceRateMetadata())
+                .isEqualTo(new SourceRateMetadata((int) captureRate, 2, capturedFrames));
+        assertThat(clip.getDurationBeats())
+                .isCloseTo(capturedFrames / captureRate * (BPM / 60.0), within(1e-9));
+        assertThat(warnings).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(doubles = {96_000.0, 24_000.0, 48_000.0})
+    void tapeMonitoringUsesTheProjectPunchTimeAndTheStreamCrossfadeRate(double projectRate) {
+        AudioFormat format = stereo24(48_000);
+        AudioEngine engine = new AudioEngine(format);
+        Transport transport = new Transport();
+        transport.setTempo(BPM);
+        long punchIn = (long) projectRate;
+        long punchOut = 2L * punchIn;
+        transport.setPunchRegion(PunchRegion.enabled(punchIn, punchOut));
+        Track track = armedStereoTrack();
+        track.setInputMonitoring(InputMonitoringMode.TAPE);
+        RecordingPipeline pipeline = new RecordingPipeline(engine, transport, format, projectRate, tempDir,
+                List.of(track));
+        transport.record();
+
+        transport.setPositionInBeats((punchIn - 1) / projectRate * (BPM / 60.0));
+        assertThat(pipeline.isInputMonitoringActive(track)).as("before project punch-in").isFalse();
+        transport.setPositionInBeats(BPM / 60.0);
+        assertThat(pipeline.isInputMonitoringActive(track)).as("inclusive project punch-in").isTrue();
+        assertThat(pipeline.resolveMonitoring(track).crossfadeFrames()).isEqualTo(240.0);
+        transport.setPositionInBeats((punchOut - 1) / projectRate * (BPM / 60.0));
+        assertThat(pipeline.isInputMonitoringActive(track)).as("before project punch-out").isTrue();
+        transport.setPositionInBeats(2.0 * (BPM / 60.0));
+        assertThat(pipeline.isInputMonitoringActive(track)).as("exclusive project punch-out").isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(doubles = {96_000.0, 24_000.0, 48_000.0})
+    void eachCallbackConvertsTheCurrentProjectPunchSnapshot(double projectRate) throws Exception {
+        AudioFormat format = stereo24(48_000);
+        AudioEngine engine = new AudioEngine(format);
+        Transport transport = new Transport();
+        transport.setTempo(BPM);
+        long projectBlock = Math.round(BLOCK * projectRate / format.sampleRate());
+        transport.setPunchRegion(PunchRegion.enabled(projectBlock, 2 * projectBlock));
+        Track track = armedStereoTrack();
+        RecordingPipeline pipeline = configurePipeline(
+                new RecordingPipeline(engine, transport, format, projectRate, tempDir, List.of(track)));
+        startRecording(pipeline);
+
+        feed(engine, transport, pipeline, format, 2);
+        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(BLOCK);
+        transport.setPunchRegion(PunchRegion.enabled(projectBlock, 3 * projectBlock));
+        feed(engine, transport, pipeline, format, 1);
+        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).as("the extended project punch was read")
+                .isEqualTo(2L * BLOCK);
+        transport.setPunchRegion(new PunchRegion(projectBlock, 3 * projectBlock, false));
+        feed(engine, transport, pipeline, format, 1);
+        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).as("the disabled punch no longer gates")
+                .isEqualTo(3L * BLOCK);
+        AudioClip clip = stopRecording(pipeline).getFirst();
+        assertThat(clip.getSourceRateMetadata()).isEqualTo(new SourceRateMetadata(48_000, 2, 3L * BLOCK));
+        assertThat(warnings).isEmpty();
     }
 
     @ParameterizedTest

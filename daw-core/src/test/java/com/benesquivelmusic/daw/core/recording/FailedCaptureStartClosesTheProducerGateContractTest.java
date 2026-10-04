@@ -71,7 +71,7 @@ class FailedCaptureStartClosesTheProducerGateContractTest {
         // The callback the audio thread loaded while beginCapture() had it
         // installed: the take's own ring and flush service, as beginCapture() wires them.
         CaptureCallback loaded = new CaptureCallback(ring, service, new Track[0], transport, engine,
-                SAMPLE_RATE, 120.0);
+                SAMPLE_RATE, SAMPLE_RATE, 120.0);
         engine.shutdown(); // the engine start inside beginCapture() throws
 
         Throwable thrown = outcomeWithinTheGuard("begin capture", pipeline::beginCapture);

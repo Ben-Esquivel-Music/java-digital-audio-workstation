@@ -15,7 +15,7 @@ import java.util.Objects;
  * hands the block to the take's {@link CaptureRing}.
  *
  * <p>Everything it reads is its own: the ring, the flush service, the
- * instrument-track array, the transport, the engine, the sample rate and the
+ * instrument-track array, the transport, the engine, the sample rates and the
  * tempo are {@code final} fields set on the caller thread before the
  * callback is installed, so the audio thread reads no field of the pipeline,
  * and a callback left over from an earlier take can only ever reach that
@@ -25,7 +25,8 @@ import java.util.Objects;
  * the start frame derived from it, the punch snapshot from one load of the
  * transport's punch region, the loop flag — copies the device block and each
  * armed graph-instrument buffer (only valid inside this callback), publishes
- * if the gate is still open, wakes the flush thread, and leaves the gate. No
+ * if its final gate read observes open, wakes the flush thread, and leaves
+ * the gate. No
  * allocation, no locks, no string, no clock, no collection iteration beyond
  * the preallocated instrument-track array. Routing, gating, wrap detection
  * and every file write happen on the flush thread from the header.</p>
@@ -35,6 +36,12 @@ import java.util.Objects;
  * manifest's anchor frame was computed with — not the transport's tempo of
  * the moment: reading that on the audio thread would read the tempo map's
  * list while another thread may be changing it.</p>
+ *
+ * <p><strong>Punch frames.</strong> The transport's punch bounds use the
+ * project's sample rate. Each block's snapshot converts them to the take's
+ * sample rate with a ratio computed before this callback is installed and
+ * rounds to the nearest capture frame, matching the anchor conversion.
+ * Bounds at equal rates are copied unchanged.</p>
  *
  * <p><strong>Block length.</strong> The engine delivers {@code numFrames}
  * frames per call; the ring's slots hold {@link CaptureRing#slotFrames()}
@@ -51,11 +58,13 @@ import java.util.Objects;
  * <p><strong>Stop.</strong> The thread that ends the take closes the ring's
  * producer gate before it removes this callback and before it moves the
  * transport ({@link RecordingPipeline#requestStop()}). A call that enters
- * after that claims nothing. A call that was inside when the gate closed
- * does not publish its block: the block that straddles the stop is dropped
- * whole. A block that is published was stamped before the gate closed, and
- * so before the stop moved the playhead. See {@link CaptureRing} for the
- * argument.</p>
+ * after that claims nothing. A call already inside drops its whole block
+ * if its final {@link CaptureRing#producerOpen()} read observes the close.
+ * If that read observed the gate open, it may publish after the close; its
+ * header was stamped before that read, before the stop moved the playhead.
+ * The flush thread waits for producer quiescence before its final drain,
+ * so a successful wait includes that late publication in the sealed take.
+ * See {@link CaptureRing} for the bounded wait and the gate argument.</p>
  */
 final class CaptureCallback implements AudioEngine.RecordingCallback {
 
@@ -66,6 +75,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     private final Transport transport;
     private final AudioEngine audioEngine;
     private final double sampleRate;
+    private final double punchFrameScale;
     private final double tempoBpm;
 
     /**
@@ -78,10 +88,12 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
      * @param transport        the transport whose position, punch region and loop flag are stamped
      * @param audioEngine      the engine the graph-instrument buffers are looked up on
      * @param sampleRate       the take's sample rate; positive
+     * @param projectSampleRate the rate of the transport's punch frames; finite and positive
      * @param tempoBpm         the tempo the take was prepared at; positive
      */
     CaptureCallback(CaptureRing ring, CaptureFlushService flush, Track[] instrumentTracks,
-                    Transport transport, AudioEngine audioEngine, double sampleRate, double tempoBpm) {
+                    Transport transport, AudioEngine audioEngine, double sampleRate,
+                    double projectSampleRate, double tempoBpm) {
         this.ring = Objects.requireNonNull(ring, "ring must not be null");
         this.flush = Objects.requireNonNull(flush, "flush must not be null");
         this.instrumentTracks = Objects.requireNonNull(instrumentTracks, "instrumentTracks must not be null").clone();
@@ -93,7 +105,11 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         if (!(tempoBpm > 0)) {
             throw new IllegalArgumentException("tempoBpm must be positive: " + tempoBpm);
         }
+        if (!(projectSampleRate > 0) || !Double.isFinite(projectSampleRate)) {
+            throw new IllegalArgumentException("projectSampleRate must be finite and positive: " + projectSampleRate);
+        }
         this.sampleRate = sampleRate;
+        this.punchFrameScale = sampleRate / projectSampleRate;
         this.tempoBpm = tempoBpm;
     }
 
@@ -141,8 +157,8 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         PunchRegion punch = transport.getPunchRegion();
         if (punch != null && punch.enabled()) {
             slot.setPunchEnabled(true);
-            slot.setPunchStartFrames(punch.startFrames());
-            slot.setPunchEndFrames(punch.endFrames());
+            slot.setPunchStartFrames(captureFrameOf(punch.startFrames()));
+            slot.setPunchEndFrames(captureFrameOf(punch.endFrames()));
         } else {
             slot.setPunchEnabled(false);
         }
@@ -170,7 +186,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
 
     /**
      * The second half of a callback: publishes the filled slot and wakes the
-     * flush thread — only if the producer gate is still open — and leaves
+     * flush thread if its final gate read observes open, then leaves
      * the gate. A slot filled by a callback that finds the gate closed here
      * stays claimed and unpublished.
      *
@@ -188,5 +204,9 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     private long startFrameOf(double beat) {
         double seconds = beat * 60.0 / tempoBpm;
         return Math.round(seconds * sampleRate);
+    }
+
+    private long captureFrameOf(long projectFrame) {
+        return punchFrameScale == 1.0 ? projectFrame : Math.round(projectFrame * punchFrameScale);
     }
 }

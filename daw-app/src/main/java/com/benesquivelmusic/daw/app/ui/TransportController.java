@@ -2228,11 +2228,12 @@ final class TransportController implements TransportIntentHandler {
             // (Recording Reliability book §2.7), read here, on the FX turn
             // after Record opened the device stream: the engine refuses a
             // format change while it runs, so this is the rate, the width
-            // and the block size of the blocks the take will be handed. The
-            // project's format is not consulted: it is the one the project
-            // was created with, whatever the audio settings say now.
+            // and the block size of the blocks the take will be handed.
+            // Project punch frames still use the project's timeline rate;
+            // pass that rate separately so the pipeline can convert them.
             pipeline = new RecordingPipeline(
-                    audioEngine, project.getTransport(), audioEngine.getFormat(), takeDirectory,
+                    audioEngine, project.getTransport(), audioEngine.getFormat(),
+                    project.getFormat().sampleRate(), takeDirectory,
                     start.armedAudioTracks, start.countIn, InputMonitoringMode.OFF, null);
             pipeline.setReportedLatency(reportedLatency.get());
             pipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());

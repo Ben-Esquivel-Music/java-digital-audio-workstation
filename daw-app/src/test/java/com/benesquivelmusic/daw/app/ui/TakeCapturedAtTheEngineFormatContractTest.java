@@ -9,10 +9,13 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -107,6 +110,65 @@ class TakeCapturedAtTheEngineFormatContractTest {
     @Test
     void aTakeRecordedAt44100HzInA96kHzProjectDeclares44100HzAndIsPlacedByIt() throws Exception {
         assertATakeIsCapturedDeclaredAndPlacedAtTheEngineRate(44_100);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {48_000, 44_100})
+    void aProjectPunchRegionIsAnchoredAndSlicedAtTheEngineRate(int engineRate) throws Exception {
+        AudioFormat projectFormat = new AudioFormat(96_000, 2, 16, 256);
+        AudioFormat engineFormat = new AudioFormat(engineRate, 2, 16, 512);
+        DawProject project = new DawProject("saved", projectFormat);
+        SteppedTakeFixture.giveADirectory(project, projectDirectory);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        project.getTransport().setTempo(BPM);
+        project.getTransport().setPositionInBeats(2.0); // one second of pre-roll
+        long projectPunchIn = 96_600;
+        long projectPunchOut = 100_200;
+        project.getTransport().setPunchRegion(PunchRegion.enabled(projectPunchIn, projectPunchOut));
+        fixture = new SteppedTakeFixture(project, engineFormat, RoundTripLatency.UNKNOWN, _ -> { });
+
+        fixture.startRecording();
+        RecordingPipeline pipeline = fixture.pipeline();
+        double punchInBeat = projectPunchIn / 96_000.0 * (BPM / 60.0);
+        long capturePunchIn = engineRate == 48_000 ? 48_300 : 44_376;
+        long capturePunchOut = engineRate == 48_000 ? 50_100 : 46_029;
+        assertThat(pipeline.getRecordingStartBeat()).as("the project punch-in time anchors the take")
+                .isCloseTo(punchInBeat, within(1e-9));
+        assertThat(pipeline.getRecordingStartFrame()).as("the manifest anchor uses capture frames")
+                .isEqualTo(capturePunchIn);
+        fixture.feedRamp(5);
+        fixture.stopAndAwaitThePublication();
+
+        long expectedFrames = capturePunchOut - capturePunchIn;
+        AudioClip clip = SteppedTakeFixture.get(() -> armed.getClips()).getFirst();
+        assertThat(clip.getStartBeat()).isCloseTo(punchInBeat, within(1e-9));
+        assertThat(clip.getDurationBeats())
+                .isCloseTo(expectedFrames / (double) engineRate * (BPM / 60.0), within(1e-9));
+        assertThat(clip.getSourceRateMetadata()).isEqualTo(new SourceRateMetadata(engineRate, 2, expectedFrames));
+        TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
+        assertThat(manifest.sampleRate()).isEqualTo((double) engineRate);
+        assertThat(manifest.startFrame()).isEqualTo(capturePunchIn);
+        assertThat(manifest.gaps()).isEmpty();
+        assertThat(manifest.truncatedFrames()).isZero();
+
+        List<Path> segments = clip.getSourceSegmentPaths().stream().map(Path::of).toList();
+        assertThat(SegmentFile.describe(segments.getFirst()).frameCount()).isEqualTo(expectedFrames);
+        float[][] onDisk = SegmentFile.readFrames(segments);
+        assertThat(onDisk[0]).hasSize((int) expectedFrames);
+        assertThat(onDisk[0][0]).as("the punch-in retains its fade").isZero();
+        int fadeFrames = (int) Math.round(0.005 * engineRate);
+        long firstRampFrame = capturePunchIn - engineRate;
+        for (int channel = 0; channel < onDisk.length; channel++) {
+            // The boundary fades intentionally alter samples; the interior must
+            // be exactly the input slice, both on disk and in the published clip.
+            for (int frame = fadeFrames; frame < expectedFrames - fadeFrames; frame++) {
+                float expected = SteppedTakeFixture.decodedRamp(channel, firstRampFrame + frame);
+                assertThat(onDisk[channel][frame]).as("channel %d, captured frame %d", channel, frame)
+                        .isEqualTo(expected);
+                assertThat(clip.getAudioData()[channel][frame]).isEqualTo(expected);
+            }
+        }
     }
 
     private void assertATakeIsCapturedDeclaredAndPlacedAtTheEngineRate(int engineRate) throws Exception {

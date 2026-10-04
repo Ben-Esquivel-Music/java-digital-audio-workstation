@@ -127,6 +127,8 @@ public final class RecordingPipeline {
     private final AudioEngine audioEngine;
     private final Transport transport;
     private final AudioFormat format;
+    /** Rate of the project timeline's frame-based punch coordinates. */
+    private final double projectSampleRate;
     private final Path outputDirectory;
     private final List<Track> armedTracks;
     private final CountInMode countInMode;
@@ -229,6 +231,8 @@ public final class RecordingPipeline {
     /**
      * Creates a new recording pipeline with default settings (no count-in,
      * monitoring off, no punch range).
+     * The project's punch coordinates are assumed to use the stream rate;
+     * use the overload accepting {@code projectSampleRate} when they differ.
      *
      * @param audioEngine     the audio engine providing input audio
      * @param transport       the transport controlling playback/recording state
@@ -253,6 +257,8 @@ public final class RecordingPipeline {
 
     /**
      * Creates a new recording pipeline with full configuration.
+     * The project's punch coordinates are assumed to use the stream rate;
+     * use the overload accepting {@code projectSampleRate} when they differ.
      *
      * @param audioEngine     the audio engine providing input audio
      * @param transport       the transport controlling playback/recording state
@@ -277,9 +283,58 @@ public final class RecordingPipeline {
                              CountInMode countInMode,
                              InputMonitoringMode monitoringMode,
                              PunchRange punchRange) {
+        this(audioEngine, transport, format,
+                Objects.requireNonNull(format, "format must not be null").sampleRate(),
+                outputDirectory, armedTracks, countInMode, monitoringMode, punchRange);
+    }
+
+    /**
+     * Creates a pipeline with default settings and an explicit project rate.
+     *
+     * @param audioEngine     the audio engine providing input audio
+     * @param transport       the transport controlling playback/recording state
+     * @param format          the live stream format used for ring slots, segments and clip metadata
+     * @param projectSampleRate the project timeline rate at which transport punch frames are expressed
+     * @param outputDirectory the take directory for recording segment files
+     * @param armedTracks     the tracks armed for recording (must not be empty)
+     */
+    public RecordingPipeline(AudioEngine audioEngine, Transport transport,
+                             AudioFormat format, double projectSampleRate, Path outputDirectory,
+                             List<Track> armedTracks) {
+        this(audioEngine, transport, format, projectSampleRate, outputDirectory, armedTracks,
+                CountInMode.OFF, InputMonitoringMode.OFF, null);
+    }
+
+    /**
+     * Creates a pipeline with full configuration and an explicit project rate.
+     * The take's frame positions use the stream's rate; transport punch bounds
+     * are converted from the project's rate when preparing the anchor and
+     * stamping each block, so live punch edits keep their timeline times.
+     *
+     * @param audioEngine     the audio engine providing input audio
+     * @param transport       the transport controlling playback/recording state
+     * @param format          the live stream format used for ring slots, segments and clip metadata
+     * @param projectSampleRate the project timeline rate at which transport punch frames are expressed;
+     *                          finite and positive
+     * @param outputDirectory the take directory for recording segment files
+     * @param armedTracks     the tracks armed for recording (must not be empty)
+     * @param countInMode     the count-in mode
+     * @param monitoringMode  the input monitoring mode
+     * @param punchRange      the beat-based punch range, or {@code null}
+     */
+    public RecordingPipeline(AudioEngine audioEngine, Transport transport,
+                             AudioFormat format, double projectSampleRate, Path outputDirectory,
+                             List<Track> armedTracks,
+                             CountInMode countInMode,
+                             InputMonitoringMode monitoringMode,
+                             PunchRange punchRange) {
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.format = Objects.requireNonNull(format, "format must not be null");
+        if (!(projectSampleRate > 0) || !Double.isFinite(projectSampleRate)) {
+            throw new IllegalArgumentException("projectSampleRate must be finite and positive: " + projectSampleRate);
+        }
+        this.projectSampleRate = projectSampleRate;
         this.outputDirectory = Objects.requireNonNull(outputDirectory, "outputDirectory must not be null");
         Objects.requireNonNull(armedTracks, "armedTracks must not be null");
         if (armedTracks.isEmpty()) {
@@ -443,14 +498,18 @@ public final class RecordingPipeline {
                 ? transport.getPunchRegion()
                 : null;
         if (transportPunch != null) {
-            double startSeconds = transportPunch.startFrames() / format.sampleRate();
+            double startSeconds = transportPunch.startFrames() / projectSampleRate;
             recordingStartBeat = startSeconds * (tempo / 60.0);
+            double punchFrameScale = format.sampleRate() / projectSampleRate;
+            recordingStartFrame = punchFrameScale == 1.0 ? transportPunch.startFrames()
+                    : Math.round(transportPunch.startFrames() * punchFrameScale);
         } else if (punchRange != null) {
             recordingStartBeat = punchRange.punchInBeat();
+            recordingStartFrame = beatsToFrames(recordingStartBeat, tempo);
         } else {
             recordingStartBeat = preparedPositionBeats;
+            recordingStartFrame = beatsToFrames(recordingStartBeat, tempo);
         }
-        recordingStartFrame = beatsToFrames(recordingStartBeat, tempo);
 
         // Set recording indicator on armed tracks, and apply the
         // pipeline-level monitoring mode as the default for any armed
@@ -567,8 +626,9 @@ public final class RecordingPipeline {
      * Story 328's transport-clocked capture-start gate owns the fix.</p>
      *
      * <p>All or nothing: if a step fails, the take's producer gate is closed
-     * ({@link CaptureRing#closeProducer()} — a callback the audio thread had
-     * already loaded publishes nothing more), the callback is removed, a
+     * ({@link CaptureRing#closeProducer()} — a callback entering afterwards
+     * claims nothing; an in-flight callback follows {@link CaptureCallback}'s
+     * final gate read), the callback is removed, a
      * transport that the failed step left recording is stopped, the take's
      * flush service is asked to discard the take
      * ({@link CaptureFlushService#requestAbort()} — without waiting: the
@@ -617,7 +677,7 @@ public final class RecordingPipeline {
             // carries the take's ring, flush service and tempo in final
             // fields, so the audio thread reads nothing of this pipeline.
             audioEngine.setRecordingCallback(new CaptureCallback(takeRing, service, instrumentTracks,
-                    transport, audioEngine, format.sampleRate(), takeTempoBpm));
+                    transport, audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm));
 
             // Start the audio engine if it is not already running
             audioEngine.start();
@@ -625,8 +685,8 @@ public final class RecordingPipeline {
             // Transition transport to recording
             transport.record();
         } catch (RuntimeException | Error e) {
-            // The gate first: a callback the audio thread already loaded
-            // publishes nothing more into the take being discarded.
+            // The gate first: later entries claim nothing, and a callback
+            // already inside drops its block if its final read sees the close.
             rollbackStep(e, () -> takeRing.closeProducer());
             rollbackStep(e, () -> audioEngine.setRecordingCallback(null));
             rollbackStep(e, () -> {
@@ -1794,9 +1854,9 @@ public final class RecordingPipeline {
         if (transportPunch != null) {
             double pos = transport.getPositionInBeats();
             double bpm = transport.getTempo();
-            double startBeats = (transportPunch.startFrames() / format.sampleRate())
+            double startBeats = (transportPunch.startFrames() / projectSampleRate)
                     * (bpm / 60.0);
-            double endBeats = (transportPunch.endFrames() / format.sampleRate())
+            double endBeats = (transportPunch.endFrames() / projectSampleRate)
                     * (bpm / 60.0);
             return pos >= startBeats && pos < endBeats;
         }
