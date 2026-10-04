@@ -199,7 +199,7 @@ class RecordingLifecycleCallerThreadSentinelTest {
     @Test
     void thePipelinesCallerThreadStepsTouchNoStorageAndNeverWait() throws IOException {
         Map<String, Walk> walks = new HashMap<>();
-        for (String root : List.of("prepare", "beginCapture", "cancelStart", "requestStop", "completeStop",
+        for (String root : List.of("prepare", "beginCapture", "cancelStart", "requestStopBeforeCapture", "requestStop", "completeStop",
                 "recordedSegmentPaths", "newSession")) {
             Walk walk = walk(PIPELINE, root);
             // completeStop has two forms: with and without a lookup of audio read back beforehand.
@@ -227,6 +227,10 @@ class RecordingLifecycleCallerThreadSentinelTest {
                 .contains(FLUSH + "#requestStop", "com/benesquivelmusic/daw/core/transport/Transport#stop");
         // The stop fence's caller-thread half is a store; its wait is the flush thread's.
         String ring = "com/benesquivelmusic/daw/core/recording/CaptureRing";
+        assertThat(walks.get("requestStopBeforeCapture").calls())
+                .contains(ring + "#closeProducer", FLUSH + "#requestStop", FLUSH + "#termination")
+                .doesNotContain("com/benesquivelmusic/daw/core/audio/AudioEngine#start",
+                        "com/benesquivelmusic/daw/core/transport/Transport#record");
         assertThat(walks.get("requestStop").calls()).contains(ring + "#closeProducer");
         assertThat(walks.get("requestStop").reached()).anyMatch(key -> key.startsWith(ring + "#closeProducer"));
         for (Walk walk : walks.values()) {

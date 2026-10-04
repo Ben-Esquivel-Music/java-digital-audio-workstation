@@ -70,7 +70,7 @@ class RecordedAudioLoadsOffTheFxThreadContractTest {
      * handler added to one that is collected before then is gone, and the
      * controller logs to a new logger without it.
      */
-    private static final Logger CONTROLLER_LOGGER = Logger.getLogger(TransportController.class.getName());
+    private static final Logger CONTROLLER_LOGGER = Logger.getLogger(RecordCoordinator.class.getName());
 
     @BeforeEach
     void listenToTheControllersLog() {

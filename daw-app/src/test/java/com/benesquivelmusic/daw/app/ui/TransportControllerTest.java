@@ -22,6 +22,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
@@ -57,6 +58,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
@@ -116,6 +119,8 @@ class TransportControllerTest {
 
     /** The play button handed to the controller, for enablement assertions. */
     private Button playButton;
+    private Button recordButton;
+    private Label statusLabel;
     /** The REC indicator handed to the controller, for recording-lifecycle assertions. */
     private Label recIndicator;
     /** The status-bar label handed to the controller, for "UI tail untouched" assertions. */
@@ -277,13 +282,14 @@ class TransportControllerTest {
             nb.setAnimated(false);
             notificationBar = nb;
             audioSettingsOpens = new AtomicInteger();
-            Label statusLabel = new Label();
+            statusLabel = new Label();
             statusBarLabel = new Label();
             recIndicator = new Label();
             recIndicator.setVisible(false);
             recIndicator.setManaged(false);
             playButton = new Button();
             Button record = new Button();
+            recordButton = record;
             // Story 293 — the Host is retired; pass direct functional deps.
             // Values mirror the former stub: snap off, quarter grid, no
             // count-in, no-op MIDI flash, and the former Host defaults for
@@ -1571,6 +1577,7 @@ class TransportControllerTest {
         midiTrack.setArmed(true);
         project.addTrack(midiTrack);
         TransportController controller = newController(project, new MockAudioBackend());
+        runHandler(() -> controller.setMidiInputDeviceResolverForTest(_ -> new RecordingInFlightFixture.StubMidiInput()));
         try {
             runHandler(controller::toggleRecord);
 
@@ -1586,6 +1593,551 @@ class TransportControllerTest {
         } finally {
             runHandler(controller::stop);
         }
+    }
+
+    @Test
+    void story325DoubleRecordFinalizesExactlyOneTakeAndOpensInputOnce() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        OpenCountingBackend backend = new OpenCountingBackend();
+        TransportController controller = newController(project, backend);
+        CountingCompletion completion = new CountingCompletion();
+        runStrictHandler(() -> controller.setTakeCompletionForTest(completion));
+        record(controller);
+        awaitABlockOnDisk(controller, armed);
+        runStrictHandler(controller::toggleRecord);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "toggle-stop publishes its one take");
+        assertThat(backend.opens.get()).isEqualTo(1);
+        assertThat(completion.calls).hasSize(1);
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+    }
+
+    @Test
+    void story325DeclinedSettingsLeaveTheSameTakeRecording() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = newController(project);
+        record(controller);
+        Path take = controller.activeTakeDirectory().orElseThrow();
+        runStrictHandler(() -> controller.recordCoordinator().setStopAndApplyConfirmationForTest(() -> false));
+        CompletableFuture<Runnable> permit = controller.recordCoordinator().requestConfigurationChange().toCompletableFuture();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> permit.get(5, TimeUnit.SECONDS))
+                .hasCauseInstanceOf(AudioConfigurationDeclinedException.class);
+        assertThat(controller.activeTakeDirectory()).contains(take);
+        assertThat(audioEngine.isStreamOpen()).isTrue();
+        assertThat(recIndicator.isVisible()).isTrue();
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING);
+    }
+
+    @Test
+    void story325ConfirmedSettingsWaitForPublicationBeforeGrantingTheLease() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        CountingCompletion completion = new CountingCompletion();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completion);
+        holdTheCaptureThread();
+        runStrictHandler(() -> controller.recordCoordinator().setStopAndApplyConfirmationForTest(() -> true));
+        CompletableFuture<Runnable> permit = controller.recordCoordinator().requestConfigurationChange().toCompletableFuture();
+        awaitOnFx(() -> !controller.isRecordingInFlight(), "confirmed apply stops capture");
+        assertThat(permit.isDone()).isFalse();
+        assertThat(completion.calls).isEmpty();
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.FINALIZING);
+        releaseAndAwaitThePublication(controller);
+        Runnable release = permit.get(5, TimeUnit.SECONDS);
+        assertThat(completion.calls).hasSize(1);
+        assertThat(armed.getClips()).hasSize(1);
+        try {
+            runStrictHandler(controller::toggleRecord);
+            assertThat(controller.isRecordingInFlight()).isFalse();
+        } finally {
+            release.run();
+            flushFx();
+        }
+    }
+
+    @Test
+    void story325MidiToggleClosesEveryDeviceAndNeverReplacesLiveRecorders() throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        Track first = new Track("First", TrackType.MIDI);
+        Track second = new Track("Second", TrackType.MIDI);
+        first.setArmed(true); second.setArmed(true);
+        first.setMidiInputDeviceName("first"); second.setMidiInputDeviceName("second");
+        project.addTrack(first); project.addTrack(second);
+        var input1 = new RecordingInFlightFixture.StubMidiInput();
+        var input2 = new RecordingInFlightFixture.StubMidiInput();
+        TransportController controller = newController(project);
+        runStrictHandler(() -> controller.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input2));
+        record(controller);
+        assertThat(input1.isConnected()).isTrue(); assertThat(input2.isConnected()).isTrue();
+        runStrictHandler(controller::toggleRecord);
+        flushFx();
+        assertThat(input1.isOpen()).isFalse(); assertThat(input2.isOpen()).isFalse();
+        assertThat(input1.isConnected()).isFalse(); assertThat(input2.isConnected()).isFalse();
+        assertThat(first.isRecording()).isFalse(); assertThat(second.isRecording()).isFalse();
+        assertThat(controller.isRecordingInFlight()).isFalse();
+    }
+
+    @Test
+    void story325NoUsableMidiDeviceFailsTheGuardAndShowsAnError() throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        Track midi = new Track("Keys", TrackType.MIDI);
+        midi.setArmed(true); project.addTrack(midi);
+        TransportController controller = newController(project);
+        runStrictHandler(() -> controller.setMidiInputDeviceResolverForTest(_ -> null));
+        record(controller);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).contains("MIDI input precondition", "no armed MIDI track");
+        runStrictHandler(() -> controller.setMidiInputDeviceResolverForTest(_ -> new CountingMidiInput(false)));
+        record(controller);
+        assertThat(controller.isRecordingInFlight()).isTrue();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
+        assertThat(notificationBar.getMessage()).doesNotContain("skipped");
+    }
+
+    @Test
+    void story325RecordSurfacesFollowCoordinatorDuringPreparationAndFinalization() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox"); armed.setArmed(true);
+        TransportController controller = newController(project);
+        AtomicReference<Runnable> allocation = new AtomicReference<>();
+        runStrictHandler(() -> {
+            controller.setStorageExecutorForTest(allocation::set);
+            controller.toggleRecord();
+            assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.PREPARING);
+            assertThat(recIndicator.isVisible()).isFalse();
+            assertThat(controller.recordCoordinator().statusProperty().get()).isEqualTo(TransportController.TAKE_PREPARING_MESSAGE);
+            controller.toggleRecord();
+            assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.FINALIZING);
+            assertThat(controller.recordCoordinator().recordAvailableProperty().get()).isFalse();
+            controller.setStorageExecutorForTest(task -> Thread.ofVirtual().start(task));
+        });
+        allocation.get().run();
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "cancelled start removes its directory");
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+    }
+
+    @Test
+    void story325PauseCannotSilentlySuspendAnActiveTake() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        TransportController controller = newController(project);
+        record(controller);
+        runStrictHandler(controller::pause);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.RECORDING);
+        assertThat(audioEngine.isStreamPaused()).isFalse();
+        assertThat(recIndicator.isVisible()).isTrue();
+    }
+
+    @Test
+    void story325OffFxRecordIsRefusedBeforeAnyResourceOpens() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        OpenCountingBackend backend = new OpenCountingBackend();
+        TransportController controller = newController(project, backend);
+        org.assertj.core.api.Assertions.assertThatThrownBy(controller::toggleRecord)
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("FX thread");
+        assertThat(backend.opens.get()).isZero();
+        assertThat(controller.isRecordingInFlight()).isFalse();
+    }
+
+    @Test
+    void story325ThrowingConfirmationCompletesRequestAndLeavesTakeRecording() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        TransportController controller = newController(project);
+        record(controller);
+        runStrictHandler(() -> controller.recordCoordinator().setStopAndApplyConfirmationForTest(
+                () -> { throw new IllegalStateException("prompt unavailable"); }));
+        var result = controller.recordCoordinator().requestConfigurationChange().toCompletableFuture();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> result.get(5, TimeUnit.SECONDS))
+                .hasCauseInstanceOf(IllegalStateException.class);
+        assertThat(controller.recordCoordinator().recordAvailableProperty().get()).isTrue();
+        assertThat(recIndicator.isVisible()).isTrue();
+    }
+
+    private DefaultAudioEngineController story325SettingsController(TransportController recording) {
+        return story325SettingsController(recording, new AtomicInteger());
+    }
+
+    private DefaultAudioEngineController story325SettingsController(TransportController recording, AtomicInteger sampleRateCalls) {
+        var selector = new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
+                Map.of(new MockAudioBackend().name(), () -> new SampleRateCountingBackend(sampleRateCalls)));
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(audioEngine, null,
+                NotificationManager.noop(), new IncompleteTakeStore(projectDirectory), selector);
+        controller.setRecordConfigurationGuard(recording.recordCoordinator()::requestConfigurationChange);
+        return controller;
+    }
+
+    private SettingsModel story325SettingsModel() {
+        var model = new SettingsModel(java.util.prefs.Preferences.userRoot().node("story325-" + UUID.randomUUID()));
+        model.setAudioBackend(new MockAudioBackend().name());
+        model.setSampleRate(48000); model.setBufferSize(256); model.setBitDepth(16);
+        model.setWorkerPoolSize(audioEngine.getWorkerPoolSize());
+        return model;
+    }
+
+    @Test
+    void story325SettingsDialogDeclinePreservesRuntimePersistenceAndDirtyEdit() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        TransportController recording = newController(project);
+        record(recording);
+        AtomicInteger sampleRateCalls = new AtomicInteger();
+        DefaultAudioEngineController controller = story325SettingsController(recording, sampleRateCalls);
+        SettingsModel model = story325SettingsModel();
+        AtomicReference<SettingsDialog> dialog = new AtomicReference<>();
+        AtomicReference<CompletableFuture<Void>> outcome = new AtomicReference<>();
+        try {
+            runStrictHandler(() -> {
+                recording.recordCoordinator().setStopAndApplyConfirmationForTest(() -> false);
+                SettingsDialog settings = new SettingsDialog(model);
+                dialog.set(settings);
+                settings.setAudioEngineController(controller);
+                settings.setDirtyClosePrompt(() -> SettingsDialog.DirtyChoice.DISCARD);
+                settings.getShell().settingRow("audio.bufferSize").orElseThrow().setValue(512);
+                settings.getShell().settingRow("audio.sampleRate").orElseThrow().setValue(96000);
+                outcome.set(settings.applySettingsAsync().toCompletableFuture());
+            });
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> outcome.get().get(10, TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(AudioConfigurationDeclinedException.class);
+            runStrictHandler(() -> {
+                assertThat(dialog.get().getShell().dirtyProperty().get()).isTrue();
+                assertThat(dialog.get().getShell().settingRow("audio.bufferSize").orElseThrow().getValue()).isEqualTo(512);
+            });
+            assertThat(model.getBufferSize()).isEqualTo(256);
+            assertThat(model.getSampleRate()).isEqualTo(48000);
+            assertThat(sampleRateCalls.get()).isZero();
+            assertThat(audioEngine.getFormat().sampleRate()).isEqualTo(48000);
+            assertThat(audioEngine.getFormat().bufferSize()).isEqualTo(256);
+            assertThat(recIndicator.isVisible()).isTrue();
+            assertThat(audioEngine.isStreamOpen()).isTrue();
+        } finally {
+            runStrictHandler(() -> { if (dialog.get() != null) dialog.get().close(); });
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void story325SettingsDialogConfirmedApplyCommitsOnlyAfterTheTakeIsPublished() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        CountingCompletion completion = new CountingCompletion();
+        TransportController recording = recordingWithABlockOnDisk(project, track, completion);
+        holdTheCaptureThread();
+        AtomicInteger sampleRateCalls = new AtomicInteger();
+        DefaultAudioEngineController controller = story325SettingsController(recording, sampleRateCalls);
+        SettingsModel model = story325SettingsModel();
+        AtomicReference<SettingsDialog> dialog = new AtomicReference<>();
+        AtomicReference<CompletableFuture<Void>> outcome = new AtomicReference<>();
+        try {
+            runStrictHandler(() -> {
+                recording.recordCoordinator().setStopAndApplyConfirmationForTest(() -> true);
+                SettingsDialog settings = new SettingsDialog(model);
+                dialog.set(settings);
+                settings.setAudioEngineController(controller);
+                settings.setDirtyClosePrompt(() -> SettingsDialog.DirtyChoice.DISCARD);
+                settings.getShell().settingRow("audio.bufferSize").orElseThrow().setValue(512);
+                settings.getShell().settingRow("audio.sampleRate").orElseThrow().setValue(96000);
+                outcome.set(settings.applySettingsAsync().toCompletableFuture());
+            });
+            awaitOnFx(() -> !recording.isRecordingInFlight(), "confirmed settings stop the take");
+            assertThat(outcome.get().isDone()).isFalse();
+            assertThat(model.getBufferSize()).isEqualTo(256);
+            assertThat(model.getSampleRate()).isEqualTo(48000);
+            assertThat(sampleRateCalls.get()).isZero();
+            assertThat(audioEngine.getFormat().sampleRate()).isEqualTo(48000);
+            assertThat(audioEngine.getFormat().bufferSize()).isEqualTo(256);
+            releaseAndAwaitThePublication(recording);
+            outcome.get().get(10, TimeUnit.SECONDS);
+            assertThat(completion.calls).hasSize(1);
+            assertThat(track.getClips()).hasSize(1);
+            assertThat(model.getBufferSize()).isEqualTo(512);
+            assertThat(model.getSampleRate()).isEqualTo(96000);
+            assertThat(sampleRateCalls.get()).isPositive();
+            assertThat(audioEngine.getFormat().sampleRate()).isEqualTo(96000);
+            assertThat(audioEngine.getFormat().bufferSize()).isEqualTo(512);
+        } finally {
+            hold.release();
+            runStrictHandler(() -> { if (dialog.get() != null) dialog.get().close(); });
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void story325LateReadinessFailureRollsBackFlushFilesAndStreamInReverseOrder() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 8, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        List<String> order = new CopyOnWriteArrayList<>();
+        OpenCountingBackend backend = new OpenCountingBackend();
+        backend.lifecycle = order;
+        TransportController recording = newController(project, backend);
+        AtomicInteger storageTasks = new AtomicInteger();
+        AtomicReference<RecordingPipeline> prepared = new AtomicReference<>();
+        AtomicReference<Boolean> terminatedBeforeCleanup = new AtomicReference<>(false);
+        AtomicReference<Boolean> removedBeforeStreamClose = new AtomicReference<>(false);
+        backend.beforeClose = () -> {
+            removedBeforeStreamClose.set(!Files.exists(prepared.get().getTakeDirectory()));
+            order.add("directory-cleaned");
+        };
+        runStrictHandler(() -> {
+            recording.setStorageExecutorForTest(task -> Thread.ofVirtual().start(() -> {
+                if (storageTasks.getAndIncrement() > 0) {
+                    terminatedBeforeCleanup.set(prepared.get().termination().toCompletableFuture().isDone());
+                    order.add("flush-terminated");
+                }
+                task.run();
+            }));
+            recording.setPipelineSetupForTest(pipeline -> {
+                prepared.set(pipeline);
+                assertThat(Files.isDirectory(pipeline.getTakeDirectory())).isTrue();
+                order.add("directory-created");
+                order.add("flush-preparing");
+            });
+            recording.toggleRecord();
+        });
+        awaitOnFx(() -> !recording.isPreparingTake() && !recording.isTakeBeingWritten(), "failed readiness fully rolls back");
+        assertThat(terminatedBeforeCleanup.get()).as("real flush termination precedes directory cleanup").isTrue();
+        assertThat(removedBeforeStreamClose.get()).as("directory cleanup precedes closing the opened stream").isTrue();
+        assertThat(order).containsSubsequence("stream-opened", "directory-created", "flush-preparing",
+                "flush-terminated", "directory-cleaned", "stream-closed");
+        assertThat(track.isRecording()).isFalse();
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(recording.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).contains("bitDepth");
+    }
+
+    @Test
+    void story325BoundRecordButtonRecAndStatusAllRenderTheCoordinator() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        TransportController recording = newController(project);
+        AtomicReference<com.benesquivelmusic.daw.app.ui.vm.TransportVM> vm = new AtomicReference<>();
+        AtomicReference<com.benesquivelmusic.daw.app.ui.vm.TransportControlBinder> binder = new AtomicReference<>();
+        try {
+            runStrictHandler(() -> {
+                var feed = new com.benesquivelmusic.daw.app.ui.vm.TransportVM(project.getTransport(), new FxDispatcher());
+                vm.set(feed);
+                feed.bindRecordState(recording.recordCoordinator().stateProperty(), recording.recordCoordinator().recordAvailableProperty());
+                var binding = new com.benesquivelmusic.daw.app.ui.vm.TransportControlBinder(feed, command -> command.execute(recording));
+                binder.set(binding); binding.bindRecord(recordButton);
+            });
+            record(recording);
+            runStrictHandler(() -> {
+                assertThat(recIndicator.isVisible()).isTrue();
+                assertThat(recordButton.getPseudoClassStates()).contains(javafx.css.PseudoClass.getPseudoClass("active"));
+                assertThat(recordButton.isDisable()).isFalse();
+                assertThat(statusLabel.getText()).isEqualTo("RECORDING");
+                assertThat(statusBarLabel.getText()).isEqualTo(recording.recordCoordinator().statusProperty().get());
+                recordButton.fire();
+                assertThat(recIndicator.isVisible()).isFalse();
+                assertThat(recordButton.getPseudoClassStates()).doesNotContain(javafx.css.PseudoClass.getPseudoClass("active"));
+                assertThat(recordButton.isDisable()).isTrue();
+                assertThat(statusLabel.getText()).isEqualTo("FINALIZING");
+            });
+            awaitOnFx(() -> !recording.isTakeBeingWritten(), "bound toggle publishes the take");
+            runStrictHandler(() -> assertThat(recordButton.isDisable()).isFalse());
+        } finally {
+            runStrictHandler(() -> { if (binder.get() != null) binder.get().dispose(); if (vm.get() != null) vm.get().dispose(); });
+        }
+    }
+
+    @Test
+    void story325NoBackendRefusesAudioRecordingWithoutFilesOrFlags() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track track = project.createAudioTrack("Vox"); track.setArmed(true);
+        TransportController recording = newController(project, null);
+        record(recording);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(recording.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+        assertThat(recording.isRecordingInFlight()).isFalse();
+        assertThat(recording.isTakeBeingWritten()).isFalse();
+        assertThat(recording.activeTakeDirectory()).isEmpty();
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(track.isRecording()).isFalse();
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).containsIgnoringCase("backend");
+        try (Stream<Path> files = Files.walk(projectDirectory)) {
+            assertThat(files.filter(Files::isRegularFile).toList()).isEmpty();
+        }
+    }
+
+    @Test
+    void story325MidiCloseFailureKeepsNotesUndoAndDirtyStateWhileDrainingEveryDevice() throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        Track first = new Track("First", TrackType.MIDI), second = new Track("Second", TrackType.MIDI);
+        first.setArmed(true); second.setArmed(true);
+        first.setMidiInputDeviceName("first"); second.setMidiInputDeviceName("second");
+        project.addTrack(first); project.addTrack(second);
+        CountingMidiInput input1 = new CountingMidiInput(false), input2 = new CountingMidiInput(true);
+        TransportController recording = newController(project);
+        runStrictHandler(() -> recording.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input2));
+        record(recording);
+        var note = new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_ON, 0, 60, 100);
+        input1.getTransmitters().getFirst().getReceiver().send(note, -1);
+        input2.getTransmitters().getFirst().getReceiver().send(note, -1);
+        runStrictHandler(recording::toggleRecord);
+        flushFx();
+        assertThat(first.getMidiClip().size()).isEqualTo(1);
+        assertThat(second.getMidiClip().size()).isEqualTo(1);
+        assertThat(project.isDirty()).isTrue();
+        assertThat(undoManager.undoSize()).isEqualTo(2);
+        for (CountingMidiInput input : List.of(input1, input2)) {
+            assertThat(input.opens).isEqualTo(1);
+            assertThat(input.transmitters).isEqualTo(1);
+            assertThat(input.closes).isEqualTo(1);
+            assertThat(input.transmitterCloses).isEqualTo(1);
+            assertThat(input.isOpen()).isFalse();
+            assertThat(input.isConnected()).isFalse();
+        }
+        assertThat(first.isRecording()).isFalse(); assertThat(second.isRecording()).isFalse();
+        assertThat(recording.isRecordingInFlight()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).contains("Second", "MIDI close failed");
+        runStrictHandler(() -> { undoManager.undo(); undoManager.undo(); });
+        assertThat(first.getMidiClip().size()).isZero();
+        assertThat(second.getMidiClip().size()).isZero();
+    }
+
+    @Test
+    void story325AcceptedRecordCancelsPostRollAndItsStaleTimerCannotStopCapture() throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        Track track = new Track("Keys", TrackType.MIDI); track.setArmed(true); track.setMidiInputDeviceName("keys");
+        project.addTrack(track);
+        TransportController recording = newController(project);
+        var input = new CountingMidiInput(false);
+        AtomicReference<javafx.animation.PauseTransition> timer = new AtomicReference<>();
+        var field = TransportController.class.getDeclaredField("postRollTimer"); field.setAccessible(true);
+        runStrictHandler(() -> {
+            recording.setMidiInputDeviceResolverForTest(_ -> input);
+            project.getTransport().setPreRollPostRoll(PreRollPostRoll.enabled(0, 8));
+            recording.start(); recording.stop();
+            assertThat(project.getTransport().isInPostRoll()).isTrue();
+            try { timer.set((javafx.animation.PauseTransition) field.get(recording)); }
+            catch (IllegalAccessException failure) { throw new AssertionError(failure); }
+            recording.toggleRecord();
+            assertThat(timer.get().getStatus()).isEqualTo(javafx.animation.Animation.Status.STOPPED);
+            timer.get().getOnFinished().handle(new javafx.event.ActionEvent());
+            assertThat(project.getTransport().getState()).isEqualTo(TransportState.RECORDING);
+            assertThat(recording.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING);
+            assertThat(input.isConnected()).isTrue();
+            assertThat(audioEngine.isStreamOpen()).isTrue();
+            assertThat(recIndicator.isVisible()).isTrue();
+        });
+    }
+
+    @Test
+    void story325GrantedConfigurationLeaseBlocksRecordAfterProjectReplacement() throws Exception {
+        DawProject oldProject = new DawProject("old", new AudioFormat(48000, 2, 16, 256));
+        TransportController old = newController(oldProject);
+        DefaultAudioEngineController controller = story325SettingsController(old);
+        AtomicReference<TransportController> current = new AtomicReference<>(old);
+        controller.setConfigurationActivityCallback(() -> current.get().recordCoordinator().refreshRecordAvailability());
+        OpenCountingBackend backend = new OpenCountingBackend();
+        try (AudioEngineController.ConfigurationLease ignored = controller.beginConfigurationChange()) {
+            runStrictHandler(old::retire);
+            DawProject replacement = new DawProject("new", new AudioFormat(48000, 2, 16, 256));
+            giveTheProjectADirectory(replacement);
+            Track track = replacement.createAudioTrack("Vox"); track.setArmed(true);
+            TransportController incoming = newController(replacement, backend);
+            current.set(incoming);
+            runStrictHandler(() -> {
+                incoming.recordCoordinator().setConfigurationInProgressCheck(controller::isConfigurationChangeInProgress);
+                incoming.toggleRecord();
+                assertThat(incoming.recordCoordinator().recordAvailableProperty().get()).isFalse();
+                assertThat(incoming.isRecordingInFlight()).isFalse();
+                assertThat(incoming.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+                assertThat(backend.opens.get()).isZero();
+            });
+        } finally {
+            controller.shutdown();
+        }
+        flushFx();
+        assertThat(current.get().recordCoordinator().recordAvailableProperty().get()).isTrue();
+    }
+
+    @Test
+    void story325MixedTakeKeepsMidiCloseErrorVisibleAfterAudioPublication() throws Exception {
+        DawProject project = new DawProject("mixed", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track audio = project.createAudioTrack("Vox"); audio.setArmed(true);
+        Track midi = new Track("Keys", TrackType.MIDI); midi.setArmed(true); midi.setMidiInputDeviceName("keys");
+        project.addTrack(midi);
+        var input = new CountingMidiInput(true);
+        TransportController recording = newController(project);
+        runStrictHandler(() -> {
+            recording.setMidiInputDeviceResolverForTest(_ -> input);
+            audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        });
+        record(recording);
+        input.getTransmitters().getFirst().getReceiver().send(
+                new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_ON, 0, 60, 100), -1);
+        awaitABlockOnDisk(recording, audio);
+        stopAndAwaitTheTake(recording);
+        assertThat(audio.getClips()).hasSize(1);
+        assertThat(midi.getMidiClip().size()).isEqualTo(1);
+        assertThat(project.isDirty()).isTrue();
+        assertThat(undoManager.undoSize()).isEqualTo(2);
+        assertThat(input.isConnected()).isFalse();
+        assertThat(input.isOpen()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).contains("Keys", "MIDI close failed");
+        assertThat(statusBarLabel.getText()).isEqualTo(notificationBar.getMessage());
+    }
+
+    private static final class CountingMidiInput extends RecordingInFlightFixture.StubMidiInput {
+        final boolean failClose;
+        int opens, transmitters, closes, transmitterCloses;
+        CountingMidiInput(boolean failClose) { this.failClose = failClose; }
+        @Override public void open() { opens++; super.open(); }
+        @Override public javax.sound.midi.Transmitter getTransmitter() {
+            transmitters++;
+            var delegate = super.getTransmitter();
+            return new javax.sound.midi.Transmitter() {
+                @Override public void setReceiver(javax.sound.midi.Receiver receiver) { delegate.setReceiver(receiver); }
+                @Override public javax.sound.midi.Receiver getReceiver() { return delegate.getReceiver(); }
+                @Override public void close() { transmitterCloses++; delegate.close(); }
+            };
+        }
+        @Override public void close() { closes++; super.close(); if (failClose) throw new IllegalStateException("MIDI close failed"); }
+    }
+
+    private static final class SampleRateCountingBackend implements AudioBackend {
+        final MockAudioBackend delegate = new MockAudioBackend();
+        final AtomicInteger rates;
+        SampleRateCountingBackend(AtomicInteger rates) { this.rates = rates; }
+        @Override public String name() { return delegate.name(); }
+        @Override public boolean isAvailable() { return true; }
+        @Override public boolean supportsStreaming() { return true; }
+        @Override public List<AudioDeviceInfo> listDevices() { return delegate.listDevices(); }
+        @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format, int frames) { delegate.open(device, format, frames); }
+        @Override public void setSampleRate(DeviceId device, double rate) { rates.incrementAndGet(); }
+        @Override public Flow.Publisher<AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
+        @Override public void sink(AudioBlock block) { delegate.sink(block); }
+        @Override public boolean isOpen() { return delegate.isOpen(); }
+        @Override public void close() { delegate.close(); }
     }
 
     // ── Story 323 review: a take still being written after its Stop ─────────
@@ -1799,7 +2351,7 @@ class TransportControllerTest {
             public void close() {
             }
         };
-        Logger logger = Logger.getLogger(TransportController.class.getName());
+        Logger logger = Logger.getLogger(RecordCoordinator.class.getName());
         logger.addHandler(capture);
         try {
             assertThat(runHandlerCatching(controller::stop)).isNull();
@@ -1876,7 +2428,7 @@ class TransportControllerTest {
         runHandler(() -> notificationBar.setHistoryService(shown));
         List<LogRecord> warnings = new CopyOnWriteArrayList<>();
         Handler capture = warningCapture(warnings);
-        Logger logger = Logger.getLogger(TransportController.class.getName());
+        Logger logger = Logger.getLogger(RecordCoordinator.class.getName());
         logger.addHandler(capture);
         try {
             releaseAndAwaitThePublication(controller); // the capture thread terminates
@@ -2087,52 +2639,135 @@ class TransportControllerTest {
         assertThat(controller.activeTakeDirectory()).as("no take is in flight").isEmpty();
     }
 
-    /**
-     * A signal that had completed before the readiness turn registered on it
-     * — the capture thread sealed the take while the start was still
-     * running — is handled the same way: the registration only posts, and
-     * the take is stopped on a later FX turn, never inside the readiness
-     * turn. Had the Stop run inside it, it would have run before that turn's
-     * own announcement: Stopped before Started on the bus, and the REC
-     * indicator lit again after the take was stopped.
-     */
-    @Test
-    void aSignalThatCompletedBeforeTheReadinessTurnRegisteredStopsTheTakeOnALaterTurn() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aSealKnownAtReadinessNeverStartsCaptureAndKeepsThePublicationFence(boolean throwingStopListener) throws Exception {
         DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
-        Track armed = project.createAudioTrack("Vox");
-        armed.setArmed(true);
-        CountingCompletion completions = new CountingCompletion();
+        Track armed = project.createAudioTrack("Vox"); armed.setArmed(true);
+        Track midi = new Track("Keys", TrackType.MIDI); midi.setArmed(true); midi.setMidiInputDeviceName("keys");
+        project.addTrack(midi);
+        var input = new CountingMidiInput(false);
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
         earlySeal.completedBeforeTheFirstRead = DISK_EXHAUSTED;
         TransportController controller = newController(project, new MockAudioBackend());
-        runHandler(() -> {
-            controller.setTakeCompletionForTest(completions);
+        AtomicInteger transportRecording = new AtomicInteger(), stateRecording = new AtomicInteger(), recLit = new AtomicInteger();
+        AtomicInteger completions = new AtomicInteger();
+        AtomicInteger stopListenerCalls = new AtomicInteger();
+        AtomicReference<Runnable> removeStopListener = new AtomicReference<>();
+        CountDownLatch publicationEntered = new CountDownLatch(1);
+        Object publicationGate = new Object();
+        var shown = new NotificationHistoryService();
+        runStrictHandler(() -> {
+            if (throwingStopListener) controller.start();
+            controller.setMidiInputDeviceResolverForTest(_ -> input);
             controller.setEarlySealSignalForTest(earlySeal);
+            notificationBar.setHistoryService(shown);
+            removeStopListener.set(project.getTransport().addChangeListener(kind -> {
+                if (kind == Transport.ChangeKind.STATE && project.getTransport().getState() == TransportState.RECORDING) transportRecording.incrementAndGet();
+                if (throwingStopListener && kind == Transport.ChangeKind.STATE
+                        && project.getTransport().getState() == TransportState.STOPPED) {
+                    stopListenerCalls.incrementAndGet();
+                    throw new IllegalStateException("injected STOPPED listener failure");
+                }
+            }));
+            controller.recordCoordinator().stateProperty().addListener((_, _, value) -> {
+                if (value == com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING) stateRecording.incrementAndGet();
+            });
+            recIndicator.visibleProperty().addListener((_, _, value) -> { if (value) recLit.incrementAndGet(); });
+            controller.setTakeCompletionForTest((pipeline, loaded) -> {
+                completions.incrementAndGet();
+                publicationEntered.countDown();
+                Platform.enterNestedEventLoop(publicationGate);
+                return pipeline.completeStop(loaded);
+            });
         });
         List<BusEvent> published = new CopyOnWriteArrayList<>();
         var previousBus = EventBusPublisher.getDefault();
+        CompletableFuture<Runnable> configuration = null;
         try {
             EventBusPublisher.setDefault(new PublishHookEventBus(published::add));
-            runHandler(controller::toggleRecord);
-            awaitOnFx(() -> !controller.isPreparingTake() && !controller.isRecordingInFlight(),
-                    "the take began and was stopped");
+            runStrictHandler(controller::toggleRecord);
+            assertThat(publicationEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            runStrictHandler(() -> {
+                assertThat(controller.isTakeBeingWritten()).isTrue();
+                assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.ABORTED);
+                assertThat(controller.recordCoordinator().recordAvailableProperty().get()).isFalse();
+                assertThat(audioEngine.getRecordingCallback()).isNull();
+                controller.toggleRecord();
+            });
+            configuration = controller.recordCoordinator().requestConfigurationChange().toCompletableFuture();
+            flushFx();
+            assertThat(configuration.isDone()).isFalse();
+            assertThat(transportRecording.get()).isZero(); assertThat(stateRecording.get()).isZero(); assertThat(recLit.get()).isZero();
+            assertThat(input.opens).isZero();
+            assertThat(published).noneMatch(TransportEvent.Started.class::isInstance);
         } finally {
             EventBusPublisher.setDefault(previousBus);
+            if (publicationEntered.getCount() == 0) runStrictHandler(() -> Platform.exitNestedEventLoop(publicationGate, null));
         }
-        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
-
-        assertThat(published).as("the readiness turn announced the take before the later turn stopped it")
-                .filteredOn(event -> event instanceof TransportEvent.Started || event instanceof TransportEvent.Stopped)
-                .extracting(event -> event.getClass().getSimpleName())
-                .containsExactly("Started", "Stopped");
-        assertThat(completions.calls).hasSize(1);
-        assertThat(completions.onFxThread).containsExactly(true);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "sealed preparation finishes publication");
+        if (configuration != null) configuration.get(5, TimeUnit.SECONDS).run();
+        flushFx();
+        assertThat(completions.get()).isEqualTo(1);
+        assertThat(stopListenerCalls.get()).isEqualTo(throwingStopListener ? 1 : 0);
         assertThat(controller.activeTakeDirectory()).isEmpty();
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(audioEngine.isRunning()).isFalse();
+        assertThat(audioEngine.isStreamOpen()).isFalse();
         assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(armed.isRecording()).isFalse(); assertThat(midi.isRecording()).isFalse();
+        assertThat(shown.getEntries()).filteredOn(entry -> entry.level() == NotificationLevel.ERROR).hasSize(1);
         assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
         assertThat(notificationBar.getMessage()).startsWith("Recording stopped — free disk space fell below 64 MiB; ");
+        if (throwingStopListener) assertThat(notificationBar.getMessage()).contains("take cleanup failed", "injected STOPPED listener failure");
         assertThat(statusBarLabel.getText()).isEqualTo(notificationBar.getMessage());
+        try (Stream<Path> files = Files.walk(projectDirectory)) {
+            assertThat(files.filter(path -> path.getFileName().toString().equals("take.manifest")).toList()).hasSize(1);
+        }
+        if (throwingStopListener) {
+            runStrictHandler(() -> {
+                removeStopListener.get().run();
+                controller.setEarlySealSignalForTest(RecordingPipeline::earlySeal);
+                controller.setTakeCompletionForTest(RecordingPipeline::completeStop);
+            });
+            record(controller);
+            stopAndAwaitTheTake(controller);
+            assertThat(notificationBar.getCurrentLevel()).isNotEqualTo(NotificationLevel.ERROR);
+            assertThat(notificationBar.getMessage()).doesNotContain("injected STOPPED listener failure", "take cleanup failed");
+        }
+    }
+
+    @Test
+    void anEarlySealDuringMidiOpenIsRecheckedBeforeCaptureBegins() throws Exception {
+        DawProject project = new DawProject("mixed", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox"); armed.setArmed(true);
+        Track midi = new Track("Keys", TrackType.MIDI); midi.setArmed(true); midi.setMidiInputDeviceName("keys"); project.addTrack(midi);
+        var input = new CountingMidiInput(false);
+        ControlledEarlySeal earlySeal = new ControlledEarlySeal();
+        TransportController controller = newController(project);
+        AtomicInteger recorded = new AtomicInteger();
+        runStrictHandler(() -> {
+            controller.setEarlySealSignalForTest(earlySeal);
+            controller.setMidiInputDeviceResolverForTest(_ -> {
+                earlySeal.signal().complete(DISK_EXHAUSTED);
+                return input;
+            });
+            project.getTransport().addChangeListener(kind -> {
+                if (project.getTransport().getState() == TransportState.RECORDING) recorded.incrementAndGet();
+            });
+        });
+        record(controller);
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "unannounced mixed take finalizes");
+        assertThat(recorded.get()).isZero();
+        assertThat(input.opens).isEqualTo(1); assertThat(input.closes).isEqualTo(1);
+        assertThat(input.isConnected()).isFalse();
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
     }
 
     /**
@@ -2811,6 +3446,8 @@ class TransportControllerTest {
     private static final class OpenCountingBackend implements AudioBackend {
         private final MockAudioBackend delegate = new MockAudioBackend();
         private final AtomicInteger opens = new AtomicInteger();
+        private List<String> lifecycle;
+        private Runnable beforeClose = () -> { };
 
         @Override public String name() { return delegate.name(); }
         @Override public boolean isAvailable() { return true; }
@@ -2819,30 +3456,40 @@ class TransportControllerTest {
         @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
                                    int bufferFrames) {
             opens.incrementAndGet();
+            if (lifecycle != null) lifecycle.add("stream-opened");
             delegate.open(device, format, bufferFrames);
         }
         @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
                                    int bufferFrames, CaptureRequirement capture) {
             opens.incrementAndGet();
+            if (lifecycle != null) lifecycle.add("stream-opened");
             delegate.open(device, format, bufferFrames);
         }
         @Override public int openedInputChannels() { return delegate.openedInputChannels(); }
         @Override public Flow.Publisher<AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
         @Override public void sink(AudioBlock block) { delegate.sink(block); }
         @Override public boolean isOpen() { return delegate.isOpen(); }
-        @Override public void close() { delegate.close(); }
+        @Override public void close() {
+            if (delegate.isOpen()) {
+                beforeClose.run();
+                if (lifecycle != null) lifecycle.add("stream-closed");
+            }
+            delegate.close();
+        }
     }
 
-    /** Runs a handler method on the FX thread, tolerating headless audio-engine failures. */
+    private static void runStrictHandler(Runnable handler) throws Exception {
+        RuntimeException failure = runHandlerCatching(handler);
+        if (failure != null) throw failure;
+    }
+
+    /** Runs a handler method on the FX thread, propagating failures to the test caller. */
     private static void runHandler(Runnable handler) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<Throwable> thrown = new AtomicReference<>();
         Platform.runLater(() -> {
             try {
                 handler.run();
-            } catch (RuntimeException e) {
-                // Audio engine may fail to open in a headless environment; the
-                // transport-state assertions are what matter.
             } catch (Throwable t) {
                 thrown.set(t);
             } finally {
@@ -2850,8 +3497,7 @@ class TransportControllerTest {
             }
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
-        if (thrown.get() instanceof Error e) {
-            throw e;
-        }
+        if (thrown.get() instanceof Error e) throw e;
+        if (thrown.get() instanceof RuntimeException failure) throw failure;
     }
 }

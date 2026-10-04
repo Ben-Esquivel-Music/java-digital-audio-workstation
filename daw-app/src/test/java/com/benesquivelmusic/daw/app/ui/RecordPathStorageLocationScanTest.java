@@ -60,6 +60,8 @@ class RecordPathStorageLocationScanTest {
     private static final Path TRANSPORT_CONTROLLER = Path.of(
             "com", "benesquivelmusic", "daw", "app", "ui", "TransportController.java");
 
+    private static final Path RECORD_COORDINATOR = TRANSPORT_CONTROLLER.resolveSibling("RecordCoordinator.java");
+
     /**
      * The types of {@code core.recording} that do not make a daw-app file part
      * of the record path: the click and the count-in ({@code Metronome},
@@ -94,7 +96,7 @@ class RecordPathStorageLocationScanTest {
         Set<Path> recordPath = recordPathFiles(app, captureTypes);
         assertThat(recordPath)
                 .as("non-vacuity: the daw-app record path found by the predicate holds the record entry point")
-                .contains(TRANSPORT_CONTROLLER);
+                .contains(TRANSPORT_CONTROLLER, RECORD_COORDINATOR);
         assertThat(filesUsingTheToken(restrictedTo(app, recordPath)))
                 .as("daw-app record-path code allocating in the OS temp directory "
                         + "(recorded audio lives in the project, book §2.6); record path: " + recordPath)
@@ -277,13 +279,13 @@ class RecordPathStorageLocationScanTest {
     @Test
     void theRecordPathAllocatesTheTakeUnderTheProjectsAudioTakes() throws IOException {
         Path controller = SourceScanSupport.locateDawAppModule().resolve("src/main/java")
-                .resolve(TRANSPORT_CONTROLLER);
+                .resolve(RECORD_COORDINATOR);
         assertThat(controller).isRegularFile();
 
         String code = executableSource(Files.readString(controller));
 
         assertThat(code)
-                .as("TransportController allocates the take under the project's audio/takes (D6)")
+                .as("RecordCoordinator allocates the take under the project's audio/takes (D6)")
                 .contains("TakeDirectories.allocate(", "ProjectManager.audioDirectory(")
                 .doesNotContain(FORBIDDEN_TOKEN);
     }

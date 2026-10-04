@@ -437,51 +437,49 @@ polling capture internals.
 
 ### 3.2 The record state machine
 
-```
-                       arm-set non-empty, device open OK, ring allocated, flush running
-        ┌──────────┐  ──────────────────────────────────────────────────────────────────►  ┌───────────────┐
-        │  IDLE    │                                                                       │  COUNT_IN     │ (§5.6; skipped
-        └──────────┘  ◄───────────────┐                                                    └───────┬───────┘  when mode=Off)
-             ▲                        │ any precondition fails: full rollback,                     │ count-in elapsed
-             │                        │ visible error, stay/return to IDLE                         ▼
-             │                        │                                                    ┌───────────────┐
-             │        ┌───────────────┴──┐         Record pressed again (toggle),         │  RECORDING    │
-             │        │  ABORTED (error  │         Stop, punch-out on non-loop,           │  write gate   │
-             │        │  surfaced, take  │ ◄──┐    or device lost                         │  per §5.6     │
-             │        │  sealed if any)  │    │  ┌────────────────────────────────────────┴───────┬───────┘
-             │        └──────────────────┘    └──┤ device lost mid-take                            │ stop / toggle
-             │                                   ▼                                                 ▼
-             │                          ┌────────────────┐                                ┌───────────────┐
-             │                          │  DEVICE_LOST   │  reconnect: §5.5               │  FINALIZING   │ seal segments,
-             │                          │  (take sealed, │ ─────────────────►             │  write clips, │ manifest,
-             │                          │   rescue reg.) │  resume or IDLE                │  publish take │ atomic rename
-             │                          └────────────────┘                                └───────┬───────┘
-             │                                                                                    │ manifest sealed
-             └────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+stateDiagram-v2
+    IDLE --> PREPARING: Audio Record, device opened
+    IDLE --> COUNT_IN: MIDI Record, viable inputs opened
+    PREPARING --> COUNT_IN: Take ready, ring allocated, flush running
+    COUNT_IN --> RECORDING: Immediate integration pass (gate is story 328)
+    PREPARING --> FINALIZING: Stop / Record again / valid post-roll end
+    COUNT_IN --> FINALIZING: Stop / Record again
+    RECORDING --> FINALIZING: Stop / Record again
+    IDLE --> ABORTED: Record guard failure
+    PREPARING --> ABORTED: Preparation / readiness / capture-start failure or early seal
+    COUNT_IN --> ABORTED: Capture-start failure
+    RECORDING --> ABORTED: Early seal
+    FINALIZING --> ABORTED: Seal / readback / completion failure
+    FINALIZING --> IDLE: Seal, readback and publication settled
+    ABORTED --> IDLE: Rollback or partial-take publication settled
+    ABORTED --> FINALIZING: Ordinary seal fence for an aborted take
+    RECORDING --> DEVICE_LOST: Event / watchdog (story 327)
+    DEVICE_LOST --> IDLE: Same-identity reopen succeeds (story 327)
+    DEVICE_LOST --> FINALIZING: Rescue seal (story 327)
+    DEVICE_LOST --> ABORTED: Rescue failure (story 327)
 ```
 
-Rules: transitions happen only on the FX thread inside `RecordCoordinator`; every arrow is a row
-in §5.2 with preconditions and rollback; RECORDING is entered only after every precondition
-holds (§2.4); FINALIZING and DEVICE_LOST both run the *same* seal step (§2.9). The machine's
-current state is the single source for the REC indicator, transport-button enablement, the
-status strip cell, and the `EngineState` bridge (§6.5).
+As landed (story 325), `RecordCoordinator` is the only owner of these FX-thread states.
+Audio Record opens the device, enters PREPARING with REC off, allocates its take directory on
+the storage executor, and calls `RecordingPipeline.prepare()`. Its flush thread creates the
+take's files and reports readiness; only the posted FX continuation begins capture and enters
+RECORDING. MIDI-only Record requires at least one successfully opened recorder. COUNT_IN is
+an integration state; all modes currently pass this integration state immediately; the audible gate and transport-anchored window remain story 328.
 
-As landed (story 323, Copilot review round 5), until story 325's `RecordCoordinator`,
-`TransportController` passes through a PREPARING state between Record pressed and RECORDING
-that the diagram does not draw. Record pressed opens the device on the FX thread; the take
-directory is then allocated off the FX thread, `RecordingPipeline.prepare()` allocates the ring
-and starts the flush thread, whose first act creates the take's files (§5.1), and only once that
-thread reports the take ready does a later FX turn begin capture — callback installed, engine
-started, transport recording — and enter RECORDING. Stop, Record pressed again or the end of a
-post-roll (the deferred half of a Stop, which acts only while its controller is not retired and
-its transport is still in that post-roll, §5.2) during PREPARING cancels the take (the flush
-thread, if it was started, deletes the segment and manifest files it created, unless it had
-already ended on its own, sealing the take early; the take directory, if that left it empty, is
-removed off the FX thread); a failed preparation rolls back the same way and is reported; and the in-app
-doors that replace the open project are refused throughout (§5.2). Of the failed starts, only a
-failed allocation or pipeline build closes the output stream Record opened, and not over a
-rolling transport or while an instrument insert keeps it open; after a failed `prepare()`,
-readiness or `beginCapture()` it stays open until story 325's rollback (§5.2).
+Every arrow is covered by §5.2. Failed starts stop the transport, drain MIDI inputs, discard the
+flush service, wait for termination and remove the attempt's directory off FX before closing
+its stream. ABORTED retains the resource/finalization gate while that cleanup is outstanding.
+User cancellation of preparation keeps the existing rolling-playback semantics; retirement
+cleanup cannot close a replacement project's stream. A successful capture start cancels any
+earlier post-roll timer, whose stale callback cannot stop the new take.
+
+FINALIZING covers flush termination, audio readback, clip/undo/dirty publication, and outcome
+reporting. An early seal or failed Stop seal keeps the partial take and reports ERROR through
+the same publication path. The state, recording flag, availability and status are read-only
+feeds for REC, the Record binder and transport status. The strip/`EngineState` bridge consumes
+this feed in story 338. DEVICE_LOST detection and rescue remain story 327; an unrelated
+settlement never bypasses the same-identity reopen guard.
 
 ### 3.3 On-disk layout and naming
 
@@ -636,7 +634,7 @@ wall-clock reads are fine here). Cadence contracts:
   manifest write have been attempted, and the flush thread does nothing more about it; the app's
   dependent only posts to the FX thread through `FxDispatcher`, where the ordinary Stop runs
   unless a Stop got there first, and one ERROR names the cause (story 325's `RecordCoordinator`
-  is to absorb this as a RECORDING → ABORTED transition, a row that story adds to §5.2).
+  absorbs it as RECORDING → ABORTED, followed by the ordinary partial-take publication fence, §5.2).
 - The flush thread never touches FX-thread state; its continuous facts are to ride
   `FxDispatcher` channels (§6.1). As landed (story 323), the three one-shot signals the app
   listens to — the take's readiness (Copilot review round 5), the early seal, and the end of the
@@ -644,7 +642,7 @@ wall-clock reads are fine here). Cadence contracts:
   app dependents only post to the FX thread through `FxDispatcher`, on `capture-flush` when the
   signal completes there (the dependent on the end of a cancelled or failed start's thread first
   hands the removal of its take directory, if empty, to a storage executor, never the FX thread): an
-  interim departure from §6.1's `EventBus` rule for discrete facts until story 325's
+  private lifecycle departure from §6.1's `EventBus` rule for discrete facts, retained by story 325's
   `RecordCoordinator`.
 
 ### 4.4 The segment writer and atomic finalize
@@ -786,55 +784,38 @@ then surface the cause via the notification seam (§6.3).
 
 | Trigger                         | From        | Guard (all must hold)                                             | To          | On guard failure |
 |---------------------------------|-------------|-------------------------------------------------------------------|-------------|------------------|
-| Record pressed                  | IDLE        | ≥1 armed track; routing validation passes (§5.4); input stream opens at required width; ring allocated; flush thread running | COUNT_IN or RECORDING | ABORTED→IDLE: full rollback, visible error naming the failed precondition; transport stays STOPPED — never the §1.3 fake state |
-| Count-in elapsed                | COUNT_IN    | transport-clock gate reached (§5.6)                               | RECORDING   | n/a (timer-driven) |
-| Record pressed again            | COUNT_IN, RECORDING | —                                                          | FINALIZING  | — (toggle semantics: second press stops cleanly; chosen over ignore-while-recording because a dead-feeling Record button reads as a bug; the current pipeline-replacing behaviour (§1.3) is forbidden) |
-| Stop pressed                    | COUNT_IN, RECORDING | —                                                          | FINALIZING  | — |
-| Seal + manifest complete        | FINALIZING  | all segments renamed; clips reference every segment               | IDLE        | write failure → ABORTED with partial take intact + error |
-| Device lost (event or watchdog) | RECORDING   | —                                                                 | DEVICE_LOST | — (runs §5.5) |
-| Device returned                 | DEVICE_LOST | same device per identity match; reopen succeeds                   | IDLE (armed kept) | stays DEVICE_LOST, notification repeats remediation |
-| Settings apply requested        | RECORDING   | **blocked**: prompt "Stop the take and apply?"; apply proceeds only after FINALIZING completes | — | — (chosen over silent-defer: a deferred apply that fires later surprises; over allow: §1.3's gutted-take bug) |
-| Project replace requested       | RECORDING, FINALIZING | **blocked** (story 323): every in-app door that replaces the open project (New, Open, Import, Restore from Archive, Hub/Welcome open, snapshot restore, Recover, migration roll-back) is refused with a WARNING toast and no prompt until FINALIZING completes; in RECORDING (story 323 review) the same doors are refused the same way while `TransportController.isRecordingInFlight()` — an audio take being prepared (as landed, below the table), an active audio pipeline or a live MIDI recorder — with the WARNING `PROJECT_CHANGE_WHILE_RECORDING_MESSAGE` ("The open project can't be replaced while recording — stop the recording first"; the load that follows an archive extraction, a journal replay — successful or not — or a journal discard that deleted the journal uses `lateLoadRefusalWhileRecordingMessage`, which also says what that work did) | — | — (the take is published into the project it was recorded in; app exit is not a guarded door — story 333's close guard owns it) |
-| Input-open failure mid-arm      | any pre-RECORDING | —                                                           | ABORTED→IDLE | covered by Record guard row |
-| MIDI device missing / open fail | arm-time    | per-track: skip track with visible warning; if *no* track opens, treat as Record guard failure | — | — |
+| Record pressed | IDLE | ≥1 armed track; existing routing validation; required capture stream opens | PREPARING (audio), COUNT_IN (MIDI-only) | ABORTED: visible named precondition, transport STOPPED; reverse rollback before IDLE |
+| Take readiness | PREPARING | ring allocated; flush thread currently running, not sealed or terminated; files ready; same current attempt | COUNT_IN | ABORTED; ordinary failed starts drain/discard, terminate, clean directory, close stream. An already sealed ready preparation retains captures/files through the publication fence without installing a callback, starting the engine, opening MIDI or announcing RECORDING. |
+| Count-in integration pass | COUNT_IN | immediate for every mode today; transport-clock capture gate belongs to story 328 (§5.6) | RECORDING | ABORTED on capture-start failure; same reverse rollback |
+| Record pressed again / Stop | PREPARING | — | FINALIZING | Cancel this attempt; stale allocation/readiness cannot resurrect it; IDLE only after termination and directory cleanup |
+| Current post-roll ends | PREPARING | same controller/timer and transport still in its tail | FINALIZING | Same cancellation; accepted RECORDING cancels the prior timer |
+| Record pressed again / Stop | COUNT_IN, RECORDING | — | FINALIZING | Toggle-stop; same pipeline and one completion, never replacement or a second stream open |
+| Seal, readback and publication settled | FINALIZING | thread terminated; clips retain all segment references; completion/undo/dirty/outcome reported | IDLE | Seal/readback/completion failure → ABORTED with partial take intact and ERROR; settlement still required |
+| Flush thread seals early | RECORDING | one-shot early-seal fact belongs to the active pipeline; competing Stop handled once | ABORTED | Ordinary stop fence preserves the partial take; publication shows one ERROR naming cause |
+| Rollback / partial publication settled | ABORTED | no pending allocation, flush/readback/publication, cleanup or MIDI input remains | IDLE | Remain unavailable until settlement; no new Record or settings mutation while resources remain |
+| Stop of an aborted take | ABORTED | outstanding take requires the ordinary seal fence | FINALIZING (or remains ABORTED) | Preserve failure and partial take; never replace ERROR with SUCCESS |
+| Device lost (event or watchdog) | RECORDING | story 327 | DEVICE_LOST | Runs §5.5; detection is not wired in story 325 |
+| Device returned | DEVICE_LOST | same identity; reopen succeeds (story 327) | IDLE (armed kept) | Remains DEVICE_LOST; settlement alone cannot clear it |
+| Rescue seal / failure | DEVICE_LOST | story 327 rescue sequence | FINALIZING / ABORTED | Partial take kept; same seal fence |
+| Settings apply requested | PREPARING, COUNT_IN, RECORDING | Prompt “Stop the take and apply?”; exact request is reserved before modal reentry; acceptance waits for all finalization/cleanup/publication | — | Decline changes no driver/runtime/persistence; pending edits stay dirty; failure clears only its owned reservation |
+| Settings apply awaits prior settlement | FINALIZING, ABORTED with resources pending | Wait for cleanup/readback/publication, without another Stop prompt | — | Prior outcome remains visible; no engine mutation before settlement |
+| Settings transaction active | any | controller-wide exclusion survives project replacement; off-FX worker waits outside the controller monitor | — | New Record refused until the configuration lease releases; separate settings workers serialize |
+| Project replace requested | PREPARING, COUNT_IN, RECORDING, FINALIZING, ABORTED with pending resources | Existing recording/writing project-door predicates refuse New/Open/Import/restore with WARNING | — | Take is published only into its original project; app exit remains story 333 |
+| MIDI device missing / open failure | starting | Per-track skip with visible track/cause WARNING; audio or ≥1 viable MIDI recorder required | — | All-MIDI failure is ABORTED guard failure; partial-open resources close; warnings reset for the next attempt |
 
-As landed (story 323, Copilot review round 5), until story 325's `RecordCoordinator`: the Record
-pressed row's "ring allocated; flush thread running" guard is a readiness gate in
-`TransportController`. Record opens the device on the FX thread, then enters PREPARING (status
-"Preparing the take…", REC indicator off): the take directory is allocated on a storage
-executor, the FX turn the allocation posts calls `RecordingPipeline.prepare()` — ring
-allocated, flush thread started — and that thread creates the take's files (§5.1) and then reports the take ready; only
-the FX turn that report posts calls `beginCapture()` (callback installed, engine started,
-`Transport.record()`) and enters RECORDING. Record pressed again, Stop, or the end of a post-roll
-(the deferred half of a Stop, which then stops the transport and calls
-`stopAudioOutputWhenIdle()`, as it does with no take being prepared) during PREPARING cancels
-the take (toggle semantics; status "Recording cancelled — no take was started" — except that a
-Stop over a PLAYING transport with a post-roll configured goes on into the post-roll, whose
-"Post-roll: …" text replaces it, and the end of that post-roll shows "Stopped"; nothing is
-announced for the take). The end of a post-roll acts only while its controller is not retired
-and its transport is still in the post-roll a Stop entered (`Transport.isInPostRoll()`, which
-Shift+Space or Pause then Play clears, and a Pause or a Record inside the tail does not): a
-timer whose tail ended another way, or whose controller was retired, cancels nothing and stops
-nothing when it fires, and `retire()` stops and drops it. On a cancel the flush thread deletes
-the segment and manifest files it created, and each track directory it created, if that leaves
-it empty — unless it had already ended on its own before the cancel (a throwable that escaped
-its drain loop sealed the take early), when it deletes nothing — and the take directory, if
-that left it empty, is removed on the storage executor once that thread has terminated, while
-one still holding files is left in place (a take cancelled while its directory is still being
-allocated has that directory removed once the allocation returns). A failed allocation,
-pipeline build, preparation, readiness or `beginCapture()` is the guard failure — an ERROR
-toast, the take's files and directory removed the same way, and a transport that was STOPPED
-left STOPPED. Of the failed starts, only a failed allocation or pipeline build closes the
-output stream Record opened, through `stopAudioOutputWhenIdle()`, and not over a rolling
-transport or while an instrument insert keeps it open; after a failed preparation, readiness or
-`beginCapture()` it stays open, and an engine `beginCapture()` started stays running
-(story 325's rollback owns closing the one and stopping the other). A cancelled start, or one
-that failed once its take directory existed, counts as FINALIZING (`isTakeBeingWritten()`)
-until the removal of its files has run, whether or not everything could be removed, so Record
-and the project-replace doors are refused meanwhile; in PREPARING the doors are refused too
-(`isRecordingInFlight()`), Record cancels (above), and Play does nothing. Stop pressed in
-RECORDING requests the seal without waiting for it, and the take is published on the FX turn
-its flush thread's termination posts — the "Seal + manifest complete" row, FINALIZING → IDLE.
+The PREPARING readiness and FINALIZING ownership introduced in stories 323/324 now live in
+`RecordCoordinator`. Cancelled starts remove only files/directories belonging to the attempt,
+after its flush thread terminates; a directory that still holds files is preserved. Failed
+starts also close the opened stream and stop the engine after that cleanup. User cancellation
+over a rolling transport preserves playback; a failed precondition ends STOPPED even when
+Record was attempted over playback. Stop never waits for disk work on FX. A stopped audio
+take remains unavailable through readback and clip publication, including nested FX reentry.
+
+The settings worker acquires the record permit before sample-rate, precision, SRC or engine
+mutation. Consent and finalization waits hold no controller monitor or dialog operation
+lock; the configuration lock remains held to serialize background workers. A modal prompt cannot grant its request until consent has been received, and retirement
+invalidates an outstanding request. The controller-wide transaction flag prevents a freshly
+created project coordinator from recording while a previously granted settings lease applies.
 
 MIDI recorders follow the same machine: stop always drains `activeMidiRecorders` and closes
 devices; a second Record press can never re-put a recorder over a live one (§1.3). Timestamp
@@ -919,13 +900,12 @@ flush-side decisions are sample-accurate.
 All cross-thread facts ride the two existing seams: `FxDispatcher` continuous channels for
 continuous values (elapsed, mirror, disk headroom) and the typed `EventBus` for discrete facts
 (take finalized, device lost, rescue registered), per `CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md
-§3.4` — no new bus, no ad-hoc `Platform.runLater`. As landed (story 323), until story 325's
-`RecordCoordinator`, three discrete facts are not `EventBus` events: the take's readiness, the
+§3.4` — no new bus, no ad-hoc `Platform.runLater`. As landed (stories 323/325), three private pipeline-lifecycle facts remain outside `EventBus`: the take's readiness, the
 early seal and the end of the flush thread (after every Stop, and after a cancelled or failed
 start) are `CompletionStage`s whose app dependents post to the FX thread through `FxDispatcher` —
-an unconditional `Platform.runLater`, made on `capture-flush` when the signal completes there —
+an unconditional post through the existing dispatcher seam, made on `capture-flush` when the signal completes there —
 the one on the end of a cancelled or failed start's thread after handing the removal of its
-take directory, if empty, to a storage executor (§4.3).
+take directory, if empty, to a storage executor (§4.3). Story 325 retains these private readiness/early-seal/termination protocols; it introduces no parallel bus and does not claim an EventBus migration.
 
 As landed (story 324): the device callback also writes the producer gate's phase word on the
 ring, and the thread that ends the take (FX in the app) writes the gate's closed flag — its one
@@ -1087,6 +1067,16 @@ finalized take, one clip set, stream opened once; (2) record with an unopenable 
 transport STOPPED, REC indicator off, an ERROR notification visible; (3) applying audio
 settings mid-take is refused until stop; (4) a -1-timestamp MIDI feed lands notes at played
 positions.
+
+**Landed.** Recording orchestration, including PREPARING and the existing 323/324 fences,
+belongs to `RecordCoordinator`; `TransportController` delegates its record/stop intents.
+Read-only feeds drive REC, Record active/disabled and status. No-backend hard refusal already
+landed in story 316 and is preserved with host-level proof. The settings transaction guards
+the first driver mutation, preserves dirty edits on decline and waits for publication before
+applying. MIDI receipt fallback, reverse cleanup and close-error recovery preserve recorded
+notes, undo and dirty state; mixed audio/MIDI completion keeps lifecycle ERROR visible.
+Source/bytecode sentinels cover both the facade and extracted owner. The strip/EngineState
+consumer remains story 338; count-in and device-loss behavior remain stories 328/327.
 
 **Unblocks.** Every later stage's transitions have a single owner; Stage 5 plugs DEVICE_LOST
 into an existing machine instead of inventing states.

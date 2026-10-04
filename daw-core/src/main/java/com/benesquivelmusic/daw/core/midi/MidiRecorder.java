@@ -72,9 +72,15 @@ public final class MidiRecorder {
     private final List<RecordingNoteListener> noteListeners = new CopyOnWriteArrayList<>();
     private final List<RecordingEventListener> eventListeners = new CopyOnWriteArrayList<>();
 
+    private final java.util.concurrent.locks.ReentrantLock lifecycleLock = new java.util.concurrent.locks.ReentrantLock();
     private Transmitter transmitter;
     private boolean recording;
     private long recordingStartTimeUs;
+    private final java.util.function.LongSupplier monotonicNanos;
+    private long recordingStartNanos;
+    private long deviceOriginRelativeUs;
+    private long lastRelativeUs;
+    private boolean usedFallbackTime;
 
     // Active note tracking: index = MIDI note number, value = start column (-1 = inactive)
     private final int[] activeNoteStarts = new int[128];
@@ -94,6 +100,12 @@ public final class MidiRecorder {
      * @param channel the MIDI channel to record (0–15)
      */
     public MidiRecorder(MidiDevice device, MidiClip clip, double tempo, int channel) {
+        this(device, clip, tempo, channel, System::nanoTime);
+    }
+
+    MidiRecorder(MidiDevice device, MidiClip clip, double tempo, int channel,
+                 java.util.function.LongSupplier monotonicNanos) {
+        this.monotonicNanos = Objects.requireNonNull(monotonicNanos);
         this.device = Objects.requireNonNull(device, "device must not be null");
         this.clip = Objects.requireNonNull(clip, "clip must not be null");
         if (tempo <= 0) {
@@ -208,20 +220,54 @@ public final class MidiRecorder {
      * @throws IllegalStateException    if already recording
      */
     public void startRecording() throws MidiUnavailableException {
-        if (recording) {
-            throw new IllegalStateException("Already recording");
+        lifecycleLock.lock();
+        try {
+            synchronized (this) {
+                if (recording) throw new IllegalStateException("Already recording");
+                recordingStartNanos = monotonicNanos.getAsLong();
+                recordingStartTimeUs = -1;
+                lastRelativeUs = 0;
+                deviceOriginRelativeUs = 0;
+                usedFallbackTime = false;
+                sessionNotes.clear();
+                for (int i = 0; i < 128; i++) {
+                    activeNoteStarts[i] = -1;
+                    activeNoteVelocities[i] = 0;
+                }
+            }
+            try {
+                if (!device.isOpen()) device.open();
+                transmitter = device.getTransmitter();
+                synchronized (this) { recording = true; }
+                transmitter.setReceiver(new MidiInputReceiver());
+            } catch (MidiUnavailableException | RuntimeException failure) {
+                synchronized (this) { recording = false; }
+                closeInput(failure);
+                throw failure;
+            }
+        } finally {
+            lifecycleLock.unlock();
         }
-        if (!device.isOpen()) {
-            device.open();
+    }
+
+    private void closeInput(Throwable primary) {
+        RuntimeException closeFailure = null;
+        try {
+            if (transmitter != null) transmitter.close();
+        } catch (RuntimeException failure) {
+            closeFailure = failure;
+        } finally {
+            transmitter = null;
+            try {
+                device.close();
+            } catch (RuntimeException failure) {
+                if (closeFailure == null) closeFailure = failure;
+                else closeFailure.addSuppressed(failure);
+            }
         }
-        transmitter = device.getTransmitter();
-        transmitter.setReceiver(new MidiInputReceiver());
-        recording = true;
-        recordingStartTimeUs = -1;
-        sessionNotes.clear();
-        for (int i = 0; i < 128; i++) {
-            activeNoteStarts[i] = -1;
-            activeNoteVelocities[i] = 0;
+        if (closeFailure != null) {
+            if (primary != null) primary.addSuppressed(closeFailure);
+            else throw closeFailure;
         }
     }
 
@@ -232,16 +278,25 @@ public final class MidiRecorder {
      * finalized at the stop time.</p>
      */
     public void stopRecording() {
-        if (!recording) {
-            return;
+        lifecycleLock.lock();
+        try {
+            synchronized (this) {
+                if (!recording) return;
+                recording = false;
+            }
+            RuntimeException failure = null;
+            try {
+                synchronized (this) { finalizeHeldNotes(); }
+            } catch (RuntimeException finishingFailure) {
+                failure = finishingFailure;
+                throw finishingFailure;
+            } finally {
+                // A provider may wait for its receiver during close; the receiver monitor is free.
+                closeInput(failure);
+            }
+        } finally {
+            lifecycleLock.unlock();
         }
-        recording = false;
-        if (transmitter != null) {
-            transmitter.close();
-            transmitter = null;
-        }
-        // Finalize any held notes
-        finalizeHeldNotes();
     }
 
     /**
@@ -249,7 +304,7 @@ public final class MidiRecorder {
      *
      * @return {@code true} if recording
      */
-    public boolean isRecording() {
+    public synchronized boolean isRecording() {
         return recording;
     }
 
@@ -268,7 +323,7 @@ public final class MidiRecorder {
      *
      * @return the session-recorded note list
      */
-    public List<MidiNoteData> getRecordedNotes() {
+    public synchronized List<MidiNoteData> getRecordedNotes() {
         return Collections.unmodifiableList(new ArrayList<>(sessionNotes));
     }
 
@@ -290,8 +345,8 @@ public final class MidiRecorder {
         for (int noteNumber = 0; noteNumber < 128; noteNumber++) {
             if (activeNoteStarts[noteNumber] >= 0) {
                 int startColumn = activeNoteStarts[noteNumber];
-                int endColumn = clip.isEmpty() ? startColumn + 1
-                        : Math.max(startColumn + 1, startColumn + 1);
+                long elapsedUs = Math.max(lastRelativeUs, (monotonicNanos.getAsLong() - recordingStartNanos) / 1_000);
+                int endColumn = timestampToColumn(Math.max(0, elapsedUs - countInDurationUs)) + startColumnOffset;
                 int duration = Math.max(1, endColumn - startColumn);
                 MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                         duration, activeNoteVelocities[noteNumber], channel);
@@ -331,6 +386,12 @@ public final class MidiRecorder {
 
         @Override
         public void send(MidiMessage message, long timeStamp) {
+            synchronized (MidiRecorder.this) {
+                receive(message, timeStamp);
+            }
+        }
+
+        private void receive(MidiMessage message, long timeStamp) {
             if (!recording) {
                 return;
             }
@@ -338,12 +399,21 @@ public final class MidiRecorder {
                 return;
             }
 
-            // Initialize start time on first message
-            if (recordingStartTimeUs < 0) {
-                recordingStartTimeUs = timeStamp;
+            long relativeUs;
+            if (timeStamp < 0) {
+                usedFallbackTime = true;
+                relativeUs = Math.max(0, (monotonicNanos.getAsLong() - recordingStartNanos) / 1_000);
+            } else {
+                if (recordingStartTimeUs < 0) {
+                    recordingStartTimeUs = timeStamp;
+                    deviceOriginRelativeUs = usedFallbackTime
+                            ? Math.max(lastRelativeUs, (monotonicNanos.getAsLong() - recordingStartNanos) / 1_000)
+                            : 0;
+                }
+                relativeUs = Math.max(0, timeStamp - recordingStartTimeUs + deviceOriginRelativeUs);
             }
-
-            long relativeUs = timeStamp - recordingStartTimeUs;
+            lastRelativeUs = Math.max(lastRelativeUs, relativeUs);
+            relativeUs = lastRelativeUs;
             int command = shortMsg.getCommand();
             int msgChannel = shortMsg.getChannel();
             int noteNumber = shortMsg.getData1();

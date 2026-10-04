@@ -676,8 +676,71 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return audioEngine.getWorkerPoolSize();
     }
 
+    private volatile java.util.function.Supplier<java.util.concurrent.CompletionStage<Runnable>> recordConfigurationGuard =
+            () -> java.util.concurrent.CompletableFuture.completedStage(() -> { });
+    private final java.util.concurrent.atomic.AtomicBoolean configurationInProgress = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile Runnable configurationActivityCallback;
+    private final java.util.concurrent.locks.ReentrantLock configurationLock = new java.util.concurrent.locks.ReentrantLock();
+    private final com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher threadVerifier = new com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher();
+    boolean isConfigurationChangeInProgress() { return configurationInProgress.get(); }
+    void setConfigurationActivityCallback(Runnable callback) { configurationActivityCallback = Objects.requireNonNull(callback); }
+    private void announceConfigurationActivity() {
+        if (configurationActivityCallback == null) return;
+        com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher.runOnFx(
+                com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher.getDefault(), configurationActivityCallback);
+    }
+    private final ThreadLocal<Integer> configurationLeaseDepth = ThreadLocal.withInitial(() -> 0);
+
+    void setRecordConfigurationGuard(java.util.function.Supplier<java.util.concurrent.CompletionStage<Runnable>> guard) {
+        recordConfigurationGuard = Objects.requireNonNull(guard);
+    }
+
     @Override
-    public synchronized void applyConfiguration(Request request) {
+    public ConfigurationLease beginConfigurationChange() {
+        int depth = configurationLeaseDepth.get();
+        if (depth > 0) {
+            configurationLeaseDepth.set(depth + 1);
+            return () -> configurationLeaseDepth.set(configurationLeaseDepth.get() - 1);
+        }
+        var dispatcher = com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher.getDefault();
+        if (threadVerifier.isFxThread()) {
+            throw new IllegalStateException("Audio configuration must be applied on a background thread");
+        }
+        configurationLock.lock();
+        configurationInProgress.set(true);
+        final Runnable release;
+        try {
+            announceConfigurationActivity();
+            release = recordConfigurationGuard.get().toCompletableFuture().join();
+        } catch (RuntimeException failure) {
+            configurationInProgress.set(false);
+            try { announceConfigurationActivity(); }
+            finally { configurationLock.unlock(); }
+            if (failure instanceof java.util.concurrent.CompletionException completion
+                    && completion.getCause() instanceof RuntimeException rejected) throw rejected;
+            throw failure;
+        }
+        configurationLeaseDepth.set(1);
+        return () -> {
+            configurationLeaseDepth.remove();
+            try { release.run(); }
+            finally {
+                configurationInProgress.set(false);
+                try { announceConfigurationActivity(); }
+                finally { configurationLock.unlock(); }
+            }
+        };
+    }
+
+    @Override
+    public void applyConfiguration(Request request) {
+        Objects.requireNonNull(request, "request must not be null");
+        try (ConfigurationLease ignored = beginConfigurationChange()) {
+            applyConfigurationWithPermit(request);
+        }
+    }
+
+    private synchronized void applyConfigurationWithPermit(Request request) {
         Objects.requireNonNull(request, "request must not be null");
         LOG.info("Applying audio configuration: " + request);
 

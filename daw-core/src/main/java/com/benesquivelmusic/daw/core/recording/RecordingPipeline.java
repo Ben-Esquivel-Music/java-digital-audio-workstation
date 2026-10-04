@@ -660,9 +660,10 @@ public final class RecordingPipeline {
         }
         CaptureRing takeRing = ring;
         CaptureFlushService service = flush;
-        if (!service.isReady()) {
+        if (!hasViableCaptureService()) {
             throw new IllegalStateException("The take under " + outputDirectory + " is not ready: capture begins"
-                    + " only once the stage prepare() returned has completed normally");
+                    + " only once prepare() has completed normally and its flush service is still running"
+                    + " without having sealed or terminated");
         }
         preparing = false;
         active = true;
@@ -752,6 +753,41 @@ public final class RecordingPipeline {
         }
         preparing = false;
         return service.termination();
+    }
+
+    /**
+     * Seals a ready preparation without beginning capture, preserving its captures and files
+     * for {@link #completeStop()} once termination settles. Used when a ready take has already
+     * sealed, or another readiness precondition disappears. Unlike {@link #cancelStart()},
+     * this does not discard the take. It installs no engine callback, starts no engine and
+     * never changes the transport. Caller thread; no storage work or waiting.
+     *
+     * @return the flush thread's termination, including an already completed termination
+     * @throws IllegalStateException if the take is not a ready preparation
+     */
+    public CompletionStage<Void> requestStopBeforeCapture() {
+        CaptureFlushService service = flush;
+        if (!preparing || service == null || !service.isReady()) {
+            throw new IllegalStateException("The take must be a ready preparation to seal before capture");
+        }
+        preparing = false;
+        finalizationPending = true;
+        clipTempoBpm = takeTempoBpm;
+        try {
+            ring.closeProducer();
+            for (Track track : armedTracks) track.setRecording(false);
+        } finally {
+            service.requestStop(TakeManifest.SealedBy.STOP);
+        }
+        return service.termination();
+    }
+
+    /** Current flush viability, rather than the historical completion of readiness. */
+    public boolean hasViableCaptureService() {
+        CaptureFlushService service = flush;
+        return service != null && service.isReady() && service.isRunning()
+                && !service.isSealed() && !service.isTerminated()
+                && !service.earlySeal().toCompletableFuture().isDone();
     }
 
     /**

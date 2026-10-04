@@ -151,9 +151,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class TransportControllerFxThreadBytecodeSentinelTest {
 
     private static final List<String> FX_ENTRY_POINTS = List.of(
-            "toggleRecord", "stop", "finishPostRoll", "onTakeDirectoryAllocated", "onTakeReady",
+            "toggleRecord", "stopAudioTake", "onTakeDirectoryAllocated", "onTakeReady", "finishUnannouncedTake",
             "cancelPendingStartByUser", "cancelPendingStart", "abandonStart", "finishWrittenTake",
-            "publishWrittenTake", "warnTakeStillWriting", "abandonedStartCleanedUp", "retire", "onAVirtualThread");
+            "publishWrittenTake", "warnTakeStillWriting", "abandonedStartCleanedUp", "retire", "onAVirtualThread", "requestConfigurationChange");
 
     private static final Set<String> STORAGE_TASKS = Set.of(
             "allocateTakeDirectory", "deleteEmptyTakeDirectory", "readRecordedAudio");
@@ -196,7 +196,7 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
 
     @Test
     void theFxEntryPointsTouchNoStorageAndNeverWait() throws IOException {
-        ClassModel model = parse(TransportController.class);
+        ClassModel model = parse(RecordCoordinator.class);
         Walk walk = walk(model, FX_ENTRY_POINTS, STORAGE_TASKS);
 
         for (String root : FX_ENTRY_POINTS) {
@@ -217,7 +217,7 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
                 .anyMatch(key -> key.startsWith("lambda$"));
         assertThat(walk.calls()).as("the walk saw the pipeline's steps, the completion seam and the FX hand-off")
                 .contains(PIPELINE + "#prepare", PIPELINE + "#beginCapture", PIPELINE + "#cancelStart",
-                        PIPELINE + "#requestStop", PIPELINE + "#termination",
+                        PIPELINE + "#requestStopBeforeCapture", PIPELINE + "#requestStop", PIPELINE + "#termination",
                         "com/benesquivelmusic/daw/app/ui/TransportController$TakeCompletion#complete",
                         "com/benesquivelmusic/daw/app/ui/marshal/FxDispatcher#runOnFx");
         assertThat(walk.handOffs()).as("each storage task is handed to the storage executor, once")
@@ -261,8 +261,20 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
      * through {@code Thread.ofVirtual()}.
      */
     @Test
+    void theTransportFacadeAlsoTouchesNoStorageAndNeverWaits() throws IOException {
+        Walk walk = walk(parse(TransportController.class), List.of("toggleRecord", "stop", "finishPostRoll", "retire"), Set.of());
+        for (String root : List.of("toggleRecord", "stop", "finishPostRoll", "retire")) {
+            assertThat(walk.roots().get(root)).as("facade root %s", root).isEqualTo(1);
+        }
+        assertThat(walk.findings()).isEmpty();
+        assertThat(walk.calls()).contains("com/benesquivelmusic/daw/app/ui/RecordCoordinator#toggleRecord",
+                "com/benesquivelmusic/daw/app/ui/RecordCoordinator#stopAudioTake",
+                "com/benesquivelmusic/daw/app/ui/RecordCoordinator#cancelPendingStartByUser");
+    }
+
+    @Test
     void theProductionStorageExecutorStartsEachTaskOnANewVirtualThread() throws IOException {
-        ClassModel model = parse(TransportController.class);
+        ClassModel model = parse(RecordCoordinator.class);
         String self = model.thisClass().asInternalName();
         List<String> stores = new ArrayList<>();
         for (MethodModel mm : model.methods()) {
