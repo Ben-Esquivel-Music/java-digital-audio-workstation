@@ -2162,7 +2162,8 @@ final class RecordCoordinator {
      * each track's recorded notes. When at least one track recorded notes —
      * the recorders put them into the tracks' MIDI clips — it marks the
      * project dirty and shows the SUCCESS toast; a take with no note leaves
-     * the project as it was. FX thread.
+     * the project as it was. Provider close failures are reported after every
+     * recorder has been drained, preserving captured notes and undo history. FX thread.
      */
     void stopMidiRecording() {
         stopMidiRecording(null);
@@ -2186,7 +2187,6 @@ final class RecordCoordinator {
             try {
                 try { recorder.stopRecording(); }
                 catch (RuntimeException | Error stopFailure) {
-                    if (startFailure == null && stopFailure instanceof Error error) throw error;
                     if (startFailure != null && stopFailure != startFailure) startFailure.addSuppressed(stopFailure);
                     stopFailures.add(track.getName() + " (" + shortDescription(stopFailure) + ")");
                     LOG.log(Level.WARNING, "MIDI provider close failed on track: " + track.getName(), stopFailure);
@@ -2197,7 +2197,6 @@ final class RecordCoordinator {
                     undoManager.execute(new RecordMidiNotesAction(track.getMidiClip(), recordedNotes));
                 }
             } catch (RuntimeException | Error failure) {
-                if (startFailure == null && failure instanceof Error error) throw error;
                 stopFailures.add(track.getName() + " (" + shortDescription(failure) + ")");
                 if (startFailure == null) {
                     notificationBar.show(NotificationLevel.ERROR,

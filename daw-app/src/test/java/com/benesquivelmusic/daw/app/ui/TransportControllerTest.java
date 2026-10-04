@@ -23,6 +23,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
@@ -2200,26 +2201,57 @@ class TransportControllerTest {
         }
     }
 
-    @Test
-    void story325MidiCloseFailureKeepsNotesUndoAndDirtyStateWhileDrainingEveryDevice() throws Exception {
+    @ParameterizedTest
+    @CsvSource({"false,false,false", "true,false,false", "true,true,false", "false,false,true"})
+    void story325MidiCloseFailureKeepsNotesUndoAndDirtyStateWhileDrainingEveryDevice(
+            boolean closeWithError, boolean failTransmitterClose, boolean failUndoListener) throws Exception {
         DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
         Track first = new Track("First", TrackType.MIDI), second = new Track("Second", TrackType.MIDI);
         first.setArmed(true); second.setArmed(true);
         first.setMidiInputDeviceName("first"); second.setMidiInputDeviceName("second");
         project.addTrack(first); project.addTrack(second);
-        CountingMidiInput input1 = new CountingMidiInput(false), input2 = new CountingMidiInput(true);
+        CountingMidiInput input1 = new CountingMidiInput(false);
+        CountingMidiInput input2 = new CountingMidiInput(!failTransmitterClose, closeWithError && !failTransmitterClose);
+        input2.transmitterCloseWithError = failTransmitterClose;
+        List<String> closedDevices = new CopyOnWriteArrayList<>();
+        input1.onClose = () -> closedDevices.add("first");
+        input2.onClose = () -> closedDevices.add("second");
         TransportController recording = newController(project);
         runStrictHandler(() -> recording.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input2));
         record(recording);
         var note = new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_ON, 0, 60, 100);
         input1.getTransmitters().getFirst().getReceiver().send(note, -1);
         input2.getTransmitters().getFirst().getReceiver().send(note, -1);
-        runStrictHandler(recording::toggleRecord);
+        UndoHistoryListener listener = history -> {
+            if (failUndoListener && history.undoSize() == 1) throw new AssertionError("MIDI undo listener failed");
+        };
+        runStrictHandler(() -> undoManager.addHistoryListener(listener));
+        try {
+            runStrictHandler(recording::toggleRecord);
+        } finally {
+            runStrictHandler(() -> undoManager.removeHistoryListener(listener));
+        }
         flushFx();
         assertThat(first.getMidiClip().size()).isEqualTo(1);
         assertThat(second.getMidiClip().size()).isEqualTo(1);
         assertThat(project.isDirty()).isTrue();
         assertThat(undoManager.undoSize()).isEqualTo(2);
+        assertThat(closedDevices).containsExactly("second", "first");
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(recording.recordCoordinator().getState()).isEqualTo(RecordState.IDLE);
+        assertThat(recording.recordCoordinator().recordAvailableProperty().get()).isTrue();
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(audioEngine.isStreamOpen()).isFalse();
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(notificationBar.getMessage()).contains("Second", "MIDI", "close failed",
+                closeWithError ? "AssertionError" : "IllegalStateException");
+        if (failUndoListener) assertThat(notificationBar.getMessage()).contains("AssertionError: MIDI undo listener failed");
+        assertThat(statusBarLabel.getText()).isEqualTo(notificationBar.getMessage());
+        runStrictHandler(() -> {
+            recording.stop();
+            recording.recordCoordinator().stopMidiRecording();
+        });
+        flushFx();
         for (CountingMidiInput input : List.of(input1, input2)) {
             assertThat(input.opens).isEqualTo(1);
             assertThat(input.transmitters).isEqualTo(1);
@@ -2230,11 +2262,15 @@ class TransportControllerTest {
         }
         assertThat(first.isRecording()).isFalse(); assertThat(second.isRecording()).isFalse();
         assertThat(recording.isRecordingInFlight()).isFalse();
-        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
-        assertThat(notificationBar.getMessage()).contains("Second", "MIDI close failed");
+        assertThat(recording.isTakeBeingWritten()).isFalse();
+        assertThat(closedDevices).containsExactly("second", "first");
+        assertThat(undoManager.undoSize()).isEqualTo(2);
         runStrictHandler(() -> { undoManager.undo(); undoManager.undo(); });
         assertThat(first.getMidiClip().size()).isZero();
         assertThat(second.getMidiClip().size()).isZero();
+        runStrictHandler(() -> { undoManager.redo(); undoManager.redo(); });
+        assertThat(first.getMidiClip().size()).isEqualTo(1);
+        assertThat(second.getMidiClip().size()).isEqualTo(1);
     }
 
     @Test
@@ -2294,38 +2330,82 @@ class TransportControllerTest {
         assertThat(current.get().recordCoordinator().recordAvailableProperty().get()).isTrue();
     }
 
-    @Test
-    void story325MixedTakeKeepsMidiCloseErrorVisibleAfterAudioPublication() throws Exception {
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,false", "true,true"})
+    void story325MixedTakeKeepsMidiCloseErrorVisibleAfterAudioPublication(
+            boolean closeWithError, boolean failTransmitterClose) throws Exception {
         DawProject project = new DawProject("mixed", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);
         Track audio = project.createAudioTrack("Vox"); audio.setArmed(true);
-        Track midi = new Track("Keys", TrackType.MIDI); midi.setArmed(true); midi.setMidiInputDeviceName("keys");
-        project.addTrack(midi);
-        var input = new CountingMidiInput(true);
+        Track first = new Track("First", TrackType.MIDI), midi = new Track("Keys", TrackType.MIDI);
+        first.setArmed(true); midi.setArmed(true);
+        first.setMidiInputDeviceName("first"); midi.setMidiInputDeviceName("keys");
+        project.addTrack(first); project.addTrack(midi);
+        var input1 = new CountingMidiInput(false);
+        var input = new CountingMidiInput(!failTransmitterClose, closeWithError && !failTransmitterClose);
+        input.transmitterCloseWithError = failTransmitterClose;
+        List<String> closedDevices = new CopyOnWriteArrayList<>();
+        input1.onClose = () -> closedDevices.add("first");
+        input.onClose = () -> closedDevices.add("keys");
         TransportController recording = newController(project);
         runStrictHandler(() -> {
-            recording.setMidiInputDeviceResolverForTest(_ -> input);
+            recording.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input);
             audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         });
         record(recording);
-        input.getTransmitters().getFirst().getReceiver().send(
-                new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_ON, 0, 60, 100), -1);
+        var note = new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_ON, 0, 60, 100);
+        input1.getTransmitters().getFirst().getReceiver().send(note, -1);
+        input.getTransmitters().getFirst().getReceiver().send(note, -1);
         awaitABlockOnDisk(recording, audio);
         stopAndAwaitTheTake(recording);
         assertThat(audio.getClips()).hasSize(1);
+        assertThat(first.getMidiClip().size()).isEqualTo(1);
         assertThat(midi.getMidiClip().size()).isEqualTo(1);
         assertThat(project.isDirty()).isTrue();
-        assertThat(undoManager.undoSize()).isEqualTo(2);
-        assertThat(input.isConnected()).isFalse();
-        assertThat(input.isOpen()).isFalse();
+        assertThat(undoManager.undoSize()).isEqualTo(3);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(recording.recordCoordinator().getState()).isEqualTo(RecordState.IDLE);
+        assertThat(recording.recordCoordinator().recordAvailableProperty().get()).isTrue();
+        assertThat(recIndicator.isVisible()).isFalse();
+        assertThat(audioEngine.isStreamOpen()).isFalse();
+        assertThat(audioEngine.getRecordingCallback()).isNull();
         assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
-        assertThat(notificationBar.getMessage()).contains("Keys", "MIDI close failed");
+        assertThat(notificationBar.getMessage()).contains("Keys", "MIDI", "close failed",
+                closeWithError ? "AssertionError" : "IllegalStateException");
         assertThat(statusBarLabel.getText()).isEqualTo(notificationBar.getMessage());
+        runStrictHandler(() -> {
+            recording.stop();
+            recording.recordCoordinator().stopMidiRecording();
+        });
+        flushFx();
+        assertThat(closedDevices).containsExactly("keys", "first");
+        for (CountingMidiInput midiInput : List.of(input1, input)) {
+            assertThat(midiInput.opens).isEqualTo(1);
+            assertThat(midiInput.transmitters).isEqualTo(1);
+            assertThat(midiInput.closes).isEqualTo(1);
+            assertThat(midiInput.transmitterCloses).isEqualTo(1);
+            assertThat(midiInput.isConnected()).isFalse();
+            assertThat(midiInput.isOpen()).isFalse();
+        }
+        assertThat(first.isRecording()).isFalse(); assertThat(midi.isRecording()).isFalse();
+        assertThat(recording.isRecordingInFlight()).isFalse();
+        assertThat(recording.isTakeBeingWritten()).isFalse();
+        assertThat(undoManager.undoSize()).isEqualTo(3);
+        runStrictHandler(() -> { undoManager.undo(); undoManager.undo(); undoManager.undo(); });
+        assertThat(audio.getClips()).isEmpty();
+        assertThat(first.getMidiClip().size()).isZero();
+        assertThat(midi.getMidiClip().size()).isZero();
+        runStrictHandler(() -> { undoManager.redo(); undoManager.redo(); undoManager.redo(); });
+        assertThat(audio.getClips()).hasSize(1);
+        assertThat(first.getMidiClip().size()).isEqualTo(1);
+        assertThat(midi.getMidiClip().size()).isEqualTo(1);
     }
 
     private static final class CountingMidiInput extends RecordingInFlightFixture.StubMidiInput {
         final boolean failClose;
         boolean closeWithError;
+        boolean transmitterCloseWithError;
+        Runnable onClose = () -> { };
         int opens, transmitters, closes, transmitterCloses;
         CountingMidiInput(boolean failClose) { this(failClose, false); }
         CountingMidiInput(boolean failClose, boolean closeWithError) {
@@ -2339,11 +2419,16 @@ class TransportControllerTest {
             return new javax.sound.midi.Transmitter() {
                 @Override public void setReceiver(javax.sound.midi.Receiver receiver) { delegate.setReceiver(receiver); }
                 @Override public javax.sound.midi.Receiver getReceiver() { return delegate.getReceiver(); }
-                @Override public void close() { transmitterCloses++; delegate.close(); }
+                @Override public void close() {
+                    transmitterCloses++;
+                    delegate.close();
+                    if (transmitterCloseWithError) throw new AssertionError("MIDI transmitter close failed");
+                }
             };
         }
         @Override public void close() {
             closes++;
+            onClose.run();
             super.close();
             if (closeWithError) throw new AssertionError("MIDI close failed");
             if (failClose) throw new IllegalStateException("MIDI close failed");

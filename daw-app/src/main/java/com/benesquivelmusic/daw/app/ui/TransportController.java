@@ -729,7 +729,8 @@ final class TransportController implements TransportIntentHandler {
             return false;
         }
         String cell = stripCellSeparator(text);
-        return cell.startsWith("Recording stopped") || cell.equals(RECORDING_CANCELLED_MESSAGE);
+        return cell.startsWith("Recording stopped") || cell.startsWith("MIDI recording stopped")
+                || cell.equals(RECORDING_CANCELLED_MESSAGE);
     }
 
     void stopAudioOutputWhenIdle() {
