@@ -20,6 +20,7 @@ import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -1685,6 +1686,101 @@ class TransportControllerTest {
         assertThat(controller.isRecordingInFlight()).isFalse();
     }
 
+    @ParameterizedTest
+    @CsvSource({"false,false,false", "true,false,false", "true,true,false", "true,false,true"})
+    void midiCaptureStartListenerFailureAbortsAndKeepsTheOriginalCauseDespiteCleanupFailures(
+            boolean failCleanup, boolean closeWithError, boolean failNotification) throws Exception {
+        DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
+        Track first = new Track("First", TrackType.MIDI);
+        Track second = new Track("Second", TrackType.MIDI);
+        first.setArmed(true); second.setArmed(true);
+        first.setMidiInputDeviceName("first"); second.setMidiInputDeviceName("second");
+        project.addTrack(first); project.addTrack(second);
+        CountingMidiInput input1 = new CountingMidiInput(false);
+        CountingMidiInput input2 = new CountingMidiInput(failCleanup, closeWithError);
+        TransportController controller = newController(project);
+        Transport transport = project.getTransport();
+        runStrictHandler(() -> {
+            controller.setMidiInputDeviceResolverForTest(name -> name.equals("first") ? input1 : input2);
+            controller.start();
+        });
+        NotificationHistoryService shown = notificationsFromNowOn();
+        IllegalStateException original = new IllegalStateException("record listener failed");
+        IllegalStateException stopFailure = new IllegalStateException("stop listener failed");
+        IllegalStateException notificationFailure = new IllegalStateException("notification listener failed");
+        Consumer<NotificationEntry> notificationListener = _ -> { if (failNotification) throw notificationFailure; };
+        shown.addListener(notificationListener);
+        List<RecordState> states = new CopyOnWriteArrayList<>();
+        runStrictHandler(() -> controller.recordCoordinator().stateProperty()
+                .addListener((_, _, next) -> states.add(next)));
+        Runnable removeListener = transport.addChangeListener(kind -> {
+            if (kind != Transport.ChangeKind.STATE) return;
+            if (transport.getState() == TransportState.RECORDING) throw original;
+            if (failCleanup && transport.getState() == TransportState.STOPPED) throw stopFailure;
+        });
+        List<BusEvent> published = new CopyOnWriteArrayList<>();
+        EventBus previousBus = EventBusPublisher.getDefault();
+        try {
+            EventBusPublisher.setDefault(new PublishHookEventBus(published::add));
+            runStrictHandler(controller::toggleRecord);
+            flushFx();
+        } finally {
+            removeListener.run();
+            shown.removeListener(notificationListener);
+            EventBusPublisher.setDefault(previousBus);
+        }
+
+        assertThat(states).containsExactly(RecordState.COUNT_IN, RecordState.ABORTED, RecordState.IDLE);
+        assertThat(controller.recordCoordinator().recordAvailableProperty().get()).isTrue();
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(controller.isRecordingInFlight()).isFalse();
+        assertThat(controller.isTakeBeingWritten()).isFalse();
+        assertThat(audioEngine.isStreamOpen()).isFalse();
+        assertThat(audioEngine.isRunning()).isFalse();
+        assertThat(audioEngine.getRecordingCallback()).isNull();
+        assertThat(recIndicator.isVisible()).isFalse();
+        for (CountingMidiInput input : List.of(input1, input2)) {
+            assertThat(input.opens).isEqualTo(1);
+            assertThat(input.closes).isEqualTo(1);
+            assertThat(input.transmitterCloses).isEqualTo(1);
+            assertThat(input.isConnected()).isFalse();
+            assertThat(input.isOpen()).isFalse();
+        }
+        assertThat(first.isRecording()).isFalse();
+        assertThat(second.isRecording()).isFalse();
+        String message = "Recording aborted — no take was started: record listener failed";
+        assertThat(statusBarLabel.getText()).isEqualTo(message);
+        assertThat(shown.getEntries()).singleElement().satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(entry.message()).isEqualTo(message);
+        });
+        assertThat(published).noneMatch(TransportEvent.Started.class::isInstance);
+        if (failCleanup) {
+            assertThat(original.getSuppressed()).contains(stopFailure)
+                    .extracting(Throwable::getMessage).contains("MIDI close failed");
+        } else {
+            assertThat(original.getSuppressed()).isEmpty();
+        }
+        if (failNotification) {
+            assertThat(original.getSuppressed()).contains(notificationFailure);
+        } else {
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(notificationBar.getMessage()).isEqualTo(message);
+        }
+
+        runStrictHandler(controller::toggleRecord);
+        assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.RECORDING);
+        assertThat(input1.opens).isEqualTo(2);
+        assertThat(input2.opens).isEqualTo(2);
+        assertThat(first.isRecording()).isTrue();
+        assertThat(second.isRecording()).isTrue();
+        if (closeWithError) {
+            runStrictHandler(() -> input2.closeWithError = false);
+        }
+        runStrictHandler(controller::stop);
+        awaitOnFx(() -> controller.recordCoordinator().getState() == RecordState.IDLE, "the retry settles");
+    }
+
     @Test
     void story325SharedMidiStartupFailureLeavesTheOtherTrackRecordingAndPublishable() throws Exception {
         DawProject project = new DawProject("keys", new AudioFormat(48000, 2, 16, 256));
@@ -2229,8 +2325,13 @@ class TransportControllerTest {
 
     private static final class CountingMidiInput extends RecordingInFlightFixture.StubMidiInput {
         final boolean failClose;
+        boolean closeWithError;
         int opens, transmitters, closes, transmitterCloses;
-        CountingMidiInput(boolean failClose) { this.failClose = failClose; }
+        CountingMidiInput(boolean failClose) { this(failClose, false); }
+        CountingMidiInput(boolean failClose, boolean closeWithError) {
+            this.failClose = failClose;
+            this.closeWithError = closeWithError;
+        }
         @Override public void open() { opens++; super.open(); }
         @Override public javax.sound.midi.Transmitter getTransmitter() {
             transmitters++;
@@ -2241,7 +2342,12 @@ class TransportControllerTest {
                 @Override public void close() { transmitterCloses++; delegate.close(); }
             };
         }
-        @Override public void close() { closes++; super.close(); if (failClose) throw new IllegalStateException("MIDI close failed"); }
+        @Override public void close() {
+            closes++;
+            super.close();
+            if (closeWithError) throw new AssertionError("MIDI close failed");
+            if (failClose) throw new IllegalStateException("MIDI close failed");
+        }
     }
 
     private static final class SampleRateCountingBackend implements AudioBackend {

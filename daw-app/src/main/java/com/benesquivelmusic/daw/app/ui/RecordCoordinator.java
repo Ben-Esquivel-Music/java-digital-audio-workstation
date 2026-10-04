@@ -1397,11 +1397,15 @@ final class RecordCoordinator {
         // the transport remains STOPPED (story 317).
         if (armedAudioTracks.isEmpty()
                 && !startAudioOutputOrRefuse("Recording")) {
-            transition(RecordState.ABORTED);
-            project.getTransport().stop();
-            rollbackStream();
-            setRecordingStatus(statusBarLabel.getText());
-            settle();
+            Throwable failure = new IllegalStateException(statusBarLabel.getText());
+            abortStep(failure, () -> transition(RecordState.ABORTED));
+            abortStep(failure, project.getTransport()::stop);
+            rollbackStream(failure);
+            abortStep(failure, () -> setRecordingStatus(statusBarLabel.getText()));
+            abortStep(failure, this::settle);
+            if (failure.getSuppressed().length > 0) {
+                LOG.log(Level.WARNING, "A step of the refused recording's cleanup failed", failure);
+            }
             return;
         }
 
@@ -1409,13 +1413,17 @@ final class RecordCoordinator {
             // MIDI-only: the output stream was proved RUNNING above, and the
             // take writes no audio files, so it starts at once and the
             // transport may enter recording.
-            startMidiRecording(armedMidiTracks, countIn);
-            if (activeMidiRecorders.isEmpty()) {
-                abortRecordingTake(new IllegalStateException("MIDI input precondition failed — no armed MIDI track opened a device"));
+            try {
+                startMidiRecording(armedMidiTracks, countIn);
+                if (activeMidiRecorders.isEmpty()) {
+                    throw new IllegalStateException("MIDI input precondition failed — no armed MIDI track opened a device");
+                }
+                transition(RecordState.COUNT_IN);
+                project.getTransport().record();
+            } catch (RuntimeException | Error failure) {
+                abortRecordingTake(failure);
                 return;
             }
-            transition(RecordState.COUNT_IN);
-            project.getTransport().record();
             announceRecordingStarted(activeMidiRecorders.size(), null);
             return;
         }
@@ -1595,7 +1603,7 @@ final class RecordCoordinator {
             // to remove, off the FX thread.
             closeCapturePeaks();
             pendingStart = null;
-            start.failed = true;
+            start.failure = e;
             removeFilesOfAbandonedStart(start, CompletableFuture.completedStage(null));
             abortRecordingTake(e);
             return;
@@ -1650,7 +1658,7 @@ final class RecordCoordinator {
         }
         try {
             pipeline.beginCapture();
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             if (pipeline.isPreparing() && !pipeline.hasViableCaptureService()) finishUnannouncedTake(start);
             else abandonStart(start, e);
             return;
@@ -1768,11 +1776,17 @@ final class RecordCoordinator {
      * ({@link #abortRecordingTake}). FX thread.
      */
     private void abandonStart(PendingStart start, Throwable failure) {
-        start.failed = true;
+        start.failure = failure;
         pendingStart = null;
-        stopMidiRecording();
-        CompletionStage<Void> terminated = discardTake(start.pipeline);
-        closeCapturePeaks();
+        stopMidiRecording(failure);
+        CompletionStage<Void> terminated;
+        try {
+            terminated = discardTake(start.pipeline);
+        } catch (RuntimeException | Error cleanupFailure) {
+            if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            terminated = start.pipeline.termination();
+        }
+        abortStep(failure, this::closeCapturePeaks);
         removeFilesOfAbandonedStart(start, terminated);
         abortRecordingTake(failure);
     }
@@ -1817,8 +1831,16 @@ final class RecordCoordinator {
     private void abandonedStartCleanedUp(PendingStart start) {
         if (abandonedStart == start) {
             abandonedStart = null;
-            if (start.failed && !retired) rollbackStream();
-            settle();
+            if (start.failure != null && !retired) {
+                int suppressedBeforeCleanup = start.failure.getSuppressed().length;
+                rollbackStream(start.failure);
+                abortStep(start.failure, this::settle);
+                if (start.failure.getSuppressed().length > suppressedBeforeCleanup) {
+                    LOG.log(Level.WARNING, "A step of the failed take's cleanup failed", start.failure);
+                }
+            } else {
+                settle();
+            }
         }
     }
 
@@ -1881,7 +1903,7 @@ final class RecordCoordinator {
         RecordingPipeline pipeline;
         /** Set by a cancel or a retirement; the start's later turns then do nothing more for it. */
         boolean cancelled;
-        boolean failed;
+        Throwable failure;
 
         PendingStart(int trackCount, List<Track> armedAudioTracks, List<Track> armedMidiTracks,
                      CountInMode countIn) {
@@ -1987,21 +2009,35 @@ final class RecordCoordinator {
     }
 
     private void abortRecordingTake(Throwable failure) {
-        transition(RecordState.ABORTED);
-        project.getTransport().stop();
-        if (abandonedStart == null) rollbackStream();
-        LOG.log(Level.WARNING,
-                "Recording aborted — the take could not be started", failure);
-
+        abortStep(failure, () -> transition(RecordState.ABORTED));
+        stopMidiRecording(failure);
+        abortStep(failure, project.getTransport()::stop);
+        if (abandonedStart == null) rollbackStream(failure);
         String reason = failure.getMessage() == null || failure.getMessage().isBlank()
                 ? failure.getClass().getSimpleName()
                 : failure.getMessage();
         String message = "Recording aborted — no take was started: " + reason;
-        setRecordingStatus(message);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
-        notificationBar.show(NotificationLevel.ERROR, message);
-        updateStatus();
-        if (abandonedStart == null) settle();
+        abortStep(failure, () -> setRecordingStatus(message));
+        abortStep(failure, () -> statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12)));
+        abortStep(failure, () -> notificationBar.show(NotificationLevel.ERROR, message));
+        abortStep(failure, this::updateStatus);
+        if (abandonedStart == null) abortStep(failure, this::settle);
+        LOG.log(Level.WARNING,
+                "Recording aborted — the take could not be started", failure);
+    }
+
+    private void rollbackStream(Throwable failure) {
+        abortStep(failure, audioEngine::stopAudioOutput);
+        abortStep(failure, audioEngine::stop);
+    }
+
+    /** Completes every start-rollback step without replacing the cause of the failed start. */
+    private static void abortStep(Throwable failure, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException | Error cleanupFailure) {
+            if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+        }
     }
 
     /**
@@ -2129,9 +2165,14 @@ final class RecordCoordinator {
      * the project as it was. FX thread.
      */
     void stopMidiRecording() {
+        stopMidiRecording(null);
+    }
+
+    /** A failed start preserves captured notes, but only its original failure is announced. */
+    private void stopMidiRecording(Throwable startFailure) {
         requireFxThread();
         if (activeMidiRecorders.isEmpty()) {
-            postFx(this::settle);
+            if (startFailure == null) postFx(this::settle);
             return;
         }
 
@@ -2144,7 +2185,9 @@ final class RecordCoordinator {
             MidiRecorder recorder = entry.getValue();
             try {
                 try { recorder.stopRecording(); }
-                catch (RuntimeException stopFailure) {
+                catch (RuntimeException | Error stopFailure) {
+                    if (startFailure == null && stopFailure instanceof Error error) throw error;
+                    if (startFailure != null && stopFailure != startFailure) startFailure.addSuppressed(stopFailure);
                     stopFailures.add(track.getName() + " (" + shortDescription(stopFailure) + ")");
                     LOG.log(Level.WARNING, "MIDI provider close failed on track: " + track.getName(), stopFailure);
                 }
@@ -2153,14 +2196,24 @@ final class RecordCoordinator {
                     totalNotes += recordedNotes.size();
                     undoManager.execute(new RecordMidiNotesAction(track.getMidiClip(), recordedNotes));
                 }
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | Error failure) {
+                if (startFailure == null && failure instanceof Error error) throw error;
                 stopFailures.add(track.getName() + " (" + shortDescription(failure) + ")");
-                notificationBar.show(NotificationLevel.ERROR,
-                        "MIDI stop failed on track: " + track.getName() + " — " + shortDescription(failure));
+                if (startFailure == null) {
+                    notificationBar.show(NotificationLevel.ERROR,
+                            "MIDI stop failed on track: " + track.getName() + " — " + shortDescription(failure));
+                } else if (failure != startFailure) {
+                    startFailure.addSuppressed(failure);
+                }
                 LOG.log(Level.WARNING, "MIDI stop failed on track: " + track.getName(), failure);
             } finally {
-                track.setRecording(false);
+                if (startFailure == null) track.setRecording(false);
+                else abortStep(startFailure, () -> track.setRecording(false));
             }
+        }
+        if (startFailure != null) {
+            if (totalNotes > 0) abortStep(startFailure, project::markDirty);
+            return;
         }
         postFx(this::settle);
 

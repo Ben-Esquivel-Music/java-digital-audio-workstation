@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -46,6 +47,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -800,8 +803,9 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
      * directory, and that the start still counts as being written, while
      * that thread is held in a pass with the take's files on disk.
      */
-    @Test
-    void aTakeWhoseCaptureCannotBeginIsAbortedAndItsDirectoryRemovedOnlyOnceItsCaptureThreadIsDone()
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aTakeWhoseCaptureCannotBeginIsAbortedAndItsDirectoryRemovedOnlyOnceItsCaptureThreadIsDone(boolean failStop)
             throws Exception {
         HeldExecutor storage = new HeldExecutor();
         runOnFx(() -> controller.setStorageExecutorForTest(storage));
@@ -812,6 +816,10 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         runOnFx(() -> controller.setMidiInputDeviceResolverForTest(_ -> midiInput));
         AtomicBoolean failedOnce = new AtomicBoolean();
         AtomicBoolean heldInAPassWhenItFailed = new AtomicBoolean();
+        IllegalStateException original = new IllegalStateException("injected failure of the transport's record()");
+        IllegalStateException stopFailure = new IllegalStateException("injected failure of the transport's stop()");
+        List<RecordState> states = new CopyOnWriteArrayList<>();
+        runOnFx(() -> controller.recordCoordinator().stateProperty().addListener((_, _, next) -> states.add(next)));
         // beginCapture()'s last step is the transport's record(), after the recording
         // callback is installed and the engine started. This listener fails it, once,
         // on the FX thread — but first it holds the capture thread at its next clock
@@ -828,7 +836,10 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
-                throw new IllegalStateException("injected failure of the transport's record()");
+                throw original;
+            }
+            if (failStop && kind == Transport.ChangeKind.STATE && transport.getState() == TransportState.STOPPED) {
+                throw stopFailure;
             }
         });
         try {
@@ -846,6 +857,8 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                             "Recording aborted — no take was started: injected failure of the transport's record()");
                 });
                 assertThat(onFx(controller::isTakeBeingWritten)).as("the failed start is being written").isTrue();
+                assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.ABORTED);
+                assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isFalse();
 
                 assertThat(midiInput.isConnected()).as("last-started MIDI has been drained before flush cleanup").isFalse();
                 assertThat(midiInput.isOpen()).isFalse();
@@ -880,9 +893,24 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         assertThat(onFx(armed::isRecording)).as("the track is no longer flagged recording").isFalse();
         assertThat(onFx(controller::isRecordingInFlight)).isFalse();
         assertThat(onFx(recIndicator::isVisible)).isFalse();
+        assertThat(states).containsExactly(RecordState.PREPARING, RecordState.ABORTED, RecordState.IDLE);
+        assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isTrue();
+        if (failStop) assertThat(original.getSuppressed()).contains(stopFailure);
+        else assertThat(original.getSuppressed()).isEmpty();
         assertThat(entries()).as("still the one ERROR").hasSize(1);
+        assertThat(onFx(statusBar::getText)).isEqualTo(entries().getFirst().message());
+        assertThat(onFx(notificationBar::getCurrentLevel)).isEqualTo(NotificationLevel.ERROR);
+        assertThat(onFx(notificationBar::getMessage)).isEqualTo(entries().getFirst().message());
         assertThat(announced).as("no Started for a take that did not begin")
                 .noneMatch(TransportEvent.Started.class::isInstance);
+
+        runOnFx(controller::toggleRecord);
+        runHeldStorageUntilTheStartHasSettled(storage);
+        assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.RECORDING);
+        assertThat(midiInput.isConnected()).isTrue();
+        runOnFx(controller::stop);
+        runHeldStorageUntilTheStartHasSettled(storage);
+        assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.IDLE);
     }
 
     @Test
