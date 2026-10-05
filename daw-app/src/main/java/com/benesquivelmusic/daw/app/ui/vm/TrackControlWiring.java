@@ -70,12 +70,14 @@ public record TrackControlWiring(TrackChannelRegistry registry,
     public static TrackControlWiring standalone(DawProject project, FxDispatcher dispatcher, MeterFeed meterFeed,
                                                 com.benesquivelmusic.daw.core.audio.AudioEngine engine,
                                                 Consumer<String> errors) {
-        var guard = new com.benesquivelmusic.daw.app.ui.recording.InputRoutingGuard(project, engine, dispatcher, errors);
-        TrackChannelRegistry registry = new TrackChannelRegistry(project, dispatcher, meterFeed);
         CoreTrackIntentHandler handler = new CoreTrackIntentHandler(project);
+        var commandSink = new LinkedTrackCommandDispatcher(project, handler);
+        var guard = new com.benesquivelmusic.daw.app.ui.recording.InputRoutingGuard(
+                project, engine, dispatcher, errors, commandSink);
         handler.setArmValidator(guard::requestArm);
         handler.setArmCancellation(guard::cancelArm);
-        return new TrackControlWiring(registry, new LinkedTrackCommandDispatcher(project, handler), guard);
+        TrackChannelRegistry registry = new TrackChannelRegistry(project, dispatcher, meterFeed);
+        return new TrackControlWiring(registry, commandSink, guard);
     }
 
     /** Disposes the registry (every VM, listener and continuous channel). Idempotent. */

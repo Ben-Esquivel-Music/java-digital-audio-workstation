@@ -390,6 +390,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             runOnFx(controller::toggleRecord);
 
             assertThat(onFx(controller::isPreparingTake)).as("the take was cancelled").isFalse();
+            awaitOnFx(() -> !engine.isStreamOpen(), "the cancel's worker closed the output stream");
             assertThat(onFx(engine::isStreamOpen)).as("the cancel closed the output stream Record opened").isFalse();
             assertThat(onFx(() -> project.getTransport().getState())).as("the transport stays paused")
                     .isEqualTo(TransportState.PAUSED);
@@ -404,8 +405,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
      * Holds the take's preparation over a STOPPED transport, in a project
      * whose mixer holds no instrument insert, cancels it with {@code cancel}
      * on the FX thread, and pins that the cancel closed the output stream
-     * Record opened — on the cancel's own FX turn, while the capture thread
-     * is still held — as every other Stop closes it.
+     * Record opened asynchronously while the capture thread is still held.
      */
     private void cancelOverAStoppedTransportClosesTheOutputStream(Consumer<TransportController> cancel)
             throws Exception {
@@ -422,6 +422,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             runOnFx(() -> cancel.accept(controller));
 
             assertThat(onFx(controller::isPreparingTake)).as("the take was cancelled").isFalse();
+            awaitOnFx(() -> !engine.isStreamOpen(), "the cancel's worker closed the output stream");
             assertThat(onFx(engine::isStreamOpen)).as("the cancel closed the output stream Record opened").isFalse();
         } finally {
             hold.release();
@@ -596,7 +597,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
         assertThat(recordOpensTheOutputStream()).as("fixture: Record opened the output stream before it allocated")
                 .isTrue();
-        awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
+        awaitOnFx(() -> !controller.isPreparingTake() && !controller.isTakeBeingWritten(), "the start and input cleanup settled");
 
         String message = onFx(statusBar::getText);
         assertThat(message).startsWith("Recording aborted — no take was started: Take-directory precondition failed:");
@@ -613,6 +614,60 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         assertThat(announced).noneMatch(TransportEvent.Started.class::isInstance);
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4})
+    void failedPreparationClosesOffFxAndKeepsOwnershipUntilARetainedHandleIsReleased(int failureStage) throws Exception {
+        HeldCloseBackend backend = new HeldCloseBackend();
+        backend.failOpen = failureStage == 4;
+        runOnFx(() -> {
+            engine.setStreamingProvision(new StreamingProvision(backend.name(),
+                    List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name())))));
+            if (failureStage == 1) controller.setStorageExecutorForTest(_ -> {
+                throw new java.util.concurrent.RejectedExecutionException("injected storage rejection");
+            });
+            if (failureStage == 2) controller.setPipelineSetupForTest(_ -> {
+                throw new IllegalStateException("injected pipeline failure");
+            });
+            if (failureStage == 3) controller.setEarlySealSignalForTest(_ ->
+                    java.util.concurrent.CompletableFuture.completedStage(
+                            new com.benesquivelmusic.daw.core.recording.EarlySeal.DiskExhausted(1024, false, true)));
+        });
+        if (failureStage == 0) makeTheTakesFolderImpossibleToCreate();
+        try {
+            runOnFx(controller::toggleRecord);
+            assertThat(backend.closeEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            runOnFx(() -> {
+                assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.ABORTED);
+                assertThat(controller.recordCoordinator().recordAvailableProperty().get()).isFalse();
+                assertThat(controller.isTakeBeingWritten()).isTrue();
+                controller.stop();
+                assertThat(controller.isTakeBeingWritten()).isTrue();
+            });
+            assertThat(backend.closeOnFx.get()).isFalse();
+            backend.release.countDown();
+            awaitOnFx(() -> entries().stream().anyMatch(entry -> entry.message().startsWith("Recording input cleanup failed:")),
+                    "the retained handle was reported without settling");
+            runOnFx(() -> {
+                assertThat(controller.isTakeBeingWritten()).isTrue();
+                assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.ABORTED);
+                assertThat(backend.isOpen()).isTrue();
+                assertThat(backend.isReleasePending()).isTrue();
+                backend.retain = false;
+                controller.stop();
+            });
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "retry Stop released the owned stream");
+            assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.IDLE);
+            assertThat(onFx(engine::isStreamOpen)).isFalse();
+            assertThat(backend.isOpen()).isFalse();
+            assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isTrue();
+            assertThat(backend.closeOnFx.get()).isFalse();
+        } finally {
+            backend.retain = false;
+            backend.release.countDown();
+            runOnFx(() -> { if (controller.isTakeBeingWritten()) controller.stop(); });
+        }
+    }
+
     /**
      * A failed allocation over playback must satisfy the Record guard contract:
      * STOPPED with its stream closed, just as a failed attempt from idle.
@@ -627,7 +682,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
         assertThat(recordOpensTheOutputStream()).as("fixture: the stream is open at the end of the Record turn")
                 .isTrue();
-        awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
+        awaitOnFx(() -> !controller.isPreparingTake() && !controller.isTakeBeingWritten(), "the start and input cleanup settled");
 
         String message = onFx(statusBar::getText);
         assertThat(message).startsWith("Recording aborted — no take was started: Take-directory precondition failed:");
@@ -868,6 +923,9 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 assertThat(midiInput.isOpen()).isFalse();
                 assertThat(onFx(midi::isRecording)).isFalse();
                 assertThat(onFx(engine::isStreamOpen)).as("the first-started stream stays open until flush termination and directory cleanup").isTrue();
+                runOnFx(controller::stop);
+                assertThat(onFx(engine::isStreamOpen)).as("Stop defers stream cleanup while the failed take's flush is held").isTrue();
+                assertThat(onFx(controller::isTakeBeingWritten)).isTrue();
                 storage.runPendingOffTheFxThread(); // whatever storage work is due while the capture thread runs
                 runOnFx(() -> { });                 // and whatever FX turn that work posted
 
@@ -902,7 +960,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         if (failStop) assertThat(original.getSuppressed()).contains(stopFailure);
         else assertThat(original.getSuppressed()).isEmpty();
         assertThat(entries()).as("still the one ERROR").hasSize(1);
-        assertThat(onFx(statusBar::getText)).isEqualTo(entries().getFirst().message());
+        assertThat(onFx(statusBar::getText)).isEqualTo("Returned to start");
         assertThat(onFx(notificationBar::getCurrentLevel)).isEqualTo(NotificationLevel.ERROR);
         assertThat(onFx(notificationBar::getMessage)).isEqualTo(entries().getFirst().message());
         assertThat(announced).as("no Started for a take that did not begin")
@@ -1464,6 +1522,38 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
     }
 
     /** A synchronous bus that hands every event published to {@code sink}; subscriptions are not used. */
+    private static final class HeldCloseBackend implements com.benesquivelmusic.daw.sdk.audio.AudioBackend {
+        private final MockAudioBackend delegate = new MockAudioBackend();
+        final CountDownLatch closeEntered = new CountDownLatch(1), release = new CountDownLatch(1);
+        final AtomicBoolean closeOnFx = new AtomicBoolean();
+        volatile boolean retain = true;
+        boolean failOpen;
+        Thread openThread;
+        public String name() { return delegate.name(); }
+        public boolean isAvailable() { return true; }
+        public boolean supportsStreaming() { return true; }
+        public List<com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo> listDevices() { return delegate.listDevices(); }
+        public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format, int frames) {
+            openThread = Thread.currentThread();
+            delegate.open(device, format, frames);
+            if (failOpen) throw new com.benesquivelmusic.daw.sdk.audio.AudioBackendException("injected partial input open failure");
+        }
+        public boolean isOpen() { return delegate.isOpen(); }
+        public boolean isReleasePending() { return retain && delegate.isOpen(); }
+        public int openedInputChannels() { return delegate.openedInputChannels(); }
+        public Flow.Publisher<com.benesquivelmusic.daw.sdk.audio.AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
+        public void sink(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) { delegate.sink(block); }
+        public void close() {
+            if (Platform.isFxApplicationThread()) closeOnFx.set(true);
+            if (failOpen && Thread.currentThread() == openThread) return;
+            closeEntered.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("held close timed out");
+            } catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException(failure); }
+            if (!retain) delegate.close();
+        }
+    }
+
     private static final class CollectingBus implements EventBus {
         private final Consumer<BusEvent> sink;
 

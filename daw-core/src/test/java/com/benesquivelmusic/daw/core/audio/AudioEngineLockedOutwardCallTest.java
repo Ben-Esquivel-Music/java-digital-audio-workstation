@@ -443,7 +443,26 @@ class AudioEngineLockedOutwardCallTest {
                 .as("the walk is abandoned rather than opening beside an unreleased handle")
                 .isZero();
         assertThat(engine.isStreamOpen()).isFalse();
+        failing.closeError = null;
         engine.stopAudioOutput();
+        assertThat(failing.closeAttempts.get()).as("the engine retained the failed hop and retries its release").isEqualTo(2);
+    }
+
+    @Test
+    void anOpenErrorWithAFailedCloseKeepsItsHandleOwnedUntilStopRetriesRelease() {
+        StallableBackend failing = new StallableBackend("ErrorWithRetainedHandle");
+        failing.openError = new AssertionError("driver open failed");
+        failing.closeError = new AssertionError("driver release failed");
+        AudioEngine engine = new AudioEngine(FORMAT);
+        engine.setStreamingProvision(provisionOf(failing));
+        try {
+            assertThatThrownBy(engine::startAudioOutput).isSameAs(failing.openError)
+                    .satisfies(failure -> assertThat(failure.getSuppressed()).contains(failing.closeError));
+            assertThat(failing.closeAttempts.get()).isEqualTo(1);
+            failing.closeError = null;
+            engine.stopAudioOutput();
+            assertThat(failing.closeAttempts.get()).isEqualTo(2);
+        } finally { failing.closeError = null; engine.stopAudioOutput(); engine.shutdown(); }
     }
 
     // ── E3: setFormat is serialized with the lifecycle transitions ───────

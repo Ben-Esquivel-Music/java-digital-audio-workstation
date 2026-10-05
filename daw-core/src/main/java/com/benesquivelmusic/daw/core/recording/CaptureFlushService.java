@@ -881,7 +881,8 @@ public final class CaptureFlushService {
             long gapStart = Math.max(0L, inputRings == null ? lastAppliedEndFrame : sourceLastAppliedEndFrame[i]);
             addInputGaps(gapStart, leftBehind);
             manifestDirty = true;
-            warn(leftBehind + " capture block(s) were published after the final sweep and are not part of the take; the manifest records the gap");
+            warn(leftBehind + " capture block(s) were published after the final sweep at frame " + gapStart
+                    + " and are not part of the take; the manifest records the gap");
         }
         inputSource = 0;
     }

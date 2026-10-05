@@ -1,8 +1,9 @@
 package com.benesquivelmusic.daw.app.ui.recording;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleArmCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TrackCommand;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
-import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -17,6 +18,7 @@ public final class InputRoutingGuard implements AutoCloseable {
     private final AudioEngine engine;
     private final FxDispatcher dispatcher;
     private final Consumer<String> errors;
+    private final Consumer<TrackCommand> commandSink;
     private final Map<Track, Runnable> listeners = new IdentityHashMap<>();
     private final Map<Track, Long> generations = new IdentityHashMap<>();
     private final Runnable unregisterProject;
@@ -27,8 +29,14 @@ public final class InputRoutingGuard implements AutoCloseable {
     private boolean validationRunning;
     public void cancelArm(Track track) { generations.merge(track, 1L, Long::sum); pendingArms.remove(track); }
 
-    public InputRoutingGuard(DawProject project, AudioEngine engine, FxDispatcher dispatcher, Consumer<String> errors) {
+    /**
+     * @param commandSink the shared intent sink; it must execute commands synchronously
+     *                    on the FX thread so validated re-entry stays within its acceptance scope
+     */
+    public InputRoutingGuard(DawProject project, AudioEngine engine, FxDispatcher dispatcher,
+                             Consumer<String> errors, Consumer<TrackCommand> commandSink) {
         this.project = project; this.engine = engine; this.dispatcher = dispatcher; this.errors = errors;
+        this.commandSink = Objects.requireNonNull(commandSink);
         unregisterProject = project.addChangeListener(kind -> { if (kind == DawProject.ChangeKind.TRACKS) { if (dispatcher.isFxThread()) reconcile(); else dispatcher.onFx(this::reconcile); } });
         reconcile();
     }
@@ -51,12 +59,12 @@ public final class InputRoutingGuard implements AutoCloseable {
         if (!track.isArmed()) { cancelArm(track); return; }
         if (track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) return;
         accepting = track;
-        try { track.setArmed(false); } finally { accepting = null; }
-        requestArm(track, () -> track.setArmed(true));
+        try { commandSink.accept(new ToggleArmCommand(track, false)); } finally { accepting = null; }
+        requestArm(track, () -> commandSink.accept(new ToggleArmCommand(track, true)));
     }
     public void requestArm(Track track, Runnable accept) {
         if (closed) return;
-        if (track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) { accept.run(); return; }
+        if (accepting == track || track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) { accept.run(); return; }
         long generation = generations.merge(track, 1L, Long::sum);
         pendingArms.put(track, new PendingArm(accept, generation, CaptureRoutingPlan.snapshot(List.of(track)).getFirst(), engine.getStreamingProvision()));
         startNextArm();
@@ -73,8 +81,7 @@ public final class InputRoutingGuard implements AutoCloseable {
         Thread.ofVirtual().name("daw-input-arm-validation").start(() -> {
             RuntimeException failure = null;
             try {
-                engine.validateInputRoutingSnapshots(List.of(request.route()), request.provision(), true);
-                engine.validateInputRoutingSnapshots(snapshot, request.provision(), false);
+                engine.validateInputRoutingSnapshots(snapshot, request.provision(), true);
             } catch (RuntimeException e) { failure = e; }
             RuntimeException result = failure;
             dispatcher.onFx(() -> {
@@ -93,7 +100,7 @@ public final class InputRoutingGuard implements AutoCloseable {
                     if (result == null) {
                         accepting = track;
                         try { request.accept().run(); } finally { accepting = null; }
-                    } else { track.setArmed(false); errors.accept(result.getMessage()); }
+                    } else { commandSink.accept(new ToggleArmCommand(track, false)); errors.accept(result.getMessage()); }
                 } else if (pendingArms.get(track) == request) pendingArms.remove(track);
                 startNextArm();
             });

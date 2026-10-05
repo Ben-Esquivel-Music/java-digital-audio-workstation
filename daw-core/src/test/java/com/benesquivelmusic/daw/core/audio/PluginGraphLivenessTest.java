@@ -318,8 +318,11 @@ class PluginGraphLivenessTest {
             recording.awaitFlushed();
             // Behind the fence the block is in the streaming segment; 0.25 is exact at 24 bits.
             var captured = RecordedAudioTestSupport.audioOnDisk(recording.getSession(graph.track()));
+            assertThat(captured.length).isEqualTo(inputChannels);
             assertThat(captured[0]).hasSize(256).containsOnly(0.25f);
-            assertThat(captured[1]).hasSize(256).containsOnly(inputChannels == 1 ? 0f : decoded24(-0.5f));
+            if (inputChannels == 2) {
+                assertThat(captured[1]).hasSize(256).containsOnly(decoded24(-0.5f));
+            }
         } finally {
             if (recording.isActive()) { stopRecording(recording); }
             graph.engine().stop();

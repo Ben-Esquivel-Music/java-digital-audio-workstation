@@ -2168,7 +2168,7 @@ class TransportControllerTest {
             runStrictHandler(()->{controller.setStorageExecutorForTest(task->{allocations.incrementAndGet();Thread.ofVirtual().start(task);});controller.toggleRecord();});
             assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
             runStrictHandler(()->track.setInputRouting(new com.benesquivelmusic.daw.core.audio.InputRouting(6,2)));
-            release.countDown();awaitOnFx(()->!controller.isRecordingInFlight(),"changed input start is refused");
+            release.countDown();awaitOnFx(()->!controller.isRecordingInFlight() && !controller.isTakeBeingWritten(),"changed input start and owned cleanup settle");
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
             assertThat(notificationBar.getMessage()).contains("Vox","routing changed");assertThat(allocations.get()).isZero();
             assertThat(backend.isOpen()).isFalse();assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
@@ -2494,6 +2494,7 @@ class TransportControllerTest {
         Track track = project.createAudioTrack("Vox"); track.setArmed(true);
         TransportController recording = newController(project, null);
         record(recording);
+        awaitOnFx(() -> !recording.isTakeBeingWritten(), "the refused start's cleanup settles");
         assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
         assertThat(recording.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
         assertThat(recording.isRecordingInFlight()).isFalse();

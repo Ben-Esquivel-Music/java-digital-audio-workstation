@@ -176,6 +176,7 @@ public final class AudioEngine {
             stopAudioOutputLocked(announcements);
             if (streamState != StreamState.CLOSED || !additionalInputs.isEmpty())
                 throw new AudioBackendException("The recording input stream is still held; retry Stop to release it");
+            stopLocked(announcements);
         } finally { lifecycleLock.unlock(); announcements.deliver(); }
     }
     public void requireCaptureRoutingUnchanged(List<Track> tracks, List<CaptureRoutingPlan.Route> routes) {
@@ -3028,6 +3029,7 @@ public final class AudioEngine {
                 // re-review).
                 boolean released = closeFailedHop(rung, hopFailure);
                 if (!released && openAttempted) {
+                    retainFailedHop(rung, requested);
                     // This new abandonment exception is the object that
                     // propagates, so its attribution belongs to THIS terminal
                     // rung even when an earlier ordinary hop failure was
@@ -3104,6 +3106,7 @@ public final class AudioEngine {
                 // recoverable hop.
                 rememberStreamStartAttempt(rung);
                 boolean released = closeFailedHop(rung, hopError);
+                if (!released && openAttempted) retainFailedHop(rung, requested);
                 LOG.log(Level.SEVERE,
                         "Backend ladder hop failed with an Error: " + rung.backend().name()
                                 + " on device '" + rung.device().name() + "'. "
@@ -3121,6 +3124,15 @@ public final class AudioEngine {
         // lock is released (story 316 re-review).
         announcements.fallbacks(provision, failedHopCauses, "none", "none");
         throw firstFailure;
+    }
+
+    /** Retains a partial acquisition so its generation-fenced cleanup can retry release. */
+    private void retainFailedHop(BackendStreamRung rung, com.benesquivelmusic.daw.sdk.audio.AudioFormat requested) {
+        openBackend = rung.backend();
+        openDevice = rung.device();
+        openSdkFormat = requested;
+        streamGeneration = pendingStreamGeneration == null ? new Object() : pendingStreamGeneration;
+        streamState = StreamState.RELEASE_PENDING;
     }
 
     /**
@@ -4607,8 +4619,8 @@ public final class AudioEngine {
                 if (outgoing != null && outgoing != transport) {
                     announcements.clockReleased(outgoing);
                 }
+                updateInputMeterDescriptions(inputLevelMonitorRegistry, tracks);
                 this.graph = new EngineGraph(transport, mixer, tracks, meteringEpoch);
-                updateInputMeterDescriptions();
                 if (transport != null) {
                     if (callbackIsDriving()) {
                         transport.setRealTimeClockActive(true);
@@ -4712,6 +4724,7 @@ public final class AudioEngine {
     public void setTracks(List<Track> tracks) {
         synchronized (graphLock) {
             EngineGraph current = this.graph;
+            updateInputMeterDescriptions(inputLevelMonitorRegistry, tracks);
             this.graph = new EngineGraph(current.transport(), current.mixer(), tracks, current.meteringEpoch());
         }
     }
@@ -4862,21 +4875,26 @@ public final class AudioEngine {
      * @param registry the registry, or {@code null} to disable
      */
     private void updateInputMeterDescriptions() {
-        InputLevelMonitorRegistry registry = inputLevelMonitorRegistry;
-        if (registry == null) return;
-        EngineGraph snapshot = graph;
-        if (snapshot.tracks() == null) return;
+        updateInputMeterDescriptions(inputLevelMonitorRegistry, graph.tracks());
+    }
+
+    private void updateInputMeterDescriptions(InputLevelMonitorRegistry registry, List<Track> tracks) {
+        if (registry == null || tracks == null) return;
         CaptureRoutingPlan plan = captureRoutingPlan;
-        for (Track track : snapshot.tracks()) if (!track.getInputRouting().isNone()) {
+        for (Track track : tracks) {
+            InputLevelMonitor monitor = registry.getOrCreate(track.getId());
+            if (track.getInputRouting().isNone()) continue;
             Integer source = plan == null ? null : plan.trackSources().get(track.getId());
             String device = source == null ? "selected input device" : plan.sources().get(source).device().name();
-            registry.getOrCreate(track.getId()).setRoutingDescription("Track '" + track.getName() + "', device '" + device + "': " + track.getInputRouting().displayName() + " unavailable; input is silent");
+            monitor.setRoutingDescription("Track '" + track.getName() + "', device '" + device + "': " + track.getInputRouting().displayName() + " unavailable; input is silent");
         }
     }
 
     public void setInputLevelMonitorRegistry(InputLevelMonitorRegistry registry) {
-        this.inputLevelMonitorRegistry = registry;
-        updateInputMeterDescriptions();
+        synchronized (graphLock) {
+            updateInputMeterDescriptions(registry, graph.tracks());
+            this.inputLevelMonitorRegistry = registry;
+        }
     }
 
     /**
@@ -5101,9 +5119,9 @@ public final class AudioEngine {
      * <p>Allocation-free hot path: the only per-block state is the snapshot
      * volatile field read at the top of {@link
      * #processBlock(float[][], float[][], int)}. Monitors are looked up by
-     * track id via {@link InputLevelMonitorRegistry#getOrCreate(String)},
-     * which synchronizes internally but allocates only the first time a
-     * given track is armed.</p>
+     * track id via {@link InputLevelMonitorRegistry#get(String)}. Graph and
+     * registry publication prepare every track's monitor on the control
+     * thread, including tracks whose input routing is currently NONE.</p>
      */
     @RealTimeSafe
     private void tapArmedTrackInputs(InputLevelMonitorRegistry registry,
@@ -5123,17 +5141,18 @@ public final class AudioEngine {
             if (track == null || !track.isArmed()) {
                 continue;
             }
+            InputLevelMonitor monitor = registry.get(track.getId());
+            if (monitor == null) continue;
             InputRouting routing = track.getInputRouting();
             if (routing == null || routing.isNone()) {
-                InputLevelMonitor existing = registry.get(track.getId());
-                if (existing != null) existing.setRoutingUnavailable(false);
+                monitor.setRoutingUnavailable(false);
                 continue;
             }
             CaptureRoutingPlan plan = captureRoutingPlan;
             if (plan != null) {
                 Integer ordinal = plan.trackSources().get(track.getId());
                 if (ordinal == null) {
-                    if (source == 0) registry.getOrCreate(track.getId()).setRoutingUnavailable(true);
+                    if (source == 0) monitor.setRoutingUnavailable(true);
                     continue;
                 }
                 if (ordinal.intValue() != source) continue;
@@ -5141,10 +5160,9 @@ public final class AudioEngine {
             int first = routing.firstChannel();
             int count = routing.channelCount();
             if (first < 0 || count <= 0 || (long) first + count > numInputChannels) {
-                registry.getOrCreate(track.getId()).setRoutingUnavailable(true);
+                monitor.setRoutingUnavailable(true);
                 continue;
             }
-            InputLevelMonitor monitor = registry.getOrCreate(track.getId());
             monitor.setRoutingUnavailable(false);
             monitor.processInputChannels(inputBuffer, first, count, numFrames);
         }

@@ -1,7 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.recording.InputRoutingGuard;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
 import com.benesquivelmusic.daw.core.audio.*;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -23,11 +23,12 @@ class ArrangementArmInputCheckOffFxTest {
         EnumerationTrackingBackend backend=new EnumerationTrackingBackend();
         AudioEngine engine=new AudioEngine(FORMAT);
         engine.setStreamingProvision(new StreamingProvision(backend.name(),List.of(new BackendStreamRung(backend,DeviceId.defaultFor(backend.name())))));
-        AtomicReference<InputRoutingGuard> guard=new AtomicReference<>();
+        AtomicReference<TrackControlWiring> wiring=new AtomicReference<>();
+        FxDispatcher dispatcher=new FxDispatcher();
         AtomicReference<String> error=new AtomicReference<>(); CountDownLatch refused=new CountDownLatch(1);
         AtomicInteger armedSignals=new AtomicInteger();
         ArrangementStripFixture.onFx(()->{
-            guard.set(new InputRoutingGuard(project,engine,new FxDispatcher(),message->{error.set(message);refused.countDown();}));
+            wiring.set(TrackControlWiring.standalone(project,dispatcher,null,engine,message->{error.set(message);refused.countDown();}));
             vox.addChangeListener(kind->{if(kind==Track.ChangeKind.ARM && vox.isArmed())armedSignals.incrementAndGet();});
             vox.setArmed(true);
             assertThat(vox.isArmed()).isFalse();
@@ -40,6 +41,6 @@ class ArrangementArmInputCheckOffFxTest {
             assertThat(armedSignals.get()).isZero();
             assertThat(backend.enumerations.get()).isPositive();
             assertThat(backend.enumerationsOnFxThread.get()).isZero();
-        } finally { ArrangementStripFixture.onFx(()->guard.get().close());engine.shutdown(); }
+        } finally { ArrangementStripFixture.onFx(()->{wiring.get().dispose();dispatcher.dispose();});engine.shutdown(); }
     }
 }

@@ -122,7 +122,8 @@ public final class MiniClipIndicator extends GpuCanvasView {
     void refreshRoutingState() {
         unavailable = monitor.isRoutingUnavailable();
         pseudoClassStateChanged(ROUTING_UNAVAILABLE, unavailable);
-        String text = unavailable ? monitor.routingDescription() : "Input level; click to reset clips";
+        String text = unavailable ? monitor.routingDescription()
+                : "Input clip indicator. Click to reset; Alt+click resets all.";
         routingTooltip.setText(text);
         setAccessibleText(text);
     }

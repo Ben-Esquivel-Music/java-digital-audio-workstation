@@ -229,6 +229,15 @@ class TransportCommandPathTest {
 
             dispatch(new ToggleRecordCommand(), handler);
 
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+            while (computeOnFx(() -> handler.isPreparingTake() || handler.isTakeBeingWritten())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertThat(computeOnFx(() -> handler.isPreparingTake() || handler.isTakeBeingWritten()))
+                    .as("the refused capture open has completed its owned cleanup")
+                    .isFalse();
+
             assertThat(transport.getState())
                     .as("a take that cannot capture never moves the transport")
                     .isEqualTo(TransportState.STOPPED);

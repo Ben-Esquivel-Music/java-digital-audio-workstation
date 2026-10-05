@@ -747,8 +747,6 @@ final class TrackStripController {
         if (armed && inputLevelMonitorRegistry != null) {
             InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
             MiniClipIndicator indicator = new MiniClipIndicator(monitor, inputLevelMonitorRegistry);
-            Tooltip.install(indicator,
-                    new Tooltip("Input clipped. Click to reset; Alt+click resets all."));
             slot.getChildren().add(indicator);
         }
     }

@@ -9,10 +9,10 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Runtime registry of {@link InputLevelMonitor} instances keyed by track id.
  *
- * <p>The recording pipeline calls {@link #getOrCreate(String)} for each
- * currently-armed track when tapping the input signal ahead of any
- * processing. The mixer UI and arrangement-view track header call
- * {@link #get(String)} to read a monitor's latest snapshot for display.</p>
+ * <p>The engine's control paths call {@link #getOrCreate(String)} for every
+ * graph track before publishing the graph or registry. The audio callback
+ * uses {@link #get(String)} to tap input without allocating; the mixer UI
+ * and arrangement-view track header read the same monitor's snapshot.</p>
  *
  * <h2>Lifecycle</h2>
  *

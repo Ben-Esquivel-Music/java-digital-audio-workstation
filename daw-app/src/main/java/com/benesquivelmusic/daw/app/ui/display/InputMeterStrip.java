@@ -153,7 +153,8 @@ public final class InputMeterStrip extends GpuCanvasView {
     void refreshRoutingState() {
         unavailable = monitor.isRoutingUnavailable();
         pseudoClassStateChanged(ROUTING_UNAVAILABLE, unavailable);
-        String text = unavailable ? monitor.routingDescription() : "Input level; click to reset clips";
+        String text = unavailable ? monitor.routingDescription()
+                : "Input meter (pre-processing). Click clip LED to reset; Alt+click resets all.";
         routingTooltip.setText(text);
         setAccessibleText(text);
     }

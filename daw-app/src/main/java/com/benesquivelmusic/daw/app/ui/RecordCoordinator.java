@@ -108,6 +108,8 @@ final class RecordCoordinator {
     private final List<String> skippedMidiTracks = new ArrayList<>();
     private String midiStopFailure;
     private RecordingPipeline unannouncedTake;
+    private PendingStart unannouncedStart;
+    private boolean unannouncedCleanupRunning;
     private boolean unannouncedStreamClosed;
     private String unannouncedCleanupFailure;
     private Supplier<Boolean> confirmStopAndApply = this::showStopAndApplyConfirmation;
@@ -551,10 +553,24 @@ final class RecordCoordinator {
      */
     private void finishWrittenTake(RecordingPipeline pipeline) {
         closeCapturePeaks();
-        if (unannouncedTake == pipeline && !unannouncedStreamClosed && !retired) {
-            try { rollbackStream(); }
-            catch (RuntimeException cleanupFailure) { rememberUnannouncedCleanupFailure(cleanupFailure); }
-            finally { unannouncedStreamClosed = true; }
+        if (unannouncedTake == pipeline && !unannouncedStreamClosed) {
+            unannouncedStart.filesCleanupComplete = true;
+            if (unannouncedCleanupRunning) return;
+            unannouncedCleanupRunning = true;
+            Object streamGeneration = unannouncedStart.streamGeneration;
+            CompletableFuture.runAsync(() -> audioEngine.stopOwnedAudioStream(streamGeneration),
+                    RecordCoordinator::onAVirtualThread).whenComplete((_, closeFailure) -> postFx(() -> {
+                unannouncedCleanupRunning = false;
+                if (closeFailure != null) {
+                    rememberUnannouncedCleanupFailure(new IllegalStateException("Recording input cleanup failed", causeOf(closeFailure)));
+                    if (!retired) notificationBar.show(NotificationLevel.ERROR,
+                            "Recording input cleanup failed: " + shortDescription(causeOf(closeFailure)));
+                } else {
+                    unannouncedStreamClosed = true;
+                    finishWrittenTake(pipeline);
+                }
+            }));
+            return;
         }
         if (retired) {
             try { reportTakeOfAReplacedProject(pipeline); }
@@ -707,6 +723,7 @@ final class RecordCoordinator {
             writingPipeline = null;
             if (unannouncedTake == pipeline) {
                 unannouncedTake = null;
+                unannouncedStart = null;
                 unannouncedStreamClosed = false;
                 unannouncedCleanupFailure = null;
             }
@@ -1455,14 +1472,14 @@ final class RecordCoordinator {
     private void onInputStreamsPrepared(PendingStart start, Path audioDirectory, Instant requested, Throwable failure) {
         start.streamPrepared = true;
         if (start.cancelled || retired) {
-            if (failure == null && !retired && (project.getTransport().getState() == TransportState.PLAYING || transport.hasGraphInstruments())) abandonedStartCleanedUp(start);
+            start.filesCleanupComplete = true;
+            if (failure == null && !retired && (project.getTransport().getState() == TransportState.PLAYING || transport.hasGraphInstruments())) finishAbandonedStartCleanup(start);
             else cleanUpPreparedInputStream(start);
             return;
         }
         if (pendingStart != start) return;
         if (failure != null) {
-            pendingStart = null;
-            abortRecordingTake(failure);
+            failPreparedInputStart(start, failure);
             return;
         }
         try {
@@ -1471,20 +1488,37 @@ final class RecordCoordinator {
                 .whenComplete((takeDirectory, allocationFailure) ->
                         postFx(() -> onTakeDirectoryAllocated(start, takeDirectory, allocationFailure)));
         } catch (RuntimeException rejected) {
-            pendingStart = null;
-            abortRecordingTake(new IllegalStateException("Take-directory scheduling precondition failed: " + shortDescription(rejected), rejected));
+            failPreparedInputStart(start, new IllegalStateException("Take-directory scheduling precondition failed: " + shortDescription(rejected), rejected));
         }
     }
 
+    private void failPreparedInputStart(PendingStart start, Throwable failure) {
+        pendingStart = null;
+        abandonedStart = start;
+        start.failure = failure;
+        start.filesCleanupComplete = true;
+        abortRecordingTake(failure);
+        cleanUpPreparedInputStream(start);
+    }
+
     boolean deferInputStreamStop() {
+        if (unannouncedTake != null && !unannouncedStreamClosed) {
+            if (unannouncedStart.filesCleanupComplete && !unannouncedCleanupRunning) finishWrittenTake(unannouncedTake);
+            return true;
+        }
         PendingStart start = pendingStart != null ? pendingStart : abandonedStart;
         if (start == null) return false;
         if (!start.streamPrepared || start.inputCleanupRunning) return true;
-        if (start.inputCleanupFailed) { cleanUpPreparedInputStream(start); return true; }
+        if (start.failure != null && !start.filesCleanupComplete) return true;
+        if (start.inputCleanupFailed || start.failure != null || start.cancelled
+                && (retired || !transport.hasGraphInstruments() && project.getTransport().getState() != TransportState.PLAYING)) {
+            cleanUpPreparedInputStream(start);
+            return true;
+        }
         return false;
     }
     private void cleanUpPreparedInputStream(PendingStart start) {
-        if (start.inputCleanupRunning) return;
+        if (start.inputCleanupRunning || start.inputCleanupComplete) return;
         start.inputCleanupRunning = true;
         CompletableFuture.runAsync(() -> audioEngine.stopOwnedAudioStream(start.streamGeneration), RecordCoordinator::onAVirtualThread)
             .whenComplete((_, closeFailure) -> postFx(() -> {
@@ -1495,7 +1529,8 @@ final class RecordCoordinator {
                             "Recording input cleanup failed: " + shortDescription(causeOf(closeFailure)));
                 } else {
                     start.inputCleanupFailed = false;
-                    abandonedStartCleanedUp(start);
+                    start.inputCleanupComplete = true;
+                    finishAbandonedStartCleanup(start);
                 }
             }));
     }
@@ -1577,11 +1612,10 @@ final class RecordCoordinator {
             return;
         }
         if (failure != null) {
-            pendingStart = null;
             Throwable cause = causeOf(failure);
             LOG.log(Level.SEVERE, "Failed to create a take directory under the project's audio/takes folder",
                     cause instanceof UncheckedIOException unchecked ? unchecked.getCause() : cause);
-            abortRecordingTake(new IllegalStateException("Take-directory precondition failed: " + shortDescription(cause)));
+            failPreparedInputStart(start, new IllegalStateException("Take-directory precondition failed: " + shortDescription(cause)));
             return;
         }
         RecordingPipeline pipeline;
@@ -1698,6 +1732,7 @@ final class RecordCoordinator {
         RecordingPipeline pipeline = start.pipeline;
         writingPipeline = pipeline;
         unannouncedTake = pipeline;
+        unannouncedStart = start;
         recordingPipeline = null;
         pendingStart = null;
         transition(RecordState.ABORTED);
@@ -1724,7 +1759,7 @@ final class RecordCoordinator {
     }
 
     private void rememberUnannouncedCleanupFailure(RuntimeException failure) {
-        LOG.log(Level.WARNING, "A step of the unannounced take's cleanup failed; publication still settles", failure);
+        LOG.log(Level.WARNING, "A step of the unannounced take's cleanup failed; the take remains owned until cleanup settles", failure);
         String reason = shortDescription(failure);
         unannouncedCleanupFailure = unannouncedCleanupFailure == null ? reason : unannouncedCleanupFailure + "; " + reason;
     }
@@ -1842,18 +1877,21 @@ final class RecordCoordinator {
      * FX thread.
      */
     private void abandonedStartCleanedUp(PendingStart start) {
+        start.filesCleanupComplete = true;
+        if (abandonedStart == start && !start.inputCleanupComplete
+                && (start.failure != null || retired || !transport.hasGraphInstruments()
+                    && project.getTransport().getState() != TransportState.PLAYING)) {
+            cleanUpPreparedInputStream(start);
+        } else {
+            finishAbandonedStartCleanup(start);
+        }
+    }
+
+    private void finishAbandonedStartCleanup(PendingStart start) {
+        if (!start.filesCleanupComplete || start.inputCleanupRunning || start.inputCleanupFailed) return;
         if (abandonedStart == start) {
             abandonedStart = null;
-            if (start.failure != null && !retired) {
-                int suppressedBeforeCleanup = start.failure.getSuppressed().length;
-                rollbackStream(start.failure);
-                abortStep(start.failure, this::settle);
-                if (start.failure.getSuppressed().length > suppressedBeforeCleanup) {
-                    LOG.log(Level.WARNING, "A step of the failed take's cleanup failed", start.failure);
-                }
-            } else {
-                settle();
-            }
+            settle();
         }
     }
 
@@ -1920,6 +1958,8 @@ final class RecordCoordinator {
         Object streamGeneration = new Object();
         boolean inputCleanupRunning;
         boolean inputCleanupFailed;
+        boolean inputCleanupComplete;
+        boolean filesCleanupComplete;
         boolean warningPublished;
         final List<com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.Route> routeSnapshots;
         final com.benesquivelmusic.daw.core.audio.StreamingProvision provision;
@@ -1969,19 +2009,6 @@ final class RecordCoordinator {
     private Optional<Path> projectDirectory() {
         ProjectMetadata metadata = project.getMetadata();
         return metadata == null ? Optional.empty() : Optional.ofNullable(metadata.projectPath());
-    }
-
-    /** Closes the attempt's stream after MIDI, flush termination and directory cleanup. */
-    private void rollbackStream() {
-        RuntimeException failure = null;
-        try { audioEngine.stopAudioOutput(); }
-        catch (RuntimeException outputFailure) { failure = outputFailure; }
-        try { audioEngine.stop(); }
-        catch (RuntimeException engineFailure) {
-            if (failure == null) failure = engineFailure;
-            else failure.addSuppressed(engineFailure);
-        }
-        if (failure != null) throw failure;
     }
 
     private void abortRecordingTake(Throwable failure) {

@@ -97,16 +97,51 @@ class InputRoutingGuardStory326Test {
     }
     @Test void twoValidGroupArmsAreBothAcceptedAfterSerializedValidation() throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);AtomicReference<Track> other=new AtomicReference<>();
-        try {
+        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
+        AtomicInteger armedVmSignals=new AtomicInteger();
+        try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
+            EventBusPublisher.setDefault(bus);
             ArrangementStripFixture.onFx(()->{
+                rig.wiring.registry().trackVm(UUID.fromString(rig.track.getId())).armedProperty()
+                        .addListener((_,_,armed)->{if(armed)armedVmSignals.incrementAndGet();});
                 other.set(rig.project.createAudioTrack("Other"));
                 rig.project.createTrackGroup("Both",List.of(rig.track,other.get())).setArmed(true);
                 assertThat(rig.track.isArmed()).isFalse();assertThat(other.get().isArmed()).isFalse();
             });
-            assertThat(rig.backend.entered.await(5,TimeUnit.SECONDS)).isTrue();rig.backend.release.countDown();
+            assertThat(rig.backend.entered.await(5,TimeUnit.SECONDS)).isTrue();
+            assertThat(events).noneMatch(TrackEvent.Armed::armed);
+            assertThat(armedVmSignals.get()).isZero();
+            rig.backend.release.countDown();
             await(()->ArrangementStripFixture.onFx(()->rig.track.isArmed() && other.get().isArmed()));
+            await(()->events.stream().filter(TrackEvent.Armed::armed).count()==2);
+            assertThat(events).filteredOn(TrackEvent.Armed::armed).extracting(TrackEvent.Armed::trackId)
+                    .containsExactlyInAnyOrder(UUID.fromString(rig.track.getId()),UUID.fromString(other.get().getId()));
+            assertThat(events).filteredOn(event->!event.armed()).extracting(TrackEvent.Armed::trackId)
+                    .containsExactlyInAnyOrder(UUID.fromString(rig.track.getId()),UUID.fromString(other.get().getId()));
+            assertThat(armedVmSignals.get()).isEqualTo(1);
             assertThat(rig.errors).isEmpty();
-        } finally {ArrangementStripFixture.onFx(rig::close);}
+        } finally {EventBusPublisher.setDefault(previous);bus.close();ArrangementStripFixture.onFx(rig::close);}
+    }
+    @Test void invalidRoutingEditDisarmsThroughTheSharedIntentAndDoesNotAnnounceARearm() throws Exception {
+        Rig rig=ArrangementStripFixture.onFx(Rig::new);
+        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
+        try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
+            EventBusPublisher.setDefault(bus);
+            ArrangementStripFixture.onFx(()->rig.wiring.commandSink().accept(new ToggleArmCommand(rig.track,true)));
+            assertThat(rig.backend.entered.await(5,TimeUnit.SECONDS)).isTrue();rig.backend.release.countDown();
+            await(()->events.size()==1);
+            ArrangementStripFixture.onFx(()->{
+                assertThat(rig.track.isArmed()).isTrue();
+                rig.track.setInputRouting(new InputRouting(6,2));
+                assertThat(rig.track.isArmed()).isFalse();
+            });
+            await(()->!rig.errors.isEmpty() && events.size()==2);
+            assertThat(events).extracting(TrackEvent.Armed::armed).containsExactly(true,false);
+            assertThat(rig.errors).singleElement().asString().contains("Vox","2 input channels");
+            ArrangementStripFixture.onFx(()->assertThat(rig.track.isArmed()).isFalse());
+        } finally {EventBusPublisher.setDefault(previous);bus.close();ArrangementStripFixture.onFx(rig::close);}
     }
     @Test void routingEditAndDisposalRejectAStaleArmCompletion() throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);
