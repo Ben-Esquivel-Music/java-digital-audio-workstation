@@ -349,6 +349,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared over playback")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "input re-open finished before the held allocation");
             assertThat(onFx(engine::isStreamOpen)).as("fixture: Record opened the stream").isTrue();
 
             runOnFx(controller::toggleRecord);
@@ -383,6 +384,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared over the pause")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "input re-open finished before the held allocation");
             assertThat(onFx(engine::isStreamOpen)).as("fixture: Record opened the stream").isTrue();
 
             runOnFx(controller::toggleRecord);
@@ -555,6 +557,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         runOnFx(() -> controller.setStorageExecutorForTest(storage));
 
         runOnFx(controller::toggleRecord);
+        awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
         assertThat(storage.pending()).as("the allocation was handed to the storage executor, and is held")
                 .isEqualTo(1);
         assertThat(onFx(controller::isPreparingTake)).isTrue();
@@ -844,6 +847,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         });
         try {
             runOnFx(controller::toggleRecord);
+            awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
             storage.runPendingOffTheFxThread(); // the allocation; the turns it leads to prepare the take and begin capture
             awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
             assertThat(heldInAPassWhenItFailed).as("fixture: the capture thread was held in a pass when record() failed")
@@ -955,6 +959,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared inside the tail")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
             assertThat(storage.pending()).as("fixture: its allocation is held").isEqualTo(1);
 
             runOnFx(() -> postRollEnd.handle(new ActionEvent()));
@@ -1030,7 +1035,9 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared over playback")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
             assertThat(storage.pending()).as("fixture: its allocation is held").isEqualTo(1);
+            awaitOnFx(() -> storage.pending() == 1, "input re-open finished before the held allocation");
             assertThat(onFx(engine::isStreamOpen)).as("fixture: Record opened the stream").isTrue();
 
             runOnFx(() -> staleTimerEnd.handle(new ActionEvent()));
@@ -1104,6 +1111,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             try {
                 assertThat(onFx(next::isPreparingTake)).as("fixture: the next project's take is being prepared")
                         .isTrue();
+                awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
                 assertThat(storage.pending()).as("fixture: its allocation is held").isEqualTo(1);
                 assertThat(onFx(engine::isStreamOpen)).as("fixture: its Record opened the shared stream").isTrue();
                 assertThat(onFx(statusBar::getText)).as("fixture: the shared status bar")
@@ -1293,18 +1301,18 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         Files.writeString(audio, "not a directory", StandardCharsets.UTF_8);
     }
 
-    /**
-     * Presses Record and returns whether the output stream is open at the
-     * end of that FX turn — before the turn the allocation posts, which runs
-     * later.
-     */
+    /** Presses Record and observes stream truth at the off-FX storage handoff, before allocation runs. */
     private boolean recordOpensTheOutputStream() throws Exception {
-        AtomicBoolean open = new AtomicBoolean();
+        AtomicReference<Boolean> openBeforeAllocation = new AtomicReference<>();
         runOnFx(() -> {
+            controller.setStorageExecutorForTest(task -> {
+                openBeforeAllocation.compareAndSet(null, engine.isStreamOpen());
+                Thread.ofVirtual().name("test-take-storage").start(task);
+            });
             controller.toggleRecord();
-            open.set(engine.isStreamOpen());
         });
-        return open.get();
+        awaitOnFx(() -> openBeforeAllocation.get() != null, "input is open before allocation is dispatched");
+        return openBeforeAllocation.get();
     }
 
     /**

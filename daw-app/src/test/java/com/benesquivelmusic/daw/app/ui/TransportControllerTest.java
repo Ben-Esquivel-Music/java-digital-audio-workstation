@@ -1003,10 +1003,7 @@ class TransportControllerTest {
     }
 
     @Test
-    void recordStartWarnsWhenAnArmedTrackChoseAnInputOtherThanTheSessionDevice() throws Exception {
-        // Story 322 — the per-track index does not route audio (recording opens
-        // the SESSION device); a disagreement is surfaced as one WARNING naming
-        // the track and both devices, never silently ignored.
+    void recordStartHonorsTheArmedTrackInputDevice() throws Exception {
         DawProject project = new DawProject("test", new AudioFormat(48000, 2, 16, 256));
         giveTheProjectADirectory(project);   // story 323: the take lives in the project
         Track vox = project.createAudioTrack("Vox");
@@ -1023,19 +1020,16 @@ class TransportControllerTest {
             record(controller);
             awaitSessionInputCheck(controller);
 
-            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
-            assertThat(notificationBar.getMessage())
-                    .contains("Recording uses the session input 'Session In [ASIO]'")
-                    .contains("track(s) Vox chose '" + mockDevice.qualifiedName() + "'")
-                    .doesNotContain("Agreeing")
-                    .contains("story 326");
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
+            assertThat(audioEngine.getCaptureRoutingPlan().trackSources()).containsKey(vox.getId());
+            assertThat(audioEngine.getCaptureRoutingPlan().sources().get(0).device().name()).isEqualTo(mockDevice.qualifiedName());
         } finally {
             stopAndAwaitTheTake(controller);
         }
     }
 
     @Test
-    void recordStartEnumeratesDevicesOffTheFxThreadAndStillWarns() throws Exception {
+    void recordStartEnumeratesRoutedDevicesOffTheFxThread() throws Exception {
         // Story 322 fix round (S7): AudioBackend.listDevices() is a driver walk
         // (on ASIO it blocks on the control thread), so the record-start check
         // enumerates on a worker and only its WARNING lands on the FX thread.
@@ -1057,9 +1051,8 @@ class TransportControllerTest {
 
             assertThat(backend.enumerations.get()).as("the check did enumerate (off-thread)").isPositive();
             assertThat(backend.enumerationsOnFxThread.get()).as("never on the FX thread").isZero();
-            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
-            assertThat(notificationBar.getMessage())
-                    .contains("track(s) Vox chose '" + mockDevice.qualifiedName() + "'");
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
+            assertThat(audioEngine.getCaptureRoutingPlan().trackSources()).containsKey(vox.getId());
         } finally {
             stopAndAwaitTheTake(controller);
         }
@@ -2055,6 +2048,9 @@ class TransportControllerTest {
             assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.PREPARING);
             assertThat(recIndicator.isVisible()).isFalse();
             assertThat(controller.recordCoordinator().statusProperty().get()).isEqualTo(TransportController.TAKE_PREPARING_MESSAGE);
+        });
+        awaitOnFx(() -> allocation.get() != null, "input preparation dispatches directory allocation");
+        runStrictHandler(() -> {
             controller.toggleRecord();
             assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.FINALIZING);
             assertThat(controller.recordCoordinator().recordAvailableProperty().get()).isFalse();
@@ -2063,6 +2059,120 @@ class TransportControllerTest {
         allocation.get().run();
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "cancelled start removes its directory");
         assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE);
+    }
+
+    @Test
+    void story326TheNamedShrinkWarningRemainsVisibleAfterRecordingStarts() throws Exception {
+        DawProject project = new DawProject("Shrinking input", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track vox = project.createAudioTrack("Vox"); vox.setArmed(true);
+        MockAudioBackend delegate = new MockAudioBackend();
+        AudioBackend backend = new AudioBackend() {
+            public String name() { return delegate.name(); }
+            public boolean isAvailable() { return true; }
+            public boolean supportsStreaming() { return true; }
+            public List<AudioDeviceInfo> listDevices() { return delegate.listDevices(); }
+            public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format, int frames) {
+                delegate.open(device, format, frames, CaptureRequirement.REQUIRED, device, 1);
+            }
+            public int openedInputChannels() { return delegate.openedInputChannels(); }
+            public Flow.Publisher<AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
+            public void sink(AudioBlock block) { delegate.sink(block); }
+            public boolean isOpen() { return delegate.isOpen(); }
+            public void close() { delegate.close(); }
+        };
+        TransportController controller = newController(project, backend);
+        audioEngine.validateInputRouting(List.of(vox));
+        try {
+            record(controller);
+            assertThat(project.getTransport().getState()).isEqualTo(TransportState.RECORDING);
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
+            assertThat(notificationBar.getMessage()).contains("Vox", "Mock Device", "Input 1-2");
+            TakeManifest manifest = TakeManifest.read(TakeManifest.manifestPath(controller.activeTakeDirectory().orElseThrow()));
+            assertThat(manifest.routingFlags()).hasSize(1);
+        } finally { stopAndAwaitTheTake(controller); }
+    }
+
+    @Test
+    void story326StopStaysResponsiveWhileNativeInputOpenIsHeld() throws Exception {
+        DawProject project=new DawProject("saved",new AudioFormat(48000,2,16,256));giveTheProjectADirectory(project);
+        project.createAudioTrack("Vox").setArmed(true);
+        OpenCountingBackend backend=new OpenCountingBackend();
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        backend.beforeOpen=()->{entered.countDown();try{assertThat(release.await(5,TimeUnit.SECONDS)).isTrue();}catch(InterruptedException e){throw new IllegalStateException(e);}};
+        TransportController controller=newController(project,backend);AtomicInteger allocations=new AtomicInteger();
+        try {
+            runStrictHandler(()->{controller.setStorageExecutorForTest(task->{allocations.incrementAndGet();Thread.ofVirtual().start(task);});controller.toggleRecord();});
+            assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
+            runStrictHandler(controller::stop);
+            assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.FINALIZING);
+            release.countDown();awaitOnFx(()->!controller.isTakeBeingWritten(),"cancelled native open releases before settling");
+            assertThat(backend.isOpen()).isFalse();assertThat(allocations.get()).isZero();
+            assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        } finally {release.countDown();stopAndAwaitTheTake(controller);}
+    }
+
+    @Test
+    void story326CancelDuringGraphOutputOpenPreservesStoppedKeyboardAudition() throws Exception {
+        DawProject project = new DawProject("Keyboard", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track keyboard = project.createAudioTrack("Keyboard");
+        keyboard.setArmed(true); keyboard.setInputRouting(InputRouting.NONE);
+        project.getMixerChannelForTrack(keyboard).addInsert(PluginSignalPathActivationTest.builtInSlot(
+                com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin.class));
+        OpenCountingBackend backend = new OpenCountingBackend();
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        backend.beforeOpen = () -> { entered.countDown(); try { assertThat(release.await(5, TimeUnit.SECONDS)).isTrue(); }
+            catch (InterruptedException e) { throw new IllegalStateException(e); } };
+        TransportController controller = newController(project, backend);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        AtomicInteger allocations = new AtomicInteger();
+        try {
+            runStrictHandler(() -> { controller.setStorageExecutorForTest(task -> allocations.incrementAndGet()); controller.toggleRecord(); });
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            runStrictHandler(controller::stop);
+            release.countDown();
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "cancelled graph take settles while audition continues");
+            assertThat(backend.isOpen()).isTrue(); assertThat(audioEngine.isRunning()).isTrue();
+            assertThat(allocations.get()).isZero();
+            assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        } finally { release.countDown(); stopAndAwaitTheTake(controller); audioEngine.stopAudioOutput(); project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS); }
+    }
+
+    @Test
+    void story326ASecondStopDoesNotBlockFxDuringOwnedInputCleanup() throws Exception {
+        DawProject project=new DawProject("saved",new AudioFormat(48000,2,16,256));giveTheProjectADirectory(project);
+        project.createAudioTrack("Vox").setArmed(true);OpenCountingBackend backend=new OpenCountingBackend();
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1),closing=new CountDownLatch(1),closed=new CountDownLatch(1);
+        backend.beforeOpen=()->{entered.countDown();try{assertThat(release.await(5,TimeUnit.SECONDS)).isTrue();}catch(InterruptedException e){throw new IllegalStateException(e);}};
+        backend.beforeClose=()->{closing.countDown();try{assertThat(closed.await(5,TimeUnit.SECONDS)).isTrue();}catch(InterruptedException e){throw new IllegalStateException(e);}};
+        TransportController controller=newController(project,backend);
+        try {
+            runStrictHandler(controller::toggleRecord);assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
+            runStrictHandler(controller::stop);release.countDown();assertThat(closing.await(5,TimeUnit.SECONDS)).isTrue();
+            runStrictHandler(controller::stop);
+            assertThat(controller.recordCoordinator().getState()).isEqualTo(com.benesquivelmusic.daw.app.ui.recording.RecordState.FINALIZING);
+            closed.countDown();awaitOnFx(()->!controller.isTakeBeingWritten(),"cleanup settles only after driver close");
+            assertThat(backend.isOpen()).isFalse();
+        } finally {release.countDown();closed.countDown();stopAndAwaitTheTake(controller);}
+    }
+
+    @Test
+    void story326RoutingEditedWhileNativeOpenIsHeldRefusesBeforeDirectoryAllocation() throws Exception {
+        DawProject project=new DawProject("saved",new AudioFormat(48000,2,16,256));giveTheProjectADirectory(project);
+        Track track=project.createAudioTrack("Vox");track.setArmed(true);OpenCountingBackend backend=new OpenCountingBackend();
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        backend.beforeOpen=()->{entered.countDown();try{assertThat(release.await(5,TimeUnit.SECONDS)).isTrue();}catch(InterruptedException e){throw new IllegalStateException(e);}};
+        TransportController controller=newController(project,backend);AtomicInteger allocations=new AtomicInteger();
+        try {
+            runStrictHandler(()->{controller.setStorageExecutorForTest(task->{allocations.incrementAndGet();Thread.ofVirtual().start(task);});controller.toggleRecord();});
+            assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
+            runStrictHandler(()->track.setInputRouting(new com.benesquivelmusic.daw.core.audio.InputRouting(6,2)));
+            release.countDown();awaitOnFx(()->!controller.isRecordingInFlight(),"changed input start is refused");
+            assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(notificationBar.getMessage()).contains("Vox","routing changed");assertThat(allocations.get()).isZero();
+            assertThat(backend.isOpen()).isFalse();assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        } finally {release.countDown();stopAndAwaitTheTake(controller);}
     }
 
     @Test
@@ -3958,6 +4068,7 @@ class TransportControllerTest {
         private final AtomicInteger opens = new AtomicInteger();
         private List<String> lifecycle;
         private Runnable beforeClose = () -> { };
+        private Runnable beforeOpen = () -> { };
 
         @Override public String name() { return delegate.name(); }
         @Override public boolean isAvailable() { return true; }
@@ -3965,12 +4076,14 @@ class TransportControllerTest {
         @Override public List<AudioDeviceInfo> listDevices() { return delegate.listDevices(); }
         @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
                                    int bufferFrames) {
+            beforeOpen.run();
             opens.incrementAndGet();
             if (lifecycle != null) lifecycle.add("stream-opened");
             delegate.open(device, format, bufferFrames);
         }
         @Override public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
                                    int bufferFrames, CaptureRequirement capture) {
+            beforeOpen.run();
             opens.incrementAndGet();
             if (lifecycle != null) lifecycle.add("stream-opened");
             delegate.open(device, format, bufferFrames);

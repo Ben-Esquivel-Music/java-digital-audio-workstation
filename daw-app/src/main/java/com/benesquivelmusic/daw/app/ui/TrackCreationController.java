@@ -82,9 +82,7 @@ final class TrackCreationController {
         }
 
         AudioDeviceInfo selectedDevice = selected.get();
-        // Story 322: the per-track choice ALSO becomes the session input
-        // (persisted + applied to the engine) — the per-track index below is
-        // kept for story 326 but does not route audio today.
+        // Keep the session default aligned with the explicit track selection.
         deps.sessionInputSelection().select(selectedDevice);
         audioTrackCounter++;
         String name = "Audio " + audioTrackCounter;
@@ -96,18 +94,7 @@ final class TrackCreationController {
             @Override public void execute() {
                 if (initialExecute) {
                     track = deps.project().get().createAudioTrack(name);
-                    // Persisted per-track user intent (ProjectSerializer /
-                    // ProjectDeserializer) that is currently INERT on the
-                    // capture path: story 316 routes recording through the
-                    // engine's provisioned device — TransportController calls
-                    // startAudioInputOutput() with no index — so this index has
-                    // no reader today. Its consumer is story 326 "Multi-Channel
-                    // Input Capture Routing", whose union open must honour every
-                    // armed track's input-device choice; deleting or disabling
-                    // this writer would destroy the state 326 needs. The
-                    // selection SURFACE itself is owned by stories 092
-                    // (per-track audio I/O routing) and 215 (driver-reported
-                    // channel names).
+                    // Physical capture resolves this device for the armed routing union.
                     track.setInputDeviceIndex(selectedDevice.index());
                     trackItem = deps.trackStripController().get().addTrackToUI(track);
                     initialExecute = false;

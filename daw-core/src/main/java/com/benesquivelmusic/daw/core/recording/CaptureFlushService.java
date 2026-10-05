@@ -290,7 +290,31 @@ public final class CaptureFlushService {
         }
     }
 
-    private final CaptureRing ring;
+    private CaptureRing ring;
+    private CaptureRing[] inputRings;
+    private int inputSource;
+    private double[] sourcePreviousBeat;
+    private long[] sourceLastOverflow;
+    private long[] sourceGapAnchorSequence;
+    private long[] sourceGapAnchorFrame;
+    private long[] sourceLastAppliedEndFrame;
+    private boolean[] sourceTruncationEpisode;
+    private java.util.concurrent.atomic.AtomicLongArray sourceOverflowNoted;
+    private int[] openedInputWidths;
+    void setOpenedInputWidths(int[] widths) { openedInputWidths = widths.clone(); }
+    void setInputRings(CaptureRing[] rings) {
+        if (started) throw new IllegalStateException("input rings already started");
+        inputRings = rings.clone();
+        sourcePreviousBeat = new double[rings.length];
+        Arrays.fill(sourcePreviousBeat, -1.0);
+        sourceLastOverflow = new long[rings.length];
+        sourceGapAnchorSequence = new long[rings.length];
+        sourceGapAnchorFrame = new long[rings.length];
+        Arrays.fill(sourceGapAnchorSequence, CaptureRing.NO_DROP);
+        sourceLastAppliedEndFrame = new long[rings.length];
+        sourceTruncationEpisode = new boolean[rings.length];
+        sourceOverflowNoted = new java.util.concurrent.atomic.AtomicLongArray(rings.length);
+    }
     private final TakeConfig config;
     private final List<TrackCapture> captures;
     private final DiskHeadroomWatch headroom;
@@ -500,7 +524,7 @@ public final class CaptureFlushService {
                 .ringSlots(ring.capacity())
                 .ringFrames(ring.slotFrames());
         for (TrackCapture capture : this.captures) {
-            manifest.addTrack(new TrackEntry(capture.trackId(), format.channels(), capture.compensationFrames()));
+            manifest.addTrack(new TrackEntry(capture.trackId(), capture.routed().length, capture.compensationFrames()));
         }
         this.thread = Thread.ofPlatform()
                 .name(THREAD_NAME)
@@ -614,6 +638,10 @@ public final class CaptureFlushService {
                 for (TrackCapture capture : captures) {
                     capture.prepareStandby();
                 }
+            }
+            if (openedInputWidths != null) for (TrackCapture capture : captures) {
+                if (!capture.isInstrument() && (long) capture.routing().firstChannel() + capture.routing().channelCount()
+                        > openedInputWidths[capture.inputSource()]) flagUnavailable(capture, openedInputWidths[capture.inputSource()]);
             }
             writeManifestOnce(manifest.build());
             if (!abortRequested) {
@@ -804,7 +832,9 @@ public final class CaptureFlushService {
         awaitingProducerExit = true;
         boolean quiescent;
         try {
-            quiescent = ring.awaitProducerQuiescent(producerQuiescenceBoundNanos);
+            quiescent = true;
+            if (inputRings == null) quiescent = ring.awaitProducerQuiescent(producerQuiescenceBoundNanos);
+            else for (CaptureRing input : inputRings) quiescent &= input.awaitProducerQuiescent(producerQuiescenceBoundNanos);
         } finally {
             awaitingProducerExit = false;
         }
@@ -842,15 +872,18 @@ public final class CaptureFlushService {
             return;
         }
         leftBehindNoted = true;
-        long leftBehind = ring.publishedBlocks() - ring.releasedBlocks();
-        if (leftBehind <= 0) {
-            return;
+        int count = inputRings == null ? 1 : inputRings.length;
+        for (int i = 0; i < count; i++) {
+            CaptureRing input = inputRings == null ? ring : inputRings[i];
+            long leftBehind = input.publishedBlocks() - input.releasedBlocks();
+            if (leftBehind <= 0) continue;
+            inputSource = i;
+            long gapStart = Math.max(0L, inputRings == null ? lastAppliedEndFrame : sourceLastAppliedEndFrame[i]);
+            addInputGaps(gapStart, leftBehind);
+            manifestDirty = true;
+            warn(leftBehind + " capture block(s) were published after the final sweep and are not part of the take; the manifest records the gap");
         }
-        long gapStart = Math.max(0L, lastAppliedEndFrame);
-        manifest.addGap(new GapEntry(GapEntry.ALL_TRACKS, gapStart, leftBehind));
-        manifestDirty = true;
-        warn(leftBehind + " capture block(s) were published after the final sweep of the stop and are not part of"
-                + " the take, which ends at frame " + gapStart + "; the take manifest records the gap");
+        inputSource = 0;
     }
 
     /**
@@ -877,9 +910,33 @@ public final class CaptureFlushService {
      * end of the pass; returns whether any block was applied.
      */
     private boolean drainOnce() {
+        if (inputRings == null) return drainInputRing();
+        boolean progressed = false;
+        for (int i = 0; i < inputRings.length; i++) {
+            inputSource = i;
+            ring = inputRings[i];
+            previousBeat = sourcePreviousBeat[i];
+            lastOverflowSeen = sourceLastOverflow[i];
+            gapAnchorSequence = sourceGapAnchorSequence[i];
+            gapAnchorFrame = sourceGapAnchorFrame[i];
+            lastAppliedEndFrame = sourceLastAppliedEndFrame[i];
+            truncationEpisodeOpen = sourceTruncationEpisode[i];
+            progressed |= drainInputRing();
+            sourcePreviousBeat[i] = previousBeat;
+            sourceLastOverflow[i] = lastOverflowSeen;
+            sourceGapAnchorSequence[i] = gapAnchorSequence;
+            sourceGapAnchorFrame[i] = gapAnchorFrame;
+            sourceLastAppliedEndFrame[i] = lastAppliedEndFrame;
+            sourceTruncationEpisode[i] = truncationEpisodeOpen;
+        }
+        inputSource = 0; ring = inputRings[0];
+        return progressed;
+    }
+    private boolean drainInputRing() {
         boolean progressed = false;
         CaptureRing.Slot slot;
-        while ((slot = ring.peek()) != null) {
+        long passEnd = ring.publishedBlocks();
+        while (ring.releasedBlocks() < passEnd && (slot = ring.peek()) != null) {
             progressed = true;
             applyBlock(slot);
             // Before the release and the count, so awaitFlushed covers it.
@@ -897,7 +954,7 @@ public final class CaptureFlushService {
                 gapAnchorFrame = startFrame + numFrames;
             }
             ring.release();
-            appliedBlocks = ring.releasedBlocks();
+            appliedBlocks = appliedBlocks + 1;
             BlockObserver observer = blockObserver;
             if (observer != null) {
                 observer.onBlockApplied(sequence, startFrame, numFrames);
@@ -1080,7 +1137,7 @@ public final class CaptureFlushService {
         }
         truncationEpisodeOpen = true;
         long gapStart = Math.max(0L, keptEndFrame);
-        manifest.addGap(new GapEntry(GapEntry.ALL_TRACKS, gapStart, 0));
+        addInputGaps(gapStart, 0);
         manifestDirty = true;
         int delivered = slot.numFrames() + truncated;
         warn("Capture block of " + delivered + " frames is longer than the " + ring.slotFrames()
@@ -1138,6 +1195,7 @@ public final class CaptureFlushService {
     private void recordToSessions(CaptureRing.Slot slot, int offset, int sliceFrames,
                                   boolean punch, int fadeInFrames, int fadeOutFrames) {
         for (TrackCapture capture : captures) {
+            if (capture.inputSource() != inputSource) continue;
             RecordingSession session = capture.session();
             if (session == null) {
                 continue;
@@ -1153,9 +1211,11 @@ public final class CaptureFlushService {
             InputRouting routing = capture.routing();
             int firstCh = instrument ? 0 : routing.firstChannel();
             int chCount = instrument ? available : routing.channelCount();
+            boolean unavailable = !instrument && (long) firstCh + chCount > available;
+            if (unavailable) flagUnavailable(capture, available);
             for (int ch = 0; ch < chCount && ch < routed.length; ch++) {
                 int srcCh = firstCh + ch;
-                if (srcCh < available) {
+                if (!unavailable && srcCh < available) {
                     System.arraycopy(rows[srcCh], offset, routed[ch], 0, sliceFrames);
                 } else {
                     Arrays.fill(routed[ch], 0, sliceFrames, 0f);
@@ -1228,6 +1288,7 @@ public final class CaptureFlushService {
      */
     private void finalizeLoopLap() {
         for (TrackCapture capture : captures) {
+            if (capture.inputSource() != inputSource) continue;
             try {
                 capture.finalizeLane(true, true);
             } finally {
@@ -1270,12 +1331,35 @@ public final class CaptureFlushService {
         // Read after the count: the callback stores the marker first.
         long droppedAfter = ring.droppedAfterSequence();
         long gapStart = Math.max(0L, gapAnchorSequence == droppedAfter ? gapAnchorFrame : lastAppliedEndFrame);
-        manifest.addGap(new GapEntry(GapEntry.ALL_TRACKS, gapStart, dropped)).overflowBlocks(overflow);
+        addInputGaps(gapStart, dropped);
+        manifest.overflowBlocks(totalOverflow());
         manifestDirty = true;
         warn("Capture ring overflow: " + dropped + " block(s) dropped at frame " + gapStart
                 + " (" + overflow + " dropped in total); the take manifest records the gap");
         flushManifest();
-        overflowNoted = overflow;
+        overflowNoted += dropped;
+        if (sourceOverflowNoted != null) sourceOverflowNoted.set(inputSource, overflow);
+    }
+
+    private long totalOverflow() {
+        if (inputRings == null) return ring.overflowCount();
+        long total = 0;
+        for (CaptureRing input : inputRings) total += input.overflowCount();
+        return total;
+    }
+    private void addInputGaps(long start, long dropped) {
+        if (inputRings == null || inputRings.length == 1) manifest.addGap(new GapEntry(GapEntry.ALL_TRACKS, start, dropped));
+        else for (TrackCapture capture : captures) if (capture.inputSource() == inputSource)
+            manifest.addGap(new GapEntry(capture.trackId(), start, dropped));
+    }
+    private void flagUnavailable(TrackCapture capture, int available) {
+        if (!capture.flagRouting()) return;
+        InputRouting routing = capture.routing();
+        manifest.addRoutingFlag(new TakeManifest.RoutingFlag(capture.trackId(), capture.inputDeviceName(),
+                routing.firstChannel(), routing.channelCount(), available));
+        manifestDirty = true;
+        warn("Track '" + capture.trackName() + "', device '" + capture.inputDeviceName() + "': "
+                + routing.displayName() + " exceeds " + available + " opened input channels; this track captures silence");
     }
 
     private void failAndSeal(Throwable failure) {
@@ -1604,10 +1688,16 @@ public final class CaptureFlushService {
      */
     public void awaitFlushed(Duration timeout) {
         Objects.requireNonNull(timeout, "timeout must not be null");
-        long target = ring.publishedBlocks();
-        long targetOverflow = ring.overflowCount();
+        CaptureRing[] inputs = inputRings == null ? new CaptureRing[] { ring } : inputRings;
+        long[] targets = new long[inputs.length];
+        long[] overflowTargets = new long[inputs.length];
+        long target = 0, targetOverflow = 0;
+        for (int i = 0; i < inputs.length; i++) {
+            targets[i] = inputs[i].publishedBlocks(); overflowTargets[i] = inputs[i].overflowCount();
+            target += targets[i]; targetOverflow += overflowTargets[i];
+        }
         long deadline = System.nanoTime() + timeout.toNanos();
-        while (appliedBlocks < target || overflowNoted < targetOverflow) {
+        while (!allInputsFlushed(inputs, targets, overflowTargets)) {
             if (!running) {
                 throw new IllegalStateException("capture-flush is not running: applied " + appliedBlocks
                         + " of " + target + " published block(s), noted " + overflowNoted + " of "
@@ -1899,8 +1989,16 @@ public final class CaptureFlushService {
     }
 
     /** Returns how many incoming blocks the callback dropped because the ring was full. */
+    private boolean allInputsFlushed(CaptureRing[] inputs, long[] targets, long[] overflows) {
+        for (int i = 0; i < inputs.length; i++) {
+            if (inputs[i].releasedBlocks() < targets[i]) return false;
+            if ((sourceOverflowNoted == null ? overflowNoted : sourceOverflowNoted.get(i)) < overflows[i]) return false;
+        }
+        return true;
+    }
+
     public long overflowCount() {
-        return ring.overflowCount();
+        return totalOverflow();
     }
 
     /** Returns whether the take has been sealed (normally or early). */

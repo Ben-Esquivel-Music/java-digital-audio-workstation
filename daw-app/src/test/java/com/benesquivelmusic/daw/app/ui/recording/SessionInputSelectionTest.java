@@ -500,9 +500,8 @@ class SessionInputSelectionTest {
         assertThat(selection.mismatches(List.of(armed("Agrees", MIC.index()), drums), DEVICES))
                 .containsExactly(drums);
         assertThat(selection.mismatchWarning(List.of(drums), DEVICES)).hasValue(
-                "Recording uses the session input 'Mic In [ASIO]'; "
-                        + "track(s) Drums chose an input device that is no longer available "
-                        + "— multi-device capture is story 326");
+                "Session input is 'Mic In [ASIO]'; "
+                        + "track(s) Drums chose an input device that is no longer available");
     }
 
     @Test
@@ -550,16 +549,14 @@ class SessionInputSelectionTest {
                 List.of(armed("Vox", USB.index()), armed("Drums", 42), armed("Keys", 99), armed("Guitar", USB.index())),
                 DEVICES))
                 .as("one unavailable group for every unresolved index, placed where its first track appears")
-                .hasValue("Recording uses the session input 'Mic In [ASIO]'; "
+                .hasValue("Session input is 'Mic In [ASIO]'; "
                         + "track(s) Vox, Guitar chose 'USB In [WASAPI]'; "
-                        + "track(s) Drums, Keys chose an input device that is no longer available "
-                        + "— multi-device capture is story 326");
+                        + "track(s) Drums, Keys chose an input device that is no longer available");
         assertThat(selection.mismatchWarning(
                 List.of(armed("Drums", 42), armed("Vox", USB.index())), DEVICES))
-                .hasValue("Recording uses the session input 'Mic In [ASIO]'; "
+                .hasValue("Session input is 'Mic In [ASIO]'; "
                         + "track(s) Drums chose an input device that is no longer available; "
-                        + "track(s) Vox chose 'USB In [WASAPI]' "
-                        + "— multi-device capture is story 326");
+                        + "track(s) Vox chose 'USB In [WASAPI]'");
     }
 
     @Test
@@ -575,10 +572,9 @@ class SessionInputSelectionTest {
 
         assertThat(warning).isPresent();
         assertThat(warning.get()).isEqualTo(
-                "Recording uses the session input 'Mic In [ASIO]'; "
+                "Session input is 'Mic In [ASIO]'; "
                         + "track(s) Vox, Guitar chose 'USB In [WASAPI]'; "
-                        + "track(s) Keys chose 'Line In [WASAPI]' "
-                        + "— multi-device capture is story 326");
+                        + "track(s) Keys chose 'Line In [WASAPI]'");
     }
 
     @Test
@@ -591,7 +587,7 @@ class SessionInputSelectionTest {
         assertThat(selection.selectedIndexIn(DEVICES)).isEqualTo(Track.NO_INPUT_DEVICE);
         assertThat(selection.mismatchWarning(List.of(armed("Vox", MIC.index())), DEVICES))
                 .hasValueSatisfying(text -> assertThat(text)
-                        .startsWith("Recording uses the session input '<default>'; track(s) Vox chose 'Mic In [ASIO]'"));
+                        .startsWith("Session input is '<default>'; track(s) Vox chose 'Mic In [ASIO]'"));
     }
 
     @Test

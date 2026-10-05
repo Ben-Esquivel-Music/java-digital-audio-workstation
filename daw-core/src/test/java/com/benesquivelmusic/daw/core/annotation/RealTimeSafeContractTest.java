@@ -1490,7 +1490,7 @@ class RealTimeSafeContractTest {
             CAPTURE_RING + "#claim", CAPTURE_RING + "#publish", CAPTURE_SLOT + "#copySource",
             CAPTURE_FLUSH + "#signal", AUDIO_ENGINE + "#graphInstrumentRecordingBuffer",
             RENDER_PIPELINE + "#graphInstrumentRecordingBuffer", TRANSPORT + "#getPositionInBeats",
-            TRANSPORT + "#getPunchRegion", TRANSPORT + "#isLoopEnabled");
+            TRANSPORT + "#getPunchRegion", TRANSPORT + "#getLoopWindow");
 
     private static ReachableScan walkCapturePath() throws Exception {
         return walkReachable(Class.forName(CAPTURE_CALLBACK.replace('/', '.')), named(CAPTURE_CALLBACK_ROOT),

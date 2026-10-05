@@ -186,6 +186,17 @@ public final class InputLevelMonitor {
      * @param channelCount  number of contiguous channels to summarize
      * @param numFrames     number of frames in this block
      */
+    private volatile boolean routingUnavailable;
+    private volatile String routingDescription = "Input routing unavailable; input is silent";
+    public String routingDescription() { return routingDescription; }
+    public void setRoutingDescription(String description) { routingDescription = description; }
+    /** The input routing cannot be satisfied; meter surfaces share the capture warning. */
+    public boolean isRoutingUnavailable() { return routingUnavailable; }
+    public void setRoutingUnavailable(boolean unavailable) {
+        routingUnavailable = unavailable;
+        if (unavailable) latest = InputLevelMeter.SILENCE;
+    }
+
     public void processInputChannels(float[][] channels,
                                      int firstChannel,
                                      int channelCount,

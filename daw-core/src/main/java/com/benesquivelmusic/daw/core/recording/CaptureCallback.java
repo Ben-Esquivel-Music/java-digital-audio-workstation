@@ -78,6 +78,13 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     private final double punchFrameScale;
     private final double tempoBpm;
 
+    private boolean independentFrameCursor;
+    private long nextInputFrame;
+    void useIndependentFrameCursor() {
+        independentFrameCursor = true;
+        nextInputFrame = startFrameOf(transport.getPositionInBeats());
+    }
+
     /**
      * Creates the callback of one take. Caller thread, before the callback
      * is installed.
@@ -145,12 +152,20 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         }
         CaptureRing.Slot slot = ring.claim();
         if (slot == null) {
+            if (independentFrameCursor) nextInputFrame += numFrames;
             return false;
         }
 
         // The recording callback fires *before* advancePosition(), so
         // getPositionInBeats() still reflects this block's start.
-        double beat = transport.getPositionInBeats();
+        double beat = independentFrameCursor ? nextInputFrame / sampleRate * tempoBpm / 60.0
+                : transport.getPositionInBeats();
+        if (independentFrameCursor) nextInputFrame += numFrames;
+        Transport.LoopWindow loop = transport.getLoopWindow();
+        if (independentFrameCursor && loop.enabled() && beat >= loop.endInBeats()) {
+            double length = loop.endInBeats() - loop.startInBeats();
+            beat = loop.startInBeats() + (beat - loop.startInBeats()) % length;
+        }
         slot.setBeatPosition(beat);
         slot.setStartFrame(startFrameOf(beat));
         // One load: the enabled flag and the frames come from the same region.
@@ -162,7 +177,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         } else {
             slot.setPunchEnabled(false);
         }
-        slot.setLoopEnabled(transport.isLoopEnabled());
+        slot.setLoopEnabled(loop.enabled());
 
         slot.setNumFrames(numFrames);
         int excess = numFrames - slot.slotFrames();

@@ -181,19 +181,9 @@ final class TrackStripController {
      */
     private final Supplier<TrackControlWiring> trackControlWiring;
     /**
-     * Story 322 — the ONE session-level input device the per-track input
-     * dialog selects and the arm-time mismatch warning is computed against
-     * (Audio Engine Wiring Design Book §5.6 "Per-track input device").
+     * Persisted session input default selected by the input-port dialog.
      */
     private final SessionInputSelection sessionInputSelection;
-    /**
-     * The worker of the most recent arm-time input check (story 322 fix
-     * round, S7): the device enumeration behind the mismatch WARNING runs off
-     * the FX thread; only the comparison (over the FX-owned track list) and
-     * the toast are marshalled back. Kept so a test can wait for the check to
-     * land; {@code null} before the first arm.
-     */
-    private volatile Thread sessionInputCheck;
     /** Live bindings keyed by strip node — present only while the strip is in the panel. */
     private final Map<HBox, StripBinding> stripBindings = new LinkedHashMap<>();
     /** Set by {@link #dispose()}: a strip re-added afterwards must not re-bind. */
@@ -443,18 +433,7 @@ final class TrackStripController {
                     }
                     InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, preselected);
                     dialog.showAndWait().ifPresent(device -> {
-                        // Persisted per-track user intent (ProjectSerializer /
-                        // ProjectDeserializer) that is currently INERT on the
-                        // capture path: story 316 routes recording through the
-                        // engine's provisioned device — TransportController
-                        // calls startAudioInputOutput() with no index — so this
-                        // index has no reader today. Its consumer is story 326
-                        // "Multi-Channel Input Capture Routing", whose union
-                        // open must honour every armed track's input-device
-                        // choice; deleting or disabling this writer would
-                        // destroy the state 326 needs. The selection SURFACE
-                        // itself is owned by stories 092 (per-track audio I/O
-                        // routing) and 215 (driver-reported channel names).
+                            // Physical capture resolves this device for the armed routing union.
                         track.setInputDeviceIndex(device.index());
                         // Story 322: the choice ALSO becomes the session input
                         // (persisted + applied to the engine), so what the
@@ -875,9 +854,6 @@ final class TrackStripController {
             // Story 137: the mini clip indicator follows the arm state (the
             // redraw timer is stopped on disarm — no animation-timer leak).
             refreshClipIndicatorSlot(controls.clipIndicatorSlot(), track, armed);
-            if (armed) {
-                warnOnInputMismatch();
-            }
         }));
         refreshClipIndicatorSlot(controls.clipIndicatorSlot(), track, trackVm.isArmed());
 
@@ -1029,43 +1005,6 @@ final class TrackStripController {
             LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
             return List.of();
         }
-    }
-
-    /**
-     * Shows the single mismatch {@code WARNING} when an armed track's
-     * per-track input choice disagrees with the session input device (§5.6
-     * "Per-track input device"): recording opens the session device, so the
-     * disagreement must be visible, never silently ignored.
-     *
-     * <p>The device enumeration runs on a virtual thread, never on the FX
-     * thread ({@code javafx-application-design} §11 — no blocking I/O in a
-     * handler; this runs from the arm listener on every arm gesture). The
-     * comparison and the toast happen back on the FX thread through the
-     * {@link FxDispatcher} seam, where the project's live track list is read
-     * (it is FX-owned); a controller disposed in the meantime shows nothing.
-     * {@code ArrangementArmInputCheckOffFxTest} pins the thread.</p>
-     */
-    private void warnOnInputMismatch() {
-        sessionInputCheck = Thread.ofVirtual().name("daw-arm-input-check").start(() -> {
-            List<AudioDeviceInfo> devices = listAudioDevices();
-            FxDispatcher.runOnFx(() -> {
-                if (disposed) {
-                    return;
-                }
-                sessionInputSelection.mismatchWarning(project.getTracks(), devices)
-                        .ifPresent(message -> notificationBar.show(NotificationLevel.WARNING, message));
-            });
-        });
-    }
-
-    /**
-     * The worker of the latest arm-time input check, so a test can wait for
-     * it before flushing the FX queue. Package-visible for tests.
-     *
-     * @return the worker, or empty before the first arm
-     */
-    Optional<Thread> pendingSessionInputCheck() {
-        return Optional.ofNullable(sessionInputCheck);
     }
 
     /**

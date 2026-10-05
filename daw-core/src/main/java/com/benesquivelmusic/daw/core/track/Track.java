@@ -68,7 +68,9 @@ public final class Track {
         /** The {@linkplain Track#isSolo() solo} flag changed. */
         SOLO,
         /** The {@linkplain Track#isArmed() armed (record-ready)} flag changed. */
-        ARM
+        ARM,
+        /** Physical input device or channel routing changed. */
+        INPUT_ROUTING
     }
 
     /**
@@ -361,7 +363,9 @@ public final class Track {
             throw new IllegalArgumentException(
                     "inputDeviceIndex must be >= -1: " + inputDeviceIndex);
         }
+        if (this.inputDeviceIndex == inputDeviceIndex) return;
         this.inputDeviceIndex = inputDeviceIndex;
+        notifyChange(ChangeKind.INPUT_ROUTING);
     }
 
     /**
@@ -383,8 +387,10 @@ public final class Track {
      * @param inputRouting the input routing
      */
     public void setInputRouting(InputRouting inputRouting) {
-        this.inputRouting = Objects.requireNonNull(inputRouting,
-                "inputRouting must not be null");
+        Objects.requireNonNull(inputRouting, "inputRouting must not be null");
+        if (this.inputRouting.equals(inputRouting)) return;
+        this.inputRouting = inputRouting;
+        notifyChange(ChangeKind.INPUT_ROUTING);
     }
 
     /**

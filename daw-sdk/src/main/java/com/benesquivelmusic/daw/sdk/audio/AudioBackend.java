@@ -248,6 +248,39 @@ public interface AudioBackend extends AutoCloseable {
         open(device, format, bufferFrames);
     }
 
+    /** Opens independent capture and playback widths. Defaults refuse unsupported routing. */
+    default void open(DeviceId output, AudioFormat format, int frames, CaptureRequirement capture,
+                      DeviceId input, int inputChannels) {
+        if (inputChannels < 0 || capture == CaptureRequirement.REQUIRED && inputChannels == 0) throw new IllegalArgumentException("inputChannels must be positive for capture");
+        boolean sameInput = input.equals(output);
+        if (!sameInput && output.isDefault()) {
+            List<AudioDeviceInfo> devices = listDevices();
+            sameInput = devices.size() == 1 && AudioDeviceInfo.isSelectionFor(input.name(), devices.getFirst().name(), devices.getFirst().hostApi());
+        }
+        if (!sameInput || inputChannels > format.channels()) {
+            throw new AudioBackendException(name() + " cannot open independent input routing");
+        }
+        open(output, format, frames, capture);
+    }
+    /** Control-thread capability query for the selected input; empty means genuinely unknown. */
+    default java.util.OptionalInt inputChannelCapacity(DeviceId input) { return java.util.OptionalInt.empty(); }
+
+    /** Actual capture rate of an opened stream, or NaN when the backend cannot report it. */
+    default double openedInputSampleRate() { return Double.NaN; }
+
+    /** Whether independent input devices can be opened together. */
+    default boolean supportsMultipleInputDevices() { return false; }
+    /** Creates an independently owned capture stream. */
+    default AudioBackend createInputBackend() {
+        throw new AudioBackendException(name() + " supports only one input device");
+    }
+    /** Opens input-only; no second output clock is created. */
+    default void openInput(DeviceId device, AudioFormat format, int frames, int channels) {
+        throw new AudioBackendException(name() + " does not support input-only streams");
+    }
+    /** Resolves the session input selection, without changing the stream. */
+    default DeviceId selectedInputDevice(DeviceId output) { return output; }
+
     /**
      * How many capture channels the CURRENTLY OPEN stream actually opened with
      * (story 316 review) &mdash; the verifiable half of the

@@ -758,10 +758,19 @@ class JavaxSoundBackendTest {
         assertThat(bytes).as("the JavaxSoundBackend class file must be readable").isNotNull();
         ClassModel model = ClassFile.of().parse(bytes);
 
+        long wrappers = model.methods().stream().filter(method -> method.methodName().stringValue().equals("open") || method.methodName().stringValue().equals("openInput"))
+                .peek(method -> assertThat(method.findAttribute(Attributes.code()).orElseThrow().elementStream()
+                        .filter(element -> element instanceof java.lang.classfile.instruction.InvokeInstruction)
+                        .map(element -> (java.lang.classfile.instruction.InvokeInstruction) element)
+                        .anyMatch(call -> call.owner().asInternalName().equals("com/benesquivelmusic/daw/sdk/audio/JavaxSoundBackend")
+                                && (call.name().stringValue().equals("openDirections") || call.name().stringValue().equals("open"))))
+                        .as("every public open wrapper reaches the inspected open/recovery implementation").isTrue()).count();
+        assertThat(wrappers).isGreaterThanOrEqualTo(4);
+
         List<Set<String>> lineFailurePaths = new ArrayList<>();
         int scannedOpenMethods = 0;
         for (MethodModel method : model.methods()) {
-            if (!method.methodName().stringValue().equals("open")) {
+            if (!method.methodName().stringValue().equals("openDirections")) {
                 continue;
             }
             CodeAttribute code = method.findAttribute(Attributes.code())
@@ -786,12 +795,12 @@ class JavaxSoundBackendTest {
         }
 
         assertThat(scannedOpenMethods)
-                .as("this sentinel only asserts anything if it actually scanned open()'s"
+                .as("this sentinel only asserts anything if it actually scanned openDirections()'s"
                         + " bytecode; no such method with a Code attribute was found, so"
                         + " every check below would pass vacuously")
                 .isGreaterThanOrEqualTo(1);
         assertThat(lineFailurePaths)
-                .as("open() has exactly two line-failure recovery paths: the mandatory"
+                .as("openDirections() has exactly two line-failure recovery paths: the mandatory"
                         + " output rollback and the optional capture degrade")
                 .hasSize(2);
         for (Set<String> catchTypes : lineFailurePaths) {

@@ -21,6 +21,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -108,6 +111,237 @@ public final class AudioEngine {
      * click side output finally targets an OPEN stream (stories 135/136).
      */
     private volatile AudioBackend openBackend;
+
+    private volatile CaptureRoutingPlan captureRoutingPlan;
+    private volatile List<CaptureRoutingPlan.Route> captureRouteRequests = List.of();
+    private volatile Object streamGeneration;
+    private Object pendingStreamGeneration;
+    private final List<AudioBackend> additionalInputs = new ArrayList<>();
+    private final List<AdditionalInputSubscriber> additionalSubscribers = new ArrayList<>();
+    private volatile RecordingCallback[] additionalRecordingCallbacks = new RecordingCallback[0];
+    private record ValidatedInput(CaptureRoutingPlan.Route route, DeviceId device, AudioBackend backend) { }
+    private final Map<String, ValidatedInput> validatedInputRoutes = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Validate on a control worker before accepting an arm gesture. */
+    private static CaptureRoutingPlan resolveCapturePlan(StreamingProvision provision, List<CaptureRoutingPlan.Route> routes, boolean checkWidths) {
+        if (routes.stream().anyMatch(route -> route.deviceIndex() >= 0 && !route.routing().isNone())) {
+            BackendStreamRung head = provision.ladder().getFirst();
+            return CaptureRoutingPlan.resolveSnapshots(head, routes, head.backend().listDevices(), checkWidths);
+        }
+        RuntimeException first = null;
+        for (BackendStreamRung rung : provision.ladder()) {
+            try { return CaptureRoutingPlan.resolveSnapshots(rung, routes, rung.backend().listDevices(), checkWidths); }
+            catch (RuntimeException failure) { if (first == null) first = failure; }
+        }
+        throw first == null ? new AudioBackendException("No configured input device can satisfy the armed routes") : first;
+    }
+    private CaptureRoutingPlan resolveCapturePlanForStart(StreamingProvision provision, List<CaptureRoutingPlan.Route> routes) {
+        RuntimeException first = null;
+        boolean explicit = routes.stream().anyMatch(route -> route.deviceIndex() >= 0 && !route.routing().isNone());
+        for (BackendStreamRung rung : provision.ladder()) {
+            try {
+                List<AudioDeviceInfo> devices = rung.backend().listDevices();
+                CaptureRoutingPlan candidate = CaptureRoutingPlan.resolveSnapshots(rung, routes, devices, false);
+                for (CaptureRoutingPlan.Route route : routes) if (!route.routing().isNone()) {
+                    DeviceId input = candidate.sources().get(candidate.trackSources().get(route.id())).device();
+                    ValidatedInput proof = validatedInputRoutes.get(route.id());
+                    if (proof == null || !proof.route().equals(route) || proof.backend() != rung.backend() || !proof.device().equals(input))
+                        CaptureRoutingPlan.resolveSnapshots(rung, List.of(route), devices, true);
+                }
+                return candidate;
+            } catch (RuntimeException failure) { if (explicit) throw failure; if (first == null) first = failure; }
+        }
+        throw first == null ? new AudioBackendException("No configured input device can satisfy the armed routes") : first;
+    }
+    public void validateInputRouting(List<Track> tracks) {
+        validateInputRoutingSnapshots(CaptureRoutingPlan.snapshot(tracks), streamingProvision, true);
+    }
+    public void validateInputRoutingSnapshots(List<CaptureRoutingPlan.Route> routes, StreamingProvision expectedProvision, boolean checkWidths) {
+        if (streamingProvision != expectedProvision) throw new AudioBackendException("Audio configuration changed during arm validation");
+        if (expectedProvision == null || expectedProvision.ladder().isEmpty() || routes.stream().allMatch(route -> route.routing().isNone())) return;
+        BackendStreamRung rung = expectedProvision.ladder().getFirst();
+        CaptureRoutingPlan plan = resolveCapturePlan(expectedProvision, routes, checkWidths);
+        if (streamingProvision != expectedProvision) throw new AudioBackendException("Audio configuration changed during arm validation");
+        if (checkWidths) for (CaptureRoutingPlan.Route route : routes) if (plan.widthValidatedTracks().contains(route.id())) {
+            int source = plan.trackSources().get(route.id());
+            validatedInputRoutes.put(route.id(), new ValidatedInput(route, plan.sources().get(source).device(), plan.backend()));
+        }
+    }
+    public Object getStreamGeneration() { return streamGeneration; }
+    public void stopOwnedAudioStream(Object generation) {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            if (generation == null || streamGeneration != generation) return;
+            stopAudioOutputLocked(announcements);
+            if (streamState != StreamState.CLOSED || !additionalInputs.isEmpty())
+                throw new AudioBackendException("The recording input stream is still held; retry Stop to release it");
+        } finally { lifecycleLock.unlock(); announcements.deliver(); }
+    }
+    public void requireCaptureRoutingUnchanged(List<Track> tracks, List<CaptureRoutingPlan.Route> routes) {
+        for (int i=0; i<tracks.size(); i++) if (!routes.get(i).matches(tracks.get(i)) || !tracks.get(i).isArmed())
+            throw new AudioBackendException("Track '" + routes.get(i).name() + "' arm or input routing changed during record preparation");
+    }
+    public void validateInputDeviceUnion(List<Track> tracks) {
+        validateInputRoutingSnapshots(CaptureRoutingPlan.snapshot(tracks), streamingProvision, false);
+    }
+    public CaptureRoutingPlan getCaptureRoutingPlan() { return captureRoutingPlan; }
+    public int captureInputChannels(int source) {
+        if (source == 0) return openBackend == null ? 0 : openBackend.openedInputChannels();
+        return additionalInputs.get(source - 1).openedInputChannels();
+    }
+    public RoundTripLatency captureInputLatency(int source) {
+        return source == 0 ? openBackend == null ? RoundTripLatency.UNKNOWN : openBackend.reportedLatency()
+                : additionalInputs.get(source - 1).reportedLatency();
+    }
+    public void setAdditionalRecordingCallbacks(RecordingCallback[] callbacks) {
+        additionalRecordingCallbacks = callbacks.clone();
+    }
+
+    /** Opens the exact device union requested by the armed tracks. */
+    public Object startAudioInputOutput(List<Track> tracks) {
+        return startAudioInputOutput(tracks, CaptureRoutingPlan.snapshot(tracks), streamingProvision);
+    }
+    public Object startAudioInputOutput(List<Track> tracks, List<CaptureRoutingPlan.Route> routes, StreamingProvision expectedProvision) {
+        return startAudioInputOutput(tracks, routes, expectedProvision, new Object());
+    }
+    public Object startAudioInputOutput(List<Track> tracks, List<CaptureRoutingPlan.Route> routes, StreamingProvision expectedProvision, Object attemptGeneration) {
+        beginStreamStartInvocation();
+        try {
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            StreamingProvision provision = streamingProvision;
+            if (provision != expectedProvision) throw new AudioBackendException("Audio configuration changed during record preparation");
+            if (provision == null || provision.ladder().isEmpty()) {
+                throw new AudioBackendException("Cannot record physical inputs: no audio backend is configured");
+            }
+            CaptureRoutingPlan plan = resolveCapturePlanForStart(provision, routes);
+            AudioBackend plannedBackend = plan.backend();
+            BackendStreamRung rung = provision.ladder().stream().filter(candidate -> candidate.backend() == plannedBackend).findFirst().orElseThrow();
+            List<com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo> devices = rung.backend().listDevices();
+            Set<String> provenBeforeOpen = new HashSet<>();
+            for (int i = 0; i < routes.size(); i++) {
+                CaptureRoutingPlan.Route route = routes.get(i);
+                if (!route.matches(tracks.get(i))) throw new AudioBackendException("Track '" + route.name() + "' routing changed during validation");
+                if (route.routing().isNone()) continue;
+                ValidatedInput proof = validatedInputRoutes.get(route.id());
+                DeviceId device = plan.sources().get(plan.trackSources().get(route.id())).device();
+                if (proof != null && proof.route().equals(route) && proof.backend() == rung.backend() && proof.device().equals(device)) provenBeforeOpen.add(route.id());
+                else {
+                    boolean headHasNoInput = route.deviceIndex() < 0 && devices.stream().anyMatch(info -> (info.name().equals(device.name()) || info.qualifiedName().equals(device.name()) || device.isDefault() && devices.size() == 1) && info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
+                    if (!headHasNoInput) CaptureRoutingPlan.resolveSnapshots(rung, List.of(route), devices, true);
+                }
+            }
+            stopAudioOutputLocked(announcements);
+            if (streamState != StreamState.CLOSED) throw new AudioBackendException("Previous input stream is still held");
+            streamGeneration = Objects.requireNonNull(attemptGeneration);
+            pendingStreamGeneration = attemptGeneration;
+            captureRoutingPlan = plan;
+            captureRouteRequests = List.copyOf(routes);
+            try {
+                startAudioOutputLocked(announcements, CaptureRequirement.REQUIRED);
+                plan = captureRoutingPlan;
+                for (int i = 1; i < plan.sources().size(); i++) {
+                    AudioBackend sibling = plan.backend().createInputBackend();
+                    additionalInputs.add(sibling); // ownership precedes open, including partial failures
+                    CaptureRoutingPlan.Source source = plan.sources().get(i);
+                    sibling.openInput(source.device(), openSdkFormat, format.bufferSize(), source.requestedChannels());
+                    double captureRate = sibling.openedInputSampleRate();
+                    if (Double.isFinite(captureRate) && Double.compare(captureRate, openSdkFormat.sampleRate()) != 0)
+                        throw new AudioBackendException("Input device '" + source.device().name() + "' opened at " + captureRate + " Hz; the take requires " + openSdkFormat.sampleRate() + " Hz");
+                    if (sibling.openedInputChannels() == 0) throw new AudioBackendException("No capture from '" + source.device().name() + "'");
+                    AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(), plan);
+                    additionalSubscribers.add(subscriber);
+                    sibling.inputBlocks().subscribe(subscriber);
+                }
+            } catch (RuntimeException | Error failure) {
+                try { stopAudioOutputLocked(announcements); } catch (RuntimeException close) { failure.addSuppressed(close); }
+                throw failure;
+            }
+            for (CaptureRoutingPlan.Route route : routes) if (!route.routing().isNone()) {
+                int source = captureRoutingPlan.trackSources().get(route.id());
+                DeviceId input = captureRoutingPlan.sources().get(source).device();
+                int available = captureInputChannels(source);
+                if ((long) route.routing().firstChannel() + route.routing().channelCount() > available
+                        && !(provenBeforeOpen.contains(route.id()) && captureRoutingPlan.backend() == rung.backend())) {
+                    try { stopAudioOutputLocked(announcements); } catch (RuntimeException close) { LOG.log(Level.WARNING, "Failed to release refused recording inputs", close); }
+                    throw new AudioBackendException("Track '" + route.name() + "', device '" + input.name() + "': " + route.routing().displayName() + " exceeds " + available + " opened input channels");
+                }
+                if ((long) route.routing().firstChannel() + route.routing().channelCount() <= available)
+                    validatedInputRoutes.put(route.id(), new ValidatedInput(route, input, captureRoutingPlan.backend()));
+            }
+            updateInputMeterDescriptions();
+            return streamGeneration;
+        } catch (RuntimeException | Error failure) {
+            bindFailedStreamStart(failure);
+            throw failure;
+        } finally {
+            pendingStreamGeneration = null;
+            lifecycleLock.unlock();
+            announcements.deliver();
+        }
+            } finally {
+            finishStreamStartInvocation();
+        }
+    }
+
+    private void closeAdditionalInputs() {
+        additionalRecordingCallbacks = new RecordingCallback[0];
+        for (AdditionalInputSubscriber subscriber : additionalSubscribers) subscriber.deactivate();
+        additionalSubscribers.clear();
+        RuntimeException failure = null;
+        for (int i = additionalInputs.size() - 1; i >= 0; i--) {
+            AudioBackend backend = additionalInputs.get(i);
+            try {
+                backend.close();
+                if (backend.isReleasePending()) throw new AudioBackendException("Input handle is still held by " + backend.name());
+                additionalInputs.remove(i);
+            } catch (RuntimeException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
+        }
+        if (failure != null) throw failure;
+        captureRoutingPlan = null;
+    }
+
+    private final class AdditionalInputSubscriber implements java.util.concurrent.Flow.Subscriber<com.benesquivelmusic.daw.sdk.audio.AudioBlock> {
+        private final int source;
+        private final float[][] planes;
+        private final float[][][] views;
+        private final CaptureRoutingPlan generation;
+        private volatile boolean active = true;
+        private volatile java.util.concurrent.Flow.Subscription subscription;
+        AdditionalInputSubscriber(int source, int width, CaptureRoutingPlan generation) {
+            this.source = source;
+            this.generation = generation;
+            planes = new float[width][format.bufferSize()];
+            views = new float[width + 1][][];
+            for (int i = 0; i <= width; i++) views[i] = java.util.Arrays.copyOf(planes, i);
+        }
+        void deactivate() {
+            active = false;
+            java.util.concurrent.Flow.Subscription current = subscription;
+            if (current != null) current.cancel();
+        }
+        @Override public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
+            this.subscription = subscription;
+            if (!active) subscription.cancel(); else subscription.request(Long.MAX_VALUE);
+        }
+        @Override public void onNext(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) {
+            if (!active || captureRoutingPlan != generation) return;
+            int frames = Math.min(block.frames(), planes[0].length);
+            for (int ch = 0; ch < planes.length; ch++) {
+                for (int f = 0; f < frames; f++) planes[ch][f] = ch < block.channels() ? block.samples()[f * block.channels() + ch] : 0f;
+            }
+            float[][] delivered = views[Math.min(block.channels(), planes.length)];
+            if (!active || captureRoutingPlan != generation) return;
+            tapInputSource(source, delivered, frames);
+            RecordingCallback[] callbacks = additionalRecordingCallbacks;
+            if (active && captureRoutingPlan == generation && source - 1 < callbacks.length)
+                callbacks[source - 1].onAudioCaptured(delivered, block.frames());
+        }
+        @Override public void onError(Throwable error) { LOG.log(Level.WARNING, "Input stream failed", error); }
+        @Override public void onComplete() { }
+    }
 
     /** Device identity of the tracked stream (the winning rung's device). */
     private volatile DeviceId openDevice;
@@ -829,6 +1063,10 @@ public final class AudioEngine {
      *       smaller than the rule above. The remainder is a reading
      *       obligation, which is what this bullet exists to hand over.</li>
      * </ol>
+     * <p>Story 326 additionally calls immutable CaptureRoutingPlan/InputRouting values,
+     * their backend-only control-thread resolver, and InputLevelMonitorRegistry/InputLevelMonitor
+     * to preallocate meter state and attach precomputed warning text. These collaborators
+     * invoke no application listeners or UI callbacks; all user warnings remain outside the lock.</p>
      */
     private final ReentrantLock lifecycleLock = new ReentrantLock();
 
@@ -1139,6 +1377,7 @@ public final class AudioEngine {
         try {
             shutdown = true;
             stopLocked(announcements);
+            if (pump == null && !additionalInputs.isEmpty()) closeAdditionalInputs();
         } finally {
             lifecycleLock.unlock();
             try {
@@ -1451,6 +1690,8 @@ public final class AudioEngine {
             throw new IllegalStateException(
                     "Cannot change streaming provision while engine is running");
         }
+        if (!additionalInputs.isEmpty()) closeAdditionalInputs();
+        validatedInputRoutes.clear();
         AudioBackend outgoing = this.openBackend;
         if (streamState != StreamState.CLOSED && outgoing != null
                 && !ladderContains(provision, outgoing)) {
@@ -1966,6 +2207,24 @@ public final class AudioEngine {
      *                               open would otherwise put a SECOND thread
      *                               into the single shared render pipeline)
     */
+    /** Opens output with an atomic ownership receipt, including a partial failed open. */
+    public Object startAudioOutputOwned(Object attemptGeneration) {
+        beginStreamStartInvocation();
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            if (streamState == StreamState.CLOSED) streamGeneration = attemptGeneration;
+            pendingStreamGeneration = attemptGeneration;
+            startAudioOutputLocked(announcements, CaptureRequirement.OPTIONAL);
+            return streamGeneration;
+        } catch (RuntimeException | Error failure) {
+            bindFailedStreamStart(failure); throw failure;
+        } finally {
+            pendingStreamGeneration = null;
+            lifecycleLock.unlock(); announcements.deliver(); finishStreamStartInvocation();
+        }
+    }
+
     public void startAudioOutput() {
         beginStreamStartInvocation();
         try {
@@ -2053,6 +2312,7 @@ public final class AudioEngine {
             provision = this.streamingProvision;
             rememberRequestedStreamStartAttempt(provision);
         }
+        if (!additionalInputs.isEmpty() && state != StreamState.RUNNING) closeAdditionalInputs();
         requireQuiescedPump();
         if (state == StreamState.PAUSED) {
             resumeAudioOutputLocked(announcements);
@@ -2091,6 +2351,7 @@ public final class AudioEngine {
         // failure, even though unwind may immediately clear live stream state.
         rememberStreamStartAttempt(opened.backendName(), opened.rung().device(),
                 StreamStartFailure.Operation.START);
+        this.streamGeneration = pendingStreamGeneration == null ? new Object() : pendingStreamGeneration;
         this.openBackend = opened.rung().backend();
         this.openDevice = opened.rung().device();
         this.openSdkFormat = opened.negotiatedFormat();
@@ -2734,8 +2995,21 @@ public final class AudioEngine {
                 com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated =
                         rung.backend().negotiateFormat(requested);
                 requireRenderableNegotiation(rung, requested, negotiated);
-                openAttempted = true;
-                rung.backend().open(rung.device(), negotiated, format.bufferSize(), capture);
+                CaptureRoutingPlan plan = captureRoutingPlan;
+                if (capture == CaptureRequirement.REQUIRED && plan != null && !plan.sources().isEmpty()) {
+                    if (rung.backend() != plan.backend()) {
+                        CaptureRoutingPlan.Route explicit = captureRouteRequests.stream().filter(route -> route.deviceIndex() >= 0 && !route.routing().isNone()).findFirst().orElse(null);
+                        if (explicit != null) throw new AudioBackendException("Track '" + explicit.name() + "', device '" + plan.sources().getFirst().device().name() + "': capture cannot preserve this device on backend '" + rung.backend().name() + "'");
+                        plan = CaptureRoutingPlan.resolveSnapshots(rung, captureRouteRequests, rung.backend().listDevices(), true);
+                    }
+                    CaptureRoutingPlan.Source input = plan.sources().getFirst();
+                    openAttempted = true;
+                    rung.backend().open(rung.device(), negotiated, format.bufferSize(), capture, input.device(), input.requestedChannels());
+                    captureRoutingPlan = plan;
+                } else {
+                    openAttempted = true;
+                    rung.backend().open(rung.device(), negotiated, format.bufferSize(), capture);
+                }
                 // AFTER the open, inside the same try: the only guard that
                 // cannot run earlier, because the capture channel count is
                 // not knowable until the driver has answered (story 316
@@ -3532,6 +3806,7 @@ public final class AudioEngine {
     private boolean stopAudioOutputLocked(PendingAnnouncements announcements) {
         AudioBackend backend = this.openBackend;
         if (backend == null || streamState == StreamState.CLOSED) {
+            closeAdditionalInputs();
             return true;
         }
         if (!stopPump()) {
@@ -3540,6 +3815,8 @@ public final class AudioEngine {
                     + " backend handle are preserved; retry the stop");
             return false;
         }
+        RuntimeException inputCloseFailure = null;
+        try { closeAdditionalInputs(); } catch (RuntimeException e) { inputCloseFailure = e; }
         recordClockRelease(announcements);
         if (controlPanelOpenOn(backend)) {
             // Deliberately NOT closed. The pump is gone and the clock is
@@ -3552,6 +3829,7 @@ public final class AudioEngine {
                     + " and closing the handle would free the native state that modal"
                     + " dialog is running on. endControlPanelSession drains this close when"
                     + " the panel returns");
+            if (inputCloseFailure != null) throw inputCloseFailure;
             return true;
         }
         try {
@@ -3580,6 +3858,7 @@ public final class AudioEngine {
                             + " and the close is retried by the next start or stop",
                     closeFailure);
         }
+        if (inputCloseFailure != null) throw inputCloseFailure;
         // Quiescence was confirmed above; a retained handle is a release
         // failure, a deliberate panel deferral, or a release the BACKEND
         // deferred over a driver teardown it has queued — never a reason to
@@ -4329,6 +4608,7 @@ public final class AudioEngine {
                     announcements.clockReleased(outgoing);
                 }
                 this.graph = new EngineGraph(transport, mixer, tracks, meteringEpoch);
+                updateInputMeterDescriptions();
                 if (transport != null) {
                     if (callbackIsDriving()) {
                         transport.setRealTimeClockActive(true);
@@ -4581,8 +4861,22 @@ public final class AudioEngine {
      *
      * @param registry the registry, or {@code null} to disable
      */
+    private void updateInputMeterDescriptions() {
+        InputLevelMonitorRegistry registry = inputLevelMonitorRegistry;
+        if (registry == null) return;
+        EngineGraph snapshot = graph;
+        if (snapshot.tracks() == null) return;
+        CaptureRoutingPlan plan = captureRoutingPlan;
+        for (Track track : snapshot.tracks()) if (!track.getInputRouting().isNone()) {
+            Integer source = plan == null ? null : plan.trackSources().get(track.getId());
+            String device = source == null ? "selected input device" : plan.sources().get(source).device().name();
+            registry.getOrCreate(track.getId()).setRoutingDescription("Track '" + track.getName() + "', device '" + device + "': " + track.getInputRouting().displayName() + " unavailable; input is silent");
+        }
+    }
+
     public void setInputLevelMonitorRegistry(InputLevelMonitorRegistry registry) {
         this.inputLevelMonitorRegistry = registry;
+        updateInputMeterDescriptions();
     }
 
     /**
@@ -4812,14 +5106,18 @@ public final class AudioEngine {
      * given track is armed.</p>
      */
     @RealTimeSafe
-    private static void tapArmedTrackInputs(InputLevelMonitorRegistry registry,
+    private void tapArmedTrackInputs(InputLevelMonitorRegistry registry,
                                             float[][] inputBuffer,
                                             int numFrames,
                                             List<Track> currentTracks) {
+        tapInputSource(0, inputBuffer, numFrames);
+    }
+
+    private void tapInputSource(int source, float[][] inputBuffer, int numFrames) {
+        InputLevelMonitorRegistry registry = inputLevelMonitorRegistry;
+        List<Track> currentTracks = graph.tracks();
+        if (registry == null || currentTracks == null) return;
         int numInputChannels = inputBuffer.length;
-        if (numInputChannels == 0) {
-            return;
-        }
         for (int i = 0, n = currentTracks.size(); i < n; i++) {
             Track track = currentTracks.get(i);
             if (track == null || !track.isArmed()) {
@@ -4827,18 +5125,27 @@ public final class AudioEngine {
             }
             InputRouting routing = track.getInputRouting();
             if (routing == null || routing.isNone()) {
+                InputLevelMonitor existing = registry.get(track.getId());
+                if (existing != null) existing.setRoutingUnavailable(false);
                 continue;
+            }
+            CaptureRoutingPlan plan = captureRoutingPlan;
+            if (plan != null) {
+                Integer ordinal = plan.trackSources().get(track.getId());
+                if (ordinal == null) {
+                    if (source == 0) registry.getOrCreate(track.getId()).setRoutingUnavailable(true);
+                    continue;
+                }
+                if (ordinal.intValue() != source) continue;
             }
             int first = routing.firstChannel();
             int count = routing.channelCount();
-            if (first < 0 || count <= 0 || first + count > numInputChannels) {
-                // Routing points off the end of the actual input buffer —
-                // e.g., user selected "Input 5-6" on a 2-in interface.
-                // Skip silently so metering never throws from the audio
-                // thread.
+            if (first < 0 || count <= 0 || (long) first + count > numInputChannels) {
+                registry.getOrCreate(track.getId()).setRoutingUnavailable(true);
                 continue;
             }
             InputLevelMonitor monitor = registry.getOrCreate(track.getId());
+            monitor.setRoutingUnavailable(false);
             monitor.processInputChannels(inputBuffer, first, count, numFrames);
         }
     }

@@ -859,6 +859,14 @@ Channel identity and naming in the routing UI remain owned by existing stories 0
 (per-track audio I/O routing) and 215 (driver-reported channel names); this contract defines
 capture-side truth, those stories the selection surface.
 
+#### Story 326 implementation
+
+The input union is an immutable control-thread plan independent of project/output width. Every opened device owns one raw SPSC ring and a generation-fenced producer; routing stays on the sole flush thread (§4.2). Default input routes retain backend fallback, while explicit devices cannot be substituted. The selected/active ASIO driver supplies arm-time capacity without probing other drivers.
+
+Unknown capacity is not proof that a route fits. Start checks actual opened width before files/REC; only a previously proven same-device route may use zero-and-flag after shrink. Losing any required channel silences the whole track. The manifest entry is `routing-unavailable=trackId|base64url(UTF-8 device label)|firstChannel|channelCount|availableChannels`; a named take warning and the amber meter indication share the unavailable state. Flush bookkeeping is per source, public loss counts are aggregated, and bounded batches prevent input starvation. Sibling frame cursors follow the loop window; only output advances transport. Primary capture preserves the configured effective/calibrated latency, including an explicit zero; sibling sources use their own measured latency.
+
+Arm commands, direct/group arms and routing edits validate off FX. Record freezes routes/backend on FX, prepares input streams on a worker and rechecks before allocation/capture. Owned generations fence cancelled/retired cleanup; FINALIZING retains a failed close for retry without blocking FX Stop. The story documents user-deferred hardware checks and deterministic pipeline/UI tests.
+
 ### 5.5 Device-loss and rescue contract
 
 Sequence on `DeviceRemoved` (or watchdog-declared stall) while RECORDING — each step must

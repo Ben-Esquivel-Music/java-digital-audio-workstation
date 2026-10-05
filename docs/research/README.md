@@ -14,6 +14,10 @@ This directory contains research documentation analyzing open source tools and t
 | [AES PDF Catalog by Decade](aes-pdf-catalog.md) | Complete catalog of all 345 AES PDFs organized by publication decade (1949–2026) | [Audio Engineering Society](https://www.aes.org/) |
 | [AES Feature Enhancements](aes-feature-enhancements.md) | 27 pure-Java feature enhancement issues derived from AES research analysis | [Audio Engineering Society](https://www.aes.org/) |
 
+## Studio Engineer
+
+The [Studio Engineer agent and skill guide](studio-engineer.md) connects this research to ten audio, hardware, acoustics, and mechanical engineering skills. Its [hardware source catalog](../../.agents/skills/studio-analog-circuits/references/schematic-catalog.md) maps the schematics, BOMs, assembly drawings, manuals, and datasheets in `Schematics/`.
+
 ## Key Findings Summary
 
 ### Recording

@@ -9,6 +9,8 @@ import com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.input.MouseButton;
 import javafx.scene.paint.Color;
+import javafx.scene.control.Tooltip;
+import javafx.css.PseudoClass;
 
 import java.util.Objects;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
@@ -61,6 +63,11 @@ public final class InputMeterStrip extends GpuCanvasView {
     private static final Color CLIP_OFF = Color.web("#2a0000");
     private static final Color LED_BORDER = Color.web("#000000", 0.4);
 
+    private static final Color UNAVAILABLE = Color.web("#ffb300");
+    private static final PseudoClass ROUTING_UNAVAILABLE = PseudoClass.getPseudoClass("routing-unavailable");
+    private final Tooltip routingTooltip = new Tooltip();
+    private boolean unavailable;
+
     private final InputLevelMonitor monitor;
     private final InputLevelMonitorRegistry registry;
 
@@ -79,6 +86,8 @@ public final class InputMeterStrip extends GpuCanvasView {
         this.monitor = Objects.requireNonNull(monitor, "monitor must not be null");
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
 
+        Tooltip.install(this, routingTooltip);
+        refreshRoutingState();
         setRenderer(this::renderFrame);
 
         setOnMouseClicked(event -> {
@@ -137,7 +146,16 @@ public final class InputMeterStrip extends GpuCanvasView {
         // snapshot() is guaranteed non-null (returns InputLevelMeter.SILENCE
         // before first process()).
         lastSnapshot = monitor.snapshot();
+        refreshRoutingState();
         renderInto(ctx.gc(), ctx.width(), ctx.height());
+    }
+
+    void refreshRoutingState() {
+        unavailable = monitor.isRoutingUnavailable();
+        pseudoClassStateChanged(ROUTING_UNAVAILABLE, unavailable);
+        String text = unavailable ? monitor.routingDescription() : "Input level; click to reset clips";
+        routingTooltip.setText(text);
+        setAccessibleText(text);
     }
 
     private void renderInto(GraphicsContext gc, double w, double h) {
@@ -152,7 +170,7 @@ public final class InputMeterStrip extends GpuCanvasView {
 
         // ── Clip LED ────────────────────────────────────────────────────
         boolean clipped = lastSnapshot.clippedSinceReset();
-        gc.setFill(clipped ? RED_ON : CLIP_OFF);
+        gc.setFill(unavailable ? UNAVAILABLE : clipped ? RED_ON : CLIP_OFF);
         gc.fillRect(1, clipTop, w - 2, clipBottom);
         gc.setStroke(LED_BORDER);
         gc.setLineWidth(0.8);

@@ -153,7 +153,7 @@ public final class TrackVM {
             case SOLO -> applyOnFx(republishSoloed);
             case ARM -> applyOnFx(republishArmed);
             // Volume/pan are projected by ChannelVM, not TrackVM.
-            case VOLUME, PAN -> { }
+            case VOLUME, PAN, INPUT_ROUTING -> { }
         }
     }
 

@@ -33,7 +33,7 @@ For a studio engineer this kills the core tracking scenario: mic a drum kit acro
 ## Non-Goals
 
 - The routing *selection* UI — channel pickers, channel identity, and driver-reported channel names are owned by existing stories 092 (per-track audio I/O routing) and 215 (driver-reported channel names). This story defines capture-side truth; those stories the surface (book §5.4).
-- The mixer-side session-level input-device selection and its mismatch warnings — story 322 (`AUDIO_ENGINE_WIRING_DESIGN_BOOK.md`), which explicitly defers multi-device *capture* to this story.
+- The session default input selector remains owned by story 322. Explicit track capture replaces the old mismatch-only capture warning with routing validation.
 - Input monitoring modes — existing story 133 (not subsumed; this story **unblocks** it: the wider opened stream and per-track capture state are exactly the inputs its render-pipeline monitoring resolution needs, book §1.8/§5.6).
 - Input gain staging and clip indicators themselves — existing story 137; this story only extends its metering seam across all opened channels.
 - The capture-to-disk machinery the flag lands in — story 323 owns the flush service and `TakeManifest`; story 324 owns RT-safety and engine-format truth; story 325 owns the record state machine hosting the arm-time guard.
@@ -43,9 +43,37 @@ For a studio engineer this kills the core tracking scenario: mic a drum kit acro
 ## Technical Notes
 
 - **Implements Stage 4 of `docs/design/RECORDING_RELIABILITY_DESIGN_BOOK.md` — "Multi-Channel Input Capture Routing"** (§5.4 multi-channel routing contract, §1.6 critique, §9.8 rejection of skip-but-record).
-- Files: `AudioEngine.java` (`:510-517` project-channel open width; `:977-983` metering skip), `TransportController.java` (`:452-457` first-armed-device-only), `RecordingPipeline.java` (`:781-790` skip-but-record deletion). Routing state lives per `TrackCapture` on the flush side (book §3.1/§4.2 — the callback stays one bounded copy of the raw device block; routing is a flush-thread act, per the book's raw-block-granularity decision).
-- The zero-and-flag record lands in the `TakeManifest` sidecar introduced by story 323 (book §3.3); validation errors and warnings ride the notification seam — production injection is Book 4 story 339 (`FAILURE_SURFACING_DESIGN_BOOK.md`); until it lands this degrades to logging (book §6.3 ordering note).
+- Files: `CaptureRoutingPlan.java`, `AudioEngine.java`, `EngineStreamPump.java`, SDK backends, `InputRoutingGuard.java`, `RecordCoordinator.java`, `RecordingPipeline.java` and `CaptureFlushService.java`. Routing state lives per `TrackCapture` on the flush side (book §3.1/§4.2); callbacks copy bounded raw device blocks.
+- The zero-and-flag record lands in the `TakeManifest` sidecar introduced by story 323 (book §3.3). Arm refusals and recording warnings use the app notification seam; armed input meters also expose the unavailable state.
 - Arm-time and record-start validation is a guard input to story 325's `RecordCoordinator` (book §5.2, "Record pressed" row: "routing validation passes (§5.4)").
 - Prerequisites: stories 323 (flush pipeline + manifest), 324 (RT-safe capture path), 325 (record state machine). Story 316 provides the ASIO production stream and stable device identity this story opens against.
 - Unblocks/feeds: existing stories 133 (input monitoring), 137 (gain staging seam), 092/215 (selection surface); Stage 6 (story 328) per-lane takes become trustworthy per track (book §8 Stage 4 "Unblocks").
 - Research backing: SKILL `research-daw` §3 (real-time audio I/O discipline); the union-open width rule mirrors how open-source DAW capture engines size input streams from armed-track routing rather than session format.
+
+## Implementation and automated verification
+
+`CaptureRoutingPlan` freezes track/device routing and takes the maximum requested channel per input device, independently of the project/output width. ASIO queries only the selected/active driver on a control worker and refuses incompatible device arms. Unknown capacity is not a width proof: a never-validated route beyond the actual open is refused before take files or REC; a previously proven same-device route whose device shrinks captures full-track silence.
+
+Each input owns a generation-fenced subscriber, bounded raw ring and frame cursor. Only output advances transport; sibling cursors follow the immutable loop window. The sole flush thread routes all devices with bounded round-robin batches, per-source loss/fence state and per-device latency compensation. The primary device preserves configured calibration (including an explicit zero); sibling devices use their own reported latency. File width follows the frozen track route. Losing any required channel zeros the entire track, persists one `routing-unavailable` manifest entry, and raises one named warning before readiness when the shortage is known. That warning stays visible through REC instead of being replaced by the generic start message. Device labels in that entry are UTF-8 base64url encoded.
+
+Shared arm commands validate off FX before changing the model or publishing an Armed event. Direct/group arms and routing/device edits also validate. Serial checks include the accepted union; disarm, disposal and changed snapshots reject stale replies. Record freezes routes/backend on FX, opens on a worker, and remains FINALIZING until owned cleanup succeeds. Stop stays responsive during held opens/closes. Arrangement and mixer meters show the same amber unavailable flag, named tooltip and accessibility text, while stale levels become silence.
+
+Regression tests exercise channels 7-8 through the real pump and WAV writer, mono/stereo/four-channel output independence, separate device signals and latency, calibrated primary latency including zero, selected ASIO capacity/refusal, default-input fallback, partial shrink exact zeros/durable flags, loop laps, source-specific overflow/truncation, stale subscribers, second-open rollback, retained-close retry, shared UI controls and held-driver cancellation. Run with Java 26 and Maven 3.9.14:
+
+```powershell
+mvn -pl daw-app -am test -DskipNativeBuild=true -DskipNoticesGeneration=true '-Dtest=*Story326Test,*InputCapture*,AudioIORoutingTest,RecordingPipeline*Test,CaptureFlushServiceTest,TakeManifestTest,AudioEngine*Test,CallbackBackendAdapterTest,AsioBackend*Test,JavaxSoundBackend*Test,MockAudioBackendTest,RecordStartReadinessGateContractTest,RealTimeSafeContractTest,RecordingLifecycleCallerThreadSentinelTest,TransportControllerTest,TransportControllerFxThreadBytecodeSentinelTest,RecordStartPreparesTheTakeOffTheFxThreadTest,TakeCapturedAtTheEngineFormatContractTest,ArrangementArmInputCheckOffFxTest,SessionInputSelectionTest,Story322SessionInputUpgradeContractTest,TrackControlBinder*Test,CoreTrackSignalTest,ProjectChangeWhileRecordingTest,ProjectChangeWhileTakeIsWrittenTest,DoubleStopWhileTakeIsWrittenTest,StopPublishesTheTakeOnALaterFxTurnTest,RecordedTakeUnsavedChangesTest,TakeFinalizationFailureReportTest,HubAndWelcomeOpenWhileRecordingTest,HubAndWelcomeOpenWhileTakeIsWrittenTest,RecordPathStorageLocationScanTest,RecordedAudioLoadsOffTheFxThreadContractTest,Story322RecordedFxThreadPublishContractTest' '-Dsurefire.failIfNoSpecifiedTests=false'
+```
+
+Verified on Windows with OpenJDK 26+35 and Maven 3.9.14 on 2026-10-04: **964 tests passed** (SDK 162, core 545, app 257), with no failures, errors or skips. This includes 21 core story regressions, six shared arm-guard tests, the visible meter flag test, 115 transport tests, 23 preparation tests and the project-change/finalization contracts. `git diff --check` passed.
+
+Native build is skipped for these deterministic injected-backend tests. Physical hardware verification is reserved for the user, as requested.
+
+## Manual Windows ASIO 8-input verification
+
+1. Connect an 8-input interface and select its ASIO driver. Use a stereo output/project at a supported sample rate and buffer size.
+2. Feed different signals to inputs 7 and 8. Route a stereo track to Input 7-8 and arm it. Confirm both input levels respond, record, stop, and audition the two recorded channels separately. Inspect the WAV as stereo at the opened sample rate.
+3. Add tracks on inputs 1-2 and record simultaneously. Each track must contain its own selected inputs. Repeat with mono and four-channel project/output formats; routes and file widths must stay the same.
+4. Choose another ASIO driver for a second track and arm it. Refusal before REC must name the track and device. Restore the active driver's routing and confirm arm succeeds.
+5. If the driver permits reducing enabled inputs, validate Input 7-8 while eight inputs are available, then reduce availability before Record. The entire affected stereo track must capture silence, one visible warning must name it, and `take.manifest` must contain `routing-unavailable`. An unavailable armed input must show amber on both arrangement and mixer indicators.
+6. Record several loop laps and audition all takes. Cancel a preparing start; Stop/playback must stay responsive and another take must start after cleanup.
+7. Restore the original driver/channel configuration. These hardware checks have not been run by the automated tests.

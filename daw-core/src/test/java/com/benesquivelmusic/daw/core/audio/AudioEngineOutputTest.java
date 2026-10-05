@@ -475,6 +475,33 @@ class AudioEngineOutputTest {
     }
 
     @Test
+    void story326RoutedDefaultInputSkipsACaptureLessRung() {
+        SynchronousTestBackend playbackOnly = new SynchronousTestBackend("PlaybackOnly");
+        playbackOnly.capturesInput = false;
+        SynchronousTestBackend duplex = new SynchronousTestBackend("Duplex");
+        engine.setStreamingProvision(provisionOf("PlaybackOnly", playbackOnly, duplex));
+
+        com.benesquivelmusic.daw.core.track.Track track = new com.benesquivelmusic.daw.core.track.Track("Default", com.benesquivelmusic.daw.core.track.TrackType.AUDIO);
+        track.setInputDeviceIndex(-1);
+        engine.startAudioInputOutput(List.of(track));
+
+        assertThat(playbackOnly.openCount.get())
+                .as("the capture-less rung is only refusable AFTER its open returns")
+                .isEqualTo(1);
+        assertThat(playbackOnly.closeCount.get())
+                .as("its handle is given back before the walk advances — the device"
+                        + " must not stay held by a stream nobody wants")
+                .isEqualTo(1);
+        assertThat(playbackOnly.isOpen()).isFalse();
+        assertThat(duplex.isOpen())
+                .as("the walk fell through to a rung that really can capture")
+                .isTrue();
+        assertThat(engine.openStreamBackendName()).contains("Duplex");
+        assertThat(duplex.openedInputChannels()).isGreaterThan(0);
+    }
+
+
+    @Test
     void recordFailsAndLeavesNoStreamOpenWhenEveryRungOpensWithoutCapture() {
         SynchronousTestBackend first = new SynchronousTestBackend("First");
         first.capturesInput = false;
@@ -556,6 +583,36 @@ class AudioEngineOutputTest {
             bus.close();
         }
     }
+
+    @Test
+    void story326RoutedDefaultInputPublishesFallbackWinner() {
+        DefaultEventBus bus = new DefaultEventBus();
+        List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
+        try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
+            EventBusPublisher.setDefault(bus);
+            SynchronousTestBackend playbackOnly =
+                    new SynchronousTestBackend("PlaybackOnly");
+            playbackOnly.capturesInput = false;
+            SynchronousTestBackend duplex = new SynchronousTestBackend("Duplex");
+            engine.setStreamingProvision(
+                    provisionOf("PlaybackOnly", playbackOnly, duplex));
+
+            com.benesquivelmusic.daw.core.track.Track track = new com.benesquivelmusic.daw.core.track.Track("Default", com.benesquivelmusic.daw.core.track.TrackType.AUDIO);
+            track.setInputDeviceIndex(-1);
+            engine.startAudioInputOutput(List.of(track));
+
+            awaitCondition(() -> received.size() >= 1,
+                    "the capture refusal is published like any other failed hop");
+            assertThat(received).hasSize(1);
+            assertThat(received.get(0).requestedBackend()).isEqualTo("PlaybackOnly");
+            assertThat(received.get(0).activeBackend()).isEqualTo("Duplex");
+            assertThat(received.get(0).cause()).contains("no capture channels");
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
 
     /**
      * A capture-less rung is refused AFTER its {@code open}, so

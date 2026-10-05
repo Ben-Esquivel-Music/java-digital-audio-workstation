@@ -83,7 +83,6 @@ final class RecordCoordinator {
     private final AudioEngine audioEngine;
     private final UndoManager undoManager;
     private final NotificationBar notificationBar;
-    private final SessionInputSelection sessionInputSelection;
     private final Label statusBarLabel;
     private final Label recIndicator;
     private final CoreTransportIntentHandler core;
@@ -237,7 +236,6 @@ final class RecordCoordinator {
         this.audioEngine = audioEngine;
         this.undoManager = undoManager;
         this.notificationBar = notificationBar;
-        this.sessionInputSelection = sessionInputSelection;
         this.statusBarLabel = statusBarLabel;
         this.recIndicator = recIndicator;
         this.core = core;
@@ -286,13 +284,7 @@ final class RecordCoordinator {
     }
 
 
-    /**
-     * The worker of the most recent record-start input check (story 322 fix
-     * round, S7): the device enumeration behind the session-input mismatch
-     * WARNING runs off the FX thread; only the comparison (over the FX-owned
-     * track list) and the toast are marshalled back. Kept so a test can wait
-     * for it; {@code null} until the first audio take.
-     */
+    /** Off-FX input plan/open worker of the latest audio start, retained for deterministic tests. */
     private volatile Thread sessionInputCheck;
 
     /**
@@ -1432,54 +1424,10 @@ final class RecordCoordinator {
                 abortRecordingTake(failure);
                 return;
             }
-            announceRecordingStarted(activeMidiRecorders.size(), null);
+            announceRecordingStarted(activeMidiRecorders.size(), null, false);
             return;
         }
 
-        // Open audio I/O through the engine's provisioned device (story 316):
-        // the settings-configured device identity is honoured on every open —
-        // a per-track input device index no longer reaches the open path.
-        // Per-track input CHANNEL routing stays on Track.getInputRouting();
-        // multi-device capture is story 326. Story 316 made
-        // startAudioInputOutput() ENFORCE capture — it walks the ladder with
-        // CaptureRequirement.REQUIRED, refuses any rung that opens with zero
-        // input channels, and throws when every rung fails or no streaming
-        // provision is configured — so a throw here is the honest "nothing
-        // can be captured" signal. It comes before anything of the take is
-        // allocated, so a refusal leaves no take directory, pipeline or file
-        // behind.
-        //
-        // The open stays on the FX thread: the engine opens the driver and
-        // starts its stream before it returns, which takes as long as the
-        // driver takes. That synchronous device call predates PR #978 review
-        // 5391920205 and lies outside it — the review's findings are the
-        // take's storage I/O and the Stop's join, and neither is left in this
-        // handler — so it is not moved here.
-        //
-        // Blocks the device delivers before capture begins reach a recording
-        // callback that is still null: they were never part of any take.
-        try {
-            if (armedAudioTracks.stream().allMatch(track ->
-                    track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track))) {
-                audioEngine.startAudioOutput();
-            } else {
-                audioEngine.startAudioInputOutput();
-            }
-        } catch (RuntimeException e) {
-            abortRecordingTake(e);
-            return;
-        }
-
-        // PREPARING (PR #978 review 5391920205, F2). The take directory is
-        // allocated under the project's audio/takes folder (story 323, D6;
-        // the OS temp directory is never used, Recording Reliability book
-        // §9.4) on the storage executor, never on the FX thread; the take's
-        // files are then created by its capture thread (prepare()), and
-        // capture begins only once they exist (onTakeReady): by default the
-        // capture ring holds the blocks covering
-        // CaptureRing.DEFAULT_HANDOFF_TOLERANCE (250 ms), rounded up to a
-        // power-of-two slot count (about 341 ms at 48 kHz with 256-frame
-        // blocks), which a slow disk would overflow if capture began first.
         PendingStart start = new PendingStart(armedTracks.size(), List.copyOf(armedAudioTracks),
                 List.copyOf(armedMidiTracks), countIn);
         pendingStart = start;
@@ -1489,21 +1437,74 @@ final class RecordCoordinator {
         updateStatus();
         Path audioDirectory = ProjectManager.audioDirectory(projectDirectory.get());
         Instant requested = Instant.now();
+        // Driver enumeration and union-open run off FX. No take file exists until validation succeeds.
+        sessionInputCheck = Thread.ofVirtual().name("daw-record-input-check").start(() -> {
+            Throwable failure = null;
+            try {
+                audioEngine.requireCaptureRoutingUnchanged(start.armedAudioTracks, start.routeSnapshots);
+                if (start.armedAudioTracks.stream().allMatch(track ->
+                        track.getInputRouting().isNone() && audioEngine.hasGraphInstrument(track))) {
+                    start.streamGeneration = audioEngine.startAudioOutputOwned(start.streamGeneration);
+                } else start.streamGeneration = audioEngine.startAudioInputOutput(start.armedAudioTracks, start.routeSnapshots, start.provision, start.streamGeneration);
+            } catch (RuntimeException | Error e) { failure = e; }
+            Throwable result = failure;
+            postFx(() -> onInputStreamsPrepared(start, audioDirectory, requested, result));
+        });
+    }
+
+    private void onInputStreamsPrepared(PendingStart start, Path audioDirectory, Instant requested, Throwable failure) {
+        start.streamPrepared = true;
+        if (start.cancelled || retired) {
+            if (failure == null && !retired && (project.getTransport().getState() == TransportState.PLAYING || transport.hasGraphInstruments())) abandonedStartCleanedUp(start);
+            else cleanUpPreparedInputStream(start);
+            return;
+        }
+        if (pendingStart != start) return;
+        if (failure != null) {
+            pendingStart = null;
+            abortRecordingTake(failure);
+            return;
+        }
         try {
+            audioEngine.requireCaptureRoutingUnchanged(start.armedAudioTracks, start.routeSnapshots);
             CompletableFuture.supplyAsync(() -> allocateTakeDirectory(audioDirectory, requested), storageExecutor)
-                .whenComplete((takeDirectory, failure) ->
-                        postFx(() -> onTakeDirectoryAllocated(start, takeDirectory, failure)));
+                .whenComplete((takeDirectory, allocationFailure) ->
+                        postFx(() -> onTakeDirectoryAllocated(start, takeDirectory, allocationFailure)));
         } catch (RuntimeException rejected) {
             pendingStart = null;
-            abortRecordingTake(new IllegalStateException("Take-directory scheduling precondition failed", rejected));
+            abortRecordingTake(new IllegalStateException("Take-directory scheduling precondition failed: " + shortDescription(rejected), rejected));
         }
+    }
+
+    boolean deferInputStreamStop() {
+        PendingStart start = pendingStart != null ? pendingStart : abandonedStart;
+        if (start == null) return false;
+        if (!start.streamPrepared || start.inputCleanupRunning) return true;
+        if (start.inputCleanupFailed) { cleanUpPreparedInputStream(start); return true; }
+        return false;
+    }
+    private void cleanUpPreparedInputStream(PendingStart start) {
+        if (start.inputCleanupRunning) return;
+        start.inputCleanupRunning = true;
+        CompletableFuture.runAsync(() -> audioEngine.stopOwnedAudioStream(start.streamGeneration), RecordCoordinator::onAVirtualThread)
+            .whenComplete((_, closeFailure) -> postFx(() -> {
+                start.inputCleanupRunning = false;
+                if (closeFailure != null) {
+                    start.inputCleanupFailed = true;
+                    if (!retired) notificationBar.show(NotificationLevel.ERROR,
+                            "Recording input cleanup failed: " + shortDescription(causeOf(closeFailure)));
+                } else {
+                    start.inputCleanupFailed = false;
+                    abandonedStartCleanedUp(start);
+                }
+            }));
     }
 
     /**
      * The ANNOUNCE and UI tail of a take whose recording has begun — the
      * transport is RECORDING: {@link TransportEvent.Started}, the status
      * line, the INFO toast, the REC indicator and, for an audio take, the
-     * session-input check. Run by {@link #onRecord()} for a MIDI-only take
+     * input preparation. Run by {@link #onRecord()} for a MIDI-only take
      * and by the readiness turn ({@link #onTakeReady}) for an audio take. FX
      * thread.
      *
@@ -1511,7 +1512,7 @@ final class RecordCoordinator {
      * @param takeDirectory the audio take's directory under
      *                      {@code audio/takes}; {@code null} for a MIDI-only take
      */
-    private void announceRecordingStarted(int trackCount, Path takeDirectory) {
+    private void announceRecordingStarted(int trackCount, Path takeDirectory, boolean preserveWarning) {
         transport.cancelPostRollForRecording();
         trackCount = (recordingPipeline == null ? 0 : recordingPipeline.getArmedTracks().size()) + activeMidiRecorders.size();
         if (state.get() == RecordState.PREPARING) transition(RecordState.COUNT_IN);
@@ -1536,20 +1537,14 @@ final class RecordCoordinator {
                 : armedSummary + " — streaming to " + ProjectManager.AUDIO_DIR_NAME + "/"
                         + TakeDirectories.TAKES_DIR_NAME + "/" + takeDirectory.getFileName());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
-        notificationBar.show(NotificationLevel.INFO,
+        if (!preserveWarning) notificationBar.show(NotificationLevel.INFO,
                 "Recording started — " + trackCount + " track"
                         + (trackCount > 1 ? "s" : "") + " armed");
         if (!skippedMidiTracks.isEmpty()) {
             notificationBar.show(NotificationLevel.WARNING, "MIDI recording skipped: " + String.join("; ", skippedMidiTracks));
             skippedMidiTracks.clear();
         }
-        // Story 322: a per-track input choice that disagrees with the session
-        // input is never silently ignored — one WARNING names the tracks and
-        // both devices. Its enumeration runs off the FX thread, so the toast
-        // lands on a later FX turn than the INFO above and stays visible over it.
-        if (takeDirectory != null) {
-            warnOnSessionInputMismatchOffFx();
-        }
+
     }
 
     /**
@@ -1591,6 +1586,7 @@ final class RecordCoordinator {
         }
         RecordingPipeline pipeline;
         try {
+            audioEngine.requireCaptureRoutingUnchanged(start.armedAudioTracks, start.routeSnapshots);
             // The take is captured at the format the engine is streaming
             // (Recording Reliability book §2.7), read here, on the FX turn
             // after Record opened the device stream: the engine refuses a
@@ -1602,6 +1598,14 @@ final class RecordCoordinator {
                     audioEngine, project.getTransport(), audioEngine.getFormat(),
                     project.getFormat().sampleRate(), takeDirectory,
                     start.armedAudioTracks, start.countIn, InputMonitoringMode.OFF, null);
+            pipeline.setWarningSink(message -> postFx(() -> {
+                RecordState current = state.get();
+                if (!retired && (current == RecordState.PREPARING || current == RecordState.COUNT_IN || current == RecordState.RECORDING)
+                        && (pendingStart == start || recordingPipeline == start.pipeline)) {
+                    start.warningPublished = true;
+                    notificationBar.show(NotificationLevel.WARNING, message);
+                }
+            }));
             pipeline.setReportedLatency(reportedLatency.get());
             pipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());
             openCapturePeaks(pipeline, start.armedAudioTracks);
@@ -1660,6 +1664,7 @@ final class RecordCoordinator {
             return;
         }
         try {
+            audioEngine.requireCaptureRoutingUnchanged(start.armedAudioTracks, start.routeSnapshots);
             if (!start.armedMidiTracks.isEmpty()) startMidiRecording(start.armedMidiTracks, start.countIn);
             if (earlySealOf(pipeline).isPresent() || !pipeline.hasViableCaptureService()) {
                 finishUnannouncedTake(start);
@@ -1685,7 +1690,7 @@ final class RecordCoordinator {
             finishUnannouncedTake(start);
             return;
         }
-        announceRecordingStarted(start.armedAudioTracks.size() + activeMidiRecorders.size(), start.takeDirectory);
+        announceRecordingStarted(start.armedAudioTracks.size() + activeMidiRecorders.size(), start.takeDirectory, start.warningPublished);
     }
 
     /** Preserves a take that ended during readiness without ever announcing a live recording. */
@@ -1898,7 +1903,7 @@ final class RecordCoordinator {
      * removal of its files has run, whatever that removal could not delete
      * ({@link #abandonedStartCleanedUp}). Written on the FX thread only.
      */
-    private static final class PendingStart {
+    private final class PendingStart {
         /** Every armed track of the take, audio and MIDI. */
         final int trackCount;
         final List<Track> armedAudioTracks;
@@ -1911,41 +1916,24 @@ final class RecordCoordinator {
         RecordingPipeline pipeline;
         /** Set by a cancel or a retirement; the start's later turns then do nothing more for it. */
         boolean cancelled;
+        boolean streamPrepared;
+        Object streamGeneration = new Object();
+        boolean inputCleanupRunning;
+        boolean inputCleanupFailed;
+        boolean warningPublished;
+        final List<com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.Route> routeSnapshots;
+        final com.benesquivelmusic.daw.core.audio.StreamingProvision provision;
         Throwable failure;
 
         PendingStart(int trackCount, List<Track> armedAudioTracks, List<Track> armedMidiTracks,
                      CountInMode countIn) {
             this.trackCount = trackCount;
             this.armedAudioTracks = armedAudioTracks;
+            this.routeSnapshots = com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.snapshot(armedAudioTracks);
+            this.provision = audioEngine.getStreamingProvision();
             this.armedMidiTracks = armedMidiTracks;
             this.countIn = countIn;
         }
-    }
-
-    /**
-     * Enumerates the devices on a virtual thread and, back on the FX thread
-     * through {@link #postFx}, shows the session-input mismatch WARNING for
-     * the armed tracks — only while this take is still in flight
-     * ({@link #recIndicator} is the controller's own in-flight fact: set at the
-     * end of a successful start, cleared by stop and abort), so a take that
-     * ended or was abandoned before the driver answered raises no stale toast
-     * over whatever replaced it. The tracks are read on the FX thread, where
-     * the project's live list is owned (story 322 fix round, S7;
-     * {@code javafx-application-design} §11 — no blocking I/O in a handler:
-     * {@code AudioBackend.listDevices()} is a driver walk that, on ASIO, waits
-     * on the control thread).
-     */
-    private void warnOnSessionInputMismatchOffFx() {
-        sessionInputCheck = Thread.ofVirtual().name("daw-record-input-check").start(() -> {
-            List<AudioDeviceInfo> devices = listAudioDevices();
-            postFx(() -> {
-                if (state.get() != RecordState.RECORDING) {
-                    return;
-                }
-                sessionInputSelection.mismatchWarning(project.getTracks(), devices)
-                        .ifPresent(message -> notificationBar.show(NotificationLevel.WARNING, message));
-            });
-        });
     }
 
     /**
@@ -1981,26 +1969,6 @@ final class RecordCoordinator {
     private Optional<Path> projectDirectory() {
         ProjectMetadata metadata = project.getMetadata();
         return metadata == null ? Optional.empty() : Optional.ofNullable(metadata.projectPath());
-    }
-
-    /**
-     * Enumerates the audio devices via the engine's one SDK backend seam
-     * (story 316). An absent backend or a failed enumeration yields an empty
-     * list (logged), in which case no per-track index can be resolved and the
-     * mismatch check has nothing to compare. Called on the input check's
-     * worker, never on the FX thread.
-     */
-    private List<AudioDeviceInfo> listAudioDevices() {
-        AudioBackend backend = audioEngine.getBackend();
-        if (backend == null) {
-            return List.of();
-        }
-        try {
-            return backend.listDevices();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to enumerate audio devices for the session-input check", e);
-            return List.of();
-        }
     }
 
     /** Closes the attempt's stream after MIDI, flush termination and directory cleanup. */

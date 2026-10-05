@@ -556,7 +556,8 @@ public final class MainController {
         }
         FxDispatcher disp = dispatcher();
         if (disp != null) {
-            trackControlWiring = TrackControlWiring.standalone(project, disp, meterFeed());
+            trackControlWiring = TrackControlWiring.standalone(project, disp, meterFeed(), audioEngine,
+                    message -> notificationBar.show(NotificationLevel.ERROR, message));
         }
     }
 

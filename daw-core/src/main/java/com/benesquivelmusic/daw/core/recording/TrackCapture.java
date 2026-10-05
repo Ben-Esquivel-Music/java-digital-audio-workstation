@@ -115,6 +115,18 @@ final class TrackCapture {
         }
     }
 
+    private int inputSource;
+    private String inputDeviceName = "Input stream";
+    private boolean routingFlagged;
+    void setInputSource(int source, String name) { inputSource = source; inputDeviceName = name; }
+    int inputSource() { return inputSource; }
+    String inputDeviceName() { return inputDeviceName; }
+    boolean flagRouting() {
+        if (routingFlagged) return false;
+        routingFlagged = true;
+        return true;
+    }
+
     private final Track track;
     private final String trackId;
     private final String trackName;

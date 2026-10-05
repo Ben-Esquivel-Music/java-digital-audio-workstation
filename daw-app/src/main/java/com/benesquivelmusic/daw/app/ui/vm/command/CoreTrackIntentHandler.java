@@ -90,6 +90,13 @@ public final class CoreTrackIntentHandler implements TrackIntentHandler {
         this.project = Objects.requireNonNull(project, "project must not be null");
     }
 
+    private java.util.function.BiConsumer<Track, Runnable> armValidator = (track, accept) -> accept.run();
+    private java.util.function.Consumer<Track> cancelArm = track -> { };
+    public void setArmCancellation(java.util.function.Consumer<Track> cancellation) { cancelArm = Objects.requireNonNull(cancellation); }
+    public void setArmValidator(java.util.function.BiConsumer<Track, Runnable> validator) {
+        armValidator = Objects.requireNonNull(validator);
+    }
+
     @Override
     public void toggleMute(Track track, boolean muted) {
         Objects.requireNonNull(track, "track must not be null");
@@ -138,13 +145,18 @@ public final class CoreTrackIntentHandler implements TrackIntentHandler {
     @Override
     public void toggleArm(Track track, boolean armed) {
         Objects.requireNonNull(track, "track must not be null");
+        if (!armed) cancelArm.accept(track);
         if (track.isArmed() == armed) {
             return; // VALIDATE: idempotent
         }
-        // Arm is track-only — no MixerChannel armed state to mirror.
+        if (armed) armValidator.accept(track, () -> applyArm(track, true));
+        else applyArm(track, false);
+    }
+
+    private void applyArm(Track track, boolean armed) {
+        if (track.isArmed() == armed) return;
         track.setArmed(armed);
-        EventBusPublisher.publish(
-                new TrackEvent.Armed(UUID.fromString(track.getId()), armed, Instant.now()));
+        EventBusPublisher.publish(new TrackEvent.Armed(UUID.fromString(track.getId()), armed, Instant.now()));
     }
 
     @Override

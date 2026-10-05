@@ -71,10 +71,9 @@ import java.util.logging.Logger;
  * {@link UncheckedIOException} from {@code recordAudioData}/{@code stop};
  * the flush service turns that into a clean early seal.</p>
  *
- * <p>Capture width this stage is the stream width ({@link AudioFormat#channels()}):
- * the segment carries that many channels, rows the routed
- * block does not provide staying silent — exactly today's routing shape
- * (story 326 narrows capture to the routed width). Bit depths 16, 24 and 32
+ * <p>Capture width is this track session's format ({@link AudioFormat#channels()}):
+ * physical tracks use their frozen routed width, and graph instruments use the render width.
+ * Rows absent from the routed block are zeroed. Bit depths 16, 24 and 32
  * are accepted; any other {@code AudioFormat#bitDepth()} fails at
  * {@link #start()} with {@link IllegalArgumentException} (8-bit capture is
  * not a supported take format).</p>

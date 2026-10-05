@@ -164,7 +164,7 @@ final class TransportController implements TransportIntentHandler {
      * Story 322 — the ONE session-level input device recording opens. Consulted
      * at record start to warn when an armed track's per-track input choice
      * disagrees with it (Audio Engine Wiring Design Book §5.6 "Per-track input
-     * device"; multi-device capture itself is story 326).
+     * device"; explicit track inputs are resolved by the story-326 capture union).
      */
     private final SessionInputSelection sessionInputSelection;
     private final Label statusLabel;
@@ -734,6 +734,7 @@ final class TransportController implements TransportIntentHandler {
     }
 
     void stopAudioOutputWhenIdle() {
+        if (recordCoordinator.deferInputStreamStop()) return;
         if (!hasGraphInstruments()) audioEngine.stopAudioOutput();
     }
 
@@ -752,7 +753,7 @@ final class TransportController implements TransportIntentHandler {
         }
     }
 
-    private boolean hasGraphInstruments() {
+    boolean hasGraphInstruments() {
         var mixer = project.getMixer();
         // Retain the callback for bypassed instruments so unbypassing while stopped can audition immediately.
         return mixer.getChannels().stream().anyMatch(com.benesquivelmusic.daw.core.mixer.MixerChannel::hasInstrumentInsert)

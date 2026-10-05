@@ -11,39 +11,10 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * The ONE session-level audio input device — story 322, Audio Engine Wiring
- * Design Book §5.6 ("Per-track input device → session-level input selection +
- * mismatch warning").
- *
- * <p>Recording opens the engine's provisioned input device (story 316:
- * {@code TransportController} calls {@code startAudioInputOutput()} with no
- * per-track index), which is the device {@code SettingsModel.getAudioInputDevice()}
- * names. The per-track choice a user makes in the input-port dialog
- * ({@code Track.setInputDeviceIndex}) is kept as persisted intent for story
- * 326's multi-device capture, but it does not route audio today. This type
- * makes that honest: every per-track dialog also {@linkplain #select(AudioDeviceInfo)
- * selects} the session device, and whenever armed tracks disagree with it the
- * surfaces show a single {@code WARNING} built by {@link #mismatchWarning} —
- * never a silent ignore. An armed track whose persisted index resolves to
- * none of the enumerated devices (the interface was unplugged) is one such
- * disagreement: over a non-empty enumeration it is reported as an unavailable
- * device, not dropped (PR #977 review) — an empty enumeration compares
- * nothing, see {@link #mismatches}. A stale index may instead name an
- * unrelated device that now carries it (a backend change); that is treated as
- * a choice of that device (reported only when that device is not the session
- * device), since only the bare index is persisted.</p>
- *
- * <p>The pure comparison logic ({@link #mismatches}, {@link #mismatchWarning},
- * {@link #selectedIndexIn}) lives here as default methods so the production
- * implementation ({@link SettingsBackedSessionInputSelection}) and any test
- * stub share exactly one definition of "disagrees with the session device".
- * Device identity is compared with {@link AudioDeviceInfo#isSelectionFor}, the
- * repo's single rule for matching a persisted selection to an enumerated
- * device (it tolerates a bare name saved before qualified names existed).</p>
- *
- * <p>Threading: {@link #select(AudioDeviceInfo)} is called on the FX thread and
- * must never block it — the engine reconfiguration runs on a worker; the read
- * methods are trivially thread-safe.</p>
+ * Persisted session default input selection. Explicit per-track selections are
+ * resolved by the capture routing union (story 326); selecting a session default
+ * remains an asynchronous engine configuration change.
+ * The legacy comparison helpers are retained for session-selection diagnostics.
  */
 public interface SessionInputSelection {
 
@@ -114,31 +85,11 @@ public interface SessionInputSelection {
     }
 
     /**
-     * Returns the armed tracks whose explicit per-track input choice
-     * ({@code inputDeviceIndex != NO_INPUT_DEVICE}) is not the session device
-     * — the tracks recording will silently serve from the wrong device unless
-     * the user is told. A choice disagrees in two ways: it resolves to an
-     * enumerated device other than the session device, or it resolves to
-     * <em>no</em> enumerated device at all. The index is persisted
-     * ({@code ProjectSerializer} writes {@code input-device}), so a project
-     * reopened after an interface was unplugged may hold indices that resolve
-     * to nothing — and after a backend change a stale index may instead name
-     * an unrelated device, which is then treated as a choice of that device
-     * (reported only when that device is not the session device; only the
-     * bare int is persisted); treating an unresolved index as "not a
-     * disagreement" was the silent ignore §5.6 forbids (PR #977 review).
+     * Diagnostic comparison of armed explicit selections with the persisted session default.
+     * Different valid inputs can participate in the same capture union. An empty device
+     * list provides no comparison; actual capture validation belongs to CaptureRoutingPlan.
      *
-     * <p>Unarmed tracks are irrelevant to the next take and skipped. When
-     * {@code devices} is empty nothing is reported: both production callers
-     * pass an empty list when there is no backend or the enumeration failed,
-     * and that means "nothing to compare", not "every device is unavailable" —
-     * flagging every armed track on an enumeration failure would be a false
-     * warning.</p>
-     *
-     * @param tracks  the project's tracks; must not be {@code null}
-     * @param devices the enumerated devices, or empty when they could not be
-     *                enumerated; must not be {@code null}
-     * @return the conflicting armed tracks, in project order; never {@code null}
+     * @return differing or unresolved selections in project order
      */
     default List<Track> mismatches(List<Track> tracks, List<AudioDeviceInfo> devices) {
         Objects.requireNonNull(tracks, "tracks must not be null");
@@ -159,24 +110,7 @@ public interface SessionInputSelection {
         return conflicting;
     }
 
-    /**
-     * Builds the single {@code WARNING} text for the current mismatches, e.g.
-     * {@code Recording uses the session input 'Mic In [ASIO]'; track(s) Vox,
-     * Guitar chose 'USB In [WASAPI]' — multi-device capture is story 326}, or
-     * {@link Optional#empty()} when every armed track agrees with the session
-     * device — or when {@code devices} is empty, which compares nothing (see
-     * {@link #mismatches}). Tracks that chose different devices are grouped per device and
-     * the groups joined with {@code "; "}, so every conflicting device is named.
-     * Tracks whose persisted index resolves to no enumerated device share ONE
-     * "unavailable" group — {@code track(s) Drums chose an input device that is
-     * no longer available} — because a device index means nothing to a user;
-     * that group takes its place among the others in first-seen project order.
-     *
-     * @param tracks  the project's tracks; must not be {@code null}
-     * @param devices the enumerated devices, or empty when they could not be
-     *                enumerated; must not be {@code null}
-     * @return the warning text, or empty when there is nothing to warn about
-     */
+    /** Builds a grouped diagnostic description of selections that differ from the session default. */
     default Optional<String> mismatchWarning(List<Track> tracks, List<AudioDeviceInfo> devices) {
         List<Track> conflicting = mismatches(tracks, devices);
         if (conflicting.isEmpty()) {
@@ -189,7 +123,7 @@ public interface SessionInputSelection {
             Optional<String> chosen = resolve(track, devices).map(AudioDeviceInfo::qualifiedName);
             trackNamesByDevice.computeIfAbsent(chosen, _ -> new ArrayList<>()).add(track.getName());
         }
-        StringBuilder text = new StringBuilder("Recording uses the session input '")
+        StringBuilder text = new StringBuilder("Session input is '")
                 .append(displayName(currentDeviceName()))
                 .append("'; ");
         boolean first = true;
@@ -203,7 +137,7 @@ public interface SessionInputSelection {
                     device -> text.append(" chose '").append(device).append('\''),
                     () -> text.append(" chose an input device that is no longer available"));
         }
-        text.append(" — multi-device capture is story 326");
+
         return Optional.of(text.toString());
     }
 

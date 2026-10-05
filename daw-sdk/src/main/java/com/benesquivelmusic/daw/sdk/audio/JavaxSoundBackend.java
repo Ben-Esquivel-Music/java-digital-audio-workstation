@@ -183,6 +183,11 @@ public final class JavaxSoundBackend implements AudioBackend {
         this.captureExitTimeoutMillis = captureExitTimeoutMillis;
     }
 
+    @Override public double openedInputSampleRate() {
+        AudioFormat current = support.format();
+        return current == null ? Double.NaN : current.sampleRate();
+    }
+
     @Override
     public String name() {
         return NAME;
@@ -727,9 +732,31 @@ public final class JavaxSoundBackend implements AudioBackend {
      *                               suppressed exception, and the line it
      *                               could not release is retained
      */
+    @Override public java.util.OptionalInt inputChannelCapacity(DeviceId input) {
+        int count = 0;
+        for (Line.Info line : javaSound.targetLineInfo(resolveMixerInfo(input)))
+            if (line instanceof DataLine.Info data) count = mergeChannelCount(count, maxChannels(data));
+        return count < 0 ? java.util.OptionalInt.empty() : java.util.OptionalInt.of(count);
+    }
+
+    @Override public boolean supportsMultipleInputDevices() { return true; }
+    @Override public AudioBackend createInputBackend() { return new JavaxSoundBackend(javaSound, captureExitTimeoutMillis); }
+    @Override public synchronized void open(DeviceId output, AudioFormat format, int frames, CaptureRequirement capture,
+                                            DeviceId input, int channels) {
+        openDirections(output, format, frames, capture, input, channels, false);
+    }
+    @Override public synchronized void openInput(DeviceId input, AudioFormat format, int frames, int channels) {
+        openDirections(input, format, frames, CaptureRequirement.REQUIRED, input, channels, true);
+    }
+
     @Override
     public synchronized void open(DeviceId device, AudioFormat format, int bufferFrames,
                                   CaptureRequirement capture) {
+        openDirections(device, format, bufferFrames, capture, device, format.channels(), false);
+    }
+    private void openDirections(DeviceId device, AudioFormat format, int bufferFrames, CaptureRequirement capture,
+                                DeviceId inputDevice, int inputChannels, boolean inputOnly) {
+        if (inputChannels < 0 || (inputOnly || capture == CaptureRequirement.REQUIRED) && inputChannels == 0) throw new IllegalArgumentException("inputChannels must be positive for capture");
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
         Objects.requireNonNull(capture, "capture must not be null");
@@ -739,8 +766,9 @@ public final class JavaxSoundBackend implements AudioBackend {
         }
         support.markOpen(format, bufferFrames);
         Mixer.Info mixerInfo;
-        OutputGeneration openedOutput;
+        OutputGeneration openedOutput = null;
         try {
+            if (!inputOnly) {
             mixerInfo = resolveMixerInfo(device);
             javax.sound.sampled.AudioFormat requestedOutput = selectOutputFormat(
                     mixerInfo, format);
@@ -761,6 +789,7 @@ public final class JavaxSoundBackend implements AudioBackend {
             // publishing here would let a concurrent sink write a stream whose
             // open ultimately throws.
             openedOutput = new OutputGeneration(this.outputLine, actualOutput, format);
+            }
         } catch (LineUnavailableException | RuntimeException e) {
             // Mandatory output line failed: roll the open back — through the
             // same retain-on-failure release close() uses, see
@@ -781,21 +810,22 @@ public final class JavaxSoundBackend implements AudioBackend {
             throw rollBackFailedOutputOpen(e);
         }
         try {
-            javax.sound.sampled.AudioFormat requestedInput = selectInputFormat(
-                    mixerInfo, format);
-            this.inputLine = javaSound.targetLine(mixerInfo, requestedInput);
+            Mixer.Info inputMixer = resolveMixerInfo(inputDevice);
+            AudioFormat captureFormat = new AudioFormat(format.sampleRate(), inputChannels, format.bitDepth());
+            javax.sound.sampled.AudioFormat requestedInput = selectInputFormat(inputMixer, captureFormat);
+            this.inputLine = javaSound.targetLine(inputMixer, requestedInput);
             int inputBufferBytes = Math.multiplyExact(
                     Math.multiplyExact(bufferFrames, requestedInput.getFrameSize()), 2);
             this.inputLine.open(requestedInput, inputBufferBytes);
             this.inputLine.start();
             this.inputLineFormat = requireActualFormat(
                     this.inputLine.getFormat(), requestedInput, "capture");
-            startCapture(format, bufferFrames);
+            startCapture(captureFormat, bufferFrames);
             // Published only once the line is open, started AND the capture
             // thread is feeding support.publishInput: openedInputChannels() is
             // a promise about inputBlocks(), so it may never outrun the thing
             // that does the publishing.
-            this.openedInputChannels = format.channels();
+            this.openedInputChannels = inputChannels;
         } catch (LineUnavailableException | RuntimeException e) {
             // Optional capture: an input failure never kills a PLAYBACK open
             // (see the REQUIRED case at the end of this comment) — but the

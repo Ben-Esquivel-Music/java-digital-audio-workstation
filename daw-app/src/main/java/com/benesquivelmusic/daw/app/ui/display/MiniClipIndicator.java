@@ -9,6 +9,8 @@ import com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.input.MouseButton;
 import javafx.scene.paint.Color;
+import javafx.scene.control.Tooltip;
+import javafx.css.PseudoClass;
 
 import java.util.Objects;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
@@ -38,6 +40,11 @@ public final class MiniClipIndicator extends GpuCanvasView {
     private static final Color ON = Color.web("#ff1744");
     private static final Color BORDER = Color.web("#000000", 0.5);
 
+    private static final Color UNAVAILABLE = Color.web("#ffb300");
+    private static final PseudoClass ROUTING_UNAVAILABLE = PseudoClass.getPseudoClass("routing-unavailable");
+    private final Tooltip routingTooltip = new Tooltip();
+    private boolean unavailable;
+
     private final InputLevelMonitor monitor;
     private final InputLevelMonitorRegistry registry;
     private InputLevelMeter lastSnapshot = InputLevelMeter.SILENCE;
@@ -54,6 +61,8 @@ public final class MiniClipIndicator extends GpuCanvasView {
         setMinSize(SIZE, SIZE);
         setMaxSize(SIZE, SIZE);
 
+        Tooltip.install(this, routingTooltip);
+        refreshRoutingState();
         setRenderer(this::renderFrame);
         gpuCanvas().setPrefSize(SIZE, SIZE);
 
@@ -106,13 +115,22 @@ public final class MiniClipIndicator extends GpuCanvasView {
         // visible again. snapshot() is guaranteed non-null (returns
         // InputLevelMeter.SILENCE before first process()).
         lastSnapshot = monitor.snapshot();
+        refreshRoutingState();
         renderInto(ctx.gc(), ctx.width(), ctx.height());
+    }
+
+    void refreshRoutingState() {
+        unavailable = monitor.isRoutingUnavailable();
+        pseudoClassStateChanged(ROUTING_UNAVAILABLE, unavailable);
+        String text = unavailable ? monitor.routingDescription() : "Input level; click to reset clips";
+        routingTooltip.setText(text);
+        setAccessibleText(text);
     }
 
     private void renderInto(GraphicsContext gc, double w, double h) {
         if (w <= 0 || h <= 0) return;
         boolean clipped = lastSnapshot.clippedSinceReset();
-        gc.setFill(clipped ? ON : OFF);
+        gc.setFill(unavailable ? UNAVAILABLE : clipped ? ON : OFF);
         gc.fillOval(1, 1, w - 2, h - 2);
         gc.setStroke(BORDER);
         gc.setLineWidth(0.8);

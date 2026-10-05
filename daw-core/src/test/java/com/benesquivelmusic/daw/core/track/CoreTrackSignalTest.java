@@ -151,6 +151,7 @@ class CoreTrackSignalTest {
         track.setMuted(true);
         track.setSolo(true);
         track.setArmed(true);
+        track.setInputDeviceIndex(1);
         Map<ChangeKind, AtomicInteger> counts = new EnumMap<>(ChangeKind.class);
         for (ChangeKind kind : ChangeKind.values()) {
             counts.put(kind, new AtomicInteger());
@@ -163,6 +164,7 @@ class CoreTrackSignalTest {
         track.setMuted(true);
         track.setSolo(true);
         track.setArmed(true);
+        track.setInputDeviceIndex(1);
 
         assertThat(counts.values()).allSatisfy(count ->
                 assertThat(count.get()).as("re-applying the current value is silent").isZero());
@@ -173,6 +175,7 @@ class CoreTrackSignalTest {
         track.setMuted(false);
         track.setSolo(false);
         track.setArmed(false);
+        track.setInputDeviceIndex(0);
 
         assertThat(counts.values()).allSatisfy(count ->
                 assertThat(count.get()).as("a real change fires exactly once").isEqualTo(1));
