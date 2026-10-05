@@ -199,13 +199,14 @@ public final class TakeManifest {
     }
 
     /**
-     * One armed track.
+     * A track whose entire routed block was replaced with silence.
      *
-     * @param trackId            the track id (no {@code |} or line breaks)
-     * @param channels           channels captured for the track; positive
-     * @param compensationFrames latency compensation applied at clip placement; non-negative
+     * @param trackId           owning track id (no {@code |} or line breaks)
+     * @param device            resolved input device name
+     * @param firstChannel      first routed input channel, zero-based; non-negative
+     * @param channelCount      number of routed input channels; positive
+     * @param availableChannels number of channels actually delivered by the device; non-negative
      */
-    /** A track whose entire routed block was replaced with silence. */
     public record RoutingFlag(String trackId, String device, int firstChannel, int channelCount, int availableChannels) {
         public RoutingFlag {
             requireField(trackId, "trackId"); Objects.requireNonNull(device);
@@ -213,6 +214,13 @@ public final class TakeManifest {
         }
     }
 
+    /**
+     * One armed track.
+     *
+     * @param trackId            the track id (no {@code |} or line breaks)
+     * @param channels           channels captured for the track; positive
+     * @param compensationFrames latency compensation applied at clip placement; non-negative
+     */
     public record TrackEntry(String trackId, int channels, long compensationFrames) {
         public TrackEntry {
             requireField(trackId, "trackId");

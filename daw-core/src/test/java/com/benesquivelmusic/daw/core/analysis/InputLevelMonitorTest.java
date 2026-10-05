@@ -38,6 +38,31 @@ class InputLevelMonitorTest {
     }
 
     @Test
+    void endedSourceMasksAValuePublishedByAnInFlightBlock() {
+        var monitor = new InputLevelMonitor();
+        var source = new InputSourceAvailability();
+        monitor.setSourceAvailability(source);
+        source.markUnavailable();
+        monitor.process(new float[]{0.5f, 0.5f, 0.5f});
+        assertThat(monitor.isRoutingUnavailable()).isTrue();
+        assertThat(monitor.snapshot()).isSameAs(InputLevelMeter.SILENCE);
+    }
+
+    @Test
+    void previousSourceTerminationCannotSilenceAReboundMonitor() {
+        var monitor = new InputLevelMonitor();
+        var previous = new InputSourceAvailability();
+        monitor.setSourceAvailability(previous);
+        monitor.setSourceAvailability(new InputSourceAvailability());
+        monitor.process(new float[]{0.5f, 0.5f, 0.5f});
+        var replacementLevel = monitor.snapshot();
+        previous.markUnavailable();
+        assertThat(monitor.isRoutingUnavailable()).isFalse();
+        assertThat(monitor.snapshot()).isSameAs(replacementLevel);
+        assertThat(replacementLevel.peakDbfs()).isGreaterThan(-10);
+    }
+
+    @Test
     void shouldRejectNonPositiveThreshold() {
         assertThatThrownBy(() -> new InputLevelMonitor(0.0))
                 .isInstanceOf(IllegalArgumentException.class);

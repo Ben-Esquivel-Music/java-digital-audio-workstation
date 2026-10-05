@@ -57,6 +57,8 @@ public final class InputLevelMonitor {
 
     // Mutable state mirrored into volatile snapshot each process() call.
     private volatile InputLevelMeter latest = InputLevelMeter.SILENCE;
+    private volatile InputSourceAvailability sourceAvailability;
+    private volatile boolean physicalInput = true;
 
     // Sticky clip state. Written by audio thread on detection; written by
     // UI thread on reset(). volatile to ensure cross-thread visibility.
@@ -191,7 +193,15 @@ public final class InputLevelMonitor {
     public String routingDescription() { return routingDescription; }
     public void setRoutingDescription(String description) { routingDescription = description; }
     /** The input routing cannot be satisfied; meter surfaces share the capture warning. */
-    public boolean isRoutingUnavailable() { return routingUnavailable; }
+    public boolean isRoutingUnavailable() { return routingUnavailable || isSourceUnavailable(); }
+    /** Binds this monitor to its current capture source; {@code null} clears the binding. */
+    public void setSourceAvailability(InputSourceAvailability availability) { sourceAvailability = availability; }
+    /** Enables source availability warnings for a physical route, preserving its generation across NONE edits. */
+    public void setPhysicalInput(boolean physicalInput) { this.physicalInput = physicalInput; }
+    private boolean isSourceUnavailable() {
+        InputSourceAvailability source = sourceAvailability;
+        return physicalInput && source != null && !source.isAvailable();
+    }
     public void setRoutingUnavailable(boolean unavailable) {
         routingUnavailable = unavailable;
         if (unavailable) latest = InputLevelMeter.SILENCE;
@@ -272,7 +282,7 @@ public final class InputLevelMonitor {
      * invoked, returns {@link InputLevelMeter#SILENCE}.</p>
      */
     public InputLevelMeter snapshot() {
-        return latest;
+        return !physicalInput || isSourceUnavailable() ? InputLevelMeter.SILENCE : latest;
     }
 
     /**

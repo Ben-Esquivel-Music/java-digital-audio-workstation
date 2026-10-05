@@ -168,6 +168,8 @@ class AudioEngineLifecycleLockContractTest {
             "com/benesquivelmusic/daw/core/audio/InputRouting",
             "com/benesquivelmusic/daw/core/analysis/InputLevelMonitorRegistry",
             "com/benesquivelmusic/daw/core/analysis/InputLevelMonitor",
+            // Engine-owned generation availability: one volatile flag, no listeners or outward calls.
+            "com/benesquivelmusic/daw/core/analysis/InputSourceAvailability",
             // Engine-owned render and streaming collaborators.
             "com/benesquivelmusic/daw/core/audio/AudioBufferPool",
             "com/benesquivelmusic/daw/core/audio/AudioEngineSettings",

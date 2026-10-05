@@ -15,10 +15,14 @@ import javafx.application.Platform;
 import javafx.scene.control.Button;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @ExtendWith(JavaFxToolkitExtension.class)
@@ -36,6 +40,7 @@ class InputRoutingGuardStory326Test {
         final HeldBackend backend=new HeldBackend();
         final AudioEngine engine=new AudioEngine(FORMAT);
         final List<String> errors=new CopyOnWriteArrayList<>();
+        final AtomicInteger errorsOffFx=new AtomicInteger();
         final FxDispatcher dispatcher=new FxDispatcher();
         final TrackControlWiring wiring;
         final TrackControlBinder binder;
@@ -44,7 +49,10 @@ class InputRoutingGuardStory326Test {
         final Button arrangement=new Button();
         Rig() {
             engine.setStreamingProvision(new StreamingProvision(backend.name(),List.of(new BackendStreamRung(backend,DeviceId.defaultFor(backend.name())))));
-            wiring=TrackControlWiring.standalone(project,dispatcher,null,engine,errors::add);
+            wiring=TrackControlWiring.standalone(project,dispatcher,null,engine,message->{
+                if(!Platform.isFxApplicationThread())errorsOffFx.incrementAndGet();
+                errors.add(Objects.requireNonNull(message));
+            });
             var channel=project.getMixerChannelForTrack(track);
             binder=new TrackControlBinder(track,wiring.registry().trackVm(UUID.fromString(track.getId())),channel,wiring.registry().channelVm(channel.getId()),wiring.commandSink());
             binder.bindStrip(mixer);binder.bindTile(stage);binder.bindArm(arrangement);
@@ -123,6 +131,68 @@ class InputRoutingGuardStory326Test {
             assertThat(rig.errors).isEmpty();
         } finally {EventBusPublisher.setDefault(previous);bus.close();ArrangementStripFixture.onFx(rig::close);}
     }
+    private static Stream<Arguments> backendErrors() {
+        return Stream.of(
+                Arguments.of(new UnsatisfiedLinkError("driver enumeration failed"),"driver enumeration failed"),
+                Arguments.of(new Error(),"java.lang.Error"),
+                Arguments.of(new Error("   "),"java.lang.Error"),
+                Arguments.of(new ExceptionInInitializerError(new IllegalStateException("initialization failed")),
+                        "java.lang.ExceptionInInitializerError"));
+    }
+    @ParameterizedTest
+    @MethodSource("backendErrors")
+    void backendErrorRefusesThePendingArmAndContinuesQueuedValidation(Error failure,String diagnostic) throws Exception {
+        Rig rig=ArrangementStripFixture.onFx(Rig::new);
+        Track other=ArrangementStripFixture.onFx(()->rig.project.createAudioTrack("Other"));
+        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
+        try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
+            EventBusPublisher.setDefault(bus);
+            rig.backend.nextEnumerationError.set(failure);
+            ArrangementStripFixture.onFx(()->rig.wiring.commandSink().accept(new ToggleArmCommand(rig.track,true)));
+            assertThat(rig.backend.entered.await(5,TimeUnit.SECONDS)).isTrue();
+            ArrangementStripFixture.onFx(()->rig.wiring.commandSink().accept(new ToggleArmCommand(other,true)));
+            rig.backend.release.countDown();
+            await(()->ArrangementStripFixture.onFx(other::isArmed));
+            await(()->events.stream().filter(TrackEvent.Armed::armed).count()==1);
+            ArrangementStripFixture.onFx(()->assertThat(rig.track.isArmed()).isFalse());
+            assertThat(events).filteredOn(TrackEvent.Armed::armed).extracting(TrackEvent.Armed::trackId)
+                    .containsExactly(UUID.fromString(other.getId()));
+            assertThat(rig.errors).containsExactly(diagnostic);
+            assertThat(rig.errorsOffFx.get()).isZero();
+            assertThat(rig.backend.onFx.get()).isZero();
+            assertThat(rig.backend.worker.get().isVirtual()).isTrue();
+        } finally {EventBusPublisher.setDefault(previous);bus.close();ArrangementStripFixture.onFx(rig::close);}
+    }
+    @Test void backendErrorAllowsTheSameTrackToBeArmedAgain() throws Exception {
+        Rig rig=ArrangementStripFixture.onFx(Rig::new);
+        try {
+            rig.backend.nextEnumerationError.set(new UnsatisfiedLinkError("driver enumeration failed"));
+            ArrangementStripFixture.onFx(()->rig.wiring.commandSink().accept(new ToggleArmCommand(rig.track,true)));
+            assertThat(rig.backend.entered.await(5,TimeUnit.SECONDS)).isTrue();
+            rig.backend.release.countDown();
+            await(()->!rig.errors.isEmpty());
+            ArrangementStripFixture.onFx(()->{
+                assertThat(rig.track.isArmed()).isFalse();
+                rig.wiring.commandSink().accept(new ToggleArmCommand(rig.track,true));
+            });
+            await(()->ArrangementStripFixture.onFx(rig.track::isArmed));
+            assertThat(rig.errors).containsExactly("driver enumeration failed");
+        } finally {ArrangementStripFixture.onFx(rig::close);}
+    }
+    @Test void disposalRejectsAStaleBackendErrorCompletion() throws Exception {
+        Rig rig=ArrangementStripFixture.onFx(Rig::new);
+        try {
+            rig.backend.nextEnumerationError.set(new UnsatisfiedLinkError("stale driver failure"));
+            ArrangementStripFixture.onFx(()->rig.wiring.commandSink().accept(new ToggleArmCommand(rig.track,true)));
+            assertThat(rig.backend.entered.await(5,TimeUnit.SECONDS)).isTrue();
+            ArrangementStripFixture.onFx(rig.wiring::dispose);
+            Thread worker=rig.backend.worker.get();rig.backend.release.countDown();worker.join(5000);
+            assertThat(worker.isAlive()).isFalse();
+            ArrangementStripFixture.onFx(()->assertThat(rig.track.isArmed()).isFalse());
+            assertThat(rig.errors).isEmpty();
+        } finally {ArrangementStripFixture.onFx(rig::close);}
+    }
     @Test void invalidRoutingEditDisarmsThroughTheSharedIntentAndDoesNotAnnounceARearm() throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);
         DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
@@ -175,8 +245,9 @@ class InputRoutingGuardStory326Test {
     private static final class HeldBackend implements AudioBackend {
         final MockAudioBackend delegate=new MockAudioBackend();final CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
         final AtomicReference<Thread> worker=new AtomicReference<>();final AtomicInteger onFx=new AtomicInteger();
+        final AtomicReference<Error> nextEnumerationError=new AtomicReference<>();
         public String name(){return delegate.name();}public boolean isAvailable(){return true;}public boolean supportsStreaming(){return true;}
-        public List<AudioDeviceInfo> listDevices(){worker.set(Thread.currentThread());if(Platform.isFxApplicationThread())onFx.incrementAndGet();entered.countDown();try{if(!release.await(5,TimeUnit.SECONDS))throw new IllegalStateException("test release timeout");}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException(e);}return delegate.listDevices();}
+        public List<AudioDeviceInfo> listDevices(){worker.set(Thread.currentThread());if(Platform.isFxApplicationThread())onFx.incrementAndGet();entered.countDown();try{if(!release.await(5,TimeUnit.SECONDS))throw new IllegalStateException("test release timeout");}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException(e);}Error failure=nextEnumerationError.getAndSet(null);if(failure!=null)throw failure;return delegate.listDevices();}
         public void open(DeviceId d,com.benesquivelmusic.daw.sdk.audio.AudioFormat f,int n){delegate.open(d,f,n);}public boolean isOpen(){return delegate.isOpen();}
         public Flow.Publisher<AudioBlock> inputBlocks(){return delegate.inputBlocks();}public void sink(AudioBlock b){delegate.sink(b);}public void close(){delegate.close();}
     }

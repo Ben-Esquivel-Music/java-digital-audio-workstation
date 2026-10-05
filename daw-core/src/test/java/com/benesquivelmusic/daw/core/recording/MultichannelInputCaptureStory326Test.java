@@ -8,6 +8,8 @@ import com.benesquivelmusic.daw.sdk.audio.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
@@ -153,6 +155,98 @@ class MultichannelInputCaptureStory326Test {
             assertThat(meters.get(instrument.getId()).isRoutingUnavailable()).isFalse();
             assertThat(meters.get(physical.getId()).isRoutingUnavailable()).isFalse();
         } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    @ParameterizedTest
+    @EnumSource(InputTermination.class)
+    void siblingInputTerminationSilencesOnlyThatSourcesMeters(InputTermination termination) {
+        PatternBackend backend=new PatternBackend();AudioEngine engine=engine(backend,2);
+        Track primary=track("Primary",0,1,0),siblingLeft=track("Sibling left",0,1,1),siblingRight=track("Sibling right",1,1,1);
+        List<Track> tracks=List.of(primary,siblingLeft,siblingRight);
+        InputLevelMonitorRegistry meters=new InputLevelMonitorRegistry();
+        engine.setInputLevelMonitorRegistry(meters);engine.setGraph(new Transport(),null,tracks);
+        try {
+            engine.startAudioInputOutput(tracks);engine.pauseAudioOutput();
+            engine.processBlock(new float[][]{filled(.1f,256)},new float[2][256],256);
+            backend.sibling.emit(256);
+            var primaryLevel=meters.get(primary.getId()).snapshot();
+            for(Track track:List.of(siblingLeft,siblingRight)) {
+                assertThat(meters.get(track.getId()).isRoutingUnavailable()).isFalse();
+                assertThat(meters.get(track.getId()).snapshot().peakDbfs()).isGreaterThan(-10);
+            }
+            termination.signal(backend.sibling.subscribers.getFirst());
+            backend.sibling.emit(256);
+            for(Track track:List.of(siblingLeft,siblingRight)) {
+                assertThat(meters.get(track.getId()).isRoutingUnavailable()).isTrue();
+                assertThat(meters.get(track.getId()).snapshot()).isEqualTo(com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter.SILENCE);
+                assertThat(meters.get(track.getId()).routingDescription()).contains(track.getName(),"Interface B");
+            }
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(meters.get(primary.getId()).snapshot()).isEqualTo(primaryLevel);
+            InputLevelMonitorRegistry rebound=new InputLevelMonitorRegistry();
+            engine.setInputLevelMonitorRegistry(rebound);engine.setTracks(tracks);
+            engine.processBlock(new float[][]{filled(.1f,256)},new float[2][256],256);
+            for(Track track:List.of(siblingLeft,siblingRight)) {
+                assertThat(rebound.get(track.getId()).isRoutingUnavailable()).isTrue();
+                assertThat(rebound.get(track.getId()).snapshot()).isEqualTo(com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter.SILENCE);
+            }
+            assertThat(rebound.get(primary.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(rebound.get(primary.getId()).snapshot().peakDbfs()).isGreaterThan(-30);
+            siblingLeft.setInputRouting(InputRouting.NONE);
+            engine.processBlock(new float[][]{filled(.1f,256)},new float[2][256],256);
+            assertThat(rebound.get(siblingLeft.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(rebound.get(siblingLeft.getId()).snapshot()).isEqualTo(com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter.SILENCE);
+            assertThat(rebound.get(siblingRight.getId()).isRoutingUnavailable()).isTrue();
+            siblingLeft.setInputRouting(new InputRouting(0,1));
+            engine.processBlock(new float[][]{filled(.1f,256)},new float[2][256],256);
+            assertThat(rebound.get(siblingLeft.getId()).isRoutingUnavailable()).isTrue();
+            assertThat(rebound.get(siblingLeft.getId()).snapshot()).isEqualTo(com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter.SILENCE);
+            engine.stopAudioOutput();engine.startAudioOutput();engine.pauseAudioOutput();
+            engine.processBlock(new float[][]{filled(.1f,256),filled(.2f,256)},new float[2][256],256);
+            for(Track track:tracks) {
+                assertThat(rebound.get(track.getId()).isRoutingUnavailable()).isFalse();
+                assertThat(rebound.get(track.getId()).snapshot().peakDbfs()).isGreaterThan(-30);
+            }
+        } finally {engine.stopAudioOutput();engine.shutdown();}
+    }
+
+    @ParameterizedTest
+    @EnumSource(InputTermination.class)
+    void oldSiblingTerminationCannotSilenceStoppedOrReplacementMeters(InputTermination termination) {
+        PatternBackend backend=new PatternBackend();AudioEngine engine=engine(backend,2);
+        Track primary=track("Primary",0,1,0),sibling=track("Sibling",0,1,1);
+        List<Track> tracks=List.of(primary,sibling);
+        InputLevelMonitorRegistry meters=new InputLevelMonitorRegistry();
+        engine.setInputLevelMonitorRegistry(meters);engine.setGraph(new Transport(),null,tracks);
+        try {
+            engine.startAudioInputOutput(tracks);engine.pauseAudioOutput();
+            backend.sibling.emit(256);
+            Flow.Subscriber<? super AudioBlock> old=backend.sibling.subscribers.getFirst();
+            var stoppedLevel=meters.get(sibling.getId()).snapshot();
+            engine.stopAudioOutput();
+            termination.signal(old);
+            assertThat(meters.get(sibling.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(meters.get(sibling.getId()).snapshot()).isEqualTo(stoppedLevel);
+            engine.startAudioInputOutput(tracks);engine.pauseAudioOutput();
+            engine.processBlock(new float[][]{filled(.1f,256)},new float[2][256],256);
+            backend.sibling.emit(256);
+            var replacementLevel=meters.get(sibling.getId()).snapshot();
+            termination.signal(old);
+            assertThat(meters.get(sibling.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(meters.get(sibling.getId()).snapshot()).isEqualTo(replacementLevel);
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isFalse();
+        } finally {engine.stopAudioOutput();engine.shutdown();}
+    }
+
+    private enum InputTermination {
+        FAILURE, COMPLETION;
+
+        void signal(Flow.Subscriber<? super AudioBlock> subscriber) {
+            switch(this) {
+                case FAILURE -> subscriber.onError(new AudioBackendException("input publisher failed"));
+                case COMPLETION -> subscriber.onComplete();
+            }
+        }
     }
 
     @Test void secondInputOpenFailureRollsBackBothOwnedStreams() {

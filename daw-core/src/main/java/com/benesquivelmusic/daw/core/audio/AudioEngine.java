@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
+import com.benesquivelmusic.daw.core.analysis.InputSourceAvailability;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
@@ -119,6 +120,9 @@ public final class AudioEngine {
     private final List<AudioBackend> additionalInputs = new ArrayList<>();
     private final List<AdditionalInputSubscriber> additionalSubscribers = new ArrayList<>();
     private volatile RecordingCallback[] additionalRecordingCallbacks = new RecordingCallback[0];
+    private record CaptureMeterSources(CaptureRoutingPlan plan, List<InputSourceAvailability> availability) { }
+    /** Current source bindings, prepared and read under graphLock. */
+    private volatile CaptureMeterSources captureMeterSources;
     private record ValidatedInput(CaptureRoutingPlan.Route route, DeviceId device, AudioBackend backend) { }
     private final Map<String, ValidatedInput> validatedInputRoutes = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -243,6 +247,7 @@ public final class AudioEngine {
             try {
                 startAudioOutputLocked(announcements, CaptureRequirement.REQUIRED);
                 plan = captureRoutingPlan;
+                CaptureMeterSources meterSources = prepareCaptureMeters(plan);
                 for (int i = 1; i < plan.sources().size(); i++) {
                     AudioBackend sibling = plan.backend().createInputBackend();
                     additionalInputs.add(sibling); // ownership precedes open, including partial failures
@@ -252,7 +257,7 @@ public final class AudioEngine {
                     if (Double.isFinite(captureRate) && Double.compare(captureRate, openSdkFormat.sampleRate()) != 0)
                         throw new AudioBackendException("Input device '" + source.device().name() + "' opened at " + captureRate + " Hz; the take requires " + openSdkFormat.sampleRate() + " Hz");
                     if (sibling.openedInputChannels() == 0) throw new AudioBackendException("No capture from '" + source.device().name() + "'");
-                    AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(), plan);
+                    AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(), meterSources);
                     additionalSubscribers.add(subscriber);
                     sibling.inputBlocks().subscribe(subscriber);
                 }
@@ -302,6 +307,10 @@ public final class AudioEngine {
         }
         if (failure != null) throw failure;
         captureRoutingPlan = null;
+        synchronized (graphLock) {
+            captureMeterSources = null;
+            updateInputMeterDescriptions(inputLevelMonitorRegistry, graph.tracks());
+        }
     }
 
     private final class AdditionalInputSubscriber implements java.util.concurrent.Flow.Subscriber<com.benesquivelmusic.daw.sdk.audio.AudioBlock> {
@@ -309,11 +318,13 @@ public final class AudioEngine {
         private final float[][] planes;
         private final float[][][] views;
         private final CaptureRoutingPlan generation;
+        private final InputSourceAvailability availability;
         private volatile boolean active = true;
         private volatile java.util.concurrent.Flow.Subscription subscription;
-        AdditionalInputSubscriber(int source, int width, CaptureRoutingPlan generation) {
+        AdditionalInputSubscriber(int source, int width, CaptureMeterSources meterSources) {
             this.source = source;
-            this.generation = generation;
+            this.generation = meterSources.plan();
+            this.availability = meterSources.availability().get(source);
             planes = new float[width][format.bufferSize()];
             views = new float[width + 1][][];
             for (int i = 0; i <= width; i++) views[i] = java.util.Arrays.copyOf(planes, i);
@@ -340,8 +351,16 @@ public final class AudioEngine {
             if (active && captureRoutingPlan == generation && source - 1 < callbacks.length)
                 callbacks[source - 1].onAudioCaptured(delivered, block.frames());
         }
-        @Override public void onError(Throwable error) { LOG.log(Level.WARNING, "Input stream failed", error); }
-        @Override public void onComplete() { }
+        private boolean terminateInputSource() {
+            if (!active || captureRoutingPlan != generation) return false;
+            availability.markUnavailable();
+            active = false;
+            return true;
+        }
+        @Override public void onError(Throwable error) {
+            if (terminateInputSource()) LOG.log(Level.WARNING, "Input stream failed", error);
+        }
+        @Override public void onComplete() { terminateInputSource(); }
     }
 
     /** Device identity of the tracked stream (the winning rung's device). */
@@ -1018,13 +1037,15 @@ public final class AudioEngine {
      *       {@link #isRunning()}, neither of which touches this lock — a pump
      *       thread can never be waiting on it while a lifecycle thread waits
      *       on the pump.</li>
-     *   <li><strong>No graph lock.</strong> {@link #graphLock} and this lock
-     *       are never nested in either direction: the lifecycle paths read
-     *       {@code graph} volatilely, and {@link #setGraph(Transport, Mixer,
+     *   <li><strong>Graph lock order.</strong> Capture meter preparation,
+     *       successful capture-close cleanup and routing-description refresh take {@link #graphLock} after this
+     *       lock to bind source availability to the currently published
+     *       registry. The reverse order is forbidden. Other lifecycle paths
+     *       read {@code graph} volatilely, and {@link #setGraph(Transport, Mixer,
      *       List)} calls no lifecycle method — it reads {@code streamState}
      *       INSIDE its own monitor, through {@link #callbackIsDriving()}, and
-     *       {@code graph} volatilely, and takes nothing further. Should a
-     *       future path need both, take this one first.
+     *       {@code graph} volatilely, and takes nothing further. Any path
+     *       needing both takes this lock first.
      *       The rule for fields is one sentence, and it is the part of this
      *       bullet worth memorising: a field WRITTEN while one of the two
      *       locks is held and READ while the other is held gets no
@@ -1065,7 +1086,7 @@ public final class AudioEngine {
      *       obligation, which is what this bullet exists to hand over.</li>
      * </ol>
      * <p>Story 326 additionally calls immutable CaptureRoutingPlan/InputRouting values,
-     * their backend-only control-thread resolver, and InputLevelMonitorRegistry/InputLevelMonitor
+     * their backend-only control-thread resolver, and InputLevelMonitorRegistry/InputLevelMonitor/InputSourceAvailability
      * to preallocate meter state and attach precomputed warning text. These collaborators
      * invoke no application listeners or UI callbacks; all user warnings remain outside the lock.</p>
      */
@@ -4875,7 +4896,20 @@ public final class AudioEngine {
      * @param registry the registry, or {@code null} to disable
      */
     private void updateInputMeterDescriptions() {
-        updateInputMeterDescriptions(inputLevelMonitorRegistry, graph.tracks());
+        synchronized (graphLock) {
+            updateInputMeterDescriptions(inputLevelMonitorRegistry, graph.tracks());
+        }
+    }
+
+    private CaptureMeterSources prepareCaptureMeters(CaptureRoutingPlan plan) {
+        List<InputSourceAvailability> availability = new ArrayList<>(plan.sources().size());
+        for (int i = 0; i < plan.sources().size(); i++) availability.add(new InputSourceAvailability());
+        CaptureMeterSources sources = new CaptureMeterSources(plan, List.copyOf(availability));
+        synchronized (graphLock) {
+            captureMeterSources = sources;
+            updateInputMeterDescriptions(inputLevelMonitorRegistry, graph.tracks());
+        }
+        return sources;
     }
 
     private void updateInputMeterDescriptions(InputLevelMonitorRegistry registry, List<Track> tracks) {
@@ -4883,8 +4917,11 @@ public final class AudioEngine {
         CaptureRoutingPlan plan = captureRoutingPlan;
         for (Track track : tracks) {
             InputLevelMonitor monitor = registry.getOrCreate(track.getId());
-            if (track.getInputRouting().isNone()) continue;
+            monitor.setPhysicalInput(!track.getInputRouting().isNone());
             Integer source = plan == null ? null : plan.trackSources().get(track.getId());
+            monitor.setSourceAvailability(source == null || captureMeterSources == null || captureMeterSources.plan() != plan
+                    ? null : captureMeterSources.availability().get(source));
+            if (track.getInputRouting().isNone()) continue;
             String device = source == null ? "selected input device" : plan.sources().get(source).device().name();
             monitor.setRoutingDescription("Track '" + track.getName() + "', device '" + device + "': " + track.getInputRouting().displayName() + " unavailable; input is silent");
         }
@@ -5144,6 +5181,7 @@ public final class AudioEngine {
             InputLevelMonitor monitor = registry.get(track.getId());
             if (monitor == null) continue;
             InputRouting routing = track.getInputRouting();
+            monitor.setPhysicalInput(routing != null && !routing.isNone());
             if (routing == null || routing.isNone()) {
                 monitor.setRoutingUnavailable(false);
                 continue;

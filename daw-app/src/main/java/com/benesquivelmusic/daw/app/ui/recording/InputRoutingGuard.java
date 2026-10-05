@@ -79,11 +79,11 @@ public final class InputRoutingGuard implements AutoCloseable {
         List<Boolean> armedStates = proposed.stream().map(Track::isArmed).toList();
         validationRunning = true;
         Thread.ofVirtual().name("daw-input-arm-validation").start(() -> {
-            RuntimeException failure = null;
+            Throwable failure = null;
             try {
                 engine.validateInputRoutingSnapshots(snapshot, request.provision(), true);
-            } catch (RuntimeException e) { failure = e; }
-            RuntimeException result = failure;
+            } catch (RuntimeException | Error e) { failure = e; }
+            Throwable result = failure;
             dispatcher.onFx(() -> {
                 validationRunning = false;
                 if (closed) return;
@@ -100,7 +100,11 @@ public final class InputRoutingGuard implements AutoCloseable {
                     if (result == null) {
                         accepting = track;
                         try { request.accept().run(); } finally { accepting = null; }
-                    } else { commandSink.accept(new ToggleArmCommand(track, false)); errors.accept(result.getMessage()); }
+                    } else {
+                        commandSink.accept(new ToggleArmCommand(track, false));
+                        String message = result.getMessage();
+                        errors.accept(message == null || message.isBlank() ? result.getClass().getName() : message);
+                    }
                 } else if (pendingArms.get(track) == request) pendingArms.remove(track);
                 startNextArm();
             });
