@@ -566,7 +566,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // try-with-resources releases it on BOTH branches, matching
         // tryCreatePortAudioAdapter()'s closeQuietly and withSdkBackend()'s
         // try (probe).
-        try (AudioBackend probe = new CallbackBackendAdapter(new PortAudioBackend())) {
+        try (AudioBackend probe = new CallbackBackendAdapter(new PortAudioBackend(), "", PortAudioBackend::new)) {
             if (probe.isAvailable()) {
                 names.add("PortAudio");
             }
@@ -2427,7 +2427,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private static AudioBackend tryCreatePortAudioAdapter(String inputDeviceName) {
         try {
             CallbackBackendAdapter adapter =
-                    new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName);
+                    new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName, PortAudioBackend::new);
             if (adapter.isAvailable()) {
                 return adapter;
             }
@@ -2597,7 +2597,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return switch (name) {
             case "PortAudio" -> {
                 try {
-                    yield new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName);
+                    yield new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName, PortAudioBackend::new);
                 } catch (RuntimeException e) {
                     LOG.log(Level.WARNING, "PortAudio requested but unavailable", e);
                     yield null;

@@ -48,6 +48,85 @@ class CallbackBackendAdapterTest {
     private static final int FRAMES = 128;
 
     @Test
+    void aGenericDelegateDoesNotAdvertiseOrCreateForeignInputSiblings() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        try {
+            assertThat(adapter.supportsMultipleInputDevices()).isFalse();
+            assertThatThrownBy(adapter::createInputBackend).isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining("Fake", "only one input device");
+            assertThat(fake.initializeCount).isZero();
+            assertThat(fake.enumerationCount).isZero();
+            assertThat(fake.openStreamCount).isZero();
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void suppliedSiblingsKeepTheDelegateFamilyAndIndependentInputLifecycle() {
+        FakeNativeBackend primary = new FakeNativeBackend();
+        List<FakeNativeBackend> siblings = new java.util.ArrayList<>();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(primary, "Mic In", () -> {
+            FakeNativeBackend sibling = new FakeNativeBackend(List.of(
+                    device(3, "Sibling out", 0, 2), device(9, "Sibling mic", 3, 0)));
+            siblings.add(sibling);
+            return sibling;
+        });
+        com.benesquivelmusic.daw.sdk.audio.AudioBackend capture = null, furtherCapture = null;
+        try {
+            assertThat(adapter.supportsMultipleInputDevices()).isTrue();
+            assertThat(siblings).isEmpty();
+            assertThat(primary.initializeCount).isZero();
+            adapter.open(new DeviceId(adapter.name(), "Main Out"), FORMAT, FRAMES, CaptureRequirement.REQUIRED);
+            capture = adapter.createInputBackend();
+            assertThat(siblings).hasSize(1);
+            assertThat(capture.name()).isEqualTo("Fake");
+            assertThat(capture.supportsMultipleInputDevices()).isTrue();
+            assertThat(capture.selectedInputDevice(new DeviceId("Fake", "Sibling out")).name())
+                    .isEqualTo("Sibling mic [Fake]");
+            capture.openInput(new DeviceId("Fake", "Sibling mic [Fake]"), FORMAT, FRAMES, 3);
+            assertThat(siblings.getFirst().lastConfig.inputDeviceIndex()).isEqualTo(9);
+            assertThat(siblings.getFirst().lastConfig.inputChannels()).isEqualTo(3);
+            assertThat(siblings.getFirst().lastConfig.outputChannels()).isZero();
+            furtherCapture = capture.createInputBackend();
+            assertThat(siblings).hasSize(2);
+            capture.close();
+            capture = null;
+            assertThat(siblings.getFirst().closeCount).isEqualTo(1);
+            assertThat(primary.isStreamActive()).isTrue();
+            assertThat(primary.closeStreamCount).isZero();
+            assertThat(primary.closeCount).isZero();
+        } finally {
+            if (furtherCapture != null) furtherCapture.close();
+            if (capture != null) capture.close();
+            adapter.close();
+        }
+    }
+
+    @Test
+    void aSiblingFactoryCannotReuseTheParentsOwnedDelegate() {
+        FakeNativeBackend primary = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(primary, "", () -> primary);
+        try {
+            assertThatThrownBy(adapter::createInputBackend).isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining("independent backend");
+            assertThat(primary.initializeCount).isZero();
+            assertThat(primary.closeCount).isZero();
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void aSiblingFactoryCannotReturnNull() {
+        FakeNativeBackend primary = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(primary, "", () -> null);
+        try {
+            assertThatThrownBy(adapter::createInputBackend).isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("input backend factory returned null");
+            assertThat(primary.initializeCount).isZero();
+            assertThat(primary.closeCount).isZero();
+        } finally { adapter.close(); }
+    }
+
+    @Test
     void selectedZeroWidthIdentityCanOpenOptionalOutputButRequiredCaptureIsRefused() {
         FakeNativeBackend fake = new FakeNativeBackend(List.of(device(3, "Main Out", 0, 2), device(5, "Mic In", 0, 0)));
         CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic In");

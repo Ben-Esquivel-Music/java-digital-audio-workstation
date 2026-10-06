@@ -56,6 +56,7 @@ public final class InputRoutingGuard implements AutoCloseable {
     }
     private void validateMutation(Track track) {
         if (closed) return;
+        engine.refreshInputMeterRouting();
         if (!track.isArmed()) { cancelArm(track); return; }
         if (track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) return;
         accepting = track;

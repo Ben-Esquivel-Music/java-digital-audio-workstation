@@ -21,6 +21,7 @@ import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -184,6 +185,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
 
     private final NativeAudioBackend delegate;
     private final String inputDeviceName;
+    private final Supplier<? extends NativeAudioBackend> inputBackendFactory;
 
     private boolean initialized;
     private volatile boolean open;
@@ -266,8 +268,23 @@ public final class CallbackBackendAdapter implements AudioBackend {
      *                        fails the open (story 316 review)
      */
     public CallbackBackendAdapter(NativeAudioBackend delegate, String inputDeviceName) {
+        this(delegate, inputDeviceName, null);
+    }
+
+    /**
+     * Creates an adapter with optional independent capture-stream support.
+     *
+     * @param delegate the owned native backend
+     * @param inputDeviceName the configured input selection; blank selects the default
+     * @param inputBackendFactory creates a fresh, independently owned backend in the
+     *                            delegate's device family; {@code null} disables siblings.
+     *                            Capability queries never invoke this factory.
+     */
+    public CallbackBackendAdapter(NativeAudioBackend delegate, String inputDeviceName,
+                                  Supplier<? extends NativeAudioBackend> inputBackendFactory) {
         this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
         this.inputDeviceName = inputDeviceName == null ? "" : inputDeviceName;
+        this.inputBackendFactory = inputBackendFactory;
     }
 
     @Override
@@ -323,9 +340,12 @@ public final class CallbackBackendAdapter implements AudioBackend {
      *                                  the driver refuses the stream
      */
     @Override public double openedInputSampleRate() { return openedSampleRate; }
-    @Override public boolean supportsMultipleInputDevices() { return true; }
+    @Override public boolean supportsMultipleInputDevices() { return inputBackendFactory != null; }
     @Override public AudioBackend createInputBackend() {
-        return new CallbackBackendAdapter(new com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend());
+        if (inputBackendFactory == null) return AudioBackend.super.createInputBackend();
+        NativeAudioBackend sibling = Objects.requireNonNull(inputBackendFactory.get(), "input backend factory returned null");
+        if (sibling == delegate) throw new AudioBackendException(name() + " input backend factory must create an independent backend");
+        return new CallbackBackendAdapter(sibling, "", inputBackendFactory);
     }
     @Override public DeviceId selectedInputDevice(DeviceId output) {
         ensureInitialized();

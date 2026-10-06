@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.*;
 import javafx.scene.Node;
 import javafx.scene.Parent;
@@ -32,6 +33,84 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(JavaFxToolkitExtension.class)
 class InputRoutingReviewRegressionTest {
     private static final AudioFormat FORMAT = new AudioFormat(48000, 2, 16, 256);
+
+    @Test
+    void noneRoutingClearsBothStoppedMeterSurfacesWithoutDisarming() throws Exception {
+        DawProject project = new DawProject("Routing edit", FORMAT);
+        var track = project.createAudioTrack("Vox");
+        track.setInputRouting(new InputRouting(6, 2));
+        WidthBackend backend = new WidthBackend(8);
+        InputLevelMonitorRegistry monitors = new InputLevelMonitorRegistry();
+        AtomicReference<ArrangementStripFixture> surfaces = new AtomicReference<>();
+        AtomicReference<TrackControlWiring> wiring = new AtomicReference<>();
+        List<String> errors = new java.util.concurrent.CopyOnWriteArrayList<>();
+        CountDownLatch accepted = new CountDownLatch(1);
+        try {
+            ArrangementStripFixture.onFx(() -> {
+                var rig = new ArrangementStripFixture(project, false);
+                surfaces.set(rig);
+                rig.audioEngine.setGraph(new Transport(), null, project.getTracks());
+                rig.audioEngine.setInputLevelMonitorRegistry(monitors);
+                rig.audioEngine.setStreamingProvision(new StreamingProvision(backend.name(), List.of(
+                        new BackendStreamRung(backend, DeviceId.defaultFor(backend.name())))));
+                wiring.set(TrackControlWiring.standalone(project, rig.dispatcher, null, rig.audioEngine, errors::add));
+                track.addChangeListener(kind -> { if (track.isArmed()) accepted.countDown(); });
+                wiring.get().commandSink().accept(new ToggleArmCommand(track, true));
+            });
+            assertThat(accepted.await(5, TimeUnit.SECONDS)).isTrue();
+            ArrangementStripFixture.onFx(() -> {
+                var rig = surfaces.get();
+                var monitor = monitors.get(track.getId());
+                monitor.setRoutingUnavailable(true);
+                rig.mixerView.setInputLevelMonitorRegistry(monitors);
+                rig.mixerView.refresh();
+                rig.controller.setInputLevelMonitorRegistry(monitors);
+                Parent arrangement = rig.addStrip(track);
+                List<Node> meters = new ArrayList<>();
+                collectMeters(rig.mixerView.getChannelStrips(), meters);
+                collectMeters(arrangement, meters);
+                assertThat(meters).hasSize(2);
+                for (Node meter : meters) assertThat(meter.getAccessibleText()).contains("Vox", "unavailable");
+                AtomicInteger armChanges = new AtomicInteger();
+                Runnable unregister = track.addChangeListener(kind -> {
+                    if (kind == com.benesquivelmusic.daw.core.track.Track.ChangeKind.ARM) armChanges.incrementAndGet();
+                });
+                int enumerations = backend.enumerations.get();
+                try {
+                    track.setInputRouting(InputRouting.NONE);
+                    assertThat(rig.audioEngine.isRunning()).isFalse();
+                    assertThat(track.isArmed()).isTrue();
+                    assertThat(armChanges.get()).isZero();
+                    assertThat(backend.enumerations.get()).isEqualTo(enumerations);
+                    assertThat(monitors.get(track.getId())).isSameAs(monitor);
+                    assertThat(monitor.isRoutingUnavailable()).isFalse();
+                    assertThat(monitor.snapshot()).isEqualTo(com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter.SILENCE);
+                    for (Node meter : meters) {
+                        refreshRouting(meter);
+                        assertThat(meter.getPseudoClassStates()).doesNotContain(javafx.css.PseudoClass.getPseudoClass("routing-unavailable"));
+                        assertThat(meter.getAccessibleText()).doesNotContain("unavailable").contains("reset");
+                        assertThat(installedTooltip(meter).getText()).doesNotContain("unavailable").contains("reset");
+                    }
+                    assertThat(errors).isEmpty();
+                } finally { unregister.run(); }
+                return null;
+            });
+        } finally {
+            ArrangementStripFixture.onFx(() -> {
+                if (wiring.get() != null) wiring.get().dispose();
+                if (surfaces.get() != null) {
+                    try { surfaces.get().close(); }
+                    finally { surfaces.get().audioEngine.shutdown(); }
+                }
+            });
+        }
+    }
+
+    private static void refreshRouting(Node meter) throws Exception {
+        var refresh = meter.getClass().getDeclaredMethod("refreshRoutingState");
+        refresh.setAccessible(true);
+        refresh.invoke(meter);
+    }
 
     @Test
     void anExplicitArmCannotMoveAnAcceptedWideDefaultRouteToANarrowBackend() throws Exception {
@@ -125,12 +204,14 @@ class InputRoutingReviewRegressionTest {
 
     private static final class WidthBackend implements AudioBackend {
         private final int width;
+        private final AtomicInteger enumerations = new AtomicInteger();
         private final MockAudioBackend delegate = new MockAudioBackend();
         WidthBackend(int width) { this.width = width; }
         public String name() { return "Width"; }
         public boolean isAvailable() { return true; }
         public boolean supportsStreaming() { return true; }
         public List<AudioDeviceInfo> listDevices() {
+            enumerations.incrementAndGet();
             return List.of(new AudioDeviceInfo(0, "Interface", "Test", width, 2, 48000, List.of(), 0, 0));
         }
         public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format, int frames) { delegate.open(device, format, frames); }

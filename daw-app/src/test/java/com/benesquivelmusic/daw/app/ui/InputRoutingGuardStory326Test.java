@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.vm.*;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleArmCommand;
 import com.benesquivelmusic.daw.core.audio.*;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.event.*;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -18,6 +19,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -238,6 +240,39 @@ class InputRoutingGuardStory326Test {
                 field.setAccessible(true);
                 assertThat((Map<?, ?>) field.get(rig.wiring.inputGuard())).isEmpty();
                 return null;
+            });
+        } finally { ArrangementStripFixture.onFx(rig::close); }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void workerRoutingEditsRefreshOnFxUnlessTheGuardWasDisposed(boolean disposeBeforeRefresh) throws Exception {
+        Rig rig = ArrangementStripFixture.onFx(Rig::new);
+        InputLevelMonitorRegistry monitors = new InputLevelMonitorRegistry();
+        try {
+            ArrangementStripFixture.onFx(() -> {
+                rig.engine.setGraph(new com.benesquivelmusic.daw.core.transport.Transport(), null, List.of(rig.track));
+                rig.engine.setInputLevelMonitorRegistry(monitors);
+                rig.wiring.commandSink().accept(new ToggleArmCommand(rig.track, true));
+            });
+            assertThat(rig.backend.entered.await(5, TimeUnit.SECONDS)).isTrue();
+            rig.backend.release.countDown();
+            await(() -> ArrangementStripFixture.onFx(rig.track::isArmed));
+            ArrangementStripFixture.onFx(() -> {
+                var monitor = monitors.get(rig.track.getId());
+                monitor.setRoutingUnavailable(true);
+                CountDownLatch changed = new CountDownLatch(1);
+                Thread.ofVirtual().start(() -> { rig.track.setInputRouting(InputRouting.NONE); changed.countDown(); });
+                try { assertThat(changed.await(5, TimeUnit.SECONDS)).isTrue(); }
+                catch (InterruptedException e) { throw new IllegalStateException(e); }
+                // The FX queue is held here, so the worker must not mutate meter control state.
+                assertThat(monitor.isRoutingUnavailable()).isTrue();
+                if (disposeBeforeRefresh) rig.wiring.dispose();
+            });
+            ArrangementStripFixture.onFx(() -> {
+                assertThat(monitors.get(rig.track.getId()).isRoutingUnavailable()).isEqualTo(disposeBeforeRefresh);
+                assertThat(rig.track.isArmed()).isTrue();
+                assertThat(rig.errors).isEmpty();
             });
         } finally { ArrangementStripFixture.onFx(rig::close); }
     }

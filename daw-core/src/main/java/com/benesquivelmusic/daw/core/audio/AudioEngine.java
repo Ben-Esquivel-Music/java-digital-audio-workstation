@@ -4946,6 +4946,11 @@ public final class AudioEngine {
         }
     }
 
+    /** Refreshes shared meter routing after a control-thread edit, even without rendering. */
+    public void refreshInputMeterRouting() {
+        updateInputMeterDescriptions();
+    }
+
     private CaptureMeterSources prepareCaptureMeters(CaptureRoutingPlan plan) {
         List<InputSourceAvailability> availability = new ArrayList<>(plan.sources().size());
         for (int i = 0; i < plan.sources().size(); i++) availability.add(new InputSourceAvailability());
@@ -4966,7 +4971,11 @@ public final class AudioEngine {
             Integer source = plan == null ? null : plan.trackSources().get(track.getId());
             monitor.setSourceAvailability(source == null || captureMeterSources == null || captureMeterSources.plan() != plan
                     ? null : captureMeterSources.availability().get(source));
-            if (track.getInputRouting().isNone()) continue;
+            if (track.getInputRouting().isNone()) {
+                monitor.setRoutingUnavailable(false);
+                monitor.setRoutingDescription("");
+                continue;
+            }
             String device = source == null ? "selected input device" : plan.sources().get(source).device().name();
             monitor.setRoutingDescription("Track '" + track.getName() + "', device '" + device + "': " + track.getInputRouting().displayName() + " unavailable; input is silent");
         }
