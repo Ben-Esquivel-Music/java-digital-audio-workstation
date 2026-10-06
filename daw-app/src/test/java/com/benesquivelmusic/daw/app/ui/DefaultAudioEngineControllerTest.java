@@ -52,6 +52,26 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 class DefaultAudioEngineControllerTest {
 
     @Test
+    void recordingCalibrationCarriesTheWatchedDeviceIncludingExplicitZero() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        AudioBackend backend = new MockAudioBackend();
+        DeviceId calibrated = new DeviceId(backend.name(), "Watched interface");
+        try {
+            controller.bindBackendDeviceEvents(backend, calibrated);
+            assertThat(controller.recordingLatencyCalibration()).isEmpty();
+            for (int frames : new int[]{360, 0}) {
+                controller.setLatencyOverrideFrames(Optional.of(frames));
+                assertThat(controller.recordingLatencyCalibration()).contains(
+                        new AudioEngineController.LatencyCalibration(calibrated,
+                                new com.benesquivelmusic.daw.sdk.audio.RoundTripLatency(frames, 0, 0)));
+            }
+            controller.bindBackendDeviceEvents(backend, new DeviceId(backend.name(), "Other interface"));
+            assertThat(controller.recordingLatencyCalibration()).isEmpty();
+        } finally { controller.shutdown(); }
+    }
+
+    @Test
     void shouldReportNoneWhenNoBackendAttached() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);

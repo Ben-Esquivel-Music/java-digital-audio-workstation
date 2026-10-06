@@ -203,6 +203,23 @@ public final class AudioEngine {
         additionalRecordingCallbacks = callbacks.clone();
     }
 
+    private static final float[][] EMPTY_CAPTURE_INPUT = new float[0][];
+    /** Input-only sources with no channel clock borrow the existing output clock. */
+    private volatile int[] clockedSilentInputSources = new int[0];
+
+    private boolean inputSourcePreviouslyValidated(CaptureRoutingPlan plan, int source) {
+        boolean found = false;
+        DeviceId device = plan.sources().get(source).device();
+        for (CaptureRoutingPlan.Route route : captureRouteRequests) {
+            if (route.routing().isNone() || plan.trackSources().get(route.id()) != source) continue;
+            ValidatedInput proof = validatedInputRoutes.get(route.id());
+            if (proof == null || !proof.route().equals(route) || proof.backend() != plan.backend()
+                    || !proof.device().equals(device)) return false;
+            found = true;
+        }
+        return found;
+    }
+
     /** Opens the exact device union requested by the armed tracks. */
     public Object startAudioInputOutput(List<Track> tracks) {
         return startAudioInputOutput(tracks, CaptureRoutingPlan.snapshot(tracks), streamingProvision);
@@ -248,19 +265,32 @@ public final class AudioEngine {
                 startAudioOutputLocked(announcements, CaptureRequirement.REQUIRED);
                 plan = captureRoutingPlan;
                 CaptureMeterSources meterSources = prepareCaptureMeters(plan);
+                List<Integer> silentSources = new ArrayList<>();
                 for (int i = 1; i < plan.sources().size(); i++) {
                     AudioBackend sibling = plan.backend().createInputBackend();
                     additionalInputs.add(sibling); // ownership precedes open, including partial failures
                     CaptureRoutingPlan.Source source = plan.sources().get(i);
-                    sibling.openInput(source.device(), openSdkFormat, format.bufferSize(), source.requestedChannels());
+                    boolean proven = inputSourcePreviouslyValidated(plan, i);
+                    boolean knownUnavailable = devices.stream().anyMatch(info ->
+                            AudioDeviceInfo.isSelectionFor(source.device().name(), info.name(), info.hostApi())
+                                    && info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
+                    if (!(proven && knownUnavailable)) {
+                        sibling.openInput(source.device(), openSdkFormat, format.bufferSize(), source.requestedChannels());
+                    }
+                    if (sibling.openedInputChannels() == 0) {
+                        if (!proven) throw new AudioBackendException("No capture from '" + source.device().name() + "'");
+                        silentSources.add(i);
+                        meterSources.availability().get(i).markUnavailable();
+                        continue;
+                    }
                     double captureRate = sibling.openedInputSampleRate();
                     if (Double.isFinite(captureRate) && Double.compare(captureRate, openSdkFormat.sampleRate()) != 0)
                         throw new AudioBackendException("Input device '" + source.device().name() + "' opened at " + captureRate + " Hz; the take requires " + openSdkFormat.sampleRate() + " Hz");
-                    if (sibling.openedInputChannels() == 0) throw new AudioBackendException("No capture from '" + source.device().name() + "'");
                     AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(), meterSources);
                     additionalSubscribers.add(subscriber);
                     sibling.inputBlocks().subscribe(subscriber);
                 }
+                clockedSilentInputSources = silentSources.stream().mapToInt(Integer::intValue).toArray();
             } catch (RuntimeException | Error failure) {
                 try { stopAudioOutputLocked(announcements); } catch (RuntimeException close) { failure.addSuppressed(close); }
                 throw failure;
@@ -293,6 +323,7 @@ public final class AudioEngine {
     }
 
     private void closeAdditionalInputs() {
+        clockedSilentInputSources = new int[0];
         additionalRecordingCallbacks = new RecordingCallback[0];
         for (AdditionalInputSubscriber subscriber : additionalSubscribers) subscriber.deactivate();
         additionalSubscribers.clear();
@@ -3026,7 +3057,9 @@ public final class AudioEngine {
                     }
                     CaptureRoutingPlan.Source input = plan.sources().getFirst();
                     openAttempted = true;
-                    rung.backend().open(rung.device(), negotiated, format.bufferSize(), capture, input.device(), input.requestedChannels());
+                    CaptureRequirement inputRequirement = inputSourcePreviouslyValidated(plan, 0)
+                            ? CaptureRequirement.OPTIONAL : capture;
+                    rung.backend().open(rung.device(), negotiated, format.bufferSize(), inputRequirement, input.device(), input.requestedChannels());
                     captureRoutingPlan = plan;
                 } else {
                     openAttempted = true;
@@ -3407,6 +3440,13 @@ public final class AudioEngine {
      * playback-only interface, or an ASIO4ALL with only speakers enabled,
      * must still open.</p>
      *
+     * <p>A frozen physical input plan has one deliberate exception: every
+     * route on its primary source was previously proven on this same backend
+     * and device. If that source shrank to zero channels, the output clock
+     * still drives a positive-duration silent take and the unavailable route
+     * is persisted and warned by the recording pipeline. Unproven routes
+     * retain the refusal above.</p>
+     *
      * @param rung    the rung whose {@code open} has just returned
      * @param capture what the caller asked for; {@link
      *                CaptureRequirement#OPTIONAL} makes this a no-op
@@ -3415,13 +3455,18 @@ public final class AudioEngine {
      *                               the backend reports no capture channels
      *                               on the stream it just opened
      */
-    private static void requireCaptureOpened(BackendStreamRung rung,
+    private void requireCaptureOpened(BackendStreamRung rung,
                                              CaptureRequirement capture) {
         if (capture != CaptureRequirement.REQUIRED) {
             return;
         }
         int openedInputChannels = rung.backend().openedInputChannels();
         if (openedInputChannels > 0) {
+            return;
+        }
+        CaptureRoutingPlan plan = captureRoutingPlan;
+        if (plan != null && plan.backend() == rung.backend() && !plan.sources().isEmpty()
+                && inputSourcePreviouslyValidated(plan, 0)) {
             return;
         }
         throw new AudioBackendException(
@@ -5121,6 +5166,13 @@ public final class AudioEngine {
         }
         boolean rendered = false;
         try {
+            RecordingCallback[] additionalCallbacks = additionalRecordingCallbacks;
+            int[] silentSources = clockedSilentInputSources;
+            for (int source : silentSources) {
+                if (source - 1 < additionalCallbacks.length) {
+                    additionalCallbacks[source - 1].onAudioCaptured(EMPTY_CAPTURE_INPUT, numFrames);
+                }
+            }
             // Story 137: tap the raw input signal per armed track BEFORE any
             // processing so the mixer's input-meter column and the clip LED
             // always reflect the converter-side signal (not post-gain / post-

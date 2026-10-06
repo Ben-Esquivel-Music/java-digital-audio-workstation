@@ -479,8 +479,8 @@ class MultichannelInputCaptureStory326Test {
     private static float[] filled(float value,int count) { float[] result=new float[count]; Arrays.fill(result,value); return result; }
 
     static final class PatternBackend implements AudioBackend {
-        int maximum=8, openedWidth, outputWidth, opens;
-        boolean multiple=true, open, failClose, failSiblingOpen, failOpen, failInputResolution;
+        int maximum=8, siblingMaximum=-1, openedWidthOverride=-1, siblingOpenedWidth=-1, openedWidth, outputWidth, opens;
+        boolean multiple=true, open, failClose, failSiblingOpen, failOpen, failInputResolution, failEnumeration;
         String input="Interface A";
         double openedRate=48000,siblingRate=48000;
         RoundTripLatency primaryLatency = RoundTripLatency.UNKNOWN;
@@ -495,8 +495,8 @@ class MultichannelInputCaptureStory326Test {
             if (failInputResolution) throw new AudioBackendException("head has no input device");
             return output;
         }
-        @Override public List<AudioDeviceInfo> listDevices(){return List.of(info(0,"Interface A"),info(1,"Interface B"));}
-        AudioDeviceInfo info(int index,String name){return new AudioDeviceInfo(index,name,"Pattern",maximum,2,48000,List.of(SampleRate.HZ_48000),0,0);}
+        @Override public List<AudioDeviceInfo> listDevices(){if(failEnumeration)throw new AssertionError("Provider enumeration must stay off take preparation");return List.of(info(0,"Interface A"),info(1,"Interface B"));}
+        AudioDeviceInfo info(int index,String name){return new AudioDeviceInfo(index,name,"Pattern",index == 1 && siblingMaximum >= 0 ? siblingMaximum : maximum,2,48000,List.of(SampleRate.HZ_48000),0,0);}
         @Override public void open(DeviceId device,com.benesquivelmusic.daw.sdk.audio.AudioFormat format,int frames){
             open(device,format,frames,CaptureRequirement.REQUIRED,device,format.channels());
         }
@@ -504,9 +504,9 @@ class MultichannelInputCaptureStory326Test {
                                    CaptureRequirement capture,DeviceId input,int width){
             if(open)throw new IllegalStateException("already open"); open=true;opens++;
             if(failOpen)throw new AudioBackendException("second input refused");
-            openedWidth=Math.min(maximum,width);outputWidth=format.channels();this.input=input.name();
+            openedWidth=openedWidthOverride >= 0 ? openedWidthOverride : Math.min(maximum,width);outputWidth=format.channels();this.input=input.name();
         }
-        @Override public AudioBackend createInputBackend(){sibling=new PatternBackend();sibling.maximum=maximum;sibling.failOpen=failSiblingOpen;sibling.openedRate=siblingRate;return sibling;}
+        @Override public AudioBackend createInputBackend(){sibling=new PatternBackend();sibling.maximum=siblingMaximum >= 0 ? siblingMaximum : maximum;sibling.openedWidthOverride=siblingOpenedWidth;sibling.failOpen=failSiblingOpen;sibling.openedRate=siblingRate;return sibling;}
         @Override public void openInput(DeviceId input,com.benesquivelmusic.daw.sdk.audio.AudioFormat format,int frames,int width){
             open(input,format,frames,CaptureRequirement.REQUIRED,input,width);
         }

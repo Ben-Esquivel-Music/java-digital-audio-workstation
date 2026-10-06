@@ -100,6 +100,76 @@ class CaptureFlushServiceTest {
         return block;
     }
 
+    @Test
+    void eachInputRetainsItsOwnPunchEntryAndReentryFadeState() {
+        Track first = new Track("First", TrackType.AUDIO);
+        Track second = new Track("Second", TrackType.AUDIO);
+        TrackCapture firstCapture = physicalPunchCapture(first, 0);
+        TrackCapture secondCapture = physicalPunchCapture(second, 1);
+        CaptureRing firstRing = new CaptureRing(SLOT_FRAMES, 1, 1, 8);
+        CaptureRing secondRing = new CaptureRing(SLOT_FRAMES, 1, 1, 8);
+        CaptureFlushService.TakeConfig config = new CaptureFlushService.TakeConfig(takeDir, STEREO_16, 120,
+                0, 0, null, false, Duration.ofSeconds(5), Instant.parse("2026-09-29T10:00:00Z"));
+        DiskHeadroomWatch watch = new DiskHeadroomWatch(takeDir, () -> 10 * GIB, GIB, 64L << 20,
+                Duration.ZERO, clock::get, warnings::add);
+        service = new CaptureFlushService(firstRing, config, List.of(firstCapture, secondCapture), watch,
+                warnings::add, clock::get);
+        service.setInputRings(new CaptureRing[]{firstRing, secondRing});
+        service.setDrainPaused(true);
+        startAndAwaitReadiness();
+        publishPunch(firstRing, 120);
+        publishPunch(secondRing, 120);
+        flushPunchPass();
+        assertThat(RecordedAudioTestSupport.audioOnDisk(firstCapture.session())[0][0]).isZero();
+        assertThat(RecordedAudioTestSupport.audioOnDisk(secondCapture.session())[0][0]).isZero();
+
+        service.setDrainPaused(true);
+        publishPunch(firstRing, 80);
+        publishPunch(secondRing, 128);
+        flushPunchPass();
+        assertThat(firstCapture.session().getTotalSamplesRecorded()).isEqualTo(8);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(secondCapture.session())[0][8]).isEqualTo(.5f);
+
+        service.setDrainPaused(true);
+        publishPunch(firstRing, 128);
+        publishPunch(secondRing, 80);
+        flushPunchPass();
+        assertThat(RecordedAudioTestSupport.audioOnDisk(firstCapture.session())[0][8]).isZero();
+        service.setDrainPaused(true);
+        publishPunch(firstRing, 136);
+        publishPunch(secondRing, 120);
+        flushPunchPass();
+        assertThat(RecordedAudioTestSupport.audioOnDisk(firstCapture.session())[0][16]).isEqualTo(.5f);
+        assertThat(RecordedAudioTestSupport.audioOnDisk(secondCapture.session())[0][16]).isZero();
+    }
+
+    private TrackCapture physicalPunchCapture(Track track, int source) {
+        TrackCapture capture = new TrackCapture(track, new InputRouting(0, 1), -1, 1, SLOT_FRAMES, 0,
+                0, STEREO_16.sampleRate(), 120, takeDir.resolve(track.getId()),
+                (t, dir) -> new RecordingSession(new AudioFormat(48_000, 1, 16, SLOT_FRAMES), dir));
+        capture.setInputSource(source, "Input " + source);
+        return capture;
+    }
+
+    private void publishPunch(CaptureRing ring, long frame) {
+        CaptureRing.Slot slot = ring.claim();
+        assertThat(slot).isNotNull();
+        slot.setNumFrames(SLOT_FRAMES);
+        slot.setStartFrame(frame);
+        slot.setBeatPosition(frame / 24_000.0);
+        slot.setPunchEnabled(true);
+        slot.setPunchStartFrames(100);
+        slot.setPunchEndFrames(200);
+        slot.copySource(0, block(1, .5f), 1, SLOT_FRAMES);
+        ring.publish();
+        service.signal();
+    }
+
+    private void flushPunchPass() {
+        service.setDrainPaused(false);
+        service.awaitFlushed(GUARD);
+    }
+
     /**
      * Publishes one block; a {@code null} instrument marks source 1 absent,
      * as the callback does when the engine hands it no recording buffer.

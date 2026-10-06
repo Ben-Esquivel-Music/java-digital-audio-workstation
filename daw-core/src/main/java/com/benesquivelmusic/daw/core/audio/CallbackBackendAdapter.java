@@ -329,7 +329,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
     }
     @Override public DeviceId selectedInputDevice(DeviceId output) {
         ensureInitialized();
-        AudioDeviceInfo info = resolveInputDevice(delegate.getAvailableDevices(), CaptureRequirement.REQUIRED);
+        AudioDeviceInfo info = resolveSelectedInputIdentity(delegate.getAvailableDevices());
         return new DeviceId(name(), info.qualifiedName());
     }
     @Override public void open(DeviceId output, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
@@ -419,7 +419,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
         List<AudioDeviceInfo> snapshot = delegate.getAvailableDevices();
         int outputIndex = inputOnly ? -1 : resolveOutputDevice(device, snapshot);
         AudioDeviceInfo inputDevice = input == null ? resolveInputDevice(snapshot, capture)
-                : resolveExplicitInput(input, snapshot);
+                : resolveExplicitInput(input, snapshot, capture);
         int inputIndex = inputDevice != null ? inputDevice.index() : -1;
 
         this.outChannels = inputOnly ? 0 : format.channels();
@@ -853,14 +853,31 @@ public final class CallbackBackendAdapter implements AudioBackend {
      *                               when the configured input device cannot
      *                               be resolved to exactly one entry
      */
-    private AudioDeviceInfo resolveExplicitInput(DeviceId input, List<AudioDeviceInfo> snapshot) {
-        if (input.isDefault()) {
+    private AudioDeviceInfo resolveSelectedInputIdentity(List<AudioDeviceInfo> snapshot) {
+        if (inputDeviceName.isBlank()) {
             AudioDeviceInfo info = delegate.getDefaultInputDevice();
-            if (info != null && info.supportsInput()) return info;
+            if (info != null) return info;
             throw new AudioBackendException("No default input device available on " + name());
         }
-        List<AudioDeviceInfo> matches = matchSelection(snapshot, input.name(), AudioDeviceInfo::supportsInput);
+        List<AudioDeviceInfo> matches = matchSelection(snapshot, inputDeviceName, info -> true);
         if (matches.size() == 1) return matches.getFirst();
+        if (matches.size() > 1) throw new AudioBackendException(ambiguousSelectionMessage("Input", inputDeviceName, matches));
+        throw new AudioBackendException("Input device missing: " + inputDeviceName);
+    }
+
+    private AudioDeviceInfo resolveExplicitInput(DeviceId input, List<AudioDeviceInfo> snapshot,
+                                                 CaptureRequirement capture) {
+        if (input.isDefault()) {
+            AudioDeviceInfo info = delegate.getDefaultInputDevice();
+            if (info != null) return info.supportsInput() ? info
+                    : refuseInput(capture, "No capture channels on input device '" + info.qualifiedName() + "'");
+            throw new AudioBackendException("No default input device available on " + name());
+        }
+        List<AudioDeviceInfo> matches = matchSelection(snapshot, input.name(), info -> true);
+        if (matches.size() == 1) {
+            AudioDeviceInfo info = matches.getFirst();
+            return info.supportsInput() ? info : refuseInput(capture, "No capture channels on input device '" + input.name() + "'");
+        }
         if (matches.size() > 1) throw new AudioBackendException(ambiguousSelectionMessage("Input", input.name(), matches));
         throw new AudioBackendException("Input device missing: " + input.name());
     }

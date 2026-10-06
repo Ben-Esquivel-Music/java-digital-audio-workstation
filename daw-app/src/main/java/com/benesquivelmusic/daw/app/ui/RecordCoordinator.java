@@ -90,6 +90,11 @@ final class RecordCoordinator {
     private final Consumer<Track> flashMidiActivity;
     private final BooleanSupplier applyLatencyCompensation;
     private final Supplier<RoundTripLatency> reportedLatency;
+    private Supplier<Optional<AudioEngineController.LatencyCalibration>> latencyCalibration;
+
+    void setLatencyCalibrationSupplier(Supplier<Optional<AudioEngineController.LatencyCalibration>> supplier) {
+        latencyCalibration = Objects.requireNonNull(supplier, "supplier must not be null");
+    }
     private final FxDispatcher fxDispatcher;
     private volatile boolean retired;
     private final FxDispatcher threadVerifier = new FxDispatcher();
@@ -1640,7 +1645,12 @@ final class RecordCoordinator {
                     notificationBar.show(NotificationLevel.WARNING, message);
                 }
             }));
-            pipeline.setReportedLatency(reportedLatency.get());
+            if (latencyCalibration == null) {
+                pipeline.setReportedLatency(reportedLatency.get());
+            } else {
+                latencyCalibration.get().ifPresent(calibration ->
+                        pipeline.setReportedLatency(calibration.device(), calibration.latency()));
+            }
             pipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());
             openCapturePeaks(pipeline, start.armedAudioTracks);
             pipelineSetup.accept(pipeline);

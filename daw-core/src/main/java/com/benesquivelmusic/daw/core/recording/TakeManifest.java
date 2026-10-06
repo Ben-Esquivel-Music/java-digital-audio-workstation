@@ -572,9 +572,10 @@ public final class TakeManifest {
         return List.copyOf(result);
     }
 
-    /** Returns the loss episodes (ring overflows and truncation episodes) in the order recorded. */
+    /** Returns the unavailable input routes in the order recorded. */
     public List<RoutingFlag> routingFlags() { return routingFlags; }
 
+    /** Returns the loss episodes (ring overflows and truncation episodes) in the order recorded. */
     public List<GapEntry> gaps() {
         return gaps;
     }

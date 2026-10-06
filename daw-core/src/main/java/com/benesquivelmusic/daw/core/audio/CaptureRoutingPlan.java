@@ -6,7 +6,14 @@ import java.util.*;
 
 /** Immutable physical input union, resolved before opening any stream (story 326). */
 public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map<String, Integer> trackSources, Set<String> widthValidatedTracks) {
-    public record Source(DeviceId device, int requestedChannels) { }
+    public record Source(DeviceId device, int requestedChannels, List<String> selectionLabels) {
+        public Source {
+            selectionLabels = List.copyOf(selectionLabels);
+        }
+        public Source(DeviceId device, int requestedChannels) {
+            this(device, requestedChannels, List.of(device.name()));
+        }
+    }
     public record Route(String id, String name, InputRouting routing, int deviceIndex) {
         public boolean matches(Track track) {
             return id.equals(track.getId()) && routing.equals(track.getInputRouting()) && deviceIndex == track.getInputDeviceIndex();
@@ -86,7 +93,22 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
             assignments.put(track.id(), input);
             widths.merge(input, (int) width, Math::max);
         }
-        List<Source> sources = widths.entrySet().stream().map(e -> new Source(e.getKey(), e.getValue())).toList();
+        DeviceId resolvedSelected = selected;
+        List<Source> sources = widths.entrySet().stream().map(e -> {
+            List<String> labels = new ArrayList<>();
+            labels.add(e.getKey().name());
+            AudioDeviceInfo info = devices.stream().filter(candidate ->
+                    AudioDeviceInfo.isSelectionFor(e.getKey().name(), candidate.name(), candidate.hostApi()))
+                    .findFirst().orElse(null);
+            if (info != null) {
+                labels.add(info.qualifiedName());
+                if (devices.stream().filter(candidate -> candidate.name().equals(info.name())).findFirst().orElseThrow() == info) {
+                    labels.add(info.name());
+                }
+            }
+            if (e.getKey().equals(resolvedSelected) && selectedChoice.isDefault()) labels.add(selectedChoice.name());
+            return new Source(e.getKey(), e.getValue(), labels);
+        }).toList();
         Map<String, Integer> ordinals = new LinkedHashMap<>();
         assignments.forEach((id, device) -> {
             for (int i = 0; i < sources.size(); i++) if (sources.get(i).device().equals(device)) ordinals.put(id, i);

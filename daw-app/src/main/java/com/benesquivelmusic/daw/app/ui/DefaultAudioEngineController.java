@@ -1014,6 +1014,17 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
+    public Optional<LatencyCalibration> recordingLatencyCalibration() {
+        DeviceId device = watchedDevice.get();
+        if (device == null) return Optional.empty();
+        Integer frames = latencyOverridesByDeviceKey.get(
+                com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore.Settings.deviceKey(device));
+        return frames == null ? Optional.empty()
+                : Optional.of(new LatencyCalibration(device,
+                        new com.benesquivelmusic.daw.sdk.audio.RoundTripLatency(frames, 0, 0)));
+    }
+
+    @Override
     public void setLatencyOverrideFrames(Optional<Integer> frames) {
         Objects.requireNonNull(frames, "frames must not be null");
         if (frames.isPresent() && frames.get() < 0) {

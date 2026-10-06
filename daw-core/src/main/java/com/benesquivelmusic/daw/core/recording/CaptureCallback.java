@@ -31,6 +31,14 @@ import java.util.Objects;
  * the preallocated instrument-track array. Routing, gating, wrap detection
  * and every file write happen on the flush thread from the header.</p>
  *
+ * <p><strong>Activation.</strong> All pipeline callbacks share a closed start
+ * gate until Record and prepared-input activation succeed. Earlier calls
+ * leave the producer gate without claiming or advancing their frame cursor.
+ * The caller freezes one beat/seek-sequence origin before publishing the
+ * volatile activation. Each source starts from it; an explicit subsequent
+ * seek supersedes it. Sibling inputs then count delivered frames independently.
+ * The primary input continues to follow the transport clock.</p>
+ *
  * <p><strong>Start frame.</strong> The header's start frame is the beat
  * position converted at the tempo the take was prepared at — the tempo its
  * manifest's anchor frame was computed with — not the transport's tempo of
@@ -77,12 +85,20 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     private final double sampleRate;
     private final double punchFrameScale;
     private final double tempoBpm;
+    private final StartGate startGate;
+
+    /** Caller initializes the common origin before publishing the volatile activation. */
+    static final class StartGate {
+        double beat;
+        long seekSequence;
+        volatile boolean active;
+    }
 
     private boolean independentFrameCursor;
     private long nextInputFrame;
+    private boolean frameCursorInitialized;
     void useIndependentFrameCursor() {
         independentFrameCursor = true;
-        nextInputFrame = startFrameOf(transport.getPositionInBeats());
     }
 
     /**
@@ -101,6 +117,13 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     CaptureCallback(CaptureRing ring, CaptureFlushService flush, Track[] instrumentTracks,
                     Transport transport, AudioEngine audioEngine, double sampleRate,
                     double projectSampleRate, double tempoBpm) {
+        this(ring, flush, instrumentTracks, transport, audioEngine, sampleRate,
+                projectSampleRate, tempoBpm, null);
+    }
+
+    CaptureCallback(CaptureRing ring, CaptureFlushService flush, Track[] instrumentTracks,
+                    Transport transport, AudioEngine audioEngine, double sampleRate,
+                    double projectSampleRate, double tempoBpm, StartGate startGate) {
         this.ring = Objects.requireNonNull(ring, "ring must not be null");
         this.flush = Objects.requireNonNull(flush, "flush must not be null");
         this.instrumentTracks = Objects.requireNonNull(instrumentTracks, "instrumentTracks must not be null").clone();
@@ -118,6 +141,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         this.sampleRate = sampleRate;
         this.punchFrameScale = sampleRate / projectSampleRate;
         this.tempoBpm = tempoBpm;
+        this.startGate = startGate;
     }
 
     /**
@@ -150,6 +174,16 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         if (!ring.enterProducer()) {
             return false;
         }
+        if (startGate != null && !startGate.active) {
+            return false;
+        }
+        boolean firstBlock = !frameCursorInitialized;
+        boolean useStartOrigin = firstBlock && startGate != null
+                && startGate.seekSequence == transport.getPositionSeekSequence();
+        if (firstBlock) {
+            nextInputFrame = startFrameOf(useStartOrigin ? startGate.beat : transport.getPositionInBeats());
+            frameCursorInitialized = true;
+        }
         CaptureRing.Slot slot = ring.claim();
         if (slot == null) {
             if (independentFrameCursor) nextInputFrame += numFrames;
@@ -159,7 +193,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         // The recording callback fires *before* advancePosition(), so
         // getPositionInBeats() still reflects this block's start.
         double beat = independentFrameCursor ? nextInputFrame / sampleRate * tempoBpm / 60.0
-                : transport.getPositionInBeats();
+                : useStartOrigin ? startGate.beat : transport.getPositionInBeats();
         if (independentFrameCursor) nextInputFrame += numFrames;
         Transport.LoopWindow loop = transport.getLoopWindow();
         if (independentFrameCursor && loop.enabled() && beat >= loop.endInBeats()) {

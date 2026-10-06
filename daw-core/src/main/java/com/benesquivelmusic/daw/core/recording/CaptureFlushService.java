@@ -294,6 +294,7 @@ public final class CaptureFlushService {
     private CaptureRing[] inputRings;
     private int inputSource;
     private double[] sourcePreviousBeat;
+    private boolean[] sourceWasInsidePunchRegion;
     private long[] sourceLastOverflow;
     private long[] sourceGapAnchorSequence;
     private long[] sourceGapAnchorFrame;
@@ -306,6 +307,7 @@ public final class CaptureFlushService {
         if (started) throw new IllegalStateException("input rings already started");
         inputRings = rings.clone();
         sourcePreviousBeat = new double[rings.length];
+        sourceWasInsidePunchRegion = new boolean[rings.length];
         Arrays.fill(sourcePreviousBeat, -1.0);
         sourceLastOverflow = new long[rings.length];
         sourceGapAnchorSequence = new long[rings.length];
@@ -917,6 +919,7 @@ public final class CaptureFlushService {
             inputSource = i;
             ring = inputRings[i];
             previousBeat = sourcePreviousBeat[i];
+            wasInsidePunchRegion = sourceWasInsidePunchRegion[i];
             lastOverflowSeen = sourceLastOverflow[i];
             gapAnchorSequence = sourceGapAnchorSequence[i];
             gapAnchorFrame = sourceGapAnchorFrame[i];
@@ -924,6 +927,7 @@ public final class CaptureFlushService {
             truncationEpisodeOpen = sourceTruncationEpisode[i];
             progressed |= drainInputRing();
             sourcePreviousBeat[i] = previousBeat;
+            sourceWasInsidePunchRegion[i] = wasInsidePunchRegion;
             sourceLastOverflow[i] = lastOverflowSeen;
             sourceGapAnchorSequence[i] = gapAnchorSequence;
             sourceGapAnchorFrame[i] = gapAnchorFrame;

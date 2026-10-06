@@ -206,6 +206,8 @@ public final class Transport {
 
     private volatile TransportState state = TransportState.STOPPED;
     private volatile double positionInBeats = 0.0;
+    /** Explicit seeks invalidate a recording start origin; ordinary clock advances do not. */
+    private final AtomicLong positionSeekSequence = new AtomicLong();
     private final TempoMap tempoMap = new TempoMap();
     private volatile LoopWindow loopWindow =
             new LoopWindow(false, DEFAULT_LOOP_START, DEFAULT_LOOP_END);
@@ -441,6 +443,12 @@ public final class Transport {
         return positionInBeats;
     }
 
+    /** Returns the sequence of accepted explicit position requests without reading the seek queue. */
+    @RealTimeSafe
+    public long getPositionSeekSequence() {
+        return positionSeekSequence.get();
+    }
+
     /**
      * Sets the playback position in beats.
      *
@@ -477,6 +485,7 @@ public final class Transport {
         if (positionInBeats < 0) {
             throw new IllegalArgumentException("position must not be negative: " + positionInBeats);
         }
+        positionSeekSequence.incrementAndGet();
         TransportState current = state;
         boolean rolling = current == TransportState.PLAYING
                 || current == TransportState.RECORDING;

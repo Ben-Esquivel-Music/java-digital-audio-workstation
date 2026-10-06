@@ -47,6 +47,46 @@ class CallbackBackendAdapterTest {
             new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 2, 24);
     private static final int FRAMES = 128;
 
+    @Test
+    void selectedZeroWidthIdentityCanOpenOptionalOutputButRequiredCaptureIsRefused() {
+        FakeNativeBackend fake = new FakeNativeBackend(List.of(device(3, "Main Out", 0, 2), device(5, "Mic In", 0, 0)));
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic In");
+        DeviceId output = new DeviceId(adapter.name(), "Main Out");
+        DeviceId input = adapter.selectedInputDevice(output);
+        assertThat(input.name()).isEqualTo("Mic In [Fake]");
+        try {
+            adapter.open(output, FORMAT, FRAMES, CaptureRequirement.OPTIONAL, input, 1);
+            assertThat(fake.lastConfig.inputChannels()).isZero();
+            assertThat(fake.lastConfig.outputChannels()).isEqualTo(2);
+            assertThat(adapter.openedInputChannels()).isZero();
+            adapter.close();
+            assertThatThrownBy(() -> adapter.open(output, FORMAT, FRAMES, CaptureRequirement.REQUIRED, input, 1))
+                    .isInstanceOf(AudioBackendException.class).hasMessageContaining("No capture channels");
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void provenPrimaryZeroWidthStartsThroughTheRealCallbackAdapter() {
+        FakeNativeBackend fake = new FakeNativeBackend(new java.util.ArrayList<>(List.of(
+                device(3, "Main Out", 0, 2), device(5, "Mic In", 1, 0))));
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic In");
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000, 2, 16, FRAMES));
+        engine.setStreamingProvision(new StreamingProvision(adapter.name(), List.of(
+                new BackendStreamRung(adapter, new DeviceId(adapter.name(), "Main Out")))));
+        var track = new com.benesquivelmusic.daw.core.track.Track("Mic", com.benesquivelmusic.daw.core.track.TrackType.AUDIO);
+        track.setInputRouting(new InputRouting(0, 1));
+        track.setInputDeviceIndex(5);
+        track.setArmed(true);
+        try {
+            engine.validateInputRouting(List.of(track));
+            fake.devices.set(1, device(5, "Mic In", 0, 0));
+            engine.startAudioInputOutput(List.of(track));
+            assertThat(engine.captureInputChannels(0)).isZero();
+            assertThat(fake.lastConfig.outputChannels()).isEqualTo(2);
+            assertThat(fake.lastConfig.inputChannels()).isZero();
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
     /** Guard budget for drain-thread waits — generous, never inner-inflated. */
     private static final long GUARD_BUDGET_MILLIS = 5_000L;
 

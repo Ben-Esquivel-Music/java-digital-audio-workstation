@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import java.nio.file.Path;
@@ -216,6 +217,7 @@ public final class RecordingPipeline {
      */
     private RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
     private boolean reportedLatencyConfigured;
+    private DeviceId reportedLatencyDevice;
     /**
      * Whether the pipeline applies driver round-trip compensation. Mirrors
      * the "Apply latency compensation to recorded takes" toggle in the
@@ -579,7 +581,10 @@ public final class RecordingPipeline {
             if (!instrument && plan != null && applyLatencyCompensation) {
                 int inputSource = plan.sourceFor(track);
                 RoundTripLatency latency = audioEngine.captureInputLatency(inputSource);
-                if (inputSource == 0 && reportedLatencyConfigured) latency = reportedLatency;
+                if (reportedLatencyConfigured && (reportedLatencyDevice == null ? inputSource == 0
+                        : calibrationMatches(plan.sources().get(inputSource)))) {
+                    latency = reportedLatency;
+                }
                 compensation = Math.max(0, latency.totalFrames());
             }
             trackCompensationFrames.put(track, compensation);
@@ -622,8 +627,10 @@ public final class RecordingPipeline {
      * position: a take anchored at a punch region or range keeps that
      * anchor — then create the take's {@link CaptureCallback} and wire it as
      * the engine's recording callback, start the audio engine if it is not
-     * running, and transition the transport to recording. The pipeline is
-     * then {@linkplain #isActive() active}.
+     * running, and transition the transport to recording. Every callback
+     * remains gated until that transition and prepared-input activation both
+     * succeed; a common initial frame origin is then published to the callbacks.
+     * The pipeline is then {@linkplain #isActive() active}.
      *
      * <p>The restore is a {@link Transport#setPositionInBeats(double)}, made
      * only on a transport that is stopped or paused — Record from idle —
@@ -646,7 +653,8 @@ public final class RecordingPipeline {
      * synchronous start this two-step start replaced had the same kind of
      * difference, sized mostly by the file creation it ran on the caller
      * thread between reading the anchor and {@code Transport.record()}.
-     * Story 328's transport-clocked capture-start gate owns the fix.</p>
+     * The capture gate prevents pre-transition publication, but does not
+     * re-anchor the prepared manifest or clips for preparation time.</p>
      *
      * <p>All or nothing: if a step fails, the take's producer gate is closed
      * ({@link CaptureRing#closeProducer()} — a callback entering afterwards
@@ -704,6 +712,7 @@ public final class RecordingPipeline {
         }
         preparing = false;
         active = true;
+        CaptureCallback.StartGate startGate = new CaptureCallback.StartGate();
         try {
             TransportState state = transport.getState();
             boolean rolling = state == TransportState.PLAYING || state == TransportState.RECORDING;
@@ -715,12 +724,12 @@ public final class RecordingPipeline {
             // carries the take's ring, flush service and tempo in final
             // fields, so the audio thread reads nothing of this pipeline.
             audioEngine.setRecordingCallback(new CaptureCallback(takeRing, service, instrumentTracks,
-                    transport, audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm));
+                    transport, audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm, startGate));
 
             AudioEngine.RecordingCallback[] extraCallbacks = new AudioEngine.RecordingCallback[Math.max(0, inputRings.length - 1)];
             for (int i = 1; i < inputRings.length; i++) {
                 CaptureCallback callback = new CaptureCallback(inputRings[i], flush, new Track[0], transport,
-                        audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm);
+                        audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm, startGate);
                 callback.useIndependentFrameCursor();
                 extraCallbacks[i - 1] = callback;
             }
@@ -732,6 +741,12 @@ public final class RecordingPipeline {
             // Transition transport to recording
             transport.record();
             captureActivation.run();
+            if (!active || transport.getState() != TransportState.RECORDING || !hasViableCaptureService()) {
+                throw new IllegalStateException("Recording start was cancelled before capture activation");
+            }
+            startGate.beat = transport.getPositionInBeats();
+            startGate.seekSequence = transport.getPositionSeekSequence();
+            startGate.active = true;
         } catch (RuntimeException | Error e) {
             // The gate first: later entries claim nothing, and a callback
             // already inside drops its block if its final read sees the close.
@@ -1807,6 +1822,22 @@ public final class RecordingPipeline {
     public void setReportedLatency(RoundTripLatency latency) {
         this.reportedLatency = Objects.requireNonNull(latency, "latency must not be null");
         reportedLatencyConfigured = true;
+        reportedLatencyDevice = null;
+    }
+
+    /**
+     * Configures a device-qualified calibration, including an explicit zero.
+     * Physical sources on other devices retain their own driver latency.
+     * Must be called before {@link #prepare()}.
+     */
+    public void setReportedLatency(DeviceId device, RoundTripLatency latency) {
+        setReportedLatency(latency);
+        reportedLatencyDevice = Objects.requireNonNull(device, "device must not be null");
+    }
+
+    private boolean calibrationMatches(com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.Source source) {
+        return reportedLatencyDevice.backend().equals(source.device().backend())
+                && source.selectionLabels().contains(reportedLatencyDevice.name());
     }
 
     /**

@@ -1547,6 +1547,7 @@ public final class MainController {
                 this::onOpenAudioSettings,
                 dispatcher());
         if (audioEngineController instanceof DefaultAudioEngineController controller) {
+            transportController.recordCoordinator().setLatencyCalibrationSupplier(controller::recordingLatencyCalibration);
             controller.setRecordConfigurationGuard(() -> transportController.recordCoordinator().requestConfigurationChange());
             controller.setConfigurationActivityCallback(() -> {
                 if (transportController != null) transportController.recordCoordinator().refreshRecordAvailability();
