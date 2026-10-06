@@ -1407,7 +1407,7 @@ class RealTimeSafeContractTest {
             CAPTURE_CALLBACK, CAPTURE_RING, CAPTURE_SLOT, CAPTURE_FLUSH,
             AUDIO_ENGINE, RENDER_PIPELINE,
             "com/benesquivelmusic/daw/core/audio/AudioFormat",
-            TRANSPORT, TRANSPORT + "$LoopWindow",
+            TRANSPORT, TRANSPORT + "$LoopWindow", TRANSPORT + "$PositionSeek",
             "com/benesquivelmusic/daw/core/transport/TempoMap",
             "com/benesquivelmusic/daw/core/transport/TempoChangeEvent",
             "com/benesquivelmusic/daw/sdk/transport/PunchRegion");
@@ -1490,6 +1490,8 @@ class RealTimeSafeContractTest {
             CAPTURE_RING + "#claim", CAPTURE_RING + "#publish", CAPTURE_SLOT + "#copySource",
             CAPTURE_FLUSH + "#signal", AUDIO_ENGINE + "#graphInstrumentRecordingBuffer",
             RENDER_PIPELINE + "#graphInstrumentRecordingBuffer", TRANSPORT + "#getPositionInBeats",
+            TRANSPORT + "#getPositionSeek", TRANSPORT + "#hasPendingPositionSeek",
+            TRANSPORT + "$PositionSeek#targetInBeats",
             TRANSPORT + "#getPunchRegion", TRANSPORT + "#getLoopWindow");
 
     private static ReachableScan walkCapturePath() throws Exception {
@@ -1883,6 +1885,8 @@ class RealTimeSafeContractTest {
                 Class.forName(RECORDING_CALLBACK.replace('/', '.'))
                         .getDeclaredMethod(CAPTURE_CALLBACK_ROOT, float[][].class, int.class),
                 transport.getDeclaredMethod("getPositionInBeats"),
+                transport.getDeclaredMethod("getPositionSeek"),
+                transport.getDeclaredMethod("hasPendingPositionSeek"),
                 transport.getDeclaredMethod("getPunchRegion"),
                 transport.getDeclaredMethod("isLoopEnabled"));
         for (Method method : expected) {

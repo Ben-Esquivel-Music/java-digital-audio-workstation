@@ -8,7 +8,7 @@ This repository includes the GitHub Copilot agent definition and ten portable sk
 
 | Platform | Agent definition | Skill location |
 | --- | --- | --- |
-| GitHub Copilot | [studio-engineer.agent.md](../../.github/agents/studio-engineer.agent.md) | `.github/skills/studio-*/SKILL.md` |
+| GitHub Copilot | [studio-engineer.agent.md](../../.github/agents/studio-engineer.agent.md) | `.github/instructions/studio-*/SKILL.md` |
 
 The GitHub definition uses Markdown with YAML frontmatter and the agent identifier `studio-engineer`. Its skill folders contain the portable `SKILL.md` files and supporting references. The existing Java agent definitions are retained.
 
@@ -16,18 +16,18 @@ The GitHub definition uses Markdown with YAML frontmatter and the agent identifi
 
 | Skill | Scope |
 | --- | --- |
-| [studio-recording](../../.github/skills/studio-recording/SKILL.md) | Microphone comparisons, placement, preamp/ADC gain, monitoring and multichannel capture. |
-| [studio-signal-flow](../../.github/skills/studio-signal-flow/SKILL.md) | Console/DAW routing, patchbays, levels, balanced interfaces, grounding and latency. |
-| [studio-mixing](../../.github/skills/studio-mixing/SKILL.md) | Balance, EQ, dynamics, sends, parallel paths, automation and translation. |
-| [studio-mastering](../../.github/skills/studio-mastering/SKILL.md) | Loudness, true peak, restoration, sequencing, conversion, dither, metadata and export checks. |
-| [studio-acoustics](../../.github/skills/studio-acoustics/SKILL.md) | Room response, monitor/subwoofer setup, treatment, isolation and measurements. |
-| [studio-immersive](../../.github/skills/studio-immersive/SKILL.md) | Speaker mapping, object-based audio, Ambisonics conventions, HRTFs and compatibility. |
-| [studio-analog-circuits](../../.github/skills/studio-analog-circuits/SKILL.md) | Schematic analysis, preamps, EQ, VCA dynamics, summing, drivers and supplies. |
-| [studio-hardware-service](../../.github/skills/studio-hardware-service/SKILL.md) | BOM reconciliation, assembly, substitutions, fault isolation and calibration. |
-| [studio-mechanical-design](../../.github/skills/studio-mechanical-design/SKILL.md) | Panels, chassis, racks, cabinets, mounts, tolerances, cooling and vibration. |
-| [studio-dsp-modeling](../../.github/skills/studio-dsp-modeling/SKILL.md) | Circuit/physical models, numerical stability, aliasing, measurement and real-time integration. |
+| [studio-recording](../../.github/instructions/studio-recording/SKILL.md) | Microphone comparisons, placement, preamp/ADC gain, monitoring and multichannel capture. |
+| [studio-signal-flow](../../.github/instructions/studio-signal-flow/SKILL.md) | Console/DAW routing, patchbays, levels, balanced interfaces, grounding and latency. |
+| [studio-mixing](../../.github/instructions/studio-mixing/SKILL.md) | Balance, EQ, dynamics, sends, parallel paths, automation and translation. |
+| [studio-mastering](../../.github/instructions/studio-mastering/SKILL.md) | Loudness, true peak, restoration, sequencing, conversion, dither, metadata and export checks. |
+| [studio-acoustics](../../.github/instructions/studio-acoustics/SKILL.md) | Room response, monitor/subwoofer setup, treatment, isolation and measurements. |
+| [studio-immersive](../../.github/instructions/studio-immersive/SKILL.md) | Speaker mapping, object-based audio, Ambisonics conventions, HRTFs and compatibility. |
+| [studio-analog-circuits](../../.github/instructions/studio-analog-circuits/SKILL.md) | Schematic analysis, preamps, EQ, VCA dynamics, summing, drivers and supplies. |
+| [studio-hardware-service](../../.github/instructions/studio-hardware-service/SKILL.md) | BOM reconciliation, assembly, substitutions, fault isolation and calibration. |
+| [studio-mechanical-design](../../.github/instructions/studio-mechanical-design/SKILL.md) | Panels, chassis, racks, cabinets, mounts, tolerances, cooling and vibration. |
+| [studio-dsp-modeling](../../.github/instructions/studio-dsp-modeling/SKILL.md) | Circuit/physical models, numerical stability, aliasing, measurement and real-time integration. |
 
-Each skill has a `SKILL.md` entrypoint. The analog-circuits skill includes a [hardware source catalog](../../.github/skills/studio-analog-circuits/references/schematic-catalog.md). It covers the 24 files currently in `Schematics/`: Neotek, Mackie, SSL/Gyraf, THAT VCAs, API-style 312, EZ1290, Pultec/GY-PD, AMEK, and the unidentified mixer image.
+Each skill has a `SKILL.md` entrypoint. The analog-circuits skill includes a [hardware source catalog](../../.github/instructions/studio-analog-circuits/references/schematic-catalog.md). It covers the 24 files currently in `Schematics/`: Neotek, Mackie, SSL/Gyraf, THAT VCAs, API-style 312, EZ1290, Pultec/GY-PD, AMEK, and the unidentified mixer image.
 
 ## Example requests
 
@@ -40,7 +40,7 @@ Select the `studio-engineer` custom agent in a supported GitHub Copilot agent se
 - "Use the Studio Engineer agent to plan a level-matched microphone test and verify our multichannel recording path."
 - "Use the Studio Engineer agent to turn the spring-reverb research into a bounded DSP prototype with a validation plan."
 
-The GitHub skills use the documented `.github/skills` discovery location; additional research guidance under `.github/instructions` can be read directly by the agent.
+The Studio Engineer skills and additional research guidance are maintained under `.github/instructions`; the agent reads the relevant `SKILL.md` files directly.
 
 ## Source discipline
 

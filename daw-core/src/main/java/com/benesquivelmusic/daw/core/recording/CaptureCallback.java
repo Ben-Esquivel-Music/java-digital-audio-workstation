@@ -36,7 +36,9 @@ import java.util.Objects;
  * leave the producer gate without claiming or advancing their frame cursor.
  * The caller freezes one beat/seek-sequence origin before publishing the
  * volatile activation. Each source starts from it; an explicit subsequent
- * seek supersedes it. Sibling inputs then count delivered frames independently.
+ * seek supersedes it once the primary clock has committed the target. Sibling
+ * inputs re-anchor to that seek's immutable target and then count delivered
+ * frames independently, even if the primary clock has already advanced further.
  * The primary input continues to follow the transport clock.</p>
  *
  * <p><strong>Start frame.</strong> The header's start frame is the beat
@@ -90,13 +92,15 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     /** Caller initializes the common origin before publishing the volatile activation. */
     static final class StartGate {
         double beat;
-        long seekSequence;
+        Transport.PositionSeek positionSeek;
+        boolean seekPending;
         volatile boolean active;
     }
 
     private boolean independentFrameCursor;
     private long nextInputFrame;
     private boolean frameCursorInitialized;
+    private Transport.PositionSeek observedPositionSeek;
     void useIndependentFrameCursor() {
         independentFrameCursor = true;
     }
@@ -177,12 +181,22 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         if (startGate != null && !startGate.active) {
             return false;
         }
+        Transport.PositionSeek positionSeek = transport.getPositionSeek();
+        boolean seekPending = independentFrameCursor && transport.hasPendingPositionSeek();
         boolean firstBlock = !frameCursorInitialized;
         boolean useStartOrigin = firstBlock && startGate != null
-                && startGate.seekSequence == transport.getPositionSeekSequence();
+                && !startGate.seekPending
+                && startGate.positionSeek == positionSeek;
         if (firstBlock) {
             nextInputFrame = startFrameOf(useStartOrigin ? startGate.beat : transport.getPositionInBeats());
             frameCursorInitialized = true;
+            if (!seekPending && (useStartOrigin || startGate == null)) {
+                observedPositionSeek = positionSeek;
+            }
+        }
+        if (independentFrameCursor && !seekPending && observedPositionSeek != positionSeek) {
+            nextInputFrame = startFrameOf(positionSeek.targetInBeats());
+            observedPositionSeek = positionSeek;
         }
         CaptureRing.Slot slot = ring.claim();
         if (slot == null) {

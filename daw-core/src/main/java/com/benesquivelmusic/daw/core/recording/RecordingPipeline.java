@@ -744,8 +744,9 @@ public final class RecordingPipeline {
             if (!active || transport.getState() != TransportState.RECORDING || !hasViableCaptureService()) {
                 throw new IllegalStateException("Recording start was cancelled before capture activation");
             }
+            startGate.positionSeek = transport.getPositionSeek();
+            startGate.seekPending = transport.hasPendingPositionSeek();
             startGate.beat = transport.getPositionInBeats();
-            startGate.seekSequence = transport.getPositionSeekSequence();
             startGate.active = true;
         } catch (RuntimeException | Error e) {
             // The gate first: later entries claim nothing, and a callback

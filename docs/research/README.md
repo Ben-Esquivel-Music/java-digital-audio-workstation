@@ -16,7 +16,7 @@ This directory contains research documentation analyzing open source tools and t
 
 ## Studio Engineer
 
-The [Studio Engineer agent and skill guide](studio-engineer.md) connects this research to ten audio, hardware, acoustics, and mechanical engineering skills. Its [hardware source catalog](../../.github/skills/studio-analog-circuits/references/schematic-catalog.md) maps the schematics, BOMs, assembly drawings, manuals, and datasheets in `Schematics/`.
+The [Studio Engineer agent and skill guide](studio-engineer.md) connects this research to ten audio, hardware, acoustics, and mechanical engineering skills. Its [hardware source catalog](../../.github/instructions/studio-analog-circuits/references/schematic-catalog.md) maps the schematics, BOMs, assembly drawings, manuals, and datasheets in `Schematics/`.
 
 ## Key Findings Summary
 

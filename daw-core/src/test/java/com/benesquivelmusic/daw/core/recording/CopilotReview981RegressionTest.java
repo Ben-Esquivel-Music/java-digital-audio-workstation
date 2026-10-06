@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -197,6 +198,205 @@ class CopilotReview981RegressionTest {
             pipeline.awaitFlushed();
             assertThat(origins).containsExactly(48_000L);
         } finally { stop(pipeline, engine); }
+    }
+
+    @Test
+    void activeSiblingReanchorsForForwardBackwardAndRepeatedSeeks() throws Exception {
+        try (SiblingCapture capture = prepareSiblingCapture(new Transport(), "sibling-seeks")) {
+            capture.pipeline().beginCapture();
+            capture.emit(256);
+            capture.transport().setPositionInBeats(2);
+            capture.emit(128);
+            capture.transport().setPositionInBeats(1);
+            capture.emit(64);
+            capture.transport().setPositionInBeats(1);
+            capture.emit(96);
+            capture.transport().advancePosition(1);
+            capture.emit(256);
+
+            assertThat(capture.frames()).containsExactly(0L, 48_000L, 24_000L, 24_000L, 24_096L);
+        }
+    }
+
+    @Test
+    void queuedSiblingSeekWaitsForPrimaryCommitAndKeepsItsTargetAfterPrimaryAdvances() throws Exception {
+        try (SiblingCapture capture = prepareSiblingCapture(new Transport(), "queued-sibling-seek")) {
+            capture.pipeline().beginCapture();
+            capture.transport().setRealTimeClockActive(true);
+            capture.emit(128);
+            capture.transport().setPositionInBeats(2);
+            capture.emit(128);
+            capture.engine().getRecordingCallback().onAudioCaptured(signal(.5f), 256);
+            capture.pipeline().awaitFlushed();
+            assertThat(capture.transport().getPositionInBeats()).isZero();
+
+            capture.transport().advancePosition(0.25);
+            capture.transport().advancePosition(1);
+            capture.emit(256);
+            capture.emit(128);
+            capture.engine().getRecordingCallback().onAudioCaptured(signal(.5f), 256);
+            capture.pipeline().awaitFlushed();
+
+            assertThat(capture.frames()).containsExactly(0L, 128L, 0L, 48_000L, 48_256L, 72_000L);
+        }
+    }
+
+    @Test
+    void queuedSiblingSeeksUseTheLastTargetAndRepeatedRequestsResetTheCursor() throws Exception {
+        try (SiblingCapture capture = prepareSiblingCapture(new Transport(), "repeated-queued-seeks")) {
+            capture.pipeline().beginCapture();
+            capture.transport().setRealTimeClockActive(true);
+            capture.emit(256);
+            capture.transport().setPositionInBeats(2);
+            capture.transport().setPositionInBeats(5);
+            capture.emit(256);
+            capture.transport().advancePosition(0.25);
+            capture.emit(256);
+            capture.transport().setPositionInBeats(5);
+            capture.emit(256);
+            capture.transport().advancePosition(0.25);
+            capture.emit(256);
+
+            assertThat(capture.frames()).containsExactly(0L, 256L, 120_000L, 120_256L, 120_000L);
+        }
+    }
+
+    @Test
+    void seekPendingAtActivationIsStillAppliedAfterTheFirstSiblingBlock() throws Exception {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(1);
+        try (SiblingCapture capture = prepareSiblingCapture(transport, "activation-pending-seek")) {
+            capture.pipeline().beginCapture(() -> {
+                transport.setRealTimeClockActive(true);
+                transport.setPositionInBeats(3);
+            });
+            capture.emit(256);
+            transport.advancePosition(0.25);
+            transport.advancePosition(2);
+            capture.emit(256);
+
+            assertThat(capture.frames()).containsExactly(24_000L, 72_000L);
+        }
+    }
+
+    @Test
+    void seekBeforeTheFirstSiblingBlockUsesTheTargetEvenAfterPrimaryAdvances() throws Exception {
+        try (SiblingCapture capture = prepareSiblingCapture(new Transport(), "seek-before-sibling")) {
+            capture.pipeline().beginCapture();
+            capture.transport().setPositionInBeats(2);
+            capture.transport().advancePosition(1);
+            capture.emit(256);
+            capture.emit(128);
+
+            assertThat(capture.frames()).containsExactly(48_000L, 48_256L);
+        }
+    }
+
+    @Test
+    void activationSeekCommittedBeforeTheFirstBlockSupersedesTheFrozenOrigin() throws Exception {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(1);
+        try (SiblingCapture capture = prepareSiblingCapture(transport, "activation-seek-committed")) {
+            capture.pipeline().beginCapture(() -> {
+                transport.setRealTimeClockActive(true);
+                transport.setPositionInBeats(3);
+            });
+            transport.advancePosition(0.25);
+            capture.engine().getRecordingCallback().onAudioCaptured(signal(.5f), 256);
+            capture.pipeline().awaitFlushed();
+            capture.emit(256);
+            capture.emit(256);
+
+            assertThat(capture.frames()).containsExactly(72_000L, 72_000L, 72_256L);
+        }
+    }
+
+    @Test
+    void seekOnAnOverflowedSiblingBlockStillCountsItsDeliveredFrames() throws Exception {
+        try (SiblingCapture capture = prepareSiblingCapture(new Transport(), "overflowed-seek")) {
+            capture.pipeline().beginCapture();
+            CaptureFlushService flush = capture.pipeline().getCaptureFlushService();
+            int capacity = capture.pipeline().getCaptureRing().capacity();
+            flush.setDrainPaused(true);
+            try {
+                for (int block = 0; block < capacity; block++) {
+                    capture.backend().sibling.emit(256);
+                }
+                capture.transport().setPositionInBeats(2);
+                capture.backend().sibling.emit(128);
+            } finally {
+                flush.setDrainPaused(false);
+            }
+            capture.pipeline().awaitFlushed();
+            capture.emit(64);
+
+            assertThat(capture.frames()).hasSize(capacity + 1).last().isEqualTo(48_128L);
+        }
+    }
+
+    @Test
+    void siblingSeekReanchorsBeforeLoopWrapping() throws Exception {
+        Transport transport = new Transport();
+        transport.setPositionInBeats(1);
+        transport.setLoopWindow(true, 1, 1 + 1024.0 / 24_000);
+        try (SiblingCapture capture = prepareSiblingCapture(transport, "looped-sibling-seek")) {
+            capture.pipeline().beginCapture();
+            capture.emit(256);
+            capture.emit(256);
+            transport.setPositionInBeats(1);
+            capture.emit(256);
+            capture.emit(768);
+            capture.emit(256);
+
+            assertThat(capture.frames()).containsExactly(24_000L, 24_256L, 24_000L, 24_256L, 24_000L);
+        }
+    }
+
+    @Test
+    void siblingSeeksEnterLeaveAndReenterThePunchRegion() throws Exception {
+        Transport transport = new Transport();
+        transport.setPunchRegion(new PunchRegion(48_000, 48_256, true));
+        try (SiblingCapture capture = prepareSiblingCapture(transport, "punched-sibling-seek")) {
+            capture.pipeline().beginCapture();
+            capture.emit(256);
+            transport.setPositionInBeats(2);
+            capture.emit(256);
+            assertThat(capture.pipeline().getSession(capture.sibling()).getTotalSamplesRecorded()).isEqualTo(256);
+            transport.setPositionInBeats(0);
+            capture.emit(256);
+            assertThat(capture.pipeline().getSession(capture.sibling()).getTotalSamplesRecorded()).isEqualTo(256);
+            transport.setPositionInBeats(2);
+            capture.emit(256);
+            assertThat(capture.pipeline().getSession(capture.sibling()).getTotalSamplesRecorded()).isEqualTo(512);
+        }
+    }
+
+    private SiblingCapture prepareSiblingCapture(Transport transport, String name) throws Exception {
+        var backend = new MultichannelInputCaptureStory326Test.PatternBackend();
+        AudioEngine engine = engine(backend);
+        Track primary = track("Primary", 0), sibling = track("Sibling", 1);
+        List<Track> tracks = List.of(primary, sibling);
+        engine.setGraph(transport, null, tracks);
+        engine.startAudioInputOutput(tracks);
+        engine.pauseAudioOutput();
+        RecordingPipeline pipeline = ready(engine, transport, tracks, name);
+        List<Long> frames = new CopyOnWriteArrayList<>();
+        pipeline.getCaptureFlushService().setBlockObserver((sequence, frame, count) -> frames.add(frame));
+        return new SiblingCapture(backend, engine, transport, pipeline, sibling, frames);
+    }
+
+    private record SiblingCapture(MultichannelInputCaptureStory326Test.PatternBackend backend,
+                                  AudioEngine engine, Transport transport, RecordingPipeline pipeline,
+                                  Track sibling, List<Long> frames) implements AutoCloseable {
+        void emit(int numFrames) {
+            backend.sibling.emit(numFrames);
+            pipeline.awaitFlushed();
+        }
+
+        @Override
+        public void close() throws Exception {
+            stop(pipeline, engine);
+        }
     }
 
     @Test

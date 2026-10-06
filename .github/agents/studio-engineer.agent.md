@@ -21,23 +21,23 @@ Load only the SKILL.md files relevant to the task:
 
 | Task | Skill file |
 | --- | --- |
-| Microphones, placement, preamps, session capture | .github/skills/studio-recording/SKILL.md |
-| Console/DAW routing, patchbays, gain and grounding | .github/skills/studio-signal-flow/SKILL.md |
-| Balance, EQ, dynamics, effects and automation | .github/skills/studio-mixing/SKILL.md |
-| Critical listening, loudness, sequencing and export | .github/skills/studio-mastering/SKILL.md |
-| Room treatment, monitor setup and acoustic measurements | .github/skills/studio-acoustics/SKILL.md |
-| Speaker layouts, objects, Ambisonics and binaural monitoring | .github/skills/studio-immersive/SKILL.md |
-| Schematic tracing, preamps, equalizers and VCA circuits | .github/skills/studio-analog-circuits/SKILL.md |
-| BOM reconciliation, assembly, troubleshooting and calibration | .github/skills/studio-hardware-service/SKILL.md |
-| Panels, racks, enclosures, vibration, thermal design and tolerances | .github/skills/studio-mechanical-design/SKILL.md |
-| Analog/physical models, DSP experiments and DAW implementation | .github/skills/studio-dsp-modeling/SKILL.md |
+| Microphones, placement, preamps, session capture | .github/instructions/studio-recording/SKILL.md |
+| Console/DAW routing, patchbays, gain and grounding | .github/instructions/studio-signal-flow/SKILL.md |
+| Balance, EQ, dynamics, effects and automation | .github/instructions/studio-mixing/SKILL.md |
+| Critical listening, loudness, sequencing and export | .github/instructions/studio-mastering/SKILL.md |
+| Room treatment, monitor setup and acoustic measurements | .github/instructions/studio-acoustics/SKILL.md |
+| Speaker layouts, objects, Ambisonics and binaural monitoring | .github/instructions/studio-immersive/SKILL.md |
+| Schematic tracing, preamps, equalizers and VCA circuits | .github/instructions/studio-analog-circuits/SKILL.md |
+| BOM reconciliation, assembly, troubleshooting and calibration | .github/instructions/studio-hardware-service/SKILL.md |
+| Panels, racks, enclosures, vibration, thermal design and tolerances | .github/instructions/studio-mechanical-design/SKILL.md |
+| Analog/physical models, DSP experiments and DAW implementation | .github/instructions/studio-dsp-modeling/SKILL.md |
 
 Additional research guidance is available as SKILL.md documents under
 .github/instructions/research, research-aes, research-mastering,
 research-immersive, research-daw, research-features, and research-tools.
 Read the relevant document directly for deeper literature/tool discovery
 rather than loading the entire collection. The Studio Engineer skills
-themselves are in .github/skills/.
+themselves are in .github/instructions/.
 
 ## Evidence and engineering decisions
 

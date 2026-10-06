@@ -195,6 +195,10 @@ public final class Transport {
     public record LoopWindow(boolean enabled, double startInBeats, double endInBeats) {
     }
 
+    /** An explicit seek's generation and target, published together by the control thread. */
+    public record PositionSeek(long sequence, double targetInBeats) {
+    }
+
     /**
      * Backs the toolkit-neutral {@code Consumer<ChangeKind>} change signal — the
      * register / unregister / lock-free notify mechanism lives in the shared
@@ -207,7 +211,7 @@ public final class Transport {
     private volatile TransportState state = TransportState.STOPPED;
     private volatile double positionInBeats = 0.0;
     /** Explicit seeks invalidate a recording start origin; ordinary clock advances do not. */
-    private final AtomicLong positionSeekSequence = new AtomicLong();
+    private volatile PositionSeek positionSeek = new PositionSeek(0, 0.0);
     private final TempoMap tempoMap = new TempoMap();
     private volatile LoopWindow loopWindow =
             new LoopWindow(false, DEFAULT_LOOP_START, DEFAULT_LOOP_END);
@@ -446,7 +450,22 @@ public final class Transport {
     /** Returns the sequence of accepted explicit position requests without reading the seek queue. */
     @RealTimeSafe
     public long getPositionSeekSequence() {
-        return positionSeekSequence.get();
+        return positionSeek.sequence();
+    }
+
+    /**
+     * Returns one coherent accepted seek snapshot. Ordinary advances do not change it;
+     * its target may still be waiting for the primary clock's next block boundary.
+     */
+    @RealTimeSafe
+    public PositionSeek getPositionSeek() {
+        return positionSeek;
+    }
+
+    /** Returns whether an explicit seek is still waiting to commit at a block boundary. */
+    @RealTimeSafe
+    public boolean hasPendingPositionSeek() {
+        return pendingSeek.get() != NO_SEEK;
     }
 
     /**
@@ -485,12 +504,13 @@ public final class Transport {
         if (positionInBeats < 0) {
             throw new IllegalArgumentException("position must not be negative: " + positionInBeats);
         }
-        positionSeekSequence.incrementAndGet();
+        PositionSeek nextSeek = new PositionSeek(positionSeek.sequence() + 1, positionInBeats);
         TransportState current = state;
         boolean rolling = current == TransportState.PLAYING
                 || current == TransportState.RECORDING;
         if (rolling && realTimeClockActive) {
             pendingSeek.set(Double.doubleToRawLongBits(positionInBeats));
+            positionSeek = nextSeek;
             // Re-read the claim after publishing (Dekker-style double check):
             // setRealTimeClockActive(false) stores the flag BEFORE draining, so
             // between the two volatile accesses at least one side observes the
@@ -503,6 +523,7 @@ public final class Transport {
         }
         pendingSeek.set(NO_SEEK);
         this.positionInBeats = positionInBeats;
+        positionSeek = nextSeek;
         notifyChange(ChangeKind.POSITION);
     }
 
