@@ -133,6 +133,7 @@ final class EngineStreamPump {
 
     private final Thread thread;
     private volatile boolean running;
+    private volatile boolean inputStreamTerminated;
     private volatile Flow.Subscription inputSubscription;
     /**
      * True once the input planes were written from a captured block and so
@@ -335,7 +336,9 @@ final class EngineStreamPump {
         while (running) {
             fillInputPlanes();
             try {
-                engine.processBlock(inputViews[availableInputChannels], output, bufferFrames, interleaved);
+                // A terminal publisher cannot regain availability through queued input.
+                engine.processBlock(inputViews[inputStreamTerminated ? 0 : availableInputChannels],
+                        output, bufferFrames, interleaved);
             } catch (RuntimeException renderFault) {
                 // Test the STATE, not the exception type (story 316 review):
                 // any collaborator reachable from processBlock — the mixer, an
@@ -595,6 +598,9 @@ final class EngineStreamPump {
 
         @Override
         public void onNext(AudioBlock item) {
+            if (!running || inputStreamTerminated) {
+                return;
+            }
             if (!inputQueue.offer(item)) {
                 droppedInputBlocks.incrementAndGet();
             }
@@ -602,14 +608,15 @@ final class EngineStreamPump {
 
         @Override
         public void onError(Throwable throwable) {
+            inputStreamTerminated = true;
             LOG.log(Level.WARNING, "Capture stream failed; input planes fall silent",
                     throwable);
         }
 
         @Override
         public void onComplete() {
-            // Stream closed — nothing to do; the loop keeps rendering silence
-            // into the input planes until the lifecycle thread stops the pump.
+            // Keep the output clock running while zero-width input flags the lost source.
+            inputStreamTerminated = true;
         }
     }
 }

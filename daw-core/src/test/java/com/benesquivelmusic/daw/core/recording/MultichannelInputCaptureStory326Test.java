@@ -249,6 +249,136 @@ class MultichannelInputCaptureStory326Test {
         }
     }
 
+    @ParameterizedTest
+    @EnumSource(InputTermination.class)
+    void terminatedPrimaryInputKeepsClockedSilenceUnavailableAndFlagged(InputTermination termination)
+            throws Exception {
+        PatternBackend backend = new PatternBackend();
+        backend.renderGate = new RenderGate();
+        AudioEngine engine = engine(backend, 2);
+        Track primary = track("Primary stereo", 6, 2, 0), sibling = track("Sibling", 0, 1, 1);
+        List<Track> tracks = List.of(primary, sibling);
+        Transport transport = new Transport();
+        var mixer = new com.benesquivelmusic.daw.core.mixer.Mixer();
+        mixer.getMasterChannel().getEffectsChain().addProcessor(new AudioProcessor() {
+            @Override public void process(float[][] input, float[][] output, int frames) {
+                for (float[] row : output) Arrays.fill(row, 0, frames, .5f);
+            }
+            @Override public void reset() { }
+            @Override public int getInputChannelCount() { return 2; }
+            @Override public int getOutputChannelCount() { return 2; }
+        });
+        engine.setGraph(transport, mixer, tracks);
+        InputLevelMonitorRegistry meters = new InputLevelMonitorRegistry();
+        engine.setInputLevelMonitorRegistry(meters);
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        RecordingPipeline pipeline = new RecordingPipeline(engine, transport, FORMAT, directory, tracks);
+        pipeline.setWarningSink(warnings::add);
+        try {
+            engine.startAudioInputOutput(tracks);
+            backend.renderGate.awaitRendered();
+            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.beginCapture();
+            backend.emit(256);
+            backend.renderGate.advance();
+            backend.sibling.emit(256);
+            pipeline.awaitFlushed();
+            assertThat(meters.get(primary.getId()).snapshot().peakDbfs()).isGreaterThan(-10);
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isFalse();
+
+            // A gap in a still-open publisher remains known-width silence.
+            backend.renderGate.advance();
+            backend.sibling.emit(256);
+            pipeline.awaitFlushed();
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(warnings).isEmpty();
+
+            Flow.Subscriber<? super AudioBlock> subscriber = backend.subscribers.getFirst();
+            backend.emit(256); // Queued audio must not restore availability after termination.
+            termination.signal(subscriber);
+            subscriber.onNext(new AudioBlock(48000, 8, 256, filled(.4f, 8 * 256)));
+            for (int block = 0; block < 3; block++) {
+                backend.renderGate.advance();
+                backend.sibling.emit(256);
+                pipeline.awaitFlushed();
+                assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isTrue();
+                assertThat(meters.get(primary.getId()).snapshot())
+                        .isEqualTo(com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter.SILENCE);
+                assertThat(meters.get(sibling.getId()).isRoutingUnavailable()).isFalse();
+                assertThat(meters.get(sibling.getId()).snapshot().peakDbfs()).isGreaterThan(-10);
+                assertThat(backend.renderGate.lastOutput).containsOnly(.5f);
+            }
+            float[][] recorded = audioOnDisk(pipeline.getSession(primary));
+            assertThat(recorded.length).isEqualTo(2);
+            assertThat(pipeline.getSession(primary).getTotalSamplesRecorded()).isEqualTo(5 * 256);
+            assertThat(Arrays.copyOfRange(recorded[0], 0, 256)).containsOnly(decoded16(.7f));
+            assertThat(Arrays.copyOfRange(recorded[1], 0, 256)).containsOnly(decoded16(.8f));
+            for (float[] row : recorded) {
+                assertThat(row).hasSize(5 * 256);
+                assertThat(Arrays.copyOfRange(row, 256, row.length)).containsOnly(0f);
+            }
+            assertThat(pipeline.getSession(sibling).getTotalSamplesRecorded()).isEqualTo(5 * 256);
+            assertThat(audioOnDisk(pipeline.getSession(sibling))[0]).hasSize(5 * 256)
+                    .containsOnly(decoded16(.9f));
+            assertThat(warnings).singleElement().asString().contains("Primary stereo", "Interface A", "silence");
+        } finally {
+            try {
+                PipelineLifecycleTestSupport.endTheTake(pipeline);
+            } finally {
+                try { engine.stopAudioOutput(); }
+                finally { engine.shutdown(); }
+            }
+        }
+        assertThat(TakeManifest.read(directory.resolve(TakeManifest.FILE_NAME)).routingFlags()).singleElement()
+                .satisfies(flag -> {
+                    assertThat(flag.trackId()).isEqualTo(primary.getId());
+                    assertThat(flag.device()).contains("Interface A");
+                    assertThat(flag.firstChannel()).isEqualTo(6);
+                    assertThat(flag.channelCount()).isEqualTo(2);
+                    assertThat(flag.availableChannels()).isZero();
+                });
+    }
+
+    @ParameterizedTest
+    @EnumSource(InputTermination.class)
+    void oldPrimaryTerminationCannotSilenceStoppedOrReplacementMeters(InputTermination termination)
+            throws Exception {
+        PatternBackend backend = new PatternBackend();
+        backend.renderGate = new RenderGate();
+        AudioEngine engine = engine(backend, 2);
+        Track primary = track("Primary", 0, 1, 0);
+        List<Track> tracks = List.of(primary);
+        InputLevelMonitorRegistry meters = new InputLevelMonitorRegistry();
+        engine.setInputLevelMonitorRegistry(meters);
+        engine.setGraph(new Transport(), null, tracks);
+        try {
+            engine.startAudioInputOutput(tracks);
+            backend.renderGate.awaitRendered();
+            backend.emit(256);
+            backend.renderGate.advance();
+            Flow.Subscriber<? super AudioBlock> old = backend.subscribers.getFirst();
+            var stoppedLevel = meters.get(primary.getId()).snapshot();
+            engine.stopAudioOutput();
+            termination.signal(old);
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(meters.get(primary.getId()).snapshot()).isEqualTo(stoppedLevel);
+
+            engine.startAudioInputOutput(tracks);
+            backend.renderGate.awaitRendered();
+            backend.emit(256);
+            backend.renderGate.advance();
+            var replacementLevel = meters.get(primary.getId()).snapshot();
+            assertThat(replacementLevel.peakDbfs()).isGreaterThan(-30);
+            termination.signal(old);
+            old.onNext(new AudioBlock(48000, 1, 256, filled(.4f, 256)));
+            backend.emit(256);
+            backend.renderGate.advance();
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(meters.get(primary.getId()).snapshot().rmsDbfs()).isEqualTo(replacementLevel.rmsDbfs());
+            assertThat(meters.get(primary.getId()).snapshot().peakDbfs()).isGreaterThan(-30);
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
     @Test void secondInputOpenFailureRollsBackBothOwnedStreams() {
         PatternBackend backend=new PatternBackend();backend.failSiblingOpen=true; AudioEngine engine=engine(backend,2);
         try {
@@ -478,6 +608,31 @@ class MultichannelInputCaptureStory326Test {
 
     private static float[] filled(float value,int count) { float[] result=new float[count]; Arrays.fill(result,value); return result; }
 
+    private static final class RenderGate {
+        private final Semaphore permits = new Semaphore(0);
+        private final Semaphore rendered = new Semaphore(0);
+        private volatile float[] lastOutput;
+
+        void awaitRendered() throws InterruptedException {
+            assertThat(rendered.tryAcquire(5, TimeUnit.SECONDS)).as("the next paced block rendered").isTrue();
+        }
+
+        void advance() throws InterruptedException {
+            permits.release();
+            awaitRendered();
+        }
+
+        void pace() {
+            try { permits.acquire(); }
+            catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
+        }
+
+        void rendered(AudioBlock block) {
+            lastOutput = block.samples().clone();
+            rendered.release();
+        }
+    }
+
     static final class PatternBackend implements AudioBackend {
         int maximum=8, siblingMaximum=-1, openedWidthOverride=-1, siblingOpenedWidth=-1, openedWidth, outputWidth, opens;
         boolean multiple=true, open, failClose, failSiblingOpen, failOpen, failInputResolution, failEnumeration;
@@ -485,6 +640,7 @@ class MultichannelInputCaptureStory326Test {
         double openedRate=48000,siblingRate=48000;
         RoundTripLatency primaryLatency = RoundTripLatency.UNKNOWN;
         PatternBackend sibling;
+        RenderGate renderGate;
         final List<Flow.Subscriber<? super AudioBlock>> subscribers=new CopyOnWriteArrayList<>();
         @Override public String name(){return "Pattern ASIO";}
         @Override public boolean isAvailable(){return true;}
@@ -516,7 +672,10 @@ class MultichannelInputCaptureStory326Test {
         @Override public Flow.Publisher<AudioBlock> inputBlocks(){return subscriber->{subscribers.add(subscriber);subscriber.onSubscribe(new Flow.Subscription(){
             public void request(long n){} public void cancel(){subscribers.remove(subscriber);}
         });};}
-        @Override public void sink(AudioBlock block){}
+        @Override public void sink(AudioBlock block){if(renderGate != null)renderGate.rendered(block);}
+        @Override public void awaitSinkCapacity(long timeoutNanos){
+            if(renderGate == null)AudioBackend.super.awaitSinkCapacity(timeoutNanos);else renderGate.pace();
+        }
         @Override public void close(){if(failClose)throw new AudioBackendException("held sibling");open=false;}
         void emit(int frames){float[] samples=new float[frames*openedWidth];for(int f=0;f<frames;f++)for(int c=0;c<openedWidth;c++)
             samples[f*openedWidth+c]=input.contains("B")?.9f:(c+1)/10f;
