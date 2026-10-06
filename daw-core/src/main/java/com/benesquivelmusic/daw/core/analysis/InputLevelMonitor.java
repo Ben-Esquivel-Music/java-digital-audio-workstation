@@ -282,7 +282,7 @@ public final class InputLevelMonitor {
      * invoked, returns {@link InputLevelMeter#SILENCE}.</p>
      */
     public InputLevelMeter snapshot() {
-        return !physicalInput || isSourceUnavailable() ? InputLevelMeter.SILENCE : latest;
+        return !physicalInput || isRoutingUnavailable() ? InputLevelMeter.SILENCE : latest;
     }
 
     /**

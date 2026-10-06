@@ -9,12 +9,16 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ManagementFactory;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class MultibandCompressorPluginTest {
+
+    private static volatile Object allocationProbe;
 
     @Test
     void shouldHavePublicNoArgConstructor() {
@@ -349,7 +353,7 @@ class MultibandCompressorPluginTest {
     }
 
     @Test
-    void crossoverWritesAndStoreDrainAllocateNothingAfterWarmup() {
+    void crossoverWritesAndStoreDrainAllocateNothingAfterWarmup() throws Exception {
         var bean = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
         assumeTrue(bean.isThreadAllocatedMemorySupported());
         bean.setThreadAllocatedMemoryEnabled(true);
@@ -358,13 +362,59 @@ class MultibandCompressorPluginTest {
         plugin.setBandCount(5);
         try {
             var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
-            // Warm the counter calls and exact measured loop as well as the parameter setters.
-            for (int batch = 0; batch < 5; batch++) {
-                measureCrossoverAllocations(slot, bean);
+            var measurement = new FutureTask<>(() -> {
+                // Bound startup/JIT warmup of the exact counter and workload on its owning thread.
+                int consecutiveZeroBatches = 0;
+                for (int batch = 0; batch < 100 && consecutiveZeroBatches < 5; batch++) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new InterruptedException("crossover measurement cancelled during warmup");
+                    }
+                    consecutiveZeroBatches = measureCrossoverAllocations(slot, bean) == 0
+                            ? consecutiveZeroBatches + 1 : 0;
+                }
+                if (consecutiveZeroBatches < 5) {
+                    throw new AssertionError("crossover allocation warmup did not converge");
+                }
+                // These fixed measurement windows are never retried or discarded.
+                var allocations = new long[6];
+                for (int batch = 0; batch < 5; batch++) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new InterruptedException("crossover measurement cancelled");
+                    }
+                    allocations[batch] = measureCrossoverAllocations(slot, bean);
+                }
+                long thread = Thread.currentThread().threadId();
+                long before = bean.getThreadAllocatedBytes(thread);
+                allocationProbe = new byte[1024];
+                allocations[5] = bean.getThreadAllocatedBytes(thread) - before;
+                return allocations;
+            });
+            Thread worker = Thread.ofPlatform().name("crossover-allocation-test").start(measurement);
+            long[] allocations;
+            try {
+                allocations = measurement.get(1, TimeUnit.MINUTES);
+            } finally {
+                worker.interrupt();
+                boolean interrupted = false;
+                while (worker.isAlive()) {
+                    try {
+                        worker.join();
+                    } catch (InterruptedException exception) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }
-            long allocated = measureCrossoverAllocations(slot, bean);
-            assertThat(allocated).isZero();
+            for (int batch = 0; batch < 5; batch++) {
+                assertThat(allocations[batch]).as("measurement batch %s", batch).isZero();
+            }
+            assertThat(allocations[5]).as("escaped allocation counter control").isGreaterThanOrEqualTo(1024);
+            assertThat(slot.isBypassed()).isFalse();
+            assertThat(plugin.getProcessor().getCrossoverFrequencies()).containsExactly(4099, 6099, 8099, 10099);
         } finally {
+            allocationProbe = null;
             plugin.dispose();
         }
     }
@@ -372,6 +422,9 @@ class MultibandCompressorPluginTest {
     private static long measureCrossoverAllocations(InsertSlot slot, com.sun.management.ThreadMXBean bean) {
         long thread = Thread.currentThread().threadId();
         long before = bean.getThreadAllocatedBytes(thread);
+        if (before < 0) {
+            throw new AssertionError("platform-thread allocation counter is unavailable");
+        }
         updateCrossovers(slot, 10000);
         return bean.getThreadAllocatedBytes(thread) - before;
     }

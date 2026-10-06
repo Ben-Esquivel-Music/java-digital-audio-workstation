@@ -49,6 +49,21 @@ class InputLevelMonitorTest {
     }
 
     @Test
+    void unavailableRoutingMasksAValueRepublishedAfterTheRoutingWasCleared() {
+        var monitor = new InputLevelMonitor();
+        monitor.process(new float[]{0.25f, 0.25f, 0.25f});
+        monitor.setRoutingUnavailable(true);
+        // An already-running input callback can publish after the control thread clears latest.
+        monitor.processInputChannels(new float[][]{{0.5f, 0.5f, 0.5f}, {0.25f, 0.25f, 0.25f}}, 0, 2, 3);
+
+        assertThat(monitor.isRoutingUnavailable()).isTrue();
+        assertThat(monitor.snapshot()).isSameAs(InputLevelMeter.SILENCE);
+
+        monitor.setRoutingUnavailable(false);
+        assertThat(monitor.snapshot().rmsDbfs()).isGreaterThan(-10);
+    }
+
+    @Test
     void previousSourceTerminationCannotSilenceAReboundMonitor() {
         var monitor = new InputLevelMonitor();
         var previous = new InputSourceAvailability();
