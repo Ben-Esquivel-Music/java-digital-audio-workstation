@@ -55,6 +55,7 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
         Map<String, DeviceId> assignments = new LinkedHashMap<>();
         DeviceId asioInput = null;
         Set<String> widthValidated = new HashSet<>();
+        Map<DeviceId, OptionalInt> inputCapacities = new HashMap<>();
         for (Route track : tracks) {
             InputRouting route = track.routing();
             if (route.isNone()) continue;
@@ -76,7 +77,7 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
                 throw refusal(track, input, backend.name() + " only captures the active device '" + selected.name() + "'");
             }
             if (checkWidths && (info == null || !info.hasKnownInputChannelCount()) && input.equals(selected)) {
-                java.util.OptionalInt capacity = backend.inputChannelCapacity(input);
+                OptionalInt capacity = inputCapacities.computeIfAbsent(input, backend::inputChannelCapacity);
                 if (capacity.isPresent()) widthValidated.add(track.id());
                 if (capacity.isPresent() && width > capacity.getAsInt())
                     throw refusal(track, input, route.displayName() + " exceeds " + capacity.getAsInt() + " input channels");
@@ -97,13 +98,15 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
         List<Source> sources = widths.entrySet().stream().map(e -> {
             List<String> labels = new ArrayList<>();
             labels.add(e.getKey().name());
-            AudioDeviceInfo info = devices.stream().filter(candidate ->
-                    AudioDeviceInfo.isSelectionFor(e.getKey().name(), candidate.name(), candidate.hostApi()))
-                    .findFirst().orElse(null);
+            AudioDeviceInfo info = devices.stream().filter(candidate -> candidate.qualifiedName().equals(e.getKey().name()))
+                    .findFirst().orElseGet(() -> devices.stream().filter(candidate -> candidate.name().equals(e.getKey().name()))
+                            .findFirst().orElse(null));
             if (info != null) {
                 labels.add(info.qualifiedName());
-                if (devices.stream().filter(candidate -> candidate.name().equals(info.name())).findFirst().orElseThrow() == info) {
+                if (devices.stream().filter(candidate -> candidate.name().equals(info.name())).count() == 1) {
                     labels.add(info.name());
+                } else {
+                    labels.removeIf(info.name()::equals);
                 }
             }
             if (e.getKey().equals(resolvedSelected) && selectedChoice.isDefault()) labels.add(selectedChoice.name());
