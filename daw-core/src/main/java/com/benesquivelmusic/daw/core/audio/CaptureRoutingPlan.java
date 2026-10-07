@@ -100,19 +100,29 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
                 throw refusal(track, input, backend.name() + " only captures the active "
                         + (selected.isDefault() ? "default input" : "device '" + selected.name() + "'"));
             }
-            if (checkWidths && (info == null || !info.hasKnownInputChannelCount()) && input.equals(selected)) {
-                OptionalInt capacity = inputCapacities.computeIfAbsent(input, backend::inputChannelCapacity);
+            if (info != null && info.hostApi().equalsIgnoreCase("ASIO")) {
+                if (asioInput != null && !asioInput.equals(input))
+                    throw refusal(track, input, "ASIO only allows one active input device '" + asioInput.name() + "'");
+                asioInput = input;
+            }
+            // Every device the union may open is probed — the selection and an explicitly routed sibling
+            // alike — so an over-wide route is refused at arm time, not after opening at Record. The single-
+            // device and one-active-ASIO-driver rules above already refused any input this backend cannot
+            // open alongside the selection; clock-domain agreement is checked after the union is built.
+            if (checkWidths && (info == null || !info.hasKnownInputChannelCount())) {
+                OptionalInt capacity;
+                try { capacity = inputCapacities.computeIfAbsent(input, backend::inputChannelCapacity); }
+                catch (RuntimeException failure) {
+                    AudioBackendException refused = refusal(track, input, "input capability query failed: " + failure.getMessage());
+                    refused.initCause(failure);
+                    throw refused;
+                }
                 if (capacity.isPresent()) widthValidated.add(track.id());
                 if (capacity.isPresent() && width > capacity.getAsInt())
                     throw refusal(track, input, route.displayName() + " exceeds " + capacity.getAsInt() + " input channels");
             }
             if (checkWidths && info != null && (!info.supportsInput() || info.hasKnownInputChannelCount() && width > info.maxInputChannels())) {
                 throw refusal(track, input, route.displayName() + " exceeds " + info.maxInputChannels() + " input channels");
-            }
-            if (info != null && info.hostApi().equalsIgnoreCase("ASIO")) {
-                if (asioInput != null && !asioInput.equals(input))
-                    throw refusal(track, input, "ASIO only allows one active input device '" + asioInput.name() + "'");
-                asioInput = input;
             }
             if (checkWidths && info != null && info.hasKnownInputChannelCount()) widthValidated.add(track.id());
             assignments.put(track.id(), input);

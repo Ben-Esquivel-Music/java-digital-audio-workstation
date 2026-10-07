@@ -262,7 +262,12 @@ public interface AudioBackend extends AutoCloseable {
         }
         open(output, format, frames, capture);
     }
-    /** Control-thread capability query for the selected input; empty means genuinely unknown. */
+    /**
+     * Control-thread capability query for an input device of this backend: the selected input, or —
+     * when {@link #supportsMultipleInputDevices()} — an explicitly routed sibling input, which capture
+     * validation probes before opening anything. Empty means genuinely unknown. A single-device backend
+     * may refuse, by throwing, a device other than its active one.
+     */
     default java.util.OptionalInt inputChannelCapacity(DeviceId input) { return java.util.OptionalInt.empty(); }
 
     /** Actual capture rate of an opened stream, or NaN when the backend cannot report it. */

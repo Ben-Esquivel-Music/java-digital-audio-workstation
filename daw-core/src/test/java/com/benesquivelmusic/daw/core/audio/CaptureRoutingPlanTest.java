@@ -366,6 +366,127 @@ class CaptureRoutingPlanTest {
         assertThat(plan.trackSources().get("Pinned")).isNotEqualTo(plan.trackSources().get("Session"));
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void routeWiderThanAnUnprobedSiblingsProbedCapacityIsRefusedAtPlanTime(boolean selectionProbed) {
+        AudioDeviceInfo primary = selectionProbed ? named(0, "Interface A") : AudioDeviceInfo.unprobed(0, "Interface A", "WASAPI");
+        AudioDeviceInfo sibling = AudioDeviceInfo.unprobed(1, "Interface B", "WASAPI");
+        DeviceId primaryId = new DeviceId(BACKEND_NAME, primary.qualifiedName());
+        DeviceId siblingId = new DeviceId(BACKEND_NAME, sibling.qualifiedName());
+        AudioBackend backend = backend(primaryId);
+        when(backend.inputChannelCapacity(primaryId)).thenReturn(OptionalInt.of(8));
+        when(backend.inputChannelCapacity(siblingId)).thenReturn(OptionalInt.of(2));
+
+        assertThatThrownBy(() -> resolve(backend, List.of(route("Kick", 0, 1), route("Room", 4, 4, sibling)),
+                List.of(primary, sibling), true))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Track 'Room'", "device '" + sibling.qualifiedName() + "'", "exceeds 2 input channels");
+
+        verify(backend).inputChannelCapacity(siblingId);
+        verify(backend, times(selectionProbed ? 0 : 1)).inputChannelCapacity(primaryId);
+    }
+
+    @Test
+    void siblingWithinItsProbedCapacityIsAWidthValidatedSecondSource() {
+        AudioDeviceInfo primary = named(0, "Interface A"), sibling = AudioDeviceInfo.unprobed(1, "Interface B", "WASAPI");
+        DeviceId siblingId = new DeviceId(BACKEND_NAME, sibling.qualifiedName());
+        AudioBackend backend = backend(new DeviceId(BACKEND_NAME, primary.qualifiedName()));
+        when(backend.inputChannelCapacity(siblingId)).thenReturn(OptionalInt.of(8));
+
+        CaptureRoutingPlan plan = resolve(backend, List.of(route("Kick", 0, 1), route("Room", 4, 4, sibling)),
+                List.of(primary, sibling), true);
+
+        assertThat(plan.sources()).hasSize(2);
+        assertThat(plan.sources().get(plan.trackSources().get("Room"))).satisfies(source -> {
+            assertThat(source.device()).isEqualTo(siblingId);
+            assertThat(source.requestedChannels()).isEqualTo(8);
+        });
+        assertThat(plan.widthValidatedTracks()).containsExactlyInAnyOrder("Kick", "Room");
+    }
+
+    @Test
+    void siblingWhoseProbeIsUnknownIsNeitherRefusedNorWidthValidated() {
+        AudioDeviceInfo primary = named(0, "Interface A"), sibling = AudioDeviceInfo.unprobed(1, "Interface B", "WASAPI");
+        DeviceId siblingId = new DeviceId(BACKEND_NAME, sibling.qualifiedName());
+        AudioBackend backend = backend(new DeviceId(BACKEND_NAME, primary.qualifiedName()));
+        when(backend.inputChannelCapacity(siblingId)).thenReturn(OptionalInt.empty());
+
+        CaptureRoutingPlan plan = resolve(backend, List.of(route("Kick", 0, 1), route("Room", 60, 4, sibling)),
+                List.of(primary, sibling), true);
+
+        assertThat(plan.sources()).hasSize(2);
+        assertThat(plan.widthValidatedTracks()).containsExactly("Kick");
+        verify(backend).inputChannelCapacity(siblingId);
+    }
+
+    @Test
+    void eachSiblingIsProbedOncePerResolutionAndNeverForUnionOnlyValidation() {
+        AudioDeviceInfo primary = named(0, "Interface A"), sibling = AudioDeviceInfo.unprobed(1, "Interface B", "WASAPI");
+        DeviceId siblingId = new DeviceId(BACKEND_NAME, sibling.qualifiedName());
+        AudioBackend backend = backend(new DeviceId(BACKEND_NAME, primary.qualifiedName()));
+        when(backend.inputChannelCapacity(siblingId)).thenReturn(OptionalInt.of(8));
+        List<CaptureRoutingPlan.Route> routes = List.of(route("Kick", 0, 1), route("Room L", 0, 1, sibling),
+                route("Room R", 1, 1, sibling), route("Overheads", 2, 2, sibling));
+
+        assertThat(resolve(backend, routes, List.of(primary, sibling), false).widthValidatedTracks()).isEmpty();
+        verify(backend, never()).inputChannelCapacity(any());
+
+        assertThat(resolve(backend, routes, List.of(primary, sibling), true).widthValidatedTracks()).hasSize(4);
+        verify(backend).inputChannelCapacity(siblingId);
+        verify(backend, times(1)).inputChannelCapacity(any());
+    }
+
+    @Test
+    void siblingWhoseCapacityQueryFailsIsRefusedNamingTheTrack() {
+        AudioDeviceInfo primary = named(0, "Interface A"), sibling = AudioDeviceInfo.unprobed(1, "Interface B", "WASAPI");
+        DeviceId siblingId = new DeviceId(BACKEND_NAME, sibling.qualifiedName());
+        AudioBackend backend = backend(new DeviceId(BACKEND_NAME, primary.qualifiedName()));
+        IllegalArgumentException gone = new IllegalArgumentException("device 'Interface B' is not available");
+        when(backend.inputChannelCapacity(siblingId)).thenThrow(gone);
+
+        assertThatThrownBy(() -> resolve(backend, List.of(route("Kick", 0, 1), route("Room", 0, 2, sibling)),
+                List.of(primary, sibling), true))
+                .isInstanceOf(AudioBackendException.class).hasCause(gone)
+                .hasMessageContainingAll("Track 'Room'", "device '" + sibling.qualifiedName() + "'",
+                        "input capability query failed: device 'Interface B' is not available");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void singleDeviceBackendRefusesASiblingRouteWithoutProbingIt(boolean asioSelection) {
+        AudioDeviceInfo primary = asioSelection ? new AudioDeviceInfo(0, "Interface A", "ASIO", 8, 2, 48_000, List.of(), 0, 0)
+                : named(0, "Interface A");
+        AudioDeviceInfo sibling = AudioDeviceInfo.unprobed(1, "Interface B", "WASAPI");
+        AudioBackend backend = backend(new DeviceId(BACKEND_NAME, primary.qualifiedName()));
+        // A multi-input backend is still single-device while its selection is an ASIO driver.
+        when(backend.supportsMultipleInputDevices()).thenReturn(asioSelection);
+
+        assertThatThrownBy(() -> resolve(backend, List.of(route("Kick", 0, 1), route("Room", 0, 2, sibling)),
+                List.of(primary, sibling), true))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Track 'Room'", "device '" + sibling.qualifiedName() + "'",
+                        "only captures the active device '" + primary.qualifiedName() + "'");
+
+        verify(backend, never()).inputChannelCapacity(any());
+    }
+
+    @Test
+    void secondAsioDriverIsRefusedByTheOneActiveDriverRuleBeforeItIsProbed() {
+        AudioDeviceInfo primary = named(0, "Interface A");
+        AudioDeviceInfo first = AudioDeviceInfo.unprobed(1, "Driver A", "ASIO"), second = AudioDeviceInfo.unprobed(2, "Driver B", "ASIO");
+        DeviceId firstId = new DeviceId(BACKEND_NAME, first.qualifiedName());
+        AudioBackend backend = backend(new DeviceId(BACKEND_NAME, primary.qualifiedName()));
+        when(backend.inputChannelCapacity(firstId)).thenReturn(OptionalInt.of(8));
+
+        assertThatThrownBy(() -> resolve(backend, List.of(route("Kick", 0, 1, first), route("Room", 0, 2, second)),
+                List.of(primary, first, second), true))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Track 'Room'", "ASIO only allows one active input device '" + first.qualifiedName() + "'");
+
+        verify(backend).inputChannelCapacity(firstId);
+        verify(backend, times(1)).inputChannelCapacity(any());
+    }
+
     @Test
     void frozenRouteNoLongerMatchesOnceTheTrackIdentityChanges() {
         Track track = armedTrack("Vocal", 0, 1);
