@@ -231,8 +231,30 @@ public final class AudioEngine {
     }
 
     private static final float[][] EMPTY_CAPTURE_INPUT = new float[0][];
-    /** Input-only sources with no channel clock borrow the existing output clock. */
-    private volatile int[] clockedSilentInputSources = new int[0];
+    /**
+     * Input-only sources with no channel clock — opened at zero width, or whose publisher terminated —
+     * borrow the existing output clock. The set is bound to the plan it belongs to: an append is a CAS
+     * against that plan's record, so a reset by {@link #closeAdditionalInputs} or a later stream's
+     * record fails a stale terminal signal's append instead of being overwritten by it.
+     */
+    private record ClockedSilence(CaptureRoutingPlan plan, int[] sources) { }
+    private static final ClockedSilence NO_CLOCKED_SILENCE = new ClockedSilence(null, new int[0]);
+    private final java.util.concurrent.atomic.AtomicReference<ClockedSilence> clockedSilentInputSources =
+            new java.util.concurrent.atomic.AtomicReference<>(NO_CLOCKED_SILENCE);
+    /**
+     * Control/publisher thread only: copy-on-write append, deduplicated, never onto another plan's set.
+     * A null plan would match the reset sentinel and clock silence into no stream, so it is refused.
+     */
+    private void clockInputSourceSilently(CaptureRoutingPlan generation, int source) {
+        Objects.requireNonNull(generation, "generation");
+        for (ClockedSilence current = clockedSilentInputSources.get(); current.plan() == generation;
+                current = clockedSilentInputSources.get()) {
+            for (int clocked : current.sources()) if (clocked == source) return;
+            int[] sources = java.util.Arrays.copyOf(current.sources(), current.sources().length + 1);
+            sources[sources.length - 1] = source;
+            if (clockedSilentInputSources.compareAndSet(current, new ClockedSilence(generation, sources))) return;
+        }
+    }
 
     private boolean inputSourcePreviouslyValidated(CaptureRoutingPlan plan, int source) {
         boolean found = false;
@@ -296,7 +318,8 @@ public final class AudioEngine {
                 startAudioOutputLocked(announcements, CaptureRequirement.REQUIRED);
                 plan = captureRoutingPlan;
                 CaptureMeterSources meterSources = prepareCaptureMeters(plan);
-                List<Integer> silentSources = new ArrayList<>();
+                // Bound before any subscribe: a sibling terminating during this loop appends to it.
+                clockedSilentInputSources.set(new ClockedSilence(meterSources.plan(), new int[0]));
                 for (int i = 1; i < plan.sources().size(); i++) {
                     AudioBackend sibling = plan.backend().createInputBackend();
                     additionalInputs.add(sibling); // ownership precedes open, including partial failures
@@ -310,7 +333,7 @@ public final class AudioEngine {
                     }
                     if (sibling.openedInputChannels() == 0) {
                         if (!proven) throw new AudioBackendException("No capture from '" + source.device().name() + "'");
-                        silentSources.add(i);
+                        clockInputSourceSilently(meterSources.plan(), i);
                         meterSources.availability().get(i).markUnavailable();
                         continue;
                     }
@@ -321,7 +344,6 @@ public final class AudioEngine {
                     additionalSubscribers.add(subscriber);
                     sibling.inputBlocks().subscribe(subscriber);
                 }
-                clockedSilentInputSources = silentSources.stream().mapToInt(Integer::intValue).toArray();
             } catch (RuntimeException | Error failure) {
                 try { stopAudioOutputLocked(announcements); } catch (RuntimeException close) { failure.addSuppressed(close); }
                 throw failure;
@@ -354,7 +376,7 @@ public final class AudioEngine {
     }
 
     private void closeAdditionalInputs() {
-        clockedSilentInputSources = new int[0];
+        clockedSilentInputSources.set(NO_CLOCKED_SILENCE);
         additionalRecordingCallbacks = new RecordingCallback[0];
         for (AdditionalInputSubscriber subscriber : additionalSubscribers) subscriber.deactivate();
         additionalSubscribers.clear();
@@ -413,10 +435,16 @@ public final class AudioEngine {
             if (active && captureRoutingPlan == generation && source - 1 < callbacks.length)
                 callbacks[source - 1].onAudioCaptured(delivered, block.frames());
         }
+        /**
+         * A dead sibling keeps its tracks full-length: its callback moves onto the output clock as
+         * zero-width blocks, which the flush flags and warns once per track. Flow signals are
+         * serialized and {@code active} drops first, so this thread delivers nothing after the handoff.
+         */
         private boolean terminateInputSource() {
             if (!active || captureRoutingPlan != generation) return false;
             availability.markUnavailable();
             active = false;
+            clockInputSourceSilently(generation, source);
             return true;
         }
         @Override public void onError(Throwable error) {
@@ -5209,7 +5237,7 @@ public final class AudioEngine {
         boolean rendered = false;
         try {
             RecordingCallback[] additionalCallbacks = additionalRecordingCallbacks;
-            int[] silentSources = clockedSilentInputSources;
+            int[] silentSources = clockedSilentInputSources.get().sources();
             for (int source : silentSources) {
                 if (source - 1 < additionalCallbacks.length) {
                     additionalCallbacks[source - 1].onAudioCaptured(EMPTY_CAPTURE_INPUT, numFrames);
