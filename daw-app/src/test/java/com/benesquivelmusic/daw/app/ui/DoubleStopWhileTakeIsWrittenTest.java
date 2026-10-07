@@ -154,8 +154,7 @@ class DoubleStopWhileTakeIsWrittenTest {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection()));
+                    () -> RoundTripLatency.UNKNOWN));
         });
         controller = ref.get();
         return ref.get();

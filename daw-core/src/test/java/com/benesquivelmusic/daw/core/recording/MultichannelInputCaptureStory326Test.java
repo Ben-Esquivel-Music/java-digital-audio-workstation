@@ -25,8 +25,13 @@ class MultichannelInputCaptureStory326Test {
     private Track track(String name, int first, int count, int device) {
         Track track = new Track(name, TrackType.AUDIO);
         track.setInputRouting(new InputRouting(first, count));
-        track.setInputDeviceIndex(device); track.setArmed(true);
+        track.setInputDevice(patternInput(device)); track.setArmed(true);
         return track;
+    }
+    /** Stable identity of a PatternBackend device by its enumeration position (0 = Interface A, 1 = Interface B). */
+    static Optional<DeviceId> patternInput(int device) {
+        return device < 0 ? Optional.empty()
+                : Optional.of(new DeviceId("Pattern ASIO", (device == 0 ? "Interface A" : "Interface B") + " [Pattern]"));
     }
     private AudioEngine engine(PatternBackend backend, int outputs) {
         AudioEngine engine = new AudioEngine(new com.benesquivelmusic.daw.core.audio.AudioFormat(48000, outputs, 16, 256));
@@ -35,7 +40,10 @@ class MultichannelInputCaptureStory326Test {
         return engine;
     }
     private RecordingPipeline pipeline(AudioEngine engine, List<Track> tracks) throws Exception {
-        RecordingPipeline pipeline = new RecordingPipeline(engine, new Transport(), engine.getFormat(), directory, tracks);
+        return pipeline(engine, directory, tracks);
+    }
+    private static RecordingPipeline pipeline(AudioEngine engine, Path takeDirectory, List<Track> tracks) throws Exception {
+        RecordingPipeline pipeline = new RecordingPipeline(engine, new Transport(), engine.getFormat(), takeDirectory, tracks);
         pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
         pipeline.beginCapture();
         return pipeline;
@@ -91,9 +99,141 @@ class MultichannelInputCaptureStory326Test {
             engine.startAudioInputOutput(List.of(far));
             assertThat(fallback.openedWidth).isEqualTo(8);
             assertThat(head.opens).isZero();
+            // With no stream open the explicit route targets the head, the rung record start opens
+            // first; it is refused there by name rather than walked onto the fallback.
+            engine.stopAudioOutput();
             assertThatThrownBy(() -> engine.validateInputRouting(List.of(track("Pinned input", 0, 1, 0))))
-                    .isInstanceOf(AudioBackendException.class).hasMessageContaining("Pinned input", "Interface A", "resolution failed");
+                    .isInstanceOf(AudioBackendException.class).hasMessageContainingAll("Pinned input", "Interface A", "resolution failed");
         } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    /** Head refuses to open, so the session stream runs on the fallback rung "Pattern WASAPI". */
+    private static AudioEngine streamingOnFallback(PatternBackend head, PatternBackend fallback) {
+        head.failOpen = true; fallback.name = "Pattern WASAPI";
+        AudioEngine engine = new AudioEngine(new com.benesquivelmusic.daw.core.audio.AudioFormat(48000, 2, 16, 256));
+        engine.setStreamingProvision(new StreamingProvision(head.name(), List.of(
+                new BackendStreamRung(head, new DeviceId(head.name(), "Interface A")),
+                new BackendStreamRung(fallback, new DeviceId(fallback.name(), "Interface A")))));
+        engine.startAudioOutput();
+        assertThat(engine.openStreamBackendName()).contains(fallback.name());
+        return engine;
+    }
+
+    @Test void aDevicePickedWhileTheStreamRunsOnAFallbackRungArmsAndRecordsFromThatRung() throws Exception {
+        PatternBackend head = new PatternBackend(), fallback = new PatternBackend();
+        AudioEngine engine = streamingOnFallback(head, fallback);
+        // The per-track picker lists, and stamps the identity with, the backend getBackend() names.
+        Track picked = track("Picked on fallback", 0, 1, -1);
+        picked.setInputDevice(Optional.of(new DeviceId(engine.getBackend().name(), fallback.listDevices().get(1).qualifiedName())));
+        RecordingPipeline pipeline = null;
+        try {
+            assertThatCode(() -> engine.validateInputRouting(List.of(picked))).doesNotThrowAnyException();
+            engine.startAudioInputOutput(List.of(picked));
+            assertThat(engine.getCaptureRoutingPlan().backend()).isSameAs(fallback);
+            assertThat(fallback.input).isEqualTo("Interface B [Pattern]");
+            assertThat(engine.openStreamBackendName()).contains(fallback.name());
+            pipeline = pipeline(engine, List.of(picked));
+            fallback.emit(256);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            boolean found = false;
+            while (!found && System.nanoTime() < deadline) {
+                pipeline.awaitFlushed();
+                for (float sample : audioOnDisk(pipeline.getSession(picked))[0]) if (sample == decoded16(.9f)) found = true;
+                if (!found) Thread.sleep(5);
+            }
+            assertThat(found).as("the take carries the picked fallback device's signal").isTrue();
+        } finally {
+            if (pipeline != null) stop(pipeline, engine);
+            else { engine.stopAudioOutput(); engine.shutdown(); }
+        }
+    }
+
+    @Test void aDeviceAnotherBackendListedIsRefusedNamingTheBackendCaptureUses() {
+        PatternBackend head = new PatternBackend(), fallback = new PatternBackend();
+        AudioEngine engine = streamingOnFallback(head, fallback);
+        Track foreign = track("Foreign", 0, 1, -1);
+        foreign.setInputDevice(Optional.of(new DeviceId("Other backend", fallback.listDevices().get(1).qualifiedName())));
+        try {
+            assertThatThrownBy(() -> engine.validateInputRouting(List.of(foreign)))
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContainingAll("Foreign", "Other backend", "capture records from backend '" + fallback.name() + "'")
+                    .hasMessageNotContaining(head.name());
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    @Test void anIdentityOwnedByALowerRungNeverDemotesAWorkingHeadOntoTheFallback() {
+        PatternBackend head = new PatternBackend();
+        PatternBackend fallback = new PatternBackend(); fallback.name = "Pattern WASAPI";
+        AudioEngine engine = engine(head, 2);
+        engine.setStreamingProvision(new StreamingProvision(head.name(), List.of(
+                new BackendStreamRung(head, new DeviceId(head.name(), "Interface A")),
+                new BackendStreamRung(fallback, new DeviceId(fallback.name(), "Interface A")))));
+        // Picked back when the stream ran on the fallback; Settings has since restored the head.
+        Track stale = track("Picked under fallback", 0, 1, -1);
+        stale.setInputDevice(Optional.of(new DeviceId(fallback.name(), "Interface B [Pattern]")));
+        try {
+            engine.startAudioOutput();
+            assertThat(engine.openStreamBackendName()).contains(head.name());
+            assertThatThrownBy(() -> engine.validateInputRouting(List.of(stale)))
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContainingAll("Picked under fallback", "belongs to backend '" + fallback.name() + "'",
+                            "capture records from backend '" + head.name() + "'");
+            assertThatThrownBy(() -> engine.startAudioInputOutput(List.of(stale)))
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContainingAll("Picked under fallback", fallback.name(), head.name());
+            assertThat(fallback.opens).as("the fallback rung is never opened in place of the working head").isZero();
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    @Test void aHintOnlyTrackRecordsTheSessionDefaultAndRecordsItsIdentityOnceSet() throws Exception {
+        PatternBackend backend = new PatternBackend();
+        AudioEngine engine = engine(backend, 2);
+        // Saved by an earlier version: position 1 is Interface B in this list, but earlier
+        // versions never captured by a position, so the track records the session input
+        // (Interface A) exactly as before.
+        Track migrated = track("Old project vocal", 0, 1, -1);
+        migrated.setLegacyInputDeviceIndexHint(1);
+        RecordingPipeline pipeline = null;
+        try {
+            assertThatCode(() -> engine.validateInputRouting(List.of(migrated))).doesNotThrowAnyException();
+            engine.startAudioInputOutput(List.of(migrated));
+            assertThat(backend.input).isEqualTo("Interface A");
+            pipeline = pipeline(engine, List.of(migrated));
+            backend.emit(256);
+            float[] sessionTake = awaitSample(pipeline, migrated, decoded16(.1f));
+            assertThat(sessionTake).as("the take carries the session default's signal")
+                    .contains(decoded16(.1f)).doesNotContain(decoded16(.9f));
+            pipeline.requestStop().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.completeStop();
+            pipeline = null;
+            engine.stopAudioOutput();
+
+            migrated.setInputDevice(patternInput(1));
+            assertThat(migrated.getLegacyInputDeviceIndexHint()).isEqualTo(Track.NO_INPUT_DEVICE);
+            assertThatCode(() -> engine.validateInputRouting(List.of(migrated))).doesNotThrowAnyException();
+            engine.startAudioInputOutput(List.of(migrated));
+            assertThat(backend.input).isEqualTo("Interface B [Pattern]");
+            pipeline = pipeline(engine, java.nio.file.Files.createDirectories(directory.resolve("confirmed")),
+                    List.of(migrated));
+            backend.emit(256);
+            assertThat(awaitSample(pipeline, migrated, decoded16(.9f)))
+                    .as("the take carries the confirmed identity's signal").contains(decoded16(.9f));
+        } finally {
+            if (pipeline != null) stop(pipeline, engine);
+            else { engine.stopAudioOutput(); engine.shutdown(); }
+        }
+    }
+
+    /** First channel of {@code track}'s take once {@code expected} reaches disk, or after a 5 s bound. */
+    private static float[] awaitSample(RecordingPipeline pipeline, Track track, float expected) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (true) {
+            pipeline.awaitFlushed();
+            float[] samples = audioOnDisk(pipeline.getSession(track))[0];
+            for (float sample : samples) if (sample == expected) return samples;
+            if (System.nanoTime() >= deadline) return samples;
+            Thread.sleep(5);
+        }
     }
 
     @Test void inputsSevenAndEightReachTheTakeThroughTheRealRenderPump() throws Exception {
@@ -487,6 +627,21 @@ class MultichannelInputCaptureStory326Test {
         } finally { engine.shutdown(); }
     }
 
+    @Test void devicesWithoutASharedClockAreRefusedAtArmAndAtRecordStartWithTrackAndDeviceNames() {
+        PatternBackend backend = new PatternBackend(); backend.sharedClock = false;
+        AudioEngine engine = engine(backend,2);
+        List<Track> tracks = List.of(track("Kick",0,1,0), track("Room microphone",0,1,1));
+        try {
+            assertThatThrownBy(() -> engine.validateInputRouting(tracks))
+                    .isInstanceOf(AudioBackendException.class).hasMessageContaining("Room microphone")
+                    .hasMessageContaining("Interface B").hasMessageContaining("not clock-synchronized");
+            assertThatThrownBy(() -> engine.startAudioInputOutput(tracks))
+                    .isInstanceOf(AudioBackendException.class).hasMessageContaining("Room microphone")
+                    .hasMessageContaining("Interface B").hasMessageContaining("not clock-synchronized");
+            assertThat(backend.opens).isZero(); assertThat(backend.sibling).isNull();
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
     @Test void knownDefaultCapabilityAndOverflowedRangesAreRefusedAtArm() {
         PatternBackend backend = new PatternBackend(); backend.maximum = 2;
         AudioEngine engine = engine(backend,2);
@@ -586,7 +741,7 @@ class MultichannelInputCaptureStory326Test {
         PatternBackend backend=new PatternBackend();backend.siblingRate=44100;AudioEngine engine=engine(backend,2);
         try {
             assertThatThrownBy(()->engine.startAudioInputOutput(List.of(track("A",0,1,0),track("B",0,1,1))))
-                    .hasMessageContaining("Interface B","44100","48000");
+                    .hasMessageContainingAll("Interface B","44100","48000");
             assertThat(backend.open).isFalse();assertThat(backend.sibling.open).isFalse();
         } finally {engine.stopAudioOutput();engine.shutdown();}
     }
@@ -613,9 +768,9 @@ class MultichannelInputCaptureStory326Test {
     }
     @Test void malformedRoutingFlagsAreReportedAsManifestIoErrorsWithALine() {
         assertThatThrownBy(() -> TakeManifest.parse("routing-unavailable=track|%%%|6|2|7", "broken.manifest"))
-                .isInstanceOf(java.io.IOException.class).hasMessageContaining("broken.manifest:1", "routing-unavailable");
+                .isInstanceOf(java.io.IOException.class).hasMessageContainingAll("broken.manifest:1", "routing-unavailable");
         assertThatThrownBy(() -> TakeManifest.parse("routing-unavailable=track|VVNC|6|0|7", "broken.manifest"))
-                .isInstanceOf(java.io.IOException.class).hasMessageContaining("broken.manifest:1", "routing-unavailable");
+                .isInstanceOf(java.io.IOException.class).hasMessageContainingAll("broken.manifest:1", "routing-unavailable");
     }
 
     private static float[] filled(float value,int count) { float[] result=new float[count]; Arrays.fill(result,value); return result; }
@@ -647,23 +802,27 @@ class MultichannelInputCaptureStory326Test {
 
     static final class PatternBackend implements AudioBackend {
         int maximum=8, siblingMaximum=-1, openedWidthOverride=-1, siblingOpenedWidth=-1, openedWidth, outputWidth, opens;
-        boolean multiple=true, open, failClose, failSiblingOpen, failOpen, failInputResolution, failEnumeration;
+        boolean multiple=true, sharedClock=true, open, failClose, failSiblingOpen, failOpen, failInputResolution, failEnumeration;
         String input="Interface A";
         double openedRate=48000,siblingRate=48000;
         RoundTripLatency primaryLatency = RoundTripLatency.UNKNOWN;
         PatternBackend sibling;
         RenderGate renderGate;
         final List<Flow.Subscriber<? super AudioBlock>> subscribers=new CopyOnWriteArrayList<>();
-        @Override public String name(){return "Pattern ASIO";}
+        String name="Pattern ASIO";
+        List<String> deviceNames=List.of("Interface A","Interface B");
+        @Override public String name(){return name;}
         @Override public boolean isAvailable(){return true;}
         @Override public boolean isOpen(){return open;}
         @Override public boolean supportsStreaming(){return true;}
         @Override public boolean supportsMultipleInputDevices(){return multiple;}
+        // The fixture models a word-clocked rig unless a test clears sharedClock.
+        @Override public boolean sharesClockDomain(DeviceId first,DeviceId second){return sharedClock || first.equals(second);}
         @Override public DeviceId selectedInputDevice(DeviceId output) {
             if (failInputResolution) throw new AudioBackendException("head has no input device");
             return output;
         }
-        @Override public List<AudioDeviceInfo> listDevices(){if(failEnumeration)throw new AssertionError("Provider enumeration must stay off take preparation");return List.of(info(0,"Interface A"),info(1,"Interface B"));}
+        @Override public List<AudioDeviceInfo> listDevices(){if(failEnumeration)throw new AssertionError("Provider enumeration must stay off take preparation");return List.of(info(0,deviceNames.get(0)),info(1,deviceNames.get(1)));}
         AudioDeviceInfo info(int index,String name){return new AudioDeviceInfo(index,name,"Pattern",index == 1 && siblingMaximum >= 0 ? siblingMaximum : maximum,2,48000,List.of(SampleRate.HZ_48000),0,0);}
         @Override public void open(DeviceId device,com.benesquivelmusic.daw.sdk.audio.AudioFormat format,int frames){
             open(device,format,frames,CaptureRequirement.REQUIRED,device,format.channels());
@@ -674,7 +833,7 @@ class MultichannelInputCaptureStory326Test {
             if(failOpen)throw new AudioBackendException("second input refused");
             openedWidth=openedWidthOverride >= 0 ? openedWidthOverride : Math.min(maximum,width);outputWidth=format.channels();this.input=input.name();
         }
-        @Override public AudioBackend createInputBackend(){sibling=new PatternBackend();sibling.maximum=siblingMaximum >= 0 ? siblingMaximum : maximum;sibling.openedWidthOverride=siblingOpenedWidth;sibling.failOpen=failSiblingOpen;sibling.openedRate=siblingRate;return sibling;}
+        @Override public AudioBackend createInputBackend(){sibling=new PatternBackend();sibling.name=name;sibling.maximum=siblingMaximum >= 0 ? siblingMaximum : maximum;sibling.openedWidthOverride=siblingOpenedWidth;sibling.failOpen=failSiblingOpen;sibling.openedRate=siblingRate;return sibling;}
         @Override public void openInput(DeviceId input,com.benesquivelmusic.daw.sdk.audio.AudioFormat format,int frames,int width){
             open(input,format,frames,CaptureRequirement.REQUIRED,input,width);
         }

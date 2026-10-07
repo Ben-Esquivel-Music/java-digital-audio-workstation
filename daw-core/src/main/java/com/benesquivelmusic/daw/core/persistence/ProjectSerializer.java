@@ -294,7 +294,18 @@ public final class ProjectSerializer {
         elem.setAttribute("armed", String.valueOf(track.isArmed()));
         elem.setAttribute("phase-inverted", String.valueOf(track.isPhaseInverted()));
         elem.setAttribute("color", track.getColor().getHexColor());
-        elem.setAttribute("input-device", String.valueOf(track.getInputDeviceIndex()));
+        // Stable input identity (backend + qualified endpoint name) is the source of
+        // truth. Additive optional attributes: older readers ignore them, and a file
+        // without them is read through the legacy "input-device" index hint, which is
+        // written back only while the track has no identity yet (an unmigrated load).
+        track.getInputDevice().ifPresentOrElse(device -> {
+            elem.setAttribute("input-device-backend", device.backend());
+            elem.setAttribute("input-device-name", device.name());
+        }, () -> {
+            if (track.getLegacyInputDeviceIndexHint() != Track.NO_INPUT_DEVICE) {
+                elem.setAttribute("input-device", String.valueOf(track.getLegacyInputDeviceIndexHint()));
+            }
+        });
         elem.setAttribute("input-routing-channel", String.valueOf(track.getInputRouting().firstChannel()));
         elem.setAttribute("input-routing-count", String.valueOf(track.getInputRouting().channelCount()));
         if (!track.getInputRoutingDisplayName().isEmpty()) {

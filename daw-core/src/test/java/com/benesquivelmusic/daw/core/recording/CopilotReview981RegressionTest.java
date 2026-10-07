@@ -41,7 +41,7 @@ class CopilotReview981RegressionTest {
     private static Track track(String name, int device) {
         Track track = new Track(name, TrackType.AUDIO);
         track.setArmed(true);
-        track.setInputDeviceIndex(device);
+        track.setInputDevice(MultichannelInputCaptureStory326Test.patternInput(device));
         track.setInputRouting(new InputRouting(0, 1));
         return track;
     }

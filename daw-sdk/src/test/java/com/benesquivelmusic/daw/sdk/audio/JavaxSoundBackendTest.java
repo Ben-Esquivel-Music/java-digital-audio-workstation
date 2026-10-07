@@ -113,6 +113,21 @@ class JavaxSoundBackendTest {
     private static final String CATCH_ALL = "<any>";
 
     @Test
+    void distinctMixersAreNeverClaimedToShareOneHardwareClock() {
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        JavaxSoundBackend backend = new JavaxSoundBackend(new TestJavaSoundAccess(new Mixer.Info[] {
+                new TestMixerInfo("Interface A"), new TestMixerInfo("Interface B")}, signed, signed));
+        DeviceId first = new DeviceId(JavaxSoundBackend.NAME, "Interface A [Java Sound]");
+
+        assertThat(backend.sharesClockDomain(first, first)).isTrue();
+        assertThat(backend.sharesClockDomain(first,
+                new DeviceId(JavaxSoundBackend.NAME, "Interface B [Java Sound]"))).isFalse();
+        assertThatThrownBy(() -> backend.sharesClockDomain(first, null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     void selectedMixerUsesFloatOutputBitExactlyAndNegotiatesCaptureSeparately() {
         Mixer.Info studio = new TestMixerInfo("Studio Interface");
         javax.sound.sampled.AudioFormat floatOutput = javaFormat(

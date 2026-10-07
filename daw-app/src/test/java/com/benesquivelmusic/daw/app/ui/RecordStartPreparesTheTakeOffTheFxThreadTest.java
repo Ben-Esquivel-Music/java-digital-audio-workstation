@@ -217,7 +217,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 track -> { },
                 () -> true,
                 () -> RoundTripLatency.UNKNOWN,
-                new StubSessionInputSelection(), dispatcher);
+                dispatcher);
     }
 
     @AfterEach
@@ -1272,8 +1272,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection());
+                    () -> RoundTripLatency.UNKNOWN);
             replacement.setStillWritingDelayForTest(new ManualFxDelay());
             next.set(replacement);
         });

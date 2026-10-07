@@ -482,7 +482,7 @@ class AudioEngineOutputTest {
         engine.setStreamingProvision(provisionOf("PlaybackOnly", playbackOnly, duplex));
 
         com.benesquivelmusic.daw.core.track.Track track = new com.benesquivelmusic.daw.core.track.Track("Default", com.benesquivelmusic.daw.core.track.TrackType.AUDIO);
-        track.setInputDeviceIndex(-1);
+        track.setInputDevice(java.util.Optional.empty());
         engine.startAudioInputOutput(List.of(track));
 
         assertThat(playbackOnly.openCount.get())
@@ -598,7 +598,7 @@ class AudioEngineOutputTest {
                     provisionOf("PlaybackOnly", playbackOnly, duplex));
 
             com.benesquivelmusic.daw.core.track.Track track = new com.benesquivelmusic.daw.core.track.Track("Default", com.benesquivelmusic.daw.core.track.TrackType.AUDIO);
-            track.setInputDeviceIndex(-1);
+            track.setInputDevice(java.util.Optional.empty());
             engine.startAudioInputOutput(List.of(track));
 
             awaitCondition(() -> received.size() >= 1,

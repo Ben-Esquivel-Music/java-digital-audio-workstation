@@ -42,7 +42,7 @@ class CaptureDeviceCalibrationTest {
             AudioEngine engine = new AudioEngine(FORMAT);
             engine.setStreamingProvision(new StreamingProvision(backend.name(), List.of(
                     new BackendStreamRung(backend, new DeviceId(backend.name(), mme.qualifiedName())))));
-            Track mmeTrack = track("MME", mme.index()), wasapiTrack = track("WASAPI", wasapi.index());
+            Track mmeTrack = track("MME", mme), wasapiTrack = track("WASAPI", wasapi);
             List<Track> tracks = reversed ? List.of(wasapiTrack, mmeTrack) : List.of(mmeTrack, wasapiTrack);
             RecordingPipeline pipeline = new RecordingPipeline(engine, new Transport(), FORMAT,
                     directory.resolve(Boolean.toString(reversed)), tracks);
@@ -73,10 +73,13 @@ class CaptureDeviceCalibrationTest {
         return new AudioDeviceInfo(index, "Interface", hostApi, 8, 2, 48_000, List.of(), 0, 0);
     }
 
-    private static Track track(String name, int device) {
+    private static Track track(String name, AudioDeviceInfo device) {
         Track track = new Track(name, TrackType.AUDIO);
         track.setArmed(true);
-        track.setInputDeviceIndex(device);
+        // Stable identity by qualified name: the two devices share the bare name "Interface", so only the
+        // host-API qualifier tells them apart. The reversed run reorders the list (each device keeps its
+        // index()) and the armed tracks; it pins order-independence of source assignment and calibration.
+        track.setInputDevice(java.util.Optional.of(new DeviceId("Pattern ASIO", device.qualifiedName())));
         track.setInputRouting(new InputRouting(0, 1));
         return track;
     }

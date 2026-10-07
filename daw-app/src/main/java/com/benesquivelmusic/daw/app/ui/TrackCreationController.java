@@ -9,12 +9,14 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiConsumer;
@@ -56,12 +58,21 @@ final class TrackCreationController {
 
     private final Deps deps;
     private final AudioDeviceManager audioDeviceManager;
+    /** Asks the user for the new track's input; the modal dialog in production. */
+    private final InputPortSelectionDialog.Chooser inputPortChooser;
     private int audioTrackCounter;
     private int midiTrackCounter;
 
     TrackCreationController(Deps deps, AudioDeviceManager audioDeviceManager) {
+        this(deps, audioDeviceManager, InputPortSelectionDialog.Chooser.MODAL);
+    }
+
+    /** Test seam: {@code inputPortChooser} scripts the input-port dialog's answer. */
+    TrackCreationController(Deps deps, AudioDeviceManager audioDeviceManager,
+                            InputPortSelectionDialog.Chooser inputPortChooser) {
         this.deps = deps;
         this.audioDeviceManager = audioDeviceManager;
+        this.inputPortChooser = Objects.requireNonNull(inputPortChooser, "inputPortChooser must not be null");
     }
 
     int getAudioTrackCounter() { return audioTrackCounter; }
@@ -71,19 +82,23 @@ final class TrackCreationController {
     void resetCounters() { audioTrackCounter = 0; midiTrackCounter = 0; }
 
     void onAddAudioTrack() {
-        List<AudioDeviceInfo> devices = audioDeviceManager.getAvailableDevices();
+        AudioDeviceManager.Enumeration enumeration = audioDeviceManager.enumerate();
+        List<AudioDeviceInfo> devices = enumeration.devices();
 
-        // Story 322: preselect the SESSION input device — the one recording opens.
-        InputPortSelectionDialog dialog = new InputPortSelectionDialog(
+        // A new track has no input of its own yet, so the dialog preselects the session input.
+        Optional<AudioDeviceInfo> selected = inputPortChooser.choose(
                 devices, deps.sessionInputSelection().selectedIndexIn(devices));
-        Optional<AudioDeviceInfo> selected = dialog.showAndWait();
         if (selected.isEmpty()) {
             return;
         }
 
         AudioDeviceInfo selectedDevice = selected.get();
-        // Keep the session default aligned with the explicit track selection.
-        deps.sessionInputSelection().select(selectedDevice);
+        // Stable identity (listing backend + qualified endpoint), never the enumeration index.
+        DeviceId selectedInput = enumeration.identityOf(selectedDevice);
+        // The pick is the new track's own input only and never rewrites the session input,
+        // so adding a track starts no engine reconfiguration. Capture validates it when the
+        // track is armed (story 326): a second device joins the routing union only when the
+        // backend reports a shared clock with the union's first source, else the arm is refused.
         audioTrackCounter++;
         String name = "Audio " + audioTrackCounter;
         deps.undoManager().get().execute(new UndoableAction() {
@@ -95,7 +110,7 @@ final class TrackCreationController {
                 if (initialExecute) {
                     track = deps.project().get().createAudioTrack(name);
                     // Physical capture resolves this device for the armed routing union.
-                    track.setInputDeviceIndex(selectedDevice.index());
+                    track.setInputDevice(Optional.of(selectedInput));
                     trackItem = deps.trackStripController().get().addTrackToUI(track);
                     initialExecute = false;
                 } else {

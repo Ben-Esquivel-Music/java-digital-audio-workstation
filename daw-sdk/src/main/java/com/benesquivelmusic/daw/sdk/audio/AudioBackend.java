@@ -270,6 +270,28 @@ public interface AudioBackend extends AutoCloseable {
 
     /** Whether independent input devices can be opened together. */
     default boolean supportsMultipleInputDevices() { return false; }
+
+    /**
+     * Whether two input devices run from one hardware sample clock (story 326,
+     * book &sect;5.4 "Device set"). Two interfaces that both report 48&nbsp;kHz
+     * still differ by tens of ppm unless they share a clock, so streams from
+     * different clock domains drift apart progressively during a take. Capture
+     * planning refuses a multi-device union whose devices this method does not
+     * report as shared: silent drift is worse than a refused take.
+     *
+     * <p>The default answers {@code true} only for the identical device. A
+     * backend overrides it only where it can prove the sharing, for example an
+     * aggregate device or a driver that reports word-clock lock. Control
+     * thread; must not enumerate or block.</p>
+     *
+     * @param first  one input device of this backend; must not be null
+     * @param second another input device of this backend; must not be null
+     * @return whether both devices are guaranteed to share one hardware clock
+     */
+    default boolean sharesClockDomain(DeviceId first, DeviceId second) {
+        return Objects.requireNonNull(first, "first must not be null")
+                .equals(Objects.requireNonNull(second, "second must not be null"));
+    }
     /** Creates an independently owned capture stream. */
     default AudioBackend createInputBackend() {
         throw new AudioBackendException(name() + " supports only one input device");

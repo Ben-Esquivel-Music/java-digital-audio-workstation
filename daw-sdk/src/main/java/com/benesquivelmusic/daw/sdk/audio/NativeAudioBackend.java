@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Abstraction for low-latency audio I/O backends.
@@ -118,6 +119,25 @@ public interface NativeAudioBackend extends AutoCloseable {
      * @return true if the backend can be used
      */
     boolean isAvailable();
+
+    /**
+     * Whether two of this backend's input devices run from one hardware sample
+     * clock (story 326, book &sect;5.4 "Device set") &mdash; the driver-level
+     * answer an adapter exposes as {@link AudioBackend#sharesClockDomain}.
+     *
+     * <p>The default answers {@code true} only for the identical device.
+     * Override only where the driver can prove the sharing, for example an
+     * aggregate device or a reported word-clock lock. Control thread; must
+     * not enumerate or block.</p>
+     *
+     * @param first  one input device; must not be null
+     * @param second another input device; must not be null
+     * @return whether both devices are guaranteed to share one hardware clock
+     */
+    default boolean sharesClockDomain(DeviceId first, DeviceId second) {
+        return Objects.requireNonNull(first, "first must not be null")
+                .equals(Objects.requireNonNull(second, "second must not be null"));
+    }
 
     /**
      * Returns the driver-reported round-trip latency for the currently

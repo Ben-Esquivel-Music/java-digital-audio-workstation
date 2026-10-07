@@ -54,7 +54,7 @@ class CallbackBackendAdapterTest {
         try {
             assertThat(adapter.supportsMultipleInputDevices()).isFalse();
             assertThatThrownBy(adapter::createInputBackend).isInstanceOf(AudioBackendException.class)
-                    .hasMessageContaining("Fake", "only one input device");
+                    .hasMessageContainingAll("Fake", "only one input device");
             assertThat(fake.initializeCount).isZero();
             assertThat(fake.enumerationCount).isZero();
             assertThat(fake.openStreamCount).isZero();
@@ -127,6 +127,21 @@ class CallbackBackendAdapterTest {
     }
 
     @Test
+    void clockDomainSharingIsTheWrappedDriversAnswerNotTheIdentityDefault() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        DeviceId first = new DeviceId(adapter.name(), "Mic In"), second = new DeviceId(adapter.name(), "Duplex");
+        try {
+            assertThat(adapter.sharesClockDomain(first, second)).isFalse();
+            fake.clockLockedDevices = Set.of(first, second);
+            assertThat(adapter.sharesClockDomain(first, second)).as("a word-clock lock the driver reports").isTrue();
+            assertThat(fake.clockDomainQueries).isEqualTo(2);
+            assertThat(fake.enumerationCount).as("a clock query never enumerates").isZero();
+            assertThatThrownBy(() -> adapter.sharesClockDomain(first, null)).isInstanceOf(NullPointerException.class);
+        } finally { adapter.close(); }
+    }
+
+    @Test
     void selectedZeroWidthIdentityCanOpenOptionalOutputButRequiredCaptureIsRefused() {
         FakeNativeBackend fake = new FakeNativeBackend(List.of(device(3, "Main Out", 0, 2), device(5, "Mic In", 0, 0)));
         CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic In");
@@ -154,7 +169,7 @@ class CallbackBackendAdapterTest {
                 new BackendStreamRung(adapter, new DeviceId(adapter.name(), "Main Out")))));
         var track = new com.benesquivelmusic.daw.core.track.Track("Mic", com.benesquivelmusic.daw.core.track.TrackType.AUDIO);
         track.setInputRouting(new InputRouting(0, 1));
-        track.setInputDeviceIndex(5);
+        track.setInputDevice(java.util.Optional.of(new DeviceId(adapter.name(), device(5, "Mic In", 1, 0).qualifiedName())));
         track.setArmed(true);
         try {
             engine.validateInputRouting(List.of(track));
@@ -1334,6 +1349,17 @@ class CallbackBackendAdapterTest {
         @Override
         public boolean isStreamActive() {
             return streamOpen;
+        }
+
+        /** Devices the fake driver reports as word-clock locked together. */
+        volatile Set<DeviceId> clockLockedDevices = Set.of();
+        int clockDomainQueries;
+
+        @Override
+        public boolean sharesClockDomain(DeviceId first, DeviceId second) {
+            clockDomainQueries++;
+            return NativeAudioBackend.super.sharesClockDomain(first, second)
+                    || clockLockedDevices.contains(first) && clockLockedDevices.contains(second);
         }
 
         @Override

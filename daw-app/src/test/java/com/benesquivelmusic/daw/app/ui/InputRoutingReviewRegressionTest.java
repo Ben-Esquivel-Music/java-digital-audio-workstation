@@ -118,7 +118,7 @@ class InputRoutingReviewRegressionTest {
         var wide = project.createAudioTrack("Wide default");
         wide.setInputRouting(new InputRouting(6, 2));
         var explicit = project.createAudioTrack("Pinned head");
-        explicit.setInputDeviceIndex(0);
+        explicit.setInputDevice(java.util.Optional.of(new DeviceId("Width", "Interface [Test]")));   // the head backend's only device
         WidthBackend head = new WidthBackend(2), fallback = new WidthBackend(8);
         AudioEngine engine = new AudioEngine(FORMAT);
         engine.setStreamingProvision(new StreamingProvision(head.name(), List.of(

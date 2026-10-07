@@ -14,13 +14,32 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
             this(device, requestedChannels, List.of(device.name()));
         }
     }
-    public record Route(String id, String name, InputRouting routing, int deviceIndex) {
+    /**
+     * Frozen per-track routing. {@code device} is the stable input identity and the
+     * only track-level device claim; an empty {@code device} records from the session
+     * default input. A pre-identity project's legacy device position
+     * ({@link Track#getLegacyInputDeviceIndexHint()}) is deliberately not carried: a
+     * position cannot identify a device, earlier versions never captured by it, and it
+     * is offered only as a suggestion to confirm in the per-track input dialog — so a
+     * hint-only track routes exactly like a track with no device of its own.
+     */
+    public record Route(String id, String name, InputRouting routing, Optional<DeviceId> device) {
+        public Route {
+            Objects.requireNonNull(id, "id must not be null");
+            Objects.requireNonNull(name, "name must not be null");
+            Objects.requireNonNull(routing, "routing must not be null");
+            Objects.requireNonNull(device, "device must not be null");
+        }
+        /** Whether the track names its own input identity; otherwise it records from the session default input. */
+        public boolean hasExplicitDevice() { return device.isPresent(); }
         public boolean matches(Track track) {
-            return id.equals(track.getId()) && routing.equals(track.getInputRouting()) && deviceIndex == track.getInputDeviceIndex();
+            return id.equals(track.getId()) && routing.equals(track.getInputRouting())
+                    && device.equals(track.getInputDevice());
         }
     }
     public static List<Route> snapshot(List<Track> tracks) {
-        return tracks.stream().map(t -> new Route(t.getId(), t.getName(), t.getInputRouting(), t.getInputDeviceIndex())).toList();
+        return tracks.stream().map(t -> new Route(t.getId(), t.getName(), t.getInputRouting(),
+                t.getInputDevice())).toList();
     }
     public CaptureRoutingPlan {
         sources = List.copyOf(sources);
@@ -44,9 +63,11 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
             Route track = tracks.stream().filter(route -> !route.routing().isNone()).findFirst().orElseThrow();
             throw refusal(track, rung.device(), "input device resolution failed: " + failure.getMessage());
         }
-        AudioDeviceInfo selectedInfo = devices.stream().filter(d -> d.qualifiedName().equals(selectedChoice.name()) || d.name().equals(selectedChoice.name()))
-                .findFirst().orElse(null);
-        if (selectedChoice.isDefault() && devices.size() == 1) selectedInfo = devices.getFirst();
+        AudioDeviceInfo selectedInfo = selectedChoice.isDefault() ? defaultInputDevice(devices).orElse(null)
+                : devices.stream().filter(d -> d.qualifiedName().equals(selectedChoice.name()) || d.name().equals(selectedChoice.name()))
+                        .findFirst().orElse(null);
+        // The alias becomes the concrete device BEFORE any grouping, so a default route and an explicit
+        // route to that same device form one source instead of a phantom two-device union.
         DeviceId selected = selectedChoice.isDefault() && selectedInfo != null
                 ? new DeviceId(backend.name(), selectedInfo.qualifiedName()) : selectedChoice;
         boolean singleDevice = !backend.supportsMultipleInputDevices()
@@ -63,18 +84,21 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
             if (width > Integer.MAX_VALUE) throw refusal(track, selected, "channel range overflows");
             AudioDeviceInfo info = selectedInfo;
             DeviceId input = selected;
-            if (track.deviceIndex() >= 0) {
-                info = devices.stream().filter(d -> d.index() == track.deviceIndex()).findFirst()
-                        .orElseThrow(() -> refusal(track, selected, "input device index " + track.deviceIndex() + " is unavailable"));
+            if (track.device().isPresent()) {
+                info = byIdentity(backend, track, track.device().get(), devices);
                 input = new DeviceId(backend.name(), info.qualifiedName());
             } else if (!selected.isDefault()) {
                 info = devices.stream().filter(d -> d.qualifiedName().equals(selected.name()) || d.name().equals(selected.name()))
                         .findFirst().orElse(null);
             }
-            // A qualified label and a bare label can identify the same selected endpoint.
-            if (info != null && (selected.name().equals(info.name()) || selected.name().equals(info.qualifiedName()))) input = selected;
+            // A qualified label and a bare label can identify the same selected endpoint — but a bare
+            // label is shared by every endpoint with that name, so it merges only the endpoint the
+            // selection itself resolved to, never a same-named sibling the track identifies.
+            if (info != null && (selected.name().equals(info.qualifiedName())
+                    || info.equals(selectedInfo) && selected.name().equals(info.name()))) input = selected;
             if (singleDevice && !input.equals(selected)) {
-                throw refusal(track, input, backend.name() + " only captures the active device '" + selected.name() + "'");
+                throw refusal(track, input, backend.name() + " only captures the active "
+                        + (selected.isDefault() ? "default input" : "device '" + selected.name() + "'"));
             }
             if (checkWidths && (info == null || !info.hasKnownInputChannelCount()) && input.equals(selected)) {
                 OptionalInt capacity = inputCapacities.computeIfAbsent(input, backend::inputChannelCapacity);
@@ -112,13 +136,60 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
             if (e.getKey().equals(resolvedSelected) && selectedChoice.isDefault()) labels.add(selectedChoice.name());
             return new Source(e.getKey(), e.getValue(), labels);
         }).toList();
+        requireSharedClockDomain(backend, tracks, assignments, sources);
         Map<String, Integer> ordinals = new LinkedHashMap<>();
         assignments.forEach((id, device) -> {
             for (int i = 0; i < sources.size(); i++) if (sources.get(i).device().equals(device)) ordinals.put(id, i);
         });
         return new CaptureRoutingPlan(backend, sources, ordinals, widthValidated);
     }
+    /**
+     * Resolves a frozen identity against the enumerated devices: same backend and exactly one device
+     * with that qualified name. The enumeration index is never consulted, so reordered devices still
+     * resolve to the same endpoint and a vanished one is refused instead of replaced by its index-mate.
+     */
+    private static AudioDeviceInfo byIdentity(AudioBackend backend, Route track, DeviceId identity, List<AudioDeviceInfo> devices) {
+        if (!identity.backend().equals(backend.name()))
+            throw refusal(track, identity, "the device belongs to backend '" + identity.backend()
+                    + "', but capture records from backend '" + backend.name() + "'");
+        List<AudioDeviceInfo> matches = devices.stream().filter(d -> d.qualifiedName().equals(identity.name())).toList();
+        if (matches.isEmpty()) throw refusal(track, identity, "input device is unavailable");
+        if (matches.size() > 1) throw refusal(track, identity, "input device identity is ambiguous (" + matches.size() + " devices share it)");
+        return matches.getFirst();
+    }
+    /**
+     * Sibling sources count their own delivered frames, so the union is only sound when every
+     * device runs from the primary input's hardware clock; otherwise their files drift apart
+     * progressively during a take. Refuses the first track routed to an unsynchronized device.
+     */
+    private static void requireSharedClockDomain(AudioBackend backend, List<Route> tracks,
+                                                 Map<String, DeviceId> assignments, List<Source> sources) {
+        if (sources.size() < 2) return;
+        DeviceId primary = sources.getFirst().device();
+        for (Source source : sources.subList(1, sources.size())) {
+            if (backend.sharesClockDomain(primary, source.device())) continue;
+            Route track = tracks.stream().filter(route -> source.device().equals(assignments.get(route.id())))
+                    .findFirst().orElseThrow();
+            throw refusal(track, source.device(), "input is not clock-synchronized with " + describe(primary)
+                    + "; independent device clocks drift apart during a take");
+        }
+    }
+    /**
+     * The concrete device behind the backend's default-input alias, when the enumeration alone
+     * proves it: the only device listed, or else the only device able to capture. Empty when
+     * several devices could be the default; the alias then stays unresolved.
+     */
+    private static Optional<AudioDeviceInfo> defaultInputDevice(List<AudioDeviceInfo> devices) {
+        if (devices.size() == 1) return Optional.of(devices.getFirst());
+        List<AudioDeviceInfo> capturing = devices.stream().filter(AudioDeviceInfo::supportsInput).toList();
+        return capturing.size() == 1 ? Optional.of(capturing.getFirst()) : Optional.empty();
+    }
+    /** Names a device for an error; an unresolved default alias is never presented as a device. */
+    static String describe(DeviceId device) {
+        return device.isDefault() ? "the default input of '" + device.backend() + "', which does not resolve to a specific device"
+                : "device '" + device.name() + "'";
+    }
     private static AudioBackendException refusal(Route track, DeviceId device, String detail) {
-        return new AudioBackendException("Track '" + track.name() + "', device '" + device.name() + "': " + detail);
+        return new AudioBackendException("Track '" + track.name() + "', " + describe(device) + ": " + detail);
     }
 }

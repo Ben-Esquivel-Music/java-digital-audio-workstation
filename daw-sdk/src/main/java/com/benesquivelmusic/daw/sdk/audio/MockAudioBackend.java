@@ -142,8 +142,26 @@ public final class MockAudioBackend implements AudioBackend {
     }
 
     private int captureWidth;
+    private volatile Set<DeviceId> sharedClockDomain = Set.of();
     @Override public boolean supportsMultipleInputDevices() { return true; }
     @Override public AudioBackend createInputBackend() { return new MockAudioBackend(); }
+
+    /**
+     * Declares that the given devices run from one hardware clock, as a word-clocked
+     * rig would; replaces any earlier declaration. By default no two distinct devices
+     * share a clock, matching the {@link AudioBackend} default.
+     *
+     * @param devices the devices of one shared clock domain; must not be null
+     */
+    public void declareSharedClockDomain(Set<DeviceId> devices) {
+        this.sharedClockDomain = Set.copyOf(Objects.requireNonNull(devices, "devices must not be null"));
+    }
+
+    @Override public boolean sharesClockDomain(DeviceId first, DeviceId second) {
+        Set<DeviceId> domain = sharedClockDomain;
+        return AudioBackend.super.sharesClockDomain(first, second)
+                || domain.contains(first) && domain.contains(second);
+    }
     @Override public void openInput(DeviceId input, AudioFormat format, int frames, int channels) {
         if (channels <= 0) throw new IllegalArgumentException("channels must be positive");
         open(input, format, frames); captureWidth = channels;

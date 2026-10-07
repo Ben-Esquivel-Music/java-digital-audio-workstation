@@ -142,8 +142,7 @@ class RecordedTakeUnsavedChangesTest {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection());
+                    () -> RoundTripLatency.UNKNOWN);
             NotificationBar lifecycleToasts = new NotificationBar();
             lifecycleToasts.setAnimated(false);
             FxDispatcher dispatcher = new FxDispatcher();

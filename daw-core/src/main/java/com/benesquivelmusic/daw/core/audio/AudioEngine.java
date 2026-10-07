@@ -126,11 +126,38 @@ public final class AudioEngine {
     private record ValidatedInput(CaptureRoutingPlan.Route route, DeviceId device, AudioBackend backend) { }
     private final Map<String, ValidatedInput> validatedInputRoutes = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /**
+     * The ONE ladder rung explicit input routes resolve against, shared by arm validation and record
+     * start so both agree; {@link #openLadder} then opens exactly this rung for an explicit plan (it
+     * refuses every other rung). The base is the active rung {@link #getBackend()} names, the one
+     * device pickers enumerate: the open stream's rung (possibly a fallback), else the ladder head.
+     * A frozen identity may move the choice only UP the ladder — to its owner's rung when that rung
+     * ranks at or above the active one (the head after a fallback, which record start retries).
+     * An identity owned by a LOWER rung never demotes a working head or active stream onto a
+     * fallback: it resolves against the active rung, where it is refused naming both backends.
+     * Only the FIRST identity in track order is consulted: when its owner ranks above the active rung
+     * it decides the rung for every route, so a refusal raised on that rung may name another co-armed
+     * track.
+     * A legacy index hint is not a device claim: a hint-only route carries no identity, so it never
+     * reaches this path on its own and records from the session default input exactly like a route
+     * with no device of its own (the default ladder walk applies).
+     */
+    private BackendStreamRung explicitCaptureRung(StreamingProvision provision, List<CaptureRoutingPlan.Route> routes) {
+        List<BackendStreamRung> ladder = provision.ladder();
+        AudioBackend current = getBackend();
+        int activeRank = 0;
+        for (int rank = 0; rank < ladder.size(); rank++) if (ladder.get(rank).backend() == current) { activeRank = rank; break; }
+        Optional<String> owner = routes.stream().filter(route -> !route.routing().isNone())
+                .flatMap(route -> route.device().stream()).map(DeviceId::backend).findFirst();
+        if (owner.isPresent()) for (int rank = 0; rank < activeRank; rank++)
+            if (ladder.get(rank).backend().name().equals(owner.get())) return ladder.get(rank);
+        return ladder.get(activeRank);
+    }
     /** Validate on a control worker before accepting an arm gesture. */
-    private static CaptureRoutingPlan resolveCapturePlan(StreamingProvision provision, List<CaptureRoutingPlan.Route> routes, boolean checkWidths) {
-        if (routes.stream().anyMatch(route -> route.deviceIndex() >= 0 && !route.routing().isNone())) {
-            BackendStreamRung head = provision.ladder().getFirst();
-            return CaptureRoutingPlan.resolveSnapshots(head, routes, head.backend().listDevices(), checkWidths);
+    private CaptureRoutingPlan resolveCapturePlan(StreamingProvision provision, List<CaptureRoutingPlan.Route> routes, boolean checkWidths) {
+        if (routes.stream().anyMatch(route -> route.hasExplicitDevice() && !route.routing().isNone())) {
+            BackendStreamRung rung = explicitCaptureRung(provision, routes);
+            return CaptureRoutingPlan.resolveSnapshots(rung, routes, rung.backend().listDevices(), checkWidths);
         }
         RuntimeException first = null;
         for (BackendStreamRung rung : provision.ladder()) {
@@ -141,8 +168,9 @@ public final class AudioEngine {
     }
     private CaptureRoutingPlan resolveCapturePlanForStart(StreamingProvision provision, List<CaptureRoutingPlan.Route> routes) {
         RuntimeException first = null;
-        boolean explicit = routes.stream().anyMatch(route -> route.deviceIndex() >= 0 && !route.routing().isNone());
-        for (BackendStreamRung rung : provision.ladder()) {
+        boolean explicit = routes.stream().anyMatch(route -> route.hasExplicitDevice() && !route.routing().isNone());
+        List<BackendStreamRung> candidates = explicit ? List.of(explicitCaptureRung(provision, routes)) : provision.ladder();
+        for (BackendStreamRung rung : candidates) {
             try {
                 List<AudioDeviceInfo> devices = rung.backend().listDevices();
                 CaptureRoutingPlan candidate = CaptureRoutingPlan.resolveSnapshots(rung, routes, devices, false);
@@ -163,7 +191,6 @@ public final class AudioEngine {
     public void validateInputRoutingSnapshots(List<CaptureRoutingPlan.Route> routes, StreamingProvision expectedProvision, boolean checkWidths) {
         if (streamingProvision != expectedProvision) throw new AudioBackendException("Audio configuration changed during arm validation");
         if (expectedProvision == null || expectedProvision.ladder().isEmpty() || routes.stream().allMatch(route -> route.routing().isNone())) return;
-        BackendStreamRung rung = expectedProvision.ladder().getFirst();
         CaptureRoutingPlan plan = resolveCapturePlan(expectedProvision, routes, checkWidths);
         if (streamingProvision != expectedProvision) throw new AudioBackendException("Audio configuration changed during arm validation");
         if (checkWidths) for (CaptureRoutingPlan.Route route : routes) if (plan.widthValidatedTracks().contains(route.id())) {
@@ -251,7 +278,11 @@ public final class AudioEngine {
                 DeviceId device = plan.sources().get(plan.trackSources().get(route.id())).device();
                 if (proof != null && proof.route().equals(route) && proof.backend() == rung.backend() && proof.device().equals(device)) provenBeforeOpen.add(route.id());
                 else {
-                    boolean headHasNoInput = route.deviceIndex() < 0 && devices.stream().anyMatch(info -> (info.name().equals(device.name()) || info.qualifiedName().equals(device.name()) || device.isDefault() && devices.size() == 1) && info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
+                    // The default-alias clause only fires across a device-list race: the plan resolves
+                    // the alias to the sole listed device from its OWN listDevices() call, so an alias
+                    // still unresolved here means that enumeration listed several devices, none or several
+                    // of them capture-capable, and this second enumeration (above) now lists exactly one.
+                    boolean headHasNoInput = !route.hasExplicitDevice() && devices.stream().anyMatch(info -> (info.name().equals(device.name()) || info.qualifiedName().equals(device.name()) || device.isDefault() && devices.size() == 1) && info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
                     if (!headHasNoInput) CaptureRoutingPlan.resolveSnapshots(rung, List.of(route), devices, true);
                 }
             }
@@ -3051,8 +3082,10 @@ public final class AudioEngine {
                 CaptureRoutingPlan plan = captureRoutingPlan;
                 if (capture == CaptureRequirement.REQUIRED && plan != null && !plan.sources().isEmpty()) {
                     if (rung.backend() != plan.backend()) {
-                        CaptureRoutingPlan.Route explicit = captureRouteRequests.stream().filter(route -> route.deviceIndex() >= 0 && !route.routing().isNone()).findFirst().orElse(null);
-                        if (explicit != null) throw new AudioBackendException("Track '" + explicit.name() + "', device '" + plan.sources().getFirst().device().name() + "': capture cannot preserve this device on backend '" + rung.backend().name() + "'");
+                        CaptureRoutingPlan.Route explicit = captureRouteRequests.stream().filter(route -> route.hasExplicitDevice() && !route.routing().isNone()).findFirst().orElse(null);
+                        if (explicit != null) throw new AudioBackendException("Track '" + explicit.name() + "', "
+                                + CaptureRoutingPlan.describe(plan.sources().get(plan.trackSources().get(explicit.id())).device())
+                                + ": capture cannot preserve this device on backend '" + rung.backend().name() + "'");
                         plan = CaptureRoutingPlan.resolveSnapshots(rung, captureRouteRequests, rung.backend().listDevices(), true);
                     }
                     CaptureRoutingPlan.Source input = plan.sources().getFirst();

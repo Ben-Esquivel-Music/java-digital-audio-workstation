@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.recording.LiveCapturePeaks;
-import com.benesquivelmusic.daw.app.ui.recording.SessionInputSelection;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
@@ -233,8 +232,7 @@ final class RecordCoordinator {
 
     RecordCoordinator(TransportController transport, DawProject project, AudioEngine audioEngine,
                       UndoManager undoManager, NotificationBar notificationBar,
-                      SessionInputSelection sessionInputSelection, Label statusBarLabel,
-                      Label recIndicator, CoreTransportIntentHandler core,
+                      Label statusBarLabel, Label recIndicator, CoreTransportIntentHandler core,
                       Supplier<CountInMode> countInMode, Consumer<Track> flashMidiActivity,
                       BooleanSupplier applyLatencyCompensation, Supplier<RoundTripLatency> reportedLatency,
                       FxDispatcher fxDispatcher) {

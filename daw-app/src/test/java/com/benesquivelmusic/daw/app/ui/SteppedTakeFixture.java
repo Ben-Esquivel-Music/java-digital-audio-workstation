@@ -119,7 +119,6 @@ final class SteppedTakeFixture {
                     _ -> { },
                     () -> true,
                     () -> reportedLatency,
-                    new StubSessionInputSelection(),
                     () -> { },
                     dispatcher);
             made.setStillWritingDelayForTest(stillWritingDelay);

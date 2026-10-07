@@ -341,6 +341,11 @@ public final class CallbackBackendAdapter implements AudioBackend {
      */
     @Override public double openedInputSampleRate() { return openedSampleRate; }
     @Override public boolean supportsMultipleInputDevices() { return inputBackendFactory != null; }
+    /** Only the wrapped driver can know whether two of its devices share one hardware clock. */
+    @Override public boolean sharesClockDomain(DeviceId first, DeviceId second) {
+        return delegate.sharesClockDomain(Objects.requireNonNull(first, "first must not be null"),
+                Objects.requireNonNull(second, "second must not be null"));
+    }
     @Override public AudioBackend createInputBackend() {
         if (inputBackendFactory == null) return AudioBackend.super.createInputBackend();
         NativeAudioBackend sibling = Objects.requireNonNull(inputBackendFactory.get(), "input backend factory returned null");

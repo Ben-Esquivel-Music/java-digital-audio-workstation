@@ -195,8 +195,7 @@ class TakeFinalizationFailureReportTest {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection());
+                    () -> RoundTripLatency.UNKNOWN);
             controller.setStillWritingDelayForTest(new ManualFxDelay());
         });
     }

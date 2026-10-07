@@ -24,7 +24,13 @@ public final class InputRoutingGuard implements AutoCloseable {
     private final Runnable unregisterProject;
     private boolean closed;
     private Track accepting;
-    private record PendingArm(Runnable accept, long generation, CaptureRoutingPlan.Route route, StreamingProvision provision) { }
+    /**
+     * A queued arm. The provision is deliberately not frozen here: each validation run reads the
+     * engine's current provision when it starts, so a request that outlives a provision swap is
+     * re-validated against the replacement instead of being dropped (track silently left disarmed)
+     * or accepted on a proof taken against the outgoing provision.
+     */
+    private record PendingArm(Runnable accept, long generation, CaptureRoutingPlan.Route route) { }
     private final Map<Track, PendingArm> pendingArms = new LinkedHashMap<>();
     private boolean validationRunning;
     public void cancelArm(Track track) { generations.merge(track, 1L, Long::sum); pendingArms.remove(track); }
@@ -48,16 +54,28 @@ public final class InputRoutingGuard implements AutoCloseable {
         for (Track track : project.getTracks()) if (!listeners.containsKey(track)) {
             listeners.put(track, track.addChangeListener(kind -> {
                 if (accepting == track || kind != Track.ChangeKind.ARM && kind != Track.ChangeKind.INPUT_ROUTING) return;
-                Runnable check = () -> validateMutation(track);
+                Runnable check = () -> validateMutation(track, kind);
                 if (dispatcher.isFxThread()) check.run(); else dispatcher.onFx(check);
             }));
-            if (track.isArmed()) validateMutation(track);
+            if (track.isArmed()) validateMutation(track, Track.ChangeKind.ARM);
         }
     }
-    private void validateMutation(Track track) {
+    /**
+     * Re-validates a track after an arm or input-routing change. An armed track is disarmed and its arm
+     * re-requested. A routing change while the track's arm is still pending (its validation in flight
+     * or queued) supersedes that validation rather than cancelling it: the arm intent survives and the
+     * LATEST routing is validated. The superseded reply is stale (its generation and route no longer
+     * match) and can neither arm the track nor report an error.
+     */
+    private void validateMutation(Track track, Track.ChangeKind kind) {
         if (closed) return;
         engine.refreshInputMeterRouting();
-        if (!track.isArmed()) { cancelArm(track); return; }
+        if (!track.isArmed()) {
+            PendingArm pending = pendingArms.get(track);
+            cancelArm(track);
+            if (kind == Track.ChangeKind.INPUT_ROUTING && pending != null) requestArm(track, pending.accept());
+            return;
+        }
         if (track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) return;
         accepting = track;
         try { commandSink.accept(new ToggleArmCommand(track, false)); } finally { accepting = null; }
@@ -67,7 +85,7 @@ public final class InputRoutingGuard implements AutoCloseable {
         if (closed) return;
         if (accepting == track || track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) { accept.run(); return; }
         long generation = generations.merge(track, 1L, Long::sum);
-        pendingArms.put(track, new PendingArm(accept, generation, CaptureRoutingPlan.snapshot(List.of(track)).getFirst(), engine.getStreamingProvision()));
+        pendingArms.put(track, new PendingArm(accept, generation, CaptureRoutingPlan.snapshot(List.of(track)).getFirst()));
         startNextArm();
     }
     private void startNextArm() {
@@ -78,25 +96,28 @@ public final class InputRoutingGuard implements AutoCloseable {
                 .filter(t -> t.getType() != TrackType.MIDI && (t.isArmed() || t == track)).toList();
         List<CaptureRoutingPlan.Route> snapshot = CaptureRoutingPlan.snapshot(proposed);
         List<Boolean> armedStates = proposed.stream().map(Track::isArmed).toList();
+        StreamingProvision provision = engine.getStreamingProvision();
         validationRunning = true;
         Thread.ofVirtual().name("daw-input-arm-validation").start(() -> {
             Throwable failure = null;
             try {
-                engine.validateInputRoutingSnapshots(snapshot, request.provision(), true);
+                engine.validateInputRoutingSnapshots(snapshot, provision, true);
             } catch (RuntimeException | Error e) { failure = e; }
             Throwable result = failure;
             dispatcher.onFx(() -> {
                 validationRunning = false;
                 if (closed) return;
                 boolean current = pendingArms.get(track) == request && project.getTracks().contains(track)
-                        && Objects.equals(generations.get(track), request.generation()) && request.route().matches(track)
-                        && engine.getStreamingProvision() == request.provision();
+                        && Objects.equals(generations.get(track), request.generation()) && request.route().matches(track);
                 if (current) {
-                    boolean siblingsChanged = false;
+                    // A provision swapped while this run was in flight makes its verdict stale either
+                    // way (including the engine's own "configuration changed" refusal): re-run the same
+                    // request against the provision installed now rather than drop or accept it.
+                    boolean stale = engine.getStreamingProvision() != provision;
                     for (int i = 0; i < proposed.size(); i++)
                         if (!snapshot.get(i).matches(proposed.get(i)) || !project.getTracks().contains(proposed.get(i))
-                                || armedStates.get(i) != proposed.get(i).isArmed()) siblingsChanged = true;
-                    if (siblingsChanged) { startNextArm(); return; }
+                                || armedStates.get(i) != proposed.get(i).isArmed()) stale = true;
+                    if (stale) { startNextArm(); return; }
                     pendingArms.remove(track);
                     if (result == null) {
                         accepting = track;

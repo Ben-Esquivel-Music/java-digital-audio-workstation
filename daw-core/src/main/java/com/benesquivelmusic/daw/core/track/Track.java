@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.TakeGroup;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import java.util.*;
 import java.util.function.Consumer;
@@ -40,7 +41,11 @@ import java.util.function.Consumer;
  */
 public final class Track {
 
-    /** Sentinel value indicating no input device has been assigned. */
+    /**
+     * Sentinel "no device index": a track has no legacy input-device index hint,
+     * or a device lookup by index found no match (for example the session
+     * device is absent from an enumerated device list).
+     */
     public static final int NO_INPUT_DEVICE = -1;
 
     /**
@@ -91,7 +96,8 @@ public final class Track {
     private boolean phaseInverted;
     private boolean recording;
     private InputMonitoringMode inputMonitoringMode = InputMonitoringMode.OFF;
-    private int inputDeviceIndex = NO_INPUT_DEVICE;
+    private DeviceId inputDevice;
+    private int legacyInputDeviceIndexHint = NO_INPUT_DEVICE;
     private InputRouting inputRouting = InputRouting.DEFAULT_STEREO;
     private String inputRoutingDisplayName = "";
     private final List<AudioClip> clips = new ArrayList<>();
@@ -340,31 +346,81 @@ public final class Track {
     }
 
     /**
-     * Returns the index of the input device assigned to this track, or
-     * {@link #NO_INPUT_DEVICE} ({@value #NO_INPUT_DEVICE}) if no device
-     * has been assigned.
+     * Returns the stable identity of the input device this track captures
+     * from: the owning backend's name plus the device's host-API-qualified
+     * {@code AudioDeviceInfo.qualifiedName()}.
      *
-     * @return the input device index, or {@code -1} if unassigned
+     * <p>This identity, never an enumeration index, is the source of truth for
+     * capture routing: enumeration indices change when devices are added,
+     * removed or reordered, so resolving one against a fresh device list can
+     * silently select a different interface.</p>
+     *
+     * @return the stable input device identity, or empty when the track has
+     *         no explicit input device (or only a {@linkplain
+     *         #getLegacyInputDeviceIndexHint() legacy index hint})
      */
-    public int getInputDeviceIndex() {
-        return inputDeviceIndex;
+    public Optional<DeviceId> getInputDevice() {
+        return Optional.ofNullable(inputDevice);
     }
 
     /**
-     * Assigns an input device to this track by its index.
+     * Assigns the stable identity of the input device this track captures
+     * from, or clears the explicit assignment when {@code device} is empty.
      *
-     * <p>Use {@link #NO_INPUT_DEVICE} to clear the assignment.</p>
+     * <p>Either way the {@linkplain #getLegacyInputDeviceIndexHint() legacy
+     * index hint} is discarded: an explicit choice (including "none")
+     * supersedes whatever an older project file recorded.</p>
      *
-     * @param inputDeviceIndex the device index, or {@code -1} to unassign
-     * @throws IllegalArgumentException if the index is less than {@code -1}
+     * @param device the device identity, or empty to unassign; must not be
+     *               {@code null}
      */
-    public void setInputDeviceIndex(int inputDeviceIndex) {
-        if (inputDeviceIndex < NO_INPUT_DEVICE) {
-            throw new IllegalArgumentException(
-                    "inputDeviceIndex must be >= -1: " + inputDeviceIndex);
+    public void setInputDevice(Optional<DeviceId> device) {
+        Objects.requireNonNull(device, "device must not be null");
+        DeviceId next = device.orElse(null);
+        if (Objects.equals(inputDevice, next) && legacyInputDeviceIndexHint == NO_INPUT_DEVICE) return;
+        this.inputDevice = next;
+        this.legacyInputDeviceIndexHint = NO_INPUT_DEVICE;
+        notifyChange(ChangeKind.INPUT_ROUTING);
+    }
+
+    /**
+     * Returns the enumeration index recorded by a project saved before stable
+     * input-device identities existed, or {@link #NO_INPUT_DEVICE} when there
+     * is none. It is only a migration hint and never identifies a device:
+     * capture, metering, calibration, monitoring and the take manifest never
+     * resolve a device by it — a routed track that has a hint but no
+     * {@linkplain #getInputDevice() stable identity} records from the session
+     * default input, exactly as earlier versions did. Its one use is the
+     * per-track input dialog, which preselects the hinted row, offered only as
+     * a suggestion to confirm; confirming stores an identity, which discards
+     * the hint. Project persistence keeps it across a re-save.
+     *
+     * @return the legacy index hint, or {@code -1} when absent
+     */
+    public int getLegacyInputDeviceIndexHint() {
+        return legacyInputDeviceIndexHint;
+    }
+
+    /**
+     * Records the enumeration index read from a project file that predates
+     * stable input-device identities.
+     *
+     * @param index the legacy index, or {@link #NO_INPUT_DEVICE} to clear it
+     * @throws IllegalArgumentException if the index is less than {@code -1}
+     * @throws IllegalStateException    if the track already has a stable input
+     *                                  device identity, which a hint must
+     *                                  never override
+     */
+    public void setLegacyInputDeviceIndexHint(int index) {
+        if (index < NO_INPUT_DEVICE) {
+            throw new IllegalArgumentException("legacy input device index must be >= -1: " + index);
         }
-        if (this.inputDeviceIndex == inputDeviceIndex) return;
-        this.inputDeviceIndex = inputDeviceIndex;
+        if (inputDevice != null && index != NO_INPUT_DEVICE) {
+            throw new IllegalStateException("Track '" + name
+                    + "' has a stable input device identity; a legacy index hint cannot override it");
+        }
+        if (legacyInputDeviceIndexHint == index) return;
+        this.legacyInputDeviceIndexHint = index;
         notifyChange(ChangeKind.INPUT_ROUTING);
     }
 
@@ -810,7 +866,11 @@ public final class Track {
         copy.setArmed(false);
         copy.setPhaseInverted(phaseInverted);
         copy.setInputMonitoringMode(inputMonitoringMode);
-        copy.setInputDeviceIndex(inputDeviceIndex);
+        if (inputDevice != null) {
+            copy.setInputDevice(Optional.of(inputDevice));
+        } else {
+            copy.setLegacyInputDeviceIndexHint(legacyInputDeviceIndexHint);
+        }
         copy.setInputRouting(inputRouting);
         copy.setInputRoutingDisplayName(inputRoutingDisplayName);
         copy.setColor(color);

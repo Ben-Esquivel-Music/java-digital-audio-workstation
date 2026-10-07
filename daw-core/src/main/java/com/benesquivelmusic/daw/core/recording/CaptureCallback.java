@@ -39,6 +39,10 @@ import java.util.Objects;
  * seek supersedes it once the primary clock has committed the target. Sibling
  * inputs re-anchor to that seek's immutable target and then count delivered
  * frames independently, even if the primary clock has already advanced further.
+ * Counting frames is sound only because {@code CaptureRoutingPlan} admits a
+ * sibling device solely when the backend reports it shares the primary input's
+ * hardware clock; unsynchronized devices are refused before the take, since
+ * nothing here corrects drift between clock domains.
  * The primary input continues to follow the transport clock.</p>
  *
  * <p><strong>Start frame.</strong> The header's start frame is the beat
