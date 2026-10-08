@@ -232,28 +232,54 @@ public final class AudioEngine {
 
     private static final float[][] EMPTY_CAPTURE_INPUT = new float[0][];
     /**
-     * Input-only sources with no channel clock — opened at zero width, or whose publisher terminated —
-     * borrow the existing output clock. The set is bound to the plan it belongs to: an append is a CAS
-     * against that plan's record, so a reset by {@link #closeAdditionalInputs} or a later stream's
-     * record fails a stale terminal signal's append instead of being overwritten by it.
+     * Who delivers each sibling source's blocks, as ONE per-source word of one plan: the source's own
+     * publisher ({@code SOURCE_LIVE}; {@code SOURCE_DELIVERING} while its {@code onNext} holds the claim;
+     * {@code SOURCE_HANDOFF_REQUESTED} once a terminal signal arrived during that claim) or the output
+     * callback, which delivers a zero-width block per period iff it reads {@code SOURCE_CLOCKED_SILENT}.
+     * Live-to-silent is a single CAS ({@code LIVE -> CLOCKED_SILENT}), or the claim's release completes it
+     * ({@code HANDOFF_REQUESTED -> CLOCKED_SILENT}), so until the stream closes exactly one path owns the
+     * source and the two never run its callback at once; owning is not supplying (a live publisher may
+     * deliver nothing, e.g. before its terminal signal arrives). {@code SOURCE_CLOSED} (set by
+     * {@code deactivate()}) is terminal and owned by neither. Index 0 (the primary) is unused.
+     * {@link #closeAdditionalInputs} and a later start publish a different record, so the output callback
+     * never reads a stale record again; a stale subscriber is refused by its closed word (set by {@code deactivate()}) and, once the plan is reset or replaced, by its plan guard too.
      */
-    private record ClockedSilence(CaptureRoutingPlan plan, int[] sources) { }
-    private static final ClockedSilence NO_CLOCKED_SILENCE = new ClockedSilence(null, new int[0]);
-    private final java.util.concurrent.atomic.AtomicReference<ClockedSilence> clockedSilentInputSources =
-            new java.util.concurrent.atomic.AtomicReference<>(NO_CLOCKED_SILENCE);
-    /**
-     * Control/publisher thread only: copy-on-write append, deduplicated, never onto another plan's set.
-     * A null plan would match the reset sentinel and clock silence into no stream, so it is refused.
-     */
-    private void clockInputSourceSilently(CaptureRoutingPlan generation, int source) {
-        Objects.requireNonNull(generation, "generation");
-        for (ClockedSilence current = clockedSilentInputSources.get(); current.plan() == generation;
-                current = clockedSilentInputSources.get()) {
-            for (int clocked : current.sources()) if (clocked == source) return;
-            int[] sources = java.util.Arrays.copyOf(current.sources(), current.sources().length + 1);
-            sources[sources.length - 1] = source;
-            if (clockedSilentInputSources.compareAndSet(current, new ClockedSilence(generation, sources))) return;
+    private record InputSourceModes(CaptureRoutingPlan plan, java.util.concurrent.atomic.AtomicIntegerArray states) {
+        InputSourceModes { Objects.requireNonNull(states, "states"); }
+        /** Publisher thread: {@code LIVE -> DELIVERING}; false means the block is not this source's to deliver. */
+        boolean claim(int source) { return states.compareAndSet(source, SOURCE_LIVE, SOURCE_DELIVERING); }
+        /** Publisher thread, after a successful claim: back to live, or complete a handoff requested meanwhile; closed stays closed. */
+        void release(int source) {
+            if (!states.compareAndSet(source, SOURCE_DELIVERING, SOURCE_LIVE))
+                states.compareAndSet(source, SOURCE_HANDOFF_REQUESTED, SOURCE_CLOCKED_SILENT);
         }
+        /** Terminal signal: true if this call moved the source off its publisher (now, or at the claim's release). */
+        boolean handOff(int source) {
+            for (;;) {
+                int state = states.get(source);
+                if (state == SOURCE_LIVE && states.compareAndSet(source, SOURCE_LIVE, SOURCE_CLOCKED_SILENT)) return true;
+                if (state == SOURCE_DELIVERING && states.compareAndSet(source, SOURCE_DELIVERING, SOURCE_HANDOFF_REQUESTED)) return true;
+                if (state != SOURCE_LIVE && state != SOURCE_DELIVERING) return false;
+            }
+        }
+        /** Every other transition is a CAS from a non-closed state, so this plain write is never overwritten. */
+        void close(int source) { states.set(source, SOURCE_CLOSED); }
+    }
+    private static final int SOURCE_LIVE = 0, SOURCE_DELIVERING = 1, SOURCE_HANDOFF_REQUESTED = 2,
+            SOURCE_CLOCKED_SILENT = 3, SOURCE_CLOSED = 4;
+    private static final InputSourceModes NO_INPUT_SOURCE_MODES =
+            new InputSourceModes(null, new java.util.concurrent.atomic.AtomicIntegerArray(0));
+    /** Written by record start and {@link #closeAdditionalInputs} only; {@link #processBlock} only reads it. */
+    private volatile InputSourceModes inputSourceModes = NO_INPUT_SOURCE_MODES;
+    /**
+     * Record start, for a proven sibling opened at zero width: hands a source of {@code generation} to the
+     * output clock in the current record only if that record is {@code generation}'s. A null plan would match
+     * the reset sentinel's null plan, whose state array is empty, so it is refused up front. (A subscriber's
+     * terminal signal hands off in its own record, {@code AdditionalInputSubscriber.modes}, not through here.)
+     */
+    private boolean clockInputSourceSilently(CaptureRoutingPlan generation, int source) {
+        InputSourceModes current = inputSourceModes;
+        return current.plan() == Objects.requireNonNull(generation, "generation") && current.handOff(source);
     }
 
     private boolean inputSourcePreviouslyValidated(CaptureRoutingPlan plan, int source) {
@@ -318,8 +344,10 @@ public final class AudioEngine {
                 startAudioOutputLocked(announcements, CaptureRequirement.REQUIRED);
                 plan = captureRoutingPlan;
                 CaptureMeterSources meterSources = prepareCaptureMeters(plan);
-                // Bound before any subscribe: a sibling terminating during this loop appends to it.
-                clockedSilentInputSources.set(new ClockedSilence(meterSources.plan(), new int[0]));
+                // Bound before any subscribe: a sibling terminating during this loop hands off in it.
+                InputSourceModes modes = new InputSourceModes(meterSources.plan(),
+                        new java.util.concurrent.atomic.AtomicIntegerArray(plan.sources().size()));
+                inputSourceModes = modes;
                 for (int i = 1; i < plan.sources().size(); i++) {
                     AudioBackend sibling = plan.backend().createInputBackend();
                     additionalInputs.add(sibling); // ownership precedes open, including partial failures
@@ -340,7 +368,7 @@ public final class AudioEngine {
                     double captureRate = sibling.openedInputSampleRate();
                     if (Double.isFinite(captureRate) && Double.compare(captureRate, openSdkFormat.sampleRate()) != 0)
                         throw new AudioBackendException("Input device '" + source.device().name() + "' opened at " + captureRate + " Hz; the take requires " + openSdkFormat.sampleRate() + " Hz");
-                    AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(), meterSources);
+                    AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(), meterSources, modes);
                     additionalSubscribers.add(subscriber);
                     sibling.inputBlocks().subscribe(subscriber);
                 }
@@ -376,7 +404,7 @@ public final class AudioEngine {
     }
 
     private void closeAdditionalInputs() {
-        clockedSilentInputSources.set(NO_CLOCKED_SILENCE);
+        inputSourceModes = NO_INPUT_SOURCE_MODES;
         additionalRecordingCallbacks = new RecordingCallback[0];
         for (AdditionalInputSubscriber subscriber : additionalSubscribers) subscriber.deactivate();
         additionalSubscribers.clear();
@@ -403,48 +431,60 @@ public final class AudioEngine {
         private final float[][][] views;
         private final CaptureRoutingPlan generation;
         private final InputSourceAvailability availability;
-        private volatile boolean active = true;
+        /** This subscriber's own plan's record, bound at construction, never the engine's current one. */
+        private final InputSourceModes modes;
         private volatile java.util.concurrent.Flow.Subscription subscription;
-        AdditionalInputSubscriber(int source, int width, CaptureMeterSources meterSources) {
+        AdditionalInputSubscriber(int source, int width, CaptureMeterSources meterSources, InputSourceModes modes) {
             this.source = source;
             this.generation = meterSources.plan();
             this.availability = meterSources.availability().get(source);
+            this.modes = modes;
             planes = new float[width][format.bufferSize()];
             views = new float[width + 1][][];
             for (int i = 0; i <= width; i++) views[i] = java.util.Arrays.copyOf(planes, i);
         }
         void deactivate() {
-            active = false;
+            modes.close(source);
             java.util.concurrent.Flow.Subscription current = subscription;
             if (current != null) current.cancel();
         }
         @Override public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
             this.subscription = subscription;
-            if (!active) subscription.cancel(); else subscription.request(Long.MAX_VALUE);
-        }
-        @Override public void onNext(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) {
-            if (!active || captureRoutingPlan != generation) return;
-            int frames = Math.min(block.frames(), planes[0].length);
-            for (int ch = 0; ch < planes.length; ch++) {
-                for (int f = 0; f < frames; f++) planes[ch][f] = ch < block.channels() ? block.samples()[f * block.channels() + ch] : 0f;
-            }
-            float[][] delivered = views[Math.min(block.channels(), planes.length)];
-            if (!active || captureRoutingPlan != generation) return;
-            tapInputSource(source, delivered, frames);
-            RecordingCallback[] callbacks = additionalRecordingCallbacks;
-            if (active && captureRoutingPlan == generation && source - 1 < callbacks.length)
-                callbacks[source - 1].onAudioCaptured(delivered, block.frames());
+            if (modes.states().get(source) == SOURCE_CLOSED) subscription.cancel(); else subscription.request(Long.MAX_VALUE);
         }
         /**
-         * A dead sibling keeps its tracks full-length: its callback moves onto the output clock as
-         * zero-width blocks, which the flush flags and warns once per track. Flow signals are
-         * serialized and {@code active} drops first, so this thread delivers nothing after the handoff.
+         * Delivers only under the {@code LIVE -> DELIVERING} claim: a block that arrives while the word is not
+         * {@code SOURCE_LIVE} (clocked silent, closed, or another claim in flight) is dropped, and a terminal
+         * signal that lands during the claim is completed by the {@code finally} release, so the output
+         * callback clocks this source only after the block has left its callback.
+         */
+        @Override public void onNext(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) {
+            if (captureRoutingPlan != generation || !modes.claim(source)) return;
+            try {
+                int frames = Math.min(block.frames(), planes[0].length);
+                for (int ch = 0; ch < planes.length; ch++) {
+                    for (int f = 0; f < frames; f++) planes[ch][f] = ch < block.channels() ? block.samples()[f * block.channels() + ch] : 0f;
+                }
+                float[][] delivered = views[Math.min(block.channels(), planes.length)];
+                if (captureRoutingPlan != generation) return;
+                tapInputSource(source, delivered, frames);
+                RecordingCallback[] callbacks = additionalRecordingCallbacks;
+                if (captureRoutingPlan == generation && source - 1 < callbacks.length)
+                    callbacks[source - 1].onAudioCaptured(delivered, block.frames());
+            } finally {
+                modes.release(source);
+            }
+        }
+        /**
+         * A dead sibling's tracks continue on the output clock: its callback moves onto it as
+         * zero-width blocks, which the flush flags and warns once per track. The move is one CAS on
+         * {@code modes} ({@link InputSourceModes#handOff}), or, while a block is being delivered, a request
+         * that {@link #onNext}'s release completes; {@code handOff} refuses a word whose handoff is already requested or done, or that is closed, so
+         * only the first terminal signal of this plan's live source counts.
          */
         private boolean terminateInputSource() {
-            if (!active || captureRoutingPlan != generation) return false;
+            if (captureRoutingPlan != generation || !modes.handOff(source)) return false;
             availability.markUnavailable();
-            active = false;
-            clockInputSourceSilently(generation, source);
             return true;
         }
         @Override public void onError(Throwable error) {
@@ -5236,10 +5276,11 @@ public final class AudioEngine {
         }
         boolean rendered = false;
         try {
+            // Reads only: a sibling source is this thread's to clock iff its word reads CLOCKED_SILENT.
             RecordingCallback[] additionalCallbacks = additionalRecordingCallbacks;
-            int[] silentSources = clockedSilentInputSources.get().sources();
-            for (int source : silentSources) {
-                if (source - 1 < additionalCallbacks.length) {
+            java.util.concurrent.atomic.AtomicIntegerArray sourceStates = inputSourceModes.states();
+            for (int source = 1, sources = sourceStates.length(); source < sources; source++) {
+                if (source - 1 < additionalCallbacks.length && sourceStates.get(source) == SOURCE_CLOCKED_SILENT) {
                     additionalCallbacks[source - 1].onAudioCaptured(EMPTY_CAPTURE_INPUT, numFrames);
                 }
             }

@@ -1247,6 +1247,47 @@ class RealTimeSafeContractTest {
                 .containsExactlyInAnyOrderElementsOf(RENDER_PATH_ALLOCATION_ALLOWLIST.keySet());
     }
 
+    /** The engine's per-plan sibling-source state words; the render walk does not follow nested classes. */
+    private static final String INPUT_SOURCE_MODES = "com/benesquivelmusic/daw/core/audio/AudioEngine$InputSourceModes";
+    private static final String ATOMIC_INT_ARRAY = "java/util/concurrent/atomic/AtomicIntegerArray";
+
+    /**
+     * The sibling-source handoff's CASes live in the nested record {@code AudioEngine.InputSourceModes},
+     * which the render walk does not follow, so {@code processBlock}'s reachable set is pinned to READ the
+     * words only: of the record it calls exactly the accessor {@code states}, and of
+     * {@code AtomicIntegerArray} exactly {@code get} and {@code length}. The read itself must still be there,
+     * or the pin would pass vacuously.
+     */
+    @Test
+    void processBlockOnlyReadsTheSiblingSourceStateWords() throws Exception {
+        ReachableScan scan = walkReachable(Class.forName("com.benesquivelmusic.daw.core.audio.AudioEngine"),
+                named("processBlock"), RENDER_PATH_INVOKE_OFFENDER);
+        assertThat(scan.scannedRoots()).as("AudioEngine#processBlock must exist with code").isGreaterThanOrEqualTo(1);
+        Set<String> modes = membersInvokedOn(scan, INPUT_SOURCE_MODES);
+        Set<String> words = membersInvokedOn(scan, ATOMIC_INT_ARRAY);
+        assertThat(modes)
+                .as("processBlock (reached: %s) must still read the sibling-source state words through "
+                        + "InputSourceModes#states — a rename or removed read makes this pin vacuous", scan.reached())
+                .contains("states");
+        assertThat(words)
+                .as("processBlock must still read a sibling-source word with AtomicIntegerArray#get")
+                .contains("get");
+        assertThat(modes)
+                .as("processBlock (reached: %s) may only read InputSourceModes through its states accessor; "
+                        + "claim/release/handOff/close belong to the subscriber and record start", scan.reached())
+                .containsExactlyInAnyOrder("states");
+        assertThat(words)
+                .as("processBlock (reached: %s) may only read the sibling-source words", scan.reached())
+                .containsExactlyInAnyOrder("get", "length");
+    }
+
+    private static Set<String> membersInvokedOn(ReachableScan scan, String owner) {
+        return scan.invoked().stream()
+                .filter(invoked -> invoked.startsWith(owner + "#"))
+                .map(invoked -> invoked.substring(owner.length() + 1))
+                .collect(Collectors.toCollection(TreeSet::new));
+    }
+
     /**
      * Story 318 — from every {@code @RealTimeSafe} method of every metering
      * class, the reachable closure (across the metering package) takes no

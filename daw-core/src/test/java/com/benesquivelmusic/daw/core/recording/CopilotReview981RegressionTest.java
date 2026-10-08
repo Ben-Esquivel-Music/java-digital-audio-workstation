@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
@@ -20,12 +21,23 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.audioOnDisk;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -424,6 +436,293 @@ class CopilotReview981RegressionTest {
                 assertThat(files.filter(Files::isRegularFile).toList()).isEmpty();
             }
         } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    private enum Termination {
+        FAILURE, COMPLETION;
+
+        void signal(Flow.Subscriber<? super AudioBlock> subscriber) {
+            switch (this) {
+                case FAILURE -> subscriber.onError(new AudioBackendException("Interface B publisher failed"));
+                case COMPLETION -> subscriber.onComplete();
+            }
+        }
+    }
+
+    /**
+     * Interface B's live block is held inside its track callback while the terminal signal arrives and an
+     * output period runs. That period belongs to the block: the output must not clock silence beside it (two
+     * producers in one CaptureCallback), and once the block has left, every later period is clocked. A terminal
+     * signal and a block from the subscriber of a replaced stream change nothing. The publisher modelled here
+     * breaks Flow's serial-signal rule (a terminal signal while its onNext still runs); SubmissionPublisher-backed
+     * siblings cannot reach this path, so it is defensive, and this is the test the earlier two-write handoff
+     * fails.
+     */
+    @ParameterizedTest @EnumSource(Termination.class)
+    void terminationDuringAnInFlightSiblingBlockHandsTheSourceToTheOutputClockWhenTheBlockLeaves(Termination termination)
+            throws Exception {
+        DyingSibling take = startDyingSibling("in-flight-" + termination);
+        try (take) {
+            take.period();
+            take.period();
+            ProducerFence fence = take.fence();
+            var delivery = new FutureTask<Void>(() -> { take.backend().sibling.emit(256); return null; });
+            Thread publisher = Thread.ofPlatform().name("Interface B publisher").unstarted(delivery);
+            fence.holdOn = publisher;
+            publisher.start();
+            Throwable primary = null;
+            try {
+                assertThat(fence.held.await(5, TimeUnit.SECONDS)).as("Interface B's third block entered its callback").isTrue();
+                termination.signal(take.subscriber());
+                termination.signal(take.stale());
+                take.stale().onNext(block(take.backend().sibling.openedWidth));
+                take.engine().processBlock(signal(.5f), new float[2][256], 256);
+                assertThat(fence.overlaps.get()).as("the output clocked silence beside the in-flight block").isZero();
+            } catch (Throwable failure) {
+                primary = failure;
+                throw failure;
+            } finally {
+                fence.release.countDown();
+                joinReleased(publisher, primary);
+            }
+            delivery.get(5, TimeUnit.SECONDS);
+            take.period(); // Interface B's publisher is dead: only the output delivers from here on.
+            take.period();
+            take.assertFullLengthWithSilenceAfter(3, 5);
+        }
+        assertOneRoutingFlagPerSibling("in-flight-" + termination, take.siblings());
+    }
+
+    /**
+     * Interface B's error signal is held in the warning its onError logs, which runs after the handoff; an
+     * output period and a block delivered during that hold fall after the handoff, so the period is clocked
+     * silent and the block refused. This guards against splitting the handoff around the warning: refusing
+     * blocks first and clocking the output only later loses that period. The earlier two-write handoff's own
+     * window had no observable hook here (markUnavailable ran before it, the warning after it), so the guard
+     * for that window is structural: the single CAS in the handoff.
+     */
+    @Test
+    void anOutputPeriodDuringASiblingsErrorSignalIsClockedSilentAndNeverSkipped() throws Exception {
+        Logger engineLog = Logger.getLogger(AudioEngine.class.getName());
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var terminating = new AtomicReference<Thread>();
+        Handler holdTheErrorSignal = new Handler() {
+            @Override public void publish(LogRecord record) {
+                if (Thread.currentThread() != terminating.get() || !"Input stream failed".equals(record.getMessage())) return;
+                held.countDown();
+                try { release.await(5, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        engineLog.addHandler(holdTheErrorSignal);
+        DyingSibling take;
+        try {
+            take = startDyingSibling("error-signal");
+        } catch (Exception | Error failure) {
+            engineLog.removeHandler(holdTheErrorSignal);
+            throw failure;
+        }
+        try (take) {
+            take.period();
+            take.period();
+            var failure = new FutureTask<Void>(() -> { Termination.FAILURE.signal(take.subscriber()); return null; });
+            Thread publisher = Thread.ofPlatform().name("Interface B publisher").unstarted(failure);
+            terminating.set(publisher);
+            publisher.start();
+            Throwable primary = null;
+            try {
+                assertThat(held.await(5, TimeUnit.SECONDS)).as("Interface B's error signal reached its warning").isTrue();
+                take.backend().sibling.emit(256); // a block delivered concurrently with the error signal: refused
+                take.engine().processBlock(signal(.5f), new float[2][256], 256);
+            } catch (Throwable thrown) {
+                primary = thrown;
+                throw thrown;
+            } finally {
+                release.countDown();
+                joinReleased(publisher, primary);
+            }
+            failure.get(5, TimeUnit.SECONDS);
+            take.period();
+            take.assertFullLengthWithSilenceAfter(2, 4);
+        } finally {
+            engineLog.removeHandler(holdTheErrorSignal);
+        }
+        assertOneRoutingFlagPerSibling("error-signal", take.siblings());
+    }
+
+    /**
+     * Stopping the stream closes Interface B's source for good: a subscription that reaches its subscriber
+     * only after the stop is cancelled at once and never asked for blocks.
+     */
+    @Test
+    void aSubscriptionReachingAStoppedStreamsSiblingIsCancelledAndNeverRequested() throws Exception {
+        var backend = new MultichannelInputCaptureStory326Test.PatternBackend();
+        AudioEngine engine = engine(backend);
+        List<Track> tracks = List.of(track("Primary", 0), track("Sibling", 1));
+        engine.setGraph(new Transport(), null, tracks);
+        try {
+            engine.startAudioInputOutput(tracks);
+            engine.pauseAudioOutput();
+            Flow.Subscriber<? super AudioBlock> stopped = backend.sibling.subscribers.getFirst();
+            engine.stopAudioOutput();
+            var requested = new AtomicLong();
+            var cancelled = new AtomicBoolean();
+            stopped.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { requested.addAndGet(n); }
+                @Override public void cancel() { cancelled.set(true); }
+            });
+            assertThat(cancelled).as("the stopped stream's subscriber cancels the late subscription").isTrue();
+            assertThat(requested.get()).as("and requests no blocks through it").isZero();
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    /** Primary on Interface A, two tracks on Interface B, driven one output period at a time. */
+    private DyingSibling startDyingSibling(String name) throws Exception {
+        var backend = new MultichannelInputCaptureStory326Test.PatternBackend();
+        AudioEngine engine = engine(backend);
+        Track primary = track("Primary", 0), left = track("Sibling left", 1), right = track("Sibling right", 1);
+        right.setInputRouting(new InputRouting(1, 1));
+        List<Track> tracks = List.of(primary, left, right);
+        Transport transport = new Transport();
+        engine.setGraph(transport, null, tracks);
+        var meters = new InputLevelMonitorRegistry();
+        engine.setInputLevelMonitorRegistry(meters);
+        engine.startAudioInputOutput(tracks);
+        engine.pauseAudioOutput();
+        Flow.Subscriber<? super AudioBlock> stale = backend.sibling.subscribers.getFirst();
+        engine.stopAudioOutput();
+        engine.startAudioInputOutput(tracks);
+        engine.pauseAudioOutput();
+        var warnings = new CopyOnWriteArrayList<String>();
+        RecordingPipeline pipeline = new RecordingPipeline(engine, transport, FORMAT, directory.resolve(name), tracks);
+        pipeline.setWarningSink(warnings::add);
+        try {
+            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.beginCapture();
+        } catch (Exception | Error failure) {
+            stop(pipeline, engine);
+            throw failure;
+        }
+        return new DyingSibling(backend, engine, pipeline, meters, primary, List.of(left, right), warnings,
+                backend.sibling.subscribers.getFirst(), stale);
+    }
+
+    private record DyingSibling(MultichannelInputCaptureStory326Test.PatternBackend backend, AudioEngine engine,
+                                RecordingPipeline pipeline, InputLevelMonitorRegistry meters, Track primary,
+                                List<Track> siblings, List<String> warnings,
+                                Flow.Subscriber<? super AudioBlock> subscriber,
+                                Flow.Subscriber<? super AudioBlock> stale) implements AutoCloseable {
+        /** One output period: the output callback, then Interface B's block for it. */
+        void period() {
+            engine.processBlock(signal(.5f), new float[2][256], 256);
+            backend.sibling.emit(256);
+        }
+
+        /** Wraps Interface B's installed track callback; the take's own CaptureCallback still records. */
+        ProducerFence fence() throws ReflectiveOperationException {
+            Field installed = AudioEngine.class.getDeclaredField("additionalRecordingCallbacks");
+            installed.setAccessible(true);
+            var callbacks = (AudioEngine.RecordingCallback[]) installed.get(engine);
+            assertThat(callbacks).hasSize(1);
+            var fence = new ProducerFence(callbacks[0]);
+            engine.setAdditionalRecordingCallbacks(new AudioEngine.RecordingCallback[]{fence});
+            return fence;
+        }
+
+        void assertFullLengthWithSilenceAfter(int liveBlocks, int periods) {
+            pipeline.awaitFlushed();
+            assertThat(pipeline.getSession(primary).getTotalSamplesRecorded()).isEqualTo(periods * 256L);
+            for (Track sibling : siblings) {
+                assertThat(pipeline.getSession(sibling).getTotalSamplesRecorded())
+                        .as("'%s' owns every output period exactly once", sibling.getName())
+                        .isEqualTo(periods * 256L);
+                float[] recorded = audioOnDisk(pipeline.getSession(sibling))[0];
+                assertThat(recorded).hasSize(periods * 256);
+                assertThat(Arrays.copyOfRange(recorded, 0, liveBlocks * 256)).containsOnly(RecordedAudioTestSupport.decoded16(.9f));
+                assertThat(Arrays.copyOfRange(recorded, liveBlocks * 256, recorded.length)).containsOnly(0f);
+                assertThat(meters.get(sibling.getId()).isRoutingUnavailable()).isTrue();
+                assertThat(warnings).filteredOn(warning -> warning.contains("'" + sibling.getName() + "'"))
+                        .singleElement().asString().contains("Interface B", "silence");
+            }
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable()).isFalse();
+            assertThat(warnings).hasSize(siblings.size());
+        }
+
+        @Override
+        public void close() throws Exception {
+            stop(pipeline, engine);
+        }
+    }
+
+    /**
+     * Joins a publisher thread whose latch the caller has just released; failing to join is added to the
+     * test's own failure when there is one, so it never masks it.
+     */
+    private static void joinReleased(Thread publisher, Throwable primary) {
+        AssertionError unjoined = null;
+        try {
+            publisher.join(5_000);
+            if (publisher.isAlive()) unjoined = new AssertionError("'" + publisher.getName() + "' still runs 5 s after its release");
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            unjoined = new AssertionError("interrupted while joining '" + publisher.getName() + "'", interrupted);
+        }
+        if (unjoined == null) return;
+        if (primary != null) primary.addSuppressed(unjoined);
+        else throw unjoined;
+    }
+
+    private void assertOneRoutingFlagPerSibling(String name, List<Track> siblings) throws Exception {
+        List<TakeManifest.RoutingFlag> flags = TakeManifest.read(directory.resolve(name).resolve(TakeManifest.FILE_NAME)).routingFlags();
+        assertThat(flags).extracting(TakeManifest.RoutingFlag::trackId)
+                .containsExactlyInAnyOrderElementsOf(siblings.stream().map(Track::getId).toList());
+        assertThat(flags).allSatisfy(flag -> {
+            assertThat(flag.device()).contains("Interface B");
+            assertThat(flag.availableChannels()).isZero();
+        });
+    }
+
+    /**
+     * One source's track callback, entered by at most one producer at a time: a second entry is counted and
+     * dropped instead of reaching the take's single-producer ring. {@code holdOn}'s next entry is held.
+     */
+    private static final class ProducerFence implements AudioEngine.RecordingCallback {
+        private final AudioEngine.RecordingCallback delegate;
+        private final AtomicInteger inside = new AtomicInteger();
+        final AtomicInteger overlaps = new AtomicInteger();
+        final CountDownLatch held = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        volatile Thread holdOn;
+
+        ProducerFence(AudioEngine.RecordingCallback delegate) { this.delegate = delegate; }
+
+        @Override public void onAudioCaptured(float[][] inputBuffer, int numFrames) {
+            if (inside.getAndIncrement() != 0) {
+                overlaps.incrementAndGet();
+                inside.decrementAndGet();
+                return;
+            }
+            try {
+                if (Thread.currentThread() == holdOn) {
+                    holdOn = null;
+                    held.countDown();
+                    try { release.await(5, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                }
+                delegate.onAudioCaptured(inputBuffer, numFrames);
+            } finally {
+                inside.decrementAndGet();
+            }
+        }
+    }
+
+    private static AudioBlock block(int width) {
+        float[] samples = new float[width * 256];
+        Arrays.fill(samples, .4f);
+        return new AudioBlock(48_000, width, 256, samples);
     }
 
     private static float[][] signal(float value) {

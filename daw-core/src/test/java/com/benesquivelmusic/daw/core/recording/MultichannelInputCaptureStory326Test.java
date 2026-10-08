@@ -627,13 +627,14 @@ class MultichannelInputCaptureStory326Test {
         Flow.Subscriber<? super AudioBlock> old = backend.sibling.subscribers.getFirst();
         CaptureRoutingPlan oldPlan = engine.getCaptureRoutingPlan();
         engine.stopAudioOutput();
-        // The signal() calls are guard checks (deactivate() already cleared the old subscriber); the late
-        // appends replay a terminal signal that passed its guard before the reset and are what discriminate.
+        // The signal() calls are guard checks: the old subscriber's plan guard refuses them, and its closed
+        // word (deactivate()) would too. The late handoffs enter the engine's plan-bound
+        // clockInputSourceSilently with the old plan and are what discriminate its plan check.
         termination.signal(old);
-        appendClockedSilenceLate(engine, oldPlan, 1); // between streams: the reset sentinel holds no plan
+        assertThat(handOffToOutputClockLate(engine, oldPlan, 1)).as("between streams: the reset sentinel holds no plan").isFalse();
         engine.startAudioInputOutput(tracks); engine.pauseAudioOutput();
         termination.signal(old);
-        appendClockedSilenceLate(engine, oldPlan, 1); // after replacement: the new stream's set holds its plan
+        assertThat(handOffToOutputClockLate(engine, oldPlan, 1)).as("after replacement: the new stream's record holds its plan").isFalse();
         List<String> warnings = new CopyOnWriteArrayList<>();
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, FORMAT, directory, tracks);
         pipeline.setWarningSink(warnings::add);
@@ -723,11 +724,11 @@ class MultichannelInputCaptureStory326Test {
         });
     }
 
-    /** The engine's own append, entered with a replaced plan: the publish a racing terminal signal makes. */
-    private static void appendClockedSilenceLate(AudioEngine engine, CaptureRoutingPlan plan, int source) throws Exception {
-        var append = AudioEngine.class.getDeclaredMethod("clockInputSourceSilently", CaptureRoutingPlan.class, int.class);
-        append.setAccessible(true);
-        append.invoke(engine, plan, source);
+    /** The engine's plan-bound output-clock handoff, entered with a replaced plan; true if it handed off. */
+    private static boolean handOffToOutputClockLate(AudioEngine engine, CaptureRoutingPlan plan, int source) throws Exception {
+        var handOff = AudioEngine.class.getDeclaredMethod("clockInputSourceSilently", CaptureRoutingPlan.class, int.class);
+        handOff.setAccessible(true);
+        return (boolean) handOff.invoke(engine, plan, source);
     }
 
     @Test void secondInputOpenFailureRollsBackBothOwnedStreams() {
