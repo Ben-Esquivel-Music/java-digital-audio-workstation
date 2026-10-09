@@ -134,6 +134,32 @@ class SessionInputSelectionTest {
     }
 
     @Test
+    void aNameSharedByAPlaybackAndACaptureMixerPreselectsAndResolvesTheCaptureMixer() {
+        // Java Sound on Windows: a playback-only and a capture-only mixer share one name, playback first.
+        String spdif = "Digital Audio (S/PDIF)";
+        AudioDeviceInfo playback = new AudioDeviceInfo(0, spdif, "Java Sound", 0, 2, 48_000, List.of(), 0, 0);
+        AudioDeviceInfo capture = new AudioDeviceInfo(1, spdif, "Java Sound", 2, 0, 48_000, List.of(), 0, 0);
+        List<AudioDeviceInfo> devices = List.of(playback, capture);
+        SettingsModel settings = newSettings();
+        SessionInputSelection selection = new SettingsBackedSessionInputSelection(settings);
+
+        for (String persisted : List.of(spdif, capture.qualifiedName())) {
+            settings.setAudioInputDevice(persisted);
+            assertThat(selection.selectedIndexIn(devices))
+                    .as("'%s' preselects the row the input dialog offers, the capture mixer", persisted)
+                    .isEqualTo(capture.index());
+        }
+
+        Track guitar = new Track("Guitar", TrackType.AUDIO);
+        guitar.setInputDevice(Optional.of(new DeviceId("Java Sound", capture.qualifiedName())));
+        assertThat(SessionInputSelection.resolve(guitar, listedBy("Java Sound", devices)))
+                .as("the identity resolves to the capture mixer, not to nothing").hasValue(capture);
+        AudioDeviceInfo secondCapture = new AudioDeviceInfo(2, spdif, "Java Sound", 2, 0, 48_000, List.of(), 0, 0);
+        assertThat(SessionInputSelection.resolve(guitar, listedBy("Java Sound", List.of(playback, capture, secondCapture))))
+                .as("two capture mixers of that name stay unresolved").isEmpty();
+    }
+
+    @Test
     void aLegacyIndexHintResolvesOnlyWhileTheTrackHasNoIdentity() {
         Track legacy = new Track("Legacy", TrackType.AUDIO);
         legacy.setLegacyInputDeviceIndexHint(USB.index());

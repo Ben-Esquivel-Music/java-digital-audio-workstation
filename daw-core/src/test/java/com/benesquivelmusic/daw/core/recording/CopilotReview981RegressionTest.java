@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
@@ -42,6 +43,8 @@ import java.util.logging.Logger;
 import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.audioOnDisk;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
 class CopilotReview981RegressionTest {
@@ -121,6 +124,54 @@ class CopilotReview981RegressionTest {
         } finally { stop(pipeline, engine); }
         assertThat(TakeManifest.read(directory.resolve(TakeManifest.FILE_NAME)).routingFlags()).singleElement()
                 .satisfies(flag -> assertThat(flag.availableChannels()).isZero());
+    }
+
+    @Test
+    void aProvenSiblingIsOpenedWhenASameNamedPlaybackEntryListsNoCaptureChannels() {
+        // Java Sound on Windows lists a playback-only and a capture-only mixer under one name. The
+        // playback entry's zero capture channels must not mark the proven capture source unavailable.
+        var backend = spy(new MultichannelInputCaptureStory326Test.PatternBackend());
+        doReturn(List.of(
+                new AudioDeviceInfo(0, "Interface A", "Pattern", 8, 2, 48_000, List.of(), 0, 0),
+                new AudioDeviceInfo(1, "Interface B", "Pattern", 0, 2, 48_000, List.of(), 0, 0),
+                new AudioDeviceInfo(2, "Interface B", "Pattern", 8, 0, 48_000, List.of(), 0, 0)))
+                .when(backend).listDevices();
+        AudioEngine engine = engine(backend);
+        List<Track> tracks = List.of(track("Primary", 0), track("Sibling", 1));
+        try {
+            engine.validateInputRouting(tracks);
+            engine.startAudioInputOutput(tracks);
+
+            assertThat(backend.sibling).as("the sibling source was created").isNotNull();
+            assertThat(backend.sibling.input).isEqualTo("Interface B [Pattern]");
+            assertThat(backend.sibling.openedInputChannels())
+                    .as("opened and capturing, not skipped as known-unavailable").isEqualTo(1);
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    @Test
+    void aTooWideDefaultRouteOnASameNamedTwinIsRefusedBeforeTheOpen() {
+        // The plan's own enumeration lists one 8-channel "Interface A", so its width check passes. The
+        // engine's second enumeration then lists the Windows twin pair: a playback entry with zero capture
+        // channels and a 2-channel capture entry under the same name. Read as the plan reads the label, the
+        // head is the capture entry, so the 4-wide route is refused before any device opens.
+        var backend = spy(new MultichannelInputCaptureStory326Test.PatternBackend());
+        backend.maximum = 2;
+        doReturn(List.of(new AudioDeviceInfo(0, "Interface A", "Pattern", 8, 2, 48_000, List.of(), 0, 0)),
+                List.of(new AudioDeviceInfo(0, "Interface A", "Pattern", 0, 2, 48_000, List.of(), 0, 0),
+                        new AudioDeviceInfo(1, "Interface A", "Pattern", 2, 0, 48_000, List.of(), 0, 0)))
+                .when(backend).listDevices();
+        AudioEngine engine = engine(backend);
+        Track wide = new Track("Wide", TrackType.AUDIO);
+        wide.setArmed(true);
+        wide.setInputRouting(new InputRouting(0, 4));
+        try {
+            assertThatThrownBy(() -> engine.startAudioInputOutput(List.of(wide)))
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining("exceeds 2 input channels")
+                    .hasMessageNotContaining("opened");
+            assertThat(backend.opens).as("refused by the pre-open resolve, not after opening").isZero();
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
     }
 
     @Test

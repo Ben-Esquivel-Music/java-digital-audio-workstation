@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import org.junit.jupiter.api.Test;
@@ -278,6 +279,116 @@ class CaptureRoutingPlanTest {
     }
 
     @Test
+    void unassignedTrackOnJavaSoundRecordsFromTheSessionInputNotTheOutputMixer() {
+        String javaSound = JavaxSoundBackend.NAME;
+        AudioDeviceInfo speakers = new AudioDeviceInfo(0, "Speakers", javaSound, 0, 2, 48_000, List.of(), 0, 0);
+        AudioDeviceInfo microphone = new AudioDeviceInfo(1, "Microphone", javaSound, 2, 0, 48_000, List.of(), 0, 0);
+        DeviceId output = new DeviceId(javaSound, speakers.qualifiedName());
+        DeviceId sessionInput = new DeviceId(javaSound, microphone.qualifiedName());
+        // A blank session input: Java Sound answers its default-input alias, resolved
+        // here to the only capturing mixer, without enumerating the host's mixers.
+        BackendStreamRung rung = new BackendStreamRung(new JavaxSoundBackend(), output);
+        CaptureRoutingPlan.Route unassigned = route("Vocal", 0, 1);
+        CaptureRoutingPlan.Route byIdentity = new CaptureRoutingPlan.Route("Guitar", "Guitar",
+                new InputRouting(1, 1), Optional.of(sessionInput));
+
+        for (boolean checkWidths : new boolean[]{true, false}) {
+            CaptureRoutingPlan plan = CaptureRoutingPlan.resolveSnapshots(rung, List.of(unassigned, byIdentity),
+                    List.of(speakers, microphone), checkWidths);
+
+            assertThat(plan.sources()).as("the unassigned track and the identity route share one source")
+                    .singleElement().satisfies(source -> {
+                        assertThat(source.device()).isEqualTo(sessionInput).isNotEqualTo(output);
+                        assertThat(source.requestedChannels()).isEqualTo(2);
+                    });
+        }
+    }
+
+    @Test
+    void blankJavaSoundSessionInputArmsWhenSeveralMixersCapture() {
+        // The normal Windows enumeration: several mixers capture, so the default
+        // alias stays unresolved and its width is asked of the backend. The default
+        // capture line has no mixer whose capacity could be read; the answer is
+        // "unknown", never the playback-only default mixer's zero capture lines.
+        String javaSound = JavaxSoundBackend.NAME;
+        AudioDeviceInfo speakers = new AudioDeviceInfo(0, "Speakers", javaSound, 0, 2, 48_000, List.of(), 0, 0);
+        AudioDeviceInfo microphone = new AudioDeviceInfo(1, "Microphone", javaSound, 2, 0, 48_000, List.of(), 0, 0);
+        AudioDeviceInfo lineIn = new AudioDeviceInfo(2, "Line In", javaSound, 2, 0, 48_000, List.of(), 0, 0);
+        DeviceId output = new DeviceId(javaSound, speakers.qualifiedName());
+        BackendStreamRung rung = new BackendStreamRung(new JavaxSoundBackend(), output);
+        CaptureRoutingPlan.Route unassigned = route("Vocal", 0, 2);
+
+        CaptureRoutingPlan plan = CaptureRoutingPlan.resolveSnapshots(rung, List.of(unassigned),
+                List.of(speakers, microphone, lineIn), true);
+
+        assertThat(plan.sources()).singleElement().satisfies(source -> {
+            assertThat(source.device()).isEqualTo(DeviceId.defaultFor(javaSound)).isNotEqualTo(output);
+            assertThat(source.requestedChannels()).isEqualTo(2);
+        });
+        assertThat(plan.widthValidatedTracks())
+                .as("an unknown capacity is not a width proof; the REQUIRED capture open enforces it")
+                .doesNotContain(unassigned.id());
+    }
+
+    @Test
+    void defaultAndIdentityRoutesOnASameNamedPlaybackAndCapturePairFormOneSourceOnTheCaptureEntry() {
+        // Java Sound on Windows: a playback-only and a capture-only mixer share one name, playback first.
+        AudioDeviceInfo playback = spdif(0, 0, 2), capture = spdif(1, 2, 0);
+        DeviceId shared = new DeviceId(BACKEND_NAME, capture.qualifiedName());
+        AudioBackend backend = backend(shared);
+        List<CaptureRoutingPlan.Route> routes = List.of(route("Vocal", 0, 1), route("Guitar", 1, 1, capture));
+
+        for (boolean checkWidths : new boolean[]{true, false}) {
+            CaptureRoutingPlan plan = resolve(backend, routes, List.of(playback, capture), checkWidths);
+
+            assertThat(plan.sources()).as("the default route and the identity route share one source")
+                    .singleElement().satisfies(source -> {
+                        assertThat(source.device()).isEqualTo(shared);
+                        assertThat(source.requestedChannels()).isEqualTo(2);
+                        assertThat(source.selectionLabels())
+                                .as("as an input label the bare name names only the capture entry")
+                                .contains(capture.qualifiedName(), capture.name());
+                    });
+            assertThat(plan.widthValidatedTracks()).hasSize(checkWidths ? 2 : 0);
+        }
+        verify(backend, never()).inputChannelCapacity(any());
+    }
+
+    @Test
+    void aRouteOnASameNamedPlaybackAndCapturePairIsWidthCheckedAgainstTheCaptureEntry() {
+        AudioDeviceInfo playback = spdif(0, 0, 2), capture = spdif(1, 2, 0);
+        AudioBackend backend = backend(new DeviceId(BACKEND_NAME, capture.name()));
+
+        for (CaptureRoutingPlan.Route tooWide : List.of(route("Vocal", 1, 2), route("Guitar", 1, 2, capture))) {
+            assertThatThrownBy(() -> resolve(backend, List.of(tooWide), List.of(playback, capture), true))
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContainingAll("Track '" + tooWide.name() + "'", "exceeds 2 input channels");
+        }
+    }
+
+    @Test
+    void twoSameNamedCaptureEntriesAreStillRefusedBesideTheirPlaybackSibling() {
+        AudioDeviceInfo playback = spdif(0, 0, 2), first = spdif(1, 2, 0), second = spdif(2, 2, 0);
+        AudioBackend backend = backend(SELECTED);
+
+        assertThatThrownBy(() -> resolve(backend, List.of(route("Guitar", 0, 1, first)),
+                List.of(playback, first, second), true))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Track 'Guitar'", "ambiguous");
+    }
+
+    @Test
+    void aSingleEntryThatCannotCaptureIsRefusedNotReplacedByAnotherDevice() {
+        AudioDeviceInfo speakers = new AudioDeviceInfo(0, "Speakers", "Java Sound", 0, 2, 48_000, List.of(), 0, 0);
+        AudioDeviceInfo microphone = new AudioDeviceInfo(1, "Microphone", "Java Sound", 2, 0, 48_000, List.of(), 0, 0);
+
+        assertThatThrownBy(() -> resolve(backend(SELECTED), List.of(route("Vocal", 0, 1, speakers)),
+                List.of(speakers, microphone), true))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Track 'Vocal'", speakers.qualifiedName(), "exceeds 0 input channels");
+    }
+
+    @Test
     void devicesOnSeparateClocksAreRefusedNamingTheTrackAndTheDevice() {
         AudioDeviceInfo a = named(0, "Interface A"), b = named(1, "Interface B");
         DeviceId primary = new DeviceId(BACKEND_NAME, a.qualifiedName());
@@ -531,6 +642,12 @@ class CaptureRoutingPlanTest {
 
     private static AudioDeviceInfo named(int index, String name) {
         return new AudioDeviceInfo(index, name, "WASAPI", 8, 2, 48_000, List.of(), 0, 0);
+    }
+
+    /** A Java Sound mixer named as the Windows S/PDIF endpoint, with the given direction widths. */
+    private static AudioDeviceInfo spdif(int index, int inputs, int outputs) {
+        return new AudioDeviceInfo(index, "Digital Audio (S/PDIF)", "Java Sound", inputs, outputs,
+                48_000, List.of(), 0, 0);
     }
 
     private static AudioDeviceInfo info(int index, String hostApi) {

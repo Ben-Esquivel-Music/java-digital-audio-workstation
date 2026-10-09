@@ -884,7 +884,10 @@ public final class CallbackBackendAdapter implements AudioBackend {
             if (info != null) return info;
             throw new AudioBackendException("No default input device available on " + name());
         }
-        List<AudioDeviceInfo> matches = matchSelection(snapshot, inputDeviceName, info -> true);
+        // A host API can list a playback endpoint and a capture endpoint under one name: as an
+        // input this selection means the one that captures (story 326), never a substitute.
+        List<AudioDeviceInfo> matches = AudioDeviceInfo.preferDirection(
+                matchSelection(snapshot, inputDeviceName, info -> true), AudioDeviceInfo::supportsInput);
         if (matches.size() == 1) return matches.getFirst();
         if (matches.size() > 1) throw new AudioBackendException(ambiguousSelectionMessage("Input", inputDeviceName, matches));
         throw new AudioBackendException("Input device missing: " + inputDeviceName);
@@ -898,7 +901,9 @@ public final class CallbackBackendAdapter implements AudioBackend {
                     : refuseInput(capture, "No capture channels on input device '" + info.qualifiedName() + "'");
             throw new AudioBackendException("No default input device available on " + name());
         }
-        List<AudioDeviceInfo> matches = matchSelection(snapshot, input.name(), info -> true);
+        // As above: a same-named playback endpoint never makes an explicit input ambiguous.
+        List<AudioDeviceInfo> matches = AudioDeviceInfo.preferDirection(
+                matchSelection(snapshot, input.name(), info -> true), AudioDeviceInfo::supportsInput);
         if (matches.size() == 1) {
             AudioDeviceInfo info = matches.getFirst();
             return info.supportsInput() ? info : refuseInput(capture, "No capture channels on input device '" + input.name() + "'");

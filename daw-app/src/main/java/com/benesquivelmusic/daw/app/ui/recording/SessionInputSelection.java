@@ -53,18 +53,21 @@ public interface SessionInputSelection {
      * Returns the {@link AudioDeviceInfo#index() index} of the session device
      * within {@code devices} — the value the input-port dialog preselects — or
      * {@link Track#NO_INPUT_DEVICE} when the session device is not in the list.
+     * Where the session name matches several devices, those that capture are
+     * preferred ({@link AudioDeviceInfo#preferDirection}): Java Sound lists a
+     * playback mixer and a capture mixer under one name, and the dialog offers
+     * only the one that captures (story 326).
      *
      * @param devices the enumerated devices; must not be {@code null}
      * @return the matching device's index, or {@link Track#NO_INPUT_DEVICE}
      */
     default int selectedIndexIn(List<AudioDeviceInfo> devices) {
         Objects.requireNonNull(devices, "devices must not be null");
-        for (AudioDeviceInfo device : devices) {
-            if (isSessionDevice(device)) {
-                return device.index();
-            }
-        }
-        return Track.NO_INPUT_DEVICE;
+        List<AudioDeviceInfo> matches = devices.stream().filter(this::isSessionDevice).toList();
+        return AudioDeviceInfo.preferDirection(matches, AudioDeviceInfo::supportsInput).stream()
+                .findFirst()
+                .map(AudioDeviceInfo::index)
+                .orElse(Track.NO_INPUT_DEVICE);
     }
 
     /**
@@ -74,7 +77,8 @@ public interface SessionInputSelection {
      * listing backend (capture would refuse it, CaptureRoutingPlan) — and then
      * by its qualified endpoint name, never by position, so a reordered list
      * still yields the same device; a name that matches no device, or more
-     * than one, resolves to nothing rather than to whatever now occupies the
+     * than one once the devices that capture are preferred, resolves to
+     * nothing rather than to whatever now occupies the
      * old position. Only a track without an identity falls back to its legacy
      * index hint, and only because this is the input-port dialog's
      * preselection ({@code TrackStripController.preselectedInputIndex}): the
@@ -97,9 +101,11 @@ public interface SessionInputSelection {
             if (!enumeration.backendName().equals(Optional.of(identity.get().backend()))) {
                 return Optional.empty();
             }
-            List<AudioDeviceInfo> matches = devices.stream()
+            // The capture preference CaptureRoutingPlan applies to an identity: a same-named
+            // playback sibling never hides the capturing device the track chose (story 326).
+            List<AudioDeviceInfo> matches = AudioDeviceInfo.preferDirection(devices.stream()
                     .filter(device -> device.qualifiedName().equals(identity.get().name()))
-                    .toList();
+                    .toList(), AudioDeviceInfo::supportsInput);
             return matches.size() == 1 ? Optional.of(matches.getFirst()) : Optional.empty();
         }
         int index = track.getLegacyInputDeviceIndexHint();

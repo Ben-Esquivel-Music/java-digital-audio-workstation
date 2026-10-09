@@ -305,7 +305,22 @@ public interface AudioBackend extends AutoCloseable {
     default void openInput(DeviceId device, AudioFormat format, int frames, int channels) {
         throw new AudioBackendException(name() + " does not support input-only streams");
     }
-    /** Resolves the session input selection, without changing the stream. */
+    /**
+     * Resolves the session input selection, without changing the stream: the
+     * device a track with no input device of its own records from (story 326).
+     *
+     * <p>The default returns {@code output}, which is right only for a backend
+     * whose capture comes from the output device. A backend with an
+     * independently configured input overrides this to return that input and
+     * not {@code output}; it may return {@link DeviceId#defaultFor(String)} for
+     * "this backend's default input". An override may throw an
+     * {@link AudioBackendException} when the configured selection is missing or
+     * ambiguous; capture planning turns that into a refusal naming the
+     * track.</p>
+     *
+     * @param output the output device of the stream; must not be null
+     * @return the session input device of this backend
+     */
     default DeviceId selectedInputDevice(DeviceId output) { return output; }
 
     /**

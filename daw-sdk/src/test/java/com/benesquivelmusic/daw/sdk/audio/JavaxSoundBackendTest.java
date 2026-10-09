@@ -128,6 +128,305 @@ class JavaxSoundBackendTest {
     }
 
     @Test
+    void blankSessionInputSelectsTheDefaultInputAliasNeverTheOutputMixer() {
+        TestJavaSoundAccess access = speakersAndMicrophone();
+        DeviceId speakers = new DeviceId(JavaxSoundBackend.NAME, "Speakers [Java Sound]");
+        DeviceId defaultInput = DeviceId.defaultFor(JavaxSoundBackend.NAME);
+
+        for (JavaxSoundBackend backend : List.of(new JavaxSoundBackend(access),
+                new JavaxSoundBackend(access, ""), new JavaxSoundBackend(access, (String) null))) {
+            assertThat(backend.selectedInputDevice(speakers))
+                    .as("a track with no device of its own records from the session input,"
+                            + " which is the default capture line, not the output mixer")
+                    .isEqualTo(defaultInput);
+            assertThat(backend.selectedInputDevice(defaultInput)).isEqualTo(defaultInput);
+        }
+    }
+
+    @Test
+    void configuredSessionInputSelectsThatMixerInItsEnumeratedQualifiedForm() {
+        TestJavaSoundAccess access = speakersAndMicrophone();
+        DeviceId speakers = new DeviceId(JavaxSoundBackend.NAME, "Speakers [Java Sound]");
+        DeviceId microphone = new DeviceId(JavaxSoundBackend.NAME, "Microphone [Java Sound]");
+
+        for (String configured : List.of("Microphone", "Microphone [Java Sound]")) {
+            JavaxSoundBackend backend = new JavaxSoundBackend(access, configured);
+
+            assertThat(backend.selectedInputDevice(speakers))
+                    .as("'%s' resolves to the microphone mixer's qualified label", configured)
+                    .isEqualTo(microphone);
+            assertThat(backend.listDevices())
+                    .as("the selection is the label listDevices enumerates for that mixer")
+                    .extracting(AudioDeviceInfo::qualifiedName)
+                    .contains(microphone.name());
+            assertThat(backend.createInputBackend().selectedInputDevice(speakers))
+                    .as("a sibling is opened only through openInput and keeps a blank session input")
+                    .isEqualTo(DeviceId.defaultFor(JavaxSoundBackend.NAME));
+        }
+    }
+
+    @Test
+    void missingOrAmbiguousSessionInputIsRefusedInsteadOfFallingBackToTheOutput() {
+        DeviceId output = DeviceId.defaultFor(JavaxSoundBackend.NAME);
+
+        assertThatThrownBy(() -> new JavaxSoundBackend(speakersAndMicrophone(), "Unplugged Interface")
+                .selectedInputDevice(output))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Unplugged Interface", "not available");
+
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        TestJavaSoundAccess duplicates = new TestJavaSoundAccess(new Mixer.Info[] {
+                new TestMixerInfo("Duplicate"), new TestMixerInfo("Duplicate")}, signed, signed);
+        assertThatThrownBy(() -> new JavaxSoundBackend(duplicates, "Duplicate").selectedInputDevice(output))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Duplicate", "ambiguous");
+
+        TestJavaSoundAccess restricted = speakersAndMicrophone();
+        restricted.deviceSelectionSupported = false;
+        assertThatThrownBy(() -> new JavaxSoundBackend(restricted, "Microphone").selectedInputDevice(output))
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("device selection not supported");
+    }
+
+    @Test
+    void openWithoutAnExplicitInputCapturesFromTheSessionInputNotTheOutputMixer() {
+        TestJavaSoundAccess blankAccess = speakersAndMicrophone();
+        JavaxSoundBackend blank = new JavaxSoundBackend(blankAccess);
+        DeviceId speakers = new DeviceId(JavaxSoundBackend.NAME, "Speakers [Java Sound]");
+
+        blank.open(speakers, STREAM_FORMAT, STREAM_FRAMES, CaptureRequirement.REQUIRED);
+        try {
+            assertThat(blankAccess.selectedSourceMixer.get().getName()).isEqualTo("Speakers");
+            assertThat(blankAccess.lastTargetLine).as("capture was opened").isNotNull();
+            assertThat(blankAccess.selectedTargetMixer.get())
+                    .as("a blank session input opens the default capture line (null mixer)")
+                    .isNull();
+            assertThat(blank.openedInputChannels()).isEqualTo(2);
+        } finally {
+            blank.close();
+        }
+
+        TestJavaSoundAccess configuredAccess = speakersAndMicrophone();
+        JavaxSoundBackend configured = new JavaxSoundBackend(configuredAccess, "Microphone");
+        configured.open(speakers, STREAM_FORMAT, STREAM_FRAMES);
+        try {
+            assertThat(configuredAccess.selectedSourceMixer.get().getName()).isEqualTo("Speakers");
+            assertThat(configuredAccess.selectedTargetMixer.get().getName())
+                    .as("the configured session input is the capture mixer")
+                    .isEqualTo("Microphone");
+        } finally {
+            configured.close();
+        }
+    }
+
+    @Test
+    void anUnresolvableSessionInputFollowsTheCaptureRequirementOnAnOpenWithoutAnExplicitInput() {
+        DeviceId speakers = new DeviceId(JavaxSoundBackend.NAME, "Speakers [Java Sound]");
+
+        TestJavaSoundAccess requiredAccess = speakersAndMicrophone();
+        JavaxSoundBackend required = new JavaxSoundBackend(requiredAccess, "Unplugged Interface");
+        assertThatThrownBy(() -> required.open(speakers, STREAM_FORMAT, STREAM_FRAMES,
+                CaptureRequirement.REQUIRED))
+                .as("a recording open never falls back to capturing from the output mixer")
+                .isInstanceOf(AudioBackendException.class)
+                .rootCause()
+                .hasMessageContainingAll("Unplugged Interface", "not available");
+        assertThat(requiredAccess.lastTargetLine).isNull();
+        required.close();
+
+        TestJavaSoundAccess optionalAccess = speakersAndMicrophone();
+        JavaxSoundBackend optional = new JavaxSoundBackend(optionalAccess, "Unplugged Interface");
+        optional.open(speakers, STREAM_FORMAT, STREAM_FRAMES, CaptureRequirement.OPTIONAL);
+        try {
+            assertThat(optional.isOpen()).as("playback survives an input problem").isTrue();
+            assertThat(optional.openedInputChannels()).isZero();
+            assertThat(optionalAccess.lastTargetLine).isNull();
+        } finally {
+            optional.close();
+        }
+    }
+
+    @Test
+    void defaultInputCapacityIsUnknownNotTheDefaultMixersZeroCaptureLines() {
+        TestJavaSoundAccess access = speakersAndMicrophone();
+        access.defaultMixerIsPlaybackOnly = true;
+        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+
+        assertThat(backend.inputChannelCapacity(DeviceId.defaultFor(JavaxSoundBackend.NAME)))
+                .as("the default capture line has no mixer whose capture lines could be read;"
+                        + " the playback-only default mixer must not report it as 0 channels")
+                .isEmpty();
+        assertThat(backend.inputChannelCapacity(
+                new DeviceId(JavaxSoundBackend.NAME, "Microphone [Java Sound]")))
+                .as("a named mixer still reports its widest capture line")
+                .hasValue(2);
+        assertThatThrownBy(() -> backend.inputChannelCapacity(DeviceId.defaultFor("ASIO")))
+                .as("the default alias of another backend is still refused")
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** Two mixers, "Speakers" then "Microphone", each advertising 48 kHz stereo signed 16-bit both ways. */
+    private static TestJavaSoundAccess speakersAndMicrophone() {
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        return new TestJavaSoundAccess(new Mixer.Info[] {
+                new TestMixerInfo("Speakers"), new TestMixerInfo("Microphone")}, signed, signed);
+    }
+
+    private static final String SPDIF = "Digital Audio (S/PDIF) (Sound Blaster ZxR DBpro)";
+    private static final DeviceId SPDIF_LABEL = new DeviceId(JavaxSoundBackend.NAME, SPDIF + " [Java Sound]");
+
+    @Test
+    void anInputSelectionNamingSameNamedPlaybackAndCaptureMixersResolvesToTheCaptureMixer() {
+        for (String configured : List.of(SPDIF, SPDIF_LABEL.name())) {
+            TestJavaSoundAccess access = spdifPlaybackThenCapture();
+            JavaxSoundBackend backend = new JavaxSoundBackend(access, configured);
+
+            assertThat(backend.listDevices()).as("both mixers enumerate under one qualified label")
+                    .extracting(AudioDeviceInfo::qualifiedName).containsExactly(SPDIF_LABEL.name(), SPDIF_LABEL.name());
+            assertThat(backend.selectedInputDevice(SPDIF_LABEL))
+                    .as("'%s' selects the one mixer of that name that captures", configured)
+                    .isEqualTo(SPDIF_LABEL);
+            assertThat(backend.inputChannelCapacity(new DeviceId(JavaxSoundBackend.NAME, configured)))
+                    .as("the capture mixer's channels, not the playback mixer's zero capture lines")
+                    .hasValue(2);
+        }
+    }
+
+    @Test
+    void oneNameSharedByPlaybackAndCaptureMixersPlaysToOneAndCapturesFromTheOther() {
+        TestJavaSoundAccess access = spdifPlaybackThenCapture();
+        Mixer.Info playback = access.mixers[0], capture = access.mixers[1];
+        JavaxSoundBackend backend = new JavaxSoundBackend(access, SPDIF);
+
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, SPDIF), STREAM_FORMAT, STREAM_FRAMES,
+                CaptureRequirement.REQUIRED);
+        try {
+            assertThat(access.selectedSourceMixer.get()).as("the output plays through the playback mixer")
+                    .isSameAs(playback);
+            assertThat(access.selectedTargetMixer.get()).as("the session input captures from the capture mixer")
+                    .isSameAs(capture);
+            assertThat(backend.openedInputChannels()).isEqualTo(2);
+        } finally {
+            backend.close();
+        }
+
+        TestJavaSoundAccess siblingAccess = spdifPlaybackThenCapture();
+        AudioBackend sibling = new JavaxSoundBackend(siblingAccess).createInputBackend();
+        sibling.openInput(SPDIF_LABEL, STREAM_FORMAT, STREAM_FRAMES, 2);
+        try {
+            assertThat(siblingAccess.selectedTargetMixer.get()).as("an explicit input captures from the capture mixer")
+                    .isSameAs(siblingAccess.mixers[1]);
+        } finally {
+            sibling.close();
+        }
+    }
+
+    @Test
+    void theDirectionPreferenceNeverResolvesAnAmbiguityOrSubstitutesAMixer() {
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        Mixer.Info playback = new TestMixerInfo("Twin");
+        TestJavaSoundAccess twinCaptures = new TestJavaSoundAccess(new Mixer.Info[] {
+                playback, new TestMixerInfo("Twin"), new TestMixerInfo("Twin")}, signed, signed);
+        twinCaptures.playbackOnlyMixers.add(playback);
+        assertThatThrownBy(() -> new JavaxSoundBackend(twinCaptures, "Twin").selectedInputDevice(SPDIF_LABEL))
+                .as("two same-named capture mixers stay ambiguous")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Twin", "ambiguous");
+        assertThatThrownBy(() -> new JavaxSoundBackend(twinCaptures)
+                .inputChannelCapacity(new DeviceId(JavaxSoundBackend.NAME, "Twin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContainingAll("Twin", "ambiguous");
+
+        TestJavaSoundAccess split = spdifPlaybackThenCapture();
+        split.playbackOnlyMixers.add(split.mixers[1]);
+        split.captureOnlyMixers.remove(split.mixers[1]);
+        assertThatThrownBy(() -> new JavaxSoundBackend(split, SPDIF).selectedInputDevice(SPDIF_LABEL))
+                .as("same-named mixers none of which captures stay ambiguous")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("ambiguous");
+
+        TestJavaSoundAccess speakersOnly = speakersAndMicrophone();
+        speakersOnly.playbackOnlyMixers.add(speakersOnly.mixers[0]);
+        JavaxSoundBackend backend = new JavaxSoundBackend(speakersOnly, "Speakers");
+        assertThat(backend.selectedInputDevice(SPDIF_LABEL))
+                .as("a single match that cannot capture is kept, not replaced by a mixer that can")
+                .isEqualTo(new DeviceId(JavaxSoundBackend.NAME, "Speakers [Java Sound]"));
+        assertThat(backend.inputChannelCapacity(new DeviceId(JavaxSoundBackend.NAME, "Speakers")))
+                .as("so its width check refuses it").hasValue(0);
+    }
+
+    @Test
+    void aMixerWhoseProviderCannotListItsLinesStaysACandidateSoTwinsStayAmbiguous() {
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        Mixer.Info unanswering = new TestMixerInfo("Twin"), answering = new TestMixerInfo("Twin");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {unanswering, answering}, signed, signed);
+        access.lineInfoFailures.add(unanswering);
+
+        assertThatThrownBy(() -> new JavaxSoundBackend(access, "Twin").selectedInputDevice(SPDIF_LABEL))
+                .as("a failed line query must not hand the input to the mixer that answered")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Twin", "ambiguous");
+        JavaxSoundBackend output = new JavaxSoundBackend(access);
+        assertThatThrownBy(() -> output.open(new DeviceId(JavaxSoundBackend.NAME, "Twin"), STREAM_FORMAT, 256))
+                .as("a failed line query must not hand the output to the mixer that answered")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Twin", "ambiguous");
+        assertThat(access.sourceLineAcquisitions).as("neither twin is opened").hasValue(0);
+        assertThat(output.isOpen()).isFalse();
+    }
+
+    @Test
+    void outputPreferenceKeepsTwoPlaybackTwinsAmbiguousWhileInputResolvesToTheCaptureTwin() {
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        Mixer.Info firstPlayback = new TestMixerInfo("Twin"), secondPlayback = new TestMixerInfo("Twin");
+        Mixer.Info capture = new TestMixerInfo("Twin");
+        TestJavaSoundAccess access = new TestJavaSoundAccess(
+                new Mixer.Info[] {firstPlayback, capture, secondPlayback}, signed, signed);
+        access.playbackOnlyMixers.addAll(List.of(firstPlayback, secondPlayback));
+        access.captureOnlyMixers.add(capture);
+        DeviceId twin = new DeviceId(JavaxSoundBackend.NAME, "Twin");
+
+        JavaxSoundBackend output = new JavaxSoundBackend(access);
+        assertThatThrownBy(() -> output.open(twin, STREAM_FORMAT, 256))
+                .as("two playback-capable twins stay ambiguous as an output")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContainingAll("Twin", "ambiguous");
+        assertThat(access.sourceLineAcquisitions).hasValue(0);
+
+        assertThat(new JavaxSoundBackend(access, "Twin").selectedInputDevice(SPDIF_LABEL))
+                .as("the one capture-capable twin is the input")
+                .isEqualTo(new DeviceId(JavaxSoundBackend.NAME, "Twin [Java Sound]"));
+        AudioBackend sibling = new JavaxSoundBackend(access).createInputBackend();
+        sibling.openInput(twin, STREAM_FORMAT, STREAM_FRAMES, 2);
+        try {
+            assertThat(access.selectedTargetMixer.get()).as("captured from the capture-only twin")
+                    .isSameAs(capture);
+        } finally {
+            sibling.close();
+        }
+    }
+
+    /**
+     * The Windows enumeration the direction preference exists for: a playback-only
+     * mixer and then a capture-only mixer, both named {@link #SPDIF}, each stereo.
+     */
+    private static TestJavaSoundAccess spdifPlaybackThenCapture() {
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        Mixer.Info playback = new TestMixerInfo(SPDIF), capture = new TestMixerInfo(SPDIF);
+        TestJavaSoundAccess access = new TestJavaSoundAccess(new Mixer.Info[] {playback, capture}, signed, signed);
+        access.playbackOnlyMixers.add(playback);
+        access.captureOnlyMixers.add(capture);
+        return access;
+    }
+
+    @Test
     void selectedMixerUsesFloatOutputBitExactlyAndNegotiatesCaptureSeparately() {
         Mixer.Info studio = new TestMixerInfo("Studio Interface");
         javax.sound.sampled.AudioFormat floatOutput = javaFormat(
@@ -136,7 +435,9 @@ class JavaxSoundBackendTest {
                 javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
         TestJavaSoundAccess access = new TestJavaSoundAccess(
                 new Mixer.Info[] {studio}, floatOutput, signedCapture);
-        JavaxSoundBackend backend = new JavaxSoundBackend(access);
+        // The session input names the same mixer: capture follows the session
+        // input, not the output device the open is given (story 326).
+        JavaxSoundBackend backend = new JavaxSoundBackend(access, "Studio Interface [Java Sound]");
         AudioFormat sdkFormat = new AudioFormat(48_000.0, 2, 24);
 
         backend.open(new DeviceId(JavaxSoundBackend.NAME,
@@ -1700,6 +2001,16 @@ class JavaxSoundBackendTest {
         private final AtomicInteger sourceLineAcquisitions = new AtomicInteger();
         private final List<MemoryLine> sourceLines = new ArrayList<>();
         private boolean deviceSelectionSupported = true;
+        /**
+         * Models Windows, where {@code AudioSystem.getMixer(null)} is the
+         * playback-only "Primary Sound Driver": the null-mixer lookup then
+         * advertises no capture lines.
+         */
+        private boolean defaultMixerIsPlaybackOnly;
+        /** Mixers that list no capture line, as a Windows playback mixer does. */
+        private final Set<Mixer.Info> playbackOnlyMixers = new LinkedHashSet<>();
+        /** Mixers that list no playback line, as a Windows capture mixer does. */
+        private final Set<Mixer.Info> captureOnlyMixers = new LinkedHashSet<>();
         private boolean failSourceLineClose;
         private boolean failSourceLineCloseAfterFirst;
         private boolean requireAdvertisedSourceProbe;
@@ -1729,14 +2040,18 @@ class JavaxSoundBackendTest {
             if (lineInfoFailures.contains(mixerInfo)) {
                 throw new IllegalStateException("mixer provider failed during enumeration");
             }
-            return outputFormat == null
+            return outputFormat == null || captureOnlyMixers.contains(mixerInfo)
                     ? new Line.Info[0]
                     : new Line.Info[] {new DataLine.Info(SourceDataLine.class, outputFormat)};
         }
 
         @Override
         public Line.Info[] targetLineInfo(Mixer.Info mixerInfo) {
-            return inputFormat == null
+            if (lineInfoFailures.contains(mixerInfo)) {
+                throw new IllegalStateException("mixer provider failed during enumeration");
+            }
+            return inputFormat == null || mixerInfo == null && defaultMixerIsPlaybackOnly
+                    || playbackOnlyMixers.contains(mixerInfo)
                     ? new Line.Info[0]
                     : new Line.Info[] {new DataLine.Info(TargetDataLine.class, inputFormat)};
         }
@@ -1744,6 +2059,9 @@ class JavaxSoundBackendTest {
         @Override
         public boolean supportsSourceLine(
                 Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format) {
+            if (captureOnlyMixers.contains(mixerInfo)) {
+                return false;
+            }
             if (requireAdvertisedSourceProbe) {
                 return sameJavaFormat(outputFormat, format);
             }
@@ -1753,12 +2071,15 @@ class JavaxSoundBackendTest {
         @Override
         public boolean supportsTargetLine(
                 Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format) {
-            return sameJavaFormat(inputFormat, format);
+            return !playbackOnlyMixers.contains(mixerInfo) && sameJavaFormat(inputFormat, format);
         }
 
         @Override
         public SourceDataLine sourceLine(
                 Mixer.Info mixerInfo, javax.sound.sampled.AudioFormat format) {
+            if (captureOnlyMixers.contains(mixerInfo)) {
+                throw new IllegalArgumentException("capture-only mixer has no playback line");
+            }
             selectedSourceMixer.set(mixerInfo);
             selectedSourceFormat.set(format);
             int acquisition = sourceLineAcquisitions.incrementAndGet();
@@ -1775,6 +2096,9 @@ class JavaxSoundBackendTest {
                 throws LineUnavailableException {
             if (inputFormat == null) {
                 throw new LineUnavailableException("no capture line");
+            }
+            if (playbackOnlyMixers.contains(mixerInfo)) {
+                throw new IllegalArgumentException("playback-only mixer has no capture line");
             }
             selectedTargetMixer.set(mixerInfo);
             lastTargetLine = new MemoryLine(actualInputFormat, false);

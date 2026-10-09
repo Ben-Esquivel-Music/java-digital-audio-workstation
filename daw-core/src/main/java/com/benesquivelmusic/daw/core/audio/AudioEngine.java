@@ -330,7 +330,10 @@ public final class AudioEngine {
                     // the alias to the sole listed device from its OWN listDevices() call, so an alias
                     // still unresolved here means that enumeration listed several devices, none or several
                     // of them capture-capable, and this second enumeration (above) now lists exactly one.
-                    boolean headHasNoInput = !route.hasExplicitDevice() && devices.stream().anyMatch(info -> (info.name().equals(device.name()) || info.qualifiedName().equals(device.name()) || device.isDefault() && devices.size() == 1) && info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
+                    // The label is read as the plan reads an input label: a same-named playback sibling
+                    // of the capturing device does not make the head look input-less.
+                    List<AudioDeviceInfo> head = device.isDefault() && devices.size() == 1 ? devices : CaptureRoutingPlan.inputsLabelled(devices, device.name());
+                    boolean headHasNoInput = !route.hasExplicitDevice() && head.stream().anyMatch(info -> info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
                     if (!headHasNoInput) CaptureRoutingPlan.resolveSnapshots(rung, List.of(route), devices, true);
                 }
             }
@@ -353,9 +356,10 @@ public final class AudioEngine {
                     additionalInputs.add(sibling); // ownership precedes open, including partial failures
                     CaptureRoutingPlan.Source source = plan.sources().get(i);
                     boolean proven = inputSourcePreviouslyValidated(plan, i);
-                    boolean knownUnavailable = devices.stream().anyMatch(info ->
-                            AudioDeviceInfo.isSelectionFor(source.device().name(), info.name(), info.hostApi())
-                                    && info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
+                    // Read as the plan reads the label, so a same-named playback sibling cannot mark a
+                    // proven capture source unavailable and skip its open.
+                    boolean knownUnavailable = CaptureRoutingPlan.inputsLabelled(devices, source.device().name()).stream()
+                            .anyMatch(info -> info.hasKnownInputChannelCount() && info.maxInputChannels() == 0);
                     if (!(proven && knownUnavailable)) {
                         sibling.openInput(source.device(), openSdkFormat, format.bufferSize(), source.requestedChannels());
                     }

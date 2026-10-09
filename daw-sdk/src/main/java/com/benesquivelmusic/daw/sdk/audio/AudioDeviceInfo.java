@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Predicate;
 
 /**
  * Describes an available audio input or output device.
@@ -213,14 +215,17 @@ public record AudioDeviceInfo(
     }
 
     /**
-     * The ONE formatting rule behind {@link #qualifiedName()} and
-     * {@link #isSelectionFor(String, String, String)}: {@code name} when
+     * The ONE formatting rule behind {@link #qualifiedName()},
+     * {@link #isSelectionFor(String, String, String)} and
+     * {@code JavaxSoundBackend.selectedInputDevice}: {@code name} when
      * {@code hostApi} is null or blank, and
-     * <code>name + " [" + hostApi + "]"</code> otherwise. Both callers go
-     * through here so the label a device offers and the label a selection is
-     * compared against cannot drift apart.
+     * <code>name + " [" + hostApi + "]"</code> otherwise. All three callers go
+     * through here so the label a device offers, the label a selection is
+     * compared against, and the label a resolved Java Sound session input is
+     * reported under cannot drift apart. Package-private for that third
+     * caller, so it applies this same rule rather than a copy of it.
      */
-    private static String qualifiedName(String name, String hostApi) {
+    static String qualifiedName(String name, String hostApi) {
         return hostApi == null || hostApi.isBlank()
                 ? name
                 : name + " [" + hostApi + "]";
@@ -280,5 +285,44 @@ public record AudioDeviceInfo(
         }
         return selection.equals(bareDeviceName)
                 || selection.equals(qualifiedName(bareDeviceName, hostApi));
+    }
+
+    /**
+     * The ONE direction preference for a selection that names more than one
+     * enumerated endpoint (story 326). Java Sound on Windows lists a playback
+     * mixer and a capture mixer under the same name, and so under the same
+     * qualified label; an input selection of that name means the mixer that
+     * captures, and an output selection means the one that plays.
+     *
+     * <p>This is a preference, never a substitution. When {@code matches}
+     * holds two or more entries, it is narrowed to the entries that serve the
+     * direction, and the caller resolves exactly as before over what is left:
+     * one entry is the answer, two or more stay ambiguous. Everything else is
+     * returned unchanged, so the caller's own outcome stands: a single match
+     * is kept even when it cannot serve the direction (its width check or open
+     * refuses it, nothing replaces it), and several matches of which none
+     * serves the direction stay ambiguous.</p>
+     *
+     * @param matches         every entry the selection names, in enumeration
+     *                        order; must not be null
+     * @param servesDirection whether an entry serves the direction being
+     *                        resolved: {@link #supportsInput()} for an input
+     *                        selection, {@link #supportsOutput()} for an
+     *                        output one, or the equivalent test on a backend's
+     *                        own endpoint handle; must not be null
+     * @param <T>             the entry type: an {@code AudioDeviceInfo}, or a
+     *                        backend's own handle for an endpoint
+     * @return the entries that serve the direction when {@code matches} holds
+     *         two or more and at least one of them serves it, in enumeration
+     *         order; otherwise {@code matches} itself
+     */
+    public static <T> List<T> preferDirection(List<T> matches, Predicate<? super T> servesDirection) {
+        Objects.requireNonNull(matches, "matches must not be null");
+        Objects.requireNonNull(servesDirection, "servesDirection must not be null");
+        if (matches.size() < 2) {
+            return matches;
+        }
+        List<T> serving = matches.stream().filter(servesDirection).toList();
+        return serving.isEmpty() ? matches : serving;
     }
 }

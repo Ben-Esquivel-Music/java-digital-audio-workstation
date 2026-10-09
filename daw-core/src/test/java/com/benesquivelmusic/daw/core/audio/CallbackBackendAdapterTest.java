@@ -472,6 +472,33 @@ class CallbackBackendAdapterTest {
         adapter.close();
     }
 
+    @Test
+    void aNameSharedByAPlaybackAndACaptureEndpointSelectsAndOpensTheCaptureEndpointAsInput() {
+        String spdif = "Digital Audio (S/PDIF)";
+        FakeNativeBackend fake = new FakeNativeBackend(List.of(device(3, spdif, 0, 2), device(7, spdif, 2, 0)));
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, spdif);
+        DeviceId output = new DeviceId(adapter.name(), spdif + " [Fake]");
+        try {
+            DeviceId input = adapter.selectedInputDevice(output);
+            assertThat(input).as("the shared label, resolved to the endpoint that captures").isEqualTo(output);
+
+            adapter.open(output, FORMAT, FRAMES, CaptureRequirement.REQUIRED, input, 2);
+
+            assertThat(fake.lastConfig.outputDeviceIndex()).as("plays through the playback endpoint").isEqualTo(3);
+            assertThat(fake.lastConfig.inputDeviceIndex()).as("captures from the capture endpoint").isEqualTo(7);
+            assertThat(adapter.openedInputChannels()).isEqualTo(2);
+        } finally { adapter.close(); }
+
+        FakeNativeBackend twins = new FakeNativeBackend(List.of(
+                device(3, spdif, 0, 2), device(7, spdif, 2, 0), device(8, spdif, 2, 0)));
+        CallbackBackendAdapter ambiguous = new CallbackBackendAdapter(twins, spdif);
+        assertThatThrownBy(() -> ambiguous.selectedInputDevice(output))
+                .as("two capture endpoints of that name stay ambiguous")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("AMBIGUOUS");
+        ambiguous.close();
+    }
+
     /**
      * A bare name that is a PREFIX of another device's name must not
      * cross-resolve, in either form. The snapshot deliberately lists the

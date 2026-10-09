@@ -64,8 +64,7 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
             throw refusal(track, rung.device(), "input device resolution failed: " + failure.getMessage());
         }
         AudioDeviceInfo selectedInfo = selectedChoice.isDefault() ? defaultInputDevice(devices).orElse(null)
-                : devices.stream().filter(d -> d.qualifiedName().equals(selectedChoice.name()) || d.name().equals(selectedChoice.name()))
-                        .findFirst().orElse(null);
+                : inputsLabelled(devices, selectedChoice.name()).stream().findFirst().orElse(null);
         // The alias becomes the concrete device BEFORE any grouping, so a default route and an explicit
         // route to that same device form one source instead of a phantom two-device union.
         DeviceId selected = selectedChoice.isDefault() && selectedInfo != null
@@ -82,14 +81,12 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
             if (route.isNone()) continue;
             long width = (long) route.firstChannel() + route.channelCount();
             if (width > Integer.MAX_VALUE) throw refusal(track, selected, "channel range overflows");
+            // A track with no device of its own records from the selection, already resolved above.
             AudioDeviceInfo info = selectedInfo;
             DeviceId input = selected;
             if (track.device().isPresent()) {
                 info = byIdentity(backend, track, track.device().get(), devices);
                 input = new DeviceId(backend.name(), info.qualifiedName());
-            } else if (!selected.isDefault()) {
-                info = devices.stream().filter(d -> d.qualifiedName().equals(selected.name()) || d.name().equals(selected.name()))
-                        .findFirst().orElse(null);
             }
             // A qualified label and a bare label can identify the same selected endpoint — but a bare
             // label is shared by every endpoint with that name, so it merges only the endpoint the
@@ -132,12 +129,13 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
         List<Source> sources = widths.entrySet().stream().map(e -> {
             List<String> labels = new ArrayList<>();
             labels.add(e.getKey().name());
-            AudioDeviceInfo info = devices.stream().filter(candidate -> candidate.qualifiedName().equals(e.getKey().name()))
-                    .findFirst().orElseGet(() -> devices.stream().filter(candidate -> candidate.name().equals(e.getKey().name()))
-                            .findFirst().orElse(null));
+            List<AudioDeviceInfo> qualified = inputMatches(devices, candidate -> candidate.qualifiedName().equals(e.getKey().name()));
+            AudioDeviceInfo info = (qualified.isEmpty() ? inputMatches(devices, candidate -> candidate.name().equals(e.getKey().name()))
+                    : qualified).stream().findFirst().orElse(null);
             if (info != null) {
                 labels.add(info.qualifiedName());
-                if (devices.stream().filter(candidate -> candidate.name().equals(info.name())).count() == 1) {
+                // The bare name is an alias only when, as an input label, it names this device alone.
+                if (inputMatches(devices, candidate -> candidate.name().equals(info.name())).equals(List.of(info))) {
                     labels.add(info.name());
                 } else {
                     labels.removeIf(info.name()::equals);
@@ -155,17 +153,39 @@ public record CaptureRoutingPlan(AudioBackend backend, List<Source> sources, Map
     }
     /**
      * Resolves a frozen identity against the enumerated devices: same backend and exactly one device
-     * with that qualified name. The enumeration index is never consulted, so reordered devices still
-     * resolve to the same endpoint and a vanished one is refused instead of replaced by its index-mate.
+     * with that qualified name, after the capture preference of {@link #inputMatches}. The enumeration
+     * index is never consulted, so reordered devices still resolve to the same endpoint and a vanished
+     * one is refused instead of replaced by its index-mate.
      */
     private static AudioDeviceInfo byIdentity(AudioBackend backend, Route track, DeviceId identity, List<AudioDeviceInfo> devices) {
         if (!identity.backend().equals(backend.name()))
             throw refusal(track, identity, "the device belongs to backend '" + identity.backend()
                     + "', but capture records from backend '" + backend.name() + "'");
-        List<AudioDeviceInfo> matches = devices.stream().filter(d -> d.qualifiedName().equals(identity.name())).toList();
+        List<AudioDeviceInfo> matches = inputMatches(devices, d -> d.qualifiedName().equals(identity.name()));
         if (matches.isEmpty()) throw refusal(track, identity, "input device is unavailable");
         if (matches.size() > 1) throw refusal(track, identity, "input device identity is ambiguous (" + matches.size() + " devices share it)");
         return matches.getFirst();
+    }
+    /**
+     * The enumerated devices an input label names: those whose qualified or bare name equals it, after
+     * the capture preference of {@link #inputMatches}, in one pass. It is the lookup the plan resolves
+     * the session input selection with, and input paths outside this class read a label through it, so
+     * they apply the same name/qualified-name test and the same capture preference as that resolution.
+     * It does not reproduce the plan's other lookups: {@link #byIdentity} matches qualified names only,
+     * and the Source label lookup gives a qualified-name match priority over a bare-name match.
+     */
+    static List<AudioDeviceInfo> inputsLabelled(List<AudioDeviceInfo> devices, String label) {
+        return inputMatches(devices, d -> d.qualifiedName().equals(label) || d.name().equals(label));
+    }
+    /**
+     * The devices {@code named} selects, narrowed to those that capture when it selects several
+     * ({@link AudioDeviceInfo#preferDirection}): Java Sound lists a playback mixer and a capture mixer
+     * under one name and one qualified label, and as an input that label means the mixer that captures.
+     * Two capturing devices stay ambiguous, and a single device that cannot capture is kept, so its
+     * width check refuses it; neither is ever replaced by another device.
+     */
+    private static List<AudioDeviceInfo> inputMatches(List<AudioDeviceInfo> devices, java.util.function.Predicate<AudioDeviceInfo> named) {
+        return AudioDeviceInfo.preferDirection(devices.stream().filter(named).toList(), AudioDeviceInfo::supportsInput);
     }
     /**
      * Sibling sources count their own delivered frames, so the union is only sound when every

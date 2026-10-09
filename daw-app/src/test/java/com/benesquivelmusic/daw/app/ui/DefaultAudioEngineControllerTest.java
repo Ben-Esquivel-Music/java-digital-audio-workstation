@@ -17,6 +17,7 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import java.util.Optional;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -2447,6 +2448,146 @@ class DefaultAudioEngineControllerTest {
         }
         engine.stop();
         controller.shutdown();
+    }
+
+    /** A configured input name no Java Sound mixer on any host enumerates. */
+    private static final String UNENUMERATED_INPUT = "DAWG configured input that no mixer enumerates";
+
+    @Test
+    void requestedJavaSoundHeadRecordsFromTheConfiguredInputNotItsOutputDevice() {
+        // Story 326 (Copilot review): a track with no device of its own records
+        // from the session input. The requested Java Sound rung must carry the
+        // configured input, so its selection is that input, never the rung's
+        // output device. An unenumerated name keeps this host-independent: the
+        // selection is refused naming it, where the pre-fix backend returned the
+        // output device.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        StreamingProvision provision = controller.buildStreamingProvision(new AudioEngineController.Request(
+                JavaxSoundBackend.NAME, UNENUMERATED_INPUT, "", SampleRate.HZ_48000, 512, 24, 1));
+        try {
+            Assumptions.assumeTrue(provision.pendingFailedHopCauses().isEmpty(),
+                    "Java Sound is not available on this host, so it cannot head the ladder");
+            BackendStreamRung head = provision.firstRung();
+            assertThat(head.backend().name()).isEqualTo(JavaxSoundBackend.NAME);
+            assertThatThrownBy(() -> head.backend().selectedInputDevice(head.device()))
+                    .as("the requested Java Sound head resolves the configured input")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining(UNENUMERATED_INPUT);
+            assertThat(provision.ladder().subList(1, provision.ladder().size()))
+                    .as("the requested Java Sound head is the ladder's only Java Sound rung,"
+                            + " so no fallback rung repeats it on the default input")
+                    .extracting(rung -> rung.backend().name())
+                    .doesNotContain(JavaxSoundBackend.NAME);
+        } finally {
+            closeRungs(provision);
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void requestedJavaSoundBackendIsBuiltWithTheConfiguredInputOnAnyHost() {
+        // Host-independent pin for the requested Java Sound factory (story 326).
+        // A name no host enumerates is refused by name: production Java Sound
+        // supports device selection, so the lookup runs and matches no mixer
+        // whatever the host lists, including nothing on a runner without sound.
+        // A backend built without the configured input would instead answer the
+        // default-input alias and never mention the name.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DeviceId defaultOutput = DeviceId.defaultFor(JavaxSoundBackend.NAME);
+        try (AudioBackend configured = controller.createStreamingBackendByName(
+                     JavaxSoundBackend.NAME, UNENUMERATED_INPUT);
+             AudioBackend blank = controller.createStreamingBackendByName(JavaxSoundBackend.NAME, "")) {
+            assertThatThrownBy(() -> configured.selectedInputDevice(defaultOutput))
+                    .as("the requested Java Sound backend resolves the configured input")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContainingAll(UNENUMERATED_INPUT, "not available");
+
+            DeviceId namedOutput = new DeviceId(JavaxSoundBackend.NAME, "Speakers [Java Sound]");
+            assertThat(blank.selectedInputDevice(namedOutput))
+                    .as("a blank input is the Java Sound default input, never the output device")
+                    .isEqualTo(DeviceId.defaultFor(JavaxSoundBackend.NAME))
+                    .isNotEqualTo(namedOutput);
+        } finally {
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void javaSoundTakesTheConfiguredInputOnlyWhereItHeadsTheDefaultLadder() {
+        // The blank-name ladder: PortAudio heads it when available, and the
+        // Java Sound rung behind it is a fallback on the default input. On a
+        // host without PortAudio, Java Sound is the head and owns the
+        // configured input.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        StreamingProvision provision = controller.buildStreamingProvision(new AudioEngineController.Request(
+                "", UNENUMERATED_INPUT, "", SampleRate.HZ_48000, 512, 24, 1));
+        try {
+            BackendStreamRung head = provision.firstRung();
+            if (head.backend().name().equals(JavaxSoundBackend.NAME)) {
+                assertThatThrownBy(() -> head.backend().selectedInputDevice(head.device()))
+                        .isInstanceOf(AudioBackendException.class)
+                        .hasMessageContaining(UNENUMERATED_INPUT);
+                assertThat(provision.ladder()).hasSize(1);
+            } else {
+                assertThat(head.backend().name()).isEqualTo("PortAudio");
+                assertThat(provision.ladder()).extracting(rung -> rung.backend().name())
+                        .containsExactly("PortAudio", JavaxSoundBackend.NAME);
+                assertJavaSoundFallbacksUseTheDefaultInput(provision.ladder().subList(1, 2));
+            }
+        } finally {
+            closeRungs(provision);
+            controller.shutdown();
+        }
+    }
+
+    @Test
+    void fallbackJavaSoundRungsKeepTheDefaultInputWhateverTheRequestConfigured(@TempDir Path projectRoot) {
+        // Story 316 review rule, kept by story 326: a configured input name
+        // belongs to the requested backend's namespace, so the Java Sound rung
+        // that FALLS BACK for an unavailable ASIO request records from the
+        // Java Sound default input, never from the ASIO input name.
+        Map<String, Supplier<AudioBackend>> factories = new LinkedHashMap<>();
+        factories.put("ASIO", () -> {
+            MockAudioBackend unavailable = new MockAudioBackend();
+            unavailable.setAvailable(false);
+            return unavailable;
+        });
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), new AudioBackendSelector(factories));
+        StreamingProvision provision = controller.buildStreamingProvision(new AudioEngineController.Request(
+                "ASIO", UNENUMERATED_INPUT, "", SampleRate.HZ_48000, 512, 24, 1));
+        try {
+            assertThat(provision.ladder()).extracting(rung -> rung.backend().name())
+                    .contains(JavaxSoundBackend.NAME);
+            assertJavaSoundFallbacksUseTheDefaultInput(provision.ladder());
+        } finally {
+            closeRungs(provision);
+            controller.shutdown();
+        }
+    }
+
+    private static void assertJavaSoundFallbacksUseTheDefaultInput(List<BackendStreamRung> fallbacks) {
+        for (BackendStreamRung rung : fallbacks) {
+            if (!rung.backend().name().equals(JavaxSoundBackend.NAME)) continue;
+            assertThat(rung.backend().selectedInputDevice(rung.device()))
+                    .as("a fallback Java Sound rung records from the Java Sound default input")
+                    .isEqualTo(DeviceId.defaultFor(JavaxSoundBackend.NAME));
+        }
+    }
+
+    private static void closeRungs(StreamingProvision provision) {
+        for (BackendStreamRung rung : provision.ladder()) {
+            try {
+                rung.backend().close();
+            } catch (RuntimeException ignored) {
+                // best-effort cleanup of never-opened rungs
+            }
+        }
     }
 
     @Test
