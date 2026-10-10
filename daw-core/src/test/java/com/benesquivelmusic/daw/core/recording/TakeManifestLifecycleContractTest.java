@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TakeManifestLifecycleContractTest {
 
     private static final AudioFormat STEREO_16 = new AudioFormat(48_000.0, 2, 16, 512);
-    /** Stage-1 capture width is the stream width: 2 channels × 16 bit. */
+    /** Stereo fixture width: 2 channels × 16 bit; mono routes use their own byte limit. */
     private static final long BLOCK_BYTES = 512L * 2 * 2;
 
     @TempDir
@@ -57,7 +57,8 @@ class TakeManifestLifecycleContractTest {
         right.setArmed(true);
         right.setInputRouting(new InputRouting(1, 1));
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, STEREO_16, takeDir, List.of(left, right));
-        pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
+        long monoBlockBytes = 512L * 1 * 2;
+        pipeline.setSegmentLimits(Duration.ofHours(1), 2 * monoBlockBytes);
         startRecording(pipeline);
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
@@ -73,7 +74,7 @@ class TakeManifestLifecycleContractTest {
         assertThat(initial.take()).isEqualTo(takeDir.toAbsolutePath().getFileName().toString());
         assertThat(initial.tracks()).extracting(TakeManifest.TrackEntry::trackId)
                 .containsExactly(left.getId(), right.getId());
-        assertThat(initial.tracks()).extracting(TakeManifest.TrackEntry::channels).containsOnly(2);
+        assertThat(initial.tracks()).extracting(TakeManifest.TrackEntry::channels).containsOnly(1);
         assertThat(initial.tracks()).extracting(TakeManifest.TrackEntry::compensationFrames).containsOnly(0L);
         assertThat(initial.sampleRate()).isEqualTo(48_000.0);
         assertThat(initial.bitDepth()).isEqualTo(16);

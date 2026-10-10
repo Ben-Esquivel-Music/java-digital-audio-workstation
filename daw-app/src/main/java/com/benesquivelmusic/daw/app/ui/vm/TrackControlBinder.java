@@ -263,7 +263,7 @@ public final class TrackControlBinder {
                 now -> new ToggleMuteCommand(track, now));
         raiseOnFlagChange(strip.soloedProperty(), trackVm::isSoloed,
                 now -> new ToggleSoloCommand(track, now));
-        raiseOnFlagChange(strip.armedProperty(), trackVm::isArmed,
+        raiseOnArmChange(strip.armedProperty(), trackVm::isArmed,
                 now -> new ToggleArmCommand(track, now));
 
         bindFaderDb(strip);
@@ -313,7 +313,7 @@ public final class TrackControlBinder {
                 now -> new ToggleMuteCommand(track, now));
         raiseOnFlagChange(tile.soloedProperty(), trackVm::isSoloed,
                 now -> new ToggleSoloCommand(track, now));
-        raiseOnFlagChange(tile.armedProperty(), trackVm::isArmed,
+        raiseOnArmChange(tile.armedProperty(), trackVm::isArmed,
                 now -> new ToggleArmCommand(track, now));
     }
 
@@ -381,6 +381,18 @@ public final class TrackControlBinder {
      * value the VM does not already hold — the stateless echo guard of
      * {@link #bindStrip}.
      */
+    private void raiseOnArmChange(javafx.beans.property.BooleanProperty property,
+                                  java.util.function.BooleanSupplier current,
+                                  java.util.function.Function<Boolean, TrackCommand> command) {
+        ChangeListener<Boolean> listener = (_, _, now) -> {
+            if (now == current.getAsBoolean()) return;
+            commandSink.accept(command.apply(now));
+            property.set(current.getAsBoolean());
+        };
+        property.addListener(listener);
+        disposers.add(() -> property.removeListener(listener));
+    }
+
     private void raiseOnFlagChange(ReadOnlyBooleanProperty stripFlag, BooleanSupplier vmValue,
                                    Function<Boolean, TrackCommand> factory) {
         ChangeListener<Boolean> listener = (_, _, now) -> {

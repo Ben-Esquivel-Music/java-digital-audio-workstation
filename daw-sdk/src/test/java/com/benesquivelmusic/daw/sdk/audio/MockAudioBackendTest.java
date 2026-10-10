@@ -204,4 +204,19 @@ class MockAudioBackendTest {
         // Default empty publisher never emits.
         assertEquals(0, count.get());
     }
+
+    @Test
+    void distinctDevicesShareNoClockDomainUnlessTheMockDeclaresOne() {
+        MockAudioBackend b = new MockAudioBackend();
+        DeviceId first = new DeviceId("Mock", "Interface A"), second = new DeviceId("Mock", "Interface B");
+        DeviceId third = new DeviceId("Mock", "Interface C");
+        assertTrue(b.sharesClockDomain(first, first));
+        assertFalse(b.sharesClockDomain(first, second));
+
+        b.declareSharedClockDomain(java.util.Set.of(first, second));
+
+        assertTrue(b.sharesClockDomain(first, second));
+        assertTrue(b.sharesClockDomain(second, first));
+        assertFalse(b.sharesClockDomain(first, third));
+    }
 }

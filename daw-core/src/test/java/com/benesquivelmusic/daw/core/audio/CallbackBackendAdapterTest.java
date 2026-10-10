@@ -47,6 +47,140 @@ class CallbackBackendAdapterTest {
             new com.benesquivelmusic.daw.sdk.audio.AudioFormat(48_000.0, 2, 24);
     private static final int FRAMES = 128;
 
+    @Test
+    void aGenericDelegateDoesNotAdvertiseOrCreateForeignInputSiblings() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        try {
+            assertThat(adapter.supportsMultipleInputDevices()).isFalse();
+            assertThatThrownBy(adapter::createInputBackend).isInstanceOf(AudioBackendException.class)
+                    .hasMessageContainingAll("Fake", "only one input device");
+            assertThat(fake.initializeCount).isZero();
+            assertThat(fake.enumerationCount).isZero();
+            assertThat(fake.openStreamCount).isZero();
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void suppliedSiblingsKeepTheDelegateFamilyAndIndependentInputLifecycle() {
+        FakeNativeBackend primary = new FakeNativeBackend();
+        List<FakeNativeBackend> siblings = new java.util.ArrayList<>();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(primary, "Mic In", () -> {
+            FakeNativeBackend sibling = new FakeNativeBackend(List.of(
+                    device(3, "Sibling out", 0, 2), device(9, "Sibling mic", 3, 0)));
+            siblings.add(sibling);
+            return sibling;
+        });
+        com.benesquivelmusic.daw.sdk.audio.AudioBackend capture = null, furtherCapture = null;
+        try {
+            assertThat(adapter.supportsMultipleInputDevices()).isTrue();
+            assertThat(siblings).isEmpty();
+            assertThat(primary.initializeCount).isZero();
+            adapter.open(new DeviceId(adapter.name(), "Main Out"), FORMAT, FRAMES, CaptureRequirement.REQUIRED);
+            capture = adapter.createInputBackend();
+            assertThat(siblings).hasSize(1);
+            assertThat(capture.name()).isEqualTo("Fake");
+            assertThat(capture.supportsMultipleInputDevices()).isTrue();
+            assertThat(capture.selectedInputDevice(new DeviceId("Fake", "Sibling out")).name())
+                    .isEqualTo("Sibling mic [Fake]");
+            capture.openInput(new DeviceId("Fake", "Sibling mic [Fake]"), FORMAT, FRAMES, 3);
+            assertThat(siblings.getFirst().lastConfig.inputDeviceIndex()).isEqualTo(9);
+            assertThat(siblings.getFirst().lastConfig.inputChannels()).isEqualTo(3);
+            assertThat(siblings.getFirst().lastConfig.outputChannels()).isZero();
+            furtherCapture = capture.createInputBackend();
+            assertThat(siblings).hasSize(2);
+            capture.close();
+            capture = null;
+            assertThat(siblings.getFirst().closeCount).isEqualTo(1);
+            assertThat(primary.isStreamActive()).isTrue();
+            assertThat(primary.closeStreamCount).isZero();
+            assertThat(primary.closeCount).isZero();
+        } finally {
+            if (furtherCapture != null) furtherCapture.close();
+            if (capture != null) capture.close();
+            adapter.close();
+        }
+    }
+
+    @Test
+    void aSiblingFactoryCannotReuseTheParentsOwnedDelegate() {
+        FakeNativeBackend primary = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(primary, "", () -> primary);
+        try {
+            assertThatThrownBy(adapter::createInputBackend).isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining("independent backend");
+            assertThat(primary.initializeCount).isZero();
+            assertThat(primary.closeCount).isZero();
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void aSiblingFactoryCannotReturnNull() {
+        FakeNativeBackend primary = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(primary, "", () -> null);
+        try {
+            assertThatThrownBy(adapter::createInputBackend).isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("input backend factory returned null");
+            assertThat(primary.initializeCount).isZero();
+            assertThat(primary.closeCount).isZero();
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void clockDomainSharingIsTheWrappedDriversAnswerNotTheIdentityDefault() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        DeviceId first = new DeviceId(adapter.name(), "Mic In"), second = new DeviceId(adapter.name(), "Duplex");
+        try {
+            assertThat(adapter.sharesClockDomain(first, second)).isFalse();
+            fake.clockLockedDevices = Set.of(first, second);
+            assertThat(adapter.sharesClockDomain(first, second)).as("a word-clock lock the driver reports").isTrue();
+            assertThat(fake.clockDomainQueries).isEqualTo(2);
+            assertThat(fake.enumerationCount).as("a clock query never enumerates").isZero();
+            assertThatThrownBy(() -> adapter.sharesClockDomain(first, null)).isInstanceOf(NullPointerException.class);
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void selectedZeroWidthIdentityCanOpenOptionalOutputButRequiredCaptureIsRefused() {
+        FakeNativeBackend fake = new FakeNativeBackend(List.of(device(3, "Main Out", 0, 2), device(5, "Mic In", 0, 0)));
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic In");
+        DeviceId output = new DeviceId(adapter.name(), "Main Out");
+        DeviceId input = adapter.selectedInputDevice(output);
+        assertThat(input.name()).isEqualTo("Mic In [Fake]");
+        try {
+            adapter.open(output, FORMAT, FRAMES, CaptureRequirement.OPTIONAL, input, 1);
+            assertThat(fake.lastConfig.inputChannels()).isZero();
+            assertThat(fake.lastConfig.outputChannels()).isEqualTo(2);
+            assertThat(adapter.openedInputChannels()).isZero();
+            adapter.close();
+            assertThatThrownBy(() -> adapter.open(output, FORMAT, FRAMES, CaptureRequirement.REQUIRED, input, 1))
+                    .isInstanceOf(AudioBackendException.class).hasMessageContaining("No capture channels");
+        } finally { adapter.close(); }
+    }
+
+    @Test
+    void provenPrimaryZeroWidthStartsThroughTheRealCallbackAdapter() {
+        FakeNativeBackend fake = new FakeNativeBackend(new java.util.ArrayList<>(List.of(
+                device(3, "Main Out", 0, 2), device(5, "Mic In", 1, 0))));
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, "Mic In");
+        AudioEngine engine = new AudioEngine(new AudioFormat(48_000, 2, 16, FRAMES));
+        engine.setStreamingProvision(new StreamingProvision(adapter.name(), List.of(
+                new BackendStreamRung(adapter, new DeviceId(adapter.name(), "Main Out")))));
+        var track = new com.benesquivelmusic.daw.core.track.Track("Mic", com.benesquivelmusic.daw.core.track.TrackType.AUDIO);
+        track.setInputRouting(new InputRouting(0, 1));
+        track.setInputDevice(java.util.Optional.of(new DeviceId(adapter.name(), device(5, "Mic In", 1, 0).qualifiedName())));
+        track.setArmed(true);
+        try {
+            engine.validateInputRouting(List.of(track));
+            fake.devices.set(1, device(5, "Mic In", 0, 0));
+            engine.startAudioInputOutput(List.of(track));
+            assertThat(engine.captureInputChannels(0)).isZero();
+            assertThat(fake.lastConfig.outputChannels()).isEqualTo(2);
+            assertThat(fake.lastConfig.inputChannels()).isZero();
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
     /** Guard budget for drain-thread waits — generous, never inner-inflated. */
     private static final long GUARD_BUDGET_MILLIS = 5_000L;
 
@@ -336,6 +470,33 @@ class CallbackBackendAdapterTest {
                 .isEqualTo(9);
         assertThat(adapter.openedInputChannels()).isEqualTo(2);
         adapter.close();
+    }
+
+    @Test
+    void aNameSharedByAPlaybackAndACaptureEndpointSelectsAndOpensTheCaptureEndpointAsInput() {
+        String spdif = "Digital Audio (S/PDIF)";
+        FakeNativeBackend fake = new FakeNativeBackend(List.of(device(3, spdif, 0, 2), device(7, spdif, 2, 0)));
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake, spdif);
+        DeviceId output = new DeviceId(adapter.name(), spdif + " [Fake]");
+        try {
+            DeviceId input = adapter.selectedInputDevice(output);
+            assertThat(input).as("the shared label, resolved to the endpoint that captures").isEqualTo(output);
+
+            adapter.open(output, FORMAT, FRAMES, CaptureRequirement.REQUIRED, input, 2);
+
+            assertThat(fake.lastConfig.outputDeviceIndex()).as("plays through the playback endpoint").isEqualTo(3);
+            assertThat(fake.lastConfig.inputDeviceIndex()).as("captures from the capture endpoint").isEqualTo(7);
+            assertThat(adapter.openedInputChannels()).isEqualTo(2);
+        } finally { adapter.close(); }
+
+        FakeNativeBackend twins = new FakeNativeBackend(List.of(
+                device(3, spdif, 0, 2), device(7, spdif, 2, 0), device(8, spdif, 2, 0)));
+        CallbackBackendAdapter ambiguous = new CallbackBackendAdapter(twins, spdif);
+        assertThatThrownBy(() -> ambiguous.selectedInputDevice(output))
+                .as("two capture endpoints of that name stay ambiguous")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessageContaining("AMBIGUOUS");
+        ambiguous.close();
     }
 
     /**
@@ -1215,6 +1376,17 @@ class CallbackBackendAdapterTest {
         @Override
         public boolean isStreamActive() {
             return streamOpen;
+        }
+
+        /** Devices the fake driver reports as word-clock locked together. */
+        volatile Set<DeviceId> clockLockedDevices = Set.of();
+        int clockDomainQueries;
+
+        @Override
+        public boolean sharesClockDomain(DeviceId first, DeviceId second) {
+            clockDomainQueries++;
+            return NativeAudioBackend.super.sharesClockDomain(first, second)
+                    || clockLockedDevices.contains(first) && clockLockedDevices.contains(second);
         }
 
         @Override

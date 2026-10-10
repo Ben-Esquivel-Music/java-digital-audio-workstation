@@ -120,8 +120,7 @@ final class RecordingInFlightFixture implements AutoCloseable {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection());
+                    () -> RoundTripLatency.UNKNOWN);
             if (midiInput != null) {
                 transport.setMidiInputDeviceResolverForTest(
                         name -> STUB_MIDI_INPUT.equals(name) ? midiInput : null);

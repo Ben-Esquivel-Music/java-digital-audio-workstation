@@ -345,11 +345,18 @@ class EngineStreamPumpTest {
     void pumpPublishesTheMasterMeterBeforeTheSameInterleavedBlockReachesTheBackend() {
         var backend = new RecordingBackend();
         engine = new AudioEngine(FORMAT);
-        new EngineBinder(engine).bind(new DawProject("Pump meters", FORMAT));
-        engine.setRecordingCallback((input, frames) -> {
-            for (float[] lane : input) {
-                java.util.Arrays.fill(lane, 0, frames, 0.5f);
+        DawProject project = new DawProject("Pump meters", FORMAT);
+        new EngineBinder(engine).bind(project);
+        project.getMixer().getMasterChannel().getEffectsChain().addProcessor(new AudioProcessor() {
+            @Override
+            public void process(float[][] input, float[][] output, int frames) {
+                for (float[] lane : output) {
+                    java.util.Arrays.fill(lane, 0, frames, 0.5f);
+                }
             }
+            @Override public void reset() { }
+            @Override public int getInputChannelCount() { return 2; }
+            @Override public int getOutputChannelCount() { return 2; }
         });
         var meter = engine.meteringTapBus().attachLevel(MeterTapPoint.MASTER_OUT);
         var frame = new MeterFrame();

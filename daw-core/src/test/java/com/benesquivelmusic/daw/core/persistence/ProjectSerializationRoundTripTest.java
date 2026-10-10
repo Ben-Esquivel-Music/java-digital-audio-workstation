@@ -25,6 +25,7 @@ import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -323,15 +325,51 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
-    void shouldRoundTripTrackInputDevice() throws IOException {
+    void shouldRoundTripTrackInputDeviceIdentity() throws IOException {
+        DeviceId usb = new DeviceId("ASIO", "USB Interface [ASIO]");
         DawProject original = new DawProject("Input Test", AudioFormat.CD_QUALITY);
         Track track = original.createAudioTrack("Mic Input");
-        track.setInputDeviceIndex(2);
+        track.setInputDevice(Optional.of(usb));
 
         String xml = serializer.serialize(original);
         DawProject restored = deserializer.deserialize(xml);
 
-        assertThat(restored.getTracks().get(0).getInputDeviceIndex()).isEqualTo(2);
+        assertThat(xml).contains("input-device-backend=\"ASIO\"", "input-device-name=\"USB Interface [ASIO]\"")
+                .doesNotContain("input-device=\"");
+        Track restoredTrack = restored.getTracks().get(0);
+        assertThat(restoredTrack.getInputDevice()).contains(usb);
+        assertThat(restoredTrack.getLegacyInputDeviceIndexHint()).isEqualTo(Track.NO_INPUT_DEVICE);
+    }
+
+    @Test
+    void legacyIndexOnlyProjectLoadsTheIndexAsAHintAndKeepsItAcrossResave() throws IOException {
+        DawProject original = new DawProject("Legacy Input", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Mic Input");
+        String current = serializer.serialize(original);
+        // A file written before stable identities existed: only the enumeration index.
+        String legacy = current.replace("name=\"Mic Input\"", "name=\"Mic Input\" input-device=\"2\"");
+        assertThat(legacy).contains("input-device=\"2\"").doesNotContain("input-device-name");
+
+        Track loaded = deserializer.deserialize(legacy).getTracks().get(0);
+
+        assertThat(loaded.getInputDevice()).isEmpty();
+        assertThat(loaded.getLegacyInputDeviceIndexHint()).isEqualTo(2);
+        Track resaved = deserializer.deserialize(serializer.serialize(deserializer.deserialize(legacy)))
+                .getTracks().get(0);
+        assertThat(resaved.getLegacyInputDeviceIndexHint()).isEqualTo(2);
+    }
+
+    @Test
+    void identityAttributesWinOverAStaleLegacyIndex() throws IOException {
+        DawProject original = new DawProject("Both", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Mic Input").setInputDevice(Optional.of(new DeviceId("ASIO", "USB Interface [ASIO]")));
+        String both = serializer.serialize(original)
+                .replace("name=\"Mic Input\"", "name=\"Mic Input\" input-device=\"4\"");
+
+        Track loaded = deserializer.deserialize(both).getTracks().get(0);
+
+        assertThat(loaded.getInputDevice()).contains(new DeviceId("ASIO", "USB Interface [ASIO]"));
+        assertThat(loaded.getLegacyInputDeviceIndexHint()).isEqualTo(Track.NO_INPUT_DEVICE);
     }
 
     @Test
@@ -379,7 +417,7 @@ class ProjectSerializationRoundTripTest {
         // Tracks with clips and automation
         Track drums = original.createAudioTrack("Drums");
         drums.setVolume(0.9);
-        drums.setInputDeviceIndex(0);
+        drums.setInputDevice(Optional.of(new DeviceId("ASIO", "Drum Interface [ASIO]")));
         AudioClip kickClip = new AudioClip("Kick", 0.0, 16.0, "/audio/kick.wav");
         kickClip.setTimeStretchRatio(0.95);
         kickClip.setPitchShiftSemitones(1.0);
@@ -436,7 +474,7 @@ class ProjectSerializationRoundTripTest {
         Track restoredDrums = restored.getTracks().get(0);
         assertThat(restoredDrums.getName()).isEqualTo("Drums");
         assertThat(restoredDrums.getVolume()).isCloseTo(0.9, within(0.001));
-        assertThat(restoredDrums.getInputDeviceIndex()).isEqualTo(0);
+        assertThat(restoredDrums.getInputDevice()).contains(new DeviceId("ASIO", "Drum Interface [ASIO]"));
         assertThat(restoredDrums.getClips()).hasSize(1);
 
         AudioClip restoredKick = restoredDrums.getClips().get(0);
@@ -572,7 +610,8 @@ class ProjectSerializationRoundTripTest {
         String xml = serializer.serialize(original);
         DawProject restored = deserializer.deserialize(xml);
 
-        assertThat(restored.getTracks().get(0).getInputDeviceIndex()).isEqualTo(Track.NO_INPUT_DEVICE);
+        assertThat(restored.getTracks().get(0).getInputDevice()).isEmpty();
+        assertThat(restored.getTracks().get(0).getLegacyInputDeviceIndexHint()).isEqualTo(Track.NO_INPUT_DEVICE);
     }
 
     @Test

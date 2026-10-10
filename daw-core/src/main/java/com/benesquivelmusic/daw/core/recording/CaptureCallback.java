@@ -31,6 +31,20 @@ import java.util.Objects;
  * the preallocated instrument-track array. Routing, gating, wrap detection
  * and every file write happen on the flush thread from the header.</p>
  *
+ * <p><strong>Activation.</strong> All pipeline callbacks share a closed start
+ * gate until Record and prepared-input activation succeed. Earlier calls
+ * leave the producer gate without claiming or advancing their frame cursor.
+ * The caller freezes one beat/seek-sequence origin before publishing the
+ * volatile activation. Each source starts from it; an explicit subsequent
+ * seek supersedes it once the primary clock has committed the target. Sibling
+ * inputs re-anchor to that seek's immutable target and then count delivered
+ * frames independently, even if the primary clock has already advanced further.
+ * Counting frames is sound only because {@code CaptureRoutingPlan} admits a
+ * sibling device solely when the backend reports it shares the primary input's
+ * hardware clock; unsynchronized devices are refused before the take, since
+ * nothing here corrects drift between clock domains.
+ * The primary input continues to follow the transport clock.</p>
+ *
  * <p><strong>Start frame.</strong> The header's start frame is the beat
  * position converted at the tempo the take was prepared at — the tempo its
  * manifest's anchor frame was computed with — not the transport's tempo of
@@ -77,6 +91,23 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     private final double sampleRate;
     private final double punchFrameScale;
     private final double tempoBpm;
+    private final StartGate startGate;
+
+    /** Caller initializes the common origin before publishing the volatile activation. */
+    static final class StartGate {
+        double beat;
+        Transport.PositionSeek positionSeek;
+        boolean seekPending;
+        volatile boolean active;
+    }
+
+    private boolean independentFrameCursor;
+    private long nextInputFrame;
+    private boolean frameCursorInitialized;
+    private Transport.PositionSeek observedPositionSeek;
+    void useIndependentFrameCursor() {
+        independentFrameCursor = true;
+    }
 
     /**
      * Creates the callback of one take. Caller thread, before the callback
@@ -94,6 +125,13 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     CaptureCallback(CaptureRing ring, CaptureFlushService flush, Track[] instrumentTracks,
                     Transport transport, AudioEngine audioEngine, double sampleRate,
                     double projectSampleRate, double tempoBpm) {
+        this(ring, flush, instrumentTracks, transport, audioEngine, sampleRate,
+                projectSampleRate, tempoBpm, null);
+    }
+
+    CaptureCallback(CaptureRing ring, CaptureFlushService flush, Track[] instrumentTracks,
+                    Transport transport, AudioEngine audioEngine, double sampleRate,
+                    double projectSampleRate, double tempoBpm, StartGate startGate) {
         this.ring = Objects.requireNonNull(ring, "ring must not be null");
         this.flush = Objects.requireNonNull(flush, "flush must not be null");
         this.instrumentTracks = Objects.requireNonNull(instrumentTracks, "instrumentTracks must not be null").clone();
@@ -111,6 +149,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         this.sampleRate = sampleRate;
         this.punchFrameScale = sampleRate / projectSampleRate;
         this.tempoBpm = tempoBpm;
+        this.startGate = startGate;
     }
 
     /**
@@ -143,14 +182,42 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         if (!ring.enterProducer()) {
             return false;
         }
+        if (startGate != null && !startGate.active) {
+            return false;
+        }
+        Transport.PositionSeek positionSeek = transport.getPositionSeek();
+        boolean seekPending = independentFrameCursor && transport.hasPendingPositionSeek();
+        boolean firstBlock = !frameCursorInitialized;
+        boolean useStartOrigin = firstBlock && startGate != null
+                && !startGate.seekPending
+                && startGate.positionSeek == positionSeek;
+        if (firstBlock) {
+            nextInputFrame = startFrameOf(useStartOrigin ? startGate.beat : transport.getPositionInBeats());
+            frameCursorInitialized = true;
+            if (!seekPending && (useStartOrigin || startGate == null)) {
+                observedPositionSeek = positionSeek;
+            }
+        }
+        if (independentFrameCursor && !seekPending && observedPositionSeek != positionSeek) {
+            nextInputFrame = startFrameOf(positionSeek.targetInBeats());
+            observedPositionSeek = positionSeek;
+        }
         CaptureRing.Slot slot = ring.claim();
         if (slot == null) {
+            if (independentFrameCursor) nextInputFrame += numFrames;
             return false;
         }
 
         // The recording callback fires *before* advancePosition(), so
         // getPositionInBeats() still reflects this block's start.
-        double beat = transport.getPositionInBeats();
+        double beat = independentFrameCursor ? nextInputFrame / sampleRate * tempoBpm / 60.0
+                : useStartOrigin ? startGate.beat : transport.getPositionInBeats();
+        if (independentFrameCursor) nextInputFrame += numFrames;
+        Transport.LoopWindow loop = transport.getLoopWindow();
+        if (independentFrameCursor && loop.enabled() && beat >= loop.endInBeats()) {
+            double length = loop.endInBeats() - loop.startInBeats();
+            beat = loop.startInBeats() + (beat - loop.startInBeats()) % length;
+        }
         slot.setBeatPosition(beat);
         slot.setStartFrame(startFrameOf(beat));
         // One load: the enabled flag and the frames come from the same region.
@@ -162,7 +229,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         } else {
             slot.setPunchEnabled(false);
         }
-        slot.setLoopEnabled(transport.isLoopEnabled());
+        slot.setLoopEnabled(loop.enabled());
 
         slot.setNumFrames(numFrames);
         int excess = numFrames - slot.slotFrames();

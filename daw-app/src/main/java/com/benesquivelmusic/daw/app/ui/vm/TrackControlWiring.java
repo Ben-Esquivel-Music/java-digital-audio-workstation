@@ -35,7 +35,9 @@ import java.util.function.Consumer;
  * @param commandSink the intent sink every binder dispatches into; must not be {@code null}
  */
 public record TrackControlWiring(TrackChannelRegistry registry,
-                                 Consumer<TrackCommand> commandSink) {
+                                 Consumer<TrackCommand> commandSink,
+                                 com.benesquivelmusic.daw.app.ui.recording.InputRoutingGuard inputGuard) {
+    public TrackControlWiring(TrackChannelRegistry registry, Consumer<TrackCommand> sink) { this(registry, sink, null); }
 
     /** @throws NullPointerException if either component is {@code null} */
     public TrackControlWiring {
@@ -65,8 +67,22 @@ public record TrackControlWiring(TrackChannelRegistry registry,
         return new TrackControlWiring(registry, new LinkedTrackCommandDispatcher(project, handler));
     }
 
+    public static TrackControlWiring standalone(DawProject project, FxDispatcher dispatcher, MeterFeed meterFeed,
+                                                com.benesquivelmusic.daw.core.audio.AudioEngine engine,
+                                                Consumer<String> errors) {
+        CoreTrackIntentHandler handler = new CoreTrackIntentHandler(project);
+        var commandSink = new LinkedTrackCommandDispatcher(project, handler);
+        var guard = new com.benesquivelmusic.daw.app.ui.recording.InputRoutingGuard(
+                project, engine, dispatcher, errors, commandSink);
+        handler.setArmValidator(guard::requestArm);
+        handler.setArmCancellation(guard::cancelArm);
+        TrackChannelRegistry registry = new TrackChannelRegistry(project, dispatcher, meterFeed);
+        return new TrackControlWiring(registry, commandSink, guard);
+    }
+
     /** Disposes the registry (every VM, listener and continuous channel). Idempotent. */
     public void dispose() {
+        if (inputGuard != null) inputGuard.close();
         registry.dispose();
     }
 }

@@ -1815,9 +1815,6 @@ public final class MixerView extends VBox implements Dockable {
             inputStrip.setMaxWidth(INPUT_METER_WIDTH);
             inputStrip.setPrefHeight(METER_HEIGHT);
             inputStrip.setMinHeight(METER_HEIGHT);
-            Tooltip.install(inputStrip,
-                    new Tooltip("Input meter (pre-processing). "
-                            + "Click clip LED to reset; Alt+click resets all."));
             activeInputMeterStrips.add(inputStrip);
             stripRow.getChildren().add(inputStrip);
         }

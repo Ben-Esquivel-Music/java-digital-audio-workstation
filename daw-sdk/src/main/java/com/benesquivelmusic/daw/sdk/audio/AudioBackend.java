@@ -248,6 +248,81 @@ public interface AudioBackend extends AutoCloseable {
         open(device, format, bufferFrames);
     }
 
+    /** Opens independent capture and playback widths. Defaults refuse unsupported routing. */
+    default void open(DeviceId output, AudioFormat format, int frames, CaptureRequirement capture,
+                      DeviceId input, int inputChannels) {
+        if (inputChannels < 0 || capture == CaptureRequirement.REQUIRED && inputChannels == 0) throw new IllegalArgumentException("inputChannels must be positive for capture");
+        boolean sameInput = input.equals(output);
+        if (!sameInput && output.isDefault()) {
+            List<AudioDeviceInfo> devices = listDevices();
+            sameInput = devices.size() == 1 && AudioDeviceInfo.isSelectionFor(input.name(), devices.getFirst().name(), devices.getFirst().hostApi());
+        }
+        if (!sameInput || inputChannels > format.channels()) {
+            throw new AudioBackendException(name() + " cannot open independent input routing");
+        }
+        open(output, format, frames, capture);
+    }
+    /**
+     * Control-thread capability query for an input device of this backend: the selected input, or —
+     * when {@link #supportsMultipleInputDevices()} — an explicitly routed sibling input, which capture
+     * validation probes before opening anything. Empty means genuinely unknown. A single-device backend
+     * may refuse, by throwing, a device other than its active one.
+     */
+    default java.util.OptionalInt inputChannelCapacity(DeviceId input) { return java.util.OptionalInt.empty(); }
+
+    /** Actual capture rate of an opened stream, or NaN when the backend cannot report it. */
+    default double openedInputSampleRate() { return Double.NaN; }
+
+    /** Whether independent input devices can be opened together. */
+    default boolean supportsMultipleInputDevices() { return false; }
+
+    /**
+     * Whether two input devices run from one hardware sample clock (story 326,
+     * book &sect;5.4 "Device set"). Two interfaces that both report 48&nbsp;kHz
+     * still differ by tens of ppm unless they share a clock, so streams from
+     * different clock domains drift apart progressively during a take. Capture
+     * planning refuses a multi-device union whose devices this method does not
+     * report as shared: silent drift is worse than a refused take.
+     *
+     * <p>The default answers {@code true} only for the identical device. A
+     * backend overrides it only where it can prove the sharing, for example an
+     * aggregate device or a driver that reports word-clock lock. Control
+     * thread; must not enumerate or block.</p>
+     *
+     * @param first  one input device of this backend; must not be null
+     * @param second another input device of this backend; must not be null
+     * @return whether both devices are guaranteed to share one hardware clock
+     */
+    default boolean sharesClockDomain(DeviceId first, DeviceId second) {
+        return Objects.requireNonNull(first, "first must not be null")
+                .equals(Objects.requireNonNull(second, "second must not be null"));
+    }
+    /** Creates an independently owned capture stream. */
+    default AudioBackend createInputBackend() {
+        throw new AudioBackendException(name() + " supports only one input device");
+    }
+    /** Opens input-only; no second output clock is created. */
+    default void openInput(DeviceId device, AudioFormat format, int frames, int channels) {
+        throw new AudioBackendException(name() + " does not support input-only streams");
+    }
+    /**
+     * Resolves the session input selection, without changing the stream: the
+     * device a track with no input device of its own records from (story 326).
+     *
+     * <p>The default returns {@code output}, which is right only for a backend
+     * whose capture comes from the output device. A backend with an
+     * independently configured input overrides this to return that input and
+     * not {@code output}; it may return {@link DeviceId#defaultFor(String)} for
+     * "this backend's default input". An override may throw an
+     * {@link AudioBackendException} when the configured selection is missing or
+     * ambiguous; capture planning turns that into a refusal naming the
+     * track.</p>
+     *
+     * @param output the output device of the stream; must not be null
+     * @return the session input device of this backend
+     */
+    default DeviceId selectedInputDevice(DeviceId output) { return output; }
+
     /**
      * How many capture channels the CURRENTLY OPEN stream actually opened with
      * (story 316 review) &mdash; the verifiable half of the

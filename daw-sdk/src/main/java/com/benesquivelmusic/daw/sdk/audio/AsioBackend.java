@@ -202,6 +202,11 @@ public final class AsioBackend implements AudioBackend {
                 driverReleaseBudget, "driverReleaseBudget");
     }
 
+    @Override public double openedInputSampleRate() {
+        AudioFormat current = support.format();
+        return current == null ? Double.NaN : current.sampleRate();
+    }
+
     @Override
     public String name() {
         return NAME;
@@ -384,6 +389,49 @@ public final class AsioBackend implements AudioBackend {
      */
     @Override
     public void open(DeviceId device, AudioFormat format, int bufferFrames) {
+        openWithInputWidth(device, format, bufferFrames, format.channels());
+    }
+    @Override
+    public void open(DeviceId output, AudioFormat format, int frames, CaptureRequirement capture,
+                     DeviceId input, int inputChannels) {
+        if (inputChannels <= 0) throw new IllegalArgumentException("inputChannels must be positive");
+        if (!selectedInputDevice(output).equals(selectedInputDevice(input)))
+            throw new AudioBackendException("ASIO cannot capture '" + input.name() + "'");
+        openWithInputWidth(output, format, frames, inputChannels);
+    }
+    @Override public DeviceId selectedInputDevice(DeviceId selection) {
+        if (selection.isDefault()) {
+            List<AudioDeviceInfo> devices = listDevices();
+            if (devices.isEmpty()) return selection;
+            return new DeviceId(name(), devices.getFirst().name());
+        }
+        String suffix = " [" + name() + "]";
+        String value = selection.name();
+        return new DeviceId(name(), value.endsWith(suffix) ? value.substring(0, value.length() - suffix.length()) : value);
+    }
+    @Override public java.util.OptionalInt inputChannelCapacity(DeviceId input) {
+        DeviceId selected = selectedInputDevice(input);
+        synchronized (DRIVER_LIFECYCLE_LOCK) {
+            if (!AsioControlThread.isQuiesced() || isReleasePending())
+                throw new AudioBackendException("ASIO input capability is unavailable while driver release is pending");
+            if (activeBackend != null) {
+                if (!selected.name().equals(activeBackend.activeDriverName))
+                    throw new AudioBackendException("ASIO only captures the active driver '" + activeBackend.activeDriverName + "'");
+                Optional<int[]> counts = driverChannelCounts();
+                return counts.isPresent() ? java.util.OptionalInt.of(counts.get()[0]) : java.util.OptionalInt.empty();
+            }
+            AsioDriverShim probe = driverShimFactory.get();
+            try {
+                if (!probe.isLifecycleAvailable()) return java.util.OptionalInt.empty();
+                String driver = resolveDriverName(probe, selected);
+                if (!probe.loadDriver(driver)) throw new AudioBackendException("Cannot query ASIO input channels: " + driver);
+                Optional<int[]> counts = driverChannelCounts();
+                return counts.isPresent() ? java.util.OptionalInt.of(counts.get()[0]) : java.util.OptionalInt.empty();
+            } finally { releaseDriverShim(probe); }
+        }
+    }
+
+    private void openWithInputWidth(DeviceId device, AudioFormat format, int bufferFrames, int inputWidth) {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
         if (bufferFrames <= 0) {
@@ -475,7 +523,7 @@ public final class AsioBackend implements AudioBackend {
                 streaming = acquireStreamingShim();
                 List<AsioStreamingShim.BufferInfo> bufferInfos = List.of();
                 if (streaming != null) {
-                    int[] counts = negotiateChannelCounts(format.channels(), driverName);
+                    int[] counts = negotiateChannelCounts(format.channels(), inputWidth, driverName);
                     if (!streaming.createBuffers(channelIndices(counts[0]),
                             channelIndices(counts[1]), bufferFrames)) {
                         throw new AudioBackendException(
@@ -605,13 +653,16 @@ public final class AsioBackend implements AudioBackend {
      *                               opaquely
      */
     private static int[] negotiateChannelCounts(int formatChannels, String driverName) {
-        int inputs = formatChannels;
+        return negotiateChannelCounts(formatChannels, formatChannels, driverName);
+    }
+    private static int[] negotiateChannelCounts(int formatChannels, int inputWidth, String driverName) {
+        int inputs = inputWidth;
         int outputs = formatChannels;
         Optional<int[]> reported = driverChannelCounts();
         if (reported.isPresent()) {
             int reportedInputs = reported.get()[0];
             int reportedOutputs = reported.get()[1];
-            inputs = Math.clamp(reportedInputs, 0, formatChannels);
+            inputs = Math.clamp(reportedInputs, 0, inputWidth);
             outputs = Math.clamp(reportedOutputs, 0, formatChannels);
             if (outputs == 0 && formatChannels > 0) {
                 // Only the DRIVER's own reported count can clamp the request
@@ -628,7 +679,7 @@ public final class AsioBackend implements AudioBackend {
                                 + driverName);
             }
         }
-        if (inputs + outputs > AsioStreamingShim.MAX_STREAM_CHANNELS) {
+        if ((long) inputs + outputs > AsioStreamingShim.MAX_STREAM_CHANNELS) {
             throw new AudioBackendException(
                     "ASIO driver rejected channel request " + inputs + " input(s) + "
                             + outputs + " output(s): the native shim activates at most "

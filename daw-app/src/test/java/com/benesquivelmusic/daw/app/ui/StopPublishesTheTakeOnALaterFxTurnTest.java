@@ -241,8 +241,7 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection());
+                    () -> RoundTripLatency.UNKNOWN);
             if (delay != null) {
                 controller.setStillWritingDelayForTest(delay);
             }

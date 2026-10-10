@@ -3,10 +3,14 @@ package com.benesquivelmusic.daw.core.track;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -151,39 +155,74 @@ class TrackTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    private static final DeviceId INTERFACE = new DeviceId("ASIO", "Interface [ASIO]");
+
     @Test
     void shouldDefaultToNoInputDevice() {
         Track track = new Track("Track", TrackType.AUDIO);
-        assertThat(track.getInputDeviceIndex()).isEqualTo(Track.NO_INPUT_DEVICE);
+        assertThat(track.getInputDevice()).isEmpty();
+        assertThat(track.getLegacyInputDeviceIndexHint()).isEqualTo(Track.NO_INPUT_DEVICE);
     }
 
     @Test
-    void shouldSetInputDeviceIndex() {
+    void shouldSetAndClearStableInputDeviceIdentity() {
         Track track = new Track("Track", TrackType.AUDIO);
-        track.setInputDeviceIndex(3);
-        assertThat(track.getInputDeviceIndex()).isEqualTo(3);
+        List<Track.ChangeKind> changes = new ArrayList<>();
+        track.addChangeListener(changes::add);
+
+        track.setInputDevice(Optional.of(INTERFACE));
+        assertThat(track.getInputDevice()).contains(INTERFACE);
+        track.setInputDevice(Optional.empty());
+        assertThat(track.getInputDevice()).isEmpty();
+
+        assertThat(changes).containsExactly(Track.ChangeKind.INPUT_ROUTING, Track.ChangeKind.INPUT_ROUTING);
     }
 
     @Test
-    void shouldClearInputDeviceIndex() {
+    void stableIdentitySupersedesTheLegacyIndexHint() {
         Track track = new Track("Track", TrackType.AUDIO);
-        track.setInputDeviceIndex(5);
-        track.setInputDeviceIndex(Track.NO_INPUT_DEVICE);
-        assertThat(track.getInputDeviceIndex()).isEqualTo(Track.NO_INPUT_DEVICE);
+        track.setLegacyInputDeviceIndexHint(3);
+
+        track.setInputDevice(Optional.of(INTERFACE));
+
+        assertThat(track.getLegacyInputDeviceIndexHint()).isEqualTo(Track.NO_INPUT_DEVICE);
+        assertThatThrownBy(() -> track.setLegacyInputDeviceIndexHint(1))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("Track");
     }
 
     @Test
-    void shouldRejectInvalidInputDeviceIndex() {
+    void explicitNoneAlsoDiscardsTheLegacyIndexHint() {
         Track track = new Track("Track", TrackType.AUDIO);
-        assertThatThrownBy(() -> track.setInputDeviceIndex(-2))
+        track.setLegacyInputDeviceIndexHint(5);
+
+        track.setInputDevice(Optional.empty());
+
+        assertThat(track.getLegacyInputDeviceIndexHint()).isEqualTo(Track.NO_INPUT_DEVICE);
+    }
+
+    @Test
+    void shouldRejectInvalidLegacyInputDeviceIndexHint() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThatThrownBy(() -> track.setLegacyInputDeviceIndexHint(-2))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void shouldAcceptZeroInputDeviceIndex() {
+    void shouldAcceptZeroLegacyInputDeviceIndexHint() {
         Track track = new Track("Track", TrackType.AUDIO);
-        track.setInputDeviceIndex(0);
-        assertThat(track.getInputDeviceIndex()).isEqualTo(0);
+        track.setLegacyInputDeviceIndexHint(0);
+        assertThat(track.getLegacyInputDeviceIndexHint()).isEqualTo(0);
+    }
+
+    @Test
+    void duplicateCarriesTheLegacyHintOfAnUnmigratedTrack() {
+        Track original = new Track("Legacy", TrackType.AUDIO);
+        original.setLegacyInputDeviceIndexHint(2);
+
+        Track copy = original.duplicate("Legacy (copy)");
+
+        assertThat(copy.getInputDevice()).isEmpty();
+        assertThat(copy.getLegacyInputDeviceIndexHint()).isEqualTo(2);
     }
 
     // ── Recording indicator tests ───────────────────────────────────────────
@@ -248,7 +287,7 @@ class TrackTest {
         original.setSolo(true);
         original.setArmed(true);
         original.setPhaseInverted(true);
-        original.setInputDeviceIndex(3);
+        original.setInputDevice(Optional.of(INTERFACE));
         original.setInputMonitoringMode(InputMonitoringMode.AUTO);
 
         Track copy = original.duplicate("Vocals (copy)");
@@ -262,7 +301,7 @@ class TrackTest {
         assertThat(copy.isSolo()).isTrue();
         assertThat(copy.isArmed()).isFalse(); // armed is never copied
         assertThat(copy.isPhaseInverted()).isTrue();
-        assertThat(copy.getInputDeviceIndex()).isEqualTo(3);
+        assertThat(copy.getInputDevice()).contains(INTERFACE);
         assertThat(copy.getInputMonitoringMode()).isEqualTo(InputMonitoringMode.AUTO);
         assertThat(copy.isRecording()).isFalse(); // recording state is never copied
         assertThat(copy.isFrozen()).isFalse(); // frozen state is never copied

@@ -110,6 +110,8 @@ final class EngineStreamPump {
 
     // Pre-allocated render state — pump thread only.
     private final float[][] input;
+    private final float[][][] inputViews;
+    private int availableInputChannels;
     private final float[][] output;
     private final float[] interleaved;
     /**
@@ -131,6 +133,7 @@ final class EngineStreamPump {
 
     private final Thread thread;
     private volatile boolean running;
+    private volatile boolean inputStreamTerminated;
     private volatile Flow.Subscription inputSubscription;
     /**
      * True once the input planes were written from a captured block and so
@@ -186,7 +189,10 @@ final class EngineStreamPump {
         this.bufferFrames = format.bufferSize();
         this.blockPeriodNanos =
                 (long) (bufferFrames * 1_000_000_000L / format.sampleRate());
-        this.input = new float[channels][bufferFrames];
+        this.input = new float[Math.max(1, backend.openedInputChannels())][bufferFrames];
+        this.inputViews = new float[input.length + 1][][];
+        for (int width = 0; width <= input.length; width++) inputViews[width] = java.util.Arrays.copyOf(input, width);
+        availableInputChannels = backend.openedInputChannels();
         this.output = new float[channels][bufferFrames];
         this.interleaved = new float[channels * bufferFrames];
         this.reusableBlock = new AudioBlock(
@@ -330,7 +336,9 @@ final class EngineStreamPump {
         while (running) {
             fillInputPlanes();
             try {
-                engine.processBlock(input, output, bufferFrames, interleaved);
+                // A terminal publisher cannot regain availability through queued input.
+                engine.processBlock(inputViews[inputStreamTerminated ? 0 : availableInputChannels],
+                        output, bufferFrames, interleaved);
             } catch (RuntimeException renderFault) {
                 // Test the STATE, not the exception type (story 316 review):
                 // any collaborator reachable from processBlock — the mixer, an
@@ -501,7 +509,7 @@ final class EngineStreamPump {
         AudioBlock block = inputQueue.poll();
         if (block == null) {
             if (inputPlanesDirty) {
-                for (int ch = 0; ch < channels; ch++) {
+                for (int ch = 0; ch < input.length; ch++) {
                     java.util.Arrays.fill(input[ch], 0f);
                 }
                 inputPlanesDirty = false;
@@ -509,7 +517,8 @@ final class EngineStreamPump {
             return;
         }
         int blockChannels = block.channels();
-        int usableChannels = Math.min(blockChannels, channels);
+        int usableChannels = Math.min(blockChannels, input.length);
+        availableInputChannels = usableChannels;
         int usableFrames = Math.min(block.frames(), bufferFrames);
         float[] samples = block.samples();
         for (int ch = 0; ch < usableChannels; ch++) {
@@ -521,7 +530,7 @@ final class EngineStreamPump {
                 java.util.Arrays.fill(plane, usableFrames, bufferFrames, 0f);
             }
         }
-        for (int ch = usableChannels; ch < channels; ch++) {
+        for (int ch = usableChannels; ch < input.length; ch++) {
             java.util.Arrays.fill(input[ch], 0f);
         }
         inputPlanesDirty = true;
@@ -589,6 +598,9 @@ final class EngineStreamPump {
 
         @Override
         public void onNext(AudioBlock item) {
+            if (!running || inputStreamTerminated) {
+                return;
+            }
             if (!inputQueue.offer(item)) {
                 droppedInputBlocks.incrementAndGet();
             }
@@ -596,14 +608,15 @@ final class EngineStreamPump {
 
         @Override
         public void onError(Throwable throwable) {
+            inputStreamTerminated = true;
             LOG.log(Level.WARNING, "Capture stream failed; input planes fall silent",
                     throwable);
         }
 
         @Override
         public void onComplete() {
-            // Stream closed — nothing to do; the loop keeps rendering silence
-            // into the input planes until the lifecycle thread stops the pump.
+            // Keep the output clock running while zero-width input flags the lost source.
+            inputStreamTerminated = true;
         }
     }
 }

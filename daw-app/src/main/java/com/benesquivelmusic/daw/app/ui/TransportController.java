@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
-import com.benesquivelmusic.daw.app.ui.recording.SessionInputSelection;
 import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportIntentHandler;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
@@ -160,13 +159,6 @@ final class TransportController implements TransportIntentHandler {
     private final AudioEngine audioEngine;
     private final UndoManager undoManager;
     private final NotificationBar notificationBar;
-    /**
-     * Story 322 — the ONE session-level input device recording opens. Consulted
-     * at record start to warn when an armed track's per-track input choice
-     * disagrees with it (Audio Engine Wiring Design Book §5.6 "Per-track input
-     * device"; multi-device capture itself is story 326).
-     */
-    private final SessionInputSelection sessionInputSelection;
     private final Label statusLabel;
     private final Label statusBarLabel;
     private final Label recIndicator;
@@ -278,13 +270,11 @@ final class TransportController implements TransportIntentHandler {
                         Supplier<CountInMode> countInMode,
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
-                        Supplier<RoundTripLatency> reportedLatency,
-                        SessionInputSelection sessionInputSelection) {
+                        Supplier<RoundTripLatency> reportedLatency) {
         this(project, audioEngine, undoManager, notificationBar, statusLabel,
                 statusBarLabel, recIndicator, playButton,
                 recordButton, snapEnabled, gridResolution, countInMode,
                 flashMidiActivity, applyLatencyCompensation, reportedLatency,
-                sessionInputSelection,
                 FxDispatcher.getDefault());
     }
 
@@ -303,12 +293,11 @@ final class TransportController implements TransportIntentHandler {
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
                         Supplier<RoundTripLatency> reportedLatency,
-                        SessionInputSelection sessionInputSelection,
                         FxDispatcher fxDispatcher) {
         this(project, audioEngine, undoManager, notificationBar, statusLabel,
                 statusBarLabel, recIndicator, playButton, recordButton,
                 snapEnabled, gridResolution, countInMode, flashMidiActivity,
-                applyLatencyCompensation, reportedLatency, sessionInputSelection,
+                applyLatencyCompensation, reportedLatency,
                 () -> { }, fxDispatcher);
     }
 
@@ -327,11 +316,8 @@ final class TransportController implements TransportIntentHandler {
                         Consumer<Track> flashMidiActivity,
                         BooleanSupplier applyLatencyCompensation,
                         Supplier<RoundTripLatency> reportedLatency,
-                        SessionInputSelection sessionInputSelection,
                         Runnable openAudioSettings,
                         FxDispatcher fxDispatcher) {
-        this.sessionInputSelection = Objects.requireNonNull(
-                sessionInputSelection, "sessionInputSelection must not be null");
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
@@ -360,7 +346,7 @@ final class TransportController implements TransportIntentHandler {
         this.core = new CoreTransportIntentHandler(
                 project.getTransport(), project.getFormat().sampleRate());
         this.recordCoordinator = new RecordCoordinator(this, project, audioEngine, undoManager,
-                notificationBar, sessionInputSelection, statusBarLabel, recIndicator, core, countInMode,
+                notificationBar, statusBarLabel, recIndicator, core, countInMode,
                 flashMidiActivity, applyLatencyCompensation, reportedLatency, fxDispatcher);
     }
 
@@ -734,6 +720,7 @@ final class TransportController implements TransportIntentHandler {
     }
 
     void stopAudioOutputWhenIdle() {
+        if (recordCoordinator.deferInputStreamStop()) return;
         if (!hasGraphInstruments()) audioEngine.stopAudioOutput();
     }
 
@@ -752,7 +739,7 @@ final class TransportController implements TransportIntentHandler {
         }
     }
 
-    private boolean hasGraphInstruments() {
+    boolean hasGraphInstruments() {
         var mixer = project.getMixer();
         // Retain the callback for bypassed instruments so unbypassing while stopped can audition immediately.
         return mixer.getChannels().stream().anyMatch(com.benesquivelmusic.daw.core.mixer.MixerChannel::hasInstrumentInsert)

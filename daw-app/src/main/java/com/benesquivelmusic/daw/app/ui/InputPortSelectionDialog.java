@@ -99,6 +99,25 @@ public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
     }
 
     /**
+     * How a per-track input pick asks the user (FX thread). Production uses
+     * {@link #MODAL}; a test substitutes a scripted answer so the real result
+     * consumer of each pick path runs without opening a window.
+     */
+    @FunctionalInterface
+    interface Chooser {
+        /** Shows this modal dialog and waits for the user's answer. */
+        Chooser MODAL = (devices, preselectedIndex) ->
+                new InputPortSelectionDialog(devices, preselectedIndex).showAndWait();
+
+        /**
+         * @param devices          the enumerated devices to offer
+         * @param preselectedIndex the device index to preselect, or {@code -1} for none
+         * @return the chosen device, or empty when the user cancelled
+         */
+        Optional<AudioDeviceInfo> choose(List<AudioDeviceInfo> devices, int preselectedIndex);
+    }
+
+    /**
      * The channel-count fragment of a device row. A device whose count is
      * {@link AudioDeviceInfo#CHANNEL_COUNT_UNKNOWN} — an enumerated ASIO
      * driver the host has not loaded — says so, rather than rendering the
@@ -184,11 +203,12 @@ public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
      * <p>Note what this is NOT fixing, because the surrounding review finding
      * is phrased for surfaces that persist a name: these rows were already
      * distinguishable when two endpoints share a name, since the host API had
-     * its own column. And this dialog persists {@code device.index()} through
-     * {@code Track.setInputDeviceIndex}, never a name, so no selection here can
-     * be silently substituted for another endpoint. The change is display-only
-     * on purpose; the selection and persistence behaviour belongs to stories
-     * 092 / 215 / 326 (see {@code TrackStripController}).</p>
+     * its own column. The callers store the pick as a stable
+     * {@code DeviceId} (backend + {@link AudioDeviceInfo#qualifiedName()})
+     * through {@code Track.setInputDevice}, never as an enumeration index, so a
+     * reordered device list cannot substitute another endpoint. The change is
+     * display-only on purpose; the selection and persistence behaviour belongs
+     * to stories 092 / 215 / 326 (see {@code TrackStripController}).</p>
      */
     private static final class AudioDeviceCell extends ListCell<AudioDeviceInfo> {
         @Override

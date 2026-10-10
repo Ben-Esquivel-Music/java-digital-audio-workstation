@@ -162,6 +162,14 @@ class AudioEngineLifecycleLockContractTest {
      * listener registry — does not become permitted by accident.
      */
     private static final Set<String> ALLOWED_TYPES = Set.of(
+            "com/benesquivelmusic/daw/core/audio/CaptureRoutingPlan",
+            "com/benesquivelmusic/daw/core/audio/CaptureRoutingPlan$Route",
+            "com/benesquivelmusic/daw/core/audio/CaptureRoutingPlan$Source",
+            "com/benesquivelmusic/daw/core/audio/InputRouting",
+            "com/benesquivelmusic/daw/core/analysis/InputLevelMonitorRegistry",
+            "com/benesquivelmusic/daw/core/analysis/InputLevelMonitor",
+            // Engine-owned generation availability: one volatile flag, no listeners or outward calls.
+            "com/benesquivelmusic/daw/core/analysis/InputSourceAvailability",
             // Engine-owned render and streaming collaborators.
             "com/benesquivelmusic/daw/core/audio/AudioBufferPool",
             "com/benesquivelmusic/daw/core/audio/AudioEngineSettings",
@@ -202,6 +210,10 @@ class AudioEngineLifecycleLockContractTest {
      * under "What must NOT happen while it is held".
      */
     private static final Set<CallSite> EXCEPTIONS = Set.of(
+            // Plain read-only Track getters for precomputed meter warning text; mutators remain forbidden.
+            new CallSite("updateInputMeterDescriptions", "com/benesquivelmusic/daw/core/track/Track", "getId"),
+            new CallSite("updateInputMeterDescriptions", "com/benesquivelmusic/daw/core/track/Track", "getName"),
+            new CallSite("updateInputMeterDescriptions", "com/benesquivelmusic/daw/core/track/Track", "getInputRouting"),
             // Engine-owned mastering preparation only sizes/publishes arrays; no processor calls.
             new CallSite("startLocked", "com/benesquivelmusic/daw/core/mastering/MasteringChain",
                     "allocateIntermediateBuffers"),

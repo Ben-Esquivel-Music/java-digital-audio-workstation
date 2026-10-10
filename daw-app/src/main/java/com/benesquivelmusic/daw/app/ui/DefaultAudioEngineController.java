@@ -566,7 +566,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // try-with-resources releases it on BOTH branches, matching
         // tryCreatePortAudioAdapter()'s closeQuietly and withSdkBackend()'s
         // try (probe).
-        try (AudioBackend probe = new CallbackBackendAdapter(new PortAudioBackend())) {
+        try (AudioBackend probe = new CallbackBackendAdapter(new PortAudioBackend(), "", PortAudioBackend::new)) {
             if (probe.isAvailable()) {
                 names.add("PortAudio");
             }
@@ -1011,6 +1011,17 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public Optional<Integer> latencyOverrideFrames() {
         return Optional.ofNullable(activeDeviceOverride());
+    }
+
+    @Override
+    public Optional<LatencyCalibration> recordingLatencyCalibration() {
+        DeviceId device = watchedDevice.get();
+        if (device == null) return Optional.empty();
+        Integer frames = latencyOverridesByDeviceKey.get(
+                com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore.Settings.deviceKey(device));
+        return frames == null ? Optional.empty()
+                : Optional.of(new LatencyCalibration(device,
+                        new com.benesquivelmusic.daw.sdk.audio.RoundTripLatency(frames, 0, 0)));
     }
 
     @Override
@@ -2132,7 +2143,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * <ul>
      *   <li>Requested rung: resolved by name — {@code "PortAudio"} becomes
      *       a {@link CallbackBackendAdapter} over {@link PortAudioBackend};
-     *       {@code "Java Sound"} is the SDK {@link JavaxSoundBackend};
+     *       {@code "Java Sound"} is the SDK {@link JavaxSoundBackend}, given
+     *       the configured input device as its session input (story 326);
      *       every other name routes through the
      *       {@link AudioBackendSelector}. Its {@link DeviceId} is the
      *       configured output device (blank &rarr; the backend's default),
@@ -2280,7 +2292,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     /**
      * The blank-name default ladder: PortAudio (adapted) when available —
-     * with the configured output device on its rung — else Java Sound.
+     * with the configured output device on its rung and the configured input
+     * device as its session input — else Java Sound, which is then the
+     * provisioned head and takes both configured names the same way. The Java
+     * Sound rung behind a PortAudio head is a fallback and stays on the
+     * default output and the default input, as in
+     * {@link #appendFallbackRungs(List, String)}.
      */
     private StreamingProvision buildDefaultProvision(
             String inputDeviceName, String outputDeviceName) {
@@ -2293,7 +2310,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
         return new StreamingProvision("Java Sound", List.of(
                 new BackendStreamRung(
-                        new JavaxSoundBackend(), deviceId("Java Sound", outputDeviceName))));
+                        new JavaxSoundBackend(inputDeviceName),
+                        deviceId("Java Sound", outputDeviceName))));
     }
 
     /**
@@ -2302,7 +2320,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * itself. Fallback rungs open their backend's DEFAULT device: the
      * default OUTPUT, and — story 316 review — deliberately the default
      * INPUT too, which is why the PortAudio adapter below is constructed
-     * with a BLANK input-device name instead of the one the user configured.
+     * with a BLANK input-device name instead of the one the user configured,
+     * and the Java Sound rung with the no-argument
+     * {@link JavaxSoundBackend#JavaxSoundBackend()} constructor, whose
+     * session input is the Java Sound default capture line (story 326).
      *
      * <p>There is no configured input name that could legitimately reach a
      * rung built here. The requested backend's input-device name belongs to
@@ -2386,7 +2407,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * <p>{@link #buildDefaultProvision(String, String)} is the deliberate
      * counter-example: there PortAudio IS the provisioned head for a request
      * that named no backend at all, so the configured input name genuinely
-     * belongs to it and is passed through.</p>
+     * belongs to it and is passed through. Java Sound receives the configured
+     * input name under the same rule, only where it is the provisioned head:
+     * on that method's branch for a host without PortAudio, and when the
+     * request names {@code "Java Sound"}
+     * ({@link #createStreamingBackendByName(String, String)}).</p>
      */
     private void appendFallbackRungs(List<BackendStreamRung> ladder, String requestedName) {
         if (!"PortAudio".equals(requestedName)) {
@@ -2416,7 +2441,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private static AudioBackend tryCreatePortAudioAdapter(String inputDeviceName) {
         try {
             CallbackBackendAdapter adapter =
-                    new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName);
+                    new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName, PortAudioBackend::new);
             if (adapter.isAvailable()) {
                 return adapter;
             }
@@ -2581,18 +2606,25 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * {@code "PortAudio"} — lives behind the SDK interface now). Returns
      * {@code null} for unknown names; the caller owns the instance's
      * lifecycle.
+     *
+     * <p>Package-private only as a narrow test seam: it pins that the
+     * requested Java Sound backend is built with the configured input name
+     * (story 326) on any host. The provisioning path cannot pin it where Java
+     * Sound reports itself unavailable (a CI runner without sound), because
+     * there the requested rung is rejected before it can head the ladder.</p>
      */
-    private AudioBackend createStreamingBackendByName(String name, String inputDeviceName) {
+    AudioBackend createStreamingBackendByName(String name, String inputDeviceName) {
         return switch (name) {
             case "PortAudio" -> {
                 try {
-                    yield new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName);
+                    yield new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName, PortAudioBackend::new);
                 } catch (RuntimeException e) {
                     LOG.log(Level.WARNING, "PortAudio requested but unavailable", e);
                     yield null;
                 }
             }
-            case "Java Sound" -> new JavaxSoundBackend();
+            // The requested backend owns the configured input name (story 326).
+            case "Java Sound" -> new JavaxSoundBackend(inputDeviceName);
             default -> createSdkBackendByName(name);
         };
     }

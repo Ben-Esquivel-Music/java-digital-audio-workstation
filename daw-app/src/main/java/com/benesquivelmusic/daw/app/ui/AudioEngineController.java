@@ -28,6 +28,19 @@ import java.util.concurrent.Flow;
  */
 public interface AudioEngineController {
 
+    /** A calibration belongs to its device even when that device is not the first armed input. */
+    record LatencyCalibration(DeviceId device, RoundTripLatency latency) {
+        public LatencyCalibration {
+            java.util.Objects.requireNonNull(device, "device must not be null");
+            java.util.Objects.requireNonNull(latency, "latency must not be null");
+        }
+    }
+
+    /** Returns the current device-qualified user calibration, including an explicit zero. */
+    default Optional<LatencyCalibration> recordingLatencyCalibration() {
+        return Optional.empty();
+    }
+
     /** Exclusive recording guard, acquired on a worker before any audio-setting mutation. */
     interface ConfigurationLease extends AutoCloseable {
         @Override void close();

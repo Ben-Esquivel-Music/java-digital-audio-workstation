@@ -199,6 +199,22 @@ public final class TakeManifest {
     }
 
     /**
+     * A track whose entire routed block was replaced with silence.
+     *
+     * @param trackId           owning track id (no {@code |} or line breaks)
+     * @param device            resolved input device name
+     * @param firstChannel      first routed input channel, zero-based; non-negative
+     * @param channelCount      number of routed input channels; positive
+     * @param availableChannels number of channels actually delivered by the device; non-negative
+     */
+    public record RoutingFlag(String trackId, String device, int firstChannel, int channelCount, int availableChannels) {
+        public RoutingFlag {
+            requireField(trackId, "trackId"); Objects.requireNonNull(device);
+            if (firstChannel < 0 || channelCount <= 0 || availableChannels < 0) throw new IllegalArgumentException("invalid routing flag");
+        }
+    }
+
+    /**
      * One armed track.
      *
      * @param trackId            the track id (no {@code |} or line breaks)
@@ -390,6 +406,7 @@ public final class TakeManifest {
     private final List<TrackEntry> tracks;
     private final List<SegmentEntry> segments;
     private final List<GapEntry> gaps;
+    private final List<RoutingFlag> routingFlags;
     private final long overflowBlocks;
     private final long truncatedFrames;
     private final SealStatus sealStatus;
@@ -442,6 +459,7 @@ public final class TakeManifest {
         this.tracks = List.copyOf(b.tracks);
         this.segments = canonicalOrder(this.tracks, b.segments);
         this.gaps = List.copyOf(b.gaps);
+        this.routingFlags = List.copyOf(b.routingFlags);
         this.overflowBlocks = b.overflowBlocks;
         this.truncatedFrames = b.truncatedFrames;
         this.sealStatus = b.sealStatus;
@@ -469,6 +487,7 @@ public final class TakeManifest {
         b.tracks.addAll(tracks);
         b.segments.addAll(segments);
         b.gaps.addAll(gaps);
+        b.routingFlags.addAll(routingFlags);
         b.overflowBlocks = overflowBlocks;
         b.truncatedFrames = truncatedFrames;
         b.sealStatus = sealStatus;
@@ -552,6 +571,9 @@ public final class TakeManifest {
         }
         return List.copyOf(result);
     }
+
+    /** Returns the unavailable input routes in the order recorded. */
+    public List<RoutingFlag> routingFlags() { return routingFlags; }
 
     /** Returns the loss episodes (ring overflows and truncation episodes) in the order recorded. */
     public List<GapEntry> gaps() {
@@ -651,6 +673,10 @@ public final class TakeManifest {
             line(sb, "segment", s.trackId() + "|" + s.lane() + "|" + s.index() + "|"
                     + s.relativePath() + "|" + s.frames() + "|" + s.state().token());
         }
+        for (RoutingFlag flag : routingFlags) {
+            line(sb, "routing-unavailable", flag.trackId() + "|" + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(flag.device().getBytes(StandardCharsets.UTF_8)) + "|" + flag.firstChannel()
+                    + "|" + flag.channelCount() + "|" + flag.availableChannels());
+        }
         for (GapEntry g : gaps) {
             line(sb, "gap", g.trackId() + "|" + g.startFrame() + "|" + g.droppedBlocks());
         }
@@ -708,6 +734,16 @@ public final class TakeManifest {
                 case "track" -> b.addTrack(parseTrack(value, source, lineNo));
                 case "segment" -> b.addSegment(parseSegment(value, source, lineNo));
                 case "gap" -> b.addGap(parseGap(value, source, lineNo));
+                case "routing-unavailable" -> {
+                    try {
+                        String[] fields = value.split("\\|", -1);
+                        if (fields.length != 5) throw new IllegalArgumentException("expected five fields");
+                        b.addRoutingFlag(new RoutingFlag(fields[0], new String(java.util.Base64.getUrlDecoder().decode(fields[1]), StandardCharsets.UTF_8),
+                                parseInt(fields[2], "first-channel", source), parseInt(fields[3], "channel-count", source), parseInt(fields[4], "available-channels", source)));
+                    } catch (IllegalArgumentException | IOException malformed) {
+                        throw new IOException(source + ":" + lineNo + ": malformed routing-unavailable", malformed);
+                    }
+                }
                 default -> scalars.put(key, value);
             }
         }
@@ -761,6 +797,12 @@ public final class TakeManifest {
         private final List<TrackEntry> tracks = new ArrayList<>();
         private final List<SegmentEntry> segments = new ArrayList<>();
         private final List<GapEntry> gaps = new ArrayList<>();
+        private final List<RoutingFlag> routingFlags = new ArrayList<>();
+        public Builder addRoutingFlag(RoutingFlag flag) {
+            Objects.requireNonNull(flag);
+            if (routingFlags.stream().noneMatch(f -> f.trackId().equals(flag.trackId()))) routingFlags.add(flag);
+            return this;
+        }
         private long overflowBlocks;
         private long truncatedFrames;
         private SealStatus sealStatus = SealStatus.STREAMING;
@@ -1098,6 +1140,7 @@ public final class TakeManifest {
                 && tracks.equals(that.tracks)
                 && segments.equals(that.segments)
                 && gaps.equals(that.gaps)
+                && routingFlags.equals(that.routingFlags)
                 && sealStatus == that.sealStatus
                 && sealedBy == that.sealedBy;
     }
@@ -1105,7 +1148,7 @@ public final class TakeManifest {
     @Override
     public int hashCode() {
         return Objects.hash(take, startedAt, sampleRate, bitDepth, streamChannels, startBeat,
-                startFrame, forceCadenceMillis, ringSlots, ringFrames, tracks, segments, gaps,
+                startFrame, forceCadenceMillis, ringSlots, ringFrames, tracks, segments, gaps, routingFlags,
                 overflowBlocks, truncatedFrames, sealStatus, sealedBy);
     }
 

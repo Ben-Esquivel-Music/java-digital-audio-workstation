@@ -21,6 +21,7 @@ import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -98,7 +99,7 @@ import java.util.logging.Logger;
  * still leaves a live capture stream, so it is not a degradation to refuse.
  * The engine additionally verifies {@link #openedInputChannels()} after the
  * open returns, so a REQUIRED open that slipped through anyway is still
- * refused there; multi-device capture routing remains story 326.</p>
+ * refused there. Armed capture routes can open additional input-only streams (story 326).</p>
  *
  * <h2>Side-output channel writes are counted, not routed</h2>
  * <p>{@link #writeToChannel(int, float[])} cannot yet address individual
@@ -184,6 +185,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
 
     private final NativeAudioBackend delegate;
     private final String inputDeviceName;
+    private final Supplier<? extends NativeAudioBackend> inputBackendFactory;
 
     private boolean initialized;
     private volatile boolean open;
@@ -266,8 +268,23 @@ public final class CallbackBackendAdapter implements AudioBackend {
      *                        fails the open (story 316 review)
      */
     public CallbackBackendAdapter(NativeAudioBackend delegate, String inputDeviceName) {
+        this(delegate, inputDeviceName, null);
+    }
+
+    /**
+     * Creates an adapter with optional independent capture-stream support.
+     *
+     * @param delegate the owned native backend
+     * @param inputDeviceName the configured input selection; blank selects the default
+     * @param inputBackendFactory creates a fresh, independently owned backend in the
+     *                            delegate's device family; {@code null} disables siblings.
+     *                            Capability queries never invoke this factory.
+     */
+    public CallbackBackendAdapter(NativeAudioBackend delegate, String inputDeviceName,
+                                  Supplier<? extends NativeAudioBackend> inputBackendFactory) {
         this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
         this.inputDeviceName = inputDeviceName == null ? "" : inputDeviceName;
+        this.inputBackendFactory = inputBackendFactory;
     }
 
     @Override
@@ -322,6 +339,33 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * @throws AudioBackendException    if the device cannot be resolved or
      *                                  the driver refuses the stream
      */
+    @Override public double openedInputSampleRate() { return openedSampleRate; }
+    @Override public boolean supportsMultipleInputDevices() { return inputBackendFactory != null; }
+    /** Only the wrapped driver can know whether two of its devices share one hardware clock. */
+    @Override public boolean sharesClockDomain(DeviceId first, DeviceId second) {
+        return delegate.sharesClockDomain(Objects.requireNonNull(first, "first must not be null"),
+                Objects.requireNonNull(second, "second must not be null"));
+    }
+    @Override public AudioBackend createInputBackend() {
+        if (inputBackendFactory == null) return AudioBackend.super.createInputBackend();
+        NativeAudioBackend sibling = Objects.requireNonNull(inputBackendFactory.get(), "input backend factory returned null");
+        if (sibling == delegate) throw new AudioBackendException(name() + " input backend factory must create an independent backend");
+        return new CallbackBackendAdapter(sibling, "", inputBackendFactory);
+    }
+    @Override public DeviceId selectedInputDevice(DeviceId output) {
+        ensureInitialized();
+        AudioDeviceInfo info = resolveSelectedInputIdentity(delegate.getAvailableDevices());
+        return new DeviceId(name(), info.qualifiedName());
+    }
+    @Override public void open(DeviceId output, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                               int frames, CaptureRequirement capture, DeviceId input, int width) {
+        openDirections(output, format, frames, capture, input, width, false);
+    }
+    @Override public void openInput(DeviceId input, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                                    int frames, int width) {
+        openDirections(input, format, frames, CaptureRequirement.REQUIRED, input, width, true);
+    }
+
     @Override
     public void open(DeviceId device,
                      com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
@@ -376,9 +420,15 @@ public final class CallbackBackendAdapter implements AudioBackend {
                      com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
                      int bufferFrames,
                      CaptureRequirement capture) {
+        openDirections(device, format, bufferFrames, capture, null, format.channels(), false);
+    }
+    private void openDirections(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
+                                int bufferFrames, CaptureRequirement capture, DeviceId input,
+                                int inputWidth, boolean inputOnly) {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
         Objects.requireNonNull(capture, "capture must not be null");
+        if (inputWidth < 0 || inputOnly && inputWidth == 0) throw new IllegalArgumentException("invalid input width: " + inputWidth);
         if (bufferFrames <= 0) {
             throw new IllegalArgumentException(
                     "bufferFrames must be positive: " + bufferFrames);
@@ -392,11 +442,12 @@ public final class CallbackBackendAdapter implements AudioBackend {
         // One FRESH enumeration snapshot per open — indices are only valid
         // within it (design book §3.2).
         List<AudioDeviceInfo> snapshot = delegate.getAvailableDevices();
-        int outputIndex = resolveOutputDevice(device, snapshot);
-        AudioDeviceInfo inputDevice = resolveInputDevice(snapshot, capture);
+        int outputIndex = inputOnly ? -1 : resolveOutputDevice(device, snapshot);
+        AudioDeviceInfo inputDevice = input == null ? resolveInputDevice(snapshot, capture)
+                : resolveExplicitInput(input, snapshot, capture);
         int inputIndex = inputDevice != null ? inputDevice.index() : -1;
 
-        this.outChannels = format.channels();
+        this.outChannels = inputOnly ? 0 : format.channels();
         // Clamp to what the resolved input device can actually supply — a
         // mono mic must not fail (or over-declare) a stereo-format open.
         // Via clampInputChannels, not a bare Math.min: a device whose count
@@ -408,13 +459,13 @@ public final class CallbackBackendAdapter implements AudioBackend {
         // review). PortAudio always reports real counts, so this is a
         // contract guard rather than a live path today.
         this.inChannels = inputDevice != null
-                ? inputDevice.clampInputChannels(format.channels())
+                ? inputDevice.clampInputChannels(inputWidth)
                 : 0;
         this.bufferFrames = bufferFrames;
         this.openedSampleRate = format.sampleRate();
         this.outScratch = new float[outChannels * bufferFrames];
         this.outputRing = new InterleavedBlockRing(OUTPUT_RING_SLOTS,
-                outChannels * bufferFrames);
+                Math.max(1, outChannels * bufferFrames));
         // ORDERING CONSTRAINT (story 316 re-review) — do not move this below
         // startDrainThread(). Everything here can still REFUSE the open:
         // SampleRate.fromHz and BufferSize.fromFrames reject any value
@@ -827,6 +878,40 @@ public final class CallbackBackendAdapter implements AudioBackend {
      *                               when the configured input device cannot
      *                               be resolved to exactly one entry
      */
+    private AudioDeviceInfo resolveSelectedInputIdentity(List<AudioDeviceInfo> snapshot) {
+        if (inputDeviceName.isBlank()) {
+            AudioDeviceInfo info = delegate.getDefaultInputDevice();
+            if (info != null) return info;
+            throw new AudioBackendException("No default input device available on " + name());
+        }
+        // A host API can list a playback endpoint and a capture endpoint under one name: as an
+        // input this selection means the one that captures (story 326), never a substitute.
+        List<AudioDeviceInfo> matches = AudioDeviceInfo.preferDirection(
+                matchSelection(snapshot, inputDeviceName, info -> true), AudioDeviceInfo::supportsInput);
+        if (matches.size() == 1) return matches.getFirst();
+        if (matches.size() > 1) throw new AudioBackendException(ambiguousSelectionMessage("Input", inputDeviceName, matches));
+        throw new AudioBackendException("Input device missing: " + inputDeviceName);
+    }
+
+    private AudioDeviceInfo resolveExplicitInput(DeviceId input, List<AudioDeviceInfo> snapshot,
+                                                 CaptureRequirement capture) {
+        if (input.isDefault()) {
+            AudioDeviceInfo info = delegate.getDefaultInputDevice();
+            if (info != null) return info.supportsInput() ? info
+                    : refuseInput(capture, "No capture channels on input device '" + info.qualifiedName() + "'");
+            throw new AudioBackendException("No default input device available on " + name());
+        }
+        // As above: a same-named playback endpoint never makes an explicit input ambiguous.
+        List<AudioDeviceInfo> matches = AudioDeviceInfo.preferDirection(
+                matchSelection(snapshot, input.name(), info -> true), AudioDeviceInfo::supportsInput);
+        if (matches.size() == 1) {
+            AudioDeviceInfo info = matches.getFirst();
+            return info.supportsInput() ? info : refuseInput(capture, "No capture channels on input device '" + input.name() + "'");
+        }
+        if (matches.size() > 1) throw new AudioBackendException(ambiguousSelectionMessage("Input", input.name(), matches));
+        throw new AudioBackendException("Input device missing: " + input.name());
+    }
+
     private AudioDeviceInfo resolveInputDevice(List<AudioDeviceInfo> snapshot,
                                                CaptureRequirement capture) {
         if (inputDeviceName.isBlank()) {

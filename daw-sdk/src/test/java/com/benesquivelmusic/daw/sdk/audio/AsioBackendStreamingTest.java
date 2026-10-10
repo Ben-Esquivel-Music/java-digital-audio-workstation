@@ -342,6 +342,25 @@ class AsioBackendStreamingTest {
     // ------------------------------------------------------------------
 
     @Test
+    void story326SelectedDriverCapabilityIsQueriedBeforeBuffersAreAllocated() {
+        AsioBackend.setCapabilityShimFactory(() -> StubCapabilityShim.withChannels(8, 2));
+        assertThat(backend.inputChannelCapacity(DRIVER_A)).hasValue(8);
+        assertThat(calls).containsExactly("unload");
+        assertThat(backend.isOpen()).isFalse();
+    }
+
+    @Test
+    void story326ActiveDriverCapabilityDoesNotReloadTheDriver() {
+        AsioBackend.setCapabilityShimFactory(() -> StubCapabilityShim.withChannels(8, 2));
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        calls.clear();
+        assertThat(backend.inputChannelCapacity(new DeviceId("ASIO", "Driver A [ASIO]"))).hasValue(8);
+        assertThat(calls).isEmpty();
+        assertThatThrownBy(() -> backend.inputChannelCapacity(new DeviceId("ASIO", "Driver B")))
+                .hasMessageContaining("active driver 'Driver A'");
+    }
+
+    @Test
     void aPlaybackOnlyDriverIsAskedForNoInputChannels() {
         AsioBackend.setCapabilityShimFactory(
                 () -> StubCapabilityShim.withChannels(0, 8));

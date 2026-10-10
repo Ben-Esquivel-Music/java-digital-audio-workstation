@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.track.Track.ChangeKind;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.Test;
 
@@ -8,6 +9,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -151,6 +153,7 @@ class CoreTrackSignalTest {
         track.setMuted(true);
         track.setSolo(true);
         track.setArmed(true);
+        track.setInputDevice(Optional.of(new DeviceId("ASIO", "Interface B [ASIO]")));
         Map<ChangeKind, AtomicInteger> counts = new EnumMap<>(ChangeKind.class);
         for (ChangeKind kind : ChangeKind.values()) {
             counts.put(kind, new AtomicInteger());
@@ -163,6 +166,7 @@ class CoreTrackSignalTest {
         track.setMuted(true);
         track.setSolo(true);
         track.setArmed(true);
+        track.setInputDevice(Optional.of(new DeviceId("ASIO", "Interface B [ASIO]")));
 
         assertThat(counts.values()).allSatisfy(count ->
                 assertThat(count.get()).as("re-applying the current value is silent").isZero());
@@ -173,6 +177,7 @@ class CoreTrackSignalTest {
         track.setMuted(false);
         track.setSolo(false);
         track.setArmed(false);
+        track.setInputDevice(Optional.of(new DeviceId("ASIO", "Interface A [ASIO]")));
 
         assertThat(counts.values()).allSatisfy(count ->
                 assertThat(count.get()).as("a real change fires exactly once").isEqualTo(1));

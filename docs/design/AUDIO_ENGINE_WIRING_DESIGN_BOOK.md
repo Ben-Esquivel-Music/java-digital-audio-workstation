@@ -879,7 +879,7 @@ dock's floating zone (one surface, one feed).
 | Snapshot / A‑B recall          | model recall                               | immediate                   | **strips re-seed from model** after recall/undo — stale-fader corruption impossible |
 | Strip rebuild                  | n/a                                        | n/a                         | mute/arm/solo styles seeded from model at build |
 | Stereo link                    | fader/pan/mute/solo + send mirroring       | live                        | "Link Inserts" removed until a plugin-clone contract exists |
-| Per-track input device         | session-level input selection + mismatch warning (an armed track's unresolvable per-track index is reported as an unavailable device over a non-empty enumeration — an empty enumeration compares nothing; the session select is latest-selection-wins) | capture path            | full multi-device capture is `RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 326) |
+| Per-track input device         | session-level input selection + mismatch warning (an armed track's unresolvable per-track index is reported as an unavailable device over a non-empty enumeration — an empty enumeration compares nothing; the session select is latest-selection-wins). *Story 326 reversed the per-track side: a per-track pick sets only that track's input-device identity, and `SessionInputSelection.select` was removed; it also retired the mismatch warning — capture resolves each armed track's own identity through the routing union, refusing at arm and record start what it cannot honour, and `SessionInputSelection.mismatches` and `mismatchWarning` were removed* | capture path            | full multi-device capture is `RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 326) |
 | 3D panner button               | hidden until a spatial node exists in the channel chain | —              | — |
 | Strip insert indicator         | rendered from the channel's real InsertSlot list (name/bypass) | —       | replaces the hardcoded five-icon fiction |
 
@@ -1103,11 +1103,13 @@ removed, SEND_LEVEL automation retargeted at real per-send levels;
 snapshot/A‑B recall re-seeds strip visuals; mute/arm styles seed from the model on
 rebuild; "Link Inserts" removed, "Link Sends" wired; per-track input-device choices
 become a session-level selection with mismatch warnings (multi-device capture stays
-with Book 2's story 326); the 3D panner button hides until a spatial node exists; strip
-insert indicators render the real rack; VCA mute/solo dual-writes Track. The deferred
-*(existing 271)* `MixerChannelStrip` migration becomes a pure skin swap once facts flow
-through `ChannelVM` — complete it here or immediately after; the dead strip suite must
-not survive uninstantiated.
+with Book 2's story 326; story 326 later reversed this — a per-track pick sets only that
+track's input-device identity, capture resolves each armed track's identity through the
+routing union, and the session select and the mismatch warning were removed); the 3D
+panner button hides until a spatial node exists; strip insert indicators render the real
+rack; VCA mute/solo dual-writes Track. The deferred *(existing 271)* `MixerChannelStrip`
+migration becomes a pure skin swap once facts flow through `ChannelVM` — complete it
+here or immediately after; the dead strip suite must not survive uninstantiated.
 
 **Proof.** Mute a track in the arrangement — the mixer strip mutes and audio stops (and
 vice versa); a VCA fader drag audibly moves members; recall snapshot B and nudge a

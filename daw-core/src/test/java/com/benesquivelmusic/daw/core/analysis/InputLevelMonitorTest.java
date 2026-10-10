@@ -38,6 +38,46 @@ class InputLevelMonitorTest {
     }
 
     @Test
+    void endedSourceMasksAValuePublishedByAnInFlightBlock() {
+        var monitor = new InputLevelMonitor();
+        var source = new InputSourceAvailability();
+        monitor.setSourceAvailability(source);
+        source.markUnavailable();
+        monitor.process(new float[]{0.5f, 0.5f, 0.5f});
+        assertThat(monitor.isRoutingUnavailable()).isTrue();
+        assertThat(monitor.snapshot()).isSameAs(InputLevelMeter.SILENCE);
+    }
+
+    @Test
+    void unavailableRoutingMasksAValueRepublishedAfterTheRoutingWasCleared() {
+        var monitor = new InputLevelMonitor();
+        monitor.process(new float[]{0.25f, 0.25f, 0.25f});
+        monitor.setRoutingUnavailable(true);
+        // An already-running input callback can publish after the control thread clears latest.
+        monitor.processInputChannels(new float[][]{{0.5f, 0.5f, 0.5f}, {0.25f, 0.25f, 0.25f}}, 0, 2, 3);
+
+        assertThat(monitor.isRoutingUnavailable()).isTrue();
+        assertThat(monitor.snapshot()).isSameAs(InputLevelMeter.SILENCE);
+
+        monitor.setRoutingUnavailable(false);
+        assertThat(monitor.snapshot().rmsDbfs()).isGreaterThan(-10);
+    }
+
+    @Test
+    void previousSourceTerminationCannotSilenceAReboundMonitor() {
+        var monitor = new InputLevelMonitor();
+        var previous = new InputSourceAvailability();
+        monitor.setSourceAvailability(previous);
+        monitor.setSourceAvailability(new InputSourceAvailability());
+        monitor.process(new float[]{0.5f, 0.5f, 0.5f});
+        var replacementLevel = monitor.snapshot();
+        previous.markUnavailable();
+        assertThat(monitor.isRoutingUnavailable()).isFalse();
+        assertThat(monitor.snapshot()).isSameAs(replacementLevel);
+        assertThat(replacementLevel.peakDbfs()).isGreaterThan(-10);
+    }
+
+    @Test
     void shouldRejectNonPositiveThreshold() {
         assertThatThrownBy(() -> new InputLevelMonitor(0.0))
                 .isInstanceOf(IllegalArgumentException.class);

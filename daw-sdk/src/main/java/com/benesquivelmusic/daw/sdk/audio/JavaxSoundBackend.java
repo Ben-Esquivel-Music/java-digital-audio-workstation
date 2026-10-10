@@ -27,6 +27,22 @@ import java.util.logging.Logger;
  * walked when {@link AsioBackend}, {@link CoreAudioBackend},
  * {@link WasapiBackend}, or {@link JackBackend} cannot open a stream on the
  * current host (story 316).</p>
+ *
+ * <p>Java Sound selects the capture mixer independently of the output mixer,
+ * so the session input is configured on its own
+ * ({@link #JavaxSoundBackend(String)}) rather than taken from the output
+ * device. {@link #selectedInputDevice(DeviceId)} reports that configured
+ * input, and the open overloads that take no explicit input
+ * ({@link #open(DeviceId, AudioFormat, int)} and
+ * {@link #open(DeviceId, AudioFormat, int, CaptureRequirement)}) capture from
+ * it, not from the output device they are given (story 326). A blank
+ * selection means the Java Sound default capture line, even when the output
+ * mixer can also capture.</p>
+ *
+ * <p>The capture mixer can therefore be a different device from the output
+ * mixer, running on a different clock. This backend does not reconcile the
+ * two clocks: story 326 documents the resulting drift as a known limitation,
+ * and its correction is deferred to future story 351.</p>
  */
 public final class JavaxSoundBackend implements AudioBackend {
 
@@ -78,6 +94,13 @@ public final class JavaxSoundBackend implements AudioBackend {
      * constructor was given another.
      */
     private final long captureExitTimeoutMillis;
+
+    /**
+     * The configured session input selection (story 326): a bare mixer name or
+     * its {@link AudioDeviceInfo#qualifiedName() qualified} label, or blank for
+     * the Java Sound default capture line. Never null.
+     */
+    private final String inputDeviceName;
 
     /**
      * Output line owned by the lifecycle path. A failed close leaves this
@@ -144,9 +167,25 @@ public final class JavaxSoundBackend implements AudioBackend {
      */
     private volatile int openedInputChannels;
 
-    /** Creates a new Java Sound backend. */
+    /** Creates a new Java Sound backend whose session input is the default capture line. */
     public JavaxSoundBackend() {
-        this(JavaSoundAccess.SYSTEM, CAPTURE_EXIT_TIMEOUT_MILLIS);
+        this(JavaSoundAccess.SYSTEM, CAPTURE_EXIT_TIMEOUT_MILLIS, "");
+    }
+
+    /**
+     * Creates a new Java Sound backend with a configured session input
+     * (story 326).
+     *
+     * @param inputDeviceName the session input: a bare mixer name or its
+     *                        {@link AudioDeviceInfo#qualifiedName() qualified}
+     *                        label; {@code null} or blank selects the Java
+     *                        Sound default capture line. It is resolved when
+     *                        {@link #selectedInputDevice(DeviceId)} is asked
+     *                        and at each open that takes no explicit input,
+     *                        never here.
+     */
+    public JavaxSoundBackend(String inputDeviceName) {
+        this(JavaSoundAccess.SYSTEM, CAPTURE_EXIT_TIMEOUT_MILLIS, inputDeviceName);
     }
 
     /**
@@ -165,22 +204,42 @@ public final class JavaxSoundBackend implements AudioBackend {
      *                                 rule out
      */
     JavaxSoundBackend(long captureExitTimeoutMillis) {
-        this(JavaSoundAccess.SYSTEM, captureExitTimeoutMillis);
+        this(JavaSoundAccess.SYSTEM, captureExitTimeoutMillis, "");
     }
 
     /** Package-private Java Sound seam for headless format/device tests. */
     JavaxSoundBackend(JavaSoundAccess javaSound) {
-        this(javaSound, CAPTURE_EXIT_TIMEOUT_MILLIS);
+        this(javaSound, CAPTURE_EXIT_TIMEOUT_MILLIS, "");
     }
 
-    /** Package-private full test constructor. */
+    /** Package-private Java Sound seam with a configured session input. */
+    JavaxSoundBackend(JavaSoundAccess javaSound, String inputDeviceName) {
+        this(javaSound, CAPTURE_EXIT_TIMEOUT_MILLIS, inputDeviceName);
+    }
+
+    /** Package-private test constructor with the default session input. */
     JavaxSoundBackend(JavaSoundAccess javaSound, long captureExitTimeoutMillis) {
+        this(javaSound, captureExitTimeoutMillis, "");
+    }
+
+    /**
+     * Package-private full constructor; {@code inputDeviceName} as in
+     * {@link #JavaxSoundBackend(String)}.
+     */
+    JavaxSoundBackend(JavaSoundAccess javaSound, long captureExitTimeoutMillis,
+                      String inputDeviceName) {
         this.javaSound = Objects.requireNonNull(javaSound, "javaSound must not be null");
         if (captureExitTimeoutMillis <= 0L) {
             throw new IllegalArgumentException(
                     "captureExitTimeoutMillis must be positive: " + captureExitTimeoutMillis);
         }
         this.captureExitTimeoutMillis = captureExitTimeoutMillis;
+        this.inputDeviceName = inputDeviceName == null ? "" : inputDeviceName;
+    }
+
+    @Override public double openedInputSampleRate() {
+        AudioFormat current = support.format();
+        return current == null ? Double.NaN : current.sampleRate();
     }
 
     @Override
@@ -638,6 +697,126 @@ public final class JavaxSoundBackend implements AudioBackend {
     /**
      * {@inheritDoc}
      *
+     * <p>A named input reports the widest capture line its mixer advertises;
+     * a name several mixers share selects the one among them that captures,
+     * as {@link #selectedInputDevice(DeviceId)} describes.
+     * The default-input alias {@code DeviceId.defaultFor(NAME)} reports an
+     * empty capacity, unknown rather than zero: it opens the Java Sound default
+     * capture line ({@code AudioSystem.getTargetDataLine}), which has no mixer
+     * identity whose lines could be read here. Java Sound's default MIXER is a
+     * different thing: on Windows it is the playback-only "Primary Sound
+     * Driver", which advertises no capture lines, so reading it would refuse
+     * every default-routed track as "exceeds 0 input channels" (story 326).
+     * The width of a default-input capture is enforced when it opens instead:
+     * a {@link CaptureRequirement#REQUIRED} open refuses a width no capture
+     * line supports.</p>
+     *
+     * @throws IllegalArgumentException      if {@code input} belongs to another
+     *                                       backend or names no single mixer
+     *                                       after that preference
+     * @throws UnsupportedOperationException if {@code input} is a named mixer
+     *                                       and this Java Sound access cannot
+     *                                       select one
+     */
+    @Override public java.util.OptionalInt inputChannelCapacity(DeviceId input) {
+        Mixer.Info mixer = resolveInputMixer(input);
+        if (mixer == null) {
+            return java.util.OptionalInt.empty();
+        }
+        int count = 0;
+        for (Line.Info line : javaSound.targetLineInfo(mixer))
+            if (line instanceof DataLine.Info data) count = mergeChannelCount(count, maxChannels(data));
+        return count < 0 ? java.util.OptionalInt.empty() : java.util.OptionalInt.of(count);
+    }
+
+    @Override public boolean supportsMultipleInputDevices() { return true; }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The sibling's session input is blank: it is only ever opened through
+     * {@link #openInput(DeviceId, AudioFormat, int, int)}, which names its
+     * device explicitly.</p>
+     */
+    @Override public AudioBackend createInputBackend() { return new JavaxSoundBackend(javaSound, captureExitTimeoutMillis); }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns the configured session input and ignores {@code output}: Java
+     * Sound captures from a mixer of its own, which need not be the output
+     * mixer (story 326). A blank selection returns the default-input alias
+     * {@code DeviceId.defaultFor(NAME)}, which opens the Java Sound default
+     * capture line. A configured name returns the
+     * {@link AudioDeviceInfo#qualifiedName() qualified} label of the one mixer
+     * it selects, the label {@link #listDevices()} enumerates for that mixer,
+     * so a track routed to that mixer by identity shares the session input's
+     * capture source.</p>
+     *
+     * <p>A name several mixers share selects the one among them that offers a
+     * capture line ({@link AudioDeviceInfo#preferDirection(List,
+     * java.util.function.Predicate)}): Java Sound on Windows lists a
+     * playback-only mixer and a capture-only mixer under the same name, and so
+     * under the same qualified label. That shared label is what this method
+     * returns, and capture planning applies the same preference to it.</p>
+     *
+     * @throws AudioBackendException if the configured name matches no mixer,
+     *                               or several mixers of which not exactly
+     *                               one captures, or if this Java Sound
+     *                               access cannot select a named mixer
+     */
+    @Override public DeviceId selectedInputDevice(DeviceId output) {
+        Objects.requireNonNull(output, "output must not be null");
+        DeviceId sessionInput = sessionInput();
+        if (sessionInput.isDefault()) {
+            return sessionInput;
+        }
+        Mixer.Info mixer;
+        try {
+            mixer = resolveInputMixer(sessionInput);
+        } catch (IllegalArgumentException | UnsupportedOperationException unresolved) {
+            throw new AudioBackendException(
+                    "Session input selection failed: " + unresolved.getMessage(), unresolved);
+        }
+        return new DeviceId(NAME, AudioDeviceInfo.qualifiedName(mixer.getName(), NAME));
+    }
+
+    /**
+     * The configured session input as an unresolved {@link DeviceId}, or the
+     * default-input alias when the selection is blank. It is resolved where it
+     * is used, so a missing or ambiguous name fails there.
+     */
+    private DeviceId sessionInput() {
+        return inputDeviceName.isBlank() ? DeviceId.defaultFor(NAME) : new DeviceId(NAME, inputDeviceName);
+    }
+
+    @Override public synchronized void open(DeviceId output, AudioFormat format, int frames, CaptureRequirement capture,
+                                            DeviceId input, int channels) {
+        openDirections(output, format, frames, capture, input, channels, false);
+    }
+    @Override public synchronized void openInput(DeviceId input, AudioFormat format, int frames, int channels) {
+        openDirections(input, format, frames, CaptureRequirement.REQUIRED, input, channels, true);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Opens {@code device} for playback and captures {@code format.channels()}
+     * channels from the configured session input, the device
+     * {@link #selectedInputDevice(DeviceId)} reports, not from {@code device}
+     * (story 326). The session input is resolved in the capture step, so a
+     * missing or ambiguous name is a capture-line failure like any other and
+     * follows {@code capture} as described below: it disables capture under
+     * {@link CaptureRequirement#OPTIONAL} and refuses the open under
+     * {@link CaptureRequirement#REQUIRED}.</p>
+     *
+     * <p>Each direction resolves a name that several mixers share to the one
+     * among them that serves it: {@code device} to the mixer offering a
+     * playback line, the session input to the mixer offering a capture line.
+     * One name can therefore play through one mixer and capture from another,
+     * as Java Sound's same-named playback and capture mixers on Windows
+     * require.</p>
+     *
      * <p>The OUTPUT line is mandatory: when it cannot be opened the open is
      * rolled back and an {@link AudioBackendException} propagates — the
      * engine's fallback ladder must see this rung <em>fail</em>, never
@@ -730,6 +909,11 @@ public final class JavaxSoundBackend implements AudioBackend {
     @Override
     public synchronized void open(DeviceId device, AudioFormat format, int bufferFrames,
                                   CaptureRequirement capture) {
+        openDirections(device, format, bufferFrames, capture, sessionInput(), format.channels(), false);
+    }
+    private void openDirections(DeviceId device, AudioFormat format, int bufferFrames, CaptureRequirement capture,
+                                DeviceId inputDevice, int inputChannels, boolean inputOnly) {
+        if (inputChannels < 0 || (inputOnly || capture == CaptureRequirement.REQUIRED) && inputChannels == 0) throw new IllegalArgumentException("inputChannels must be positive for capture");
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
         Objects.requireNonNull(capture, "capture must not be null");
@@ -739,9 +923,10 @@ public final class JavaxSoundBackend implements AudioBackend {
         }
         support.markOpen(format, bufferFrames);
         Mixer.Info mixerInfo;
-        OutputGeneration openedOutput;
+        OutputGeneration openedOutput = null;
         try {
-            mixerInfo = resolveMixerInfo(device);
+            if (!inputOnly) {
+            mixerInfo = resolveOutputMixer(device);
             javax.sound.sampled.AudioFormat requestedOutput = selectOutputFormat(
                     mixerInfo, format);
             this.outputLine = javaSound.sourceLine(mixerInfo, requestedOutput);
@@ -761,6 +946,7 @@ public final class JavaxSoundBackend implements AudioBackend {
             // publishing here would let a concurrent sink write a stream whose
             // open ultimately throws.
             openedOutput = new OutputGeneration(this.outputLine, actualOutput, format);
+            }
         } catch (LineUnavailableException | RuntimeException e) {
             // Mandatory output line failed: roll the open back — through the
             // same retain-on-failure release close() uses, see
@@ -781,21 +967,22 @@ public final class JavaxSoundBackend implements AudioBackend {
             throw rollBackFailedOutputOpen(e);
         }
         try {
-            javax.sound.sampled.AudioFormat requestedInput = selectInputFormat(
-                    mixerInfo, format);
-            this.inputLine = javaSound.targetLine(mixerInfo, requestedInput);
+            Mixer.Info inputMixer = resolveInputMixer(inputDevice);
+            AudioFormat captureFormat = new AudioFormat(format.sampleRate(), inputChannels, format.bitDepth());
+            javax.sound.sampled.AudioFormat requestedInput = selectInputFormat(inputMixer, captureFormat);
+            this.inputLine = javaSound.targetLine(inputMixer, requestedInput);
             int inputBufferBytes = Math.multiplyExact(
                     Math.multiplyExact(bufferFrames, requestedInput.getFrameSize()), 2);
             this.inputLine.open(requestedInput, inputBufferBytes);
             this.inputLine.start();
             this.inputLineFormat = requireActualFormat(
                     this.inputLine.getFormat(), requestedInput, "capture");
-            startCapture(format, bufferFrames);
+            startCapture(captureFormat, bufferFrames);
             // Published only once the line is open, started AND the capture
             // thread is feeding support.publishInput: openedInputChannels() is
             // a promise about inputBlocks(), so it may never outrun the thing
             // that does the publishing.
-            this.openedInputChannels = format.channels();
+            this.openedInputChannels = inputChannels;
         } catch (LineUnavailableException | RuntimeException e) {
             // Optional capture: an input failure never kills a PLAYBACK open
             // (see the REQUIRED case at the end of this comment) — but the
@@ -836,7 +1023,71 @@ public final class JavaxSoundBackend implements AudioBackend {
         this.outputGeneration = openedOutput;
     }
 
-    private Mixer.Info resolveMixerInfo(DeviceId device) {
+    /**
+     * Resolves an input selection to its capture mixer: among several mixers
+     * of that name, the one that offers a {@link TargetDataLine} (story 326).
+     * Java Sound on Windows lists a playback mixer and a capture mixer under
+     * one name.
+     */
+    private Mixer.Info resolveInputMixer(DeviceId device) {
+        return resolveMixerInfo(device, this::offersCaptureLine);
+    }
+
+    /**
+     * Resolves an output selection to its playback mixer: among several
+     * mixers of that name, the one that offers a {@link SourceDataLine}; the
+     * mirror of {@link #resolveInputMixer(DeviceId)}.
+     */
+    private Mixer.Info resolveOutputMixer(DeviceId device) {
+        return resolveMixerInfo(device, this::offersPlaybackLine);
+    }
+
+    private boolean offersCaptureLine(Mixer.Info mixer) {
+        return offersDataLine(mixer, javaSound::targetLineInfo, TargetDataLine.class);
+    }
+
+    private boolean offersPlaybackLine(Mixer.Info mixer) {
+        return offersDataLine(mixer, javaSound::sourceLineInfo, SourceDataLine.class);
+    }
+
+    /**
+     * Whether {@code mixer} may serve the direction: it advertises a data line
+     * of {@code lineClass} among the {@code lines} it lists, or its provider
+     * fails to answer. A mixer that cannot answer is never ruled out, because
+     * ruling it out would let the preference substitute a same-named sibling
+     * for a selection that names both. It stays a candidate instead: two
+     * mixers that may serve the direction stay ambiguous, and a capture twin
+     * whose query fails, beside a playback-only twin, still resolves to that
+     * capture twin, so its open then fails loudly on the device the user
+     * chose.
+     */
+    private static boolean offersDataLine(Mixer.Info mixer,
+                                          java.util.function.Function<Mixer.Info, Line.Info[]> lines,
+                                          Class<? extends DataLine> lineClass) {
+        try {
+            for (Line.Info line : lines.apply(mixer)) {
+                if (line instanceof DataLine.Info data && lineClass.isAssignableFrom(data.getLineClass())) {
+                    return true;
+                }
+            }
+        } catch (RuntimeException unanswered) {
+            LOG.log(Level.FINE, () -> "Java Sound mixer '" + mixer.getName()
+                    + "' could not list its lines: " + unanswered);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * The one resolver behind {@link #resolveInputMixer(DeviceId)} and
+     * {@link #resolveOutputMixer(DeviceId)}: every mixer the selection names,
+     * narrowed by {@link AudioDeviceInfo#preferDirection(List,
+     * java.util.function.Predicate)} to the mixers that serve the direction
+     * when it names several. Exactly one must remain.
+     *
+     * @return the selected mixer, or {@code null} for the default alias
+     */
+    private Mixer.Info resolveMixerInfo(DeviceId device, java.util.function.Predicate<Mixer.Info> servesDirection) {
         if (!NAME.equals(device.backend())) {
             throw new IllegalArgumentException(
                     "device selection not supported on this backend: " + NAME
@@ -861,7 +1112,8 @@ public final class JavaxSoundBackend implements AudioBackend {
                 matches.add(mixer);
             }
         }
-        Mixer.Info match = requireUniqueMixer(device.name(), matches);
+        Mixer.Info match = requireUniqueMixer(device.name(),
+                AudioDeviceInfo.preferDirection(matches, servesDirection));
         if (match != null) {
             return match;
         }

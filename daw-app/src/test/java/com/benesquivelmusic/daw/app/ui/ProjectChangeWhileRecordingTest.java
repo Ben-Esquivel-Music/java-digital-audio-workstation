@@ -448,15 +448,21 @@ class ProjectChangeWhileRecordingTest {
     }
 
     /**
-     * Record starts the take before its session-input check enumerates the
-     * devices off the FX thread, so while that check still waits for its
-     * device list the recording is already in flight, and a door is refused.
+     * Record reserves PREPARING while input validation enumerates devices off FX.
+     * A project door is refused while the driver still holds the device list,
+     * before capture starts or any take files are allocated.
      */
     @Test
     void aDoorAskedWhileTheRecordStartsInputCheckStillWaitsForItsDeviceListIsRefused() throws Exception {
         HeldDeviceListBackend backend = new HeldDeviceListBackend();
         try {
-            record(RecordingInFlightFixture.audio(project.get(), backend));
+            recording = RecordingInFlightFixture.audio(project.get(), backend);
+            TransportController current = recording.controller();
+            runOnFx(() -> {
+                lifecycle.setTakeBeingWrittenCheck(current::isTakeBeingWritten);
+                lifecycle.setRecordingInFlightCheck(current::isRecordingInFlight);
+                recording.startOnFx();
+            });
             assertThat(backend.asked.await(5, TimeUnit.SECONDS))
                     .as("fixture: a worker asked for the device list").isTrue();
             Thread inputCheck = onFx(() -> recording.controller().pendingSessionInputCheck()).orElseThrow();
@@ -467,10 +473,12 @@ class ProjectChangeWhileRecordingTest {
             assertThat(onFx(lifecycle::confirmProjectMayClose)).isFalse();
 
             assertRefusedOnce();
-            recording.assertStillRecording();
+            assertThat(onFx(current::isPreparingTake)).isTrue();
+            assertThat(onFx(() -> project.get().getTransport().getState())).isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
             backend.release.countDown();
             inputCheck.join(TimeUnit.SECONDS.toMillis(5));
             assertThat(inputCheck.isAlive()).as("fixture: the released input check finished").isFalse();
+            recording.assertStillRecording();
         } finally {
             // On every path the worker is released and joined before the
             // engine is closed, so it never outlives the test.

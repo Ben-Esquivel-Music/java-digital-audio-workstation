@@ -10,7 +10,6 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
-import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 
 import javafx.application.Platform;
 import javafx.css.PseudoClass;
@@ -175,11 +174,6 @@ final class Story322ContractRig implements AutoCloseable {
         @Override
         public String currentDeviceName() {
             return "";
-        }
-
-        @Override
-        public void select(AudioDeviceInfo device) {
-            // no session device in a probe
         }
     }
 }

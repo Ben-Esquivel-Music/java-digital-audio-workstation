@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import java.nio.file.Path;
@@ -145,6 +146,8 @@ public final class RecordingPipeline {
      * each take's {@link CaptureCallback} carries its own.
      */
     private volatile CaptureRing ring;
+    private volatile CaptureRing[] inputRings = new CaptureRing[0];
+    private final java.util.Map<Track, Integer> captureWidths = new java.util.HashMap<>();
     private volatile CaptureFlushService flush;
     /**
      * Armed tracks recording their graph instrument; ring source
@@ -213,6 +216,8 @@ public final class RecordingPipeline {
      * {@link RoundTripLatency#UNKNOWN} (zero compensation).
      */
     private RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
+    private boolean reportedLatencyConfigured;
+    private DeviceId reportedLatencyDevice;
     /**
      * Whether the pipeline applies driver round-trip compensation. Mirrors
      * the "Apply latency compensation to recorded takes" toggle in the
@@ -476,6 +481,7 @@ public final class RecordingPipeline {
         // created — never the previous take's service, ring or files.
         flush = null;
         ring = null;
+        inputRings = new CaptureRing[0];
         instrumentTracks = new Track[0];
         recordedClips.clear();
         trackCompensationFrames.clear();
@@ -532,34 +538,37 @@ public final class RecordingPipeline {
                 ? Math.max(0, reportedLatency.totalFrames())
                 : 0L;
 
-        // Ring sources: 0 = the device block; one more per armed track that
-        // records its graph instrument (that engine buffer is only valid
-        // inside the callback, so the callback copies it into the ring).
-        // Source rows cover the stream width AND every armed routing's
-        // highest input channel: a device may deliver more input channels
-        // than the format's (output) width, and the callback used to read
-        // them straight from the delivered buffer — the ring must not lose
-        // them. This is the armed set's live requirement, not a captured
-        // constant (book §9.9); story 326 owns the routing width proper.
+        // Each producer copies its actual raw input width; graph buffers retain their render width.
+        com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan plan = audioEngine.getCaptureRoutingPlan();
         List<Track> instruments = new ArrayList<>();
-        int sourceRows = format.channels();
+        int sourceRows = plan == null || plan.sources().isEmpty() ? 0 : audioEngine.captureInputChannels(0);
         for (Track track : armedTracks) {
             InputRouting routing = track.getInputRouting();
             if (routing.isNone()) {
                 instruments.add(track);
-            } else {
-                sourceRows = Math.max(sourceRows, routing.firstChannel() + routing.channelCount());
+                sourceRows = Math.max(sourceRows, format.channels());
+            } else if (plan == null) {
+                sourceRows = Math.max(sourceRows, Math.addExact(routing.firstChannel(), routing.channelCount()));
             }
         }
+        sourceRows = Math.max(1, sourceRows);
         instrumentTracks = instruments.toArray(new Track[0]);
         int slots = ringSlots > 0
                 ? ringSlots
                 : CaptureRing.slotCountFor(format.sampleRate(), format.bufferSize(),
                         CaptureRing.DEFAULT_HANDOFF_TOLERANCE);
         ring = new CaptureRing(format.bufferSize(), sourceRows, 1 + instrumentTracks.length, slots);
+        int inputs = plan == null ? 1 : Math.max(1, plan.sources().size());
+        inputRings = new CaptureRing[inputs];
+        inputRings[0] = ring;
+        for (int i = 1; i < inputs; i++) inputRings[i] = new CaptureRing(format.bufferSize(),
+                Math.max(1, audioEngine.captureInputChannels(i)), 1, slots);
 
         // One TrackCapture per armed track: routing snapshot, routed scratch,
         // compensation, and an unstarted lane-0 session.
+        captureWidths.clear();
+        for (Track track : armedTracks) captureWidths.put(track, track.getInputRouting().isNone()
+                ? format.channels() : track.getInputRouting().channelCount());
         int instrumentIndex = 0;
         for (Track track : armedTracks) {
             InputRouting routing = track.getInputRouting();
@@ -569,12 +578,25 @@ public final class RecordingPipeline {
             // elapsed in these buffers; physical capture retains round-trip alignment.
             long compensation = instrument && audioEngine.hasGraphInstrument(track)
                     ? 0L : resolvedCompensationFrames;
+            if (!instrument && plan != null && applyLatencyCompensation) {
+                int inputSource = plan.sourceFor(track);
+                RoundTripLatency latency = audioEngine.captureInputLatency(inputSource);
+                if (reportedLatencyConfigured && (reportedLatencyDevice == null ? inputSource == 0
+                        : calibrationMatches(plan.sources().get(inputSource)))) {
+                    latency = reportedLatency;
+                }
+                compensation = Math.max(0, latency.totalFrames());
+            }
             trackCompensationFrames.put(track, compensation);
             int source = instrument ? 1 + instrumentIndex++ : -1;
             int routedChannels = instrument ? format.channels() : routing.channelCount();
             captures.put(track, new TrackCapture(track, routing, source, routedChannels,
                     format.bufferSize(), compensation, compensatedStartBeat(track, tempo),
                     format.sampleRate(), tempo, outputDirectory.resolve(track.getId()), sessionFactory));
+            if (!instrument && plan != null) {
+                int ordinal = plan.sourceFor(track);
+                captures.get(track).setInputSource(ordinal, plan.sources().get(ordinal).device().name());
+            }
         }
 
         DiskHeadroomWatch watch = diskHeadroomWatch != null
@@ -586,6 +608,12 @@ public final class RecordingPipeline {
         flush = new CaptureFlushService(ring, config, List.copyOf(captures.values()), watch,
                 warningSink, peakSnapshotSink, nanoClock);
         // Starts the thread only: the take's files are its first act.
+        flush.setInputRings(inputRings);
+        if (plan != null && !plan.sources().isEmpty()) {
+            int[] widths = new int[inputRings.length];
+            for (int i = 0; i < widths.length; i++) widths[i] = audioEngine.captureInputChannels(i);
+            flush.setOpenedInputWidths(widths);
+        }
         flush.start();
     }
 
@@ -599,8 +627,10 @@ public final class RecordingPipeline {
      * position: a take anchored at a punch region or range keeps that
      * anchor — then create the take's {@link CaptureCallback} and wire it as
      * the engine's recording callback, start the audio engine if it is not
-     * running, and transition the transport to recording. The pipeline is
-     * then {@linkplain #isActive() active}.
+     * running, and transition the transport to recording. Every callback
+     * remains gated until that transition and prepared-input activation both
+     * succeed; a common initial frame origin is then published to the callbacks.
+     * The pipeline is then {@linkplain #isActive() active}.
      *
      * <p>The restore is a {@link Transport#setPositionInBeats(double)}, made
      * only on a transport that is stopped or paused — Record from idle —
@@ -623,7 +653,8 @@ public final class RecordingPipeline {
      * synchronous start this two-step start replaced had the same kind of
      * difference, sized mostly by the file creation it ran on the caller
      * thread between reading the anchor and {@code Transport.record()}.
-     * Story 328's transport-clocked capture-start gate owns the fix.</p>
+     * The capture gate prevents pre-transition publication, but does not
+     * re-anchor the prepared manifest or clips for preparation time.</p>
      *
      * <p>All or nothing: if a step fails, the take's producer gate is closed
      * ({@link CaptureRing#closeProducer()} — a callback entering afterwards
@@ -681,6 +712,7 @@ public final class RecordingPipeline {
         }
         preparing = false;
         active = true;
+        CaptureCallback.StartGate startGate = new CaptureCallback.StartGate();
         try {
             TransportState state = transport.getState();
             boolean rolling = state == TransportState.PLAYING || state == TransportState.RECORDING;
@@ -692,7 +724,16 @@ public final class RecordingPipeline {
             // carries the take's ring, flush service and tempo in final
             // fields, so the audio thread reads nothing of this pipeline.
             audioEngine.setRecordingCallback(new CaptureCallback(takeRing, service, instrumentTracks,
-                    transport, audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm));
+                    transport, audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm, startGate));
+
+            AudioEngine.RecordingCallback[] extraCallbacks = new AudioEngine.RecordingCallback[Math.max(0, inputRings.length - 1)];
+            for (int i = 1; i < inputRings.length; i++) {
+                CaptureCallback callback = new CaptureCallback(inputRings[i], flush, new Track[0], transport,
+                        audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm, startGate);
+                callback.useIndependentFrameCursor();
+                extraCallbacks[i - 1] = callback;
+            }
+            audioEngine.setAdditionalRecordingCallbacks(extraCallbacks);
 
             // Start the audio engine if it is not already running
             audioEngine.start();
@@ -700,10 +741,18 @@ public final class RecordingPipeline {
             // Transition transport to recording
             transport.record();
             captureActivation.run();
+            if (!active || transport.getState() != TransportState.RECORDING || !hasViableCaptureService()) {
+                throw new IllegalStateException("Recording start was cancelled before capture activation");
+            }
+            startGate.positionSeek = transport.getPositionSeek();
+            startGate.seekPending = transport.hasPendingPositionSeek();
+            startGate.beat = transport.getPositionInBeats();
+            startGate.active = true;
         } catch (RuntimeException | Error e) {
             // The gate first: later entries claim nothing, and a callback
             // already inside drops its block if its final read sees the close.
             rollbackStep(e, () -> takeRing.closeProducer());
+            rollbackStep(e, this::closeInputProducers);
             rollbackStep(e, () -> audioEngine.setRecordingCallback(null));
             rollbackStep(e, () -> {
                 if (transport.getState() == TransportState.RECORDING) {
@@ -760,7 +809,7 @@ public final class RecordingPipeline {
         CaptureFlushService service = flush;
         // No callback was installed for this take; the gate is closed all
         // the same, so the take's ring can never be published to.
-        ring.closeProducer();
+        closeInputProducers();
         service.requestAbort();
         captures.clear();
         for (Track track : armedTracks) {
@@ -789,7 +838,7 @@ public final class RecordingPipeline {
         finalizationPending = true;
         clipTempoBpm = takeTempoBpm;
         try {
-            ring.closeProducer();
+            closeInputProducers();
             for (Track track : armedTracks) track.setRecording(false);
         } finally {
             service.requestStop(TakeManifest.SealedBy.STOP);
@@ -832,6 +881,7 @@ public final class RecordingPipeline {
                 CaptureRing takeRing = ring;
                 if (takeRing != null) {
                     takeRing.closeProducer();
+                    closeInputProducers();
                 }
                 CaptureFlushService service = flush;
                 if (service != null) {
@@ -863,8 +913,13 @@ public final class RecordingPipeline {
      * pipeline's segment limits, force cadence, clock and channel opener to
      * its writers.
      */
+    private void closeInputProducers() {
+        for (CaptureRing input : inputRings) input.closeProducer();
+        audioEngine.setAdditionalRecordingCallbacks(new AudioEngine.RecordingCallback[0]);
+    }
+
     private RecordingSession newSession(Track track, Path trackDirectory) {
-        RecordingSession session = new RecordingSession(format, trackDirectory, maxSegmentDuration,
+        RecordingSession session = new RecordingSession(new AudioFormat(format.sampleRate(), captureWidths.get(track), format.bitDepth(), format.bufferSize()), trackDirectory, maxSegmentDuration,
                 maxSegmentBytes, forceCadence, nanoClock);
         session.setChannelOpener(channelOpener);
         return session;
@@ -947,7 +1002,7 @@ public final class RecordingPipeline {
             // block it had not already decided to publish — and every block
             // that is published was stamped before the transport stop below
             // moves the playhead.
-            ring.closeProducer();
+            closeInputProducers();
 
             // Remove the recording callback
             audioEngine.setRecordingCallback(null);
@@ -1518,8 +1573,9 @@ public final class RecordingPipeline {
      * {@link #getCaptureRing()}).
      */
     public long getOverflowCount() {
-        CaptureRing current = ring;
-        return current == null ? 0L : current.overflowCount();
+        long total = 0;
+        for (CaptureRing input : inputRings) total += input.overflowCount();
+        return total;
     }
 
     /**
@@ -1530,8 +1586,9 @@ public final class RecordingPipeline {
      * {@link #getCaptureRing()}). Any thread.
      */
     public long getTruncatedFrames() {
-        CaptureRing current = ring;
-        return current == null ? 0L : current.truncatedFrames();
+        long total = 0;
+        for (CaptureRing input : inputRings) total += input.truncatedFrames();
+        return total;
     }
 
     /**
@@ -1748,7 +1805,7 @@ public final class RecordingPipeline {
     }
 
     /**
-     * Configures the driver-reported round-trip latency to compensate for.
+     * Configures the primary device's effective round-trip latency, including user calibration.
      * Must be called <em>before</em> {@link #prepare()} — the pipeline
      * captures the value once when each session starts so it cannot
      * drift mid-take. Typical use is to read
@@ -1765,6 +1822,23 @@ public final class RecordingPipeline {
      */
     public void setReportedLatency(RoundTripLatency latency) {
         this.reportedLatency = Objects.requireNonNull(latency, "latency must not be null");
+        reportedLatencyConfigured = true;
+        reportedLatencyDevice = null;
+    }
+
+    /**
+     * Configures a device-qualified calibration, including an explicit zero.
+     * Physical sources on other devices retain their own driver latency.
+     * Must be called before {@link #prepare()}.
+     */
+    public void setReportedLatency(DeviceId device, RoundTripLatency latency) {
+        setReportedLatency(latency);
+        reportedLatencyDevice = Objects.requireNonNull(device, "device must not be null");
+    }
+
+    private boolean calibrationMatches(com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.Source source) {
+        return reportedLatencyDevice.backend().equals(source.device().backend())
+                && source.selectionLabels().contains(reportedLatencyDevice.name());
     }
 
     /**

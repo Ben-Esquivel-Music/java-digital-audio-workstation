@@ -71,6 +71,11 @@ public final class MockAudioBackend implements AudioBackend {
         this.inputPcm = Objects.requireNonNull(inputPcm, "inputPcm").clone();
     }
 
+    @Override public double openedInputSampleRate() {
+        AudioFormat current = support.format();
+        return current == null ? Double.NaN : current.sampleRate();
+    }
+
     @Override
     public String name() {
         return NAME;
@@ -130,9 +135,41 @@ public final class MockAudioBackend implements AudioBackend {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
         support.markOpen(format, bufferFrames);
+        this.captureWidth = format.channels();
         this.inputCursor = 0;
         this.outputPcm.reset();
         this.directChannelOutput.clear();
+    }
+
+    private int captureWidth;
+    private volatile Set<DeviceId> sharedClockDomain = Set.of();
+    @Override public boolean supportsMultipleInputDevices() { return true; }
+    @Override public AudioBackend createInputBackend() { return new MockAudioBackend(); }
+
+    /**
+     * Declares that the given devices run from one hardware clock, as a word-clocked
+     * rig would; replaces any earlier declaration. By default no two distinct devices
+     * share a clock, matching the {@link AudioBackend} default.
+     *
+     * @param devices the devices of one shared clock domain; must not be null
+     */
+    public void declareSharedClockDomain(Set<DeviceId> devices) {
+        this.sharedClockDomain = Set.copyOf(Objects.requireNonNull(devices, "devices must not be null"));
+    }
+
+    @Override public boolean sharesClockDomain(DeviceId first, DeviceId second) {
+        Set<DeviceId> domain = sharedClockDomain;
+        return AudioBackend.super.sharesClockDomain(first, second)
+                || domain.contains(first) && domain.contains(second);
+    }
+    @Override public void openInput(DeviceId input, AudioFormat format, int frames, int channels) {
+        if (channels <= 0) throw new IllegalArgumentException("channels must be positive");
+        open(input, format, frames); captureWidth = channels;
+    }
+    @Override public void open(DeviceId output, AudioFormat format, int frames, CaptureRequirement capture,
+                               DeviceId input, int channels) {
+        if (channels < 0 || capture == CaptureRequirement.REQUIRED && channels == 0) throw new IllegalArgumentException("channels must be positive for capture");
+        open(output, format, frames); captureWidth = channels;
     }
 
     @Override
@@ -159,7 +196,7 @@ public final class MockAudioBackend implements AudioBackend {
     @Override
     public int openedInputChannels() {
         AudioFormat format = support.format();
-        return support.isOpen() && format != null ? format.channels() : 0;
+        return support.isOpen() && format != null ? captureWidth : 0;
     }
 
     @Override
@@ -535,7 +572,7 @@ public final class MockAudioBackend implements AudioBackend {
             throw new IllegalStateException("pumpInput called before open()");
         }
         AudioFormat fmt = support.format();
-        int channels = fmt.channels();
+        int channels = captureWidth;
         int byteCount = frames * channels * 2; // 16-bit PCM
         byte[] slice = new byte[byteCount];
         int available = Math.max(0, Math.min(byteCount, inputPcm.length - inputCursor));

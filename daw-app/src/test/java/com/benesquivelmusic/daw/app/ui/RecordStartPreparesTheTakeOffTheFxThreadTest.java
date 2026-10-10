@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CaptureFlushService;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.SegmentWriter;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -76,6 +77,9 @@ import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.spy;
 
 /**
  * PR #978 review 5391920205 (F2): Record does no storage I/O on the FX thread
@@ -134,7 +138,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link #READY_WAIT}, for a take to become ready, which is bounded at
  * {@link #READY_TURN_BUDGET}; the transport listener that fails
  * {@code beginCapture()} waits inside the readiness turn at most
- * {@link #HOLD_IN_A_PASS_WAIT}, below that 5 s; every wait for a real disk
+ * {@link #READINESS_POST_HOLD_WAIT}, below that 5 s; every wait for a real disk
  * is bounded at 30 s.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
@@ -150,11 +154,11 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
     /**
      * The longest the transport listener that fails {@code beginCapture()}
-     * waits, inside the readiness turn, for the capture thread to be held in
-     * a pass: below the 5 s bound of every FX action the test thread posts
+     * waits, inside the readiness turn, for the capture thread to be held
+     * after posting that turn: below the 5 s bound of every FX action the test thread posts
      * meanwhile.
      */
-    private static final Duration HOLD_IN_A_PASS_WAIT = Duration.ofSeconds(3);
+    private static final Duration READINESS_POST_HOLD_WAIT = Duration.ofSeconds(3);
 
     @TempDir
     Path workspace;
@@ -195,20 +199,25 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             recIndicator = new Label();
             recIndicator.setVisible(false);
             recIndicator.setManaged(false);
-            controller = new TransportController(project, engine, new UndoManager(), notificationBar,
-                    new Label(), statusBar, recIndicator, new Button(), new Button(),
-                    () -> false,
-                    () -> GridResolution.QUARTER,
-                    () -> CountInMode.OFF,
-                    track -> { },
-                    () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection());
+            controller = newController(FxDispatcher.getDefault());
             controller.setStillWritingDelayForTest(new ManualFxDelay());
             hold.installOn(controller);
         });
         previousBus = EventBusPublisher.getDefault();
         EventBusPublisher.setDefault(new CollectingBus(announced::add));
+    }
+
+    /** Builds the same production controller with the selected FX dispatch seam. FX thread. */
+    private TransportController newController(FxDispatcher dispatcher) {
+        return new TransportController(project, engine, new UndoManager(), notificationBar,
+                new Label(), statusBar, recIndicator, new Button(), new Button(),
+                () -> false,
+                () -> GridResolution.QUARTER,
+                () -> CountInMode.OFF,
+                track -> { },
+                () -> true,
+                () -> RoundTripLatency.UNKNOWN,
+                dispatcher);
     }
 
     @AfterEach
@@ -349,6 +358,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared over playback")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "input re-open finished before the held allocation");
             assertThat(onFx(engine::isStreamOpen)).as("fixture: Record opened the stream").isTrue();
 
             runOnFx(controller::toggleRecord);
@@ -383,11 +393,13 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared over the pause")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "input re-open finished before the held allocation");
             assertThat(onFx(engine::isStreamOpen)).as("fixture: Record opened the stream").isTrue();
 
             runOnFx(controller::toggleRecord);
 
             assertThat(onFx(controller::isPreparingTake)).as("the take was cancelled").isFalse();
+            awaitOnFx(() -> !engine.isStreamOpen(), "the cancel's worker closed the output stream");
             assertThat(onFx(engine::isStreamOpen)).as("the cancel closed the output stream Record opened").isFalse();
             assertThat(onFx(() -> project.getTransport().getState())).as("the transport stays paused")
                     .isEqualTo(TransportState.PAUSED);
@@ -402,8 +414,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
      * Holds the take's preparation over a STOPPED transport, in a project
      * whose mixer holds no instrument insert, cancels it with {@code cancel}
      * on the FX thread, and pins that the cancel closed the output stream
-     * Record opened — on the cancel's own FX turn, while the capture thread
-     * is still held — as every other Stop closes it.
+     * Record opened asynchronously while the capture thread is still held.
      */
     private void cancelOverAStoppedTransportClosesTheOutputStream(Consumer<TransportController> cancel)
             throws Exception {
@@ -420,6 +431,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             runOnFx(() -> cancel.accept(controller));
 
             assertThat(onFx(controller::isPreparingTake)).as("the take was cancelled").isFalse();
+            awaitOnFx(() -> !engine.isStreamOpen(), "the cancel's worker closed the output stream");
             assertThat(onFx(engine::isStreamOpen)).as("the cancel closed the output stream Record opened").isFalse();
         } finally {
             hold.release();
@@ -555,6 +567,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         runOnFx(() -> controller.setStorageExecutorForTest(storage));
 
         runOnFx(controller::toggleRecord);
+        awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
         assertThat(storage.pending()).as("the allocation was handed to the storage executor, and is held")
                 .isEqualTo(1);
         assertThat(onFx(controller::isPreparingTake)).isTrue();
@@ -593,7 +606,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
         assertThat(recordOpensTheOutputStream()).as("fixture: Record opened the output stream before it allocated")
                 .isTrue();
-        awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
+        awaitOnFx(() -> !controller.isPreparingTake() && !controller.isTakeBeingWritten(), "the start and input cleanup settled");
 
         String message = onFx(statusBar::getText);
         assertThat(message).startsWith("Recording aborted — no take was started: Take-directory precondition failed:");
@@ -610,6 +623,60 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         assertThat(announced).noneMatch(TransportEvent.Started.class::isInstance);
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4})
+    void failedPreparationClosesOffFxAndKeepsOwnershipUntilARetainedHandleIsReleased(int failureStage) throws Exception {
+        HeldCloseBackend backend = new HeldCloseBackend();
+        backend.failOpen = failureStage == 4;
+        runOnFx(() -> {
+            engine.setStreamingProvision(new StreamingProvision(backend.name(),
+                    List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name())))));
+            if (failureStage == 1) controller.setStorageExecutorForTest(_ -> {
+                throw new java.util.concurrent.RejectedExecutionException("injected storage rejection");
+            });
+            if (failureStage == 2) controller.setPipelineSetupForTest(_ -> {
+                throw new IllegalStateException("injected pipeline failure");
+            });
+            if (failureStage == 3) controller.setEarlySealSignalForTest(_ ->
+                    java.util.concurrent.CompletableFuture.completedStage(
+                            new com.benesquivelmusic.daw.core.recording.EarlySeal.DiskExhausted(1024, false, true)));
+        });
+        if (failureStage == 0) makeTheTakesFolderImpossibleToCreate();
+        try {
+            runOnFx(controller::toggleRecord);
+            assertThat(backend.closeEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            runOnFx(() -> {
+                assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.ABORTED);
+                assertThat(controller.recordCoordinator().recordAvailableProperty().get()).isFalse();
+                assertThat(controller.isTakeBeingWritten()).isTrue();
+                controller.stop();
+                assertThat(controller.isTakeBeingWritten()).isTrue();
+            });
+            assertThat(backend.closeOnFx.get()).isFalse();
+            backend.release.countDown();
+            awaitOnFx(() -> entries().stream().anyMatch(entry -> entry.message().startsWith("Recording input cleanup failed:")),
+                    "the retained handle was reported without settling");
+            runOnFx(() -> {
+                assertThat(controller.isTakeBeingWritten()).isTrue();
+                assertThat(controller.recordCoordinator().getState()).isEqualTo(RecordState.ABORTED);
+                assertThat(backend.isOpen()).isTrue();
+                assertThat(backend.isReleasePending()).isTrue();
+                backend.retain = false;
+                controller.stop();
+            });
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "retry Stop released the owned stream");
+            assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.IDLE);
+            assertThat(onFx(engine::isStreamOpen)).isFalse();
+            assertThat(backend.isOpen()).isFalse();
+            assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isTrue();
+            assertThat(backend.closeOnFx.get()).isFalse();
+        } finally {
+            backend.retain = false;
+            backend.release.countDown();
+            runOnFx(() -> { if (controller.isTakeBeingWritten()) controller.stop(); });
+        }
+    }
+
     /**
      * A failed allocation over playback must satisfy the Record guard contract:
      * STOPPED with its stream closed, just as a failed attempt from idle.
@@ -624,7 +691,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
         assertThat(recordOpensTheOutputStream()).as("fixture: the stream is open at the end of the Record turn")
                 .isTrue();
-        awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
+        awaitOnFx(() -> !controller.isPreparingTake() && !controller.isTakeBeingWritten(), "the start and input cleanup settled");
 
         String message = onFx(statusBar::getText);
         assertThat(message).startsWith("Recording aborted — no take was started: Take-directory precondition failed:");
@@ -801,41 +868,55 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
      * capture thread — which deletes the take's files — has terminated. The
      * storage work is held here, so the test sees that nothing removes the
      * directory, and that the start still counts as being written, while
-     * that thread is held in a pass with the take's files on disk.
+     * that thread is held after posting readiness with the take's files on disk.
      */
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void aTakeWhoseCaptureCannotBeginIsAbortedAndItsDirectoryRemovedOnlyOnceItsCaptureThreadIsDone(boolean failStop)
             throws Exception {
         HeldExecutor storage = new HeldExecutor();
-        runOnFx(() -> controller.setStorageExecutorForTest(storage));
+        CaptureThreadHold preparationHold = new CaptureThreadHold();
+        preparationHold.arm();
+        FxDispatcher dispatcher = spy(new FxDispatcher());
+        AtomicBoolean heldReadinessPost = new AtomicBoolean();
+        doAnswer(invocation -> {
+            invocation.callRealMethod(); // Enqueue the readiness turn before holding its publishing thread.
+            if (CaptureFlushService.THREAD_NAME.equals(Thread.currentThread().getName())
+                    && heldReadinessPost.compareAndSet(false, true)) {
+                hold.arm();
+                hold.getAsLong();
+            }
+            return null;
+        }).when(dispatcher).onFx(any(Runnable.class));
+        runOnFx(() -> {
+            controller = newController(dispatcher);
+            controller.setStillWritingDelayForTest(new ManualFxDelay());
+            controller.setStorageExecutorForTest(storage);
+            preparationHold.installOn(controller);
+        });
         Transport transport = project.getTransport();
         Track midi = new Track("Keys", com.benesquivelmusic.daw.core.track.TrackType.MIDI);
         midi.setArmed(true); midi.setMidiInputDeviceName("keys"); project.addTrack(midi);
         var midiInput = new RecordingInFlightFixture.StubMidiInput();
         runOnFx(() -> controller.setMidiInputDeviceResolverForTest(_ -> midiInput));
         AtomicBoolean failedOnce = new AtomicBoolean();
-        AtomicBoolean heldInAPassWhenItFailed = new AtomicBoolean();
+        AtomicBoolean heldAtReadinessWhenItFailed = new AtomicBoolean();
         IllegalStateException original = new IllegalStateException("injected failure of the transport's record()");
         IllegalStateException stopFailure = new IllegalStateException("injected failure of the transport's stop()");
         List<RecordState> states = new CopyOnWriteArrayList<>();
         runOnFx(() -> controller.recordCoordinator().stateProperty().addListener((_, _, next) -> states.add(next)));
-        // beginCapture()'s last step is the transport's record(), after the recording
-        // callback is installed and the engine started. This listener fails it, once,
-        // on the FX thread — but first it holds the capture thread at its next clock
-        // read, in its drain loop (normally the disk-headroom check of a block it
-        // applies, or a force-cadence check after one; see CaptureThreadHold), so that
-        // thread is still in a pass, the take's files still on disk, when the start is
-        // abandoned.
+        // record() runs with the installed producer gate still closed. Holding the
+        // flush thread after its real readiness post keeps cleanup pending without
+        // depending on pre-record audio, which must never reach the take.
         Runnable removeListener = transport.addChangeListener(kind -> {
             if (kind == Transport.ChangeKind.STATE && transport.getState() == TransportState.RECORDING
                     && failedOnce.compareAndSet(false, true)) {
-                hold.arm();
                 try {
-                    heldInAPassWhenItFailed.set(hold.holdsWithin(HOLD_IN_A_PASS_WAIT));
+                    heldAtReadinessWhenItFailed.set(hold.holdsWithin(READINESS_POST_HOLD_WAIT));
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
+                engine.getRecordingCallback().onAudioCaptured(new float[][] {new float[256], new float[256]}, 256);
                 throw original;
             }
             if (failStop && kind == Transport.ChangeKind.STATE && transport.getState() == TransportState.STOPPED) {
@@ -844,9 +925,15 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         });
         try {
             runOnFx(controller::toggleRecord);
+            awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
             storage.runPendingOffTheFxThread(); // the allocation; the turns it leads to prepare the take and begin capture
+            preparationHold.awaitHolding(Duration.ofSeconds(10));
+            // prepare() has returned and the app has attached its readiness dependent
+            // before initialisation resumes, so its post runs on capture-flush.
+            runOnFx(() -> { });
+            preparationHold.release();
             awaitOnFx(() -> !controller.isPreparingTake(), "the start settled");
-            assertThat(heldInAPassWhenItFailed).as("fixture: the capture thread was held in a pass when record() failed")
+            assertThat(heldAtReadinessWhenItFailed).as("fixture: the capture thread was held after posting readiness when record() failed")
                     .isTrue();
             Path takeDirectory = onlyTakeDirectory();
 
@@ -859,11 +946,17 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                 assertThat(onFx(controller::isTakeBeingWritten)).as("the failed start is being written").isTrue();
                 assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.ABORTED);
                 assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isFalse();
+                assertThat(Files.size(takeDirectory.resolve(armed.getId()).resolve("segment-000.wav.part")))
+                        .as("the failed transition captured no samples before its producer gate opened")
+                        .isEqualTo(SegmentWriter.DATA_OFFSET);
 
                 assertThat(midiInput.isConnected()).as("last-started MIDI has been drained before flush cleanup").isFalse();
                 assertThat(midiInput.isOpen()).isFalse();
                 assertThat(onFx(midi::isRecording)).isFalse();
                 assertThat(onFx(engine::isStreamOpen)).as("the first-started stream stays open until flush termination and directory cleanup").isTrue();
+                runOnFx(controller::stop);
+                assertThat(onFx(engine::isStreamOpen)).as("Stop defers stream cleanup while the failed take's flush is held").isTrue();
+                assertThat(onFx(controller::isTakeBeingWritten)).isTrue();
                 storage.runPendingOffTheFxThread(); // whatever storage work is due while the capture thread runs
                 runOnFx(() -> { });                 // and whatever FX turn that work posted
 
@@ -881,6 +974,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             assertThat(takeDirectory).isDirectory();
             runHeldStorageUntilNothingIsBeingWritten(storage); // the removal of the take directory
         } finally {
+            preparationHold.release();
             hold.release();
             removeListener.run();
         }
@@ -898,7 +992,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         if (failStop) assertThat(original.getSuppressed()).contains(stopFailure);
         else assertThat(original.getSuppressed()).isEmpty();
         assertThat(entries()).as("still the one ERROR").hasSize(1);
-        assertThat(onFx(statusBar::getText)).isEqualTo(entries().getFirst().message());
+        assertThat(onFx(statusBar::getText)).isEqualTo("Returned to start");
         assertThat(onFx(notificationBar::getCurrentLevel)).isEqualTo(NotificationLevel.ERROR);
         assertThat(onFx(notificationBar::getMessage)).isEqualTo(entries().getFirst().message());
         assertThat(announced).as("no Started for a take that did not begin")
@@ -955,6 +1049,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared inside the tail")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
             assertThat(storage.pending()).as("fixture: its allocation is held").isEqualTo(1);
 
             runOnFx(() -> postRollEnd.handle(new ActionEvent()));
@@ -1030,7 +1125,9 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared over playback")
                     .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
             assertThat(storage.pending()).as("fixture: its allocation is held").isEqualTo(1);
+            awaitOnFx(() -> storage.pending() == 1, "input re-open finished before the held allocation");
             assertThat(onFx(engine::isStreamOpen)).as("fixture: Record opened the stream").isTrue();
 
             runOnFx(() -> staleTimerEnd.handle(new ActionEvent()));
@@ -1104,6 +1201,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             try {
                 assertThat(onFx(next::isPreparingTake)).as("fixture: the next project's take is being prepared")
                         .isTrue();
+                awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
                 assertThat(storage.pending()).as("fixture: its allocation is held").isEqualTo(1);
                 assertThat(onFx(engine::isStreamOpen)).as("fixture: its Record opened the shared stream").isTrue();
                 assertThat(onFx(statusBar::getText)).as("fixture: the shared status bar")
@@ -1174,8 +1272,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                     () -> CountInMode.OFF,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN,
-                    new StubSessionInputSelection());
+                    () -> RoundTripLatency.UNKNOWN);
             replacement.setStillWritingDelayForTest(new ManualFxDelay());
             next.set(replacement);
         });
@@ -1293,18 +1390,18 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         Files.writeString(audio, "not a directory", StandardCharsets.UTF_8);
     }
 
-    /**
-     * Presses Record and returns whether the output stream is open at the
-     * end of that FX turn — before the turn the allocation posts, which runs
-     * later.
-     */
+    /** Presses Record and observes stream truth at the off-FX storage handoff, before allocation runs. */
     private boolean recordOpensTheOutputStream() throws Exception {
-        AtomicBoolean open = new AtomicBoolean();
+        AtomicReference<Boolean> openBeforeAllocation = new AtomicReference<>();
         runOnFx(() -> {
+            controller.setStorageExecutorForTest(task -> {
+                openBeforeAllocation.compareAndSet(null, engine.isStreamOpen());
+                Thread.ofVirtual().name("test-take-storage").start(task);
+            });
             controller.toggleRecord();
-            open.set(engine.isStreamOpen());
         });
-        return open.get();
+        awaitOnFx(() -> openBeforeAllocation.get() != null, "input is open before allocation is dispatched");
+        return openBeforeAllocation.get();
     }
 
     /**
@@ -1456,6 +1553,38 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
     }
 
     /** A synchronous bus that hands every event published to {@code sink}; subscriptions are not used. */
+    private static final class HeldCloseBackend implements com.benesquivelmusic.daw.sdk.audio.AudioBackend {
+        private final MockAudioBackend delegate = new MockAudioBackend();
+        final CountDownLatch closeEntered = new CountDownLatch(1), release = new CountDownLatch(1);
+        final AtomicBoolean closeOnFx = new AtomicBoolean();
+        volatile boolean retain = true;
+        boolean failOpen;
+        Thread openThread;
+        public String name() { return delegate.name(); }
+        public boolean isAvailable() { return true; }
+        public boolean supportsStreaming() { return true; }
+        public List<com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo> listDevices() { return delegate.listDevices(); }
+        public void open(DeviceId device, com.benesquivelmusic.daw.sdk.audio.AudioFormat format, int frames) {
+            openThread = Thread.currentThread();
+            delegate.open(device, format, frames);
+            if (failOpen) throw new com.benesquivelmusic.daw.sdk.audio.AudioBackendException("injected partial input open failure");
+        }
+        public boolean isOpen() { return delegate.isOpen(); }
+        public boolean isReleasePending() { return retain && delegate.isOpen(); }
+        public int openedInputChannels() { return delegate.openedInputChannels(); }
+        public Flow.Publisher<com.benesquivelmusic.daw.sdk.audio.AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
+        public void sink(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) { delegate.sink(block); }
+        public void close() {
+            if (Platform.isFxApplicationThread()) closeOnFx.set(true);
+            if (failOpen && Thread.currentThread() == openThread) return;
+            closeEntered.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("held close timed out");
+            } catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException(failure); }
+            if (!retain) delegate.close();
+        }
+    }
+
     private static final class CollectingBus implements EventBus {
         private final Consumer<BusEvent> sink;
 

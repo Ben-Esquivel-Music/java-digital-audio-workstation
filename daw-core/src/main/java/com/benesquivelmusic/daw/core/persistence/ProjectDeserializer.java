@@ -41,6 +41,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
 import com.benesquivelmusic.daw.sdk.audio.CurveShape;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
@@ -550,9 +551,17 @@ public final class ProjectDeserializer {
             }
         }
 
-        int inputDevice = parseIntAttr(elem, "input-device", Track.NO_INPUT_DEVICE);
-        if (inputDevice >= Track.NO_INPUT_DEVICE) {
-            track.setInputDeviceIndex(inputDevice);
+        // Stable input identity first; the bare "input-device" enumeration index of
+        // projects saved before identities existed is kept only as a legacy hint.
+        String inputBackend = elem.getAttribute("input-device-backend");
+        String inputName = elem.getAttribute("input-device-name");
+        if (!inputBackend.isBlank() && !inputName.isBlank()) {
+            track.setInputDevice(Optional.of(new DeviceId(inputBackend, inputName)));
+        } else {
+            int legacyInputDevice = parseIntAttr(elem, "input-device", Track.NO_INPUT_DEVICE);
+            if (legacyInputDevice >= Track.NO_INPUT_DEVICE) {
+                track.setLegacyInputDeviceIndexHint(legacyInputDevice);
+            }
         }
 
         // Restore per-track input channel routing

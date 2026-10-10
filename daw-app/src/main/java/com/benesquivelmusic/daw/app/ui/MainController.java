@@ -214,9 +214,10 @@ public final class MainController {
     private NotificationBar notificationBar;
     /**
      * Story 322 — the ONE session-level input device (§5.6 "Per-track input
-     * device"), built by {@link #createSessionInputSelection()} once the
-     * notification bar exists and shared by the transport, track-strip and
-     * track-creation controllers across project rebuilds.
+     * device"), built by {@link #createSessionInputSelection()} over the
+     * app-scoped settings and shared by the track-strip and track-creation
+     * controllers (the input dialogs' preselection fallback) across project
+     * rebuilds.
      */
     private SessionInputSelection sessionInputSelection;
     private Metronome metronome;
@@ -556,7 +557,8 @@ public final class MainController {
         }
         FxDispatcher disp = dispatcher();
         if (disp != null) {
-            trackControlWiring = TrackControlWiring.standalone(project, disp, meterFeed());
+            trackControlWiring = TrackControlWiring.standalone(project, disp, meterFeed(), audioEngine,
+                    message -> notificationBar.show(NotificationLevel.ERROR, message));
         }
     }
 
@@ -1071,9 +1073,8 @@ public final class MainController {
         }
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         initializeNotificationBar();
-        // Story 322 — the session input selection needs the notification bar
-        // and must exist before the transport / track-strip / track-creation
-        // controllers that consult it.
+        // Story 322 — the session input selection must exist before the
+        // track-strip and track-creation controllers whose input dialogs read it.
         createSessionInputSelection();
         createTempoEditController();
         initializePluginFaultIsolation();
@@ -1541,11 +1542,10 @@ public final class MainController {
                 () -> audioEngineController != null
                         ? audioEngineController.reportedLatency()
                         : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
-                // Story 322 — the session input the record-start mismatch check consults.
-                sessionInputSelection,
                 this::onOpenAudioSettings,
                 dispatcher());
         if (audioEngineController instanceof DefaultAudioEngineController controller) {
+            transportController.recordCoordinator().setLatencyCalibrationSupplier(controller::recordingLatencyCalibration);
             controller.setRecordConfigurationGuard(() -> transportController.recordCoordinator().requestConfigurationChange());
             controller.setConfigurationActivityCallback(() -> {
                 if (transportController != null) transportController.recordCoordinator().refreshRecordAvailability();
@@ -1588,19 +1588,14 @@ public final class MainController {
 
     /**
      * Story 322 — builds the ONE session-level input selection (Audio Engine
-     * Wiring Design Book §5.6 "Per-track input device") over the app-scoped
-     * settings, engine controller and notification bar. App-scoped like its
+     * Wiring Design Book §5.6 "Per-track input device"): a read-only view of
+     * the persisted session input in the app-scoped settings, which the input
+     * dialogs use as their preselection fallback. App-scoped like its
      * collaborators: it survives project rebuilds and is handed to the
-     * transport, track-strip and track-creation controllers on every
-     * (re)construction.
+     * track-strip and track-creation controllers on every (re)construction.
      */
     private void createSessionInputSelection() {
-        sessionInputSelection = new SettingsBackedSessionInputSelection(
-                settingsModel,
-                audioEngineController,
-                (level, message, actionLabel, action) -> postFx(() ->
-                        notificationBar.show(level, message, actionLabel, action)),
-                this::onOpenAudioSettings);
+        sessionInputSelection = new SettingsBackedSessionInputSelection(settingsModel);
     }
 
     private void status(String text, DawIcon icon) {
@@ -2179,7 +2174,7 @@ public final class MainController {
                 () -> viewNavigationController.getZoomLevel(viewNavigationController.getActiveView()),
                 () -> viewNavigationController.getEditorView(),
                 // Story 322 — the live control wiring the arrangement strips bind through,
-                // and the session input the per-track dialog / arm warning consult.
+                // and the session input the per-track input dialog preselects as a fallback.
                 this::trackControlWiring,
                 sessionInputSelection);
     }
@@ -2429,7 +2424,7 @@ public final class MainController {
                         () -> project.markDirty(),
                         this::status,
                         (level, message) -> notificationBar.show(level, message),
-                        // Story 322 — the session input the new-track dialog preselects/selects.
+                        // Story 322 — the session input the new-track dialog preselects (read-only).
                         sessionInputSelection),
                 deviceManager);
     }

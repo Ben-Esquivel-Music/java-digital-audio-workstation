@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.app.ui.vm.TrackVM;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
@@ -26,7 +27,6 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
-import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
@@ -129,7 +129,8 @@ final class TrackStripController {
                          Button soloBtn,
                          Button armBtn,
                          HBox insertChain,
-                         HBox clipIndicatorSlot) {
+                         HBox clipIndicatorSlot,
+                         Label ioLabel) {
     }
 
     /** One live binding: the VMs a strip observes and the disposers that detach it. */
@@ -181,19 +182,14 @@ final class TrackStripController {
      */
     private final Supplier<TrackControlWiring> trackControlWiring;
     /**
-     * Story 322 — the ONE session-level input device the per-track input
-     * dialog selects and the arm-time mismatch warning is computed against
-     * (Audio Engine Wiring Design Book §5.6 "Per-track input device").
+     * The persisted session input: only READ here, as the input-port dialog's
+     * preselection for a track with no input identity (or legacy row
+     * suggestion) of its own. A per-track pick
+     * never writes it.
      */
     private final SessionInputSelection sessionInputSelection;
-    /**
-     * The worker of the most recent arm-time input check (story 322 fix
-     * round, S7): the device enumeration behind the mismatch WARNING runs off
-     * the FX thread; only the comparison (over the FX-owned track list) and
-     * the toast are marshalled back. Kept so a test can wait for the check to
-     * land; {@code null} before the first arm.
-     */
-    private volatile Thread sessionInputCheck;
+    /** Asks the user for a per-track input; the modal dialog unless a test scripts the answer. */
+    private InputPortSelectionDialog.Chooser inputPortChooser = InputPortSelectionDialog.Chooser.MODAL;
     /** Live bindings keyed by strip node — present only while the strip is in the panel. */
     private final Map<HBox, StripBinding> stripBindings = new LinkedHashMap<>();
     /** Set by {@link #dispose()}: a strip re-added afterwards must not re-bind. */
@@ -432,47 +428,7 @@ final class TrackStripController {
         if (track.getType() == TrackType.AUDIO) {
             ioLabel.setOnMouseClicked(event -> {
                 if (event.getClickCount() == 2) {
-                    List<AudioDeviceInfo> devices = listAudioDevices();
-                    // Story 322: the dialog preselects the SESSION input device
-                    // (the one recording actually opens); the track's own
-                    // index is only the fallback when the session device is
-                    // not in the enumerated list.
-                    int preselected = sessionInputSelection.selectedIndexIn(devices);
-                    if (preselected == Track.NO_INPUT_DEVICE) {
-                        preselected = track.getInputDeviceIndex();
-                    }
-                    InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, preselected);
-                    dialog.showAndWait().ifPresent(device -> {
-                        // Persisted per-track user intent (ProjectSerializer /
-                        // ProjectDeserializer) that is currently INERT on the
-                        // capture path: story 316 routes recording through the
-                        // engine's provisioned device — TransportController
-                        // calls startAudioInputOutput() with no index — so this
-                        // index has no reader today. Its consumer is story 326
-                        // "Multi-Channel Input Capture Routing", whose union
-                        // open must honour every armed track's input-device
-                        // choice; deleting or disabling this writer would
-                        // destroy the state 326 needs. The selection SURFACE
-                        // itself is owned by stories 092 (per-track audio I/O
-                        // routing) and 215 (driver-reported channel names).
-                        track.setInputDeviceIndex(device.index());
-                        // Story 322: the choice ALSO becomes the session input
-                        // (persisted + applied to the engine), so what the
-                        // user picked is what recording opens.
-                        sessionInputSelection.select(device);
-                        // qualifiedName(), not name() (story 316 review): the
-                        // row the user just picked is labelled with the
-                        // host-API-qualified name, so echoing the bare one
-                        // here would name a DIFFERENT string than the thing
-                        // they clicked whenever two endpoints share a name —
-                        // and those are precisely the cases where "which one
-                        // did I choose?" is the question the echo answers.
-                        ioLabel.setTooltip(new Tooltip("Input: " + device.qualifiedName()));
-                        statusBarLabel.setText("Input changed: " + track.getName()
-                                + " ← " + device.qualifiedName());
-                        statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
-                        markDirty.run();
-                    });
+                    pickTrackInput(track, ioLabel);
                 }
             });
         } else if (track.getType() == TrackType.MIDI) {
@@ -725,7 +681,8 @@ final class TrackStripController {
         // rebuild) disposes the binding. Registered BEFORE the add below so
         // that add is the first bind.
         trackItem.getProperties().put(STRIP_CONTROLS_KEY, new StripControls(
-                nameLabel, volumeSlider, panSlider, muteBtn, soloBtn, armBtn, insertChain, clipIndicatorSlot));
+                nameLabel, volumeSlider, panSlider, muteBtn, soloBtn, armBtn, insertChain, clipIndicatorSlot,
+                ioLabel));
         trackItem.parentProperty().addListener((_, _, parent) -> {
             if (parent == null) {
                 unbindStrip(trackItem);
@@ -768,8 +725,6 @@ final class TrackStripController {
         if (armed && inputLevelMonitorRegistry != null) {
             InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
             MiniClipIndicator indicator = new MiniClipIndicator(monitor, inputLevelMonitorRegistry);
-            Tooltip.install(indicator,
-                    new Tooltip("Input clipped. Click to reset; Alt+click resets all."));
             slot.getChildren().add(indicator);
         }
     }
@@ -875,9 +830,6 @@ final class TrackStripController {
             // Story 137: the mini clip indicator follows the arm state (the
             // redraw timer is stopped on disarm — no animation-timer leak).
             refreshClipIndicatorSlot(controls.clipIndicatorSlot(), track, armed);
-            if (armed) {
-                warnOnInputMismatch();
-            }
         }));
         refreshClipIndicatorSlot(controls.clipIndicatorSlot(), track, trackVm.isArmed());
 
@@ -1007,65 +959,73 @@ final class TrackStripController {
         return trimmed.substring(0, Math.min(3, trimmed.length())).toUpperCase(Locale.ROOT);
     }
 
-    // ── Story 322: session input selection ─────────────────────────────────
+    // ── Per-track input device ─────────────────────────────────────────────
 
-    /**
-     * Enumerates the audio devices via the engine's one SDK backend seam
-     * (story 316: the open stream's backend, else the provision's requested
-     * rung). An enumeration failure is logged and yields an empty list. A
-     * driver walk — on ASIO it waits on the driver control thread, for seconds
-     * while a reopen is in flight — so it is called from the input-port dialog
-     * (a deliberate user gesture) and from the arm check's worker, never from
-     * a property listener on the FX thread.
-     */
-    private List<AudioDeviceInfo> listAudioDevices() {
-        AudioBackend backend = audioEngine.getBackend();
-        if (backend == null) {
-            return List.of();
-        }
-        try {
-            return backend.listDevices();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
-            return List.of();
-        }
+    /** Replaces the modal input-port dialog with a scripted answer (tests only; FX thread). */
+    void setInputPortChooserForTest(InputPortSelectionDialog.Chooser chooser) {
+        inputPortChooser = Objects.requireNonNull(chooser, "chooser must not be null");
     }
 
     /**
-     * Shows the single mismatch {@code WARNING} when an armed track's
-     * per-track input choice disagrees with the session input device (§5.6
-     * "Per-track input device"): recording opens the session device, so the
-     * disagreement must be visible, never silently ignored.
-     *
-     * <p>The device enumeration runs on a virtual thread, never on the FX
-     * thread ({@code javafx-application-design} §11 — no blocking I/O in a
-     * handler; this runs from the arm listener on every arm gesture). The
-     * comparison and the toast happen back on the FX thread through the
-     * {@link FxDispatcher} seam, where the project's live track list is read
-     * (it is FX-owned); a controller disposed in the meantime shows nothing.
-     * {@code ArrangementArmInputCheckOffFxTest} pins the thread.</p>
+     * The I/O label's double-click (FX thread): enumerates the devices of the
+     * engine's one SDK backend seam (story 316: the open stream's backend,
+     * else the provision's requested rung), asks {@link #inputPortChooser} for
+     * a pick and applies it as the track's own input. The enumeration is a
+     * driver walk — on ASIO it waits on the driver control thread — so it runs
+     * only on this deliberate gesture, never from a property listener. One
+     * backend reference serves both the listing and the identity stamped on
+     * the pick, so the stored {@code DeviceId} names the backend that actually
+     * listed the chosen row; an enumeration failure is logged and offers an
+     * empty list.
      */
-    private void warnOnInputMismatch() {
-        sessionInputCheck = Thread.ofVirtual().name("daw-arm-input-check").start(() -> {
-            List<AudioDeviceInfo> devices = listAudioDevices();
-            FxDispatcher.runOnFx(() -> {
-                if (disposed) {
-                    return;
-                }
-                sessionInputSelection.mismatchWarning(project.getTracks(), devices)
-                        .ifPresent(message -> notificationBar.show(NotificationLevel.WARNING, message));
-            });
-        });
+    private void pickTrackInput(Track track, Label ioLabel) {
+        AudioDeviceManager.Enumeration enumeration = new AudioDeviceManager(audioEngine).enumerate();
+        inputPortChooser.choose(enumeration.devices(),
+                        preselectedInputIndex(track, sessionInputSelection, enumeration))
+                .ifPresent(device -> {
+                    assignTrackInputDevice(track, enumeration, device);
+                    // qualifiedName(), not name() (story 316 review): the
+                    // row the user just picked is labelled with the
+                    // host-API-qualified name, so echoing the bare one
+                    // here would name a DIFFERENT string than the thing
+                    // they clicked whenever two endpoints share a name.
+                    ioLabel.setTooltip(new Tooltip("Input: " + device.qualifiedName()));
+                });
     }
 
     /**
-     * The worker of the latest arm-time input check, so a test can wait for
-     * it before flushing the FX queue. Package-visible for tests.
-     *
-     * @return the worker, or empty before the first arm
+     * The row the input-port dialog preselects for {@code track}: the track's
+     * own input identity, resolved on the listing backend; for a pre-identity
+     * project's track with no identity, the row at its legacy index hint,
+     * offered only as a suggestion to confirm (the track records from the
+     * session input until the user confirms a pick, which stores an identity
+     * and clears the hint); otherwise the session input.
      */
-    Optional<Thread> pendingSessionInputCheck() {
-        return Optional.ofNullable(sessionInputCheck);
+    static int preselectedInputIndex(Track track, SessionInputSelection session,
+                                     AudioDeviceManager.Enumeration enumeration) {
+        return SessionInputSelection.resolve(track, enumeration)
+                .map(AudioDeviceInfo::index)
+                .orElseGet(() -> session.selectedIndexIn(enumeration.devices()));
+    }
+
+    /**
+     * Applies a per-track input-device pick (FX thread). Only the track's own
+     * stable identity changes; the session input is never written, so the pick
+     * starts no engine reconfiguration that could race the arm guard. Capture
+     * resolves the device through the routing union of the armed tracks
+     * (story 326): it adds a second input device only when the backend can
+     * capture several devices AND reports that device shares the union's first
+     * source's hardware clock; otherwise the arm is refused naming the track
+     * and the device. The synchronous {@link Track.ChangeKind#INPUT_ROUTING}
+     * notification lets the arm guard re-validate an armed track against the
+     * provision installed now.
+     */
+    private void assignTrackInputDevice(Track track, AudioDeviceManager.Enumeration enumeration,
+                                        AudioDeviceInfo device) {
+        track.setInputDevice(Optional.of(enumeration.identityOf(device)));
+        statusBarLabel.setText("Input changed: " + track.getName() + " ← " + device.qualifiedName());
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
+        markDirty.run();
     }
 
     /**
