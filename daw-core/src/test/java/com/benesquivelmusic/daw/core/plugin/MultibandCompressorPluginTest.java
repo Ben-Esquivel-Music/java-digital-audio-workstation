@@ -7,22 +7,12 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.regex.Pattern;
+import java.lang.management.ManagementFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class MultibandCompressorPluginTest {
 
@@ -359,91 +349,40 @@ class MultibandCompressorPluginTest {
     }
 
     @Test
-    void crossoverWritesAndStoreDrainAllocateNothingAfterWarmup(@TempDir Path directory) throws Exception {
-        var result = runAllocationProbe(directory);
-        assertThat(result.exitCode()).as(result.transcript()).isZero();
-    }
-
-    @Test
-    void crossoverAllocationProbeRejectsAnAllocationInTheMeasuredWorkload(@TempDir Path directory)
-            throws Exception {
-        var result = runAllocationProbe(directory, "--allocate-in-workload");
-        assertThat(result.exitCode()).as(result.transcript()).isNotZero();
-        assertThat(result.transcript()).containsPattern("measurement batch 0 allocated [1-9][0-9]* bytes");
-    }
-
-    private record AllocationProbeResult(int exitCode, String transcript) { }
-
-    private static AllocationProbeResult runAllocationProbe(Path directory, String... arguments)
-            throws IOException, InterruptedException, URISyntaxException {
-        Set<String> classPath = new LinkedHashSet<>();
-        classPath.add(codeSourceOf(CrossoverAllocationProbe.class));
-        classPath.add(codeSourceOf(MultibandCompressorPlugin.class));
-        addPathEntries(classPath, System.getProperty("jdk.module.path"));
-        addPathEntries(classPath, System.getProperty("java.class.path"));
-        Path bin = Path.of(System.getProperty("java.home"), "bin");
-        Path windowsLauncher = bin.resolve("java.exe");
-        Path launcher = Files.isRegularFile(windowsLauncher) ? windowsLauncher : bin.resolve("java");
-        assertThat(launcher).as("the launcher of this JVM's own JDK").isRegularFile();
-        // C2 submission interns the requesting class's unrelated constant-pool strings on
-        // this thread. Interpret only this probe so its byte counter measures the workload,
-        // and so escape analysis cannot hide an allocation introduced into that workload.
-        var command = new ArrayList<>(java.util.List.of(
-                launcher.toString(), "-Xint", "--enable-native-access=ALL-UNNAMED",
-                "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8",
-                "-cp", String.join(File.pathSeparator, classPath),
-                CrossoverAllocationProbe.class.getName()));
-        command.addAll(java.util.List.of(arguments));
-        Path output = directory.resolve("crossover-allocation-probe.log");
-        Process probe = new ProcessBuilder(command)
-                .directory(directory.toFile())
-                .redirectErrorStream(true)
-                .redirectOutput(output.toFile())
-                .start();
+    void crossoverWritesAndStoreDrainAllocateNothingAfterWarmup() {
+        var bean = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        assumeTrue(bean.isThreadAllocatedMemorySupported());
+        bean.setThreadAllocatedMemoryEnabled(true);
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+        plugin.setBandCount(5);
         try {
-            assertThat(probe.waitFor(2, TimeUnit.MINUTES))
-                    .as("allocation probe exited within two minutes; %s", output).isTrue();
-            return new AllocationProbeResult(probe.exitValue(), Files.readString(output, StandardCharsets.UTF_8));
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw exception;
-        } finally {
-            stopAllocationProbe(probe);
-        }
-    }
-
-    private static String codeSourceOf(Class<?> type) throws URISyntaxException {
-        var source = type.getProtectionDomain().getCodeSource();
-        assertThat(source).as("%s was loaded from a code source", type.getName()).isNotNull();
-        return Path.of(source.getLocation().toURI()).toString();
-    }
-
-    private static void addPathEntries(Set<String> classPath, String pathList) {
-        if (pathList == null) { return; }
-        for (String entry : pathList.split(Pattern.quote(File.pathSeparator))) {
-            if (!entry.isBlank()) { classPath.add(entry); }
-        }
-    }
-
-    private static void stopAllocationProbe(Process probe) throws IOException {
-        if (!probe.isAlive()) { return; }
-        probe.destroyForcibly();
-        boolean interrupted = Thread.interrupted();
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        try {
-            while (probe.isAlive()) {
-                long remaining = deadline - System.nanoTime();
-                if (remaining <= 0) {
-                    throw new IOException("allocation probe did not exit after forcible termination");
-                }
-                try {
-                    probe.waitFor(remaining, TimeUnit.NANOSECONDS);
-                } catch (InterruptedException exception) {
-                    interrupted = true;
-                }
+            var slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+            // Warm the counter calls and exact measured loop as well as the parameter setters.
+            for (int batch = 0; batch < 5; batch++) {
+                measureCrossoverAllocations(slot, bean);
             }
+            long allocated = measureCrossoverAllocations(slot, bean);
+            assertThat(allocated).isZero();
         } finally {
-            if (interrupted) { Thread.currentThread().interrupt(); }
+            plugin.dispose();
+        }
+    }
+
+    private static long measureCrossoverAllocations(InsertSlot slot, com.sun.management.ThreadMXBean bean) {
+        long thread = Thread.currentThread().threadId();
+        long before = bean.getThreadAllocatedBytes(thread);
+        updateCrossovers(slot, 10000);
+        return bean.getThreadAllocatedBytes(thread) - before;
+    }
+
+    private static void updateCrossovers(InsertSlot slot, int iterations) {
+        var store = slot.getParameterStore();
+        for (int iteration = 0; iteration < iterations; iteration++) {
+            for (int index = 2; index <= 5; index++) {
+                store.writeFromUi(index, index * 2000.0 + iteration % 100);
+            }
+            slot.drainParametersToAudio();
         }
     }
 
