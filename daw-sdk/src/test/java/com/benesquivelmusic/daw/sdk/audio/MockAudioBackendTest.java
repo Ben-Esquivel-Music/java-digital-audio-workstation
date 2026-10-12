@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -148,6 +149,43 @@ class MockAudioBackendTest {
         Thread.sleep(150);
         assertEquals(1, count.get());
         b.close();
+    }
+
+    /**
+     * Story 327: the device-event feed is the backend's, not one stream's.
+     * A hot-unplug closes the stream, and the device's return is published
+     * while none is open — a feed completed by that close could never
+     * deliver it. So a subscriber taken before the close is still fed after
+     * it, across a reopen, and is never completed by a close.
+     */
+    @Test
+    void deviceEventsOutliveTheStreamCloseAndAReopen() throws InterruptedException {
+        MockAudioBackend b = new MockAudioBackend();
+        java.util.List<AudioDeviceEvent> received = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        AtomicInteger completions = new AtomicInteger();
+        CountDownLatch delivered = new CountDownLatch(3);
+        b.deviceEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(AudioDeviceEvent e) { received.add(e); delivered.countDown(); }
+            @Override public void onError(Throwable t) { }
+            @Override public void onComplete() { completions.incrementAndGet(); }
+        });
+        DeviceId id = new DeviceId("Mock", "USB Interface");
+
+        b.open(id, AudioFormat.CD_QUALITY, 128);
+        b.simulateDeviceRemoved(id);
+        b.close();
+        b.simulateDeviceArrived(id);
+        b.open(id, AudioFormat.CD_QUALITY, 128);
+        b.simulateDeviceFormatChanged(id, AudioFormat.STUDIO_QUALITY_48K);
+        b.close();
+
+        assertTrue(delivered.await(2, TimeUnit.SECONDS), "the events before, after and across the close all arrive");
+        assertEquals(3, received.size());
+        assertInstanceOf(AudioDeviceEvent.DeviceRemoved.class, received.get(0));
+        assertInstanceOf(AudioDeviceEvent.DeviceArrived.class, received.get(1));
+        assertInstanceOf(AudioDeviceEvent.DeviceFormatChanged.class, received.get(2));
+        assertEquals(0, completions.get(), "no close completed the device feed");
     }
 
     @Test

@@ -555,6 +555,14 @@
     -fx-font-weight: bold;
 }
 
+/* Story 327 — the record state's DEVICE_LOST, rendered by
+   TransportController.updateStatus() in place of the stopped transport:
+   the theme's warning token, never a literal colour. */
+.status-device-lost {
+    -fx-text-fill: -warn;
+    -fx-font-weight: bold;
+}
+
 /* ── Time Display ── */
 .time-display {
     /* Typography (mono, 14 px, weight 500) now comes from the

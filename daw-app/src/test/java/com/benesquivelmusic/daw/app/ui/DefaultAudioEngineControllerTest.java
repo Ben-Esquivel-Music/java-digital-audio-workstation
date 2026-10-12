@@ -55,7 +55,7 @@ class DefaultAudioEngineControllerTest {
     @Test
     void recordingCalibrationCarriesTheWatchedDeviceIncludingExplicitZero() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         AudioBackend backend = new MockAudioBackend();
         DeviceId calibrated = new DeviceId(backend.name(), "Watched interface");
         try {
@@ -75,7 +75,7 @@ class DefaultAudioEngineControllerTest {
     @Test
     void shouldReportNoneWhenNoBackendAttached() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         assertThat(controller.getActiveBackendName()).isEqualTo(AudioEngineController.BACKEND_NONE);
     }
 
@@ -90,8 +90,7 @@ class DefaultAudioEngineControllerTest {
         AudioBackendSelector selector = new AudioBackendSelector(factories);
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             assertThat(controller.getAvailableBackendNames())
                     .doesNotContain(JavaxSoundBackend.NAME);
@@ -103,21 +102,21 @@ class DefaultAudioEngineControllerTest {
     @Test
     void shouldReturnEmptyDeviceListWhenNoBackend() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         assertThat(controller.listDevices()).isEmpty();
     }
 
     @Test
     void shouldReturnEmptyDevicesForUnknownBackend() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         assertThat(controller.listDevices("Made Up Backend")).isEmpty();
     }
 
     @Test
     void shouldReturnNegativeCpuLoadWhenNoMonitor() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         assertThat(controller.getCpuLoadPercent()).isEqualTo(-1.0);
     }
 
@@ -127,7 +126,7 @@ class DefaultAudioEngineControllerTest {
     void monitorEventsAreDrainedWithoutAnyCpuLoadPoll() throws InterruptedException {
         AudioFormat format = new AudioFormat(48_000.0, 2, 24, 256);
         AudioEngine engine = new AudioEngine(format);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         try {
             PerformanceMonitor monitor = new PerformanceMonitor(format);
             CountDownLatch warned = new CountDownLatch(1);
@@ -155,7 +154,7 @@ class DefaultAudioEngineControllerTest {
     void getCpuLoadPercentIsSideEffectFree() {
         AudioFormat format = new AudioFormat(48_000.0, 2, 24, 256);
         AudioEngine engine = new AudioEngine(format);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         // Kill the drain before its first 250 ms tick so the getter is the
         // only candidate publisher left.
         controller.shutdown();
@@ -179,7 +178,7 @@ class DefaultAudioEngineControllerTest {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         AtomicInteger callbackHits = new AtomicInteger();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, callbackHits::incrementAndGet);
+                engine, callbackHits::incrementAndGet, NotificationManager.noop());
 
         AudioEngineController.Request request = new AudioEngineController.Request(
                 AudioEngineController.BACKEND_NONE,
@@ -218,7 +217,7 @@ class DefaultAudioEngineControllerTest {
                     } else {
                         interactiveCompleted.countDown();
                     }
-                });
+                }, NotificationManager.noop());
         var startupRequest = new AudioEngineController.Request(
                 AudioEngineController.BACKEND_NONE, "", "",
                 SampleRate.HZ_48000, 256, 24);
@@ -261,7 +260,7 @@ class DefaultAudioEngineControllerTest {
     @Test
     void shouldRejectNullRequest() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         assertThatThrownByApply(controller, null);
     }
 
@@ -280,7 +279,7 @@ class DefaultAudioEngineControllerTest {
     @Test
     void shouldStartInStoppedState() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
     }
 
@@ -289,9 +288,8 @@ class DefaultAudioEngineControllerTest {
             throws InterruptedException {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         List<String> notifications = new ArrayList<>();
-        IncompleteTakeStore takeStore = new IncompleteTakeStore(projectRoot);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, message -> { synchronized (notifications) { notifications.add(message); } }, takeStore);
+                engine, null, message -> { synchronized (notifications) { notifications.add(message); } });
 
         // Story 316 review: DEVICE_LOST is reserved for the device of an OPEN
         // stream, so this test opens one — being merely WATCHED no longer
@@ -307,10 +305,6 @@ class DefaultAudioEngineControllerTest {
         assertThat(engine.isStreamOpen()).isTrue();
 
         try {
-            // Simulate that some audio was already captured into the take buffer.
-            controller.captureRecordingFrames(new float[][]{{0.1f, 0.2f}, {0.3f, 0.4f}}, 2);
-            assertThat(takeStore.bufferedByteCount()).isGreaterThan(0);
-
             // Yank the device.
             backend.simulateDeviceRemoved(active);
 
@@ -332,14 +326,86 @@ class DefaultAudioEngineControllerTest {
             assertThat(engine.isStreamOpen())
                     .as("the lost device's stream is closed, not left claiming the hardware")
                     .isFalse();
-            // Take buffer must have been flushed to disk under .daw/incomplete-takes/
-            assertThat(takeStore.bufferedByteCount()).isZero();
-            Path takesDir = projectRoot.resolve(".daw").resolve("incomplete-takes");
-            assertThat(takesDir).exists();
-            try (java.util.stream.Stream<Path> takeEntries = Files.list(takesDir)) {
-                assertThat(takeEntries.count()).isPositive();
-            } catch (IOException e) {
-                throw new AssertionError(e);
+            // Story 327: the controller holds no copy of a take's audio and
+            // writes nothing on a loss — the take streams to disk under the
+            // project and RecordCoordinator seals it (book §2.9).
+            assertThat(filesUnder(projectRoot))
+                    .as("the engine controller writes nothing anywhere under the project")
+                    .isEmpty();
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    /**
+     * Story 327 fix round: DEVICE_LOST ends when ANY stream opens — the
+     * engine's stream-open seam, which a bare Play fires without this
+     * controller in the loop, resets it to STOPPED. Pinned through its two
+     * consequences: a second loss on the new stream is published (not
+     * deduplicated away by setEngineState), and an arrival while the loss
+     * is over — the lost device's or another's — is neither a return nor a
+     * "still disconnected" remediation.
+     */
+    @Test
+    void aStreamOpeningEndsDeviceLostSoASecondLossIsPublishedAndNoRemediationNamesTheNewWatch()
+            throws InterruptedException {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notifications = new ArrayList<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, message -> { synchronized (notifications) { notifications.add(message); } });
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyReopen");
+        DeviceId active = new DeviceId("SpyReopen", "Mock Device");
+        DeviceId other = new DeviceId("SpyReopen", "Some Other Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyReopen",
+                List.of(new BackendStreamRung(backend, active))));
+        List<EngineState> seen = new ArrayList<>();
+        controller.engineStateEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(EngineState state) { synchronized (seen) { seen.add(state); } }
+            @Override public void onError(Throwable t) { /* ignore */ }
+            @Override public void onComplete() { /* ignore */ }
+        });
+        // The open the transport does for a Play: no bind call of this
+        // controller's — the engine's seam binds the watch to the rung that won.
+        engine.startAudioOutput();
+        assertThat(controller.getWatchedDevice()).as("premise: the seam bound the watch").contains(active);
+
+        try {
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            assertThat(engine.isStreamOpen()).isFalse();
+
+            // The user presses Stop, then Play: the transport opens a stream again.
+            engine.startAudioOutput();
+            assertThat(engine.isStreamOpen()).isTrue();
+            assertThat(controller.engineState()).as("an open stream ends the loss").isEqualTo(EngineState.STOPPED);
+            waitFor(() -> { synchronized (seen) { return seen.contains(EngineState.STOPPED); } });
+
+            // Neither arrival finds the DEVICE_LOST gate open any more.
+            backend.publishDeviceEvent(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent.DeviceArrived(other));
+            backend.publishDeviceEvent(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent.DeviceArrived(active));
+
+            // A second loss, on the new stream, is published — not deduplicated.
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> {
+                synchronized (seen) {
+                    return seen.stream().filter(state -> state == EngineState.DEVICE_LOST).count() == 2;
+                }
+            });
+            assertThat(controller.engineState()).isEqualTo(EngineState.DEVICE_LOST);
+            assertThat(engine.isStreamOpen()).as("the second loss closed the second stream").isFalse();
+            synchronized (seen) {
+                assertThat(seen).containsExactly(EngineState.DEVICE_LOST, EngineState.STOPPED, EngineState.DEVICE_LOST);
+            }
+            // The device events are delivered in order on one subscriber, so
+            // both arrivals were handled before the second loss was seen.
+            synchronized (notifications) {
+                assertThat(notifications).noneMatch(m -> m.contains("still disconnected"))
+                        .noneMatch(m -> m.contains("reconnected"));
+                assertThat(notifications.stream().filter(m -> m.contains("disconnected")).count())
+                        .as("one 'disconnected' per loss").isEqualTo(2);
             }
         } finally {
             engine.stopAudioOutput();
@@ -353,8 +419,7 @@ class DefaultAudioEngineControllerTest {
             throws InterruptedException {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
 
         // An OPEN stream is the precondition for DEVICE_LOST (story 316
         // review) — a merely watched device that vanishes is inert, so the
@@ -414,7 +479,7 @@ class DefaultAudioEngineControllerTest {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         AtomicReference<String> lastNotice = new AtomicReference<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, lastNotice::set, new IncompleteTakeStore(projectRoot));
+                engine, null, lastNotice::set);
 
         // A stream IS open here on purpose (story 316 review): with the
         // open-stream gate in onDeviceRemoved, a stopped engine would ignore
@@ -451,8 +516,7 @@ class DefaultAudioEngineControllerTest {
             throws InterruptedException {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         // Open a stream first: the flush this test guards is only reached for
         // the device of an OPEN stream (story 316 review).
         SpyStreamingBackend backend = new SpyStreamingBackend("SpyEmptyTake");
@@ -465,15 +529,10 @@ class DefaultAudioEngineControllerTest {
         try {
             backend.simulateDeviceRemoved(active);
             waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
-            // Nothing buffered → no file should have been written, but no exception either.
-            Path takesDir = projectRoot.resolve(".daw").resolve("incomplete-takes");
-            if (java.nio.file.Files.exists(takesDir)) {
-                try (var stream = java.nio.file.Files.list(takesDir)) {
-                    assertThat(stream.count()).isZero();
-                } catch (IOException e) {
-                    throw new AssertionError(e);
-                }
-            }
+            // No take was captured: no exception, and no file written
+            // anywhere under the project (story 327 — the controller never
+            // writes a rescue file; the record coordinator seals the take).
+            assertThat(filesUnder(projectRoot)).isEmpty();
         } finally {
             engine.stopAudioOutput();
             engine.stop();
@@ -487,19 +546,16 @@ class DefaultAudioEngineControllerTest {
         // are two different facts. applyConfiguration() binds the watch BEFORE
         // any open (and no seam clears it on close), so treating "bound" as
         // "active" made an idle interface's hot-unplug drive a perfectly
-        // stopped engine into DEVICE_LOST, stop it, and flush an incomplete
-        // take that no stream had ever recorded.
+        // stopped engine into DEVICE_LOST and stop it.
         //
-        // A provision IS installed and the take store IS non-empty, so every
-        // side effect the old code performed is reachable here — the only
-        // reason none of them happens is the open-stream gate.
+        // A provision IS installed, so every side effect the old code
+        // performed is reachable here — the only reason none of them happens
+        // is the open-stream gate.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         List<String> notices = new ArrayList<>();
-        IncompleteTakeStore takeStore = new IncompleteTakeStore(projectRoot);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null,
-                message -> { synchronized (notices) { notices.add(message); } },
-                takeStore);
+                message -> { synchronized (notices) { notices.add(message); } });
         SpyStreamingBackend spy = new SpyStreamingBackend("SpyWatchedOnly");
         DeviceId watched = new DeviceId("SpyWatchedOnly", "Idle Interface");
         try {
@@ -513,12 +569,9 @@ class DefaultAudioEngineControllerTest {
             controller.bindBackendDeviceEvents(spy, watched, events);
             events.connect();
             engine.start();
-            controller.captureRecordingFrames(new float[][]{{0.1f, 0.2f}, {0.3f, 0.4f}}, 2);
             assertThat(engine.isStreamOpen())
                     .as("premise: watched, but nothing open")
                     .isFalse();
-            int bufferedBefore = takeStore.bufferedByteCount();
-            assertThat(bufferedBefore).isPositive();
 
             events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
                     .DeviceRemoved(watched));
@@ -531,9 +584,6 @@ class DefaultAudioEngineControllerTest {
             assertThat(engine.isRunning())
                     .as("the engine is not stopped out from under the user")
                     .isTrue();
-            assertThat(takeStore.bufferedByteCount())
-                    .as("no stream recorded anything, so nothing is flushed")
-                    .isEqualTo(bufferedBefore);
             synchronized (notices) {
                 assertThat(notices)
                         .as("the user is not told playback paused when nothing was playing")
@@ -568,11 +618,9 @@ class DefaultAudioEngineControllerTest {
         // deliberately outlive the close.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         List<String> notices = new ArrayList<>();
-        IncompleteTakeStore takeStore = new IncompleteTakeStore(projectRoot);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null,
-                message -> { synchronized (notices) { notices.add(message); } },
-                takeStore);
+                message -> { synchronized (notices) { notices.add(message); } });
         SpyStreamingBackend spy = new SpyStreamingBackend("SpyLossRecovery");
         DeviceId watched = new DeviceId("SpyLossRecovery", "Live Interface");
         try {
@@ -588,8 +636,6 @@ class DefaultAudioEngineControllerTest {
             DelayedDeviceEventPublisher events = new DelayedDeviceEventPublisher();
             controller.bindBackendDeviceEvents(spy, watched, events);
             events.connect();
-            controller.captureRecordingFrames(new float[][]{{0.1f, 0.2f}, {0.3f, 0.4f}}, 2);
-            assertThat(takeStore.bufferedByteCount()).isPositive();
 
             events.emit(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent
                     .DeviceRemoved(watched));
@@ -600,9 +646,6 @@ class DefaultAudioEngineControllerTest {
             assertThat(engine.isStreamOpen())
                     .as("output is stopped, not left claiming absent hardware")
                     .isFalse();
-            assertThat(takeStore.bufferedByteCount())
-                    .as("the in-flight take is flushed so the user can recover it")
-                    .isZero();
             synchronized (notices) {
                 assertThat(notices).anyMatch(m -> m.contains("disconnected"));
             }
@@ -650,8 +693,7 @@ class DefaultAudioEngineControllerTest {
                     stateWhenCallbackRan.compareAndSet(null, controllerRef.get().engineState());
                     postReconfigureHits.incrementAndGet();
                 },
-                message -> { synchronized (notifications) { notifications.add(message); } },
-                new IncompleteTakeStore(projectRoot));
+                message -> { synchronized (notifications) { notifications.add(message); } });
         controllerRef.set(controller);
 
         MockAudioBackend backend = new MockAudioBackend();
@@ -724,8 +766,7 @@ class DefaultAudioEngineControllerTest {
         AudioFormat starting = new AudioFormat(48_000.0, 2, 24, 256);
         AudioEngine engine = new AudioEngine(starting);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         List<String> lifecycleLog =
                 java.util.Collections.synchronizedList(new ArrayList<>());
         SpyStreamingBackend spy = new SpyStreamingBackend("SpyASIO", lifecycleLog);
@@ -820,8 +861,7 @@ class DefaultAudioEngineControllerTest {
         AtomicInteger postReconfigureHits = new AtomicInteger();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, postReconfigureHits::incrementAndGet,
-                message -> { synchronized (notifications) { notifications.add(message); } },
-                new IncompleteTakeStore(projectRoot));
+                message -> { synchronized (notifications) { notifications.add(message); } });
 
         MockAudioBackend backend = new MockAudioBackend();
         DeviceId active = new DeviceId(MockAudioBackend.NAME, "Mock Device");
@@ -868,6 +908,15 @@ class DefaultAudioEngineControllerTest {
         // reopen too — the STOPPED arc completing implies it already ran
         // (step 8 precedes step 9's STOPPED transition).
         assertThat(postReconfigureHits.get()).isEqualTo(1);
+    }
+
+    /** Every regular file under {@code root}, recursively; empty when nothing was written there. */
+    private static List<Path> filesUnder(Path root) {
+        try (var walk = Files.walk(root)) {
+            return walk.filter(Files::isRegularFile).toList();
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private static void waitFor(java.util.function.BooleanSupplier condition)
@@ -932,8 +981,7 @@ class DefaultAudioEngineControllerTest {
 
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     MockAudioBackend.NAME, "", "", SampleRate.HZ_44100, 512, 16, 1));
@@ -971,8 +1019,7 @@ class DefaultAudioEngineControllerTest {
                 java.util.Map.of(MockAudioBackend.NAME, () -> backend));
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         controller.applyConfiguration(new AudioEngineController.Request(
                 MockAudioBackend.NAME, "", "Mock Device", SampleRate.HZ_44100, 512, 16, 1));
         engine.stop();
@@ -1026,8 +1073,7 @@ class DefaultAudioEngineControllerTest {
             @TempDir Path projectRoot) throws Exception {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         MockAudioBackend backendA = new MockAudioBackend();
         MockAudioBackend backendB = new MockAudioBackend();
         DeviceId deviceA = new DeviceId(MockAudioBackend.NAME, "Device A");
@@ -1089,8 +1135,7 @@ class DefaultAudioEngineControllerTest {
         List<String> notices = new ArrayList<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null,
-                message -> { synchronized (notices) { notices.add(message); } },
-                new IncompleteTakeStore(projectRoot));
+                message -> { synchronized (notices) { notices.add(message); } });
 
         controller.applyConfiguration(new AudioEngineController.Request(
                 "WASAPI (Exclusive)", "", "", SampleRate.HZ_44100, 512, 16, 1));
@@ -1151,8 +1196,7 @@ class DefaultAudioEngineControllerTest {
         List<String> notices = new ArrayList<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null,
-                message -> { synchronized (notices) { notices.add(message); } },
-                new IncompleteTakeStore(projectRoot), selector);
+                message -> { synchronized (notices) { notices.add(message); } }, selector);
 
         controller.applyConfiguration(new AudioEngineController.Request(
                 "ASIO", "", "", SampleRate.HZ_44100, 512, 16, 1));
@@ -1212,8 +1256,7 @@ class DefaultAudioEngineControllerTest {
 
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
 
         controller.applyConfiguration(new AudioEngineController.Request(
                 "ASIO", "", "Studio Interface Out", SampleRate.HZ_44100, 512, 16, 1));
@@ -1257,8 +1300,7 @@ class DefaultAudioEngineControllerTest {
                         }));
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             // 1. What the Settings output menu is built from: the enumeration,
             //    filtered by supportsOutput() exactly as DeviceEnumerationTask
@@ -1314,8 +1356,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
@@ -1366,8 +1407,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
@@ -1433,8 +1473,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
@@ -1487,8 +1526,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
@@ -1526,8 +1564,7 @@ class DefaultAudioEngineControllerTest {
         AudioFormat starting = new AudioFormat(48_000.0, 2, 24, 256);
         AudioEngine engine = new AudioEngine(starting);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         SpyStreamingBackend spy = new SpyStreamingBackend("SpyPausedReopen");
         DeviceId active = new DeviceId("SpyPausedReopen", "Dev B");
         try {
@@ -1693,8 +1730,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of(MockAudioBackend.NAME, () -> backend));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 16, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     MockAudioBackend.NAME, "", "Mock Device",
@@ -1761,8 +1797,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         spy.setControlPanelAction(() -> {
             panelRunning.countDown();
             try {
@@ -1839,8 +1874,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         spy.setControlPanelAction(() -> {
             // Leaves the handle RELEASE_PENDING and tracked: the panel is
             // registered, so the engine defers this close rather than
@@ -1938,8 +1972,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         AtomicInteger closesSeenWhileThePanelWasOpen = new AtomicInteger(-1);
         spy.setControlPanelAction(() -> {
             controller.shutdown();
@@ -1998,8 +2031,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         AtomicBoolean stopReportedQuiescence = new AtomicBoolean();
         AtomicInteger closesSeenWhileThePanelWasOpen = new AtomicInteger(-1);
         AtomicBoolean streamReportedOpenWhileThePanelWasOpen = new AtomicBoolean(true);
@@ -2068,8 +2100,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> outgoing, "SpyOther", () -> incoming));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         AtomicReference<Throwable> swapOutcome = new AtomicReference<>();
         AtomicInteger closesSeenWhileThePanelWasOpen = new AtomicInteger(-1);
         outgoing.setControlPanelAction(() -> {
@@ -2131,8 +2162,7 @@ class DefaultAudioEngineControllerTest {
 
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         // Hand-built all-failing ladder: no real hardware, and the failure
         // is the ladder's own, not a provisioning-gate rejection.
         engine.setStreamingProvision(new StreamingProvision("ASIO", List.of(
@@ -2214,8 +2244,7 @@ class DefaultAudioEngineControllerTest {
         // overrides the method, so the BACKEND_NONE floor was untested.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         try {
             assertThat(engine.getStreamingProvision())
                     .as("construction must not install a provision — that is what "
@@ -2243,8 +2272,7 @@ class DefaultAudioEngineControllerTest {
         List<String> notices = new ArrayList<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null,
-                message -> { synchronized (notices) { notices.add(message); } },
-                new IncompleteTakeStore(projectRoot));
+                message -> { synchronized (notices) { notices.add(message); } });
 
         controller.applyConfiguration(new AudioEngineController.Request(
                 "NoSuchBackend", "", "Studio Interface Out", SampleRate.HZ_44100, 512, 16, 1));
@@ -2289,8 +2317,7 @@ class DefaultAudioEngineControllerTest {
             List<String> notices = new ArrayList<>();
             DefaultAudioEngineController controller = new DefaultAudioEngineController(
                     engine, null,
-                    message -> { synchronized (notices) { notices.add(message); } },
-                    new IncompleteTakeStore(projectRoot));
+                    message -> { synchronized (notices) { notices.add(message); } });
 
             controller.applyConfiguration(new AudioEngineController.Request(
                     noPreference, "", "", SampleRate.HZ_44100, 512, 16, 1));
@@ -2346,8 +2373,7 @@ class DefaultAudioEngineControllerTest {
         List<String> notices = new ArrayList<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, () -> callbackRan.set(true),
-                message -> { synchronized (notices) { notices.add(message); } },
-                new IncompleteTakeStore(projectRoot), selector);
+                message -> { synchronized (notices) { notices.add(message); } }, selector);
         try {
             // Leave the initial STOPPED state first so the STOPPED assertion
             // below is discriminating rather than vacuous: a removal of the
@@ -2417,8 +2443,7 @@ class DefaultAudioEngineControllerTest {
         List<String> notices = new ArrayList<>();
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
                 engine, null,
-                message -> { synchronized (notices) { notices.add(message); } },
-                new IncompleteTakeStore(projectRoot), selector);
+                message -> { synchronized (notices) { notices.add(message); } }, selector);
 
         boolean portAudioCapable =
                 controller.getAvailableBackendNames().contains("PortAudio");
@@ -2462,7 +2487,7 @@ class DefaultAudioEngineControllerTest {
         // selection is refused naming it, where the pre-fix backend returned the
         // output device.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         StreamingProvision provision = controller.buildStreamingProvision(new AudioEngineController.Request(
                 JavaxSoundBackend.NAME, UNENUMERATED_INPUT, "", SampleRate.HZ_48000, 512, 24, 1));
         try {
@@ -2494,7 +2519,7 @@ class DefaultAudioEngineControllerTest {
         // A backend built without the configured input would instead answer the
         // default-input alias and never mention the name.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         DeviceId defaultOutput = DeviceId.defaultFor(JavaxSoundBackend.NAME);
         try (AudioBackend configured = controller.createStreamingBackendByName(
                      JavaxSoundBackend.NAME, UNENUMERATED_INPUT);
@@ -2521,7 +2546,7 @@ class DefaultAudioEngineControllerTest {
         // host without PortAudio, Java Sound is the head and owns the
         // configured input.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
-        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, NotificationManager.noop());
         StreamingProvision provision = controller.buildStreamingProvision(new AudioEngineController.Request(
                 "", UNENUMERATED_INPUT, "", SampleRate.HZ_48000, 512, 24, 1));
         try {
@@ -2557,8 +2582,7 @@ class DefaultAudioEngineControllerTest {
         });
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), new AudioBackendSelector(factories));
+                engine, null, NotificationManager.noop(), new AudioBackendSelector(factories));
         StreamingProvision provision = controller.buildStreamingProvision(new AudioEngineController.Request(
                 "ASIO", UNENUMERATED_INPUT, "", SampleRate.HZ_48000, 512, 24, 1));
         try {
@@ -2606,8 +2630,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> refusing));
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
 
         com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
                 com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
@@ -2674,8 +2697,7 @@ class DefaultAudioEngineControllerTest {
                         java.util.Map.of("ASIO", () -> gated));
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
 
         com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
                 com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
@@ -2754,8 +2776,7 @@ class DefaultAudioEngineControllerTest {
         // the open stream. The engine's stream-open seam re-points them.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         SpyStreamingBackend refusing = new SpyStreamingBackend("Requested");
         refusing.failOpensWith(
                 new com.benesquivelmusic.daw.sdk.audio.AudioBackendException(
@@ -2809,8 +2830,7 @@ class DefaultAudioEngineControllerTest {
         // thread. Deferring to process exit is strictly safer.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         SpyStreamingBackend wedging = new SpyStreamingBackend("Wedging");
         // Never opened: isolates the CONTROLLER'S provision cleanup from the
         // engine's own hand-back of the open handle.
@@ -2845,8 +2865,7 @@ class DefaultAudioEngineControllerTest {
         // silently disable shutdown cleanup on the normal path.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         SpyStreamingBackend streaming = new SpyStreamingBackend("Streaming");
         SpyStreamingBackend spare = new SpyStreamingBackend("Spare");
         try {
@@ -2904,8 +2923,7 @@ class DefaultAudioEngineControllerTest {
         AtomicInteger postReconfigureRuns = new AtomicInteger();
         List<String> notified = java.util.Collections.synchronizedList(new ArrayList<>());
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, postReconfigureRuns::incrementAndGet, notified::add,
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, postReconfigureRuns::incrementAndGet, notified::add, selector);
         SpyStreamingBackend outgoing = new SpyStreamingBackend("Outgoing");
         StreamingProvision outgoingProvision = new StreamingProvision("Outgoing", List.of(
                 new BackendStreamRung(outgoing, new DeviceId("Outgoing", "Out"))));
@@ -2964,8 +2982,7 @@ class DefaultAudioEngineControllerTest {
         AudioBackendSelector selector = new AudioBackendSelector(factories);
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             assertThat(controller.getAvailableBackendNames())
                     .containsAll(selector.availableBackendNames())
@@ -2994,8 +3011,7 @@ class DefaultAudioEngineControllerTest {
                 new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
 
         // The call resolves a backend through the selector and invokes
         // its setSampleRate(DeviceId, double). MockAudioBackend uses
@@ -3012,9 +3028,7 @@ class DefaultAudioEngineControllerTest {
         // falls through to the model-only update.
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot),
-                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector());
+                engine, null, NotificationManager.noop(), new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector());
         // Both null/blank/legacy names must be silent no-ops.
         controller.setSampleRate(null, "", 48_000.0);
         controller.setSampleRate("", "", 48_000.0);
@@ -3148,8 +3162,7 @@ class DefaultAudioEngineControllerTest {
                             return incoming;
                         }));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         StreamingProvision outgoingProvision = new StreamingProvision("Outgoing", List.of(
                 new BackendStreamRung(outgoing, DeviceId.defaultFor("Outgoing"))));
         engine.setStreamingProvision(outgoingProvision);
@@ -3219,8 +3232,7 @@ class DefaultAudioEngineControllerTest {
                             null, controllerRef.get().engineState());
                     postReconfigureRuns.incrementAndGet();
                 },
-                notified::add,
-                new IncompleteTakeStore(projectRoot));
+                notified::add);
         controllerRef.set(controller);
         DeviceId device = new DeviceId("SpyWedged", "Wedged Device");
         engine.setStreamingProvision(new StreamingProvision("SpyWedged",

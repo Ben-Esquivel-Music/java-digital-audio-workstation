@@ -31,7 +31,9 @@ import java.util.regex.Pattern;
  * project file.
  *
  * <p><strong>Thread.</strong> {@link #write(Path)} is called on the
- * {@code capture-flush} thread only; {@link #read(Path)} from any
+ * {@code capture-flush} thread while a take streams and seals, and by the
+ * crash-recovery scan ({@link TakeRecovery}) on its caller's thread for a
+ * take no flush thread owns any more; {@link #read(Path)} from any
  * non-real-time thread.
  * Instances are immutable and safe to share.</p>
  *
@@ -56,7 +58,11 @@ import java.util.regex.Pattern;
  * overflow-blocks=&lt;long&gt;
  * truncated-frames=&lt;long&gt;                                          (absent in older files: reads as 0)
  * seal-status=streaming|sealed|aborted
- * sealed-by=stop|disk-exhaustion|write-failure|start-failure       (present iff seal-status != streaming)
+ * sealed-by=stop|disk-exhaustion|write-failure|start-failure|device-loss|crash-recovery
+ *                                                                  (present iff seal-status != streaming)
+ * sealed-at=&lt;ISO-8601 instant&gt;                                   (written with every seal since story 327;
+ *                                                                   never present while streaming; absent in
+ *                                                                   older sealed files: reads as empty)
  * </pre>
  *
  * <p>Segment order in the manifest <em>is</em> the clip's segment order:
@@ -158,7 +164,20 @@ public final class TakeManifest {
         STOP("stop"),
         DISK_EXHAUSTION("disk-exhaustion"),
         WRITE_FAILURE("write-failure"),
-        START_FAILURE("start-failure");
+        START_FAILURE("start-failure"),
+        /**
+         * The seal a device loss requested while the take was recording
+         * (book §3.4 RESCUED, §5.5 step 2; story 327): the ordinary stop
+         * seal applied early, so the take reads {@code aborted}/{@code device-loss}
+         * with everything captured up to the dropout intact.
+         */
+        DEVICE_LOSS("device-loss"),
+        /**
+         * The seal the crash-recovery scan ({@link TakeRecovery}, book §4.7)
+         * applied to a take the recording JVM never sealed: written by the
+         * scan only, never by a flush thread.
+         */
+        CRASH_RECOVERY("crash-recovery");
 
         private final String token;
 
@@ -411,6 +430,7 @@ public final class TakeManifest {
     private final long truncatedFrames;
     private final SealStatus sealStatus;
     private final SealedBy sealedBy; // null iff sealStatus == STREAMING
+    private final Instant sealedAt; // null while STREAMING, and for a sealed file older than story 327
 
     private TakeManifest(Builder b) {
         this.take = requireField(b.take, "take");
@@ -448,6 +468,9 @@ public final class TakeManifest {
         if (b.sealStatus != SealStatus.STREAMING && b.sealedBy == null) {
             throw new IllegalArgumentException(b.sealStatus + " requires a sealed-by reason");
         }
+        if (b.sealStatus == SealStatus.STREAMING && b.sealedAt != null) {
+            throw new IllegalArgumentException("a streaming take has no sealed-at");
+        }
         this.sampleRate = b.sampleRate;
         this.bitDepth = b.bitDepth;
         this.streamChannels = b.streamChannels;
@@ -464,6 +487,7 @@ public final class TakeManifest {
         this.truncatedFrames = b.truncatedFrames;
         this.sealStatus = b.sealStatus;
         this.sealedBy = b.sealedBy;
+        this.sealedAt = b.sealedAt;
     }
 
     /** Returns a builder with no fields set ({@code sealStatus} defaults to STREAMING). */
@@ -492,6 +516,7 @@ public final class TakeManifest {
         b.truncatedFrames = truncatedFrames;
         b.sealStatus = sealStatus;
         b.sealedBy = sealedBy;
+        b.sealedAt = sealedAt;
         return b;
     }
 
@@ -605,6 +630,16 @@ public final class TakeManifest {
         return Optional.ofNullable(sealedBy);
     }
 
+    /**
+     * Returns when the take was sealed: the wall-clock instant the final
+     * manifest was assembled at, by the flush thread's seal or by the
+     * crash-recovery scan. Empty while {@link SealStatus#STREAMING}, and
+     * for a sealed manifest written before the key existed (story 327).
+     */
+    public Optional<Instant> sealedAt() {
+        return Optional.ofNullable(sealedAt);
+    }
+
     /** Returns the sidecar path inside {@code takeDirectory}. */
     public static Path manifestPath(Path takeDirectory) {
         return Objects.requireNonNull(takeDirectory, "takeDirectory must not be null")
@@ -614,7 +649,9 @@ public final class TakeManifest {
     /**
      * Atomically writes this manifest as {@code <takeDirectory>/take.manifest}:
      * staging file written and forced to storage, then moved over the
-     * target. Called on the {@code capture-flush} thread.
+     * target. Called on the {@code capture-flush} thread, or by the
+     * crash-recovery scan ({@link TakeRecovery}) for a take whose flush
+     * thread is gone.
      *
      * @param takeDirectory the take directory (must exist)
      * @return the manifest path
@@ -686,6 +723,9 @@ public final class TakeManifest {
         if (sealedBy != null) {
             line(sb, "sealed-by", sealedBy.token());
         }
+        if (sealedAt != null) {
+            line(sb, "sealed-at", sealedAt.toString());
+        }
         return sb.toString();
     }
 
@@ -693,7 +733,8 @@ public final class TakeManifest {
      * Parses a manifest file. Unknown keys are ignored; a missing
      * {@code seal-status} reads as {@link SealStatus#STREAMING}; missing
      * {@code track}/{@code segment}/{@code gap}/{@code overflow-blocks}/
-     * {@code truncated-frames} read as empty / zero. The format keys are
+     * {@code truncated-frames} read as empty / zero, and a missing
+     * {@code sealed-at} as {@link #sealedAt() empty}. The format keys are
      * required.
      *
      * @param manifestFile the {@code take.manifest} path
@@ -775,6 +816,14 @@ public final class TakeManifest {
         b.sealStatus(status == null ? SealStatus.STREAMING : SealStatus.parse(status));
         String by = scalars.get("sealed-by");
         b.sealedBy(by == null ? null : SealedBy.parse(by));
+        String at = scalars.get("sealed-at");
+        if (at != null) {
+            try {
+                b.sealedAt(Instant.parse(at));
+            } catch (DateTimeParseException e) {
+                throw new IOException(source + ": malformed sealed-at", e);
+            }
+        }
         try {
             return b.build();
         } catch (IllegalArgumentException | NullPointerException e) {
@@ -807,6 +856,7 @@ public final class TakeManifest {
         private long truncatedFrames;
         private SealStatus sealStatus = SealStatus.STREAMING;
         private SealedBy sealedBy;
+        private Instant sealedAt;
 
         private Builder() {
         }
@@ -951,6 +1001,16 @@ public final class TakeManifest {
         /** Sets the reason; {@code null} clears it (only valid while streaming). */
         public Builder sealedBy(SealedBy sealedBy) {
             this.sealedBy = sealedBy;
+            return this;
+        }
+
+        /**
+         * Sets when the take was sealed; {@code null} clears it. Every seal
+         * sets it, after {@link #sealed(SealedBy)} or {@link #aborted(SealedBy)}:
+         * the build refuses it on a streaming take.
+         */
+        public Builder sealedAt(Instant sealedAt) {
+            this.sealedAt = sealedAt;
             return this;
         }
 
@@ -1142,20 +1202,22 @@ public final class TakeManifest {
                 && gaps.equals(that.gaps)
                 && routingFlags.equals(that.routingFlags)
                 && sealStatus == that.sealStatus
-                && sealedBy == that.sealedBy;
+                && sealedBy == that.sealedBy
+                && Objects.equals(sealedAt, that.sealedAt);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(take, startedAt, sampleRate, bitDepth, streamChannels, startBeat,
                 startFrame, forceCadenceMillis, ringSlots, ringFrames, tracks, segments, gaps, routingFlags,
-                overflowBlocks, truncatedFrames, sealStatus, sealedBy);
+                overflowBlocks, truncatedFrames, sealStatus, sealedBy, sealedAt);
     }
 
     @Override
     public String toString() {
         return "TakeManifest[" + take + ", " + sealStatus
                 + (sealedBy == null ? "" : "/" + sealedBy)
+                + (sealedAt == null ? "" : "@" + sealedAt)
                 + ", tracks=" + tracks.size() + ", segments=" + segments.size()
                 + ", gaps=" + gaps.size() + "]";
     }

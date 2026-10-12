@@ -1513,8 +1513,13 @@ public final class CaptureFlushService {
             if (first == SealedBy.STOP && !sealFailed) {
                 manifest.sealed(SealedBy.STOP);
             } else {
+                // A DEVICE_LOSS stop with every lane sealed lands here as
+                // aborted/device-loss — the book §3.4 RESCUED row.
                 manifest.aborted(sealFailed ? SealedBy.WRITE_FAILURE : first);
             }
+            // Wall-clock, not the injected monotonic clock: the manifest
+            // records an instant, and the service has no other clock for one.
+            manifest.sealedAt(Instant.now());
             manifestDirty = true;
             if (!writeManifest(MANIFEST_WRITE_ATTEMPTS)) {
                 LOG.log(Level.SEVERE, "final manifest write failed under " + config.takeDirectory()

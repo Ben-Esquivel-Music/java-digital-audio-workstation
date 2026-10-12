@@ -625,4 +625,37 @@ class SegmentWriterTest {
                 .as("the whole file's length fits a signed int")
                 .isEqualTo(Integer.MAX_VALUE);
     }
+
+    @Test
+    void patchSizeFieldsWritesTheHeaderSealWrites() throws IOException {
+        float[][] audio = signal(300);
+        SegmentWriter sealed = open("sealed.wav.part", 16);
+        sealed.append(audio, CHANNELS, 300);
+        sealed.seal();
+        SegmentWriter abandoned = open("abandoned.wav.part", 16);
+        abandoned.append(audio, CHANNELS, 300);
+        abandoned.close();
+        assertThat(abandoned.dataBytes()).isEqualTo(sealed.dataBytes());
+
+        try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(
+                abandoned.partPath(), java.nio.file.StandardOpenOption.WRITE)) {
+            SegmentWriter.patchSizeFields(channel, abandoned.dataBytes());
+        }
+
+        assertThat(Files.readAllBytes(abandoned.partPath())).isEqualTo(Files.readAllBytes(sealed.sealedPath()));
+    }
+
+    @Test
+    void patchSizeFieldsRefusesASizeOutsideTheDataLimit() throws IOException {
+        SegmentWriter writer = open("limits.wav.part", 16);
+        try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(
+                writer.partPath(), java.nio.file.StandardOpenOption.WRITE)) {
+            assertThatThrownBy(() -> SegmentWriter.patchSizeFields(channel, -1))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> SegmentWriter.patchSizeFields(channel, SegmentWriter.MAX_DATA_BYTES + 1))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        writer.close();
+        assertThat(RampCaptureTestSupport.hasProvisionalSizes(writer.partPath())).as("nothing was written").isTrue();
+    }
 }

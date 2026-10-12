@@ -480,12 +480,7 @@ public final class SegmentWriter implements AutoCloseable {
                     "sealed segment already exists; a segment is never overwritten");
         }
         channel.force(true);
-        ByteBuffer patch = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
-        patch.putInt(0, (int) (RIFF_HEADER_OVERHEAD + dataBytes));
-        writeFully(channel, patch, RIFF_SIZE_OFFSET);
-        patch.clear();
-        patch.putInt(0, (int) dataBytes);
-        writeFully(channel, patch, DATA_SIZE_OFFSET);
+        patchSizeFields(channel, dataBytes);
         channel.force(true);
         channel.close();
         try {
@@ -501,6 +496,31 @@ public final class SegmentWriter implements AutoCloseable {
         state = State.SEALED;
         bytesSinceForce = 0;
         return sealedPath;
+    }
+
+    /**
+     * Writes the exact RIFF-size (offset 4) and data-size (offset 40) fields
+     * of the canonical header for a data chunk of {@code dataBytes} bytes —
+     * the patch step of {@link #seal()}, with neither of the forces around
+     * it and no close. Shared with the crash-recovery scan
+     * ({@link TakeRecovery}), which seals a {@code .part} the writer never
+     * did; the bytes it writes are the ones {@code seal()} writes. Called on
+     * the thread that owns {@code channel}.
+     *
+     * @param channel   the segment's channel, open for writing
+     * @param dataBytes the data chunk's exact size; at most {@link #MAX_DATA_BYTES}
+     * @throws IOException if a write fails
+     */
+    static void patchSizeFields(FileChannel channel, long dataBytes) throws IOException {
+        if (dataBytes < 0 || dataBytes > MAX_DATA_BYTES) {
+            throw new IllegalArgumentException("dataBytes must be within 0.." + MAX_DATA_BYTES + ": " + dataBytes);
+        }
+        ByteBuffer patch = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+        patch.putInt(0, (int) (RIFF_HEADER_OVERHEAD + dataBytes));
+        writeFully(channel, patch, RIFF_SIZE_OFFSET);
+        patch.clear();
+        patch.putInt(0, (int) dataBytes);
+        writeFully(channel, patch, DATA_SIZE_OFFSET);
     }
 
     /**

@@ -443,9 +443,9 @@ public interface AudioEngineController {
     /**
      * Returns a {@link Flow.Publisher} that emits the new
      * {@link EngineState} every time the engine transitions between
-     * states. UI components (for example the transport bar's
-     * "Reconnecting…" indicator) subscribe to this publisher so they
-     * never have to poll.
+     * states. UI components subscribe to this publisher so they never
+     * have to poll — the record state machine's device-loss bridge among
+     * them (story 327).
      *
      * <p>The default implementation returns an empty publisher that
      * never emits, which is safe for test doubles.</p>
@@ -671,9 +671,9 @@ public interface AudioEngineController {
      * been bound.</p>
      *
      * <p>On {@code DeviceRemoved} for the watched device <em>while a stream
-     * is open on it</em>, the controller transitions to
-     * {@link EngineState#DEVICE_LOST}, halts the render thread, persists the
-     * in-flight recording take to {@code .daw/incomplete-takes/}, and
+     * is open on it</em>, the controller halts the render thread,
+     * transitions to {@link EngineState#DEVICE_LOST} — on which the record
+     * coordinator rescues an in-flight take on disk (story 327) — and
      * notifies the user. A removal with no stream open is a routine unplug
      * of an idle endpoint and changes no state. On a matching
      * {@code DeviceArrived} after {@code DEVICE_LOST}, the stream is

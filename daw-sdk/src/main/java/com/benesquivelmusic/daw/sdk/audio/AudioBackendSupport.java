@@ -10,7 +10,9 @@ import java.util.function.BiPredicate;
 /**
  * Internal helper that holds the mutable state every {@link AudioBackend}
  * implementation needs: the input-block publisher, the opened
- * {@link AudioFormat}, and the open/closed flag.
+ * {@link AudioFormat}, the open/closed flag, and the device-event publisher,
+ * which is the backend's rather than one stream's and outlives a stream's
+ * {@link #close()} (story 327).
  *
  * <p>Used by composition — native backends ({@code AsioBackend},
  * {@code CoreAudioBackend}, {@code WasapiBackend}, {@code JackBackend}),
@@ -65,10 +67,12 @@ final class AudioBackendSupport implements AutoCloseable {
         if (open) {
             throw new IllegalStateException("backend already has an open stream");
         }
-        // close() completes a stream's publishers, as required by
+        // close() completes the stream's input publisher, as required by
         // AudioBackend. A later close-then-open starts a fresh stream and must
-        // therefore expose fresh publishers rather than silently discard ASIO
-        // callbacks on the already-completed instances.
+        // therefore expose a fresh publisher rather than silently discard ASIO
+        // callbacks on the already-completed instance. The device-event
+        // publisher outlives a close (see close()); it is replaced only when
+        // a test handed in one that was closed.
         if (publisher.isClosed()) {
             publisher = new SubmissionPublisher<>();
         }
@@ -276,11 +280,23 @@ final class AudioBackendSupport implements AutoCloseable {
         }
     }
 
+    /**
+     * Closes the stream: clears its state and completes its input-block
+     * publisher. The device-event publisher is deliberately left open — the
+     * host's device events are a feed of the backend, not of one stream, and
+     * the hot-unplug reaction depends on that (story 327): the loss of the
+     * device of an open stream closes that stream, and the device's return is
+     * published while no stream is open; a feed completed by that close could
+     * never deliver it, and {@link #publishDeviceEvent} would drop it. The
+     * device-event publisher is never completed: it is collected with this
+     * support, and a subscriber that must stop before then cancels its
+     * subscription, as {@code DefaultAudioEngineController} does on rebind
+     * and shutdown.
+     */
     @Override
     public synchronized void close() {
         markClosed();
         publisher.close();
-        devicePublisher.close();
     }
 
     /**

@@ -980,13 +980,53 @@ public final class RecordingPipeline {
      *                               cancelled with {@link #cancelStart()}
      */
     public CompletionStage<Void> requestStop() {
+        return requestStop(TakeManifest.SealedBy.STOP);
+    }
+
+    /**
+     * {@link #requestStop()} with the reason the seal records: the same
+     * one-shot steps — gate closed, callback removed, flags cleared,
+     * transport stopped — and the same seal, whose manifest then reads
+     * {@code sealed}/{@code stop} for {@link TakeManifest.SealedBy#STOP}
+     * and {@code aborted}/{@code device-loss} for
+     * {@link TakeManifest.SealedBy#DEVICE_LOSS} — the take rescue of story
+     * 327 (book §5.5 step 2): the ordinary seal applied early, with
+     * everything captured up to the dropout intact. A lane that throws in
+     * either seal is reported by {@link #stopSealFailure()} the same way,
+     * and {@link #earlySeal()} completes for neither. Caller thread (FX in
+     * the app); runs nothing on the audio thread.
+     *
+     * <p>A repeated request keeps the first reason: the flush service
+     * records the reason of the first stop request it receives
+     * ({@link CaptureFlushService#requestStop(TakeManifest.SealedBy)}), so a
+     * Stop after a device-loss rescue — or a rescue after a Stop — changes
+     * neither the seal nor the manifest and only returns the same
+     * termination signal.</p>
+     *
+     * @param reason {@link TakeManifest.SealedBy#STOP} or
+     *               {@link TakeManifest.SealedBy#DEVICE_LOSS}: the pipeline
+     *               requests no other seal — the flush thread's own reasons
+     *               are its to raise, and {@code CRASH_RECOVERY} is written
+     *               by the recovery scan alone
+     * @return the flush thread's termination, as for {@link #requestStop()}
+     * @throws IllegalArgumentException for any other reason
+     * @throws IllegalStateException    if a take is being prepared — that
+     *                                  take is cancelled with {@link #cancelStart()}
+     */
+    public CompletionStage<Void> requestStop(TakeManifest.SealedBy reason) {
+        Objects.requireNonNull(reason, "reason must not be null");
+        if (reason != TakeManifest.SealedBy.STOP && reason != TakeManifest.SealedBy.DEVICE_LOSS) {
+            throw new IllegalArgumentException("a pipeline stop is sealed by STOP or DEVICE_LOSS, not " + reason);
+        }
         if (preparing) {
             throw new IllegalStateException("Recording pipeline is still preparing its take under "
                     + outputDirectory + "; cancel it with cancelStart()");
         }
         CaptureFlushService service = flush;
         if (finalizationPending) {
-            service.requestStop(TakeManifest.SealedBy.STOP);
+            // The service keeps the first request's reason; this one is only
+            // the same termination signal again.
+            service.requestStop(reason);
             return service.termination();
         }
         if (!active) {
@@ -1018,7 +1058,7 @@ public final class RecordingPipeline {
         } finally {
             // Whatever threw above, the take is sealed and its thread ends:
             // nothing else would ever ask for it.
-            service.requestStop(TakeManifest.SealedBy.STOP);
+            service.requestStop(reason);
         }
         return service.termination();
     }
@@ -1504,6 +1544,12 @@ public final class RecordingPipeline {
      * transport it does not, so when this anchor is the transport's position,
      * recording begins about the preparation time after it (see
      * {@code beginCapture()}).</p>
+     *
+     * <p>It is the manifest's {@code start-beat}, and it outlives the take:
+     * only the next {@link #prepare()} replaces it, so after a stop or a
+     * device-loss rescue ({@link #requestStop(TakeManifest.SealedBy)}) it
+     * still names where the last take began — the position the record
+     * coordinator seeks to when the lost device returns (story 327).</p>
      *
      * @return the recording start beat position
      */

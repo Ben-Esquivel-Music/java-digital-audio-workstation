@@ -2219,7 +2219,7 @@ class TransportControllerTest {
         var selector = new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
                 Map.of(new MockAudioBackend().name(), () -> new SampleRateCountingBackend(sampleRateCalls)));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(audioEngine, null,
-                NotificationManager.noop(), new IncompleteTakeStore(projectDirectory), selector);
+                NotificationManager.noop(), selector);
         controller.setRecordConfigurationGuard(recording.recordCoordinator()::requestConfigurationChange);
         return controller;
     }

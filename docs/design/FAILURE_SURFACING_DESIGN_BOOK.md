@@ -650,6 +650,13 @@ today:
   and surfaces `KeyBindingManager`'s own already‑user‑quality message (§1.2) instead
   of letting it vanish mid‑apply.
 
+> **As landed by story 327** (`RECORDING_RELIABILITY_DESIGN_BOOK.md` Stage 5): the 2-arg
+> constructor is gone and `MainController` passes a toast-backed sink; the controller holds
+> no `IncompleteTakeStore` at all — the class is the in-memory, project-rooted rescued-take
+> registry owned by `RecordCoordinator`, whose takes live under `<project>/audio/takes/` (a
+> take elsewhere is refused). The "project-scoped `IncompleteTakeStore` directory" above no
+> longer exists. Story 339 keeps the sink's levels, rate limiting and the app-wide injection.
+
 **Why constructor injection and not a service locator:** the noop bug survived because
 the default was silent and the field final — nothing forced the composition root to
 decide (§2.7). A required parameter makes "who sees this component's failures" a
@@ -865,7 +872,7 @@ the wizard was the proof of what happens otherwise.
 |---|---|---|
 | **AUDIO_ENGINE_WIRING_DESIGN_BOOK.md** (the audible core) | Engine⇄project wiring, backend truth, metering taps | Honest engine state on stream‑open failure is its story 317; this book supplies the DEVICE_LOST/fault *surfaces* those states land on (§4.4) and the guards its streaming paths run under (§4.3). The §4.3 health record and its metering tap bus are siblings on the same pulse drain, never one mechanism. |
 | **RECORDING_RELIABILITY_DESIGN_BOOK.md** (audio reaches disk) | Capture path RT‑safety, device‑loss detection (story 327), take rescue | Its device‑change watcher publishes the events whose *reaction* chain and visible surfaces this book completes (§4.4‑4.5; story 214's split); the watchdog is the backstop when no device event ever arrives. Recording is why guards return silence rather than stopping (§4.3). |
-| **PERSISTENCE_INTEGRITY_DESIGN_BOOK.md** (save/reopen fidelity) | Atomic writes, journal‑on‑by‑default, exit protocol | The FATAL path of the spine must leave journals/atomic writes intact (crash ≠ corrupt); the project‑scoped `IncompleteTakeStore` directory (§4.5) follows its storage rules; its recovery‑on‑open surfaces ride channel D. |
+| **PERSISTENCE_INTEGRITY_DESIGN_BOOK.md** (save/reopen fidelity) | Atomic writes, journal‑on‑by‑default, exit protocol | The FATAL path of the spine must leave journals/atomic writes intact (crash ≠ corrupt); the rescued-take registry (`IncompleteTakeStore` — in memory and project-rooted as landed by story 327, its takes under `<project>/audio/takes/`; §4.5) follows its storage rules; its recovery‑on‑open surfaces ride channel D. |
 | **INTERACTION_COMPLETENESS_DESIGN_BOOK.md** (every control real) | Dead‑wire controls, conformance harness for control liveness | Shares the conformance‑gate idiom (§6.3); division of labour: a button that *throws* is this book's spine; a button wired to *nothing* is that book's harness. Both converge on §2.2. |
 | **CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md** | The bus, view‑models, `FxDispatcher` | This book hardens its choke points (pulse isolation §4.3, bus subscriber escalation §1.6) and rides its transports (continuous channels for drains, events for facts). Failure facts obey its signal taxonomy: counters are continuous, transitions are events. |
 | **PLUGIN_VIEW_DESIGN_BOOK.md** | Editor surface, SDK seam, fault‑state display | §4.7's real eviction is what its fault badges/toasts were always describing; editor‑side bypass/fault UI binds to the *snapshot* truth, not the flag. |
