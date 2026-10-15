@@ -13,8 +13,9 @@ import java.util.Objects;
  * {@link Error} included — the flush thread logs it, leaves any segment it
  * could not seal as its {@code .part} for recovery, goes on to the remaining
  * lanes, and writes a final manifest that reads {@code seal-status=aborted}
- * with {@code sealed-by=write-failure} (if that write fails, the manifest on
- * disk is the last one written). That seal is no early seal, so
+ * with {@code sealed-by=write-failure} (if that write fails on every attempt,
+ * the manifest on disk is the last one written, and
+ * {@link FinalManifestFailure} reports it). That seal is no early seal, so
  * {@link CaptureFlushService#earlySeal()} never completes for it; this is how
  * its failure reaches the caller. A take the flush thread sealed early never
  * has one, whatever a lane threw in that early seal: {@link EarlySeal}

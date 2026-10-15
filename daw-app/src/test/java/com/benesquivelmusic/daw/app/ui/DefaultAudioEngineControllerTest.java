@@ -363,7 +363,7 @@ class DefaultAudioEngineControllerTest {
         List<EngineState> seen = new ArrayList<>();
         controller.engineStateEvents().subscribe(new Flow.Subscriber<>() {
             @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
-            @Override public void onNext(EngineState state) { synchronized (seen) { seen.add(state); } }
+            @Override public void onNext(EngineStateChange change) { synchronized (seen) { seen.add(change.state()); } }
             @Override public void onError(Throwable t) { /* ignore */ }
             @Override public void onComplete() { /* ignore */ }
         });
@@ -414,6 +414,211 @@ class DefaultAudioEngineControllerTest {
         }
     }
 
+    /**
+     * Story 327 fix round (PR #982, the CI failure): the lost device's return
+     * publishes its STOPPED only after the reopened stream is parked. The
+     * subscriber samples the engine inside {@code onNext} — on the
+     * publisher's executor, whenever that runs — and the return's STOPPED
+     * reads the stream paused, because the park precedes the offer in
+     * {@code onDeviceArrived}'s program order. Published from the
+     * stream-open seam instead, before the pause, the sample read RUNNING
+     * whenever the executor outran the device-event thread — and read
+     * PAUSED whenever it did not, so this test's pre-fix failure was
+     * probabilistic (PR #982 round 2); the deterministic guard of the same
+     * fact is
+     * {@link #theReturnIsStillDeviceLostWhenTheParkLandsSoItsStoppedFollowsThePark},
+     * which reads the premise on the pausing thread itself.
+     */
+    @Test
+    void theLostDevicesReturnPublishesStoppedOnlyAfterTheReopenedStreamIsParked() throws InterruptedException {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop());
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyParkedReturn");
+        DeviceId active = new DeviceId("SpyParkedReturn", "Mock Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyParkedReturn",
+                List.of(new BackendStreamRung(backend, active))));
+        record Sample(EngineStateChange change, boolean streamPaused) {
+        }
+        List<Sample> seen = new ArrayList<>();
+        controller.engineStateEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(EngineStateChange change) {
+                synchronized (seen) { seen.add(new Sample(change, engine.isStreamPaused())); }
+            }
+            @Override public void onError(Throwable t) { /* ignore */ }
+            @Override public void onComplete() { /* ignore */ }
+        });
+        engine.startAudioOutput();
+        assertThat(controller.getWatchedDevice()).as("premise: the seam bound the watch").contains(active);
+
+        try {
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            // The loss is delivered before the device returns, so its sample
+            // reads the stream as the loss left it: closed.
+            waitFor(() -> { synchronized (seen) { return seen.size() == 1; } });
+
+            backend.publishDeviceEvent(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent.DeviceArrived(active));
+            waitFor(() -> { synchronized (seen) { return seen.size() == 2; } });
+
+            assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+            assertThat(engine.isStreamOpen()).isTrue();
+            assertThat(engine.isStreamPaused()).as("the return parks the reopened stream").isTrue();
+            synchronized (seen) {
+                assertThat(seen).as("the return's STOPPED is observable only with the stream parked")
+                        .containsExactly(
+                                new Sample(new EngineStateChange(EngineState.DEVICE_LOST, Optional.of(active)), false),
+                                new Sample(new EngineStateChange(EngineState.STOPPED, Optional.of(active)), true));
+            }
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    /**
+     * The deterministic guard of the park-before-publish rule (PR #982
+     * round 2): the premise is read on the device-event thread, in
+     * {@code onDeviceArrived}'s own program order, at a point the engine
+     * reaches INSIDE {@code pauseAudioOutput()} — the render pump's stop
+     * cancels its capture subscription synchronously on the pausing thread,
+     * under the lifecycle lock, before the stream leaves RUNNING — through
+     * the spy's one-shot cancel hook. There the controller is still
+     * DEVICE_LOST, because the return's STOPPED is offered only after
+     * {@code pauseAudioOutput()} has returned; published from the
+     * stream-open seam inside {@code startAudioOutput()} instead, the state
+     * is already STOPPED when the park lands, on every run. The hook also
+     * reads the stream open and not yet paused, and the controller's
+     * monitor held — the whole reopen runs under it — so the sample is
+     * {@code onDeviceArrived}'s own, not some later turn's. Exactly one
+     * STOPPED then follows, carrying the arrived device, with the stream
+     * parked.
+     */
+    @Test
+    void theReturnIsStillDeviceLostWhenTheParkLandsSoItsStoppedFollowsThePark() throws InterruptedException {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop());
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyParkOrder");
+        DeviceId active = new DeviceId("SpyParkOrder", "Mock Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyParkOrder",
+                List.of(new BackendStreamRung(backend, active))));
+        record AtThePark(EngineState state, boolean streamOpen, boolean streamPaused, boolean underTheControllersMonitor) {
+        }
+        List<EngineStateChange> seen = new ArrayList<>();
+        controller.engineStateEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(EngineStateChange change) { synchronized (seen) { seen.add(change); } }
+            @Override public void onError(Throwable t) { /* ignore */ }
+            @Override public void onComplete() { /* ignore */ }
+        });
+        engine.startAudioOutput();
+        assertThat(controller.getWatchedDevice()).as("premise: the seam bound the watch").contains(active);
+
+        try {
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            waitFor(() -> { synchronized (seen) { return seen.size() == 1; } });
+
+            // Armed after the loss, so the next capture subscription is the
+            // return's reopen and its cancel is that reopen's park.
+            AtomicInteger parks = new AtomicInteger();
+            AtomicReference<AtThePark> atThePark = new AtomicReference<>();
+            backend.armNextInputCancelHook(() -> {
+                parks.incrementAndGet();
+                atThePark.compareAndSet(null, new AtThePark(controller.engineState(), engine.isStreamOpen(),
+                        engine.isStreamPaused(), Thread.holdsLock(controller)));
+            });
+            backend.publishDeviceEvent(new com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent.DeviceArrived(active));
+            waitFor(() -> controller.engineState() == EngineState.STOPPED);
+            waitFor(() -> { synchronized (seen) { return seen.size() == 2; } });
+
+            assertThat(parks).as("the reopened stream was parked exactly once").hasValue(1);
+            assertThat(atThePark.get())
+                    .as("at the park, in the device-event thread's program order, the return is still DEVICE_LOST")
+                    .isEqualTo(new AtThePark(EngineState.DEVICE_LOST, true, false, true));
+            assertThat(engine.isStreamOpen()).isTrue();
+            assertThat(engine.isStreamPaused()).as("the return parks the reopened stream").isTrue();
+            synchronized (seen) {
+                assertThat(seen).as("exactly one STOPPED follows the park, carrying the arrived device")
+                        .containsExactly(
+                                new EngineStateChange(EngineState.DEVICE_LOST, Optional.of(active)),
+                                new EngineStateChange(EngineState.STOPPED, Optional.of(active)));
+            }
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    /**
+     * Story 327 fix round (PR #982 review): the feed carries the device the
+     * controller watched at the transition, captured in
+     * {@code setEngineState} under the monitor, not the device watched when
+     * the element is delivered. A loss of one device and then an open on
+     * another through the engine's stream-open seam — which rebinds the
+     * watch to the new rung before it publishes — is delivered as
+     * [(DEVICE_LOST, A), (STOPPED, B)] although the watch says B by then:
+     * the subscriber requests nothing until the open on B has completed, so
+     * both elements wait in the publisher's buffer across the rebind and
+     * are read only after it.
+     */
+    @Test
+    void theFeedCarriesTheDeviceWatchedAtTheTransitionNotTheOneWatchedAtDelivery() throws InterruptedException {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop());
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpySnapshot");
+        DeviceId deviceA = new DeviceId("SpySnapshot", "Device A");
+        DeviceId deviceB = new DeviceId("SpySnapshot", "Device B");
+        engine.setStreamingProvision(new StreamingProvision("SpySnapshot",
+                List.of(new BackendStreamRung(backend, deviceA))));
+        List<EngineStateChange> seen = new ArrayList<>();
+        AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
+        controller.engineStateEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { subscription.set(s); }
+            @Override public void onNext(EngineStateChange change) { synchronized (seen) { seen.add(change); } }
+            @Override public void onError(Throwable t) { /* ignore */ }
+            @Override public void onComplete() { /* ignore */ }
+        });
+        waitFor(() -> subscription.get() != null);
+        engine.startAudioOutput();
+        assertThat(controller.getWatchedDevice()).as("premise: the seam bound the watch to A").contains(deviceA);
+
+        try {
+            backend.simulateDeviceRemoved(deviceA);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            // While A is unplugged the ladder lands on B: an open the
+            // controller did not drive, whose seam rebinds the watch to B
+            // and then publishes STOPPED.
+            engine.setStreamingProvision(new StreamingProvision("SpySnapshot",
+                    List.of(new BackendStreamRung(backend, deviceB))));
+            engine.startAudioOutput();
+            assertThat(controller.engineState()).isEqualTo(EngineState.STOPPED);
+            assertThat(controller.getWatchedDevice()).as("premise: the watch moved to B").contains(deviceB);
+            synchronized (seen) {
+                assertThat(seen).as("nothing was requested, so nothing was delivered yet").isEmpty();
+            }
+
+            subscription.get().request(Long.MAX_VALUE);
+            waitFor(() -> { synchronized (seen) { return seen.size() == 2; } });
+
+            synchronized (seen) {
+                assertThat(seen).as("delivered after the rebind, each element still names its own device")
+                        .containsExactly(
+                                new EngineStateChange(EngineState.DEVICE_LOST, Optional.of(deviceA)),
+                                new EngineStateChange(EngineState.STOPPED, Optional.of(deviceB)));
+            }
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
     @Test
     void shouldReturnToStoppedWhenLostDeviceReturns(@TempDir Path projectRoot)
             throws InterruptedException {
@@ -440,8 +645,8 @@ class DefaultAudioEngineControllerTest {
                 @Override public void onSubscribe(java.util.concurrent.Flow.Subscription s) {
                     s.request(Long.MAX_VALUE);
                 }
-                @Override public void onNext(EngineState state) {
-                    synchronized (seen) { seen.add(state); }
+                @Override public void onNext(EngineStateChange change) {
+                    synchronized (seen) { seen.add(change.state()); }
                 }
                 @Override public void onError(Throwable t) { /* ignore */ }
                 @Override public void onComplete() { /* ignore */ }
@@ -710,8 +915,8 @@ class DefaultAudioEngineControllerTest {
             @Override public void onSubscribe(java.util.concurrent.Flow.Subscription s) {
                 s.request(Long.MAX_VALUE);
             }
-            @Override public void onNext(EngineState s) {
-                synchronized (transitions) { transitions.add(s); }
+            @Override public void onNext(EngineStateChange change) {
+                synchronized (transitions) { transitions.add(change.state()); }
             }
             @Override public void onError(Throwable t) { /* ignore */ }
             @Override public void onComplete() { /* ignore */ }
@@ -789,12 +994,12 @@ class DefaultAudioEngineControllerTest {
             assertThat(spy.isOpen()).isTrue();
 
             List<EngineState> transitions = new ArrayList<>();
-            controller.engineStateEvents().subscribe(new Flow.Subscriber<EngineState>() {
+            controller.engineStateEvents().subscribe(new Flow.Subscriber<EngineStateChange>() {
                 @Override public void onSubscribe(Flow.Subscription s) {
                     s.request(Long.MAX_VALUE);
                 }
-                @Override public void onNext(EngineState s) {
-                    synchronized (transitions) { transitions.add(s); }
+                @Override public void onNext(EngineStateChange change) {
+                    synchronized (transitions) { transitions.add(change.state()); }
                 }
                 @Override public void onError(Throwable t) { /* ignore */ }
                 @Override public void onComplete() { /* ignore */ }
@@ -872,8 +1077,8 @@ class DefaultAudioEngineControllerTest {
             @Override public void onSubscribe(java.util.concurrent.Flow.Subscription s) {
                 s.request(Long.MAX_VALUE);
             }
-            @Override public void onNext(EngineState s) {
-                synchronized (transitions) { transitions.add(s); }
+            @Override public void onNext(EngineStateChange change) {
+                synchronized (transitions) { transitions.add(change.state()); }
             }
             @Override public void onError(Throwable t) { /* ignore */ }
             @Override public void onComplete() { /* ignore */ }
@@ -1582,12 +1787,12 @@ class DefaultAudioEngineControllerTest {
                     .isTrue();
 
             List<EngineState> transitions = new ArrayList<>();
-            controller.engineStateEvents().subscribe(new Flow.Subscriber<EngineState>() {
+            controller.engineStateEvents().subscribe(new Flow.Subscriber<EngineStateChange>() {
                 @Override public void onSubscribe(Flow.Subscription s) {
                     s.request(Long.MAX_VALUE);
                 }
-                @Override public void onNext(EngineState s) {
-                    synchronized (transitions) { transitions.add(s); }
+                @Override public void onNext(EngineStateChange change) {
+                    synchronized (transitions) { transitions.add(change.state()); }
                 }
                 @Override public void onError(Throwable t) { /* ignore */ }
                 @Override public void onComplete() { /* ignore */ }

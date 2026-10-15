@@ -992,9 +992,11 @@ public final class RecordingPipeline {
      * {@link TakeManifest.SealedBy#DEVICE_LOSS} — the take rescue of story
      * 327 (book §5.5 step 2): the ordinary seal applied early, with
      * everything captured up to the dropout intact. A lane that throws in
-     * either seal is reported by {@link #stopSealFailure()} the same way,
-     * and {@link #earlySeal()} completes for neither. Caller thread (FX in
-     * the app); runs nothing on the audio thread.
+     * either seal is reported by {@link #stopSealFailure()} the same way, a
+     * final manifest write that fails on every attempt by
+     * {@link #finalManifestFailure()}, and {@link #earlySeal()} completes
+     * for neither. Caller thread (FX in the app); runs nothing on the audio
+     * thread.
      *
      * <p>A repeated request keeps the first reason: the flush service
      * records the reason of the first stop request it receives
@@ -1433,7 +1435,8 @@ public final class RecordingPipeline {
      * seal failed is left as its {@code .part} for recovery, the take's final
      * manifest reads {@code seal-status=aborted} with
      * {@code sealed-by=write-failure} when the flush thread's write of it
-     * lands, and {@link #completeStop()} still returns the clips it built.
+     * lands ({@link #finalManifestFailure()} reports one that did not), and
+     * {@link #completeStop()} still returns the clips it built.
      * Empty when no lane's seal threw in that seal, for a take the
      * {@code capture-flush} thread sealed early ({@link #earlySeal()} reports
      * that one, also when it sealed the take in the final sweep of the stop),
@@ -1458,6 +1461,46 @@ public final class RecordingPipeline {
             throw new IllegalStateException("Recording pipeline has not been started");
         }
         return service.stopSealFailure();
+    }
+
+    /**
+     * Returns the failure of the final manifest write of the current take, or
+     * of the last take until the next {@link #prepare()}, if the write of the
+     * manifest that carries the take's seal — {@code sealed}/{@code stop},
+     * {@code aborted}/{@code device-loss}, {@code aborted}/{@code write-failure}
+     * — failed on every attempt and no later attempt landed it
+     * ({@link FinalManifestFailure}): every lane had its seal first, and
+     * {@link #completeStop()} still returns the clips it built, but the
+     * manifest on disk is the last one written and reads
+     * {@code seal-status=streaming}, so the take is recorded neither as
+     * stopped nor as rescued, and the recovery scan ({@link TakeRecovery#scan};
+     * story 332 runs it on project open) treats it as a crash candidate and
+     * rebuilds it; the value carries the reason the
+     * manifest was to carry. Independent of {@link #stopSealFailure()}: a
+     * stop or a rescue whose every lane sealed can report this and nothing
+     * else, and a lane that threw can report both. Empty when the final
+     * write landed, for a cancelled start, for the rollback of a failed start
+     * and for the flush service's {@code stopAndAbandon} test seam; see
+     * {@link CaptureFlushService#finalManifestFailure()}. Final once the
+     * take's flush thread has terminated — as when the signal
+     * {@code requestStop()} returned has completed; read before that, empty
+     * may only mean that the seal has not run yet. Each prepare creates the
+     * take's own flush service, so a pipeline started again never reports
+     * the previous take's. Caller thread (the one that runs the take's
+     * lifecycle).
+     *
+     * @return the failure of the final manifest write, or empty
+     * @throws IllegalStateException if no prepare has created a take's flush
+     *                               service yet ({@link #prepare()} never
+     *                               called, or the last one failed before it
+     *                               created one)
+     */
+    public Optional<FinalManifestFailure> finalManifestFailure() {
+        CaptureFlushService service = flush;
+        if (service == null) {
+            throw new IllegalStateException("Recording pipeline has not been started");
+        }
+        return service.finalManifestFailure();
     }
 
     /**

@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
+import com.benesquivelmusic.daw.core.recording.EarlySeal;
+import com.benesquivelmusic.daw.core.recording.FinalManifestFailure;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
@@ -10,12 +12,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.RejectedExecutionException;
 
@@ -33,9 +37,16 @@ import static org.assertj.core.api.Assertions.tuple;
  * thread's uncaught handler. And a rescue whose own seal fails on disk —
  * a file already sits where the first segment is to be sealed — is
  * reported once as the ERROR of a failed finish, with no word of a saved
- * take, through DEVICE_LOST to ABORTED, and is not registered. The loss is
- * reported to the coordinator directly here; the production wiring is
- * pinned by {@code DeviceLossRescuesTheTakeThroughTheEngineBridgeTest}.
+ * take, through DEVICE_LOST to ABORTED, and is not registered; so is a
+ * rescue whose every lane sealed but whose final manifest write failed on
+ * every attempt (PR #982 review): the manifest on disk still reads
+ * streaming, so the take is no rescued take — one ERROR that leads with the
+ * device-loss wording and names the manifest, never "take preserved"; and
+ * so is a rescue the capture thread sealed early inside the rescue's own
+ * stop (review round 2): its manifest does not read device-loss, so it is
+ * reported, never registered. The
+ * loss is reported to the coordinator directly here; the production wiring
+ * is pinned by {@code DeviceLossRescuesTheTakeThroughTheEngineBridgeTest}.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class DeviceLossRescueStepIndependenceTest {
@@ -237,6 +248,165 @@ class DeviceLossRescueStepIndependenceTest {
                 .hasSize(1);
         assertThat(onFx(() -> List.copyOf(states))).as("DEVICE_LOST, then ABORTED (rescue failure), then settled")
                 .containsSubsequence(RecordState.DEVICE_LOST, RecordState.ABORTED).endsWith(RecordState.IDLE);
+        assertThat(uncaughtOnFx).isEmpty();
+    }
+
+    /**
+     * No seam between the flush thread and the coordinator: the final
+     * manifest write fails through the production wiring because a
+     * non-empty directory sits where the manifest's staging file goes
+     * ({@code take.manifest.tmp}) — opening the staging channel fails on
+     * every attempt, on Windows and on Linux alike — so the manifest on
+     * disk stays the take start's while every lane sealed.
+     */
+    @Test
+    void aRescueWhoseManifestCannotBeWrittenIsReportedAsAnErrorAndNeverRegistered() throws Exception {
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path staging = takeDirectory.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX);
+        Files.createDirectory(staging);
+        Files.writeString(staging.resolve("occupied"), "the staging file cannot be opened", StandardCharsets.UTF_8);
+        byte[] manifestBefore = Files.readAllBytes(TakeManifest.manifestPath(takeDirectory));
+        List<RecordState> states = new ArrayList<>();
+        runOnFx(() -> fixture.coordinator().stateProperty().addListener((_, _, state) -> states.add(state)));
+        int before = fixture.shownCount();
+
+        fixture.closeTheStreamAsTheLossDoes();
+        runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
+        fixture.awaitPublished();
+
+        List<NotificationEntry> entries = fixture.entriesSince(before);
+        assertThat(entries).as("one ERROR, no WARNING, no SUCCESS").hasSize(1);
+        NotificationEntry report = entries.getFirst();
+        assertThat(report.level()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(report.actionLabel()).as("no Review: there is no rescued take to review").isEmpty();
+        assertThat(report.message())
+                .startsWith(lost.name() + " disconnected during recording. The audio was saved up to the dropout"
+                        + " (1 clip on 1 track), but the take's manifest could not be written (")
+                .endsWith("); take recovery rebuilds it from the segments")
+                .doesNotContain("next project open")
+                .doesNotContain(".;")
+                .doesNotContainIgnoringCase("preserved")
+                .doesNotStartWith("Recording stopped");
+        assertThat(onFx(() -> fixture.statusBar().getText())).isEqualTo(report.message());
+        assertThat(onFx(() -> List.copyOf(states))).as("DEVICE_LOST, then ABORTED (rescue failure), then settled")
+                .containsSubsequence(RecordState.DEVICE_LOST, RecordState.ABORTED).endsWith(RecordState.IDLE);
+        assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().isEmpty())
+                .as("a take whose manifest was not written is not a rescued take").isTrue();
+        assertThat(onFx(() -> List.copyOf(fixture.guitar().getClips()))).as("the clip is published all the same")
+                .hasSize(1);
+        assertThat(onFx(() -> fixture.project().isDirty())).isTrue();
+        assertThat(takeDirectory.resolve(fixture.guitar().getId()).resolve("segment-000.wav"))
+                .as("every lane sealed").isRegularFile();
+        assertThat(fixture.firstSegmentPart(takeDirectory)).doesNotExist();
+        assertThat(Files.readAllBytes(TakeManifest.manifestPath(takeDirectory)))
+                .as("the manifest on disk is the take start's").isEqualTo(manifestBefore);
+        assertThat(TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).sealStatus())
+                .isEqualTo(TakeManifest.SealStatus.STREAMING);
+        assertThat(fixture.pipeline().finalManifestFailure()).as("the reason the manifest was to carry")
+                .isPresent().get().extracting(FinalManifestFailure::intendedReason)
+                .isEqualTo(TakeManifest.SealedBy.DEVICE_LOSS);
+        assertThat(uncaughtOnFx).isEmpty();
+    }
+
+    /**
+     * The same through the seam, with a reason this module cannot cause on
+     * disk — the manifest's build threw — pinning the exact report: the
+     * device-loss lead, the audio saved, the manifest not written with the
+     * throwable's type and message, the rebuild by take recovery; with no
+     * clip, no rebuild is promised — no track recorded a frame, the live
+     * seal deleted the empty tails, and the scan has no segment to rebuild
+     * the take from (PR #982 review round 2; story 327, Known limitations).
+     */
+    @Test
+    void aRescueWhoseManifestFailureNamesItsReasonIsReportedAsAnErrorAndNeverRegistered() throws Exception {
+        fixture.recordUntilABlockIsOnDisk();
+        FinalManifestFailure notWritten = new FinalManifestFailure(
+                new IllegalStateException("manifest build failed"), TakeManifest.SealedBy.DEVICE_LOSS);
+        runOnFx(() -> fixture.coordinator().setStopSealOutcomeForTest(_ ->
+                new TransportController.StopSealOutcome(Optional.empty(), Optional.of(notWritten))));
+        List<RecordState> states = new ArrayList<>();
+        runOnFx(() -> fixture.coordinator().stateProperty().addListener((_, _, state) -> states.add(state)));
+        int before = fixture.shownCount();
+
+        fixture.closeTheStreamAsTheLossDoes();
+        runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
+        fixture.awaitPublished();
+
+        String report = lost.name() + " disconnected during recording. The audio was saved up to the dropout"
+                + " (1 clip on 1 track), but the take's manifest could not be written (IllegalStateException:"
+                + " manifest build failed); take recovery rebuilds it from the segments";
+        assertThat(RecordCoordinator.rescuedTakeManifestNotWrittenMessage(lost, notWritten, 1, 1)).isEqualTo(report);
+        assertThat(RecordCoordinator.rescuedTakeManifestNotWrittenMessage(lost, notWritten, 0, 0))
+                .as("with no clip, nothing had reached disk, and no rebuild is promised")
+                .isEqualTo(lost.name() + " disconnected during recording; nothing had reached disk yet, and the"
+                        + " take's manifest could not be written (IllegalStateException: manifest build failed)")
+                .doesNotContain("rebuilds");
+        assertThat(fixture.entriesSince(before)).as("one ERROR, no WARNING, no SUCCESS")
+                .extracting(NotificationEntry::level, NotificationEntry::message, NotificationEntry::actionLabel)
+                .containsExactly(tuple(NotificationLevel.ERROR, report, Optional.empty()));
+        assertThat(onFx(() -> fixture.statusBar().getText())).isEqualTo(report);
+        assertThat(onFx(() -> List.copyOf(states)))
+                .containsSubsequence(RecordState.DEVICE_LOST, RecordState.ABORTED).endsWith(RecordState.IDLE);
+        assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().isEmpty())
+                .as("not registered").isTrue();
+        assertThat(onFx(() -> List.copyOf(fixture.guitar().getClips()))).hasSize(1);
+        assertThat(uncaughtOnFx).isEmpty();
+    }
+
+    /**
+     * PR #982 review round 2: a stop requested first does not prevent an
+     * early seal — an exhaustion, or a write failure applying a block the
+     * rescue's own final sweep drains, completes the signal inside the
+     * rescue — and such a take is no rescued take on disk: its manifest
+     * reads write-failure or disk-exhaustion, not device-loss. The seal
+     * outcome the pipeline reports is clean here (the real seal was clean;
+     * the signal is the seam, completed on the FX turn of the loss right
+     * after the rescue was requested, as the capture thread would complete
+     * it in the final sweep), so the early seal alone keeps the take out of
+     * the registry: one ERROR leading with the device-loss wording, never
+     * "take preserved", DEVICE_LOST → ABORTED → IDLE, the clip published.
+     */
+    @Test
+    void aRescueSealedEarlyInsideItsOwnStopIsReportedAsAnErrorAndNeverRegistered() throws Exception {
+        CompletableFuture<EarlySeal> earlySeal = new CompletableFuture<>();
+        runOnFx(() -> fixture.controller().setEarlySealSignalForTest(_ -> earlySeal));
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        EarlySeal seal = new EarlySeal.WriteFailed(new IOException("injected lane write failure"), false);
+        List<RecordState> states = new ArrayList<>();
+        runOnFx(() -> fixture.coordinator().stateProperty().addListener((_, _, state) -> states.add(state)));
+        int before = fixture.shownCount();
+
+        fixture.closeTheStreamAsTheLossDoes();
+        // One FX turn: the rescue is requested, then the signal completes;
+        // its dependent posts the auto-Stop to a later turn, which finds the
+        // take already stopping and does nothing.
+        runOnFx(() -> {
+            fixture.coordinator().onDeviceLost(lost);
+            earlySeal.complete(seal);
+        });
+        fixture.awaitPublished();
+
+        String report = RecordCoordinator.rescuedTakeSealedEarlyMessage(lost, seal, 1, takeDirectory);
+        assertThat(report)
+                .isEqualTo(lost.name() + " disconnected during recording. Saving the take ended early — writing the"
+                        + " take to disk failed (injected lane write failure); one or more segment files that could"
+                        + " not be finished are left under audio/takes/" + takeDirectory.getFileName()
+                        + " (1 clip created)")
+                .startsWith(lost.name())
+                .doesNotContainIgnoringCase("preserved")
+                .doesNotContainIgnoringCase("saved")
+                .doesNotStartWith("Recording stopped");
+        assertThat(fixture.entriesSince(before)).as("one ERROR, no WARNING, no SUCCESS")
+                .extracting(NotificationEntry::level, NotificationEntry::message, NotificationEntry::actionLabel)
+                .containsExactly(tuple(NotificationLevel.ERROR, report, Optional.empty()));
+        assertThat(onFx(() -> fixture.statusBar().getText())).isEqualTo(report);
+        assertThat(onFx(() -> List.copyOf(states))).as("DEVICE_LOST, then ABORTED (rescue failure), then settled")
+                .containsSubsequence(RecordState.DEVICE_LOST, RecordState.ABORTED).endsWith(RecordState.IDLE);
+        assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().isEmpty())
+                .as("a take sealed early is not a rescued take").isTrue();
+        assertThat(onFx(() -> List.copyOf(fixture.guitar().getClips()))).as("the clip is published all the same")
+                .hasSize(1);
+        assertSealedByDeviceLoss(takeDirectory); // fixture: the real seal was clean; the signal alone decided
         assertThat(uncaughtOnFx).isEmpty();
     }
 

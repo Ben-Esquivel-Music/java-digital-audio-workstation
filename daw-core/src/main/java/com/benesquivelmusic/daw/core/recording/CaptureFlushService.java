@@ -195,7 +195,17 @@ import java.util.logging.Logger;
  * per {@link #MANIFEST_RETRY_INTERVAL} of the take's clock — with later
  * blocks and idle passes until it lands. The manifest on disk is then the
  * last one that was written. The same holds for the final seal: the
- * segments are sealed whether or not the manifest can say so. Only the
+ * segments are sealed whether or not the manifest can say so. A final
+ * write that fails on every attempt is recorded for
+ * {@link #finalManifestFailure()}, logged SEVERE, and told to the sink once
+ * per take by seal kind: for an early seal, that the take was sealed early
+ * and the write is retried — the thread keeps draining until a stop, its
+ * idle passes retry the write, and the seal the stop then requests makes
+ * the last attempt; for the thread's last seal — the seal a stop
+ * requested, or the loop's failure handler's — in words that promise no
+ * retry: the take has ended, the manifest on disk does not record the
+ * seal, and the recovery scan ({@link TakeRecovery#scan}; story 332 runs
+ * it on project open) rebuilds it from the segments. Only the
  * initial write, in the take's initialisation, is a single attempt whose
  * failure fails the start ({@link #readiness()}): no block is applied before
  * readiness, and {@code RecordingPipeline} installs its recording callback
@@ -389,6 +399,12 @@ public final class CaptureFlushService {
      */
     private volatile StopSealFailure stopSealFailure;
     /**
+     * The failure of the final manifest write; see {@link #finalManifestFailure()}.
+     * Written by the flush thread, before it terminates: set by a final write
+     * that failed on every attempt, cleared by one that landed.
+     */
+    private volatile FinalManifestFailure finalManifestFailure;
+    /**
      * The flush thread has left its drain loop for a stop and is waiting for
      * the callback in flight to leave the ring's producer gate; see
      * {@link #isAwaitingProducerExit()}.
@@ -408,6 +424,17 @@ public final class CaptureFlushService {
     private long lastManifestAttemptNanos;
     /** The manifest carrying the final seal status is on disk. */
     private boolean finalManifestWritten;
+    /** The sink has been told that the take's last final manifest write failed, with no retry to come; said once per take. */
+    private boolean finalManifestWarned;
+    /** The sink has been told that an early seal's final manifest write failed and is retried; said once per take. */
+    private boolean earlySealManifestWarned;
+    /**
+     * The seal running is the thread's last — the seal a stop requested, or
+     * the loop failure handler's — so a final manifest write that fails in it
+     * is retried by nothing. Before it, an early seal's failed final write is
+     * retried by the idle passes and by the seal the stop then requests.
+     */
+    private boolean lastSeal;
     /** The final sweep after the stop flag is running: the cadence tick stands down for the seal. */
     private boolean finalSweep;
     /** The final sweep has drained the ring: a block published from here on is left behind. */
@@ -769,6 +796,9 @@ public final class CaptureFlushService {
                 finalSweep = true;
                 drainOnce();
                 finalSweepDone = true;
+                // The thread's last seal: a final manifest write that fails
+                // in it is retried by nothing.
+                lastSeal = true;
                 sealAll(requestedReason);
             }
         } catch (Throwable t) {
@@ -783,7 +813,9 @@ public final class CaptureFlushService {
                         + "; sealing everything captured so far under " + config.takeDirectory());
                 try {
                     // Re-entry is safe: lanes already sealed are left alone, and
-                    // a final manifest that did not reach the disk is written now.
+                    // a final manifest that did not reach the disk is written now
+                    // — the thread's last write: it terminates after this.
+                    lastSeal = true;
                     sealEarly(SealedBy.WRITE_FAILURE, t);
                 } catch (Throwable sealFailure) {
                     LOG.log(Level.SEVERE, "capture-flush could not seal after a loop failure", sealFailure);
@@ -1510,21 +1542,21 @@ public final class CaptureFlushService {
         if (!finalManifestWritten) {
             noteBlocksLeftBehind();
             SealedBy first = sealReason;
+            SealedBy manifestReason;
             if (first == SealedBy.STOP && !sealFailed) {
-                manifest.sealed(SealedBy.STOP);
+                manifestReason = SealedBy.STOP;
+                manifest.sealed(manifestReason);
             } else {
                 // A DEVICE_LOSS stop with every lane sealed lands here as
                 // aborted/device-loss — the book §3.4 RESCUED row.
-                manifest.aborted(sealFailed ? SealedBy.WRITE_FAILURE : first);
+                manifestReason = sealFailed ? SealedBy.WRITE_FAILURE : first;
+                manifest.aborted(manifestReason);
             }
             // Wall-clock, not the injected monotonic clock: the manifest
             // records an instant, and the service has no other clock for one.
             manifest.sealedAt(Instant.now());
             manifestDirty = true;
-            if (!writeManifest(MANIFEST_WRITE_ATTEMPTS)) {
-                LOG.log(Level.SEVERE, "final manifest write failed under " + config.takeDirectory()
-                        + "; the segments are sealed, the manifest on disk is the last one written");
-            }
+            writeFinalManifest(manifestReason);
         }
         if (firstLaneError != null) {
             throw firstLaneError;
@@ -1581,14 +1613,124 @@ public final class CaptureFlushService {
     }
 
     /**
-     * Builds and writes the manifest, trying up to {@code attempts} times
-     * with {@link #MANIFEST_RETRY_PAUSE} in between. Flush thread.
+     * A manifest write of the take while it streams, or a retry of a final
+     * write that failed earlier ({@link #flushManifest()}): builds and
+     * writes the manifest, trying up to {@code attempts} times with
+     * {@link #MANIFEST_RETRY_PAUSE} in between ({@link #tryWriteManifest}),
+     * and when every attempt failed logs it and — once per failure episode
+     * — tells the sink that recording continues and the write is retried;
+     * for a take sealed early, whose capture is over, that the take keeps
+     * draining and the write is retried ({@link #earlySealRetryText}; PR
+     * #982 review round 2). Flush thread.
      *
      * @return whether the manifest on disk now matches the builder; on
-     *         {@code false} the manifest stays dirty, the failure is
-     *         recorded and the sink has been warned once for this episode
+     *         {@code false} the manifest stays dirty and the failure is
+     *         recorded
      */
     private boolean writeManifest(int attempts) {
+        Optional<Exception> failure = tryWriteManifest(attempts);
+        if (failure.isEmpty()) {
+            return true;
+        }
+        LOG.log(Level.WARNING, "take manifest write failed under " + config.takeDirectory()
+                + " after " + attempts + " attempt(s); " + (sealedEarly
+                        ? "the take keeps draining and the write is retried" : "capture continues"), failure.get());
+        if (!manifestWriteFailing) {
+            manifestWriteFailing = true;
+            warn(manifestNotWrittenText(failure.get()) + "; " + (sealedEarly
+                    ? earlySealRetryText()
+                    : "recording continues and the manifest is rewritten as soon as it can be"));
+        }
+        return false;
+    }
+
+    /** {@code The take manifest under <take directory> could not be written — <failure>}: the lead every manifest-write warning shares. */
+    private String manifestNotWrittenText(Exception failure) {
+        return "The take manifest under " + config.takeDirectory() + " could not be written — " + describe(failure);
+    }
+
+    /**
+     * What a take sealed early does about a manifest write that failed: it
+     * keeps draining until a stop, retrying the write on its idle passes
+     * ({@link #flushManifest}), and the seal the stop then requests makes
+     * the last attempt; once the stop has been requested, only that last
+     * attempt is still to come. Flush thread.
+     */
+    private String earlySealRetryText() {
+        return stopping
+                ? "the take was sealed early in the final sweep of its stop; the manifest write is retried once"
+                        + " more by the stop's seal"
+                : "the take was sealed early and keeps draining until Stop; the manifest write is retried until it"
+                        + " lands or Stop seals the take";
+    }
+
+    /**
+     * The final manifest write of the seal ({@link #sealAll}): the manifest
+     * that carries the seal status and {@code manifestReason}, written with
+     * the full retry budget ({@link #tryWriteManifest}). When every attempt
+     * failed, the manifest on disk is the last one written, which says
+     * nothing of the seal; that is recorded for
+     * {@link #finalManifestFailure()} — before the thread terminates, so a
+     * caller that has observed the termination reads it — logged SEVERE
+     * and told to the sink once per take, by seal kind (PR #982 review
+     * round 2). An early seal's ({@link #sealEarly}, before the thread's
+     * last seal) is retried: the thread keeps draining until a stop, its
+     * idle passes retry the write ({@link #flushManifest}), and the seal the
+     * stop then requests makes the last attempt — a retry that lands clears
+     * the record in {@link #writeManifestOnce} — so the sink hears that the
+     * take was sealed early and the write is retried
+     * ({@link #earlySealRetryText}), and the failure episode
+     * ({@code manifestWriteFailing}) is opened so that the retries do not
+     * warn again. The thread's last seal's ({@link #lastSeal}: the seal a
+     * stop requested, or the loop failure handler's) is retried by nothing,
+     * so the sink hears, once, in words that promise no retry, that the
+     * take has ended and its manifest on disk does not record the seal —
+     * said even when an early seal's warning preceded it. Flush thread.
+     *
+     * @param manifestReason the {@code sealed-by} the manifest was to carry
+     */
+    private void writeFinalManifest(SealedBy manifestReason) {
+        Optional<Exception> failure = tryWriteManifest(MANIFEST_WRITE_ATTEMPTS);
+        if (failure.isEmpty()) {
+            return;
+        }
+        finalManifestFailure = new FinalManifestFailure(failure.get(), manifestReason);
+        manifestWriteFailing = true;
+        String onDisk = "the segments are sealed, the manifest on disk is the last one written and does not carry"
+                + " sealed-by=" + manifestReason.token();
+        if (!lastSeal) {
+            LOG.log(Level.SEVERE, "final manifest write of an early seal failed under " + config.takeDirectory()
+                    + " after " + MANIFEST_WRITE_ATTEMPTS + " attempt(s); " + onDisk + "; the write is retried",
+                    failure.get());
+            if (!earlySealManifestWarned) {
+                earlySealManifestWarned = true;
+                warn(manifestNotWrittenText(failure.get()) + "; " + earlySealRetryText());
+            }
+            return;
+        }
+        LOG.log(Level.SEVERE, "final manifest write of the take's last seal failed under " + config.takeDirectory()
+                + " after " + MANIFEST_WRITE_ATTEMPTS + " attempt(s); " + onDisk
+                + "; the take has ended and nothing retries it", failure.get());
+        if (!finalManifestWarned) {
+            finalManifestWarned = true;
+            warn(manifestNotWrittenText(failure.get()) + "; the take has ended and its manifest on disk does not"
+                    + " record the seal: take recovery rebuilds it from the segments");
+        }
+    }
+
+    /**
+     * Builds and writes the manifest, trying up to {@code attempts} times
+     * with {@link #MANIFEST_RETRY_PAUSE} in between; the bookkeeping the
+     * streaming and the final write share. A write that lands closes a
+     * failure episode that was open; one that fails on every attempt leaves
+     * the manifest dirty, stamps the attempt for the retry interval and
+     * records the failure ({@link #lastFailure()}). Says nothing to the log
+     * or the sink: that is each caller's. Flush thread.
+     *
+     * @return the failure of the last attempt, or empty once the manifest
+     *         on disk matches the builder
+     */
+    private Optional<Exception> tryWriteManifest(int attempts) {
         Exception failure = null;
         for (int attempt = 1; attempt <= attempts; attempt++) {
             if (attempt > 1) {
@@ -1600,7 +1742,7 @@ public final class CaptureFlushService {
                     manifestWriteFailing = false;
                     LOG.log(Level.INFO, "take manifest under " + config.takeDirectory() + " is up to date again");
                 }
-                return true;
+                return Optional.empty();
             } catch (IOException | RuntimeException e) {
                 failure = e;
             }
@@ -1608,17 +1750,16 @@ public final class CaptureFlushService {
         manifestDirty = true;
         lastManifestAttemptNanos = nanoClock.getAsLong();
         lastFailure = failure;
-        LOG.log(Level.WARNING, "take manifest write failed under " + config.takeDirectory()
-                + " after " + attempts + " attempt(s); capture continues", failure);
-        if (!manifestWriteFailing) {
-            manifestWriteFailing = true;
-            warn("The take manifest under " + config.takeDirectory() + " could not be written — "
-                    + describe(failure) + "; recording continues and the manifest is rewritten as soon as it can be");
-        }
-        return false;
+        return Optional.of(failure);
     }
 
-    /** One write attempt, no failure handling: the take's initialisation, and each attempt of {@link #writeManifest(int)}. Flush thread. */
+    /**
+     * One write attempt, no failure handling: the take's initialisation, and
+     * each attempt of {@link #tryWriteManifest(int)}. A manifest that carries
+     * the seal status, once on disk, is the final one: a failure of an
+     * earlier final write ({@link #finalManifestFailure()}) is cleared.
+     * Flush thread.
+     */
     private void writeManifestOnce(TakeManifest built) throws IOException {
         throwInjectedManifestFault();
         manifestTouched = true;
@@ -1628,6 +1769,7 @@ public final class CaptureFlushService {
         manifestWrites = manifestWrites + 1;
         if (built.sealStatus() != TakeManifest.SealStatus.STREAMING) {
             finalManifestWritten = true;
+            finalManifestFailure = null;
         }
     }
 
@@ -1730,9 +1872,10 @@ public final class CaptureFlushService {
      * leave the ring's producer gate — which the pipeline closed before this
      * request ({@link CaptureRing#closeProducer()}); its final sweep then
      * drains the ring, seals every active writer and writes the final
-     * manifest (a final manifest that cannot be written is logged SEVERE and
-     * leaves the last written one on disk; the segments are sealed
-     * regardless), and then it terminates — {@link #termination()} completes,
+     * manifest (a final manifest that cannot be written is logged SEVERE,
+     * leaves the last written one on disk — the segments are sealed
+     * regardless — and is reported by {@link #finalManifestFailure()}), and
+     * then it terminates — {@link #termination()} completes,
      * and only from then on may the caller read what the thread wrote
      * ({@link #sealedSegmentPaths()}, the captures). Caller thread (FX in the
      * app); no storage I/O.
@@ -2156,7 +2299,8 @@ public final class CaptureFlushService {
      * was sealed, an {@link Error} included. The value carries the first
      * throwable a lane threw, and the final manifest the flush thread writes
      * reads {@code seal-status=aborted} with {@code sealed-by=write-failure};
-     * if that write fails, the manifest on disk is the last one written.
+     * if that write fails on every attempt, the manifest on disk is the last
+     * one written, and {@link #finalManifestFailure()} reports it.
      *
      * <p>Empty when no lane's seal threw in that seal, and always empty for
      * a take the flush thread sealed early — {@link #earlySeal()} reports
@@ -2176,6 +2320,46 @@ public final class CaptureFlushService {
      */
     public Optional<StopSealFailure> stopSealFailure() {
         return Optional.ofNullable(stopSealFailure);
+    }
+
+    /**
+     * Returns the failure of the final manifest write
+     * ({@link FinalManifestFailure}) if the write of the manifest that
+     * carries the take's seal failed on every attempt
+     * ({@link #MANIFEST_WRITE_ATTEMPTS}, {@link #MANIFEST_RETRY_PAUSE} apart)
+     * and no later attempt landed it: every lane had its seal first, so the
+     * segments are what the seal left them, but the manifest on disk is the
+     * last one written — it reads {@code seal-status=streaming} and says
+     * nothing of the seal, so the recovery scan ({@link TakeRecovery#scan};
+     * story 332 runs it on project open) treats the take as a crash
+     * candidate and rebuilds it. The value carries the throwable
+     * of the last attempt and the reason the manifest was to carry. Empty
+     * when the final write landed — at once, or after retries — for an
+     * abort ({@link #requestAbort()}) of a take no early seal had sealed
+     * (the abort exit seals nothing and clears nothing, so an early seal's
+     * failed final write before it stays recorded), for the
+     * {@code stopAndAbandon} test seam of such a take, and for a take that
+     * never became ready.
+     *
+     * <p>Independent of {@link #stopSealFailure()} and of
+     * {@link #earlySeal()}: the final write is made whatever the lanes'
+     * seals did, so a stop whose every lane sealed can have this and nothing
+     * else, and a lane that threw can have both.</p>
+     *
+     * <p>Written on the flush thread only: a volatile write made once a
+     * final write has failed on every attempt, which the flush thread's
+     * later volatile write of {@link #isTerminated()} follows in program
+     * order; a final write that lands clears it the same way — only a take
+     * the flush thread sealed early retries its final write after a
+     * failure, on its idle passes and in the seal the stop then requests,
+     * the seal a stop requests being the thread's last manifest write. So a
+     * thread that has read {@code isTerminated()} as {@code true} — as a
+     * dependent of {@link #termination()} has — reads the final value here;
+     * read before that, empty may only mean that the seal has not run yet.
+     * Never written on the audio thread. Any thread.</p>
+     */
+    public Optional<FinalManifestFailure> finalManifestFailure() {
+        return Optional.ofNullable(finalManifestFailure);
     }
 
     /** Returns the most recently written manifest, once one has been written. */

@@ -209,9 +209,12 @@ public final class MainController {
      * Story 327 — the one subscription to
      * {@code audioEngineController.engineStateEvents()}, feeding the current
      * {@link #transportController}'s {@link TransportController#onEngineState}
-     * on the FX thread ({@link EngineStateBridge}). Built and subscribed in
-     * {@link #initialize()} right after the controller is built, over the
-     * {@link #dispatcher()} of that moment; cancelled in the window teardown.
+     * on the FX thread ({@link EngineStateBridge}) with each
+     * {@link EngineStateChange} as published — the state and the device the
+     * controller watched at that transition; the bridge looks nothing up at
+     * delivery. Built and subscribed in {@link #initialize()} right after
+     * the controller is built, over the {@link #dispatcher()} of that
+     * moment; cancelled in the window teardown.
      */
     private EngineStateBridge engineStateBridge;
     /** Per-track CPU budget enforcer wired into the engine (story 129 UI). */
@@ -1008,14 +1011,13 @@ public final class MainController {
         // Story 327 — the DEVICE_LOST / reconnect bridge (Recording
         // Reliability book §6.5): subscribed once, here, before the default
         // provision below can open the first stream — the controller's
-        // constructor publishes no state, so nothing is missed. Every state
-        // is posted to whatever transport controller is current when it is
-        // delivered; the subscriber never blocks (setEngineState offers with
-        // a drop handler). Cancelled in the window teardown below.
-        engineStateBridge = new EngineStateBridge(
-                () -> transportController,
-                () -> audioEngineController != null ? audioEngineController.getWatchedDevice() : Optional.empty(),
-                dispatcher());
+        // constructor publishes no state, so nothing is missed. Every
+        // EngineStateChange — state plus the device watched at that
+        // transition, captured by the controller — is posted as-is to
+        // whatever transport controller is current when it is delivered;
+        // the subscriber never blocks (setEngineState offers with a drop
+        // handler). Cancelled in the window teardown below.
+        engineStateBridge = new EngineStateBridge(() -> transportController, dispatcher());
         engineStateBridge.subscribeTo(audioEngineController);
         // Story 316: install the blank-name default streaming provision
         // (PortAudio first, then Java Sound as the final attempted rung) so

@@ -73,6 +73,15 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
 
     private static final Duration FX_TURN_BUDGET = Duration.ofSeconds(5);
     private static final long WAIT_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(10);
+    /**
+     * The bound of a held FX turn ({@link #holdTheFxThread()}): strictly
+     * longer than the sum of the {@link #await} calls a test runs inside the
+     * hold — at most two, of {@link #WAIT_BUDGET_NANOS} each — so the hold
+     * cannot expire under a premise still being awaited and let the test
+     * pass vacuously on a turn that ran early. The inner awaits keep their
+     * own budget; only the guard is wider (PR #982 round 2).
+     */
+    private static final long HOLD_BUDGET_NANOS = 3 * WAIT_BUDGET_NANOS;
     /** The hang guard of a wait for a real take's capture thread: its files created, or the take published. */
     private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
 
@@ -121,7 +130,7 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
             controller.setStillWritingDelayForTest(new ManualFxDelay());
             controller.setPipelineSetupForTest(pipeline::set);
             if (withEngineBridge) {
-                bridge = new EngineStateBridge(() -> controller, engineController::getWatchedDevice, null);
+                bridge = new EngineStateBridge(() -> controller, null);
                 bridge.subscribeTo(engineController);
             }
         });
@@ -326,6 +335,49 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
             assertThat(System.nanoTime() - deadline < 0).as("%s, within 30 s", what).isTrue();
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
         }
+    }
+
+    /**
+     * A held FX thread: {@link #release()} lets the held turn end, after
+     * which every turn posted meanwhile runs in posting order.
+     */
+    interface FxHold extends AutoCloseable {
+        void release();
+
+        @Override
+        default void close() {
+            release();
+        }
+    }
+
+    /**
+     * Holds the FX thread on its next turn until the hold is released, so a
+     * test can order what the device-event thread and the engine-state
+     * publisher's executor post behind it — the queued-loss interleaving of
+     * story 327's fix round (PR #982 review): the loss's FX turn runs only
+     * after the watch has moved. Returns once the hold is in place. The held
+     * turn is bounded at {@link #HOLD_BUDGET_NANOS} (30 s) — strictly longer
+     * than the two 10 s {@link #await} calls a test may run inside it, so
+     * the hold cannot end under a premise still being awaited — and the hold
+     * is always released in the test's {@code try}-with-resources; nothing
+     * that needs the FX thread —
+     * {@link #runOnFx}, {@link #onFx}, {@link #awaitOnFx} — may be called
+     * while it is held.
+     */
+    static FxHold holdTheFxThread() throws Exception {
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch released = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            held.countDown();
+            try {
+                released.await(HOLD_BUDGET_NANOS, TimeUnit.NANOSECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        assertThat(held.await(FX_TURN_BUDGET.toMillis(), TimeUnit.MILLISECONDS))
+                .as("the FX thread is held within %d s", FX_TURN_BUDGET.toSeconds()).isTrue();
+        return released::countDown;
     }
 
     static <T> T onFx(Supplier<T> action) throws Exception {

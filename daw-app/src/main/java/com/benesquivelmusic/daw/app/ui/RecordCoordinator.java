@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CapturePeakSnapshot;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.EarlySeal;
+import com.benesquivelmusic.daw.core.recording.FinalManifestFailure;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.SegmentFile;
@@ -75,6 +76,7 @@ import com.benesquivelmusic.daw.app.ui.TransportController.TakeCompletion;
 import com.benesquivelmusic.daw.app.ui.TransportController.FxDelay;
 import com.benesquivelmusic.daw.app.ui.TransportController.EarlySealSignal;
 import com.benesquivelmusic.daw.app.ui.TransportController.StopSealOutcome;
+import com.benesquivelmusic.daw.app.ui.TransportController.StopSealOutcomeReader;
 
 /** Owns the record state and the asynchronous take/MIDI lifecycle on the FX thread. */
 final class RecordCoordinator {
@@ -514,11 +516,47 @@ final class RecordCoordinator {
      */
     static String rescuedTakeMessage(DeviceId device, int clipCount, int trackCount) {
         if (clipCount == 0) {
-            return device.name() + " disconnected during recording; nothing had reached disk yet.";
+            return deviceDisconnectedText(device) + "; nothing had reached disk yet.";
         }
-        return device.name() + " disconnected during recording. The take was saved up to the dropout: "
-                + clipCount + " clip" + (clipCount == 1 ? "" : "s") + " on " + trackCount + " track"
-                + (trackCount == 1 ? "" : "s") + ".";
+        return deviceDisconnectedText(device) + ". The take was saved up to the dropout: "
+                + clipsOnTracksText(clipCount, trackCount) + ".";
+    }
+
+    /**
+     * The ERROR of a device-loss rescue whose every lane sealed but whose
+     * final manifest write failed on every attempt
+     * ({@link FinalManifestFailure}; PR #982 review): it leads with the
+     * device-loss wording, says that the audio was saved up to the dropout
+     * — the segments are sealed — but that the take's manifest could not be
+     * written, with the reason ({@link #manifestNotWrittenText}), and that
+     * take recovery rebuilds it ({@link #MANIFEST_REBUILT_BY_RECOVERY_TEXT}).
+     * Such a take is not a rescued take on disk, so it is never registered
+     * and never called preserved. With no clip — no track recorded a frame,
+     * so no segment holds audio and the live seal deleted the empty tails —
+     * that nothing had reached disk yet and the manifest could not be
+     * written, with no word of a rebuild: there is no segment to rebuild a
+     * take from (story 327, Known limitations).
+     */
+    static String rescuedTakeManifestNotWrittenMessage(DeviceId device, FinalManifestFailure failure,
+                                                      int clipCount, int trackCount) {
+        if (clipCount == 0) {
+            return deviceDisconnectedText(device) + "; nothing had reached disk yet, and "
+                    + manifestNotWrittenText(failure);
+        }
+        return deviceDisconnectedText(device) + ". The audio was saved up to the dropout ("
+                + clipsOnTracksText(clipCount, trackCount) + "), but " + manifestNotWrittenText(failure) + "; "
+                + MANIFEST_REBUILT_BY_RECOVERY_TEXT;
+    }
+
+    /** The lead every device-loss report shares: {@code <device> disconnected during recording}. */
+    private static String deviceDisconnectedText(DeviceId device) {
+        return device.name() + " disconnected during recording";
+    }
+
+    /** {@code 1 clip on 1 track}, {@code 2 clips on 2 tracks}. */
+    private static String clipsOnTracksText(int clipCount, int trackCount) {
+        return clipCount + " clip" + (clipCount == 1 ? "" : "s") + " on " + trackCount + " track"
+                + (trackCount == 1 ? "" : "s");
     }
 
     /**
@@ -788,11 +826,12 @@ final class RecordCoordinator {
      */
     private EarlySealSignal earlySealSignal = RecordingPipeline::earlySeal;
     /**
-     * How the outcome of the seal a take's Stop requested is read —
-     * {@code RecordingPipeline::stopSealFailure}; replaced only by
+     * How the outcome of the seal a take's Stop or rescue requested is read
+     * — {@link StopSealOutcome#of}, the pipeline's {@code stopSealFailure()}
+     * and {@code finalManifestFailure()}; replaced only by
      * {@link #setStopSealOutcomeForTest}.
      */
-    private StopSealOutcome stopSealOutcome = RecordingPipeline::stopSealFailure;
+    private StopSealOutcomeReader stopSealOutcome = StopSealOutcome::of;
     /**
      * How {@link #startMidiRecording} finds an armed MIDI track's input
      * device by its name — {@link #resolveMidiDevice}; replaced only by
@@ -1029,7 +1068,8 @@ final class RecordCoordinator {
      * {@link #TAKE_FINISHING_MESSAGE} or {@link #TAKE_STILL_WRITING_MESSAGE},
      * if it still says one of them, and leaves the project as it was. A take
      * whose finalisation did not end cleanly — sealed early by the capture
-     * thread, or a lane that threw in the seal the Stop requested — is
+     * thread, a lane that threw in the seal the Stop requested, or a final
+     * manifest write that failed on every attempt — is
      * reported here: the report of {@link #finalizationFailureReport} as the
      * ERROR toast and the status text, with or without clips. A failure of
      * the completion itself is logged SEVERE and shown as an ERROR toast
@@ -1100,7 +1140,14 @@ final class RecordCoordinator {
             return;
         }
         int clipCount = clips.size();
-        Optional<String> failureReport = finalizationFailureReport(pipeline, clipCount);
+        int trackCount = pipeline.getRecordedClips().size();
+        boolean rescue = isRescue(pipeline);
+        // Read once: the early seal, the lanes' seals and the final manifest
+        // write, final now that the take's capture thread has terminated.
+        Optional<EarlySeal> earlySeal = earlySealOf(pipeline);
+        StopSealOutcome sealOutcome = stopSealOutcome.of(pipeline);
+        Optional<String> failureReport = finalizationFailureReport(pipeline, earlySeal, sealOutcome, clipCount,
+                trackCount);
         if (unannouncedTake == pipeline && failureReport.isEmpty()) {
             failureReport = Optional.of("Recording aborted — take readiness precondition failed:"
                     + " the flush service ended before capture; " + clipsCreatedText(clipCount));
@@ -1110,15 +1157,23 @@ final class RecordCoordinator {
             failureReport = Optional.of(failureReport.orElseThrow() + "; take cleanup failed: " + cleanupFailure);
         }
         // Story 327 (book §5.5 step 3): a device-loss rescue whose every lane
-        // sealed is a rescued take on disk whatever follows — its audio may
-        // still fail to load, a MIDI recorder of a mixed take may have
-        // failed to close — so it is registered before any report below,
-        // and those reports lead with the device-loss wording instead of
-        // "Recording stopped". A rescue whose seal failed (stopSealFailure
-        // present) is not a rescued take and stays unregistered.
-        boolean rescue = pipeline == rescuedTakePipeline && lostDevice != null;
-        boolean rescueSealed = rescue && stopSealOutcome.of(pipeline).isEmpty();
-        int trackCount = pipeline.getRecordedClips().size();
+        // sealed, and whose manifest says so on disk, is a rescued take on
+        // disk whatever follows — its audio may still fail to load, a MIDI
+        // recorder of a mixed take may have failed to close — so it is
+        // registered before any report below, and those reports lead with
+        // the device-loss wording instead of "Recording stopped". A rescue
+        // whose seal failed — the capture thread sealed the take early
+        // (earlySeal: a stop requested first does not prevent it — an
+        // exhaustion or a write failure applying a block the final sweep
+        // drains completes it — and the manifest then reads write-failure
+        // or disk-exhaustion, not device-loss), a lane threw
+        // (stopSealFailure), or the final manifest write failed on every
+        // attempt (finalManifestFailure: the manifest on disk still reads
+        // streaming, and the recovery scan — TakeRecovery.scan, which story
+        // 332 runs on project open — rebuilds it as crash recovery) — is not
+        // a rescued take and stays unregistered (PR #982 review; round 2 for
+        // the early seal).
+        boolean rescueSealed = rescue && earlySeal.isEmpty() && sealOutcome.isClean();
         if (rescueSealed) {
             int sealedSegments = 0;
             for (List<String> segmentPaths : segmentLists) sealedSegments += segmentPaths.size();
@@ -1144,15 +1199,23 @@ final class RecordCoordinator {
             reportTakeFinalizationFailure(joinedReport(outcome, unloadedReport.get()));
         } else if (failureReport.isPresent()) {
             // A rescued take whose seal failed takes this path too (book
-            // §5.2 "Rescue failure": DEVICE_LOST → ABORTED), with the ERROR
-            // of stopSealFailedMessage and no "saved" wording.
+            // §5.2 "Rescue failure": DEVICE_LOST → ABORTED): a lane that
+            // threw with the ERROR of stopSealFailedMessage and no "saved"
+            // wording; a final manifest write that failed with the ERROR of
+            // rescuedTakeManifestNotWrittenMessage, which leads with the
+            // device-loss wording and never calls the take preserved.
             reportTakeFinalizationFailure(failureReport.get());
         } else if (rescue) {
-            // Story 327 (book §5.5 step 5): a device-loss rescue whose
-            // every lane sealed. finalizationFailureReport is empty for it:
-            // earlySeal() never completes for a requested stop and
-            // stopSealFailure() is empty when every lane sealed, whatever the
-            // reason the stop was requested with (DeviceLossSealContractTest).
+            // Story 327 (book §5.5 step 5): a device-loss rescue with no
+            // early seal, whose every lane sealed and whose manifest says so
+            // on disk. finalizationFailureReport is empty for it: the early
+            // seal is empty (a stop requested first does not prevent one —
+            // an exhaustion or a write failure in the final sweep completes
+            // it — and such a rescue was reported above, not shown here),
+            // stopSealFailure() is empty when every lane sealed, whatever
+            // the reason the stop was requested with, and
+            // finalManifestFailure() is empty when the final write landed
+            // (DeviceLossSealContractTest).
             showRescuedTake(pipeline, clips, trackCount);
         } else {
             showTakePublished(clipCount);
@@ -1171,8 +1234,9 @@ final class RecordCoordinator {
     }
 
     /**
-     * Registers the rescued take {@code pipeline} recorded, whose every lane
-     * sealed, with the project's rescued-take registry
+     * Registers the rescued take {@code pipeline} recorded — no early seal,
+     * every lane sealed, and the final manifest that says so on disk — with
+     * the project's rescued-take registry
      * ({@link #rescuedTakeRegistration}; book §5.5 step 3). A failure is
      * logged, never propagated: the publication and the report that follow
      * do not depend on it. Not an overload of {@link #registerRescuedTake}
@@ -1490,23 +1554,62 @@ final class RecordCoordinator {
      * ended, read once by the turn that publishes the take, once the take's
      * completion has returned the clips: its capture thread has
      * terminated then, and before it terminated that thread completed the
-     * early-seal signal, if it ever will, and recorded the failure of the
-     * seal the Stop requested, if there was one. The report of a take the
-     * capture thread sealed early ({@link #takeSealedEarlyMessage});
+     * early-seal signal, if it ever will ({@code earlySeal}, read by the
+     * caller through {@link #earlySealOf}), recorded the failure of the
+     * seal the Stop requested, if there was one, and recorded the failure
+     * of the final manifest write, if it failed on every attempt
+     * ({@code sealOutcome}). The report of a take the capture thread sealed
+     * early — for a Stop {@link #takeSealedEarlyMessage}, for a device-loss
+     * rescue {@link #rescuedTakeSealedEarlyMessage}: a stop requested first
+     * does not prevent an early seal, which an exhaustion or a write
+     * failure in the final sweep completes (PR #982 review round 2);
      * otherwise the report of a lane that threw in the seal the Stop
-     * requested ({@link #stopSealFailedMessage}); otherwise empty — the take
-     * was finalised cleanly, and the caller shows the SUCCESS. The core never
-     * reports both for one take: a take sealed early has no failure of the
-     * Stop's seal. Reads only; blocks on nothing. FX thread.
+     * requested ({@link #stopSealFailedMessage}); either of them, when the final
+     * manifest write failed as well, with that fact joined on
+     * ({@link #joinedReport}); otherwise, for a final manifest write that
+     * failed after a clean seal of every lane, the report of a manifest
+     * that could not be written — for a device-loss rescue leading with the
+     * device-loss wording ({@link #rescuedTakeManifestNotWrittenMessage}),
+     * for a Stop as {@link #finalManifestNotWrittenMessage} — so that a
+     * take whose manifest on disk still reads streaming is never reported
+     * as stopped cleanly or as preserved (PR #982 review); otherwise empty
+     * — the take was finalised cleanly, and the caller shows the SUCCESS.
+     * The core never reports an early seal and a failure of the Stop's seal
+     * for one take. This is the one predicate the Stop and the rescue
+     * share. Reads only; blocks on nothing. FX thread.
      *
-     * @param clipCount the clips the Stop created from the take
+     * @param earlySeal   the early seal the capture thread signalled, if it sealed the take on its own
+     * @param sealOutcome how the seal the Stop or the rescue requested ended
+     * @param clipCount   the clips the Stop created from the take
+     * @param trackCount  how many tracks the take recorded onto
      */
-    private Optional<String> finalizationFailureReport(RecordingPipeline pipeline, int clipCount) {
+    private Optional<String> finalizationFailureReport(RecordingPipeline pipeline, Optional<EarlySeal> earlySeal,
+                                                       StopSealOutcome sealOutcome, int clipCount, int trackCount) {
         Path takeDirectory = pipeline.getTakeDirectory();
-        return earlySealOf(pipeline)
-                .map(seal -> takeSealedEarlyMessage(seal, clipCount, takeDirectory))
-                .or(() -> stopSealOutcome.of(pipeline)
+        boolean rescue = isRescue(pipeline);
+        Optional<String> sealReport = earlySeal
+                .map(seal -> rescue
+                        ? rescuedTakeSealedEarlyMessage(lostDevice, seal, clipCount, takeDirectory)
+                        : takeSealedEarlyMessage(seal, clipCount, takeDirectory))
+                .or(() -> sealOutcome.laneFailure()
                         .map(failure -> stopSealFailedMessage(failure, clipCount, takeDirectory)));
+        Optional<FinalManifestFailure> manifestFailure = sealOutcome.manifestFailure();
+        if (manifestFailure.isEmpty()) {
+            return sealReport;
+        }
+        FinalManifestFailure failure = manifestFailure.get();
+        if (sealReport.isPresent()) {
+            return Optional.of(joinedReport(sealReport.get(),
+                    manifestNotWrittenText(failure) + "; " + MANIFEST_REBUILT_BY_RECOVERY_TEXT));
+        }
+        return Optional.of(rescue
+                ? rescuedTakeManifestNotWrittenMessage(lostDevice, failure, clipCount, trackCount)
+                : finalManifestNotWrittenMessage(failure, clipCount));
+    }
+
+    /** Whether {@code pipeline}'s take is the one a device loss rescued, with the lost device remembered. FX thread. */
+    private boolean isRescue(RecordingPipeline pipeline) {
+        return pipeline == rescuedTakePipeline && lostDevice != null;
     }
 
     /**
@@ -1544,6 +1647,34 @@ final class RecordCoordinator {
      * @param takeDirectory the take's directory under the project's {@code audio/takes}
      */
     static String takeSealedEarlyMessage(EarlySeal seal, int clipCount, Path takeDirectory) {
+        return "Recording stopped — " + sealedEarlyText(seal, clipCount, takeDirectory);
+    }
+
+    /**
+     * The ERROR toast and status text of a device-loss rescue whose take the
+     * capture thread sealed early — a stop requested first does not prevent
+     * an early seal: an exhaustion, or a write failure applying a block the
+     * rescue's own final sweep drained, completes it (PR #982 review round
+     * 2) — shown once by the turn that publishes the take: the device-loss
+     * lead ({@link #deviceDisconnectedText}), that saving the take ended
+     * early, and the cause and what was kept or left in the words of
+     * {@link #takeSealedEarlyMessage}. Such a take is not a rescued take on
+     * disk — its manifest reads {@code aborted}/{@code write-failure} or
+     * {@code disk-exhaustion}, not {@code device-loss} — so it is never
+     * registered and never called saved or preserved.
+     *
+     * @param device        the device whose loss requested the rescue
+     * @param seal          the early seal the capture thread signalled
+     * @param clipCount     the clips the rescue created from the take
+     * @param takeDirectory the take's directory under the project's {@code audio/takes}
+     */
+    static String rescuedTakeSealedEarlyMessage(DeviceId device, EarlySeal seal, int clipCount, Path takeDirectory) {
+        return deviceDisconnectedText(device) + ". Saving the take ended early — "
+                + sealedEarlyText(seal, clipCount, takeDirectory);
+    }
+
+    /** The cause of an early seal and what it kept or left: the body {@link #takeSealedEarlyMessage} and {@link #rescuedTakeSealedEarlyMessage} share. */
+    private static String sealedEarlyText(EarlySeal seal, int clipCount, Path takeDirectory) {
         String cause = switch (seal) {
             case EarlySeal.DiskExhausted disk when disk.freeSpaceUnknown() ->
                     "the free disk space could not be read";
@@ -1561,7 +1692,7 @@ final class RecordCoordinator {
         } else {
             kept = "no audio had been recorded before that";
         }
-        return "Recording stopped — " + cause + "; " + kept;
+        return cause + "; " + kept;
     }
 
     /**
@@ -1601,6 +1732,59 @@ final class RecordCoordinator {
             left = "no audio had been recorded";
         }
         return "Recording stopped — " + finishingFailedText(failure.failure()) + "; " + left;
+    }
+
+    /**
+     * What rebuilds the manifest of a take whose final write failed: the
+     * recovery scan ({@code TakeRecovery.scan}), from the sealed segments.
+     * {@code IncompleteTakeStore.registerRecoveredTakes} runs the scan;
+     * story 332 calls it on project open, and until then
+     * {@code registerRecoveredTakes} has no production caller. The
+     * single-failure reports ({@link #finalManifestNotWrittenMessage} and
+     * {@link #rescuedTakeManifestNotWrittenMessage}) say it only of a take
+     * that holds a clip: with no clip there is no segment to rebuild it
+     * from (story 327, Known limitations). The joined report of
+     * {@link #finalizationFailureReport} — an early seal or a lane failure
+     * beside the failed write — says it whatever the clip count, since a
+     * lane's {@code .part} may remain for the scan.
+     */
+    private static final String MANIFEST_REBUILT_BY_RECOVERY_TEXT = "take recovery rebuilds it from the segments";
+
+    /**
+     * The ERROR toast and status text of a Stop whose every lane sealed but
+     * whose final manifest write failed on every attempt
+     * ({@link FinalManifestFailure}; PR #982 review), shown once by the turn
+     * that publishes the take instead of the SUCCESS: the manifest could not
+     * be written, with the reason ({@link #manifestNotWrittenText}); that
+     * the audio recorded is kept, with the clips created, and that take
+     * recovery rebuilds the manifest ({@link #MANIFEST_REBUILT_BY_RECOVERY_TEXT});
+     * or, with no clip — no track recorded a frame, and the live seal
+     * deleted the empty tails — that no audio had been recorded, with no
+     * word of a rebuild. Never "Recording stopped — N clips created" alone:
+     * the manifest on disk still reads streaming, and the next scan treats
+     * the take as a crash candidate.
+     *
+     * @param failure   the failure of the final manifest write
+     * @param clipCount the clips the Stop created from the take
+     */
+    static String finalManifestNotWrittenMessage(FinalManifestFailure failure, int clipCount) {
+        if (clipCount == 0) {
+            return "Recording stopped — " + manifestNotWrittenText(failure) + "; no audio had been recorded";
+        }
+        return "Recording stopped — " + manifestNotWrittenText(failure) + "; the audio recorded is kept ("
+                + clipsCreatedText(clipCount) + "); " + MANIFEST_REBUILT_BY_RECOVERY_TEXT;
+    }
+
+    /**
+     * The cause of a {@link FinalManifestFailure}: that the take's manifest
+     * could not be written, with the reason of the innermost
+     * {@link IOException} when there is one in the cause chain, otherwise
+     * the throwable's type and, when it has one, its message.
+     */
+    private static String manifestNotWrittenText(FinalManifestFailure failure) {
+        IOException ioFailure = innermostIOException(failure.failure());
+        String reason = ioFailure != null ? ioReason(ioFailure) : shortDescription(failure.failure());
+        return "the take's manifest could not be written (" + reason + ")";
     }
 
     /** {@code 1 clip created}, {@code 2 clips created}. */
@@ -1755,10 +1939,11 @@ final class RecordCoordinator {
     }
 
     /**
-     * Test seam: replaces how the outcome of a take's Stop seal is read (see
-     * {@link StopSealOutcome}). FX thread, before the take is stopped.
+     * Test seam: replaces how the outcome of a take's Stop or rescue seal is
+     * read (see {@link StopSealOutcomeReader}). FX thread, before the take
+     * is stopped.
      */
-    void setStopSealOutcomeForTest(StopSealOutcome outcome) {
+    void setStopSealOutcomeForTest(StopSealOutcomeReader outcome) {
         stopSealOutcome = Objects.requireNonNull(outcome, "outcome must not be null");
     }
 

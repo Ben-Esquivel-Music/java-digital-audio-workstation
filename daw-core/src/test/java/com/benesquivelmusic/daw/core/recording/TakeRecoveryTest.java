@@ -12,16 +12,21 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -33,6 +38,9 @@ import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.has
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampValue;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.sizeFields;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * {@link TakeRecovery} — the crash grammar of Recording Reliability book
@@ -46,8 +54,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and by appending a torn partial frame behind it. Also: a streaming entry
  * under an already aborted manifest is healed and the found reason kept; an
  * empty standby {@code .part} is deleted as the live seal deletes an empty
- * tail; a sealed take with an unlisted orphan is no candidate; one take's
- * failure never hides the next.
+ * tail — only once the manifest that drops its entry is on disk, so a
+ * manifest write that fails leaves it, and a delete that fails after the
+ * write is reported with the manifest standing; an unlisted zero-frame
+ * {@code .part} (the live seal's undeletable standby; the file a scan
+ * dropped and then could not delete) is deleted wherever a scan finds it,
+ * while an unlisted {@code .part} with frames, one shorter than the header,
+ * one of another format, one whose header claims more channels than the
+ * track its directory names (a widened frame that floors real mono frames
+ * to none) and one under a directory naming no listed track are left; a
+ * sealed take with an orphan is no candidate; one take's failure never
+ * hides the next.
  */
 class TakeRecoveryTest {
 
@@ -142,6 +159,26 @@ class TakeRecoveryTest {
         return wav;
     }
 
+    /**
+     * Writes at {@code relativePath} a {@code .part} whose header claims
+     * {@code headerChannels} channels and then holds {@code monoFrames}
+     * whole frames of the listed mono track's width — a header that widens
+     * the frame past the data behind it, so the length-derived count floors
+     * to no frame at all — and returns its path.
+     */
+    private Path partWhoseHeaderClaimsChannels(String relativePath, int headerChannels, int monoFrames)
+            throws IOException {
+        Path part = SegmentWriter.partPathFor(takeDir.resolve(relativePath));
+        try (SegmentWriter _ = SegmentWriter.open(part, SAMPLE_RATE, headerChannels, BIT_DEPTH, CADENCE,
+                System::nanoTime)) {
+            // The open writes the header; nothing is appended through the writer.
+        }
+        Files.write(part, new byte[monoFrames * BYTES_PER_FRAME_MONO_16], StandardOpenOption.APPEND);
+        assertThat(SegmentFile.describe(part).frameCount())
+                .as("fixture: under the widened header the mono frames floor to none").isZero();
+        return part;
+    }
+
     private static SegmentEntry sealed(String relativePath, int index, long frames) {
         return new SegmentEntry(TRACK, 0, index, relativePath, frames, SegmentState.SEALED);
     }
@@ -187,6 +224,55 @@ class TakeRecoveryTest {
 
     private TakeManifest manifestOnDisk() throws IOException {
         return TakeManifest.read(TakeManifest.manifestPath(takeDir));
+    }
+
+    private byte[] manifestBytesOnDisk() throws IOException {
+        return Files.readAllBytes(TakeManifest.manifestPath(takeDir));
+    }
+
+    /**
+     * Plants a non-empty directory where {@link TakeManifest#write(Path)}
+     * stages its file ({@code take.manifest.tmp}), so that opening the
+     * staging channel fails and the write throws, the manifest on disk
+     * untouched; the returned path is what to delete to let a later write
+     * land.
+     */
+    private Path refuseTheManifestWrite() throws IOException {
+        Path staging = takeDir.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX);
+        Files.createDirectory(staging);
+        Files.writeString(staging.resolve("occupied"), "the staging file cannot be opened");
+        return staging;
+    }
+
+    private static void allowTheManifestWriteAgain(Path staging) throws IOException {
+        Files.delete(staging.resolve("occupied"));
+        Files.delete(staging);
+    }
+
+    /**
+     * Keeps {@code file} from being deleted while the returned hold is open,
+     * the way a platform refuses a delete: on Windows a {@code java.io}
+     * stream holds it open without delete sharing, so {@code Files.delete}
+     * fails with a sharing violation; elsewhere the write bits of its
+     * directory are withdrawn, so the unlink is refused. Closing the hold
+     * releases the stream or restores the bits. The caller assumes, never
+     * asserts, that the refusal took: a POSIX process that overrides the
+     * permission bits (root) or a mount that ignores them (WSL's drvfs)
+     * deletes the file all the same, and the test is skipped there.
+     */
+    private static AutoCloseable holdUndeletable(Path file) throws IOException {
+        if (System.getProperty("os.name", "").startsWith("Windows")) {
+            InputStream open = new FileInputStream(file.toFile());
+            return open::close;
+        }
+        Path directory = file.getParent();
+        Set<PosixFilePermission> before = Files.getPosixFilePermissions(directory);
+        Set<PosixFilePermission> withoutWrite = EnumSet.noneOf(PosixFilePermission.class);
+        withoutWrite.addAll(before);
+        withoutWrite.removeAll(EnumSet.of(PosixFilePermission.OWNER_WRITE, PosixFilePermission.GROUP_WRITE,
+                PosixFilePermission.OTHERS_WRITE));
+        Files.setPosixFilePermissions(directory, withoutWrite);
+        return () -> Files.setPosixFilePermissions(directory, before);
     }
 
     @Test
@@ -550,22 +636,285 @@ class TakeRecoveryTest {
     }
 
     @Test
-    void aSealedTakeWithAnUnlistedOrphanPartIsNotACandidate() throws IOException {
+    void aZeroFrameOrphanUnderASealedTakeIsDeletedAndTheTakeIsNoCandidate() throws IOException {
         // A take that stopped cleanly, whose standby .part the live seal could not delete.
-        sealedByWriter(SEGMENT_000, FRAMES);
+        Path wav = sealedByWriter(SEGMENT_000, FRAMES);
         manifestFor(takeDir, sealed(SEGMENT_000, 0, FRAMES))
                 .sealed(SealedBy.STOP).sealedAt(Instant.parse("2026-08-03T14:25:05Z")).build().write(takeDir);
         Path orphan = abandonedPart(SEGMENT_001, MONO, 0);
-        byte[] orphanBytes = Files.readAllBytes(orphan);
-        byte[] manifestBytes = Files.readAllBytes(TakeManifest.manifestPath(takeDir));
+        assertThat(Files.size(orphan)).as("fixture: the orphan is a bare header").isEqualTo(SegmentFile.HEADER_BYTES);
+        byte[] wavBytes = Files.readAllBytes(wav);
+        byte[] manifestBytes = manifestBytesOnDisk();
 
         List<String> warnings = warningsLoggedBy(() -> assertThat(TakeRecovery.scan(takesDir)).isEmpty());
 
         assertThat(warnings).hasSize(1);
-        assertThat(warnings.getFirst()).contains(orphan.toString(), "does not list it");
+        assertThat(warnings.getFirst()).contains(orphan.toString(), "deleted").doesNotContain("untouched");
+        assertThat(orphan).as("it holds no frame and no manifest lists it: deleted, as the live seal meant to")
+                .doesNotExist();
+        assertThat(takeDir.resolve(SEGMENT_001)).as("never sealed into a segment").doesNotExist();
+        assertThat(Files.readAllBytes(wav)).isEqualTo(wavBytes);
+        assertThat(manifestBytesOnDisk()).as("a sealed take is rewritten by no scan").isEqualTo(manifestBytes);
         assertThat(TakeRecovery.recover(takeDir)).isEmpty();
-        assertThat(Files.readAllBytes(orphan)).as("left as it is").isEqualTo(orphanBytes);
-        assertThat(Files.readAllBytes(TakeManifest.manifestPath(takeDir))).isEqualTo(manifestBytes);
+    }
+
+    @Test
+    void anOrphanWithFramesUnderASealedTakeIsLoggedAndLeftAndTheTakeIsNoCandidate() throws IOException {
+        sealedByWriter(SEGMENT_000, FRAMES);
+        manifestFor(takeDir, sealed(SEGMENT_000, 0, FRAMES))
+                .sealed(SealedBy.STOP).sealedAt(Instant.parse("2026-08-03T14:25:05Z")).build().write(takeDir);
+        Path orphan = abandonedPart(SEGMENT_001, MONO, FRAMES);
+        byte[] orphanBytes = Files.readAllBytes(orphan);
+        byte[] manifestBytes = manifestBytesOnDisk();
+
+        List<String> warnings = warningsLoggedBy(() -> assertThat(TakeRecovery.scan(takesDir)).isEmpty());
+
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst()).contains(orphan.toString(), "untouched", "does not list it");
+        assertThat(TakeRecovery.recover(takeDir)).isEmpty();
+        assertThat(Files.readAllBytes(orphan)).as("its frames are real and its lane unknown: left as it is")
+                .isEqualTo(orphanBytes);
+        assertThat(manifestBytesOnDisk()).isEqualTo(manifestBytes);
+    }
+
+    @Test
+    void aManifestWriteThatFailsLeavesTheEmptyStandbyOnDiskForTheNextScanToDiscard() throws IOException {
+        manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        Path standby = abandonedPart(SEGMENT_000, MONO, 0);
+        byte[] standbyBytes = Files.readAllBytes(standby);
+        byte[] manifestBytes = manifestBytesOnDisk();
+        Path staging = refuseTheManifestWrite();
+
+        assertThatThrownBy(() -> TakeRecovery.recover(takeDir)).isInstanceOf(IOException.class);
+
+        assertThat(standby).as("never deleted before the manifest that drops its entry is on disk").isRegularFile();
+        assertThat(Files.readAllBytes(standby)).isEqualTo(standbyBytes);
+        assertThat(manifestBytesOnDisk()).as("the failed write left the manifest it found").isEqualTo(manifestBytes);
+        assertThat(manifestOnDisk().segments()).as("still listed, still streaming: no later scan reports a"
+                + " segment with neither file").containsExactly(streaming(SEGMENT_000, 0));
+
+        allowTheManifestWriteAgain(staging);
+        List<RecoveredTake> recovered = TakeRecovery.scan(takesDir);
+
+        assertThat(recovered).hasSize(1);
+        assertThat(recovered.getFirst().sealedSegments()).isEmpty();
+        assertThat(recovered.getFirst().unrecoverable()).isEmpty();
+        assertThat(standby).as("discarded by the scan whose write landed").doesNotExist();
+        TakeManifest manifest = manifestOnDisk();
+        assertThat(manifest.sealedBy()).contains(SealedBy.CRASH_RECOVERY);
+        assertThat(manifest.segments()).isEmpty();
+        assertThat(TakeRecovery.scan(takesDir)).isEmpty();
+    }
+
+    @Test
+    void aZeroFramePartLeftBetweenTheManifestWriteAndItsDeleteIsDeletedByTheNextScan() throws IOException {
+        // A scan wrote the manifest without the standby's entry and died
+        // before deleting the file: aborted/crash-recovery, every entry
+        // sealed, and an unlisted bare header in the track directory.
+        Path wav = sealedByWriter(SEGMENT_000, FRAMES);
+        manifestFor(takeDir, sealed(SEGMENT_000, 0, FRAMES))
+                .aborted(SealedBy.CRASH_RECOVERY).sealedAt(Instant.parse("2026-08-03T14:25:05Z")).build()
+                .write(takeDir);
+        Path standby = abandonedPart(SEGMENT_001, MONO, 0);
+        byte[] wavBytes = Files.readAllBytes(wav);
+        byte[] manifestBytes = manifestBytesOnDisk();
+
+        List<String> warnings = warningsLoggedBy(() -> assertThat(TakeRecovery.scan(takesDir)).isEmpty());
+
+        assertThat(standby).as("the delete the crash cut short is done by this scan").doesNotExist();
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst()).contains(standby.toString(), "deleted");
+        assertThat(TakeRecovery.recover(takeDir)).as("not a candidate: nothing is registered for a cleanup")
+                .isEmpty();
+        assertThat(Files.readAllBytes(wav)).isEqualTo(wavBytes);
+        assertThat(manifestBytesOnDisk()).isEqualTo(manifestBytes);
+    }
+
+    @Test
+    void anUnlistedZeroFramePartUnderACandidateIsDeletedAndNotReported() throws IOException {
+        manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        abandonedPart(SEGMENT_000, MONO, FRAMES);
+        // The standby the live seal could not delete, under a take the JVM then died in.
+        Path orphan = abandonedPart(SEGMENT_001, MONO, 0);
+
+        AtomicReference<List<RecoveredTake>> recovered = new AtomicReference<>();
+        List<String> warnings = warningsLoggedBy(() -> recovered.set(TakeRecovery.scan(takesDir)));
+
+        assertThat(recovered.get()).hasSize(1);
+        RecoveredTake take = recovered.get().getFirst();
+        assertThat(take.sealedSegments()).containsExactly(sealed(SEGMENT_000, 0, FRAMES));
+        assertThat(take.unrecoverable()).as("deleted, not reported").isEmpty();
+        assertThat(orphan).doesNotExist();
+        assertThat(takeDir.resolve(SEGMENT_001)).doesNotExist();
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst()).contains(orphan.toString(), "deleted");
+        assertThat(manifestOnDisk().segments()).as("no entry is invented for it")
+                .containsExactly(sealed(SEGMENT_000, 0, FRAMES));
+        assertThat(TakeRecovery.scan(takesDir)).isEmpty();
+    }
+
+    @Test
+    void anUnlistedPartShorterThanTheHeaderIsNotZeroFrameAndIsReportedAndLeft() throws IOException {
+        manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        abandonedPart(SEGMENT_000, MONO, FRAMES);
+        Path stub = SegmentWriter.partPathFor(takeDir.resolve(SEGMENT_001));
+        byte[] stubBytes = "RIFF\u0000\u0000\u0000\u0000WAVE".getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        Files.write(stub, stubBytes);
+
+        List<RecoveredTake> recovered = TakeRecovery.scan(takesDir);
+
+        assertThat(recovered).hasSize(1);
+        assertThat(recovered.getFirst().unrecoverable()).extracting(Unrecoverable::file).containsExactly(stub);
+        assertThat(recovered.getFirst().unrecoverable().getFirst().reason()).contains("not listed");
+        assertThat(Files.readAllBytes(stub)).as("too short to parse: not provably zero-frame, so left")
+                .isEqualTo(stubBytes);
+        assertThat(manifestOnDisk().segments()).containsExactly(sealed(SEGMENT_000, 0, FRAMES));
+    }
+
+    @Test
+    void anUnlistedZeroFramePartOfAnotherFormatIsNotZeroFrameAndIsReportedAndLeft() throws IOException {
+        manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        abandonedPart(SEGMENT_000, MONO, FRAMES);
+        // A bare header, but at 24 bits where the manifest says 16: not this take's file.
+        Path foreign = SegmentWriter.partPathFor(takeDir.resolve(SEGMENT_001));
+        try (SegmentWriter _ = SegmentWriter.open(foreign, SAMPLE_RATE, MONO, 24, CADENCE, System::nanoTime)) {
+            // The open writes the header; nothing is appended.
+        }
+        byte[] foreignBytes = Files.readAllBytes(foreign);
+        assertThat(foreignBytes).hasSize(SegmentFile.HEADER_BYTES);
+
+        List<RecoveredTake> recovered = TakeRecovery.scan(takesDir);
+
+        assertThat(recovered).hasSize(1);
+        assertThat(recovered.getFirst().unrecoverable()).extracting(Unrecoverable::file).containsExactly(foreign);
+        assertThat(recovered.getFirst().unrecoverable().getFirst().reason()).contains("not listed");
+        assertThat(Files.readAllBytes(foreign)).isEqualTo(foreignBytes);
+    }
+
+    @Test
+    void anUnlistedPartWhoseHeaderClaimsMoreChannelsThanItsTrackIsNotZeroFrameAndIsLoggedAndLeftUnderASealedTake()
+            throws IOException {
+        Path wav = sealedByWriter(SEGMENT_000, FRAMES);
+        manifestFor(takeDir, sealed(SEGMENT_000, 0, FRAMES))
+                .sealed(SealedBy.STOP).sealedAt(Instant.parse("2026-08-03T14:25:05Z")).build().write(takeDir);
+        // One whole mono frame behind a header claiming stereo: by the header's
+        // frame size the file holds no frame; by the track's, it holds one.
+        Path orphan = partWhoseHeaderClaimsChannels(SEGMENT_001, 2, 1);
+        byte[] orphanBytes = Files.readAllBytes(orphan);
+        byte[] wavBytes = Files.readAllBytes(wav);
+        byte[] manifestBytes = manifestBytesOnDisk();
+
+        List<String> warnings = warningsLoggedBy(() -> assertThat(TakeRecovery.scan(takesDir)).isEmpty());
+
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst()).contains(orphan.toString(), "untouched", "does not list it",
+                "not provably zero-frame", "2 channel(s)", "lists 1");
+        assertThat(Files.readAllBytes(orphan)).as("the listed-entry rule refuses this disagreement, and so does"
+                + " the unlisted one: never deleted").isEqualTo(orphanBytes);
+        assertThat(Files.readAllBytes(wav)).isEqualTo(wavBytes);
+        assertThat(manifestBytesOnDisk()).isEqualTo(manifestBytes);
+        assertThat(TakeRecovery.recover(takeDir)).isEmpty();
+    }
+
+    @Test
+    void anUnlistedPartWhoseHeaderClaimsMoreChannelsThanItsTrackIsNotZeroFrameAndIsReportedAndLeftUnderACandidate()
+            throws IOException {
+        manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        abandonedPart(SEGMENT_000, MONO, FRAMES);
+        Path orphan = partWhoseHeaderClaimsChannels(SEGMENT_001, 2, 1);
+        byte[] orphanBytes = Files.readAllBytes(orphan);
+
+        AtomicReference<List<RecoveredTake>> recovered = new AtomicReference<>();
+        List<String> warnings = warningsLoggedBy(() -> recovered.set(TakeRecovery.scan(takesDir)));
+
+        assertThat(recovered.get()).hasSize(1);
+        RecoveredTake take = recovered.get().getFirst();
+        assertThat(take.sealedSegments()).containsExactly(sealed(SEGMENT_000, 0, FRAMES));
+        assertThat(take.unrecoverable()).extracting(Unrecoverable::file).containsExactly(orphan);
+        assertThat(take.unrecoverable().getFirst().reason())
+                .contains("not listed", "not provably zero-frame", "2 channel(s)", "lists 1");
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst()).contains(orphan.toString(), "untouched", "2 channel(s)");
+        assertThat(Files.readAllBytes(orphan)).isEqualTo(orphanBytes);
+        assertThat(takeDir.resolve(SEGMENT_001)).doesNotExist();
+        assertThat(manifestOnDisk().segments()).as("no entry is invented for it")
+                .containsExactly(sealed(SEGMENT_000, 0, FRAMES));
+        // The next scan finds it under a take that is no candidate, and refuses it the same way.
+        assertThat(TakeRecovery.scan(takesDir)).isEmpty();
+        assertThat(Files.readAllBytes(orphan)).isEqualTo(orphanBytes);
+    }
+
+    @Test
+    void anUnlistedZeroFramePartUnderADirectoryNamingNoListedTrackIsNotZeroFrameAndIsReportedAndLeft()
+            throws IOException {
+        manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        abandonedPart(SEGMENT_000, MONO, FRAMES);
+        // A bare header of the manifest's own format, under a track the manifest does not list.
+        Path stray = SegmentWriter.partPathFor(takeDir.resolve("guitar/segment-000.wav"));
+        try (SegmentWriter _ = SegmentWriter.open(stray, SAMPLE_RATE, MONO, BIT_DEPTH, CADENCE, System::nanoTime)) {
+            // The open writes the header; nothing is appended.
+        }
+        byte[] strayBytes = Files.readAllBytes(stray);
+        assertThat(strayBytes).hasSize(SegmentFile.HEADER_BYTES);
+
+        AtomicReference<List<RecoveredTake>> recovered = new AtomicReference<>();
+        List<String> warnings = warningsLoggedBy(() -> recovered.set(TakeRecovery.scan(takesDir)));
+
+        assertThat(recovered.get()).hasSize(1);
+        RecoveredTake take = recovered.get().getFirst();
+        assertThat(take.sealedSegments()).containsExactly(sealed(SEGMENT_000, 0, FRAMES));
+        assertThat(take.unrecoverable()).extracting(Unrecoverable::file).containsExactly(stray);
+        assertThat(take.unrecoverable().getFirst().reason())
+                .contains("not listed", "not provably zero-frame", "guitar", "names no track");
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst()).contains(stray.toString(), "untouched", "names no track");
+        assertThat(Files.readAllBytes(stray)).as("no track to check its channel count against: not provably this"
+                + " take's file, so left").isEqualTo(strayBytes);
+        assertThat(manifestOnDisk().segments()).containsExactly(sealed(SEGMENT_000, 0, FRAMES));
+    }
+
+    @Test
+    void anEmptyStandbyWhoseDeleteIsRefusedAfterTheWriteIsReportedWithTheManifestStandingAndDeletedByTheNextScan()
+            throws Exception {
+        manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        Path standby = abandonedPart(SEGMENT_000, MONO, 0);
+        byte[] standbyBytes = Files.readAllBytes(standby);
+        Instant before = Instant.now();
+
+        AtomicReference<List<RecoveredTake>> recovered = new AtomicReference<>();
+        List<String> warnings;
+        try (AutoCloseable _ = holdUndeletable(standby)) {
+            assumeTrue(catchThrowable(() -> Files.delete(standby)) != null,
+                    "this platform deletes the held file; the refused delete cannot be staged here");
+            warnings = warningsLoggedBy(() -> recovered.set(TakeRecovery.scan(takesDir)));
+        }
+
+        assertThat(recovered.get()).as("a refused delete after the write ends no take's recovery").hasSize(1);
+        RecoveredTake take = recovered.get().getFirst();
+        assertThat(take.sealedSegments()).isEmpty();
+        assertThat(take.unrecoverable()).extracting(Unrecoverable::file).containsExactly(standby);
+        assertThat(take.unrecoverable().getFirst().reason())
+                .contains("holds no frame", "does not list it", "could not be deleted", "next scan");
+        assertThat(standby).isRegularFile();
+        assertThat(Files.readAllBytes(standby)).isEqualTo(standbyBytes);
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst()).contains(standby.toString(), "could not be deleted");
+        TakeManifest manifest = manifestOnDisk();
+        assertThat(manifest).as("the manifest the scan wrote stands").isEqualTo(take.manifest());
+        assertThat(manifest.sealStatus()).isEqualTo(SealStatus.ABORTED);
+        assertThat(manifest.sealedBy()).contains(SealedBy.CRASH_RECOVERY);
+        assertThat(manifest.sealedAt().orElseThrow()).isBetween(before, Instant.now());
+        assertThat(manifest.segments()).as("the entry is dropped: the file holds no frame").isEmpty();
+        byte[] manifestBytes = manifestBytesOnDisk();
+
+        // The hold is released: the next scan finds an unlisted zero-frame
+        // .part under a take that is no candidate, and deletes it.
+        List<String> again = warningsLoggedBy(() -> assertThat(TakeRecovery.scan(takesDir)).isEmpty());
+
+        assertThat(again).hasSize(1);
+        assertThat(again.getFirst()).contains(standby.toString(), "deleted");
+        assertThat(standby).doesNotExist();
+        assertThat(manifestBytesOnDisk()).isEqualTo(manifestBytes);
     }
 
     @Test

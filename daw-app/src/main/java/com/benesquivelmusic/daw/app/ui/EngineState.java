@@ -25,11 +25,12 @@ public enum EngineState {
      * The active audio device disappeared mid-session (USB unplug, driver
      * crash, JACK server shutdown). The render thread is halted, an
      * in-flight take is rescued on disk by the record coordinator (story
-     * 327 — this state reaches it through {@code engineStateEvents()}), and
-     * the controller is waiting for a matching {@code DeviceArrived} event
-     * so it can automatically reopen the stream and transition to
-     * {@link #STOPPED}. Any other stream opening ends this state too
-     * (story 327): a loss is over once a stream is open again.
+     * 327 — this state reaches it through {@code engineStateEvents()}, as
+     * an {@link EngineStateChange} carrying the lost device), and the
+     * controller is waiting for a matching {@code DeviceArrived} event so
+     * it can automatically reopen the stream, park it and only then
+     * transition to {@link #STOPPED}. Any other stream opening ends this
+     * state too (story 327): a loss is over once a stream is open again.
      *
      * <p>Publisher contract (story 327): a publisher of this state closes
      * the stream first ({@code AudioEngine.stopAudioOutput()}, then

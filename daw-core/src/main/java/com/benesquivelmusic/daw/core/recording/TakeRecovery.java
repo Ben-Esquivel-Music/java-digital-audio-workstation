@@ -51,9 +51,13 @@ import java.util.logging.Logger;
  * the rename and the manifest write), or neither does. A take whose
  * manifest is sealed or aborted and whose every entry is sealed is not a
  * candidate: a second scan over a recovered take returns nothing for it,
- * and a {@code .part} such a manifest does not list — a standby file the
- * live seal could not delete — does not make the take one; it is logged at
- * {@link Level#WARNING} once per scan and left as it is, never registered.
+ * and a {@code .part} such a manifest does not list does not make the take
+ * one, and nothing is registered for it: one that holds no frame (the
+ * zero-frame rule below) — a standby the live seal could not delete, or a
+ * file a scan dropped from the manifest and then could not delete — is
+ * deleted and the deletion logged at {@link Level#WARNING}; one with frames,
+ * or one the rule cannot vouch for, is logged at {@link Level#WARNING} once
+ * per scan and left as it is.
  * A directory with no manifest is skipped: the manifest is the only record
  * of the take's format and anchor, and a {@code .part} without one is
  * logged and left as it is.</p>
@@ -62,13 +66,16 @@ import java.util.logging.Logger;
  * in state {@code streaming}:</p>
  * <ul>
  *   <li>Its {@code .part} exists and holds no whole frame — the 44-byte
- *       header a loop-record standby or a fresh rotation tail leaves — it is
- *       deleted and its entry removed from the manifest, as the live seal
- *       discards an empty tail ({@code RecordingSession.discardEmptyTail},
+ *       header a loop-record standby or a fresh rotation tail leaves — its
+ *       entry is removed from the manifest and the file is deleted, as the
+ *       live seal discards an empty tail ({@code RecordingSession.discardEmptyTail},
  *       {@link TakeManifest.Builder#removeSegment}): the ordinary seal never
- *       produces a zero-frame segment. It is neither sealed nor reported; a
- *       delete that fails is reported and the entry kept, so the next scan
- *       tries again.</li>
+ *       produces a zero-frame segment. It is neither sealed nor reported.
+ *       The delete waits for the manifest write (the ordering paragraph
+ *       below): the file is never gone while the manifest on disk still
+ *       lists it. A delete that fails after the write is reported, the
+ *       manifest standing, and the next scan deletes the file as an
+ *       unlisted zero-frame {@code .part}.</li>
  *   <li>Its {@code .part} exists with frames: the frame count is derived
  *       from the file length, {@code (length − 44) / bytesPerFrame} floored
  *       to whole frames ({@link SegmentFile#describe(Path)}; a torn trailing
@@ -92,12 +99,35 @@ import java.util.logging.Logger;
  *       track the manifest does not list, or a segment with neither
  *       file.</li>
  * </ul>
- * <p>A {@code .part} a candidate's manifest does not list — the manifest
- * write lagged the segment's open — is reported as unrecoverable and left as
- * it is: its name gives the track and the index, but not the lane, so no
- * entry can be derived for it safely. An unrecoverable file keeps the take a
- * candidate, and is reported again by every later scan, until it is dealt
- * with.</p>
+ * <p>A {@code .part} a candidate's manifest does not list and that holds
+ * frames — the manifest write lagged the segment's open — is reported as
+ * unrecoverable and left as it is: its name gives the track and the index,
+ * but not the lane, so no entry can be derived for it safely. An
+ * unrecoverable file keeps the take a candidate, and is reported again by
+ * every later scan, until it is dealt with. One that holds no frame is
+ * deleted, the deletion logged at {@link Level#WARNING}, and not reported:
+ * it is what a crash between the manifest write and the delete leaves,
+ * what the live seal leaves when its delete of a standby failed, and what
+ * a segment opened ahead of the manifest write leaves when the JVM died
+ * before a frame was appended to it. <em>Zero-frame</em>, for a
+ * {@code .part} no manifest entry describes, is decided from the file, the
+ * manifest and the track its directory names — the layout is
+ * {@code <take>/<trackId>/segment-NNN.wav.part}, so the directory is the
+ * track id, the key {@code sealEntry} resolves a listed entry's track by.
+ * The file is zero-frame when its header parses as a canonical segment header
+ * ({@link SegmentFile#describe(Path)}) that agrees with the manifest's bit
+ * depth and sample rate and with the channel count of that track's entry,
+ * checked in that order as for a listed entry, and its length holds no
+ * whole frame of that header's own frame size, the count a listed entry is
+ * discarded on. A file shorter than the header, one whose header does not
+ * parse, one whose header disagrees with the manifest or with its track,
+ * and one under a directory naming no track the manifest lists are not
+ * zero-frame: none is provably this take's empty file, and each is left,
+ * and reported or logged with the reason, as a file with frames is. The
+ * channel check is load-bearing: a header claiming more channels than the
+ * track widens the frame, so a file holding real frames of the track's
+ * width floors to none — the listed-entry rule refuses that disagreement,
+ * and so does this one.</p>
  *
  * <p>Then, when the manifest was streaming or any entry changed here, the
  * manifest is written atomically ({@link TakeManifest#write(Path)}) with
@@ -110,7 +140,14 @@ import java.util.logging.Logger;
  * trail of why and when the take ended survives the scan that healed its
  * stragglers. The result is playable:
  * {@link SegmentFile#readFrames(Path)} on a sealed segment returns exactly
- * the frames its entry declares.</p>
+ * the frames its entry declares. Only once that write has returned — or was
+ * not needed — are the zero-frame {@code .part} files deleted, the listed
+ * ones whose entries it dropped and the unlisted ones: at no instant does
+ * the manifest on disk list a file that is gone (book §2.5). A write that
+ * fails leaves them all on disk beside the manifest it found, and the next
+ * scan discards them again; a delete that fails after the write is reported,
+ * undoes nothing, and is retried by the next scan, which finds an unlisted
+ * zero-frame {@code .part}.</p>
  */
 public final class TakeRecovery {
 
@@ -151,8 +188,13 @@ public final class TakeRecovery {
      * @param sealedSegments the entries this scan sealed, in manifest order;
      *                       empty when the crash left nothing streaming,
      *                       nothing could be sealed, or every streaming
-     *                       file was an empty tail that was deleted
-     * @param unrecoverable  the files left untouched, with why
+     *                       file was an empty tail — dropped from the
+     *                       manifest and deleted, or, when its delete was
+     *                       refused after the write, reported in
+     *                       {@code unrecoverable} instead
+     * @param unrecoverable  the files left untouched, with why — a
+     *                       zero-frame {@code .part} whose delete failed
+     *                       after the manifest write among them
      */
     public record RecoveredTake(Path takeDirectory, TakeManifest manifest,
                                 List<SegmentEntry> sealedSegments, List<Unrecoverable> unrecoverable) {
@@ -177,12 +219,38 @@ public final class TakeRecovery {
     private record Sealed(long frames) implements Outcome {
     }
 
-    /** The entry's empty {@code .part} was deleted; the entry leaves the manifest. */
-    private record Discarded() implements Outcome {
+    /**
+     * The entry's {@code .part} holds no frame: the entry leaves the
+     * manifest, and the file is deleted once the manifest without it is on
+     * disk.
+     */
+    private record Discarded(Path part) implements Outcome {
+        private Discarded {
+            Objects.requireNonNull(part, "part must not be null");
+        }
     }
 
     /** The entry's files were left as they were; the reason is in the report. */
     private record Left() implements Outcome {
+    }
+
+    /** What {@link #inspectUnlisted} found a {@code .part} no manifest entry describes to be (class note). */
+    private sealed interface UnlistedPart permits ZeroFrame, WithFrames, NotProvablyZeroFrame {
+    }
+
+    /** Provably this take's file and holding no whole frame: deleted, after the manifest write when there is one. */
+    private record ZeroFrame() implements UnlistedPart {
+    }
+
+    /** Holds {@code frames} whole frames: left, since its lane cannot be derived from its name. */
+    private record WithFrames(long frames) implements UnlistedPart {
+    }
+
+    /** Not provably this take's zero-frame file, for {@code reason}: left as it is. */
+    private record NotProvablyZeroFrame(String reason) implements UnlistedPart {
+        private NotProvablyZeroFrame {
+            Objects.requireNonNull(reason, "reason must not be null");
+        }
     }
 
     /**
@@ -192,7 +260,11 @@ public final class TakeRecovery {
      * {@link IOException} (an unreadable or malformed manifest, a write
      * that fails) or a {@link RuntimeException} — is logged at
      * {@link Level#WARNING} and skipped, so one damaged take does not hide
-     * the others; a directory that is not a candidate is skipped silently.
+     * the others; a directory that is not a candidate yields nothing, and
+     * is not silent about a {@code .part} its manifest does not list: a
+     * zero-frame one is deleted and the deletion logged at
+     * {@link Level#WARNING}, any other is logged at {@link Level#WARNING}
+     * with why it is left (class note).
      *
      * @param takesDirectory the takes directory; a missing one yields no takes
      * @return the recovered takes, in directory-name order
@@ -226,7 +298,9 @@ public final class TakeRecovery {
      *                     manifest cannot be written (the segments sealed
      *                     before that stay sealed, and the next scan finds
      *                     their entries still streaming and records them
-     *                     from their {@code .wav} files)
+     *                     from their {@code .wav} files; the zero-frame
+     *                     {@code .part} files stay on disk, listed as they
+     *                     were, and the next scan discards them)
      */
     public static Optional<RecoveredTake> recover(Path takeDirectory) throws IOException {
         Objects.requireNonNull(takeDirectory, "takeDirectory must not be null");
@@ -248,10 +322,19 @@ public final class TakeRecovery {
         boolean entryStreaming = found.segments().stream().anyMatch(s -> s.state() == SegmentState.STREAMING);
         if (!streaming && !entryStreaming) {
             // A healthy take: sealed or aborted by its flush thread, every
-            // entry sealed. A .part it does not list is no segment of it.
+            // entry sealed. A .part it does not list is no segment of it: one
+            // that provably holds no frame is deleted, any other is left.
             for (Path orphan : parts) {
-                LOG.log(Level.WARNING, "take recovery left " + orphan + " untouched: " + takeDirectory
-                        + " is sealed and does not list it; it is no segment of the take");
+                switch (inspectUnlisted(orphan, found)) {
+                    case ZeroFrame() -> deleteUnlistedZeroFramePart(orphan, takeDirectory)
+                            .ifPresent(TakeRecovery::logLeft);
+                    case WithFrames(long frames) -> LOG.log(Level.WARNING, "take recovery left " + orphan
+                            + " untouched: " + takeDirectory + " is sealed and does not list it; it holds " + frames
+                            + " frame(s) and is no segment of the take");
+                    case NotProvablyZeroFrame(String reason) -> LOG.log(Level.WARNING, "take recovery left " + orphan
+                            + " untouched: " + takeDirectory + " is sealed and does not list it, and it is not"
+                            + " provably zero-frame: " + reason);
+                }
             }
             return Optional.empty();
         }
@@ -259,6 +342,8 @@ public final class TakeRecovery {
         TakeManifest.Builder builder = found.toBuilder();
         List<SegmentEntry> sealedNow = new ArrayList<>();
         List<Unrecoverable> unrecoverable = new ArrayList<>();
+        List<Path> emptyParts = new ArrayList<>();
+        List<Path> orphanParts = new ArrayList<>();
         Set<Path> listedParts = new HashSet<>();
         boolean manifestChanged = false;
         for (SegmentEntry entry : found.segments()) {
@@ -275,8 +360,9 @@ public final class TakeRecovery {
                     sealedNow.add(sealed);
                     manifestChanged = true;
                 }
-                case Discarded() -> {
+                case Discarded(Path emptyPart) -> {
                     builder.removeSegment(entry.trackId(), entry.lane(), entry.index());
+                    emptyParts.add(emptyPart);
                     manifestChanged = true;
                 }
                 case Left() -> {
@@ -285,9 +371,16 @@ public final class TakeRecovery {
             }
         }
         for (Path part : parts) {
-            if (!listedParts.contains(part.toAbsolutePath().normalize())) {
-                unrecoverable.add(new Unrecoverable(part, "not listed in the manifest; its lane cannot be derived"
-                        + " from its name, so it is left as it is"));
+            if (listedParts.contains(part.toAbsolutePath().normalize())) {
+                continue;
+            }
+            switch (inspectUnlisted(part, found)) {
+                case ZeroFrame() -> orphanParts.add(part);
+                case WithFrames(long frames) -> unrecoverable.add(new Unrecoverable(part,
+                        "not listed in the manifest; it holds " + frames + " frame(s) and its lane cannot be derived"
+                                + " from its name, so it is left as it is"));
+                case NotProvablyZeroFrame(String reason) -> unrecoverable.add(new Unrecoverable(part,
+                        "not listed in the manifest and not provably zero-frame: " + reason + "; left as it is"));
             }
         }
 
@@ -298,15 +391,27 @@ public final class TakeRecovery {
             manifest = builder.aborted(reason).sealedAt(sealedAt).build();
             manifest.write(takeDirectory);
         }
-        for (Unrecoverable left : unrecoverable) {
-            LOG.log(Level.WARNING, "take recovery left " + left.file() + " untouched: " + left.reason());
+        // Only now, with the manifest on disk listing none of them, do the
+        // zero-frame files go: a write that threw above left every one of
+        // them beside the manifest that still lists it.
+        for (Path emptyPart : emptyParts) {
+            deleteZeroFramePart(emptyPart).ifPresent(unrecoverable::add);
         }
+        for (Path orphan : orphanParts) {
+            deleteUnlistedZeroFramePart(orphan, takeDirectory).ifPresent(unrecoverable::add);
+        }
+        unrecoverable.forEach(TakeRecovery::logLeft);
         return Optional.of(new RecoveredTake(takeDirectory, manifest, sealedNow, unrecoverable));
     }
 
+    private static void logLeft(Unrecoverable left) {
+        LOG.log(Level.WARNING, "take recovery left " + left.file() + " untouched: " + left.reason());
+    }
+
     /**
-     * Seals one streaming entry from whichever of its files exists, discards
-     * it when its {@code .part} holds no frame, or reports why it cannot be
+     * Seals one streaming entry from whichever of its files exists, marks it
+     * discarded when its {@code .part} holds no frame (the file is deleted by
+     * the caller, after the manifest write), or reports why it cannot be
      * sealed. The pre-checks here — the sealed sibling must not exist, the
      * track must be listed — are the never-overwrite guarantee of
      * {@link #sealPart}.
@@ -315,8 +420,7 @@ public final class TakeRecovery {
                                      List<Unrecoverable> unrecoverable) {
         boolean partExists = Files.isRegularFile(part, LinkOption.NOFOLLOW_LINKS);
         boolean wavExists = Files.exists(wav, LinkOption.NOFOLLOW_LINKS);
-        Optional<TrackEntry> track = manifest.tracks().stream()
-                .filter(t -> t.trackId().equals(entry.trackId())).findFirst();
+        Optional<TrackEntry> track = listedTrack(manifest, entry.trackId());
         if (partExists) {
             if (wavExists) {
                 unrecoverable.add(new Unrecoverable(part, "its sealed sibling " + wav.getFileName()
@@ -331,8 +435,7 @@ public final class TakeRecovery {
             try {
                 SegmentFile.Description description = describeStreaming(part, manifest, track.get());
                 if (description.frameCount() == 0) {
-                    discardEmptyPart(part);
-                    return new Discarded();
+                    return new Discarded(part);
                 }
                 return new Sealed(sealPart(part, wav, description));
             } catch (IOException e) {
@@ -407,27 +510,86 @@ public final class TakeRecovery {
     }
 
     /**
-     * Deletes a {@code .part} that holds no whole frame, as the live seal
-     * deletes an empty tail. Throws, naming the file, when the delete fails;
-     * the entry is then kept for the next scan.
+     * What a {@code .part} the manifest does not list is (class note). The
+     * track is the one its directory names; when the manifest lists it, the
+     * header must agree with the manifest's bit depth and sample rate and
+     * with that track's channel count — {@link #requireHeaderAgreement}, the
+     * listed-entry check, in that order — and the whole-frame count the
+     * header's own frame size derives from the length decides between
+     * {@link ZeroFrame} and {@link WithFrames}. A file shorter than the
+     * header, one whose header does not parse or disagrees, and one under a
+     * directory naming no listed track are {@link NotProvablyZeroFrame}
+     * with the reason: only a {@link ZeroFrame} is ever deleted.
      */
-    private static void discardEmptyPart(Path part) throws IOException {
-        try {
-            Files.delete(part);
-        } catch (IOException e) {
-            throw new IOException(part + " holds no frame but could not be deleted: " + reasonOf(e), e);
+    private static UnlistedPart inspectUnlisted(Path part, TakeManifest manifest) {
+        String trackId = String.valueOf(part.getParent().getFileName());
+        Optional<TrackEntry> track = listedTrack(manifest, trackId);
+        if (track.isEmpty()) {
+            return new NotProvablyZeroFrame("its directory " + trackId + " names no track the manifest lists");
         }
+        try {
+            SegmentFile.Description header = SegmentFile.describe(part);
+            requireHeaderAgreement(part, header, manifest, track.get());
+            return header.frameCount() == 0 ? new ZeroFrame() : new WithFrames(header.frameCount());
+        } catch (IOException e) {
+            return new NotProvablyZeroFrame(reasonOf(e));
+        }
+    }
+
+    /** The manifest's entry for {@code trackId}, when it lists the track. */
+    private static Optional<TrackEntry> listedTrack(TakeManifest manifest, String trackId) {
+        return manifest.tracks().stream().filter(t -> t.trackId().equals(trackId)).findFirst();
+    }
+
+    /**
+     * Deletes a {@code .part} that holds no whole frame, as the live seal
+     * deletes an empty tail, once the manifest on disk lists it no more.
+     * Returns the report when the delete fails: the file stays, the manifest
+     * stands, and the next scan — which finds an unlisted zero-frame
+     * {@code .part} — deletes it.
+     */
+    private static Optional<Unrecoverable> deleteZeroFramePart(Path part) {
+        try {
+            Files.deleteIfExists(part);
+            return Optional.empty();
+        } catch (IOException e) {
+            return Optional.of(new Unrecoverable(part, "holds no frame and the manifest on disk does not list it,"
+                    + " but it could not be deleted: " + reasonOf(e) + "; the next scan deletes it"));
+        }
+    }
+
+    /**
+     * {@link #deleteZeroFramePart} for a {@code .part} no manifest entry
+     * described, logging the deletion at {@link Level#WARNING}: the file is
+     * the trace of a delete that failed — the live seal's, or an earlier
+     * scan's — or of a segment opened ahead of the manifest write that was
+     * to list it, the JVM dead before a frame reached it; the log is where
+     * that trace ends.
+     */
+    private static Optional<Unrecoverable> deleteUnlistedZeroFramePart(Path orphan, Path takeDirectory) {
+        Optional<Unrecoverable> left = deleteZeroFramePart(orphan);
+        if (left.isEmpty()) {
+            LOG.log(Level.WARNING, "take recovery deleted " + orphan + ": " + takeDirectory
+                    + " does not list it and it holds no frame");
+        }
+        return left;
     }
 
     private static void requireHeaderAgreement(Path file, SegmentFile.Description header,
                                                TakeManifest manifest, TrackEntry track) throws IOException {
-        if (header.bitDepth() != manifest.bitDepth()) {
-            throw new IOException(file + " declares " + header.bitDepth() + " bits per sample but the manifest says "
-                    + manifest.bitDepth());
-        }
+        requireFormatAgreement(file, header, manifest);
         if (header.channels() != track.channels()) {
             throw new IOException(file + " declares " + header.channels() + " channel(s) but the manifest lists "
                     + track.channels() + " for track " + track.trackId());
+        }
+    }
+
+    /** The take-wide half of the header check — bit depth and sample rate; the channel count is the track's. */
+    private static void requireFormatAgreement(Path file, SegmentFile.Description header, TakeManifest manifest)
+            throws IOException {
+        if (header.bitDepth() != manifest.bitDepth()) {
+            throw new IOException(file + " declares " + header.bitDepth() + " bits per sample but the manifest says "
+                    + manifest.bitDepth());
         }
         int manifestRate = SegmentWriter.headerSampleRate(manifest.sampleRate());
         if ((int) header.sampleRate() != manifestRate) {

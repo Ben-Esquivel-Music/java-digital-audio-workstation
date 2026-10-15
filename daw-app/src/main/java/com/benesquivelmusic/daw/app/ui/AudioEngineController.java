@@ -441,18 +441,23 @@ public interface AudioEngineController {
     }
 
     /**
-     * Returns a {@link Flow.Publisher} that emits the new
-     * {@link EngineState} every time the engine transitions between
-     * states. UI components subscribe to this publisher so they never
-     * have to poll — the record state machine's device-loss bridge among
-     * them (story 327).
+     * Returns a {@link Flow.Publisher} that emits an
+     * {@link EngineStateChange} every time the engine transitions between
+     * states: the new {@link EngineState} together with the device the
+     * controller watched at the instant of the transition, captured there
+     * and never looked up at delivery (the snapshot rule is on the record).
+     * UI components subscribe to this publisher so they never have to poll
+     * — the record state machine's device-loss bridge among them (story
+     * 327): {@link EngineState#DEVICE_LOST} arrives with the lost device,
+     * an open-stream {@link EngineState#STOPPED} or
+     * {@link EngineState#RUNNING} with the device the stream is bound to.
      *
      * <p>The default implementation returns an empty publisher that
      * never emits, which is safe for test doubles.</p>
      *
      * @return a publisher of engine-state transitions; never {@code null}
      */
-    default Flow.Publisher<EngineState> engineStateEvents() {
+    default Flow.Publisher<EngineStateChange> engineStateEvents() {
         return subscriber -> {
             subscriber.onSubscribe(new Flow.Subscription() {
                 @Override public void request(long n) { /* no-op */ }
