@@ -348,6 +348,24 @@ final class RecordCoordinator {
      *       ({@link #cancelPendingStart}) and ends ABORTED with an ERROR
      *       naming the device — book §3.2 has no arrow from PREPARING to
      *       DEVICE_LOST, and no take had begun.</li>
+     *   <li>DEVICE_LOST: the device was lost again — the stream the lost
+     *       device's return (or an open the controller did not drive)
+     *       reopened is closed once more. The take was sealed at the first
+     *       loss, so nothing is rescued twice and no state, transport or
+     *       MIDI step runs; the WARNING is logged, a return already
+     *       delivered is forgotten ({@link #lostDeviceReturned} cleared,
+     *       so a clean rescue's pending publication settles to
+     *       DEVICE_LOST, not IDLE — book §5.2 "Device returned" and §2.4,
+     *       PR #982 review; a rescue whose publication fails still
+     *       leaves through ABORTED to IDLE, as before:
+     *       {@link #reportTakeFinalizationFailure} transitions to ABORTED
+     *       and {@link #settle()} takes ABORTED to IDLE without consulting
+     *       the flag), the
+     *       status bar names the device lost now and says whether the
+     *       take is still being saved or already preserved
+     *       ({@link #deviceLostStatus}), and {@link #lostDevice} keeps
+     *       the device whose loss sealed the take, which the rescue's
+     *       messages and registration name.</li>
      *   <li>Anything else — IDLE, or the FINALIZING or ABORTED of an earlier
      *       take — changes nothing here: the controller's own notification
      *       covers the playback loss.</li>
@@ -379,6 +397,26 @@ final class RecordCoordinator {
             if (failure.getSuppressed().length > 0) {
                 LOG.log(Level.WARNING, "A step of the lost-device start cancellation failed", failure);
             }
+            return;
+        }
+        if (state.get() == RecordState.DEVICE_LOST) {
+            // Story 327 (PR #982 review): a second loss while DEVICE_LOST.
+            // The take was sealed at the first loss — nothing is rescued
+            // twice. The one thing to undo is a return already delivered:
+            // left set, lostDeviceReturned would let the rescued take's
+            // pending publication settle to IDLE and offer Record with the
+            // stream closed (book §2.4). The next open-stream STOPPED or
+            // RUNNING is the return again — the transport controller re-latched its
+            // deviceLost on this loss — and settles the machine then.
+            // writingPipeline is the rescued take's pipeline until its
+            // publication turn runs, so it says whether the take is still
+            // being saved or already preserved.
+            boolean publicationPending = writingPipeline != null;
+            LOG.warning("Audio device " + device.name() + " was lost again while the record state is DEVICE_LOST"
+                    + (publicationPending ? " and the rescued take is still being published" : "")
+                    + "; the take was sealed at the first loss and is not rescued twice");
+            lostDeviceReturned = false;
+            setRecordingStatus(deviceLostStatus(device, !publicationPending));
             return;
         }
         if (state.get() != RecordState.RECORDING) return;
@@ -445,7 +483,9 @@ final class RecordCoordinator {
      * Either way the state settles to IDLE at once, or once the rescued
      * take's publication has ended. Recording never restarts itself, and
      * nothing here disarms a track: the armed set is exactly what it was
-     * when the device was lost. Ignored in any other state, and by a
+     * when the device was lost. A second loss before the publication has
+     * ended undoes the return ({@link #onDeviceLost}): the machine stays
+     * DEVICE_LOST until the next one. Ignored in any other state, and by a
      * {@linkplain #retire() retired} coordinator. FX thread.
      *
      * @param device the device the engine's stream is open on now
@@ -745,13 +785,20 @@ final class RecordCoordinator {
     /**
      * Story 327 — the device whose loss put this coordinator in DEVICE_LOST,
      * named by the rescue's status and messages; set by {@link #onDeviceLost}
-     * and kept until the next loss. FX thread.
+     * when it rescues a take and kept until the next rescue — a second loss
+     * while DEVICE_LOST leaves it, so the rescue's messages and registration
+     * name the device whose loss sealed the take (PR #982 review). FX thread.
      */
     private DeviceId lostDevice;
     /**
      * Story 327 — whether the lost device has returned
      * ({@link #onLostDeviceReturned}): the one thing that lets
-     * {@link #settle()} leave DEVICE_LOST for IDLE. FX thread.
+     * {@link #settle()} leave DEVICE_LOST for IDLE. Cleared again by a
+     * second loss while DEVICE_LOST ({@link #onDeviceLost}; PR #982
+     * review): the return it recorded is undone by that loss, and the
+     * settlement it owed is owed to the next return instead, which the
+     * transport controller's re-latched {@code deviceLost} delivers with
+     * the next open-stream STOPPED or RUNNING. FX thread.
      */
     private boolean lostDeviceReturned;
     /**

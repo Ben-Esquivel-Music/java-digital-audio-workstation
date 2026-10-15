@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 
 import java.util.Objects;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -42,17 +43,44 @@ import java.util.logging.Logger;
  * subscribed before the first stream can open: the controller's
  * constructor publishes no state, so subscribing right after it misses
  * nothing. {@code MainController} subscribes it once and
- * {@linkplain #cancel() cancels} it in the window teardown; a test over a
- * real {@link DefaultAudioEngineController} and {@link TransportController}
+ * {@linkplain #cancel() cancels} it in the window teardown. The publisher
+ * delivers {@code onSubscribe} on its executor, so a teardown can cancel
+ * before the subscription has arrived (PR #982 review): cancellation is a
+ * terminal state of the one {@link #subscription} cell, installed
+ * atomically against the subscription's arrival — a subscription that
+ * arrives after {@code cancel()} is cancelled on arrival and never
+ * requested, a second subscription while one is held is cancelled too
+ * (Reactive Streams rule 2.5), and a state delivered after the
+ * cancellation is dropped, never posted. A test over a real
+ * {@link DefaultAudioEngineController} and {@link TransportController}
  * wires the same object.</p>
  */
 final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
 
     private static final Logger LOG = Logger.getLogger(EngineStateBridge.class.getName());
 
+    /** The terminal state of {@link #subscription}: cancelled; requests and cancels nothing. */
+    private static final Flow.Subscription CANCELLED = new Flow.Subscription() {
+        @Override
+        public void request(long n) {
+            // Terminal: nothing to request from.
+        }
+
+        @Override
+        public void cancel() {
+            // Terminal: already cancelled.
+        }
+    };
+
     private final Supplier<TransportController> currentTransport;
     private final FxDispatcher dispatcher;
-    private volatile Flow.Subscription subscription;
+    /**
+     * {@code null} until a subscription arrives or {@link #cancel()} runs,
+     * then the live subscription, then {@link #CANCELLED} for good; every
+     * change is a compare-and-set or a get-and-set, so the two can arrive
+     * on different threads in either order.
+     */
+    private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
 
     /**
      * @param currentTransport the transport controller current when a state
@@ -70,19 +98,31 @@ final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
         Objects.requireNonNull(controller, "controller must not be null").engineStateEvents().subscribe(this);
     }
 
-    /** Publisher's executor: requests everything. */
+    /**
+     * Publisher's executor: holds the first subscription and requests
+     * everything from it; cancels, and requests nothing from, one that
+     * arrives after {@link #cancel()} or while another is held.
+     */
     @Override
     public void onSubscribe(Flow.Subscription subscription) {
-        this.subscription = Objects.requireNonNull(subscription, "subscription must not be null");
-        subscription.request(Long.MAX_VALUE);
+        Objects.requireNonNull(subscription, "subscription must not be null");
+        if (this.subscription.compareAndSet(null, subscription)) {
+            subscription.request(Long.MAX_VALUE);
+        } else {
+            subscription.cancel();
+        }
     }
 
     /**
      * Publisher's executor: posts the snapshot — state and device as
-     * captured at the transition — to the FX thread and returns.
+     * captured at the transition — to the FX thread and returns; a state
+     * delivered after {@link #cancel()} is dropped.
      */
     @Override
     public void onNext(EngineStateChange change) {
+        if (subscription.get() == CANCELLED) {
+            return;
+        }
         FxDispatcher.runOnFx(dispatcher, () -> {
             TransportController current = currentTransport.get();
             if (current != null) {
@@ -106,11 +146,15 @@ final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
         // call it, and reach here.
     }
 
-    /** Ends the subscription, if one was established. Any thread; idempotent. */
+    /**
+     * Ends the subscription: cancels the one held, or, when none has arrived
+     * yet, makes the one that arrives later cancel itself on arrival. Any
+     * thread; idempotent; never blocks.
+     */
     void cancel() {
-        Flow.Subscription current = subscription;
-        if (current != null) {
-            current.cancel();
+        Flow.Subscription prior = subscription.getAndSet(CANCELLED);
+        if (prior != null && prior != CANCELLED) {
+            prior.cancel();
         }
     }
 }

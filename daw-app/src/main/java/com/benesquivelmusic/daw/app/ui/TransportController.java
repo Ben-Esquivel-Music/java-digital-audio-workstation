@@ -792,7 +792,7 @@ final class TransportController implements TransportIntentHandler {
      * re-plug: RUNNING until its {@code pauseAudioOutput()} parks it, so a
      * PAUSED test missed that window and closed a stream the STOPPED that
      * followed needed open — {@link #onEngineState} counts only an
-     * open-stream STOPPED as the return) or the instrument-audio open of
+     * open-stream STOPPED or RUNNING as the return) or the instrument-audio open of
      * {@code MainController.pluginGraphChanged}, which may legitimately stay
      * open. FX thread.
      *

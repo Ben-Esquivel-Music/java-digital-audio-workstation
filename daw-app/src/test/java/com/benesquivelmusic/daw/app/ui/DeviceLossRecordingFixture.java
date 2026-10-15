@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
@@ -91,6 +92,7 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     private final NotificationHistoryService shown = new NotificationHistoryService();
     private final List<String> engineNotices = Collections.synchronizedList(new ArrayList<>());
     private final AtomicReference<RecordingPipeline> pipeline = new AtomicReference<>();
+    private final AtomicInteger engineStateDeliveries = new AtomicInteger();
     private AudioEngine engine;
     private TransportController controller;
     private NotificationBar notificationBar;
@@ -130,7 +132,10 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
             controller.setStillWritingDelayForTest(new ManualFxDelay());
             controller.setPipelineSetupForTest(pipeline::set);
             if (withEngineBridge) {
-                bridge = new EngineStateBridge(() -> controller, null);
+                bridge = new EngineStateBridge(() -> {
+                    engineStateDeliveries.incrementAndGet();
+                    return controller;
+                }, null);
                 bridge.subscribeTo(engineController);
             }
         });
@@ -194,6 +199,17 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     /** What the engine controller told its notification manager, in order. */
     List<String> engineNotices() {
         return List.copyOf(engineNotices);
+    }
+
+    /**
+     * How many engine-state changes the bridge of {@link #withEngineBridge}
+     * has delivered on the FX thread so far — counted at the start of each
+     * delivery's FX turn, so a test polling it on the FX thread
+     * ({@link #awaitOnFx}) knows that turn has ended; zero without the
+     * bridge.
+     */
+    int engineStateDeliveries() {
+        return engineStateDeliveries.get();
     }
 
     /** The pipeline of the latest audio take Record built; {@code null} before the first. */

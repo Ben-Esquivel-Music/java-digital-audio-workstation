@@ -60,7 +60,11 @@ import java.util.logging.Logger;
  * per scan and left as it is.
  * A directory with no manifest is skipped: the manifest is the only record
  * of the take's format and anchor, and a {@code .part} without one is
- * logged and left as it is.</p>
+ * logged and left as it is. No link is ever followed: a take directory
+ * that is not a real directory — a symbolic link, a junction, a file — is
+ * skipped and logged at {@link Level#WARNING} before its manifest is read,
+ * and {@link #scan(Path)} does not list one; a manifest the scan writes
+ * lands only in a real take directory.</p>
  *
  * <p><strong>What the seal does.</strong> For every manifest segment entry
  * in state {@code streaming}:</p>
@@ -96,8 +100,12 @@ import java.util.logging.Logger;
  *       shorter than the 44-byte header, one whose header disagrees with the
  *       manifest, one longer than a segment may be, one whose sealed
  *       {@code .wav} already exists (a segment is never overwritten), a
- *       track the manifest does not list, or a segment with neither
- *       file.</li>
+ *       track the manifest does not list, a segment with neither file, or
+ *       one whose track directory — any directory the entry's path names
+ *       below the take directory — is a link or not a directory, in which
+ *       case neither file is read: {@link SegmentEntry#resolve} is
+ *       lexical, and a link there is the one way a listed path leads out
+ *       of the take.</li>
  * </ul>
  * <p>A {@code .part} a candidate's manifest does not list and that holds
  * frames — the manifest write lagged the segment's open — is reported as
@@ -264,9 +272,12 @@ public final class TakeRecovery {
      * is not silent about a {@code .part} its manifest does not list: a
      * zero-frame one is deleted and the deletion logged at
      * {@link Level#WARNING}, any other is logged at {@link Level#WARNING}
-     * with why it is left (class note).
+     * with why it is left (class note). Only real subdirectories are
+     * visited: an entry that is a link (symbolic or junction) or a file is
+     * not listed, and nothing behind it is read or touched.
      *
-     * @param takesDirectory the takes directory; a missing one yields no takes
+     * @param takesDirectory the takes directory; a missing one, or one that
+     *                       is a link or not a directory, yields no takes
      * @return the recovered takes, in directory-name order
      * @throws IOException if {@code takesDirectory} cannot be listed
      */
@@ -291,8 +302,10 @@ public final class TakeRecovery {
      *
      * @param takeDirectory the take directory
      * @return the recovered take, or empty when the directory is not a
-     *         candidate: no manifest, or a manifest already sealed or
-     *         aborted whose every entry is sealed
+     *         candidate: missing, a link or not a directory (logged at
+     *         {@link Level#WARNING} unless missing, and nothing behind it
+     *         read or touched), no manifest, or a manifest already sealed
+     *         or aborted whose every entry is sealed
      * @throws IOException if the manifest cannot be read or parsed, if the
      *                     directory cannot be listed, or if the final
      *                     manifest cannot be written (the segments sealed
@@ -307,6 +320,17 @@ public final class TakeRecovery {
         Consumer<Path> fault = recoverFaultForTest;
         if (fault != null) {
             fault.accept(takeDirectory);
+        }
+        if (!Files.isDirectory(takeDirectory, LinkOption.NOFOLLOW_LINKS)) {
+            // A link — symbolic, a junction, dangling — or a file where the
+            // take directory should be: nothing behind it is this take's, so
+            // nothing behind it is read, written or deleted. A missing
+            // directory is simply no take.
+            if (Files.exists(takeDirectory, LinkOption.NOFOLLOW_LINKS)) {
+                LOG.log(Level.WARNING, "take recovery skipped " + takeDirectory
+                        + ": a link, or not a directory; nothing behind it is read or touched");
+            }
+            return Optional.empty();
         }
         Path manifestFile = TakeManifest.manifestPath(takeDirectory);
         List<Path> parts = streamingFilesUnder(takeDirectory);
@@ -353,7 +377,7 @@ public final class TakeRecovery {
             if (entry.state() == SegmentState.SEALED) {
                 continue;
             }
-            switch (sealEntry(found, entry, part, wav, unrecoverable)) {
+            switch (sealEntry(takeDirectory, found, entry, part, wav, unrecoverable)) {
                 case Sealed(long frames) -> {
                     SegmentEntry sealed = entry.sealed(frames);
                     builder.putSegment(sealed);
@@ -412,12 +436,23 @@ public final class TakeRecovery {
      * Seals one streaming entry from whichever of its files exists, marks it
      * discarded when its {@code .part} holds no frame (the file is deleted by
      * the caller, after the manifest write), or reports why it cannot be
-     * sealed. The pre-checks here — the sealed sibling must not exist, the
-     * track must be listed — are the never-overwrite guarantee of
-     * {@link #sealPart}.
+     * sealed. The pre-checks here — every directory between the take
+     * directory and the files must be a real directory, the sealed sibling
+     * must not exist, the track must be listed — are the never-overwrite
+     * and never-follow-a-link guarantees of {@link #sealPart} and of the
+     * caller's delete: {@link SegmentEntry#resolve} is lexical, so a link
+     * at the track directory is the one way a listed path leads out of the
+     * take, and it is refused ({@link #linkedAncestor}) before either file
+     * is so much as stat'd.
      */
-    private static Outcome sealEntry(TakeManifest manifest, SegmentEntry entry, Path part, Path wav,
-                                     List<Unrecoverable> unrecoverable) {
+    private static Outcome sealEntry(Path takeDirectory, TakeManifest manifest, SegmentEntry entry, Path part,
+                                     Path wav, List<Unrecoverable> unrecoverable) {
+        Optional<Path> linked = linkedAncestor(takeDirectory, wav);
+        if (linked.isPresent()) {
+            unrecoverable.add(new Unrecoverable(wav, "its directory " + linked.get()
+                    + " is a link, or not a directory of the take; nothing behind it is read, sealed or deleted"));
+            return new Left();
+        }
         boolean partExists = Files.isRegularFile(part, LinkOption.NOFOLLOW_LINKS);
         boolean wavExists = Files.exists(wav, LinkOption.NOFOLLOW_LINKS);
         Optional<TrackEntry> track = listedTrack(manifest, entry.trackId());
@@ -461,6 +496,37 @@ public final class TakeRecovery {
         unrecoverable.add(new Unrecoverable(wav, "neither the streaming " + part.getFileName()
                 + " nor the sealed file exists"));
         return new Left();
+    }
+
+    /**
+     * The first directory component strictly between {@code takeDirectory}
+     * and {@code file} — the track directory of the layout
+     * {@code <take>/<trackId>/segment-NNN.wav}, or any deeper name a
+     * manifest's relative path carries — that exists but is not a real
+     * directory: a symbolic link, a junction, a dangling link or a file. The
+     * walk is top-down from the take directory and stops at the first such
+     * component, so no name behind a link is ever stat'd; a component that
+     * is missing ends the walk empty (nothing below it can exist, and the
+     * caller's "neither file exists" outcome stands). The take directory
+     * itself is the caller's to check ({@link #recover}), and the final
+     * component is checked by the caller with {@code NOFOLLOW_LINKS}.
+     */
+    private static Optional<Path> linkedAncestor(Path takeDirectory, Path file) {
+        Path relativeParent = takeDirectory.relativize(file).getParent();
+        if (relativeParent == null) {
+            return Optional.empty();
+        }
+        Path component = takeDirectory;
+        for (Path name : relativeParent) {
+            component = component.resolve(name);
+            if (!Files.exists(component, LinkOption.NOFOLLOW_LINKS)) {
+                return Optional.empty();
+            }
+            if (!Files.isDirectory(component, LinkOption.NOFOLLOW_LINKS)) {
+                return Optional.of(component);
+            }
+        }
+        return Optional.empty();
     }
 
     /**

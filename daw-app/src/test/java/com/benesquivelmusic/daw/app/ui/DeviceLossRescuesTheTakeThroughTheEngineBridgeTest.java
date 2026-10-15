@@ -46,6 +46,9 @@ import static org.assertj.core.api.Assertions.within;
 @ExtendWith(JavaFxToolkitExtension.class)
 class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
 
+    /** A status text production never writes: overwritten before a loss whose own status write is under test. */
+    private static final String SENTINEL_STATUS = "sentinel: not yet rewritten by the second loss";
+
     @TempDir
     Path projectDirectory;
 
@@ -347,6 +350,178 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         assertThat(fixture.engine().isStreamPaused()).as("open but parked; nothing records").isTrue();
         assertThat(fixture.engineNotices()).anyMatch(notice -> notice.contains("reconnected"));
         assertThat(onFx(() -> fixture.guitar().isArmed())).as("the armed set is kept").isTrue();
+    }
+
+    /**
+     * Fix round (PR #982 review, Copilot F1 — high): loss, return, loss
+     * again, all before the rescued take's publication has settled. The
+     * return sets the coordinator's pending-return flag and the publication
+     * then settles to IDLE; a second loss before that must undo the return,
+     * or the publication offers Record with the stream closed. Nothing is
+     * timed: the rescued take's readback runs on the storage executor, which
+     * here holds it ({@code SteppedTakeFixture.ManualStorage}), so the
+     * publication turn cannot run until the test releases it; each engine
+     * state's FX turn is awaited through the fixture's delivery count, so the
+     * return runs with the stream open (the transport controller reads
+     * {@code isStreamOpen()} at delivery — a return the second loss had
+     * already closed would not count as one) and the second loss runs
+     * before the publication. The device lost twice is the same one, so the
+     * second loss's status names it and says the take is still being saved;
+     * the rescue's own report and registration, once published, name it
+     * too. With the second-loss branch removed the machine settles to IDLE
+     * with Record available and no stream.
+     */
+    @Test
+    void aSecondLossBeforeTheRescuedTakeIsPublishedUndoesTheReturnAndKeepsRecordUnavailable() throws Exception {
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        DeviceId device = fixture.activeDevice();
+        DefaultAudioEngineController engineController = fixture.engineController().orElseThrow();
+        // Installed once the take records: the record start allocates the
+        // take directory on the same executor.
+        SteppedTakeFixture.ManualStorage storage = new SteppedTakeFixture.ManualStorage();
+        runOnFx(() -> fixture.coordinator().setStorageExecutorForTest(storage));
+        int before = fixture.shownCount();
+        int delivered = fixture.engineStateDeliveries();
+        String reconnected = device.name() + " reconnected. Tracks are still armed; press Record to continue.";
+
+        fixture.unplug();
+        awaitOnFx(() -> fixture.coordinator().getState() == RecordState.DEVICE_LOST, "the loss's turn ran");
+        storage.awaitQueued(1);
+        assertThat(onFx(() -> fixture.controller().isTakeBeingWritten()))
+                .as("premise: the rescued take's readback is held, so its publication is pending").isTrue();
+
+        fixture.plugIn(device);
+        awaitOnFx(() -> fixture.engineStateDeliveries() == delivered + 2, "the return's turn ran");
+        assertThat(fixture.engine().isStreamOpen()).as("premise: the return reopened the stream").isTrue();
+        assertThat(fixture.entriesSince(before)).as("premise: the return was delivered as the return")
+                .extracting(NotificationEntry::level, NotificationEntry::message)
+                .containsExactly(tuple(NotificationLevel.INFO, reconnected));
+        assertThat(onFx(() -> fixture.coordinator().getState()))
+                .as("premise: still DEVICE_LOST while the publication is pending").isEqualTo(RecordState.DEVICE_LOST);
+        // The first loss wrote the very text the second loss writes, and
+        // nothing in between rewrites the status bar: without this sentinel
+        // the assertion after the second loss would hold with the second
+        // loss's own status write deleted. The label is set, not bound.
+        runOnFx(() -> fixture.statusBar().setText(SENTINEL_STATUS));
+
+        fixture.unplug();
+        await(() -> engineController.engineState() == EngineState.DEVICE_LOST, "the controller declared the second loss");
+        assertThat(fixture.engine().isStreamOpen()).as("premise: the second loss closed the stream").isFalse();
+        awaitOnFx(() -> fixture.engineStateDeliveries() == delivered + 3, "the second loss's turn ran");
+        assertThat(onFx(() -> fixture.controller().isTakeBeingWritten()))
+                .as("premise: the publication is still pending behind the second loss").isTrue();
+        assertThat(onFx(() -> fixture.statusBar().getText()))
+                .as("the second loss rewrote the status: the take is still being saved")
+                .isEqualTo(RecordCoordinator.deviceLostStatus(device, false));
+
+        storage.release();
+        fixture.awaitPublished();
+        runOnFx(() -> { }); // the settle the publication posted has run
+
+        assertThat(onFx(() -> fixture.coordinator().getState()))
+                .as("the second loss undid the return: the publication settles to DEVICE_LOST, not IDLE")
+                .isEqualTo(RecordState.DEVICE_LOST);
+        assertThat(onFx(() -> fixture.coordinator().recordAvailableProperty().get()))
+                .as("Record is not offered with the stream closed").isFalse();
+        assertThat(fixture.engine().isStreamOpen()).isFalse();
+        assertThat(engineController.engineState()).isEqualTo(EngineState.DEVICE_LOST);
+        assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().rescuedTakes())
+                .as("the take was rescued once, at the first loss")
+                .extracting(IncompleteTakeStore.RescuedTake::takeDirectory, IncompleteTakeStore.RescuedTake::deviceName)
+                .containsExactly(tuple(takeDirectory.toAbsolutePath().normalize(), Optional.of(device.name())));
+        assertThat(fixture.entriesSince(before)).as("the return's INFO, then the one rescue WARNING; no second rescue")
+                .extracting(NotificationEntry::level, NotificationEntry::message)
+                .containsExactly(
+                        tuple(NotificationLevel.INFO, reconnected),
+                        tuple(NotificationLevel.WARNING, RecordCoordinator.rescuedTakeMessage(device, 1, 1)));
+        assertThat(onFx(() -> fixture.statusBar().getText()))
+                .as("the publication reports the take preserved").isEqualTo(RecordCoordinator.deviceLostStatus(device, true));
+        assertThat(onFx(() -> fixture.transportStatus().getText())).isEqualTo("Device lost");
+        assertThat(onFx(() -> fixture.recIndicator().isVisible())).isFalse();
+
+        fixture.plugIn(device);
+        awaitOnFx(() -> fixture.coordinator().getState() == RecordState.IDLE, "the next return settles to IDLE");
+
+        assertThat(onFx(() -> fixture.coordinator().recordAvailableProperty().get())).isTrue();
+        assertThat(fixture.engine().isStreamOpen()).as("reopened").isTrue();
+        assertThat(fixture.engine().isStreamPaused()).as("open but parked; nothing records").isTrue();
+        assertThat(onFx(() -> fixture.guitar().isArmed())).as("the armed set is kept").isTrue();
+        assertThat(fixture.entriesSince(before)).as("the next return is reported as a return again")
+                .extracting(NotificationEntry::level, NotificationEntry::message)
+                .containsExactly(
+                        tuple(NotificationLevel.INFO, reconnected),
+                        tuple(NotificationLevel.WARNING, RecordCoordinator.rescuedTakeMessage(device, 1, 1)),
+                        tuple(NotificationLevel.INFO, reconnected));
+        assertThat(onFx(() -> fixture.transportStatus().getText())).isNotEqualTo("Device lost");
+        storage.joinEveryTask();
+    }
+
+    /**
+     * The other second-loss status: the rescued take already published, no
+     * return delivered, the same device lost again — the status names it
+     * and says the take is preserved, not that it is still being saved
+     * ({@code writingPipeline} is null once the publication turn has run).
+     * The engine controller declares DEVICE_LOST only for the device of an
+     * OPEN stream and publishes no state twice in a row, so a second loss
+     * needs a reopen between — the device's return. The FX thread is held
+     * while the device-event thread reopens on the return and closes again
+     * on the second loss, so both states queue behind the hold: the STOPPED,
+     * delivered with the stream closed, is only remembered by the transport
+     * controller and never reaches the coordinator as a return; the
+     * DEVICE_LOST that follows meets a coordinator still DEVICE_LOST with no
+     * publication pending. Nothing is timed. The sentinel is the one of the
+     * test above: the publication wrote the same text at its turn.
+     */
+    @Test
+    void aSecondLossAfterTheRescuedTakeWasPublishedReportsItPreservedWithoutARescue() throws Exception {
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        DeviceId device = fixture.activeDevice();
+        DefaultAudioEngineController engineController = fixture.engineController().orElseThrow();
+        fixture.unplug();
+        fixture.awaitRescued();
+        runOnFx(() -> { }); // the settle the publication posted has run
+        int before = fixture.shownCount();
+        int delivered = fixture.engineStateDeliveries();
+        assertThat(onFx(() -> fixture.controller().isTakeBeingWritten()))
+                .as("premise: the publication has ended; nothing is pending").isFalse();
+        assertThat(onFx(() -> fixture.statusBar().getText()))
+                .as("premise: the publication reported the take preserved")
+                .isEqualTo(RecordCoordinator.deviceLostStatus(device, true));
+        runOnFx(() -> fixture.statusBar().setText(SENTINEL_STATUS));
+
+        try (DeviceLossRecordingFixture.FxHold hold = DeviceLossRecordingFixture.holdTheFxThread()) {
+            fixture.plugIn(device);
+            await(() -> engineController.engineState() == EngineState.STOPPED, "the controller reopened on the return");
+            assertThat(fixture.engine().isStreamOpen()).as("premise: reopened before the return's FX turn ran").isTrue();
+            fixture.unplug();
+            await(() -> engineController.engineState() == EngineState.DEVICE_LOST, "the controller declared the second loss");
+            assertThat(fixture.engine().isStreamOpen()).as("premise: the second loss closed the stream").isFalse();
+        }
+        awaitOnFx(() -> fixture.engineStateDeliveries() == delivered + 2, "the return's and the second loss's turns ran");
+
+        assertThat(onFx(() -> fixture.statusBar().getText()))
+                .as("the second loss rewrote the status: the take is preserved, not still being saved")
+                .isEqualTo(RecordCoordinator.deviceLostStatus(device, true));
+        assertThat(onFx(() -> fixture.coordinator().getState())).isEqualTo(RecordState.DEVICE_LOST);
+        assertThat(onFx(() -> fixture.coordinator().recordAvailableProperty().get()))
+                .as("Record is not offered with the stream closed").isFalse();
+        assertThat(onFx(() -> fixture.controller().isTakeBeingWritten())).as("no second rescue was started").isFalse();
+        assertThat(fixture.entriesSince(before))
+                .as("the closed-stream STOPPED was no return and the second loss no rescue: nothing was shown")
+                .isEmpty();
+        assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().rescuedTakes())
+                .as("the take was rescued once, at the first loss")
+                .extracting(IncompleteTakeStore.RescuedTake::takeDirectory, IncompleteTakeStore.RescuedTake::deviceName)
+                .containsExactly(tuple(takeDirectory.toAbsolutePath().normalize(), Optional.of(device.name())));
+        assertThat(onFx(() -> fixture.transportStatus().getText())).isEqualTo("Device lost");
+
+        fixture.plugIn(device);
+        awaitOnFx(() -> fixture.coordinator().getState() == RecordState.IDLE, "the next return settles to IDLE");
+        assertThat(fixture.entriesSince(before)).as("the next return is reported as a return")
+                .extracting(NotificationEntry::level, NotificationEntry::message)
+                .containsExactly(tuple(NotificationLevel.INFO,
+                        device.name() + " reconnected. Tracks are still armed; press Record to continue."));
+        assertThat(onFx(() -> fixture.coordinator().recordAvailableProperty().get())).isTrue();
     }
 
     private List<String> stillDisconnectedNotices() {
