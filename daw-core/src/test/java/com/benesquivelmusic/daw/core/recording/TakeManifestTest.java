@@ -611,4 +611,77 @@ class TakeManifestTest {
 
         assertThat(TakeManifest.parse(crlf, "crlf")).isEqualTo(original);
     }
+
+    @Test
+    void everySealReasonAndSealedAtRoundTripThroughTextAndFile() throws IOException {
+        Instant sealedAt = Instant.parse("2026-08-03T14:25:05.5Z");
+        var tokens = java.util.Map.of(
+                SealedBy.STOP, "stop",
+                SealedBy.DISK_EXHAUSTION, "disk-exhaustion",
+                SealedBy.WRITE_FAILURE, "write-failure",
+                SealedBy.START_FAILURE, "start-failure",
+                SealedBy.DEVICE_LOSS, "device-loss",
+                SealedBy.CRASH_RECOVERY, "crash-recovery");
+        assertThat(tokens).as("every reason has a token under test").containsOnlyKeys(SealedBy.values());
+
+        for (SealedBy reason : SealedBy.values()) {
+            TakeManifest original = full().aborted(reason).sealedAt(sealedAt).build();
+            String text = original.toText();
+            assertThat(text).as(reason.name())
+                    .contains("seal-status=aborted\nsealed-by=" + tokens.get(reason) + "\nsealed-at=" + sealedAt + "\n");
+            TakeManifest parsed = TakeManifest.parse(text, reason.name());
+            assertThat(parsed.sealedBy()).contains(reason);
+            assertThat(parsed.sealedAt()).contains(sealedAt);
+            assertThat(parsed).isEqualTo(original);
+            assertThat(parsed.hashCode()).isEqualTo(original.hashCode());
+            Path file = original.write(tempDir);
+            assertThat(TakeManifest.read(file)).isEqualTo(original);
+        }
+    }
+
+    @Test
+    void aSealedManifestWithoutSealedAtReadsAsEmptyAsOlderFilesDo() throws IOException {
+        TakeManifest older = full().sealed(SealedBy.STOP).build();
+        String text = older.toText();
+        assertThat(text).doesNotContain("sealed-at=");
+
+        TakeManifest parsed = TakeManifest.parse(text, "older");
+
+        assertThat(parsed.sealStatus()).isEqualTo(SealStatus.SEALED);
+        assertThat(parsed.sealedBy()).contains(SealedBy.STOP);
+        assertThat(parsed.sealedAt()).isEmpty();
+        assertThat(parsed).isEqualTo(older);
+        assertThat(parsed).isNotEqualTo(older.toBuilder().sealedAt(STARTED).build());
+    }
+
+    @Test
+    void aStreamingTakeRefusesSealedAt() {
+        assertThatThrownBy(() -> full().sealedAt(STARTED).build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sealed-at");
+        assertThatThrownBy(() -> TakeManifest.parse(full().build().toText() + "sealed-at=" + STARTED + "\n", "m"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("sealed-at");
+    }
+
+    @Test
+    void aMalformedSealedAtFailsNamingTheSource() {
+        String text = full().aborted(SealedBy.DEVICE_LOSS).build().toText() + "sealed-at=yesterday\n";
+
+        assertThatThrownBy(() -> TakeManifest.parse(text, "m"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("m: malformed sealed-at");
+    }
+
+    @Test
+    void toBuilderCarriesSealedAt() {
+        Instant sealedAt = Instant.parse("2026-08-03T14:25:05Z");
+        TakeManifest sealed = full().aborted(SealedBy.CRASH_RECOVERY).sealedAt(sealedAt).build();
+
+        TakeManifest copy = sealed.toBuilder().build();
+
+        assertThat(copy.sealedAt()).contains(sealedAt);
+        assertThat(copy).isEqualTo(sealed);
+        assertThat(copy.toString()).contains("ABORTED/CRASH_RECOVERY@" + sealedAt);
+    }
 }

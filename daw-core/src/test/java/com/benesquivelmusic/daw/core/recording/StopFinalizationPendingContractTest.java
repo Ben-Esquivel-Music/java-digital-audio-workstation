@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.within;
  * completed, builds the clips exactly as an uninterrupted stop would have,
  * without repeating the one-shot side effects the user may have moved past;
  * made before that, it is refused and reads nothing the thread writes.
- * {@code prepare()} and the pre-start setters are refused meanwhile. The
+ * {@code prepare(long)} and the pre-start setters are refused meanwhile. The
  * signal completes on every path that ends the thread, and only then; a stop
  * made once the thread has terminated does not wait for it to exit, and one
  * requested on the flush thread itself never waits for that thread.
@@ -243,7 +243,7 @@ class StopFinalizationPendingContractTest {
 
         // Nothing may restart or reconfigure the pipeline over the pending take.
         Map<Path, Long> before = snapshot();
-        assertThatThrownBy(pipeline::prepare)
+        assertThatThrownBy(() -> pipeline.prepare(engine.getCaptureHaltGeneration()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("still finalising");
         assertThatThrownBy(() -> pipeline.setSegmentLimits(Duration.ofMinutes(1), BLOCK_BYTES))

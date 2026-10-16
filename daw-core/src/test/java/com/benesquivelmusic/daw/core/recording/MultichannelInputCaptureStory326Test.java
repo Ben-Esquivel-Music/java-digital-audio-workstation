@@ -44,7 +44,7 @@ class MultichannelInputCaptureStory326Test {
     }
     private static RecordingPipeline pipeline(AudioEngine engine, Path takeDirectory, List<Track> tracks) throws Exception {
         RecordingPipeline pipeline = new RecordingPipeline(engine, new Transport(), engine.getFormat(), takeDirectory, tracks);
-        pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
         pipeline.beginCapture();
         return pipeline;
     }
@@ -429,7 +429,7 @@ class MultichannelInputCaptureStory326Test {
         try {
             engine.startAudioInputOutput(tracks);
             backend.renderGate.awaitRendered();
-            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
             pipeline.beginCapture();
             backend.emit(256);
             backend.renderGate.advance();
@@ -551,7 +551,7 @@ class MultichannelInputCaptureStory326Test {
         try {
             engine.startAudioInputOutput(tracks);
             backend.renderGate.awaitRendered();
-            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
             pipeline.beginCapture();
             for (int block = 0; block < 2; block++) {
                 backend.emit(256);
@@ -639,7 +639,7 @@ class MultichannelInputCaptureStory326Test {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, FORMAT, directory, tracks);
         pipeline.setWarningSink(warnings::add);
         try {
-            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
             pipeline.beginCapture();
             for (int block = 0; block < 3; block++) {
                 engine.processBlock(new float[][]{filled(.1f, 256)}, new float[2][256], 256);
@@ -683,7 +683,7 @@ class MultichannelInputCaptureStory326Test {
             // Interface B's publisher terminates inside subscribe(), before startAudioInputOutput returns.
             engine.startAudioInputOutput(tracks);
             backend.renderGate.awaitRendered();
-            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
             pipeline.beginCapture();
             for (int block = 0; block < 3; block++) {
                 backend.emit(256);
@@ -761,7 +761,7 @@ class MultichannelInputCaptureStory326Test {
         Transport transport=new Transport();transport.setLoopWindow(true,0,512.0/48000*120/60);
         engine.setGraph(transport,null,List.of(a,b));engine.startAudioInputOutput(List.of(a,b));engine.pauseAudioOutput();
         RecordingPipeline pipeline=new RecordingPipeline(engine,transport,FORMAT,directory,List.of(a,b));
-        pipeline.setLoopRecord(true);pipeline.prepare().toCompletableFuture().get(5,TimeUnit.SECONDS);pipeline.beginCapture();
+        pipeline.setLoopRecord(true);pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5,TimeUnit.SECONDS);pipeline.beginCapture();
         try {
             for(int block=0;block<7;block++) {
                 engine.getRecordingCallback().onAudioCaptured(new float[][]{filled(.1f,256)},256);
@@ -807,7 +807,7 @@ class MultichannelInputCaptureStory326Test {
             RecordingPipeline pipeline = new RecordingPipeline(engine, new Transport(), FORMAT,
                     directory.resolve("calibration-" + calibration), List.of(a, b));
             pipeline.setReportedLatency(new RoundTripLatency(calibration, 0, 0));
-            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS); pipeline.beginCapture();
+            pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS); pipeline.beginCapture();
             try {
                 assertThat(pipeline.getSession(a).getCompensationFrames()).isEqualTo(calibration);
                 assertThat(pipeline.getSession(b).getCompensationFrames()).isEqualTo(12);
@@ -864,7 +864,7 @@ class MultichannelInputCaptureStory326Test {
         Transport transport = new Transport(); engine.setGraph(transport,null,List.of(far));
         RecordingPipeline pipeline = new RecordingPipeline(engine,transport,FORMAT,directory,List.of(far));
         pipeline.setWarningSink(warnings::add);
-        pipeline.prepare().toCompletableFuture().get(5,TimeUnit.SECONDS);
+        pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5,TimeUnit.SECONDS);
         assertThat(warnings).singleElement().asString().contains("Shrinking stereo", "Interface A", "silence");
         assertThat(TakeManifest.read(directory.resolve(TakeManifest.FILE_NAME)).routingFlags()).singleElement()
                 .satisfies(flag -> assertThat(flag.availableChannels()).isEqualTo(7));
@@ -921,7 +921,7 @@ class MultichannelInputCaptureStory326Test {
         Track a=track("A",0,1,0),b=track("B",0,1,1);
         engine.startAudioInputOutput(List.of(a,b));engine.pauseAudioOutput();
         RecordingPipeline pipeline=new RecordingPipeline(engine,new Transport(),FORMAT,directory,List.of(a,b));pipeline.setRingSlots(8);
-        pipeline.prepare().toCompletableFuture().get(5,TimeUnit.SECONDS);pipeline.beginCapture();
+        pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5,TimeUnit.SECONDS);pipeline.beginCapture();
         CountDownLatch held=new CountDownLatch(1),release=new CountDownLatch(1);
         pipeline.getCaptureFlushService().setBlockObserver((sequence,start,frames)->{held.countDown();try{release.await(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}});
         try {

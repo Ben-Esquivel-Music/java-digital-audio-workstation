@@ -1367,13 +1367,146 @@ class RecordingPipelineFlushServiceTest {
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.STOP);
         assertThat(service.lastFailure()).isPresent().get().isInstanceOf(IOException.class);
         assertThat(service.manifestWrites()).isEqualTo(1);
-        assertThat(warnings.stream().filter(w -> w.contains("manifest")).count()).isEqualTo(1);
+        List<String> manifestWarnings = warnings.stream().filter(w -> w.contains("manifest")).toList();
+        assertThat(manifestWarnings)
+                .as("one warning for the episode while recording, and one for the final write, which promises no retry")
+                .hasSize(2);
+        assertThat(manifestWarnings.getFirst()).contains("recording continues");
+        assertThat(manifestWarnings.getLast())
+                .contains("could not be written").contains("the take has ended")
+                .contains("take recovery rebuilds it from the segments")
+                .doesNotContain("next project open").doesNotContain("retried")
+                .doesNotContain("recording continues");
+        assertThat(service.finalManifestFailure()).as("the final write failed on every attempt: the stop's reason was lost")
+                .isPresent().get().extracting(FinalManifestFailure::intendedReason).isEqualTo(TakeManifest.SealedBy.STOP);
         assertThat(warnings).noneMatch(w -> w.contains("stopped early"));
         assertThat(Files.readAllBytes(pipeline.getTakeManifestPath()))
                 .as("the manifest on disk is still the last successful write")
                 .isEqualTo(startManifest);
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).sealStatus())
                 .isEqualTo(TakeManifest.SealStatus.STREAMING);
+    }
+
+    /**
+     * PR #982 review round 2: a final manifest write that fails for an
+     * early seal is not the take's last — the thread keeps draining until a
+     * stop, and its idle passes retry the write — so the sink is told that
+     * the take was sealed early and the write is retried, never that the
+     * take has ended; the retry that lands clears the failure, and the stop
+     * then finds nothing to report. The early seal is a rotation whose
+     * rename fails, through the real writer.
+     */
+    @Test
+    void anEarlySealsFailedFinalManifestWriteIsRetriedAndTheSinkIsNotToldTheTakeHasEnded() throws IOException {
+        AtomicLong clock = new AtomicLong();
+        RecordingPipeline pipeline = newPipeline(track);
+        pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
+        pipeline.setNanoClock(clock::get);
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        pipeline.setWarningSink(warnings::add);
+        startRecording(pipeline);
+        CaptureFlushService service = pipeline.getCaptureFlushService();
+        long frame = feedRamp(engine, transport, pipeline, 0, 1, 1);
+        long writesBeforeTheSeal = service.manifestWrites();
+        // The rotation right after the second block seals segment-000: its
+        // rename fails, which seals the take early, and the early seal's
+        // final manifest write is refused on every attempt of its budget.
+        pipeline.getSession(track).getCurrentWriter().failNextRename();
+        service.failNextManifestWrites(CaptureFlushService.MANIFEST_WRITE_ATTEMPTS);
+        frame = feedRamp(engine, transport, pipeline, frame, 1, 1);
+
+        assertThat(pipeline.earlySeal().toCompletableFuture().isDone())
+                .as("fixture: the rotation's failed rename sealed the take early").isTrue();
+        assertThat(service.isRunning()).as("the take keeps draining").isTrue();
+        assertThat(service.finalManifestFailure()).as("the early seal's final write failed on every attempt")
+                .isPresent().get().extracting(FinalManifestFailure::intendedReason)
+                .isEqualTo(TakeManifest.SealedBy.WRITE_FAILURE);
+        assertThat(service.manifestWrites()).as("nothing of the seal reached the disk").isEqualTo(writesBeforeTheSeal);
+        assertThat(manifestWarnings(warnings)).as("told once: sealed early, retried, not ended")
+                .singleElement().satisfies(warning -> assertThat(warning)
+                        .contains("could not be written")
+                        .contains("the take was sealed early and keeps draining until Stop")
+                        .contains("retried until it lands or Stop seals the take")
+                        .doesNotContain("has ended")
+                        .doesNotContain("rebuilds")
+                        .doesNotContain("recording continues"));
+
+        // The idle retry, one interval later on the take's clock, lands:
+        // the fault budget is spent. The block is discarded by the sealed
+        // take; its pass runs the retry.
+        clock.addAndGet(CaptureFlushService.MANIFEST_RETRY_INTERVAL.toNanos());
+        feedRamp(engine, transport, pipeline, frame, 1, 1);
+
+        assertThat(service.finalManifestFailure()).as("the retry that landed cleared the failure").isEmpty();
+        assertThat(service.manifestWrites()).isEqualTo(writesBeforeTheSeal + 1);
+        TakeManifest landed = TakeManifest.read(pipeline.getTakeManifestPath());
+        assertThat(landed.sealStatus()).isEqualTo(TakeManifest.SealStatus.ABORTED);
+        assertThat(landed.sealedBy()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
+
+        assertThat(stopRecording(pipeline)).hasSize(1);
+
+        assertThat(pipeline.finalManifestFailure()).as("nothing to report at the stop").isEmpty();
+        assertThat(manifestWarnings(warnings)).as("the retry and the stop warned nothing more").hasSize(1);
+        assertThat(warnings).noneMatch(w -> w.contains("has ended"));
+    }
+
+    /**
+     * PR #982 review round 2: an early seal's failed final write, then a
+     * stop whose own final write fails on every attempt too — the sink
+     * hears the retry wording once for the early seal, nothing for the idle
+     * retry that fails inside the open episode, and exactly once, after it,
+     * the no-retry wording for the stop's write, which is the take's last.
+     */
+    @Test
+    void aStopWhoseFinalWriteFailsAfterAnEarlySealsFailedWriteIsToldOnceThatTheTakeHasEnded() throws IOException {
+        AtomicLong clock = new AtomicLong();
+        RecordingPipeline pipeline = newPipeline(track);
+        pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
+        pipeline.setNanoClock(clock::get);
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        pipeline.setWarningSink(warnings::add);
+        startRecording(pipeline);
+        CaptureFlushService service = pipeline.getCaptureFlushService();
+        byte[] startManifest = Files.readAllBytes(pipeline.getTakeManifestPath());
+        long frame = feedRamp(engine, transport, pipeline, 0, 1, 1);
+        long writesBeforeTheSeal = service.manifestWrites();
+        pipeline.getSession(track).getCurrentWriter().failNextRename();
+        service.failNextManifestWrites(Integer.MAX_VALUE);
+        frame = feedRamp(engine, transport, pipeline, frame, 1, 1); // the rotation's rename fails: sealed early
+
+        assertThat(pipeline.earlySeal().toCompletableFuture().isDone()).as("fixture: sealed early").isTrue();
+        assertThat(manifestWarnings(warnings)).hasSize(1);
+
+        clock.addAndGet(CaptureFlushService.MANIFEST_RETRY_INTERVAL.toNanos());
+        feedRamp(engine, transport, pipeline, frame, 1, 1); // the idle retry is refused too
+
+        assertThat(service.finalManifestFailure()).isPresent();
+        assertThat(manifestWarnings(warnings)).as("a refused retry inside the open episode warns nothing").hasSize(1);
+
+        assertThat(stopRecording(pipeline)).hasSize(1);
+
+        assertThat(pipeline.finalManifestFailure()).as("the stop's final write failed on every attempt too")
+                .isPresent().get().extracting(FinalManifestFailure::intendedReason)
+                .isEqualTo(TakeManifest.SealedBy.WRITE_FAILURE);
+        List<String> told = manifestWarnings(warnings);
+        assertThat(told).as("the early seal's retry wording, then the stop's no-retry wording, once each").hasSize(2);
+        assertThat(told.getFirst())
+                .contains("the take was sealed early and keeps draining until Stop")
+                .doesNotContain("has ended");
+        assertThat(told.getLast())
+                .contains("the take has ended and its manifest on disk does not record the seal")
+                .contains("take recovery rebuilds it from the segments")
+                .doesNotContain("retried")
+                .doesNotContain("recording continues");
+        assertThat(service.manifestWrites()).as("nothing reached the disk after the take start")
+                .isEqualTo(writesBeforeTheSeal);
+        assertThat(Files.readAllBytes(pipeline.getTakeManifestPath()))
+                .as("the manifest on disk is still the take start's").isEqualTo(startManifest);
+    }
+
+    /** The flush thread's manifest-write warnings, apart from the early seal's own "stopped early" warning. */
+    private static List<String> manifestWarnings(List<String> warnings) {
+        return warnings.stream().filter(warning -> warning.contains("take manifest")).toList();
     }
 
     @Test

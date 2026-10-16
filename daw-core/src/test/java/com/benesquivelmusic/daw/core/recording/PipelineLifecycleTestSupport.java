@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.recording;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.AudioEngine;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -14,7 +16,7 @@ import java.util.concurrent.TimeoutException;
 /**
  * The one way a test starts and stops a {@link RecordingPipeline} when the
  * start or the stop is not itself what the test is about: the pipeline's
- * caller-thread lifecycle — {@link RecordingPipeline#prepare()} then
+ * caller-thread lifecycle — {@link RecordingPipeline#prepare(long)} then
  * {@link RecordingPipeline#beginCapture()} or
  * {@link RecordingPipeline#cancelStart()}, {@link RecordingPipeline#requestStop()}
  * then {@link RecordingPipeline#completeStop()} — with the waits between the
@@ -126,15 +128,17 @@ public final class PipelineLifecycleTestSupport {
      * error keeps from being deleted is left and the error logged)
      * — and rethrows the readiness failure as it was given (an
      * {@link java.io.UncheckedIOException}, any other unchecked throwable,
-     * or a {@link CancellationException}). A failure of {@code prepare()}
+     * or a {@link CancellationException}). A failure of {@code prepare(long)}
      * or {@code beginCapture()} itself propagates as thrown; both roll
-     * themselves back.
+     * themselves back. The device-loss fence's baseline is the pipeline's
+     * engine's capture-halt generation read just before the preparation, as
+     * a caller that opens no stream for the take reads it.
      *
      * @param pipeline the pipeline to start
      */
     public static void startRecording(RecordingPipeline pipeline) {
         STARTED.add(pipeline);
-        CompletionStage<Void> readiness = pipeline.prepare();
+        CompletionStage<Void> readiness = pipeline.prepare(engineOf(pipeline).getCaptureHaltGeneration());
         Throwable notReady = failureWithinTheGuard(readiness, "the take's readiness");
         if (notReady != null) {
             awaitWithinTheGuard(pipeline.cancelStart(), "the capture-flush thread's termination after a failed start");
@@ -224,5 +228,19 @@ public final class PipelineLifecycleTestSupport {
             throw error;
         }
         return new IllegalStateException("a readiness failure is always unchecked", failure);
+    }
+
+    /**
+     * The engine {@code pipeline} was built with, which the pipeline does not
+     * expose; read reflectively (same module), failing on a rename.
+     */
+    private static AudioEngine engineOf(RecordingPipeline pipeline) {
+        try {
+            Field engine = RecordingPipeline.class.getDeclaredField("audioEngine");
+            engine.setAccessible(true);
+            return (AudioEngine) engine.get(pipeline);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("fixture: RecordingPipeline keeps its engine in the field audioEngine", e);
+        }
     }
 }

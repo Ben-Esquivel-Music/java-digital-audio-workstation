@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -1228,6 +1229,18 @@ public final class AudioEngine {
 
     // Optional callback invoked from processBlock when recording is active
     private volatile RecordingCallback recordingCallback;
+
+    /**
+     * How many capture halts have begun ({@link #haltRecordingCapture()}),
+     * the halt's half of the fence a capture start checks against
+     * ({@link #getCaptureHaltGeneration()}). An {@link AtomicLong} rather
+     * than a volatile counter: the halt is public and nothing confines it to
+     * one thread, and two racing {@code ++}s on a volatile could store the
+     * same value, so a halt could leave the generation where a start had
+     * already read it and the start would miss it. Never read on the audio
+     * thread.
+     */
+    private final AtomicLong captureHaltGeneration = new AtomicLong();
 
     // Optional performance monitor for CPU load and underrun tracking
     private volatile PerformanceMonitor performanceMonitor;
@@ -4928,6 +4941,108 @@ public final class AudioEngine {
         return recordingCallback;
     }
 
+    /**
+     * Returns a copy of the additional recording callbacks installed now —
+     * one per sibling input source, in source order; empty when none is.
+     * Not for the audio thread: the copy allocates.
+     *
+     * @return a copy of the additional recording callbacks
+     */
+    public RecordingCallback[] getAdditionalRecordingCallbacks() {
+        return additionalRecordingCallbacks.clone();
+    }
+
+    /**
+     * Ends capture into the callbacks installed now — the recording callback
+     * and the additional recording callbacks — without waiting for the audio
+     * thread and without touching the stream: the
+     * {@linkplain #getCaptureHaltGeneration() capture-halt generation} is
+     * advanced first; then each installed callback is told through
+     * {@link RecordingCallback#onCaptureHalted()} (the recording pipeline's
+     * callback closes its ring's producer gate there); then both slots are
+     * emptied, so a render pump started afterwards reads {@code null} and
+     * runs no callback, and a callback a running pump has already loaded
+     * finishes its block under the gate it reads. Any thread but the audio
+     * callback; no locks, no waiting. With no callback installed it advances
+     * the generation, calls no callback and stores the two empty slots
+     * again.
+     *
+     * <p>Story 327 (PR #982 review): the device-loss path calls this on the
+     * device-event thread, inside {@code onDeviceRemoved}, BEFORE the lost
+     * stream is closed — a reopen needs a closed stream, so the halt
+     * precedes every reopen, the lost device's return included — because
+     * {@link #stop()} leaves the recording callback installed and the
+     * pipeline's own stop runs later, on the FX thread; a stream reopened in
+     * between would otherwise have published into the take being rescued.
+     * The stores are volatile: the pump's next
+     * {@link #processBlock(float[][], float[][], int, float[])} loads
+     * {@code null}; a callback in flight read the gate before this store or
+     * after it, and publishes only if it read it open — the stop fence of
+     * {@code RecordingPipeline.requestStop}, whose own closing of the gate
+     * and removal of the callback then repeat these stores harmlessly.</p>
+     *
+     * <p><strong>A capture start that overlaps the halt</strong> (PR #982
+     * review r4297840180). The halt reaches only the callbacks it reads. A
+     * take whose start was under way when the halt began — its stream
+     * opened, or its take still being prepared — may have
+     * {@code RecordingPipeline.beginCapture} install its callbacks on the
+     * FX thread after that read, even inside the halt's own window between
+     * reading the slots and storing {@code null}; a stream reopened before
+     * the loss's FX turn would then publish into the interrupted take. The
+     * generation closes that. The take keeps a baseline of it — the record
+     * coordinator reads it when Record is pressed, before the take's stream
+     * is opened, and hands it to {@code RecordingPipeline.prepare(long)} —
+     * and {@code beginCapture} reads the
+     * generation again after installing both callbacks and before it opens
+     * their start gate, and rejects the start
+     * — its ordinary all-or-nothing rollback: gates closed, callbacks
+     * removed, rethrown — if it has moved. The two sides are a Dekker pair:
+     * the halt advances the generation, then loads the slots; the start
+     * stores the slots, then loads the generation. Those volatile accesses
+     * and the atomic's update are totally ordered, consistently with each
+     * thread's program order, and a read sees the last write before it in
+     * that order, so at least one side sees the other: either the start's
+     * load sees the advance and the start is rejected, or that load comes
+     * before the advance, so the start's stores come before the halt's
+     * loads, and the halt sees the installed callbacks and closes their
+     * gates. A start whose installation lands inside the halt's
+     * read-to-store window is the first case — its stores come after the
+     * halt's loads, so after the advance — and is rejected; the halt's
+     * {@code null} store and the rollback's agree. A take whose baseline was
+     * read after the advance is not this halt's to reject: its start goes
+     * on, and the loss's own handling — the {@code DEVICE_LOST} the
+     * device-loss path publishes — still reaches it. The audio thread never
+     * reads the generation: the capture path is unchanged.</p>
+     */
+    public void haltRecordingCapture() {
+        captureHaltGeneration.incrementAndGet();
+        RecordingCallback primary = this.recordingCallback;
+        RecordingCallback[] additional = this.additionalRecordingCallbacks;
+        if (primary != null) {
+            primary.onCaptureHalted();
+        }
+        for (RecordingCallback callback : additional) {
+            callback.onCaptureHalted();
+        }
+        this.recordingCallback = null;
+        this.additionalRecordingCallbacks = new RecordingCallback[0];
+    }
+
+    /**
+     * How many {@link #haltRecordingCapture()} calls have begun — the
+     * device-loss fence a capture start checks: a start that reads, after
+     * installing its callbacks, a value other than its take's baseline
+     * overlapped a halt and is rejected
+     * ({@code RecordingPipeline.beginCapture}; the ordering argument is on
+     * {@link #haltRecordingCapture()}). It only ever grows; a start compares
+     * for equality. Any thread but the audio callback; one volatile read.
+     *
+     * @return the capture-halt generation
+     */
+    public long getCaptureHaltGeneration() {
+        return captureHaltGeneration.get();
+    }
+
     /** Whether the track can record a hosted instrument without an input device. */
     public boolean hasGraphInstrument(Track track) {
         EngineGraph current = graph;
@@ -5508,5 +5623,17 @@ public final class AudioEngine {
          */
         @RealTimeSafe
         void onAudioCaptured(float[][] inputBuffer, int numFrames);
+
+        /**
+         * Called once, on the thread that removed this callback through
+         * {@link AudioEngine#haltRecordingCapture()}, never on the audio
+         * thread: the capture it fed has ended for good. An implementation
+         * closes whatever gate it publishes behind (one volatile store, no
+         * waiting), so that a render pump started afterwards — one that
+         * never sees this callback — cannot be joined by a block of this
+         * callback's either. Default: nothing.
+         */
+        default void onCaptureHalted() {
+        }
     }
 }

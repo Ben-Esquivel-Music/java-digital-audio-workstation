@@ -48,7 +48,7 @@ import java.util.logging.Logger;
  * metadata only.</p>
  *
  * <p><strong>Threads.</strong> A track's first-lane session is constructed
- * on the caller thread (in {@code RecordingPipeline.prepare()}), a later
+ * on the caller thread (in {@code RecordingPipeline.prepare(long)}), a later
  * loop lane's on the flush thread. {@link #start()} runs on the
  * {@code capture-flush} thread — inside the take's initialisation for a
  * track's first lane, and for a later loop lane ahead of its lap, or at the

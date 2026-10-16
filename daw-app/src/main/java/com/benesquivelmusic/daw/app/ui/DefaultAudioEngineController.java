@@ -23,7 +23,6 @@ import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.WasapiBackend;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -55,6 +54,17 @@ import java.util.logging.Logger;
  * existing engine references intact. The controller owns every provision
  * backend instance's lifecycle; the engine only opens and closes streams on
  * them.</p>
+ *
+ * <p>Capture state is the recording pipeline's, driven from the FX thread —
+ * with one deliberate exception (story 327, PR #982 review): on a device
+ * loss, {@link #onDeviceRemoved(DeviceId)} ends capture on the device-event
+ * thread through {@link AudioEngine#haltRecordingCapture()} (lock-free: the
+ * engine's capture-halt generation is advanced atomically, then every
+ * installed recording callback closes its ring's producer gate and both
+ * callback slots are emptied, with volatile stores) before it closes the
+ * lost stream, so that no stream reopened before the loss's FX turn can
+ * publish into the take being rescued. The seal, the transport stop, the flags and
+ * the UI transitions stay on FX (Recording Reliability book §5.5, §6.1).</p>
  */
 final class DefaultAudioEngineController implements AudioEngineController {
 
@@ -64,7 +74,6 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final TestTonePlayer tonePlayer;
     private final Runnable postReconfigureCallback;
     private final NotificationManager notifications;
-    private final IncompleteTakeStore incompleteTakeStore;
     /**
      * Maps a UI-facing backend name (e.g. {@code "ASIO"}, {@code "WASAPI"},
      * {@code "CoreAudio"}, {@code "JACK"}, {@code "Mock"}) to a fresh SDK
@@ -74,11 +83,25 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * to {@code null} for every platform backend.
      */
     private final AudioBackendSelector backendSelector;
-    private final SubmissionPublisher<EngineState> engineStatePublisher = new SubmissionPublisher<>();
+    private final SubmissionPublisher<EngineStateChange> engineStatePublisher = new SubmissionPublisher<>();
     private final SubmissionPublisher<AudioDeviceEvent> deviceEventPublisher =
             new SubmissionPublisher<>();
     private volatile XrunDetector xrunDetector;
     private volatile EngineState engineState = EngineState.STOPPED;
+    /**
+     * Set by {@link #onDeviceArrived(DeviceId)} around the reopen it drives
+     * for the lost device's return (story 327 fix round, PR #982 CI): while
+     * it is set, the stream-open seam {@link #onStreamOpened} — which that
+     * reopen fires re-entrantly, on the same thread, inside
+     * {@code startAudioOutput()} — binds the watch but publishes no state,
+     * so the return's {@link EngineState#STOPPED} is published by
+     * {@code onDeviceArrived} itself, after {@code pauseAudioOutput()} has
+     * parked the stream. Guarded by this controller's monitor: every read
+     * and write is in a {@code synchronized} method, and the only thread
+     * that can observe it set is the one that set it, because
+     * {@code onDeviceArrived} holds the monitor for the whole reopen.
+     */
+    private boolean returnReopenInProgress;
     /** Backend whose deviceEvents() we are currently subscribed to. */
     private final AtomicReference<AudioBackend> boundBackend = new AtomicReference<>();
     /**
@@ -321,6 +344,13 @@ final class DefaultAudioEngineController implements AudioEngineController {
      *       reached from the action {@link #openControlPanel()} handed back
      *       after releasing the monitor.</li>
      * </ul>
+     * <p>{@link #setEngineState} is {@code synchronized} too (story 327 fix
+     * round) and takes one more lock under the monitor — the
+     * {@link java.util.concurrent.SubmissionPublisher}'s own, inside its
+     * non-blocking {@code offer} — which is a leaf: delivery to subscribers
+     * runs on the publisher's executor, never on a thread that holds the
+     * publisher's lock while waiting for this monitor, so the edge
+     * [controller monitor &rarr; publisher lock] closes no cycle.</p>
      */
     private final ReentrantLock controlPanelLock = new ReentrantLock();
 
@@ -435,18 +465,24 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     private AudioBackend controlPanelBackend;
 
-    DefaultAudioEngineController(AudioEngine audioEngine, Runnable postReconfigureCallback) {
-        this(audioEngine, postReconfigureCallback,
-                NotificationManager.noop(),
-                new IncompleteTakeStore(Paths.get(System.getProperty("java.io.tmpdir"))));
-    }
-
+    /**
+     * Creates the controller with the production backend selector. There is
+     * no constructor that defaults the notification sink: every message
+     * this controller sends — a lost device, a failed reopen, a backend
+     * fallback — rides {@code notifications}, and a silent default is what
+     * Recording Reliability book §6.3 forbids (story 327). {@code MainController}
+     * passes a sink that shows the message in the notification bar; a test
+     * passes {@link NotificationManager#noop()} on purpose, or a recording one.
+     *
+     * @param audioEngine             the engine this controller configures
+     * @param postReconfigureCallback run after every applied configuration;
+     *                                may be {@code null}
+     * @param notifications           where this controller's messages go
+     */
     DefaultAudioEngineController(AudioEngine audioEngine,
                                  Runnable postReconfigureCallback,
-                                 NotificationManager notifications,
-                                 IncompleteTakeStore incompleteTakeStore) {
-        this(audioEngine, postReconfigureCallback, notifications, incompleteTakeStore,
-                new AudioBackendSelector());
+                                 NotificationManager notifications) {
+        this(audioEngine, postReconfigureCallback, notifications, new AudioBackendSelector());
     }
 
     /**
@@ -457,14 +493,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
     DefaultAudioEngineController(AudioEngine audioEngine,
                                  Runnable postReconfigureCallback,
                                  NotificationManager notifications,
-                                 IncompleteTakeStore incompleteTakeStore,
                                  AudioBackendSelector backendSelector) {
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.tonePlayer = new TestTonePlayer();
         this.postReconfigureCallback = postReconfigureCallback;
         this.notifications = Objects.requireNonNull(notifications, "notifications must not be null");
-        this.incompleteTakeStore = Objects.requireNonNull(
-                incompleteTakeStore, "incompleteTakeStore must not be null");
         this.backendSelector = Objects.requireNonNull(
                 backendSelector, "backendSelector must not be null");
         this.xrunDetector = createDetectorFor(audioEngine.getFormat());
@@ -481,7 +514,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // is overloaded (2-arg and 3-arg) and a method ref would silently
         // re-target if either overload's shape changed.
         audioEngine.setStreamOpenListener(
-                (backend, device) -> bindBackendDeviceEvents(backend, device));
+                (backend, device) -> onStreamOpened(backend, device));
         monitorEventDrain.scheduleWithFixedDelay(this::drainMonitorEvents,
                 MONITOR_EVENT_DRAIN_MILLIS, MONITOR_EVENT_DRAIN_MILLIS,
                 TimeUnit.MILLISECONDS);
@@ -977,7 +1010,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
-    public Flow.Publisher<EngineState> engineStateEvents() {
+    public Flow.Publisher<EngineStateChange> engineStateEvents() {
         return engineStatePublisher;
     }
 
@@ -1118,6 +1151,44 @@ final class DefaultAudioEngineController implements AudioEngineController {
         events.subscribe(next);
     }
 
+    /**
+     * The engine's stream-open seam ({@link AudioEngine.StreamOpenListener}):
+     * every completed open re-binds the device-event watch to the rung that
+     * won ({@link #bindBackendDeviceEvents(AudioBackend, DeviceId)}), and —
+     * story 327 — ends {@link EngineState#DEVICE_LOST}: a stream is open
+     * again, so the loss is over whichever device carries it. Without this
+     * the state stuck at DEVICE_LOST across every open this controller did
+     * not drive (a bare Play or Record straight from the transport), so a
+     * second loss on the new stream deduplicated in {@link #setEngineState}
+     * and was never published — no rescue of the second take — and
+     * {@link #onDeviceArrived}'s DEVICE_LOST gate stayed open over a watch
+     * re-pointed to another device. The state becomes STOPPED, the
+     * convention for an open this controller did not drive (a bare Play
+     * never reports RUNNING either). The bind precedes the publication, so
+     * the {@link EngineStateChange} carries the device the stream is bound
+     * to. {@link #onDeviceArrived}'s own reopen fires this seam
+     * re-entrantly inside its {@code startAudioOutput()}, with
+     * {@link #returnReopenInProgress} set: the watch is bound here as for
+     * any open, but the STOPPED is NOT published from here — it would reach
+     * observers while the stream is still RUNNING, before the pause that
+     * parks it (story 327 fix round, PR #982 CI) — and is published by
+     * {@code onDeviceArrived} after the park. Runs on the thread that
+     * completed the open, outside the engine's lifecycle lock.
+     */
+    private synchronized void onStreamOpened(AudioBackend backend, DeviceId device) {
+        bindBackendDeviceEvents(backend, device);
+        if (engineState != EngineState.DEVICE_LOST) {
+            return;
+        }
+        if (returnReopenInProgress) {
+            LOG.info("The lost device's return reopened on " + device
+                    + "; STOPPED is published once the stream is parked");
+            return;
+        }
+        LOG.info("A stream opened on " + device + " while the engine was DEVICE_LOST; the loss is over");
+        setEngineState(EngineState.STOPPED);
+    }
+
     private void clearBoundBackendDeviceEvents() {
         DeviceEventSubscriber previous = deviceEventSubscriber.getAndSet(null);
         if (previous != null) {
@@ -1190,33 +1261,39 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     /**
-     * Captures one block of recorded input into the
-     * {@link IncompleteTakeStore} so it can be flushed to disk if the
-     * device disappears mid-take. Production wiring (the recording
-     * subsystem) calls this from the audio callback.
+     * Records {@code newState} and publishes it as an
+     * {@link EngineStateChange} with the device watched at this instant,
+     * unless it is the state already held. {@code synchronized} (story 327
+     * fix round): every caller but {@link #runFormatChangeReopen}'s catch
+     * already holds the monitor, and that catch runs on the format-change
+     * worker against handlers on the device-event thread, so without the
+     * monitor its read-compare-write of {@link #engineState} could
+     * interleave with theirs. Reentrant for the callers that hold it; see
+     * the lock-order note on {@link #controlPanelLock} for why the
+     * publisher's lock under the monitor adds no edge.
+     *
+     * <p>The device is read from {@link #watchedDevice} HERE, under the
+     * monitor and in program order after any rebind the same transition
+     * did ({@link #onStreamOpened} binds before it publishes), and travels
+     * with the state (PR #982 review): a subscriber that looked the watch
+     * up at delivery could name, for a queued DEVICE_LOST, the device a
+     * fast reopen had rebound the watch to meanwhile.</p>
      */
-    void captureRecordingFrames(float[][] inputBuffer, int numFrames) {
-        incompleteTakeStore.appendCapturedFrames(inputBuffer, numFrames);
-    }
-
-    /** Visible for tests. */
-    IncompleteTakeStore getIncompleteTakeStore() {
-        return incompleteTakeStore;
-    }
-
-    private void setEngineState(EngineState newState) {
+    private synchronized void setEngineState(EngineState newState) {
         EngineState previous = this.engineState;
         if (previous == newState) {
             return;
         }
         this.engineState = newState;
+        EngineStateChange change = new EngineStateChange(newState, Optional.ofNullable(watchedDevice.get()));
         // Use offer() instead of submit() to avoid blocking under
         // backpressure — a slow UI subscriber must not stall the
         // device-event thread.
         if (!engineStatePublisher.isClosed()) {
-            engineStatePublisher.offer(newState, (subscriber, dropped) -> false);
+            engineStatePublisher.offer(change, (subscriber, dropped) -> false);
         }
-        LOG.info("Engine state " + previous + " -> " + newState);
+        LOG.info("Engine state " + previous + " -> " + newState
+                + change.device().map(device -> " (watching " + device + ")").orElse(""));
     }
 
     /**
@@ -1235,6 +1312,26 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * had recorded — and because {@link #onDeviceArrived(DeviceId)} is gated
      * on {@code DEVICE_LOST}, re-plugging it then OPENED a stream the user
      * never asked for.</p>
+     *
+     * <p>Story 327 (PR #982 review): for the device of an open stream, the
+     * first step — before {@link AudioEngine#stopAudioOutput()} closes the
+     * stream — is {@link AudioEngine#haltRecordingCapture()}: the engine's
+     * capture-halt generation is advanced (an atomic update: the
+     * device-loss fence of a capture start still under way), then each
+     * installed recording callback closes its ring's producer gate and both
+     * callback slots are emptied (volatile stores), all lock-free, on this
+     * thread. This
+     * is the one place the device-event thread touches capture state
+     * (Recording Reliability book §6.1): the engine's {@code stop()} leaves
+     * the recording callback installed, the pipeline's own stop — which
+     * seals the take — runs on the FX thread when the DEVICE_LOST published
+     * below is delivered, and a reopen can only follow a closed stream, so
+     * halting here is what keeps a stream reopened before that FX turn —
+     * {@link #onDeviceArrived(DeviceId)}'s reopen of the returned device,
+     * or an open this controller did not drive — from publishing into the
+     * take being rescued. The pipeline's stop then repeats the gate close
+     * and the callback removal harmlessly; the seal, the transport stop,
+     * the flags and every UI transition stay on FX.</p>
      */
     private synchronized void onDeviceRemoved(DeviceId removed) {
         if (!audioEngine.isStreamOpen()) {
@@ -1247,11 +1344,28 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return;
         }
         DeviceId watched = watchedDevice.get();
-        if (watched == null || !matches(watched, removed)) {
+        if (watched == null || !sameDevice(watched, removed)) {
             // Some other device went away — nothing to do.
             return;
         }
         LOG.warning("Active audio device removed: " + removed);
+        // Story 327 (PR #982 review): end capture into the take FIRST, on
+        // this thread, before the stream is closed — a reopen needs a closed
+        // stream, so this precedes every reopen: the lost device's return
+        // below, and an open this controller does not drive. The engine's
+        // stop() leaves the recording callback installed and the pipeline's
+        // own stop runs later, on the FX thread; a pump started in between
+        // would have published the reopened stream into the rescued take.
+        // Lock-free: an atomic advance of the capture-halt generation (the
+        // device-loss fence of a capture start still under way), then
+        // volatile stores (each callback closes its ring's gate, then both
+        // callback slots are emptied); while nothing records, only the
+        // advance and the stores of the two empty slots.
+        try {
+            audioEngine.haltRecordingCapture();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to halt recording capture during disconnect", e);
+        }
         // Halt the render thread cleanly. Best-effort; never let an
         // exception from the device-event thread escape and crash the
         // engine — the issue requires "no exceptions on the audio thread".
@@ -1265,13 +1379,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to stop engine during disconnect", e);
         }
-        // Persist any in-progress recording take so the user can review
-        // it after the device returns.
-        try {
-            incompleteTakeStore.flushIfNotEmpty(removed, audioEngine.getFormat());
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to persist incomplete take", e);
-        }
+        // Story 327: an in-flight take is not SEALED here — only its capture
+        // was ended above. DEVICE_LOST reaches RecordCoordinator through
+        // engineStateEvents() on the FX thread, and the coordinator seals
+        // the take on disk through the pipeline's ordinary stop (Recording
+        // Reliability book §2.9, §5.5); there is no second in-RAM copy of
+        // the audio to flush. The message below is the playback case; when
+        // a take was recording, the coordinator's rescue message says what
+        // became of it.
         setEngineState(EngineState.DEVICE_LOST);
         try {
             notifications.notify("Audio device disconnected — playback paused");
@@ -1295,14 +1410,63 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * must outlive the close by design — what was removed instead is the
      * STORED "active" claim: whether a stream is open is now derived from
      * {@link AudioEngine#isStreamOpen()}, the authority, rather than
-     * mirrored into a field nothing clears.</p>
+     * mirrored into a field nothing clears. The subscription outlives the
+     * close only because {@code AudioBackendSupport.close()} completes just
+     * the stream's input publisher (story 327); the device-event publisher
+     * lives with the backend — before that change the close completed it,
+     * and the subscriber's {@code onComplete} closed the subscription.</p>
+     *
+     * <p>Story 327: the DEVICE_LOST gate below also closes when any other
+     * stream opens ({@link #onStreamOpened}), so the "still disconnected"
+     * remediation never names a watch re-pointed to another device. The
+     * reopen here fires that seam re-entrantly inside
+     * {@code startAudioOutput()}; under {@link #returnReopenInProgress} the
+     * seam only binds the watch, and the return's STOPPED is published here,
+     * after {@code pauseAudioOutput()} has parked the stream (fix round, PR
+     * #982 CI). Observers gating on that STOPPED — the record coordinator's
+     * return, a Play on the FX thread — find the stream open-but-parked,
+     * barring a pause the engine deferred (a render pump that did not join
+     * in time: logged SEVERE, the stream left RUNNING, the STOPPED still
+     * published because a stream is open) or an open this controller did
+     * not drive that completed in the window below (the reopen is skipped
+     * and the STOPPED is published with THAT stream RUNNING; no park is
+     * owed) — never open-and-RUNNING with a park of this handler's still to
+     * land under them. Invariant on every exit:
+     * {@code EngineState.DEVICE_LOST} ends whenever a stream is open, so the
+     * catch path publishes STOPPED iff {@link AudioEngine#isStreamOpen()}
+     * says one is — an invariant guard, not a path the current engine
+     * reaches (see the catch).</p>
+     *
+     * <p>Not pinned, and not a regression if it is found (PR #982 round 2):
+     * the "already open" window. An open this controller did not drive —
+     * the instrument-audio open of {@code MainController.pluginGraphChanged},
+     * on a virtual thread — has COMPLETED, so {@link AudioEngine#isStreamOpen()}
+     * is true, but its stream-open announcement is still waiting on this
+     * monitor when this handler runs for the lost device. The reopen below
+     * is skipped and the STOPPED published here snapshots
+     * {@link #watchedDevice} BEFORE that open's seam rebinds it
+     * ({@link #setEngineState} reads the watch in program order), so the
+     * STOPPED can carry the lost device while the stream is bound to
+     * another rung; the seam's own STOPPED is then deduplicated. In the
+     * sibling ordering — the announcement delivered first — the seam ends
+     * DEVICE_LOST naming the rung that opened and the gate above returns.
+     * No fixture controls the engine's lifecycle lock or that thread, so
+     * neither ordering is pinned (story 327, Known limitations).</p>
      */
     private synchronized void onDeviceArrived(DeviceId arrived) {
         if (engineState != EngineState.DEVICE_LOST) {
             return;
         }
         DeviceId watched = watchedDevice.get();
-        if (watched == null || !matches(watched, arrived)) {
+        if (watched == null || !sameDevice(watched, arrived)) {
+            // Story 327 (book §5.2 "Device returned", guard failure): the
+            // remediation repeats once per arrival that is not the lost
+            // device, so a user who plugged in the wrong interface is told
+            // which one is still missing. Nothing is reopened.
+            LOG.info("Audio device arrived while " + watched + " is lost, but it is not that device: " + arrived);
+            notifyQuietly("Audio device " + (watched == null ? "" : watched.name() + " ")
+                    + "is still disconnected — " + arrived.name() + " arrived, but it is not the lost device;"
+                    + " playback stays paused");
             return;
         }
         LOG.info("Lost audio device returned: " + arrived);
@@ -1313,16 +1477,58 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // is the historical post-arrival state — device proven usable, user
         // re-arms transport manually. A later Play resumes on the same open
         // stream. With no provision installed there is nothing to reopen.
+        // The !isStreamOpen() clause is all but dead since onStreamOpened
+        // ends DEVICE_LOST on every announced open (the gate above would
+        // have returned): it still covers the window between an open's
+        // completion, after which isStreamOpen() is true, and that open's
+        // deferred announcement (AudioEngine.PendingAnnouncements.deliver,
+        // outside the lifecycle lock), which has not entered onStreamOpened yet.
+        //
+        // Fix round (PR #982 CI): startAudioOutput() delivers its stream-open
+        // announcement on THIS thread before it returns, so onStreamOpened
+        // runs re-entrantly here, under the monitor, between the open and
+        // the park. With returnReopenInProgress set it binds the watch and
+        // publishes nothing; the STOPPED below is offered only after
+        // pauseAudioOutput() returned — the park precedes the state that
+        // observers gate on (the record coordinator's return reads
+        // isStreamOpen(); a Play reads isStreamOpen() && !isStreamPaused()).
+        // Published from the seam, before the park, the STOPPED was
+        // observable with the stream RUNNING, and a Play accepted inside
+        // that window was parked by the late pause: PLAYING with no callback.
         if (audioEngine.getStreamingProvision() != null && !audioEngine.isStreamOpen()) {
+            returnReopenInProgress = true;
             try {
                 audioEngine.startAudioOutput();
+                // The one park the engine offers. It parks only a RUNNING
+                // stream; a pump that did not join in time logs SEVERE and
+                // returns with the stream still RUNNING — open either way,
+                // so STOPPED is still the state to publish below.
                 audioEngine.pauseAudioOutput();
             } catch (RuntimeException e) {
                 LOG.log(Level.WARNING, "Failed to reopen audio stream after reconnect", e);
                 try {
                     notifications.notify("Audio device reconnected but reopen failed: " + e.getMessage());
                 } catch (RuntimeException ignored) { /* best-effort */ }
+                if (audioEngine.isStreamOpen()) {
+                    // A stream is open although the reopen threw, so
+                    // DEVICE_LOST is over. This is the invariant guard, not
+                    // a path the current engine reaches: startAudioOutput()
+                    // throws only from inside its open — the unwind of a
+                    // failed pump START, before the announcements, leaves no
+                    // open stream — and its announcement delivery lets no
+                    // RuntimeException escape (AudioEngine.notifyStreamOpened
+                    // catches and logs the listener's; PendingAnnouncements
+                    // .deliver catches the clock release's and the fallback
+                    // events'), while pauseAudioOutputLocked logs a deferred
+                    // join and returns. The seam used to publish this
+                    // STOPPED; under the mark it does not, so it is
+                    // published here. The finally clears the mark.
+                    setEngineState(EngineState.STOPPED);
+                }
+                // Otherwise no stream is open: stay DEVICE_LOST, as before.
                 return;
+            } finally {
+                returnReopenInProgress = false;
             }
         }
         // Resume in STOPPED state — the user re-arms transport manually,
@@ -1360,7 +1566,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // performFormatChangeReopen() re-opens only what
         // AudioEngine.isStreamOpen() said was open (its wasOpen).
         DeviceId watched = watchedDevice.get();
-        if (watched == null || !matches(watched, requested.device())) {
+        if (watched == null || !sameDevice(watched, requested.device())) {
             // Some other device — nothing to do.
             return;
         }
@@ -1401,7 +1607,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return;
         }
         DeviceId watched = watchedDevice.get();
-        if (watched == null || !matches(watched, requested.device())) {
+        if (watched == null || !sameDevice(watched, requested.device())) {
             return;
         }
         try {
@@ -1473,14 +1679,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return;
         }
 
-        // 3. If recording was active, behave like DeviceRemoved for the
-        //    in-flight take — flush partially captured frames so the
-        //    user can review them after the reopen.
-        try {
-            incompleteTakeStore.flushIfNotEmpty(watched, audioEngine.getFormat());
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to persist incomplete take during reopen", e);
-        }
+        // 3. (Story 327) Nothing is flushed for an in-flight take here any
+        //    more: the take streams to disk continuously and the record
+        //    coordinator owns what becomes of it; this controller never
+        //    held a copy of its audio.
 
         // 4. Re-query capabilities so the new open call uses values the
         //    backend actually allows. The SDK contract for these methods
@@ -1770,7 +1972,18 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return current.bufferSize();
     }
 
-    private static boolean matches(DeviceId watched, DeviceId other) {
+    /**
+     * Whether {@code other} names the same endpoint as {@code watched}: the
+     * one device-identity predicate of the app layer, shared by
+     * {@link #onDeviceRemoved}, {@link #onDeviceArrived}, the format-change
+     * paths and {@code RecordCoordinator.onLostDeviceReturned} (story 327
+     * fix round), so a return the controller would not accept as the lost
+     * device's is not read as one by the record state machine either. Equal
+     * ids match; otherwise the friendly name decides — a documented
+     * limitation (story 352 owns the stable hardware identity). Any thread;
+     * pure.
+     */
+    static boolean sameDevice(DeviceId watched, DeviceId other) {
         if (watched.equals(other)) {
             return true;
         }

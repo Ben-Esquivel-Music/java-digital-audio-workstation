@@ -8,10 +8,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.assumeSymbolicLinks;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -32,6 +34,9 @@ class TakeManifestAtomicReplaceTest {
 
     @TempDir
     Path takeDir;
+
+    @TempDir
+    Path elsewhere;
 
     @Test
     void aRewriteThatCannotStageItsTemporaryFileLeavesThePreviousManifestIntact() throws IOException {
@@ -71,6 +76,55 @@ class TakeManifestAtomicReplaceTest {
 
         assertThat(TakeManifest.read(manifestPath)).isEqualTo(second);
         assertThat(staging).doesNotExist();
+    }
+
+    @Test
+    void aStaleRegularStagingFileIsTruncatedAndTheRewriteLands() throws IOException {
+        // What a crash between the staging write and the move leaves: a
+        // regular take.manifest.tmp with whatever bytes it got. The next
+        // write truncates it (CREATE + TRUNCATE_EXISTING) and lands.
+        TakeManifest first = manifest().build();
+        Path manifestPath = first.write(takeDir);
+        Path staging = takeDir.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX);
+        Files.writeString(staging, "stale bytes of a write that never moved, longer than any manifest line\n".repeat(40));
+        TakeManifest second = manifest().overflowBlocks(7).sealed(SealedBy.STOP).build();
+
+        assertThat(second.write(takeDir)).isEqualTo(manifestPath);
+
+        assertThat(TakeManifest.read(manifestPath)).isEqualTo(second);
+        assertThat(Files.readAllBytes(manifestPath)).isEqualTo(second.toText().getBytes(StandardCharsets.UTF_8));
+        assertThat(staging).as("moved into place, not left beside the manifest").doesNotExist();
+    }
+
+    /**
+     * The live flush path's shape of PR #982 review r4289337635: a
+     * {@code take.manifest.tmp} that is a symbolic link to a regular file
+     * outside the take directory. {@code STAGING_CHANNEL} opens with
+     * {@code NOFOLLOW_LINKS}, so the write is refused before a byte is
+     * written: the external file and the previous manifest are
+     * byte-for-byte intact and the link is left where it was. Aborts where
+     * the platform refuses to create a symbolic link.
+     */
+    @Test
+    void aStagingFileThatIsALinkIsRefusedAndTheFileBehindItIsNotTouched() throws IOException {
+        assumeSymbolicLinks(takeDir);
+        Path external = Files.write(elsewhere.resolve("precious.txt"), "do not overwrite me".getBytes(StandardCharsets.UTF_8));
+        byte[] externalBefore = Files.readAllBytes(external);
+        TakeManifest first = manifest().build();
+        Path manifestPath = first.write(takeDir);
+        byte[] manifestBefore = Files.readAllBytes(manifestPath);
+        Path staging = takeDir.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX);
+        Files.createSymbolicLink(staging, external);
+        TakeManifest second = manifest().overflowBlocks(7).sealed(SealedBy.STOP).build();
+
+        assertThatThrownBy(() -> second.write(takeDir))
+                .as("the staging file is never opened through a link")
+                .isInstanceOf(IOException.class);
+
+        assertThat(Files.readAllBytes(external)).as("the file behind the link is byte-identical").isEqualTo(externalBefore);
+        assertThat(Files.readAllBytes(manifestPath)).as("the previous manifest is byte-identical").isEqualTo(manifestBefore);
+        assertThat(Files.isSymbolicLink(manifestPath)).as("the move never ran").isFalse();
+        assertThat(Files.isSymbolicLink(staging)).as("the link is left where it was").isTrue();
     }
 
     private static TakeManifest.Builder manifest() {

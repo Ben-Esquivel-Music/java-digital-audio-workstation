@@ -30,3 +30,7 @@ Story 123 covers underrun detection and is adjacent — but underruns are tempor
 - Falling back to `JavaxSoundBackend` mid-session — too many parameters change for that to be silent.
 - Recovering audio that was already lost between the last successful callback and the disconnect event; only the in-flight in-memory take is salvaged.
 - Hardware-level USB-stack diagnostics (driver-version checking, USB controller resets).
+
+## As landed by story 327
+
+- The `.daw/incomplete-takes/` WAV promised above never shipped and is gone: `DefaultAudioEngineController` holds no `IncompleteTakeStore` and writes no file on `DeviceRemoved`; the in-flight take is rescued by `RecordCoordinator` — the pipeline's ordinary stop with reason `device-loss` seals its segments under `<project>/audio/takes/<take>/`, as every take is written — and `IncompleteTakeStore` is the in-memory, project-rooted registry of takes sealed that way; the reopen on a matching `DeviceArrived` ends the record state in IDLE with the armed tracks kept, and recording resumes only on the user's Record (`docs/user-stories/327-device-loss-detection-and-take-rescue.md`, Recording Reliability book §2.9, §5.5).

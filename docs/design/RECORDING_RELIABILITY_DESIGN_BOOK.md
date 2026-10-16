@@ -462,7 +462,7 @@ stateDiagram-v2
 
 As landed (story 325), `RecordCoordinator` is the only owner of these FX-thread states.
 Audio Record opens the device, enters PREPARING with REC off, allocates its take directory on
-the storage executor, and calls `RecordingPipeline.prepare()`. Its flush thread creates the
+the storage executor, and calls `RecordingPipeline.prepare(long)` with the capture-halt baseline read at the Record press (§5.5). Its flush thread creates the
 take's files and reports readiness; only the posted FX continuation begins capture and enters
 RECORDING. MIDI inputs are opened and validated without accepting events; after every input
 has completed preparation and the transport's recording transition succeeds, all successful
@@ -481,9 +481,46 @@ earlier post-roll timer, whose stale callback cannot stop the new take.
 FINALIZING covers flush termination, audio readback, clip/undo/dirty publication, and outcome
 reporting. An early seal or failed Stop seal keeps the partial take and reports ERROR through
 the same publication path. The state, recording flag, availability and status are read-only
-feeds for REC, the Record binder and transport status. The strip/`EngineState` bridge consumes
-this feed in story 338. DEVICE_LOST detection and rescue remain story 327; an unrelated
-settlement never bypasses the same-identity reopen guard.
+feeds for REC, the Record binder and transport status. The strip cell that consumes this
+feed is story 338's.
+
+As landed (story 327), DEVICE_LOST is live. `EngineStateBridge` — `MainController`'s one
+subscription to `AudioEngineController.engineStateEvents()`, posted to the FX thread — feeds
+`TransportController.onEngineState` each `EngineStateChange`: the state with the device the
+engine controller watched at that transition, captured together under its monitor and never
+looked up at delivery (PR #982 fix round — a fast reopen may rebind the watch before a queued
+loss's FX turn runs). It hands `EngineState.DEVICE_LOST` to `RecordCoordinator.onDeviceLost`
+with the lost device, and the first `STOPPED` or `RUNNING` delivered after it with the engine's
+stream open to `onLostDeviceReturned`, which identity-matches the device delivered with it (a
+closed-stream `STOPPED` and a `RECONFIGURING` are only remembered). The rescue comes
+first: `onDeviceLost` requests the pipeline's ordinary stop with reason `DEVICE_LOSS`
+(`RecordingPipeline.requestStop(SealedBy)`) before any UI step, and only then — each step guarded,
+a failure logged — enters DEVICE_LOST (REC off, the status naming the device), stops the MIDI
+recorders and runs the transport's stop tail. The take is published on a later FX turn as after a
+Stop; on that turn every rescue whose seal succeeded is registered with the rescued-take registry
+before any report, and a clean one is reported by one WARNING with a Review action (which seeks
+only while the transport is stopped or paused). The state stays DEVICE_LOST through the seal and
+the publication. Its exits: the lost device's return (the same-identity reopen —
+`DefaultAudioEngineController.sameDevice`, the controller's own predicate — after which `settle()`
+— and only then — takes it to IDLE with the armed tracks kept, the transport at the take's start
+anchor — unless the device is lost again before the publication has settled, which clears the
+pending return and keeps the machine DEVICE_LOST until the next open-stream STOPPED or RUNNING
+(§5.2 "Device returned"; PR #982 review)) or the loss ending on another device (an open the controller did not drive —
+`MainController.pluginGraphChanged`'s instrument-audio open — landed on another rung: IDLE, armed
+tracks kept, no seek, an INFO naming both devices); the user's Stop or a configuration request
+(DEVICE_LOST → FINALIZING → IDLE once the publication has ended);
+and a rescue whose seal — the capture thread sealed the take early inside the rescue (PR #982
+review round 2), a lane threw, or the final manifest write failed on every attempt
+and left the manifest on disk streaming (`FinalManifestFailure`; PR #982 review) — or readback
+failed (DEVICE_LOST → ABORTED → IDLE, the ordinary ERROR — a readback failure after a clean
+seal keeps its registration; an early seal or a failed manifest write registers nothing and leads with the
+device-loss wording). Record and Play are refused
+while DEVICE_LOST, naming the device and the ways out. `EngineState.DEVICE_LOST` itself ends
+when any stream opens, so a loss on a later stream is published again. A loss during PREPARING
+abandons the start through ABORTED with an ERROR, as the diagram has no PREPARING → DEVICE_LOST
+arrow; a loss during a MIDI-only take is an ordinary Stop. In main source only
+`MockAudioBackend` publishes `DeviceRemoved`/`DeviceArrived`; the hardware feeds remain story
+338's (§5.5).
 
 ### 3.3 On-disk layout and naming
 
@@ -712,7 +749,8 @@ seals the lane, stacks the lap and swaps the standby in without opening a file. 
 rotates takes over the standby's empty file, and the manifest is rewritten before the first
 frame lands in it. Whatever ends the take discards a standby no lap reached — file deleted,
 entry removed. A standby file that cannot be deleted then is left as an unlisted zero-frame
-`.part` and reported through the warning sink; §3.4 has no row for that state yet. The same
+`.part` and reported through the warning sink — the recovery scan (§4.7; story 332 runs it on
+project open) deletes it; §3.4 has no row for that state yet. The same
 holds for a standby discarded at a wrap because the sealed lane ended on an empty segment: if
 its file cannot be deleted the take goes on, and the next lane is opened one index past that
 file.
@@ -794,13 +832,13 @@ then surface the cause via the notification seam (§6.3).
 | Record pressed again / Stop | PREPARING | — | FINALIZING | Cancel this attempt; stale allocation/readiness cannot resurrect it; IDLE only after termination and directory cleanup |
 | Current post-roll ends | PREPARING | same controller/timer and transport still in its tail | FINALIZING | Same cancellation; accepted RECORDING cancels the prior timer |
 | Record pressed again / Stop | COUNT_IN, RECORDING | — | FINALIZING | Toggle-stop; same pipeline and one completion, never replacement or a second stream open |
-| Seal, readback and publication settled | FINALIZING | thread terminated; clips retain all segment references; completion/undo/dirty/outcome reported | IDLE | Seal/readback/completion failure → ABORTED with partial take intact and ERROR; settlement still required |
+| Seal, readback and publication settled | FINALIZING | thread terminated; clips retain all segment references; completion/undo/dirty/outcome reported | IDLE | Seal/readback/completion failure → ABORTED with partial take intact and ERROR (a final manifest write that failed on every attempt is a seal failure: the manifest on disk says nothing of the seal, so the take is never reported as stopped cleanly — PR #982 review); settlement still required |
 | Flush thread seals early | RECORDING | one-shot early-seal fact belongs to the active pipeline; competing Stop handled once | ABORTED | Ordinary stop fence preserves the partial take; publication shows one ERROR naming cause |
 | Rollback / partial publication settled | ABORTED | no pending allocation, flush/readback/publication, cleanup or MIDI input remains | IDLE | Remain unavailable until settlement; no new Record or settings mutation while resources remain |
 | Stop of an aborted take | ABORTED | outstanding take requires the ordinary seal fence | FINALIZING (or remains ABORTED) | Preserve failure and partial take; never replace ERROR with SUCCESS |
 | Device lost (event or watchdog) | RECORDING | story 327 | DEVICE_LOST | Runs §5.5; detection is not wired in story 325 |
-| Device returned | DEVICE_LOST | same identity; reopen succeeds (story 327) | IDLE (armed kept) | Remains DEVICE_LOST; settlement alone cannot clear it |
-| Rescue seal / failure | DEVICE_LOST | story 327 rescue sequence | FINALIZING / ABORTED | Partial take kept; same seal fence |
+| Device returned | DEVICE_LOST | same identity; reopen succeeds (story 327) — as landed, another device's open also ends DEVICE_LOST → IDLE without a seek (story 327) | IDLE (armed kept) | Remains DEVICE_LOST; settlement alone cannot clear it; a second loss before the publication settles undoes the return (story 327, PR #982 review) |
+| Rescue seal / failure | DEVICE_LOST | story 327 rescue sequence; a rescue is clean only when no early seal completed, every lane sealed and the final manifest write landed | FINALIZING / ABORTED | Partial take kept; same seal fence; an early seal (one can complete inside the rescue's own final sweep), a lane that threw or a final manifest write that failed on every attempt is a rescue failure — ERROR, not registered (PR #982 review; round 2 for the early seal) |
 | Settings apply requested | PREPARING, COUNT_IN, RECORDING | Prompt “Stop the take and apply?”; exact request is reserved before modal reentry; acceptance waits for all finalization/cleanup/publication | — | Decline changes no driver/runtime/persistence; pending edits stay dirty; failure clears only its owned reservation |
 | Settings apply awaits prior settlement | FINALIZING, ABORTED with resources pending | Wait for cleanup/readback/publication, without another Stop prompt | — | Prior outcome remains visible; no engine mutation before settlement |
 | Settings transaction active | any | controller-wide exclusion survives project replacement; off-FX worker waits outside the controller monitor | — | New Record refused until the configuration lease releases; separate settings workers serialize |
@@ -878,9 +916,9 @@ complete regardless of later-step failure:
 |---|------|-------|
 | 1 | Callback source stops delivering; ring drains normally | flush thread |
 | 2 | Seal all active segments (§3.4); manifest marked `sealed-by: device-loss` | flush thread |
-| 3 | Register the rescued take with the project-rooted `IncompleteTakeStore` (registry role, §2.9) | flush → FX |
+| 3 | Register the rescued take with the project-rooted `IncompleteTakeStore` (registry role, §2.9) | flush → FX *(as landed: FX — `RecordCoordinator`, on the take's publication turn, before any report)* |
 | 4 | State → DEVICE_LOST; REC indicator off; status strip shows the cause | `RecordCoordinator` |
-| 5 | Notification: device name, "take preserved", review affordance — through the **injected production** notification manager (never the no-op of §1.7; injection is story 339, `FAILURE_SURFACING_DESIGN_BOOK.md`) | FX |
+| 5 | Notification: device name, "take preserved", review affordance — through the **injected production** notification manager (never the no-op of §1.7; injection is story 339, `FAILURE_SURFACING_DESIGN_BOOK.md`) *(as landed: `RecordCoordinator` calls the notification bar directly; the injected manager is story 339's)* | FX |
 | 6 | On `DeviceArrived` matching identity: reopen per §5.2; armed set preserved; the user chooses to resume — recording never restarts itself | `RecordCoordinator` |
 
 Detection feeds (in preference order): backend device events (ASIO, live once story 316 of
@@ -889,6 +927,14 @@ callback-heartbeat watchdog (story 338, `FAILURE_SURFACING_DESIGN_BOOK.md`) for 
 events. This book consumes those signals; it does not implement watchers (§6.3). The same seal
 path is what crash recovery replays from disk (§4.7) — one rescue grammar for unplug, crash, and
 power loss.
+
+#### Story 327 implementation
+
+The feed is the engine controller's existing reaction chain: `DefaultAudioEngineController.onDeviceRemoved` (gated on an open stream and on the watched identity) stops the output and the engine and declares `EngineState.DEVICE_LOST`; `EngineStateBridge`, subscribed once by `MainController` before the first stream opens, posts every `EngineStateChange` — the state with the device watched at that transition, captured by `setEngineState` under the controller's monitor and never looked up at delivery (PR #982 fix round) — to the FX thread, where `TransportController.onEngineState` turns `DEVICE_LOST` into `RecordCoordinator.onDeviceLost(device)` with the device it carries and the first `STOPPED` or `RUNNING` delivered after it with the engine's stream open into `onLostDeviceReturned(device)` — a closed-stream `STOPPED` (a failed or refused reopen) and a `RECONFIGURING` are only remembered; the producers of such an open-stream state while the coordinator is DEVICE_LOST are `onDeviceArrived` (the lost device: reopen, park, then `STOPPED` — published after the park since the PR #982 fix round, so the coordinator's return and a Play never find the reopened stream RUNNING with the park still to land) and the stream-open seam `onStreamOpened` for an open the controller did not drive — Play and Record are refused while DEVICE_LOST, so that is the instrument-audio open of `MainController.pluginGraphChanged`, which may land on another rung and which the coordinator, identity-matching the delivered device with the controller's own `sameDevice`, reads as the loss ending on another device (no seek; an INFO naming both); a `FormatChangeRequested` while DEVICE_LOST publishes `RECONFIGURING` then a closed-stream `STOPPED` (`performFormatChangeReopen` restores only a stream that was open; the loss closed it) and is ignored; a Settings apply never reaches a DEVICE_LOST coordinator, whose guard leaves DEVICE_LOST through FINALIZING before the permit is granted (`ASettingsApplyLeavesDeviceLostThroughFinalizingTest`). `EngineState.DEVICE_LOST` ends when any stream opens (`onStreamOpened`, the stream-open seam), so a second loss is published and the "still disconnected" remediation never names a re-pointed watch. No producer was added: in main source only `MockAudioBackend.simulateDeviceRemoved`/`simulateDeviceArrived` publish `DeviceRemoved`/`DeviceArrived` (`AsioBackend`, `WasapiBackend` and `CoreAudioBackend` publish `FormatChangeRequested` only), so the hardware feeds of the preference order above remain story 338's. The identity match is unchanged (`sameDevice`: `DeviceId.equals`, else the friendly name) and shared with the coordinator; a non-matching arrival while `DEVICE_LOST` repeats the remediation once per arrival and reopens nothing. `AudioBackendSupport.close()` no longer completes the device-event publisher — the loss closes the stream, and the return is published while none is open — which is what makes step 6 reachable on every `AudioBackendSupport`-based backend.
+
+The steps run in this order, each independent of the ones after it. Capture into the take ends before any of them, on the device-event thread (PR #982 review r4289337584): `onDeviceRemoved` calls `AudioEngine.haltRecordingCapture()` as its first act for the device of an open stream, BEFORE `stopAudioOutput()` closes the stream — every installed recording callback is told through `RecordingCallback.onCaptureHalted()` (the pipeline's `CaptureCallback` closes its ring's producer gate there: `CaptureRing.closeProducer()`, one volatile store), then the recording-callback slot and the additional-callbacks slot are emptied. A reopen needs a closed stream, so the halt precedes every reopen — `onDeviceArrived`'s reopen of the returned device and an open the controller did not drive alike — and a pump started by one reads `null` and runs no callback; without it the engine's `stop()` left the callback installed and a stream reopened before the loss's FX turn published its blocks into the take being rescued (pinned with the FX thread held and a reopened pump rendering: `…EngineBridgeTest.aStreamReopenedBeforeTheLossTurnRunsPublishesNothingIntoTheRescuedTake`; the acting-thread order — halted, then closed, then `DEVICE_LOST` published — in `DefaultAudioEngineControllerTest.theLossHaltsCaptureOnTheDeviceEventThreadBeforeTheStreamClosesAndBeforeDeviceLostIsPublished`). It is the device-event thread's one write to capture state (§6.1); a loss while nothing records advances the capture-halt generation (below) and finds no callback to halt. The halt reaches only the callbacks it reads, so a capture start that races it is fenced (PR #982 review r4297840180): `haltRecordingCapture()` first advances the engine's capture-halt generation (the field `captureHaltGeneration` is an `AtomicLong`, because `haltRecordingCapture()` is public and nothing confines it to one thread; `AudioEngine.getCaptureHaltGeneration()` returns its value). The take keeps a baseline of the generation: the record coordinator reads it on the FX thread when Record is pressed — before the take's stream is opened on `sessionInputCheck` — keeps it in the take's `PendingStart` and hands it to `RecordingPipeline.prepare(long)`, which every caller hands a baseline it read itself. `beginCapture()` reads the generation before it starts the engine or touches the transport, and again after installing both callbacks and before it opens their start gate, and rejects a start that overlapped a halt (one after the baseline was read and before `beginCapture()` — a halt of the take's own stream between its open and the take's preparation included; one during `beginCapture()`, before the installation or between it and the final check; one whose own window between reading the slots and storing `null` the installation falls into — a halt after the final check sees the installed callbacks and closes their gates, as before) through its ordinary all-or-nothing rollback, rethrowing *"the audio device was lost while the take was starting"*. The two sides are a Dekker pair over volatile accesses — the start stores the slots and then reads the generation, the halt advances the generation and then reads the slots — so either the start sees the halt and is rejected, or the halt sees both callbacks and closes their gates; the audio thread never reads the generation, and the capture path is unchanged. Those instruction orders, and the volatility of both slots, are pinned in the bytecode (`RealTimeSafeContractTest.theDeviceLossFenceKeepsTheInstructionOrdersItsDekkerPairRestsOn`, `…theCallbackSlotsTheDeviceLossFenceReadsAreVolatileAndItsGenerationIsAnAtomicLong`). The record coordinator abandons the rejected start as a failed one — the ERROR *"Recording aborted — no take was started: the audio device was lost while the take was starting"*, PREPARING → ABORTED → IDLE once the take's files are removed and the take's stream released (`cleanUpPreparedInputStream` → `stopOwnedAudioStream(start.streamGeneration)`, a no-op for a stream a reopen left open, which stays untouched) — and the loss's FX turn, queued behind the readiness turn, then finds no take in flight and changes nothing (`CaptureStartOverlappingALossHaltIsRejectedTest`: the halt between preparation and `beginCapture()`, inside the preparation, after the baseline but before the preparation, from the capture activation, and around a whole start run inside the halt's read-to-store window — where a pump runs, it renders at least three blocks while the take's published-block count stays zero; `DeviceLossWhileTheTakeIsStartingRejectsTheStartTest`: the halt after the take was prepared; — the take-directory allocation held — after Record opened the stream and before the take was prepared; and inside the open of the take's stream, from the engine's stream-open listener on the input-check thread before the open returns, which a baseline read anywhere after the open would miss). One residual is not fenced: a halt descheduled between its slot loads and its `null` stores for the whole of a newer take's Record → preparation → readiness → `beginCapture()` — a take whose baseline was read after the advance — would empty that take's callback slots with their start gates open; once a block already in flight has finished, the take receives no further block and no stream feeds it, and the loss's `DEVICE_LOST` turn rescues it — a compare-and-set on the slots would not close this, because the same thread's `stopAudioOutput()` then blind-stores the additional slot (`closeAdditionalInputs()`). On the FX thread, `onDeviceLost` requests the rescue first — the pipeline's one-shot stop with reason `DEVICE_LOSS`, no storage I/O, no wait; its gate close and callback removal are idempotent repeats of the halt — and only then, each step guarded and its failure logged, enters DEVICE_LOST (step 4: REC off, status *"Audio device lost — `<device>`; saving the take"* with the warning glyph, the transport status label *"Device lost"* in the theme's warning token), stops the MIDI recorders and runs the transport's stop tail (which leaves a stream it finds OPEN alone — the loss closed the stream before publishing, so an open one is a post-loss reopen: the device may already have returned). Steps 1 and 2 are the flush thread's ordinary stop: woken at once (its park is bounded by `PARK_BACKSTOP`, 50 ms), at most `PRODUCER_QUIESCENCE_BOUND` (200 ms) for a callback inside the producer gate, drain of a ring sized for at least 250 ms of audio, seal of every active writer, final manifest `aborted`/`device-loss` with `sealed-at` (§3.4 RESCUED; a lane that threw reads `aborted`/`write-failure` with `stopSealFailure`, as for a Stop; a final manifest write that fails on every attempt leaves the manifest on disk the last one written — streaming — and is reported by `finalManifestFailure()` with the reason it meant to carry, the sink told once per seal kind — the stop's seal in words that promise no retry, an early seal's that the take keeps draining and the write is retried: PR #982 review, round 2). The publication follows on a later FX turn exactly as after a Stop; on that turn, step 3 — registration with the project's `IncompleteTakeStore`, owned by `RecordCoordinator` and created from the project directory, a take directory outside `<project>/audio/takes` refused — happens for every rescue whose seal succeeded (no early seal — the signal is read beside `StopSealOutcome.isClean()`, since an exhaustion or a write failure applying a block the rescue's own final sweep drains completes one inside the rescue, and the manifest then reads `write-failure` or `disk-exhaustion`: PR #982 review round 2 — every lane sealed, and the manifest that says so on disk), before the clips are published and before any report, so a take whose audio then fails to load is registered all the same (and reported as an ERROR that leads with the device-loss wording); then step 5, the status *"…; take preserved"* and one WARNING naming the device and the clips saved, with a **Review** action that names the take folder and recorded length and, while the transport is stopped or paused, seeks to the take's start anchor (`RecordingPipeline.getRecordingStartBeat()`); the notification rides `MainController`'s toast sink until story 339's injection. Step 6: the matching return reopens and parks the stream and then ends `STOPPED`; `onLostDeviceReturned` seeks to the anchor, says *"`<device>` reconnected. Tracks are still armed; press Record to continue."* and settles to IDLE with nothing disarmed — unless a further loss arrives before the publication settles, which undoes the return (§5.2 "Device returned"); when the device delivered with the state is not the lost one (an open the controller did not drive that landed on another device), it seeks nothing and says *"Audio is now on `<device>`; `<lost>` did not return. Tracks are still armed; press Record to continue."* before settling the same way; the next Record allocates a new take directory. Settlement alone never leaves DEVICE_LOST; Stop and a configuration request leave through FINALIZING; Record and Play are refused meanwhile, naming the device and the ways out; a rescue whose seal failed — an early seal inside the rescue, a lane that threw, or a final manifest write that failed on every attempt — leaves through ABORTED with the ordinary ERROR (for the early seal, one that leads with the device-loss wording and says saving the take ended early, with the cause and what was kept or left; for the manifest, one that leads with the device-loss wording, says the audio was saved up to the dropout but the take's manifest could not be written, and that take recovery rebuilds it from the segments — no rebuild promised when no track recorded a frame, since the scan then finds a listed segment with neither file and reports it unrecoverable) and is not registered: it is no rescued take on disk, and the recovery scan (`TakeRecovery.scan`; story 332 runs it on project open) rebuilds the take whose manifest write failed as crash recovery. The ordinary Stop reports a failed final write the same way (`finalManifestNotWrittenMessage`, FINALIZING → ABORTED), never as "Recording stopped — N clips created"; `finalizationFailureReport` is the one predicate both paths share.
+
+Crash recovery (§4.7) is `TakeRecovery.scan`/`recover` in `core.recording`, applied through `IncompleteTakeStore.registerRecoveredTakes(audioDirectory)` with reason `CRASH_RECOVERY`; story 332 is to invoke it on project open (no production caller yet). A take is a candidate when its manifest is streaming or lists an entry still streaming; a zero-frame `.part` has its entry dropped, as the live seal drops an empty tail, and is deleted only once the manifest without it is on disk — PR #982 review F3: deleting it first left a listed entry with no file whenever the write then failed, which every later scan reported as unrecoverable — a write that fails leaving it listed for the next scan to discard, and a delete that fails after the write reported, never undoing the manifest; an unlisted zero-frame `.part` — the live seal's undeletable standby, or the file a scan dropped and then could not delete — is deleted by whichever scan finds it, under a candidate or a sealed take, logged and never registered (zero-frame, for an unlisted file: a canonical header agreeing with the manifest's bit depth and sample rate and with the channel count of the track its directory names — bit depth → sample rate → channels, the listed-entry check, a directory naming no listed track never zero-frame — and a length-derived whole-frame count of 0; PR #982 review round 2); an unlisted `.part` with frames is reported under a candidate and only earns a log line under a sealed take; a take the flush thread had already aborted keeps its reason and its `sealed-at`, `crash-recovery` and the scan's own instant being written only for a take that was still streaming (the instant also for one that had none); and no throwable from one take ends the scan of the rest. The manifest's staging file `take.manifest.tmp` is opened `NOFOLLOW_LINKS` (`TakeManifest.STAGING_CHANNEL`: `CREATE, TRUNCATE_EXISTING, WRITE, NOFOLLOW_LINKS`), on the scan and on the live flush path alike, so one pre-planted as a symbolic link — to a file outside the take, or dangling — makes the write fail before a byte is written, the file behind the link and the previous manifest untouched (PR #982 review r4289337635; without the option the open truncated and overwrote the link's target and the move then installed the link as the manifest). Known limitations and the acceptance evidence are in the story (`docs/user-stories/327-device-loss-detection-and-take-rescue.md`); the stable hardware identity the name-only match lacks is story 352.
 
 ### 5.6 Workflow gating contract
 
@@ -913,7 +959,7 @@ flush-side decisions are sample-accurate.
 | device callback   | ring slots + headers; health atomics              | anything else in §5.1's "never RT" rows |
 | `capture-flush`   | segment files, manifests, mirror, take model, ring read index | touching FX-thread state; any JavaFX call but the `FxDispatcher` post below; blocking on FX; unbounded park |
 | FX thread         | record state machine; arm/routing edits; notifications | file I/O; ring access |
-| device-event thread (Book 4 watcher / backend) | publishes device + health events | mutating capture state directly — events route through `RecordCoordinator` on FX |
+| device-event thread (Book 4 watcher / backend) | publishes device + health events; **one exception** (story 327, PR #982 review r4289337584): on the loss of an open stream's device, `DefaultAudioEngineController.onDeviceRemoved` calls `AudioEngine.haltRecordingCapture()` BEFORE it closes the stream — each installed recording callback closes its ring's producer gate (`CaptureCallback.onCaptureHalted` → `CaptureRing.closeProducer`, one volatile store) and both callback slots are emptied — so no stream reopened before the loss's FX turn can publish into the take; the halt first advances the engine's capture-halt generation, which a capture start re-reads after installing its callbacks, and the start is rejected if it moved since the take's baseline (read at the Record press; PR #982 review r4297840180, §5.5) — part of the same call, not a second write path | mutating any other capture state — the seal, the transport stop, the flags and every UI transition route through `RecordCoordinator` on FX, whose stop then repeats the gate close and the callback removal harmlessly |
 
 All cross-thread facts ride the two existing seams: `FxDispatcher` continuous channels for
 continuous values (elapsed, mirror, disk headroom) and the typed `EventBus` for discrete facts
@@ -927,7 +973,11 @@ take directory, if empty, to a storage executor (§4.3). Story 325 retains these
 
 As landed (story 324): the device callback also writes the producer gate's phase word on the
 ring, and the thread that ends the take (FX in the app) writes the gate's closed flag — its one
-ring access, a volatile store. `capture-flush` waits at most 200 ms
+ring access, a volatile store; on a device loss the device-event thread writes that same flag
+first, through `AudioEngine.haltRecordingCapture()` (story 327, PR #982 review — the row above),
+and the FX thread's store is then a repeat; a start whose baseline of the capture-halt generation
+was read before that call advanced it, and whose callbacks are installed after the halt read the
+slots, is rejected (§5.5). `capture-flush` waits at most 200 ms
 (`CaptureFlushService.PRODUCER_QUIESCENCE_BOUND`) for a callback in flight before the final sweep
 of a stop. The mirror rides an `FxDispatcher` channel: `capture-flush` publishes peak snapshots into one continuous channel per armed track
 (`LiveCapturePeaks`), and the dispatcher's pulse delivers them on the FX thread. Reading a
@@ -976,9 +1026,10 @@ claims the `audio/` subtree's contents during capture.
 
 The REC indicator, transport Record button state, status-bar text, and the session status strip
 (story 295) all render the §3.2 machine — no surface derives "recording" from anything else.
-`EngineState`'s promised *"Reconnecting…"* indicator (§1.7) becomes real by bridging
-DEVICE_LOST/reconnect into the status strip; the strip cell itself is Book 4's story 338 scope,
-the record-state feed is ours. During capture, the arrangement draws the growing take from the
+`EngineState`'s promised *"Reconnecting…"* indicator (§1.7) is, as landed by story 327, the
+§3.2 machine's DEVICE_LOST rendered on the transport status (*"Device lost"*,
+`status-device-lost`, the theme's warning token); the strip cell that will bind to the same
+record-state feed is Book 4's story 338 scope, the feed is ours. During capture, the arrangement draws the growing take from the
 §4.5 mirror. Take lanes and comp interactions are `INTERACTION_COMPLETENESS_DESIGN_BOOK.md`
 surface territory; their data contract is §3.5.
 
@@ -1144,6 +1195,46 @@ simulated crash (§4.7).
 
 **Unblocks.** §2.1 holds under the failure mode that motivated it; the recovered-take review
 flow stops being fiction.
+
+**Landed with story 327** — see the story's Resolution
+(`docs/user-stories/327-device-loss-detection-and-take-rescue.md`) and §5.5 "Story 327
+implementation". Where it differs from the scope above: no detection feed was added — the
+consumer chain (`EngineStateBridge` → `TransportController.onEngineState` →
+`RecordCoordinator`) is wired in production, but the only publisher of `DeviceRemoved` in main
+source is `MockAudioBackend`, so the hardware half of the proof waits for story 338's watchdog
+or a backend's native events; `IncompleteTakeStore` kept its name and became the in-memory,
+project-rooted registry (its WAV writer and the `captureRecordingFrames` feeder are deleted, not
+re-rooted); the rescue is `RecordingPipeline.requestStop(DEVICE_LOSS)` — the ordinary stop seal
+with a reason, which the manifest records as `aborted`/`device-loss` with a new `sealed-at`
+instant — not a separate early-seal entry point on the flush service; registration happens on
+the FX turn that publishes the take (once its completion has produced the clips, before any
+report), not from the flush thread; the second proof is
+`TakeRecovery` (§4.7), with `IncompleteTakeStore.registerRecoveredTakes` awaiting its caller in
+story 332; and the reconnect tests exposed and fixed `AudioBackendSupport.close()` completing
+the device-event publisher, which had made `DeviceArrived` undeliverable after a loss on every
+`AudioBackendSupport`-based backend. The verification fix round then reordered `onDeviceLost`
+(the rescue is requested before any UI step), registered every rescue whose seal succeeded
+before its report, ended `EngineState.DEVICE_LOST` on any stream open, made the return "the
+first STOPPED or RUNNING delivered with the stream open", refused Play while DEVICE_LOST, and
+taught `TakeRecovery` to keep a found reason, delete empty tails and leave orphans under a
+sealed take alone — each in the story's Resolution. A second fix round made the coordinator's
+return identity-matched with the controller's own `sameDevice` (a mismatch — an open the
+controller did not drive, on another rung — ends the loss without a seek), made the stop tail
+leave any open stream alone (closing the fast re-plug window between the reopen and its park),
+kept a found `sealed-at` in the scan, and pinned the Settings-apply exit. A third fix round
+(PR #982 review) made the return's `STOPPED` follow the park rather than the stream-open seam,
+and gave the engine-state feed an `EngineStateChange` — state plus the device watched at that
+transition — so a queued loss can no longer be delivered as the loss of a device a fast reopen
+had rebound the watch to; both fast re-plug orderings are pinned with the FX thread held. The
+same round made the recovery scan's discard of an empty `.part` crash-consistent (§5.5): the
+file is deleted only after the manifest that drops its entry is on disk, and an unlisted
+zero-frame `.part` is deleted by whichever scan finds it. Its second round kept a rescue the
+capture thread sealed early inside its own stop out of the registry — the early-seal signal is
+read beside `StopSealOutcome.isClean()`, and such a rescue is reported with the device-loss
+wording — worded the flush thread's failed-final-write warning by seal kind (an early seal's
+write is retried by the idle passes and the stop's seal; the thread's last seal's is not), and
+retired every promise of a scan "on the next project open" in favour of take recovery, which
+story 332 wires; a zero-audio take whose final write failed promises no rebuild.
 
 ### Stage 6 — Capture Workflows: Count-In, Punch, Loop Takes, Comping (story 328)
 

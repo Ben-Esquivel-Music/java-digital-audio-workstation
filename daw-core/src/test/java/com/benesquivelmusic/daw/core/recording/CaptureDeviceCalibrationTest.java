@@ -53,7 +53,7 @@ class CaptureDeviceCalibrationTest {
                 backend.sibling.primaryLatency = latency(backend.sibling.input);
                 doThrow(new AssertionError("Take preparation must use frozen source aliases")).when(backend).listDevices();
                 pipeline.setReportedLatency(new DeviceId(backend.name(), watched), new RoundTripLatency(frames, 0, 0));
-                pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
                 pipeline.beginCapture();
 
                 assertThat(pipeline.getSession(mmeTrack).getCompensationFrames())

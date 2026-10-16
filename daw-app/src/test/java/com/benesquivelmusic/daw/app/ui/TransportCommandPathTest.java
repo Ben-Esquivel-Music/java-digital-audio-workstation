@@ -246,7 +246,7 @@ class TransportCommandPathTest {
                     .as("and never announces Started — the bus must not carry a "
                             + "take that did not begin")
                     .isEmpty();
-            // RecordingPipeline.prepare() flags every armed track as
+            // RecordingPipeline.prepare(long) flags every armed track as
             // recording, and only beginCapture() sets active = true. Here the
             // device open fails before any pipeline is built, and an
             // unflagged track agrees: no pipeline flagged it, and none is

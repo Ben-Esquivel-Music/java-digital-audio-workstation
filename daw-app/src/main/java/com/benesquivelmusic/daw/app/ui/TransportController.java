@@ -13,14 +13,17 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CapturePeakSnapshot;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.EarlySeal;
+import com.benesquivelmusic.daw.core.recording.FinalManifestFailure;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.StopSealFailure;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
+import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
@@ -377,6 +380,9 @@ final class TransportController implements TransportIntentHandler {
         if (recordCoordinator.isPreparingTake() || state == TransportState.PLAYING || state == TransportState.RECORDING) {
             return;
         }
+        if (refusePlaybackWhileDeviceLost()) {
+            return;
+        }
         if (!startAudioOutputOrRefuse("Playback")) {
             return;
         }
@@ -385,6 +391,25 @@ final class TransportController implements TransportIntentHandler {
         updateStatus();
         statusBarLabel.setText("Playing...");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
+    }
+
+    /**
+     * Story 327 — Play is refused while the record state is DEVICE_LOST,
+     * before the engine is touched: the provision ladder could otherwise
+     * open a fallback rung (the system default the OS re-pointed after the
+     * unplug) and roll the transport under a status that says "Device
+     * lost". The refusal is the WARNING of
+     * {@link RecordCoordinator#refuseWhileDeviceLost}, naming the lost
+     * device and the ways out; nothing opens. FX thread.
+     *
+     * @return {@code true} when Play was refused
+     */
+    private boolean refusePlaybackWhileDeviceLost() {
+        if (recordCoordinator.getState() != RecordState.DEVICE_LOST) {
+            return false;
+        }
+        recordCoordinator.refuseWhileDeviceLost("Playback");
+        return true;
     }
 
     /**
@@ -515,7 +540,7 @@ final class TransportController implements TransportIntentHandler {
      * caller that stopped the transport underneath a running pipeline (count-in
      * does not defer {@code Transport.record()} today; story 328 owns
      * count-in). (Before story 323 a throw inside the pipeline's start was a
-     * second way in; its start is now all-or-nothing — {@code prepare()},
+     * second way in; its start is now all-or-nothing — {@code prepare(long)},
      * then {@code beginCapture()} — and a failed start is abandoned
      * ({@link #abandonStart}), so no active pipeline is left behind.)
      * Returning early on that
@@ -604,16 +629,21 @@ final class TransportController implements TransportIntentHandler {
      * got there first or the controller was {@linkplain #retire() retired}.</p>
      *
      * <p><strong>A take whose finalisation did not end cleanly</strong> (story
-     * 323 review): the capture thread sealed it early, or a lane threw in
+     * 323 review): the capture thread sealed it early, a lane threw in
      * the seal this Stop requested ({@link StopSealFailure}) — a segment
-     * whose own seal failed is then left as its {@code .part} file.
-     * The FX turn that publishes such a take ({@link #publishWrittenTake})
-     * reads how its finalisation ended once
+     * whose own seal failed is then left as its {@code .part} file — or the
+     * final manifest write failed on every attempt
+     * ({@link FinalManifestFailure}; PR #982 review) — the manifest on disk
+     * then says nothing of the seal, and the recovery scan
+     * ({@code TakeRecovery.scan}; story 332 runs it on project open)
+     * rebuilds it. The FX turn that publishes such a take
+     * ({@link #publishWrittenTake}) reads how its finalisation ended once
      * ({@link #finalizationFailureReport}), publishes its clips, the "Record
      * Audio" undo entry and the dirty mark as always, but instead of the
      * SUCCESS toast and its status text it shows that report once, as the
      * ERROR toast — after this Stop's MIDI toast — and as the status text:
-     * {@link #takeSealedEarlyMessage}, or {@link #stopSealFailedMessage}.</p>
+     * {@link #takeSealedEarlyMessage}, {@link #stopSealFailedMessage} or
+     * {@link #finalManifestNotWrittenMessage}.</p>
      */
     @Override
     public void stop() {
@@ -628,6 +658,15 @@ final class TransportController implements TransportIntentHandler {
         }
         if (!wasRolling && !isRecordingInFlight()) {
             stopAudioOutputWhenIdle();
+            if (recordCoordinator.getState() == RecordState.DEVICE_LOST) {
+                // Story 327: the first Stop after a device loss leaves
+                // DEVICE_LOST (RecordCoordinator.stopAudioTake); it is not a
+                // double-stop, so the playhead stays where the rescued take
+                // ended.
+                recordCoordinator.stopAudioTake();
+                updateStatus();
+                return;
+            }
             // Double-stop: second Stop returns to zero, if the preference says
             // so. Immediate while stopped — fires POSITION so the VM/playhead/
             // time display follow.
@@ -723,6 +762,137 @@ final class TransportController implements TransportIntentHandler {
         if (recordCoordinator.deferInputStreamStop()) return;
         if (!hasGraphInstruments()) audioEngine.stopAudioOutput();
     }
+
+    /**
+     * Story 327 — the tail of {@link #stop()} for a take the record
+     * coordinator rescued on device loss ({@link RecordCoordinator#onDeviceLost}),
+     * which stopped the transport through the pipeline's own stop: the
+     * Stopped announce when the transport was rolling (the pipeline's stop
+     * found it rolling and stopped it, so this is the true transition, as
+     * in {@link #stop()}), the stream the engine already closed, the status
+     * and the Record button's appearance. No post-roll follows a rescued
+     * take. A stream found OPEN here ({@link AudioEngine#isStreamOpen()},
+     * RUNNING or PAUSED) is not closed, because on this turn it can only be
+     * a post-loss reopen: the publisher of the loss closed the stream before
+     * publishing it — the precondition this tail rests on, stated as the
+     * publisher contract on {@link EngineState#DEVICE_LOST}
+     * ({@code onDeviceRemoved} calls {@code stopAudioOutput()}, then
+     * {@code stop()}, before it publishes DEVICE_LOST; a
+     * {@code stopAudioOutput()} whose pump did not join keeps the stream
+     * RUNNING, but the engine's {@code stop()} that follows it then marks
+     * it RELEASE_PENDING, which {@code isStreamOpen()} reports as closed) —
+     * the coordinator was RECORDING until this turn (its only call site is the
+     * RECORDING branch of {@code onDeviceLost}), and nothing the transport
+     * drives opens a stream in that state — {@link #start()} and
+     * {@link #playWithPreRoll()} return early while RECORDING, Record
+     * pressed while RECORDING is the Stop, and a driver's format-change
+     * reopen restores only a stream that was open ({@code wasOpen} is false
+     * after the loss). What can have opened one is {@code onDeviceArrived}'s
+     * reopen of the returned device on the device-event thread (a fast
+     * re-plug: RUNNING until its {@code pauseAudioOutput()} parks it, so a
+     * PAUSED test missed that window and closed a stream the STOPPED that
+     * followed needed open — {@link #onEngineState} counts only an
+     * open-stream STOPPED or RUNNING as the return) or the instrument-audio open of
+     * {@code MainController.pluginGraphChanged}, which may legitimately stay
+     * open. FX thread.
+     *
+     * @param wasRolling      whether the transport was rolling when the device was lost
+     * @param stoppedAtFrames the transport position then, in frames
+     */
+    void finishDeviceLossStop(boolean wasRolling, long stoppedAtFrames) {
+        if (wasRolling && project.getTransport().getState() == TransportState.STOPPED) {
+            EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
+        }
+        if (!audioEngine.isStreamOpen()) {
+            stopAudioOutputWhenIdle();
+        }
+        updateStatus();
+        recordButton.setOpacity(1.0);
+        recordButton.setStyle("");
+    }
+
+    /**
+     * Story 327 — the bridge from the engine's lifecycle to the record
+     * state machine (Recording Reliability book §6.5): {@code MainController}
+     * subscribes once to {@code AudioEngineController.engineStateEvents()}
+     * and posts every {@link EngineStateChange} here, on the FX thread, as
+     * the state and the device the controller watched at that transition
+     * (captured together there, never looked up at delivery — PR #982
+     * review). {@link EngineState#DEVICE_LOST} is the loss of the device it
+     * carries ({@link RecordCoordinator#onDeviceLost}) and latches
+     * {@link #deviceLost}. The lost device's return is the first
+     * {@link EngineState#STOPPED} or {@link EngineState#RUNNING} delivered
+     * after that <em>with the stream open</em>
+     * ({@link AudioEngine#isStreamOpen()}, read here at delivery): the
+     * engine has a stream open again. Its producers, while the coordinator
+     * is DEVICE_LOST, are {@code DefaultAudioEngineController.onDeviceArrived}
+     * (the lost device returned: it reopens the stream, parks it, and only
+     * then publishes the STOPPED — so this turn, and a Play inside the
+     * window, find the stream open-but-parked, barring a pause the engine
+     * deferred (logged SEVERE, the stream left RUNNING) or an open the
+     * controller did not drive completing inside that handler's window
+     * (its reopen skipped, the STOPPED published with that stream RUNNING
+     * and no park owed) — never RUNNING with a park still to land) and the
+     * engine's stream-open seam,
+     * {@code onStreamOpened}, for any open the controller did not drive —
+     * Play and Record are refused while DEVICE_LOST, so the one left is the
+     * instrument-audio open of {@code MainController.pluginGraphChanged},
+     * an unguarded {@code startAudioOutput()} on a virtual thread that
+     * walks the provision ladder and opens whatever rung it yields; the
+     * device delivered with its STOPPED is whichever rung opened — the seam
+     * binds the watch to it before it publishes — another device while the
+     * interface is unplugged, which the coordinator reads as the loss ending
+     * on another device (no seek), or the lost device itself if it is
+     * physically back and the ladder, which honours the configured
+     * {@code DeviceId}, lands on it, which is the return. A
+     * {@code FormatChangeRequested} while DEVICE_LOST publishes
+     * RECONFIGURING and then a closed-stream STOPPED
+     * ({@code performFormatChangeReopen} restores only a stream that was
+     * open; the loss closed it) and is ignored here; a Settings apply
+     * leaves DEVICE_LOST through FINALIZING before its own STOPPED is
+     * published, so that STOPPED meets an IDLE coordinator. The return
+     * clears the latch and is handed, with the device it carries, to
+     * {@link RecordCoordinator#onLostDeviceReturned}, which ignores it in
+     * any state but DEVICE_LOST and identity-matches it. A STOPPED
+     * delivered with the stream CLOSED — a failed reopen, a refused format
+     * change — and a RECONFIGURING are only remembered: the latch stays. A
+     * device the controller did not name is reported as
+     * {@link #UNKNOWN_DEVICE}. FX thread.
+     *
+     * @param state   the engine state just published
+     * @param watched the device the engine controller watched at that
+     *                transition, if any
+     */
+    void onEngineState(EngineState state, Optional<DeviceId> watched) {
+        Objects.requireNonNull(state, "state must not be null");
+        Objects.requireNonNull(watched, "watched must not be null");
+        DeviceId device = watched.orElse(UNKNOWN_DEVICE);
+        if (state == EngineState.DEVICE_LOST) {
+            deviceLost = true;
+            recordCoordinator.onDeviceLost(device);
+            return;
+        }
+        boolean reopened = state == EngineState.STOPPED || state == EngineState.RUNNING;
+        if (deviceLost && reopened && audioEngine.isStreamOpen()) {
+            deviceLost = false;
+            recordCoordinator.onLostDeviceReturned(device);
+        }
+    }
+
+    /** The device named when the engine controller watches none (story 327). */
+    static final DeviceId UNKNOWN_DEVICE = new DeviceId("unknown", "Unknown audio device");
+
+    /**
+     * Story 327 — latched by a {@link EngineState#DEVICE_LOST}
+     * {@link #onEngineState} saw, cleared by the lost device's return (the
+     * first STOPPED or RUNNING delivered with the stream open). A superset
+     * of "the coordinator is DEVICE_LOST": it may stay set after a
+     * closed-stream STOPPED, or after the coordinator left DEVICE_LOST by
+     * Stop or a Settings apply — harmless, because
+     * {@link RecordCoordinator#onLostDeviceReturned} ignores every state but
+     * DEVICE_LOST, and a new DEVICE_LOST re-latches it. FX thread.
+     */
+    private boolean deviceLost;
 
     /**
      * {@link #stopAudioOutputWhenIdle()}, unless the transport is rolling —
@@ -856,18 +1026,56 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * How the turn that publishes a take reads the outcome of the seal the
-     * take's Stop requested ({@link #finalizationFailureReport}). Production:
-     * {@code RecordingPipeline::stopSealFailure}, read once the take's
-     * completion has returned the clips. A test seam for the failures this module
-     * cannot cause on disk — an {@link Error}, a failure after every
-     * segment was sealed, a reason of the test's choosing; a real one, a
-     * file already at a segment's sealed path, fails the seal through the
-     * production wiring.
+     * How the seal a take's Stop — or its device-loss rescue — requested
+     * ended, read once by the turn that publishes the take
+     * ({@link #finalizationFailureReport}), once the take's completion has
+     * returned the clips: the lanes ({@link StopSealFailure}: one threw in
+     * the seal) and the final manifest write ({@link FinalManifestFailure}:
+     * it failed on every attempt, so the manifest on disk says nothing of
+     * the seal). Clean when both are empty: no lane threw, and the final
+     * manifest write landed. The early-seal signal is no part of it — it
+     * has its own reader ({@link EarlySealSignal}), and the publication
+     * turn reads it beside this — so a rescued take is registered only when
+     * this is clean and that signal is empty: an early seal can complete
+     * inside the stop's own final sweep (an exhaustion, or a write failure
+     * applying a block the sweep drains), and such a rescue is reported,
+     * not registered (PR #982 review, round 2).
+     *
+     * @param laneFailure     the failure of a lane's seal, if one threw
+     * @param manifestFailure the failure of the final manifest write, if it
+     *                        failed on every attempt
+     */
+    record StopSealOutcome(Optional<StopSealFailure> laneFailure, Optional<FinalManifestFailure> manifestFailure) {
+
+        StopSealOutcome {
+            Objects.requireNonNull(laneFailure, "laneFailure must not be null");
+            Objects.requireNonNull(manifestFailure, "manifestFailure must not be null");
+        }
+
+        /** The outcome the pipeline reports — the production reading. */
+        static StopSealOutcome of(RecordingPipeline pipeline) {
+            return new StopSealOutcome(pipeline.stopSealFailure(), pipeline.finalManifestFailure());
+        }
+
+        /** No lane threw in the seal and the final manifest write landed; says nothing of an early seal, which the caller reads beside it. */
+        boolean isClean() {
+            return laneFailure.isEmpty() && manifestFailure.isEmpty();
+        }
+    }
+
+    /**
+     * How the turn that publishes a take reads its {@link StopSealOutcome}.
+     * Production: {@link StopSealOutcome#of} — the pipeline's own accessors,
+     * read once the take's completion has returned the clips. A test seam
+     * for the failures this module cannot cause on disk — an {@link Error},
+     * a failure after every segment was sealed, a reason of the test's
+     * choosing; a real one — a file already at a segment's sealed path, a
+     * directory where the manifest's staging file goes — fails the seal
+     * through the production wiring.
      */
     @FunctionalInterface
-    interface StopSealOutcome {
-        Optional<StopSealFailure> of(RecordingPipeline pipeline);
+    interface StopSealOutcomeReader {
+        StopSealOutcome of(RecordingPipeline pipeline);
     }
 
     /**
@@ -1035,6 +1243,9 @@ final class TransportController implements TransportIntentHandler {
         // start()): Shift+Space while RECORDING must not leave record, nor
         // start playback under a take that is being prepared.
         if (recordCoordinator.isPreparingTake() || project.getTransport().getState() == TransportState.RECORDING) {
+            return;
+        }
+        if (refusePlaybackWhileDeviceLost()) {
             return;
         }
         if (!startAudioOutputOrRefuse("Pre-roll playback")) {
@@ -1207,26 +1418,34 @@ final class TransportController implements TransportIntentHandler {
         TransportState state = transport.getState();
 
         var recordState = recordCoordinator.getState();
-        statusLabel.setText(recordState == com.benesquivelmusic.daw.app.ui.recording.RecordState.IDLE
-                ? state.name() : recordState.name());
+        statusLabel.setText(recordState == RecordState.IDLE ? state.name() : recordState.name());
         statusLabel.getStyleClass().removeAll(
-                "status-recording", "status-playing", "status-stopped", "status-paused");
-        switch (state) {
-            case RECORDING -> {
-                statusLabel.getStyleClass().add("status-recording");
-                statusLabel.setGraphic(IconNode.of(DawIcon.LIVE, 12));
-            }
-            case PLAYING -> {
-                statusLabel.getStyleClass().add("status-playing");
-                statusLabel.setGraphic(IconNode.of(DawIcon.PLAY, 12));
-            }
-            case PAUSED -> {
-                statusLabel.getStyleClass().add("status-paused");
-                statusLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
-            }
-            default -> {
-                statusLabel.getStyleClass().add("status-stopped");
-                statusLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
+                "status-recording", "status-playing", "status-stopped", "status-paused", "status-device-lost");
+        if (recordState == RecordState.DEVICE_LOST) {
+            // Story 327 (book §6.5): DEVICE_LOST renders the record state, not
+            // the stopped transport — the §6.5 strip cell (story 338) binds
+            // to the same stateProperty().
+            statusLabel.setText("Device lost");
+            statusLabel.getStyleClass().add("status-device-lost");
+            statusLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+        } else {
+            switch (state) {
+                case RECORDING -> {
+                    statusLabel.getStyleClass().add("status-recording");
+                    statusLabel.setGraphic(IconNode.of(DawIcon.LIVE, 12));
+                }
+                case PLAYING -> {
+                    statusLabel.getStyleClass().add("status-playing");
+                    statusLabel.setGraphic(IconNode.of(DawIcon.PLAY, 12));
+                }
+                case PAUSED -> {
+                    statusLabel.getStyleClass().add("status-paused");
+                    statusLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
+                }
+                default -> {
+                    statusLabel.getStyleClass().add("status-stopped");
+                    statusLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
+                }
             }
         }
 
@@ -1278,9 +1497,10 @@ final class TransportController implements TransportIntentHandler {
     void setStorageExecutorForTest(Executor value) { recordCoordinator.setStorageExecutorForTest(value); }
     void setPipelineSetupForTest(Consumer<RecordingPipeline> value) { recordCoordinator.setPipelineSetupForTest(value); }
     void setEarlySealSignalForTest(EarlySealSignal value) { recordCoordinator.setEarlySealSignalForTest(value); }
-    void setStopSealOutcomeForTest(StopSealOutcome value) { recordCoordinator.setStopSealOutcomeForTest(value); }
+    void setStopSealOutcomeForTest(StopSealOutcomeReader value) { recordCoordinator.setStopSealOutcomeForTest(value); }
     void setMidiInputDeviceResolverForTest(Function<String, MidiDevice> value) { recordCoordinator.setMidiInputDeviceResolverForTest(value); }
     static String takeOfAReplacedProjectMessage(String name, Path path) { return RecordCoordinator.takeOfAReplacedProjectMessage(name, path); }
     static String takeSealedEarlyMessage(EarlySeal seal, int count, Path path) { return RecordCoordinator.takeSealedEarlyMessage(seal, count, path); }
     static String stopSealFailedMessage(StopSealFailure failure, int count, Path path) { return RecordCoordinator.stopSealFailedMessage(failure, count, path); }
+    static String finalManifestNotWrittenMessage(FinalManifestFailure failure, int count) { return RecordCoordinator.finalManifestNotWrittenMessage(failure, count); }
 }

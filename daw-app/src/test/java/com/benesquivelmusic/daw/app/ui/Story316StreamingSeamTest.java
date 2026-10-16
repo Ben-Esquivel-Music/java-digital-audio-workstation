@@ -69,8 +69,7 @@ class Story316StreamingSeamTest {
         AudioBackendSelector selector = new AudioBackendSelector(Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
@@ -126,8 +125,7 @@ class Story316StreamingSeamTest {
         AudioBackendSelector selector = new AudioBackendSelector(Map.of("ASIO", () -> spy));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     "ASIO", "", "Dev B", SampleRate.HZ_48000, 64, 24, 1));
@@ -171,8 +169,7 @@ class Story316StreamingSeamTest {
         SpyStreamingBackend fallback = new SpyStreamingBackend("SpyFallback");
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot));
+                engine, null, NotificationManager.noop());
         // A hand-built two-rung provision keeps the fallback rung a spy too:
         // no real hardware, fully deterministic ladder.
         engine.setStreamingProvision(new StreamingProvision("ASIO", List.of(
@@ -233,8 +230,7 @@ class Story316StreamingSeamTest {
                 Map.of("SpyA", () -> spyA, "SpyB", () -> spyB));
         AudioEngine engine = new AudioEngine(new AudioFormat(48_000.0, 2, 24, 64));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(
-                engine, null, NotificationManager.noop(),
-                new IncompleteTakeStore(projectRoot), selector);
+                engine, null, NotificationManager.noop(), selector);
         try {
             controller.applyConfiguration(new AudioEngineController.Request(
                     "SpyA", "", "Out A", SampleRate.HZ_48000, 64, 24, 1));

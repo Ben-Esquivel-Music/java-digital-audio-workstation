@@ -190,7 +190,7 @@ class LoopLanePreOpenContractTest {
                         "3|3|STREAMING|-1", "4|4|STREAMING|-1");
         stopRecording(pipeline);
 
-        // Who did what: lane 0's session is built by prepare() on the caller
+        // Who did what: lane 0's session is built by prepare(long) on the caller
         // thread; every later lane's — the standby no lap reached included —
         // on the flush thread, and nothing of any lane on the feeding thread
         // once capture runs.
@@ -426,7 +426,7 @@ class LoopLanePreOpenContractTest {
         loopOverBlocks(2);
         pipeline.setLoopRecord(true);
 
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         assertThat(filesInTheTrackDirectory()).as("the take is ready with lane 0 and its standby open")
                 .containsExactly("segment-000.wav.part", "segment-001.wav.part");
         assertThat(manifestSegments()).containsExactly("0|0|STREAMING|-1", "1|1|STREAMING|-1");

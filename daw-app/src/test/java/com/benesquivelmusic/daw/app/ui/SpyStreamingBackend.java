@@ -14,6 +14,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -57,6 +58,12 @@ final class SpyStreamingBackend implements AudioBackend {
     private volatile Runnable controlPanelAction;
     private final java.util.concurrent.atomic.AtomicReference<Runnable> nextCloseHook =
             new java.util.concurrent.atomic.AtomicReference<>();
+    /**
+     * A ONE-SHOT hook for the NEXT capture subscription this spy hands out,
+     * run on the thread that cancels it; see
+     * {@link #armNextInputCancelHook(Runnable)}.
+     */
+    private final AtomicReference<Runnable> nextInputCancelHook = new AtomicReference<>();
 
     /**
      * Wedges {@link #awaitSinkCapacity(long)} the way
@@ -193,9 +200,51 @@ final class SpyStreamingBackend implements AudioBackend {
         lifecycleLog.add("open:" + name);
     }
 
+    /**
+     * Arms a ONE-SHOT hook that the NEXT capture subscription handed out by
+     * {@link #inputBlocks()} runs when it is cancelled, on the cancelling
+     * thread, and is then forgotten. The engine's render pump subscribes to
+     * {@code inputBlocks()} when it starts and cancels that subscription
+     * inside its stop — synchronously, on the lifecycle thread that pauses
+     * or stops the stream, under the engine's lifecycle lock and before the
+     * stream's state leaves RUNNING — so a test that arms this reads what
+     * the pausing thread sees at the park, in that thread's own program
+     * order and with no timing in it (story 327, PR #982 round 2). The
+     * subscription that carries the hook is delivered synchronously, unlike
+     * the {@link SubmissionPublisher} the unarmed spy hands out, whose
+     * {@code onSubscribe} is asynchronous, so the pump holds it by the time
+     * its start returns; nothing is ever published on that flow. Arm it
+     * after the open whose stop should be observed is the next one to
+     * start: the hook is consumed by the next {@code inputBlocks()} call.
+     *
+     * @param hook the action the next capture subscription's cancel runs
+     */
+    void armNextInputCancelHook(Runnable hook) {
+        this.nextInputCancelHook.set(hook);
+    }
+
     @Override
     public Flow.Publisher<AudioBlock> inputBlocks() {
-        return inputPublisher;
+        Runnable cancelHook = nextInputCancelHook.getAndSet(null);
+        if (cancelHook == null) {
+            return inputPublisher;
+        }
+        return subscriber -> subscriber.onSubscribe(new Flow.Subscription() {
+            private final AtomicReference<Runnable> pending = new AtomicReference<>(cancelHook);
+
+            @Override
+            public void request(long n) {
+                // Nothing is published on this flow.
+            }
+
+            @Override
+            public void cancel() {
+                Runnable onCancel = pending.getAndSet(null);
+                if (onCancel != null) {
+                    onCancel.run();
+                }
+            }
+        });
     }
 
     @Override

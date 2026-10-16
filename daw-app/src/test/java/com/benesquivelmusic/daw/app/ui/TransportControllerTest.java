@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.core.recording.CaptureFlushService;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.DiskHeadroomWatch;
 import com.benesquivelmusic.daw.core.recording.EarlySeal;
+import com.benesquivelmusic.daw.core.recording.FinalManifestFailure;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.StopSealFailure;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
@@ -1373,7 +1374,7 @@ class TransportControllerTest {
         // STOPPED: a count-in take before its deferred transport.record(), or
         // an internal caller stopping the transport under a running pipeline.
         // (Before story 323 a throw inside RecordingPipeline.start() was a
-        // third way in — its start is now all-or-nothing, prepare() then
+        // third way in — its start is now all-or-nothing, prepare(long) then
         // beginCapture(), and a failed start is abandoned on its allocation
         // turn or its readiness turn.) This test reproduces exactly that end state — an
         // active pipeline over a stopped transport — and asserts Stop finalizes
@@ -2219,7 +2220,7 @@ class TransportControllerTest {
         var selector = new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(
                 Map.of(new MockAudioBackend().name(), () -> new SampleRateCountingBackend(sampleRateCalls)));
         DefaultAudioEngineController controller = new DefaultAudioEngineController(audioEngine, null,
-                NotificationManager.noop(), new IncompleteTakeStore(projectDirectory), selector);
+                NotificationManager.noop(), selector);
         controller.setRecordConfigurationGuard(recording.recordCoordinator()::requestConfigurationChange);
         return controller;
     }
@@ -3710,8 +3711,17 @@ class TransportControllerTest {
             false);
 
     /** Stands in for the core's failed Stop seal, whose triggers are package-private to daw-core. */
-    private static TransportController.StopSealOutcome stopSealFailedWith(StopSealFailure failure) {
-        return _ -> Optional.of(failure);
+    private static TransportController.StopSealOutcomeReader stopSealFailedWith(StopSealFailure failure) {
+        return _ -> new TransportController.StopSealOutcome(Optional.of(failure), Optional.empty());
+    }
+
+    /** The final manifest write failed on every attempt after every lane sealed (PR #982 review). */
+    private static final FinalManifestFailure MANIFEST_NOT_WRITTEN = new FinalManifestFailure(
+            new IOException("injected manifest write failure"), TakeManifest.SealedBy.STOP);
+
+    /** Stands in for the core's failed final manifest write, whose trigger is package-private to daw-core. */
+    private static TransportController.StopSealOutcomeReader manifestNotWrittenWith(FinalManifestFailure failure) {
+        return _ -> new TransportController.StopSealOutcome(Optional.empty(), Optional.of(failure));
     }
 
     /**
@@ -3868,6 +3878,140 @@ class TransportControllerTest {
                         tuple(NotificationLevel.ERROR, expected));
         assertThat(statusBarLabel.getText()).as("the report, not that the take holds no audio")
                 .isEqualTo(expected);
+    }
+
+    /**
+     * A Stop whose every lane sealed but whose final manifest write failed
+     * on every attempt (PR #982 review) is no clean Stop: the manifest on
+     * disk still reads streaming, so the take is reported once as the ERROR
+     * of a manifest that could not be written — never "Recording stopped —
+     * 1 clip created" alone — goes FINALIZING → ABORTED → IDLE, and still
+     * publishes its clip, its undo entry and the dirty mark.
+     */
+    @Test
+    void aStopWhoseManifestCouldNotBeWrittenIsReportedOnceAsAnErrorWithItsClips() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        awaitSessionInputCheck(controller);
+        List<RecordState> states = new CopyOnWriteArrayList<>();
+        runHandler(() -> {
+            controller.setStopSealOutcomeForTest(manifestNotWrittenWith(MANIFEST_NOT_WRITTEN));
+            controller.recordCoordinator().stateProperty().addListener((_, _, value) -> states.add(value));
+        });
+        project.markClean();
+        NotificationHistoryService shown = notificationsFromNowOn();
+
+        stopAndAwaitTheTake(controller);
+
+        String expected = TransportController.finalManifestNotWrittenMessage(MANIFEST_NOT_WRITTEN, 1);
+        assertThat(expected).isEqualTo("Recording stopped — the take's manifest could not be written (injected"
+                + " manifest write failure); the audio recorded is kept (1 clip created); take recovery rebuilds it"
+                + " from the segments");
+        assertThat(shown.getEntries()).as("one ERROR, and no SUCCESS").singleElement().satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(entry.message()).isEqualTo(expected);
+        });
+        assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(statusBarLabel.getText()).isEqualTo(expected);
+        assertThat(states).as("FINALIZING, then ABORTED (the seal did not end cleanly), then settled")
+                .containsSubsequence(RecordState.FINALIZING, RecordState.ABORTED).endsWith(RecordState.IDLE);
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(undoManager.undoDescription()).isEqualTo("Record Audio");
+        assertThat(project.isDirty()).isTrue();
+    }
+
+    /** A lane that threw and a final write that failed are reported together, once, the manifest fact joined on. */
+    @Test
+    void aStopWhoseSealAndManifestBothFailedIsReportedOnceWithBoth() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        awaitSessionInputCheck(controller);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        runHandler(() -> controller.setStopSealOutcomeForTest(_ -> new TransportController.StopSealOutcome(
+                Optional.of(RENAME_FAILED), Optional.of(MANIFEST_NOT_WRITTEN))));
+        NotificationHistoryService shown = notificationsFromNowOn();
+
+        stopAndAwaitTheTake(controller);
+
+        String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory)
+                + "; the take's manifest could not be written (injected manifest write failure);"
+                + " take recovery rebuilds it from the segments";
+        assertThat(expected).doesNotContain(".;");
+        assertThat(shown.getEntries()).as("one ERROR naming both").singleElement().satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(entry.message()).isEqualTo(expected);
+        });
+        assertThat(armed.getClips()).hasSize(1);
+    }
+
+    /**
+     * Through the production wiring, no seam: a non-empty directory sits
+     * where the manifest's staging file goes ({@code take.manifest.tmp}), so
+     * the final write fails on every attempt — on Windows and on Linux
+     * alike — while every lane seals; the manifest on disk stays the take
+     * start's, and the Stop is reported as the ERROR of
+     * {@link TransportController#finalManifestNotWrittenMessage}.
+     */
+    @Test
+    void aStopWhoseManifestCannotBeWrittenOnDiskIsReportedAsAnErrorThroughTheProductionWiring() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        awaitSessionInputCheck(controller);
+        Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        Path staging = takeDirectory.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX);
+        Files.createDirectory(staging);
+        Files.writeString(staging.resolve("occupied"), "the staging file cannot be opened");
+        byte[] manifestBefore = Files.readAllBytes(TakeManifest.manifestPath(takeDirectory));
+        NotificationHistoryService shown = notificationsFromNowOn();
+
+        stopAndAwaitTheTake(controller);
+
+        assertThat(shown.getEntries()).as("one ERROR, and no SUCCESS").singleElement().satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(entry.message())
+                    .startsWith("Recording stopped — the take's manifest could not be written (")
+                    .endsWith("); the audio recorded is kept (1 clip created); take recovery rebuilds it from the"
+                            + " segments");
+        });
+        assertThat(statusBarLabel.getText()).isEqualTo(shown.getEntries().getFirst().message());
+        assertThat(armed.getClips()).hasSize(1);
+        assertThat(takeDirectory.resolve(armed.getId()).resolve("segment-000.wav")).as("every lane sealed")
+                .isRegularFile();
+        assertThat(Files.readAllBytes(TakeManifest.manifestPath(takeDirectory)))
+                .as("the manifest on disk is the take start's").isEqualTo(manifestBefore);
+        assertThat(TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).sealStatus())
+                .isEqualTo(TakeManifest.SealStatus.STREAMING);
+    }
+
+    @Test
+    void theManifestNotWrittenReportNamesTheInnermostIOReasonOrTheThrowableAndWhatIsKept() {
+        FinalManifestFailure onDisk = new FinalManifestFailure(new UncheckedIOException("manifest write failed",
+                new FileSystemException("take.manifest.tmp", null, "The process cannot access the file")),
+                TakeManifest.SealedBy.STOP);
+        FinalManifestFailure inTheBuild = new FinalManifestFailure(
+                new IllegalStateException("builder refused"), TakeManifest.SealedBy.DEVICE_LOSS);
+
+        assertThat(TransportController.finalManifestNotWrittenMessage(onDisk, 2))
+                .isEqualTo("Recording stopped — the take's manifest could not be written (The process cannot"
+                        + " access the file); the audio recorded is kept (2 clips created); take recovery rebuilds"
+                        + " it from the segments")
+                .doesNotContain("manifest write failed");
+        // No clip: no track recorded a frame, the live seal deleted the empty
+        // tails, and the scan has no segment to rebuild the take from — so no
+        // rebuild is promised (PR #982 review round 2).
+        assertThat(TransportController.finalManifestNotWrittenMessage(inTheBuild, 0))
+                .isEqualTo("Recording stopped — the take's manifest could not be written (IllegalStateException:"
+                        + " builder refused); no audio had been recorded")
+                .doesNotContain("rebuilds");
     }
 
     @Test

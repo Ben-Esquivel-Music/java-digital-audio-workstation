@@ -87,7 +87,7 @@ final class SteppedTakeFixture {
      * @param project         a project that has a directory and its armed tracks
      * @param engineFormat    the format the engine streams at
      * @param reportedLatency the driver latency the controller is told
-     * @param pipelineSetup   run on each take's pipeline before its {@code prepare()}
+     * @param pipelineSetup   run on each take's pipeline before its {@code prepare(long)}
      */
     SteppedTakeFixture(DawProject project, AudioFormat engineFormat, RoundTripLatency reportedLatency,
                        Consumer<RecordingPipeline> pipelineSetup) throws Exception {

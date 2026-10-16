@@ -1,187 +1,198 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.recording.TakeDirectories;
+import com.benesquivelmusic.daw.core.recording.TakeManifest;
+import com.benesquivelmusic.daw.core.recording.TakeRecovery;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Thread-safe in-memory store for the float samples being captured by the
- * recording thread, with the ability to flush whatever has accumulated to a
- * timestamped {@code .wav} file when the audio device disappears.
+ * The registry of the open project's rescued takes (Recording Reliability
+ * book §2.9, story 327): the takes sealed by a failure rather than by the
+ * user's Stop, kept so the user gets the "review recovered take" flow.
  *
- * <p>Used by {@link DefaultAudioEngineController} to salvage the in-flight
- * recording take when an {@code AudioDeviceEvent.DeviceRemoved} is received:
- * if any samples have been captured but not yet committed to the project,
- * the controller calls {@link #flushIfNotEmpty(DeviceId, AudioFormat)} which
- * writes them under {@code <projectRoot>/.daw/incomplete-takes/} so the user
- * can review the recovered take after the device returns.</p>
+ * <p>There is no second copy of the audio here. A rescued take is the
+ * ordinary take on disk — its segments under
+ * {@code <project>/audio/takes/<take>/}, sealed by the same seal a Stop
+ * applies, its manifest reading {@code aborted} with the reason — and this
+ * registry only remembers that it exists and why. It is fed by exactly two
+ * paths, both seal paths:</p>
+ * <ul>
+ *   <li>the live rescue: {@link RecordCoordinator} registers the take its
+ *       device-loss rescue sealed, once the take's clips are published
+ *       ({@link TakeManifest.SealedBy#DEVICE_LOSS});</li>
+ *   <li>the recovery scan: {@link #registerRecoveredTakes(Path)} runs the
+ *       book §4.7 grammar ({@link TakeRecovery#scan}) over the project's
+ *       {@code audio/takes} and registers every take it sealed
+ *       ({@link TakeManifest.SealedBy#CRASH_RECOVERY}). Story 332 is to
+ *       call it on every project-open path — no production caller exists
+ *       yet; this class only provides it.</li>
+ * </ul>
  *
- * <p>{@link #appendCapturedFrames(float[][], int)} appends data to an in-memory
- * buffer and does not perform disk I/O, but this class is not lock-free or
- * allocation-free: synchronization and buffer growth may occur. Disk I/O
- * happens only inside {@link #flushIfNotEmpty(DeviceId, AudioFormat)}.</p>
+ * <p>In memory, one per project ({@link RecordCoordinator} owns it, rooted
+ * at the project's directory); persisting takes in the project file is
+ * story 334's. A registered take must lie under the project's
+ * {@code audio/takes} — never the OS temporary directory (book §9 item 4),
+ * never another project — which {@link RescuedTake} refuses otherwise.</p>
+ *
+ * <p>Thread-safe: registration and reads may come from any thread; in the
+ * app the live rescue registers on the FX thread and the scan on the thread
+ * that opens the project.</p>
  */
 public final class IncompleteTakeStore {
 
-    private static final Logger LOG = Logger.getLogger(IncompleteTakeStore.class.getName());
-
-    private static final DateTimeFormatter STAMP =
-            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
-
-    private final Path projectRoot;
-    private final ReentrantLock lock = new ReentrantLock();
-    private final ByteArrayOutputStream pcmBytes = new ByteArrayOutputStream();
-    private int channels;
+    private final Path projectDirectory;
+    private final Path takesDirectory;
+    private final List<RescuedTake> rescuedTakes = new CopyOnWriteArrayList<>();
 
     /**
-     * Creates a store rooted at {@code projectRoot}. The
-     * {@code .daw/incomplete-takes/} subdirectory is created on demand on
-     * the first successful flush.
+     * Creates the registry of the project at {@code projectDirectory}.
      *
-     * @param projectRoot directory representing the open project; must not be null
+     * @param projectDirectory the project's directory; must not be null
      */
-    public IncompleteTakeStore(Path projectRoot) {
-        this.projectRoot = Objects.requireNonNull(projectRoot, "projectRoot must not be null");
+    public IncompleteTakeStore(Path projectDirectory) {
+        this.projectDirectory = Objects.requireNonNull(projectDirectory, "projectDirectory must not be null")
+                .toAbsolutePath().normalize();
+        this.takesDirectory = TakeDirectories.takesDirectory(ProjectManager.audioDirectory(this.projectDirectory))
+                .toAbsolutePath().normalize();
     }
 
     /**
-     * Appends one block of captured audio to the in-memory take buffer.
-     * Safe to call from the audio callback thread.
+     * One take sealed by a failure, as the registry remembers it.
      *
-     * @param inputBuffer captured samples laid out as {@code [channel][frame]};
-     *                    must not be null
-     * @param numFrames   number of frames in {@code inputBuffer}; must be
-     *                    non-negative
+     * @param takeDirectory      the take's directory, absolute, under the
+     *                           project's {@code audio/takes}
+     * @param reason             what sealed it: {@link TakeManifest.SealedBy#DEVICE_LOSS}
+     *                           for the live rescue, {@link TakeManifest.SealedBy#CRASH_RECOVERY}
+     *                           for the recovery scan; no other reason is a rescue
+     * @param deviceName         the lost device's name, for a device-loss
+     *                           rescue; empty for a crash recovery, which
+     *                           does not know it
+     * @param registeredAt       when it was registered
+     * @param clipCount          the clips the take was published with
+     *                           (crash recovery: the distinct tracks of its
+     *                           playable segments)
+     * @param sealedSegmentCount the segments that were sealed, and so are playable
      */
-    public void appendCapturedFrames(float[][] inputBuffer, int numFrames) {
-        Objects.requireNonNull(inputBuffer, "inputBuffer must not be null");
-        if (numFrames < 0) {
-            throw new IllegalArgumentException("numFrames must not be negative: " + numFrames);
-        }
-        if (numFrames == 0 || inputBuffer.length == 0) {
-            return;
-        }
-        int ch = inputBuffer.length;
-        lock.lock();
-        try {
-            this.channels = ch;
-            // Encode interleaved little-endian 16-bit PCM (the canonical
-            // intermediate format for the WAV writer below).
-            byte[] scratch = new byte[numFrames * ch * 2];
-            int idx = 0;
-            for (int f = 0; f < numFrames; f++) {
-                for (int c = 0; c < ch; c++) {
-                    float sample = inputBuffer[c][f];
-                    if (sample > 1.0f) sample = 1.0f;
-                    else if (sample < -1.0f) sample = -1.0f;
-                    short pcm = (short) Math.round(sample * 32767.0f);
-                    scratch[idx++] = (byte) (pcm & 0xFF);
-                    scratch[idx++] = (byte) ((pcm >>> 8) & 0xFF);
-                }
+    public record RescuedTake(Path takeDirectory, TakeManifest.SealedBy reason, Optional<String> deviceName,
+                              Instant registeredAt, int clipCount, int sealedSegmentCount) {
+        public RescuedTake {
+            Objects.requireNonNull(takeDirectory, "takeDirectory must not be null");
+            Objects.requireNonNull(reason, "reason must not be null");
+            Objects.requireNonNull(deviceName, "deviceName must not be null");
+            Objects.requireNonNull(registeredAt, "registeredAt must not be null");
+            if (reason != TakeManifest.SealedBy.DEVICE_LOSS && reason != TakeManifest.SealedBy.CRASH_RECOVERY) {
+                throw new IllegalArgumentException("a rescued take is sealed by DEVICE_LOSS or CRASH_RECOVERY, not " + reason);
             }
-            pcmBytes.write(scratch, 0, scratch.length);
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    /**
-     * Returns the number of bytes currently buffered (encoded as
-     * little-endian 16-bit PCM). Useful for tests.
-     *
-     * @return buffered byte count (never negative)
-     */
-    public int bufferedByteCount() {
-        lock.lock();
-        try {
-            return pcmBytes.size();
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    /**
-     * Writes the in-memory take to a timestamped {@code .wav} file under
-     * {@code <projectRoot>/.daw/incomplete-takes/} and returns the file
-     * path, or {@link java.util.Optional#empty()} when nothing has been
-     * captured yet. The buffer is reset on success so a subsequent take
-     * starts from zero.
-     *
-     * @param device device that was just lost (used to tag the filename so
-     *               multiple parallel takes from different devices don't
-     *               collide); must not be null
-     * @param format audio format the buffer was captured in; must not be null
-     * @return absolute path of the written file, or empty when nothing was
-     *         buffered; never null
-     */
-    public java.util.Optional<Path> flushIfNotEmpty(DeviceId device, AudioFormat format) {
-        Objects.requireNonNull(device, "device must not be null");
-        Objects.requireNonNull(format, "format must not be null");
-        byte[] data;
-        int channelCount;
-        lock.lock();
-        try {
-            if (pcmBytes.size() == 0) {
-                return java.util.Optional.empty();
+            if (!takeDirectory.isAbsolute()) {
+                throw new IllegalArgumentException("takeDirectory must be absolute: " + takeDirectory);
             }
-            data = pcmBytes.toByteArray();
-            channelCount = Math.max(1, this.channels);
-            pcmBytes.reset();
-        } finally {
-            lock.unlock();
-        }
-
-        try {
-            Path dir = projectRoot.resolve(".daw").resolve("incomplete-takes");
-            Files.createDirectories(dir);
-            String safeName = device.name().replaceAll("[^A-Za-z0-9._-]", "_");
-            String filename = "take-" + LocalDateTime.now().format(STAMP)
-                    + "-" + safeName + ".wav";
-            Path target = dir.resolve(filename);
-            byte[] wav = wrapInWav(data, (int) format.sampleRate(), channelCount, 16);
-            Files.write(target, wav);
-            LOG.info("Persisted incomplete take to " + target + " (" + data.length + " bytes)");
-            return java.util.Optional.of(target);
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "Failed to persist incomplete take", e);
-            return java.util.Optional.empty();
+            if (clipCount < 0) {
+                throw new IllegalArgumentException("clipCount must not be negative: " + clipCount);
+            }
+            if (sealedSegmentCount < 0) {
+                throw new IllegalArgumentException("sealedSegmentCount must not be negative: " + sealedSegmentCount);
+            }
+            takeDirectory = takeDirectory.normalize();
         }
     }
 
-    private static byte[] wrapInWav(byte[] pcm, int sampleRate, int channels, int bitsPerSample) {
-        int byteRate = sampleRate * channels * bitsPerSample / 8;
-        int blockAlign = channels * bitsPerSample / 8;
-        int riffSize = 36 + pcm.length;
-        ByteBuffer header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN);
-        header.put("RIFF".getBytes(StandardCharsets.US_ASCII));
-        header.putInt(riffSize);
-        header.put("WAVE".getBytes(StandardCharsets.US_ASCII));
-        header.put("fmt ".getBytes(StandardCharsets.US_ASCII));
-        header.putInt(16);             // fmt chunk size
-        header.putShort((short) 1);    // PCM
-        header.putShort((short) channels);
-        header.putInt(sampleRate);
-        header.putInt(byteRate);
-        header.putShort((short) blockAlign);
-        header.putShort((short) bitsPerSample);
-        header.put("data".getBytes(StandardCharsets.US_ASCII));
-        header.putInt(pcm.length);
-        byte[] out = new byte[44 + pcm.length];
-        System.arraycopy(header.array(), 0, out, 0, 44);
-        System.arraycopy(pcm, 0, out, 44, pcm.length);
-        return out;
+    /** Returns the project directory this registry is rooted at (absolute, normalized). */
+    public Path projectDirectory() {
+        return projectDirectory;
+    }
+
+    /**
+     * Registers {@code take}. Any thread.
+     *
+     * @param take the rescued take
+     * @throws IllegalArgumentException if the take's directory is not a
+     *                                  subdirectory of this project's
+     *                                  {@code audio/takes} — a take in the OS
+     *                                  temporary directory or in another
+     *                                  project is never a take of this one
+     */
+    public void register(RescuedTake take) {
+        Objects.requireNonNull(take, "take must not be null");
+        requireUnderTakes(take.takeDirectory());
+        rescuedTakes.add(take);
+    }
+
+    /**
+     * Returns the rescued takes registered so far, oldest first; an
+     * unmodifiable snapshot that later registrations do not change. Any thread.
+     */
+    public List<RescuedTake> rescuedTakes() {
+        return List.copyOf(rescuedTakes);
+    }
+
+    /** Returns the take registered last, or empty when none has been. Any thread. */
+    public Optional<RescuedTake> latest() {
+        List<RescuedTake> snapshot = rescuedTakes();
+        return snapshot.isEmpty() ? Optional.empty() : Optional.of(snapshot.getLast());
+    }
+
+    /** Returns whether no take has been registered. Any thread. */
+    public boolean isEmpty() {
+        return rescuedTakes.isEmpty();
+    }
+
+    /**
+     * Runs the crash-recovery grammar (book §4.7, {@link TakeRecovery#scan})
+     * over {@code <audioDirectory>/takes} and registers every take it
+     * recovered with reason {@link TakeManifest.SealedBy#CRASH_RECOVERY}:
+     * its clip count is the number of distinct tracks among its playable
+     * segments and its sealed-segment count their number. A take the scan
+     * found nothing to seal in — every remaining file unrecoverable — is
+     * still registered, with zero of each, so the user is told it is there.
+     * Storage I/O: never on the FX thread; in the app the project-open
+     * recovery pass is to run it (story 332 — no production caller yet).
+     *
+     * @param audioDirectory the project's {@code audio} directory; its
+     *                       {@code takes} subdirectory may not exist yet
+     * @return the takes registered by this call, in directory-name order
+     * @throws IOException              if the takes directory cannot be listed
+     * @throws IllegalArgumentException if {@code audioDirectory} is not this
+     *                                  project's {@code audio} directory
+     */
+    public List<RescuedTake> registerRecoveredTakes(Path audioDirectory) throws IOException {
+        Objects.requireNonNull(audioDirectory, "audioDirectory must not be null");
+        Path takes = TakeDirectories.takesDirectory(audioDirectory).toAbsolutePath().normalize();
+        if (!takes.equals(takesDirectory)) {
+            throw new IllegalArgumentException(audioDirectory + " is not the audio directory of the project at "
+                    + projectDirectory);
+        }
+        List<RescuedTake> registered = new ArrayList<>();
+        for (TakeRecovery.RecoveredTake recovered : TakeRecovery.scan(takes)) {
+            List<TakeManifest.SegmentEntry> playable = recovered.playableSegments();
+            Set<String> tracks = new HashSet<>();
+            for (TakeManifest.SegmentEntry segment : playable) {
+                tracks.add(segment.trackId());
+            }
+            RescuedTake take = new RescuedTake(recovered.takeDirectory().toAbsolutePath(),
+                    TakeManifest.SealedBy.CRASH_RECOVERY, Optional.empty(), Instant.now(),
+                    tracks.size(), playable.size());
+            register(take);
+            registered.add(take);
+        }
+        return List.copyOf(registered);
+    }
+
+    private void requireUnderTakes(Path takeDirectory) {
+        Path normalized = takeDirectory.toAbsolutePath().normalize();
+        if (normalized.getParent() == null || !normalized.getParent().equals(takesDirectory)) {
+            throw new IllegalArgumentException("a rescued take of the project at " + projectDirectory
+                    + " lies directly under " + takesDirectory + ", not at " + takeDirectory);
+        }
     }
 }

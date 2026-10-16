@@ -214,7 +214,7 @@ class LoopStandbyLifecycleContractTest {
         loopOverBlocks(2);
         two.setLoopRecord(true);
 
-        awaitWithinTheGuard(two.prepare(), "the take's readiness");
+        awaitWithinTheGuard(two.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         for (Track armed : List.of(track, second)) {
             assertThat(filesIn(takeDir.resolve(armed.getId())))
                     .containsExactly("segment-000.wav.part", "segment-001.wav.part");

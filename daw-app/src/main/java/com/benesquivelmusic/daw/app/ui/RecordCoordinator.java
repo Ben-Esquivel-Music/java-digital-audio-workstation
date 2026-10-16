@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CapturePeakSnapshot;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.EarlySeal;
+import com.benesquivelmusic.daw.core.recording.FinalManifestFailure;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.SegmentFile;
@@ -25,6 +26,7 @@ import com.benesquivelmusic.daw.core.recording.StopSealFailure;
 import com.benesquivelmusic.daw.core.recording.Take;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.recording.TakeGroup;
+import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -33,6 +35,7 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 
@@ -56,6 +59,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -72,6 +76,7 @@ import com.benesquivelmusic.daw.app.ui.TransportController.TakeCompletion;
 import com.benesquivelmusic.daw.app.ui.TransportController.FxDelay;
 import com.benesquivelmusic.daw.app.ui.TransportController.EarlySealSignal;
 import com.benesquivelmusic.daw.app.ui.TransportController.StopSealOutcome;
+import com.benesquivelmusic.daw.app.ui.TransportController.StopSealOutcomeReader;
 
 /** Owns the record state and the asynchronous take/MIDI lifecycle on the FX thread. */
 final class RecordCoordinator {
@@ -163,6 +168,10 @@ final class RecordCoordinator {
         if (recordingPipeline != null || pendingStart != null || writingPipeline != null || abandonedStart != null
                 || !activeMidiRecorders.isEmpty()) return;
         if (state.get() == RecordState.FINALIZING || state.get() == RecordState.ABORTED) transition(RecordState.IDLE);
+        // Story 327 (book §5.2 "Device returned"): settlement alone never
+        // clears DEVICE_LOST — only the lost device's return does, once the
+        // rescued take's publication has ended; the armed tracks are kept.
+        if (state.get() == RecordState.DEVICE_LOST && lostDeviceReturned) transition(RecordState.IDLE);
         if (state.get() != RecordState.IDLE) return;
         if (pendingConfiguration != null && !confirmingConfiguration) reserveConfiguration(pendingConfiguration);
     }
@@ -193,6 +202,11 @@ final class RecordCoordinator {
                     return;
                 }
                 if (isRecordingInFlight()) stop();
+                // Story 327: a configuration change while DEVICE_LOST leaves
+                // it as the user's Stop does — nothing is in flight, the
+                // rescued take is published or being published — and the
+                // request is reserved once that has settled to IDLE.
+                if (state.get() == RecordState.DEVICE_LOST) transition(RecordState.FINALIZING);
                 settle();
             } catch (RuntimeException failure) {
                 if (pendingConfiguration == result) {
@@ -277,15 +291,479 @@ final class RecordCoordinator {
 
     void stopAudioTake() {
         requireFxThread();
+        if (state.get() == RecordState.DEVICE_LOST
+                && (recordingPipeline == null || !recordingPipeline.isActive())) {
+            // Story 327 (book §5.2 "Rescue seal"): the user's Stop is one of
+            // the exits from DEVICE_LOST. The rescued take was sealed when
+            // the device was lost; nothing is in flight, so this only leaves
+            // through FINALIZING, which settles to IDLE once the take's
+            // publication has ended. The armed tracks are left as they are.
+            // A DEVICE_LOST that somehow still holds an ACTIVE pipeline —
+            // no path here does today; a future one (story 338's watchdog)
+            // might — falls through to the ordinary stop below instead, so
+            // the machine can never hold an active pipeline with no exit.
+            transition(RecordState.FINALIZING);
+            settle();
+            return;
+        }
         if (isRecordingInFlight() && state.get() != RecordState.ABORTED) transition(RecordState.FINALIZING);
         if (recordingPipeline != null && recordingPipeline.isActive()) {
             RecordingPipeline stopping = recordingPipeline;
             recordingPipeline = null;
-            CompletionStage<Void> written = requestTakeStop(stopping);
+            CompletionStage<Void> written = requestTakeStop(stopping, TakeManifest.SealedBy.STOP);
             setRecordingStatus(TAKE_FINISHING_MESSAGE);
             publishWhenWritten(stopping, written);
             stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
         }
+    }
+
+    /**
+     * The device of the take being recorded was lost (Recording Reliability
+     * book §2.8, §5.5; story 327): the engine has already stopped its stream
+     * and declared {@code EngineState.DEVICE_LOST}, and the bridge in
+     * {@code TransportController} posts that fact here. What happens depends
+     * on the take in flight:
+     * <ul>
+     *   <li>RECORDING with an audio pipeline: the take is rescued FIRST —
+     *       the pipeline's ordinary stop with reason
+     *       {@link TakeManifest.SealedBy#DEVICE_LOSS}
+     *       ({@link #requestTakeRescue}): gate closed and callback removed
+     *       — already done, by the engine controller's
+     *       {@code AudioEngine.haltRecordingCapture()} on the device-event
+     *       thread before it closed the lost stream (PR #982 review: a
+     *       stream reopened before this turn must not publish into the
+     *       take), so the stop repeats both harmlessly — then
+     *       flags cleared, transport stopped, and the seal requested of the
+     *       capture thread, which the take's publication then follows on a
+     *       later FX turn exactly as after a Stop ({@link #publishWhenWritten},
+     *       the still-writing warning included). Only then, each step on
+     *       its own and logging its own failure ({@link #rescueStep}): the
+     *       state becomes DEVICE_LOST (REC off), the status bar says the
+     *       device was lost and the take is being saved, MIDI recorders of
+     *       a mixed take are stopped as the Stop path stops them, and the
+     *       transport's Stop tail — the Stopped announce, the stream, the
+     *       status — runs through
+     *       {@code TransportController.finishDeviceLossStop}. A UI step
+     *       that throws therefore never skips the rescue.</li>
+     *   <li>RECORDING with only MIDI recorders: there is no audio to rescue
+     *       and the engine that drove the transport is stopped, so the take
+     *       is stopped as the user's Stop stops it; the controller's own
+     *       notification covers the loss.</li>
+     *   <li>PREPARING: the start is cancelled as Stop cancels it
+     *       ({@link #cancelPendingStart}) and ends ABORTED with an ERROR
+     *       naming the device — book §3.2 has no arrow from PREPARING to
+     *       DEVICE_LOST, and no take had begun. A start whose readiness turn
+     *       ran before this one is no longer PREPARING. Its
+     *       {@code PendingStart} read the engine's capture-halt baseline
+     *       when Record was pressed, before the take's stream was opened:
+     *       if the halt began after that read and before the final capture
+     *       check of the take's {@code RecordingPipeline.beginCapture()},
+     *       the pipeline's device-loss fence rejected the start (PR #982
+     *       review r4297840180), {@link #abandonStart} reported it as a
+     *       failed start — the audio device was lost while the take was
+     *       starting — and this turn finds ABORTED or IDLE and changes
+     *       nothing (the last case below); if after the final check, the
+     *       halt closed the take's producer gates and the take is
+     *       RECORDING, rescued as the first case above describes. A halt
+     *       that began before the Record press is not this take's to
+     *       reject: its start goes on, and this turn cancels it while it is
+     *       PREPARING, or rescues it once it is RECORDING — the pipeline's
+     *       own stop then closing the producer gates, which that halt never
+     *       read.</li>
+     *   <li>DEVICE_LOST: the device was lost again — the stream the lost
+     *       device's return (or an open the controller did not drive)
+     *       reopened is closed once more. The take was sealed at the first
+     *       loss, so nothing is rescued twice and no state, transport or
+     *       MIDI step runs; the WARNING is logged, a return already
+     *       delivered is forgotten ({@link #lostDeviceReturned} cleared,
+     *       so a clean rescue's pending publication settles to
+     *       DEVICE_LOST, not IDLE — book §5.2 "Device returned" and §2.4,
+     *       PR #982 review; a rescue whose publication fails still
+     *       leaves through ABORTED to IDLE, as before:
+     *       {@link #reportTakeFinalizationFailure} transitions to ABORTED
+     *       and {@link #settle()} takes ABORTED to IDLE without consulting
+     *       the flag), the
+     *       status bar names the device lost now and says whether the
+     *       take is still being saved or already preserved
+     *       ({@link #deviceLostStatus}), and {@link #lostDevice} keeps
+     *       the device whose loss sealed the take, which the rescue's
+     *       messages and registration name.</li>
+     *   <li>Anything else — IDLE, the FINALIZING or ABORTED of an earlier
+     *       take, or the ABORTED or IDLE that a start the device-loss fence
+     *       rejected left behind — changes nothing here: the controller's own
+     *       notification covers the playback loss.</li>
+     * </ul>
+     * A {@linkplain #retire() retired} coordinator ignores it: its take was
+     * handed to {@link #reportTakeOfAReplacedProject}. Nothing here touches
+     * storage or waits. FX thread.
+     *
+     * @param device the lost device, as the engine controller watched it
+     */
+    void onDeviceLost(DeviceId device) {
+        requireFxThread();
+        Objects.requireNonNull(device, "device must not be null");
+        if (retired) return;
+        if (pendingStart != null) {
+            LOG.warning("Audio device " + device.name() + " was lost while the take was being prepared");
+            cancelPendingStart();
+            Throwable failure = new IllegalStateException("audio device " + device.name()
+                    + " was lost while the take was being prepared");
+            abortStep(failure, () -> transition(RecordState.ABORTED));
+            stopMidiRecording(failure);
+            abortStep(failure, project.getTransport()::stop);
+            String message = "Recording aborted — no take was started: " + failure.getMessage();
+            abortStep(failure, () -> setRecordingStatus(message));
+            abortStep(failure, () -> statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12)));
+            abortStep(failure, () -> notificationBar.show(NotificationLevel.ERROR, message));
+            abortStep(failure, this::stopAudioOutputUnlessRolling);
+            abortStep(failure, this::updateStatus);
+            if (failure.getSuppressed().length > 0) {
+                LOG.log(Level.WARNING, "A step of the lost-device start cancellation failed", failure);
+            }
+            return;
+        }
+        if (state.get() == RecordState.DEVICE_LOST) {
+            // Story 327 (PR #982 review): a second loss while DEVICE_LOST.
+            // The take was sealed at the first loss — nothing is rescued
+            // twice. The one thing to undo is a return already delivered:
+            // left set, lostDeviceReturned would let the rescued take's
+            // pending publication settle to IDLE and offer Record with the
+            // stream closed (book §2.4). The next open-stream STOPPED or
+            // RUNNING is the return again — the transport controller re-latched its
+            // deviceLost on this loss — and settles the machine then.
+            // writingPipeline is the rescued take's pipeline until its
+            // publication turn runs, so it says whether the take is still
+            // being saved or already preserved.
+            boolean publicationPending = writingPipeline != null;
+            LOG.warning("Audio device " + device.name() + " was lost again while the record state is DEVICE_LOST"
+                    + (publicationPending ? " and the rescued take is still being published" : "")
+                    + "; the take was sealed at the first loss and is not rescued twice");
+            lostDeviceReturned = false;
+            setRecordingStatus(deviceLostStatus(device, !publicationPending));
+            return;
+        }
+        if (state.get() != RecordState.RECORDING) return;
+        if (recordingPipeline == null || !recordingPipeline.isActive()) {
+            LOG.warning("Audio device " + device.name() + " was lost during a MIDI-only take; stopping it");
+            stop();
+            return;
+        }
+        RecordingPipeline rescued = recordingPipeline;
+        Transport transportModel = project.getTransport();
+        boolean wasRolling = transportModel.getState() != TransportState.STOPPED;
+        long stoppedAtFrames = core.beatsToFrames(transportModel.getPositionInBeats());
+        LOG.warning("Audio device " + device.name() + " was lost while recording the take under "
+                + rescued.getTakeDirectory() + "; rescuing it");
+        lostDevice = device;
+        lostDeviceReturned = false;
+        rescuedTakePipeline = rescued;
+        // The rescue first, independent of every step after it (book §5.5):
+        // the seal is requested before the state changes, before the status
+        // bar, the MIDI recorders, the transport tail or any message — so a
+        // step of the UI that throws cannot leave an active pipeline behind
+        // — and each later step logs its own failure (rescueStep). Nothing
+        // posted here can run before this method returns.
+        recordingPipeline = null;
+        CompletionStage<Void> written = requestTakeRescue(rescued);
+        publishWhenWritten(rescued, written);
+        stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(rescued));
+        rescueStep("Entering DEVICE_LOST", () -> transition(RecordState.DEVICE_LOST));
+        rescueStep("The device-lost status", () -> setRecordingStatus(deviceLostStatus(device, false)));
+        rescueStep("The device-lost glyph", () -> statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12)));
+        rescueStep("Stopping the MIDI recorders", this::stopMidiRecording);
+        rescueStep("The transport's stop", () -> transport.finishDeviceLossStop(wasRolling, stoppedAtFrames));
+    }
+
+    /**
+     * One step of {@link #onDeviceLost} after the rescue was requested: its
+     * failure is logged at WARNING, named by {@code what}, and the steps
+     * after it still run. FX thread.
+     */
+    private static void rescueStep(String what, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException failure) {
+            LOG.log(Level.WARNING, what + " after the device loss failed", failure);
+        }
+    }
+
+    /**
+     * The loss is over: the engine has a stream open again, on
+     * {@code device} (book §5.2 "Device returned", §5.5 step 6; story 327).
+     * While DEVICE_LOST, when {@code device} is the lost device — the
+     * controller's own predicate,
+     * {@link DefaultAudioEngineController#sameDevice} — the transport is
+     * seeked to the rescued take's start anchor — the beat the pipeline
+     * read at {@code prepare(long)},
+     * {@code RecordingPipeline.getRecordingStartBeat()}, which outlives the
+     * take — and the user is told it reconnected, that the tracks are
+     * still armed and that Record continues. When it is another device
+     * (story 327 fix round: the instrument-audio open of
+     * {@code MainController.pluginGraphChanged} walks the provision ladder
+     * while the interface is unplugged and opens whatever rung it yields),
+     * nothing is seeked — the playhead belongs to whatever opened that
+     * stream — and the INFO is {@link #lossEndedOnAnotherDeviceMessage}.
+     * Either way the state settles to IDLE at once, or once the rescued
+     * take's publication has ended. Recording never restarts itself, and
+     * nothing here disarms a track: the armed set is exactly what it was
+     * when the device was lost. A second loss before the publication has
+     * ended undoes the return ({@link #onDeviceLost}): the machine stays
+     * DEVICE_LOST until the next one. Ignored in any other state, and by a
+     * {@linkplain #retire() retired} coordinator. FX thread.
+     *
+     * @param device the device the engine's stream is open on now
+     */
+    void onLostDeviceReturned(DeviceId device) {
+        requireFxThread();
+        Objects.requireNonNull(device, "device must not be null");
+        if (retired || state.get() != RecordState.DEVICE_LOST) return;
+        String rescuedTake = rescuedTakePipeline == null ? "(none)" : rescuedTakePipeline.getTakeDirectory().toString();
+        lostDeviceReturned = true;
+        if (lostDevice == null || DefaultAudioEngineController.sameDevice(lostDevice, device)) {
+            LOG.info("Audio device " + device.name() + " returned after the rescue of the take under " + rescuedTake);
+            if (rescuedTakePipeline != null) {
+                try {
+                    project.getTransport().setPositionInBeats(rescuedTakePipeline.getRecordingStartBeat());
+                } catch (RuntimeException failure) {
+                    LOG.log(Level.WARNING, "Could not seek to the rescued take's start", failure);
+                }
+            }
+            notificationBar.show(NotificationLevel.INFO, device.name()
+                    + " reconnected. Tracks are still armed; press Record to continue.");
+        } else {
+            LOG.info("Audio is on " + device.name() + " after the rescue of the take under " + rescuedTake
+                    + "; the lost device " + lostDevice.name() + " did not return");
+            notificationBar.show(NotificationLevel.INFO, lossEndedOnAnotherDeviceMessage(device, lostDevice));
+        }
+        settle();
+        updateStatus();
+    }
+
+    /**
+     * The INFO shown when the loss ends with a stream open on a device that
+     * is not the lost one (story 327 fix round): the one the audio is on
+     * now, that the lost device did not return, and that the armed tracks
+     * are kept. Nothing is seeked: the playhead belongs to whatever opened
+     * that stream, not to the rescued take.
+     */
+    static String lossEndedOnAnotherDeviceMessage(DeviceId current, DeviceId lost) {
+        return "Audio is now on " + current.name() + "; " + lost.name()
+                + " did not return. Tracks are still armed; press Record to continue.";
+    }
+
+    /**
+     * Asks {@code pipeline} to rescue its take — its one-shot stop with
+     * reason {@link TakeManifest.SealedBy#DEVICE_LOSS}, after which the
+     * manifest reads {@code aborted}/{@code device-loss} and every lane is
+     * sealed as after a Stop — and returns its capture thread's termination
+     * signal, as {@link #requestTakeStop} does, with the same retry. FX thread.
+     */
+    private static CompletionStage<Void> requestTakeRescue(RecordingPipeline pipeline) {
+        return requestTakeStop(pipeline, TakeManifest.SealedBy.DEVICE_LOSS);
+    }
+
+    /**
+     * The status text while DEVICE_LOST: the lost device's name and, before
+     * the rescued take is published, that it is being saved; afterwards that
+     * it is preserved.
+     */
+    static String deviceLostStatus(DeviceId device, boolean published) {
+        return "Audio device lost — " + device.name() + (published ? "; take preserved" : "; saving the take");
+    }
+
+    /**
+     * The WARNING shown once the rescued take is published (book §5.5 step
+     * 5): the device, that the take was saved up to the dropout, and what
+     * it holds; or, with no clip, that nothing had reached disk yet. Not an
+     * ERROR: nothing failed on our side.
+     */
+    static String rescuedTakeMessage(DeviceId device, int clipCount, int trackCount) {
+        if (clipCount == 0) {
+            return deviceDisconnectedText(device) + "; nothing had reached disk yet.";
+        }
+        return deviceDisconnectedText(device) + ". The take was saved up to the dropout: "
+                + clipsOnTracksText(clipCount, trackCount) + ".";
+    }
+
+    /**
+     * The ERROR of a device-loss rescue whose every lane sealed but whose
+     * final manifest write failed on every attempt
+     * ({@link FinalManifestFailure}; PR #982 review): it leads with the
+     * device-loss wording, says that the audio was saved up to the dropout
+     * — the segments are sealed — but that the take's manifest could not be
+     * written, with the reason ({@link #manifestNotWrittenText}), and that
+     * take recovery rebuilds it ({@link #MANIFEST_REBUILT_BY_RECOVERY_TEXT}).
+     * Such a take is not a rescued take on disk, so it is never registered
+     * and never called preserved. With no clip — no track recorded a frame,
+     * so no segment holds audio and the live seal deleted the empty tails —
+     * that nothing had reached disk yet and the manifest could not be
+     * written, with no word of a rebuild: there is no segment to rebuild a
+     * take from (story 327, Known limitations).
+     */
+    static String rescuedTakeManifestNotWrittenMessage(DeviceId device, FinalManifestFailure failure,
+                                                      int clipCount, int trackCount) {
+        if (clipCount == 0) {
+            return deviceDisconnectedText(device) + "; nothing had reached disk yet, and "
+                    + manifestNotWrittenText(failure);
+        }
+        return deviceDisconnectedText(device) + ". The audio was saved up to the dropout ("
+                + clipsOnTracksText(clipCount, trackCount) + "), but " + manifestNotWrittenText(failure) + "; "
+                + MANIFEST_REBUILT_BY_RECOVERY_TEXT;
+    }
+
+    /** The lead every device-loss report shares: {@code <device> disconnected during recording}. */
+    private static String deviceDisconnectedText(DeviceId device) {
+        return device.name() + " disconnected during recording";
+    }
+
+    /** {@code 1 clip on 1 track}, {@code 2 clips on 2 tracks}. */
+    private static String clipsOnTracksText(int clipCount, int trackCount) {
+        return clipCount + " clip" + (clipCount == 1 ? "" : "s") + " on " + trackCount + " track"
+                + (trackCount == 1 ? "" : "s");
+    }
+
+    /**
+     * The status text the "Review" action of {@link #rescuedTakeMessage}
+     * sets: the take's folder and the recorded length as {@code mm:ss.t}.
+     */
+    static String rescuedTakeReviewStatus(Path takeDirectory, double recordedSeconds) {
+        long tenths = Math.round(Math.max(0.0, recordedSeconds) * 10.0);
+        long minutes = tenths / 600;
+        long seconds = (tenths % 600) / 10;
+        long tenth = tenths % 10;
+        return "Rescued take: " + ProjectManager.AUDIO_DIR_NAME + "/" + TakeDirectories.TAKES_DIR_NAME + "/"
+                + takeDirectory.getFileName() + " — " + String.format("%02d:%02d.%d", minutes, seconds, tenth)
+                + " recorded";
+    }
+
+    /**
+     * The registry of this project's rescued takes (book §2.9), created on
+     * the first rescue from the project's directory; empty while the project
+     * has never been saved — an audio take is refused without a directory,
+     * so a rescue always has one, and a MIDI-only take has nothing to
+     * rescue. Package-visible for tests. FX thread.
+     */
+    Optional<IncompleteTakeStore> rescuedTakeStore() {
+        if (rescuedTakeStore == null) {
+            projectDirectory().ifPresent(directory -> rescuedTakeStore = new IncompleteTakeStore(directory));
+        }
+        return Optional.ofNullable(rescuedTakeStore);
+    }
+
+    /**
+     * Test seam: replaces how a rescued take is registered (production:
+     * {@link #registerRescuedTake}, into {@link #rescuedTakeStore()}), so
+     * that a test can make the registration step fail and see the steps
+     * around it complete all the same. FX thread, before the device is lost.
+     */
+    void setRescuedTakeRegistrationForTest(Consumer<IncompleteTakeStore.RescuedTake> registration) {
+        rescuedTakeRegistration = Objects.requireNonNull(registration, "registration must not be null");
+    }
+
+    /** The production {@link #rescuedTakeRegistration}: into this project's registry. FX thread. */
+    private void registerRescuedTake(IncompleteTakeStore.RescuedTake take) {
+        rescuedTakeStore().orElseThrow(() -> new IllegalStateException(
+                "the project has no directory, so it has no rescued-take registry")).register(take);
+    }
+
+    /**
+     * Test seam: replaces how the rescued take's WARNING is shown
+     * (production: {@link #showRescuedTakeNotification}, through the
+     * notification bar with its "Review" action), so that a test can make
+     * the notification step fail and see the steps before it — the seal,
+     * the publication, the registration — complete all the same. The bar
+     * and its history are final classes, so no failing subclass can stand
+     * in for them. FX thread, before the device is lost.
+     *
+     * @param notification receives the message and the "Review" action
+     */
+    void setRescuedTakeNotificationForTest(BiConsumer<String, Runnable> notification) {
+        rescuedTakeNotification = Objects.requireNonNull(notification, "notification must not be null");
+    }
+
+    /** The production {@link #rescuedTakeNotification}: the WARNING with its "Review" action. FX thread. */
+    private void showRescuedTakeNotification(String message, Runnable review) {
+        notificationBar.show(NotificationLevel.WARNING, message, "Review", review);
+    }
+
+    /**
+     * What follows the publication of a rescued take's clips once it has
+     * been {@linkplain #registerSealedRescue registered} (book §5.5 step 5):
+     * the status bar says the take is preserved and the WARNING of
+     * {@link #rescuedTakeMessage} is shown ({@link #rescuedTakeNotification})
+     * with a "Review" action that puts the take's folder and recorded
+     * length in the status bar ({@link #rescuedTakeReviewStatus}) and, while
+     * the transport is STOPPED or PAUSED (a paused playhead is not playing),
+     * seeks it to the take's start anchor — over a rolling transport the
+     * review only sets the status text; it never moves a playhead that is
+     * playing. The review seeks only: there is no selection seam here to
+     * select the rescued clips with. A failure is logged, never propagated.
+     * FX thread.
+     *
+     * @param clips      the clips the completion returned
+     * @param trackCount how many tracks the take recorded onto
+     */
+    private void showRescuedTake(RecordingPipeline pipeline, List<AudioClip> clips, int trackCount) {
+        DeviceId device = lostDevice;
+        String message = rescuedTakeMessage(device, clips.size(), trackCount);
+        LOG.warning(message);
+        try {
+            setRecordingStatus(deviceLostStatus(device, true));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            double recordedSeconds = recordedSeconds(clips);
+            double anchor = pipeline.getRecordingStartBeat();
+            Path takeDirectory = pipeline.getTakeDirectory();
+            rescuedTakeNotification.accept(message, () -> {
+                Transport transportModel = project.getTransport();
+                TransportState transportState = transportModel.getState();
+                if (transportState == TransportState.STOPPED || transportState == TransportState.PAUSED) {
+                    transportModel.setPositionInBeats(anchor);
+                }
+                setRecordingStatus(rescuedTakeReviewStatus(takeDirectory, recordedSeconds));
+            });
+        } catch (RuntimeException failure) {
+            LOG.log(Level.WARNING, "Could not show the rescued take under " + pipeline.getTakeDirectory(), failure);
+        }
+    }
+
+    /**
+     * The WARNING a Record or a Play pressed while DEVICE_LOST gets (book
+     * §5.2 "Record while lost"; story 327): {@code action} is unavailable,
+     * the lost device is named, and the three ways out — reconnecting it,
+     * Stop, or another device in Audio Settings.
+     *
+     * @param action what was pressed, as a sentence subject ("Record", "Playback")
+     * @param device the lost device; empty when none is remembered
+     */
+    static String unavailableWhileDeviceLostMessage(String action, Optional<DeviceId> device) {
+        return action + " is unavailable — audio device " + device.map(lost -> lost.name() + " ").orElse("")
+                + "is still disconnected; reconnect it, press Stop, or choose another device in Audio Settings";
+    }
+
+    /**
+     * Refuses {@code action} because the record state is DEVICE_LOST: logs,
+     * puts {@link #unavailableWhileDeviceLostMessage} in the status bar with
+     * the warning glyph, and shows it as a WARNING. Nothing else is touched.
+     * Called by {@link #onRecord} and by the transport controller's Play
+     * paths. FX thread, in state DEVICE_LOST.
+     */
+    void refuseWhileDeviceLost(String action) {
+        requireFxThread();
+        String message = unavailableWhileDeviceLostMessage(action, Optional.ofNullable(lostDevice));
+        LOG.warning(message);
+        setRecordingStatus(message);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+        notificationBar.show(NotificationLevel.WARNING, message);
+    }
+
+    /** The longest clip's duration, in seconds at the transport's current tempo; zero with no clip. FX thread. */
+    private double recordedSeconds(List<AudioClip> clips) {
+        double beats = 0.0;
+        for (AudioClip clip : clips) {
+            beats = Math.max(beats, clip.getDurationBeats());
+        }
+        double tempo = project.getTransport().getTempo();
+        return tempo > 0.0 ? beats * 60.0 / tempo : 0.0;
     }
 
 
@@ -328,6 +806,48 @@ final class RecordCoordinator {
      */
     private RecordingPipeline writingPipeline;
     /**
+     * Story 327 — the device whose loss put this coordinator in DEVICE_LOST,
+     * named by the rescue's status and messages; set by {@link #onDeviceLost}
+     * when it rescues a take and kept until the next rescue — a second loss
+     * while DEVICE_LOST leaves it, so the rescue's messages and registration
+     * name the device whose loss sealed the take (PR #982 review). FX thread.
+     */
+    private DeviceId lostDevice;
+    /**
+     * Story 327 — whether the lost device has returned
+     * ({@link #onLostDeviceReturned}): the one thing that lets
+     * {@link #settle()} leave DEVICE_LOST for IDLE. Cleared again by a
+     * second loss while DEVICE_LOST ({@link #onDeviceLost}; PR #982
+     * review): the return it recorded is undone by that loss, and the
+     * settlement it owed is owed to the next return instead, which the
+     * transport controller's re-latched {@code deviceLost} delivers with
+     * the next open-stream STOPPED or RUNNING. FX thread.
+     */
+    private boolean lostDeviceReturned;
+    /**
+     * Story 327 — the pipeline of the take the device loss rescued: its
+     * publication registers it and shows the rescue message instead of the
+     * SUCCESS, and its start anchor is where the lost device's return seeks
+     * to. Set by {@link #onDeviceLost}; kept until the next rescue. FX thread.
+     */
+    private RecordingPipeline rescuedTakePipeline;
+    /**
+     * Story 327 — this project's rescued-take registry (book §2.9), created
+     * on first use by {@link #rescuedTakeStore()}. FX thread.
+     */
+    private IncompleteTakeStore rescuedTakeStore;
+    /**
+     * Story 327 — how a rescued take is registered: {@link #registerRescuedTake};
+     * replaced only by {@link #setRescuedTakeRegistrationForTest}.
+     */
+    private Consumer<IncompleteTakeStore.RescuedTake> rescuedTakeRegistration = this::registerRescuedTake;
+    /**
+     * Story 327 — how the rescued take's WARNING is shown:
+     * {@link #showRescuedTakeNotification}; replaced only by
+     * {@link #setRescuedTakeNotificationForTest}.
+     */
+    private BiConsumer<String, Runnable> rescuedTakeNotification = this::showRescuedTakeNotification;
+    /**
      * The live peaks of the audio take in hand — one continuous channel per
      * armed audio track (Recording Reliability book §4.5): opened when the
      * take's pipeline is built ({@link #onTakeDirectoryAllocated}), closed
@@ -353,7 +873,7 @@ final class RecordCoordinator {
     private Executor storageExecutor = RecordCoordinator::onAVirtualThread;
     /**
      * What is done to a take's pipeline after it is built and before its
-     * {@code prepare()} — nothing in production; replaced only by
+     * {@code prepare(long)} — nothing in production; replaced only by
      * {@link #setPipelineSetupForTest}.
      */
     private Consumer<RecordingPipeline> pipelineSetup = _ -> { };
@@ -376,11 +896,12 @@ final class RecordCoordinator {
      */
     private EarlySealSignal earlySealSignal = RecordingPipeline::earlySeal;
     /**
-     * How the outcome of the seal a take's Stop requested is read —
-     * {@code RecordingPipeline::stopSealFailure}; replaced only by
+     * How the outcome of the seal a take's Stop or rescue requested is read
+     * — {@link StopSealOutcome#of}, the pipeline's {@code stopSealFailure()}
+     * and {@code finalManifestFailure()}; replaced only by
      * {@link #setStopSealOutcomeForTest}.
      */
-    private StopSealOutcome stopSealOutcome = RecordingPipeline::stopSealFailure;
+    private StopSealOutcomeReader stopSealOutcome = StopSealOutcome::of;
     /**
      * How {@link #startMidiRecording} finds an armed MIDI track's input
      * device by its name — {@link #resolveMidiDevice}; replaced only by
@@ -398,13 +919,13 @@ final class RecordCoordinator {
      * request — which repeats none of those steps — hands back the same
      * signal, so the take is still published. FX thread.
      */
-    private static CompletionStage<Void> requestTakeStop(RecordingPipeline pipeline) {
+    private static CompletionStage<Void> requestTakeStop(RecordingPipeline pipeline, TakeManifest.SealedBy reason) {
         try {
-            return pipeline.requestStop();
+            return pipeline.requestStop(reason);
         } catch (RuntimeException oneShotFailure) {
             LOG.log(Level.WARNING, "A step of the stop of the take under " + pipeline.getTakeDirectory()
                     + " failed; the take is sealed all the same", oneShotFailure);
-            return pipeline.requestStop();
+            return pipeline.requestStop(reason);
         }
     }
 
@@ -617,7 +1138,8 @@ final class RecordCoordinator {
      * {@link #TAKE_FINISHING_MESSAGE} or {@link #TAKE_STILL_WRITING_MESSAGE},
      * if it still says one of them, and leaves the project as it was. A take
      * whose finalisation did not end cleanly — sealed early by the capture
-     * thread, or a lane that threw in the seal the Stop requested — is
+     * thread, a lane that threw in the seal the Stop requested, or a final
+     * manifest write that failed on every attempt — is
      * reported here: the report of {@link #finalizationFailureReport} as the
      * ERROR toast and the status text, with or without clips. A failure of
      * the completion itself is logged SEVERE and shown as an ERROR toast
@@ -688,7 +1210,14 @@ final class RecordCoordinator {
             return;
         }
         int clipCount = clips.size();
-        Optional<String> failureReport = finalizationFailureReport(pipeline, clipCount);
+        int trackCount = pipeline.getRecordedClips().size();
+        boolean rescue = isRescue(pipeline);
+        // Read once: the early seal, the lanes' seals and the final manifest
+        // write, final now that the take's capture thread has terminated.
+        Optional<EarlySeal> earlySeal = earlySealOf(pipeline);
+        StopSealOutcome sealOutcome = stopSealOutcome.of(pipeline);
+        Optional<String> failureReport = finalizationFailureReport(pipeline, earlySeal, sealOutcome, clipCount,
+                trackCount);
         if (unannouncedTake == pipeline && failureReport.isEmpty()) {
             failureReport = Optional.of("Recording aborted — take readiness precondition failed:"
                     + " the flush service ended before capture; " + clipsCreatedText(clipCount));
@@ -697,10 +1226,35 @@ final class RecordCoordinator {
             String cleanupFailure = unannouncedCleanupFailure;
             failureReport = Optional.of(failureReport.orElseThrow() + "; take cleanup failed: " + cleanupFailure);
         }
+        // Story 327 (book §5.5 step 3): a device-loss rescue whose every lane
+        // sealed, and whose manifest says so on disk, is a rescued take on
+        // disk whatever follows — its audio may still fail to load, a MIDI
+        // recorder of a mixed take may have failed to close — so it is
+        // registered before any report below, and those reports lead with
+        // the device-loss wording instead of "Recording stopped". A rescue
+        // whose seal failed — the capture thread sealed the take early
+        // (earlySeal: a stop requested first does not prevent it — an
+        // exhaustion or a write failure applying a block the final sweep
+        // drains completes it — and the manifest then reads write-failure
+        // or disk-exhaustion, not device-loss), a lane threw
+        // (stopSealFailure), or the final manifest write failed on every
+        // attempt (finalManifestFailure: the manifest on disk still reads
+        // streaming, and the recovery scan — TakeRecovery.scan, which story
+        // 332 runs on project open — rebuilds it as crash recovery) — is not
+        // a rescued take and stays unregistered (PR #982 review; round 2 for
+        // the early seal).
+        boolean rescueSealed = rescue && earlySeal.isEmpty() && sealOutcome.isClean();
+        if (rescueSealed) {
+            int sealedSegments = 0;
+            for (List<String> segmentPaths : segmentLists) sealedSegments += segmentPaths.size();
+            registerSealedRescue(pipeline, clipCount, sealedSegments);
+        }
         if (midiStopFailure != null) {
             String midiFailure = midiStopFailure;
-            failureReport = Optional.of(failureReport.map(report -> report + "; " + midiFailure)
-                    .orElse("Recording stopped — " + clipsCreatedText(clipCount) + "; " + midiFailure));
+            String outcome = rescueSealed ? rescuedTakeMessage(lostDevice, clipCount, trackCount)
+                    : "Recording stopped — " + clipsCreatedText(clipCount);
+            failureReport = Optional.of(failureReport.map(report -> joinedReport(report, midiFailure))
+                    .orElse(joinedReport(outcome, midiFailure)));
         }
         Optional<String> unloadedReport = unloadedAudioReport(pipeline, clips, unread);
         if (clipCount == 0 && failureReport.isEmpty() && unloadedReport.isEmpty()
@@ -709,11 +1263,67 @@ final class RecordCoordinator {
         }
         publishRecordedTake(pipeline, clips);
         if (unloadedReport.isPresent()) {
-            String outcome = failureReport.orElseGet(() -> "Recording stopped"
-                    + (clipCount == 0 ? "" : " — " + clipsCreatedText(clipCount)));
-            reportTakeFinalizationFailure(outcome + "; " + unloadedReport.get());
+            String outcome = failureReport.orElseGet(() -> rescueSealed
+                    ? rescuedTakeMessage(lostDevice, clipCount, trackCount)
+                    : "Recording stopped" + (clipCount == 0 ? "" : " — " + clipsCreatedText(clipCount)));
+            reportTakeFinalizationFailure(joinedReport(outcome, unloadedReport.get()));
+        } else if (failureReport.isPresent()) {
+            // A rescued take whose seal failed takes this path too (book
+            // §5.2 "Rescue failure": DEVICE_LOST → ABORTED): a lane that
+            // threw with the ERROR of stopSealFailedMessage and no "saved"
+            // wording; a final manifest write that failed with the ERROR of
+            // rescuedTakeManifestNotWrittenMessage, which leads with the
+            // device-loss wording and never calls the take preserved.
+            reportTakeFinalizationFailure(failureReport.get());
+        } else if (rescue) {
+            // Story 327 (book §5.5 step 5): a device-loss rescue with no
+            // early seal, whose every lane sealed and whose manifest says so
+            // on disk. finalizationFailureReport is empty for it: the early
+            // seal is empty (a stop requested first does not prevent one —
+            // an exhaustion or a write failure in the final sweep completes
+            // it — and such a rescue was reported above, not shown here),
+            // stopSealFailure() is empty when every lane sealed, whatever
+            // the reason the stop was requested with, and
+            // finalManifestFailure() is empty when the final write landed
+            // (DeviceLossSealContractTest).
+            showRescuedTake(pipeline, clips, trackCount);
         } else {
-            failureReport.ifPresentOrElse(this::reportTakeFinalizationFailure, () -> showTakePublished(clipCount));
+            showTakePublished(clipCount);
+        }
+    }
+
+    /**
+     * {@code head}, then {@code "; "}, then {@code tail} — with the period
+     * that ends a standalone message ({@link #rescuedTakeMessage}) stripped
+     * from {@code head} first, so a report that joins it to a detail never
+     * reads {@code ".;"} (story 327 fix round).
+     */
+    static String joinedReport(String head, String tail) {
+        String lead = head.endsWith(".") ? head.substring(0, head.length() - 1) : head;
+        return lead + "; " + tail;
+    }
+
+    /**
+     * Registers the rescued take {@code pipeline} recorded — no early seal,
+     * every lane sealed, and the final manifest that says so on disk — with
+     * the project's rescued-take registry
+     * ({@link #rescuedTakeRegistration}; book §5.5 step 3). A failure is
+     * logged, never propagated: the publication and the report that follow
+     * do not depend on it. Not an overload of {@link #registerRescuedTake}
+     * (the registration itself, the production target of the seam) — the
+     * two were, and a method reference to the seam's target must not be
+     * ambiguous. FX thread.
+     *
+     * @param clipCount      the clips the completion returned
+     * @param sealedSegments how many segments the take's clips reference
+     */
+    private void registerSealedRescue(RecordingPipeline pipeline, int clipCount, int sealedSegments) {
+        try {
+            rescuedTakeRegistration.accept(new IncompleteTakeStore.RescuedTake(
+                    pipeline.getTakeDirectory().toAbsolutePath(), TakeManifest.SealedBy.DEVICE_LOSS,
+                    Optional.of(lostDevice.name()), Instant.now(), clipCount, sealedSegments));
+        } catch (RuntimeException failure) {
+            LOG.log(Level.WARNING, "Could not register the rescued take under " + pipeline.getTakeDirectory(), failure);
         }
     }
 
@@ -1014,23 +1624,62 @@ final class RecordCoordinator {
      * ended, read once by the turn that publishes the take, once the take's
      * completion has returned the clips: its capture thread has
      * terminated then, and before it terminated that thread completed the
-     * early-seal signal, if it ever will, and recorded the failure of the
-     * seal the Stop requested, if there was one. The report of a take the
-     * capture thread sealed early ({@link #takeSealedEarlyMessage});
+     * early-seal signal, if it ever will ({@code earlySeal}, read by the
+     * caller through {@link #earlySealOf}), recorded the failure of the
+     * seal the Stop requested, if there was one, and recorded the failure
+     * of the final manifest write, if it failed on every attempt
+     * ({@code sealOutcome}). The report of a take the capture thread sealed
+     * early — for a Stop {@link #takeSealedEarlyMessage}, for a device-loss
+     * rescue {@link #rescuedTakeSealedEarlyMessage}: a stop requested first
+     * does not prevent an early seal, which an exhaustion or a write
+     * failure in the final sweep completes (PR #982 review round 2);
      * otherwise the report of a lane that threw in the seal the Stop
-     * requested ({@link #stopSealFailedMessage}); otherwise empty — the take
-     * was finalised cleanly, and the caller shows the SUCCESS. The core never
-     * reports both for one take: a take sealed early has no failure of the
-     * Stop's seal. Reads only; blocks on nothing. FX thread.
+     * requested ({@link #stopSealFailedMessage}); either of them, when the final
+     * manifest write failed as well, with that fact joined on
+     * ({@link #joinedReport}); otherwise, for a final manifest write that
+     * failed after a clean seal of every lane, the report of a manifest
+     * that could not be written — for a device-loss rescue leading with the
+     * device-loss wording ({@link #rescuedTakeManifestNotWrittenMessage}),
+     * for a Stop as {@link #finalManifestNotWrittenMessage} — so that a
+     * take whose manifest on disk still reads streaming is never reported
+     * as stopped cleanly or as preserved (PR #982 review); otherwise empty
+     * — the take was finalised cleanly, and the caller shows the SUCCESS.
+     * The core never reports an early seal and a failure of the Stop's seal
+     * for one take. This is the one predicate the Stop and the rescue
+     * share. Reads only; blocks on nothing. FX thread.
      *
-     * @param clipCount the clips the Stop created from the take
+     * @param earlySeal   the early seal the capture thread signalled, if it sealed the take on its own
+     * @param sealOutcome how the seal the Stop or the rescue requested ended
+     * @param clipCount   the clips the Stop created from the take
+     * @param trackCount  how many tracks the take recorded onto
      */
-    private Optional<String> finalizationFailureReport(RecordingPipeline pipeline, int clipCount) {
+    private Optional<String> finalizationFailureReport(RecordingPipeline pipeline, Optional<EarlySeal> earlySeal,
+                                                       StopSealOutcome sealOutcome, int clipCount, int trackCount) {
         Path takeDirectory = pipeline.getTakeDirectory();
-        return earlySealOf(pipeline)
-                .map(seal -> takeSealedEarlyMessage(seal, clipCount, takeDirectory))
-                .or(() -> stopSealOutcome.of(pipeline)
+        boolean rescue = isRescue(pipeline);
+        Optional<String> sealReport = earlySeal
+                .map(seal -> rescue
+                        ? rescuedTakeSealedEarlyMessage(lostDevice, seal, clipCount, takeDirectory)
+                        : takeSealedEarlyMessage(seal, clipCount, takeDirectory))
+                .or(() -> sealOutcome.laneFailure()
                         .map(failure -> stopSealFailedMessage(failure, clipCount, takeDirectory)));
+        Optional<FinalManifestFailure> manifestFailure = sealOutcome.manifestFailure();
+        if (manifestFailure.isEmpty()) {
+            return sealReport;
+        }
+        FinalManifestFailure failure = manifestFailure.get();
+        if (sealReport.isPresent()) {
+            return Optional.of(joinedReport(sealReport.get(),
+                    manifestNotWrittenText(failure) + "; " + MANIFEST_REBUILT_BY_RECOVERY_TEXT));
+        }
+        return Optional.of(rescue
+                ? rescuedTakeManifestNotWrittenMessage(lostDevice, failure, clipCount, trackCount)
+                : finalManifestNotWrittenMessage(failure, clipCount));
+    }
+
+    /** Whether {@code pipeline}'s take is the one a device loss rescued, with the lost device remembered. FX thread. */
+    private boolean isRescue(RecordingPipeline pipeline) {
+        return pipeline == rescuedTakePipeline && lostDevice != null;
     }
 
     /**
@@ -1068,6 +1717,34 @@ final class RecordCoordinator {
      * @param takeDirectory the take's directory under the project's {@code audio/takes}
      */
     static String takeSealedEarlyMessage(EarlySeal seal, int clipCount, Path takeDirectory) {
+        return "Recording stopped — " + sealedEarlyText(seal, clipCount, takeDirectory);
+    }
+
+    /**
+     * The ERROR toast and status text of a device-loss rescue whose take the
+     * capture thread sealed early — a stop requested first does not prevent
+     * an early seal: an exhaustion, or a write failure applying a block the
+     * rescue's own final sweep drained, completes it (PR #982 review round
+     * 2) — shown once by the turn that publishes the take: the device-loss
+     * lead ({@link #deviceDisconnectedText}), that saving the take ended
+     * early, and the cause and what was kept or left in the words of
+     * {@link #takeSealedEarlyMessage}. Such a take is not a rescued take on
+     * disk — its manifest reads {@code aborted}/{@code write-failure} or
+     * {@code disk-exhaustion}, not {@code device-loss} — so it is never
+     * registered and never called saved or preserved.
+     *
+     * @param device        the device whose loss requested the rescue
+     * @param seal          the early seal the capture thread signalled
+     * @param clipCount     the clips the rescue created from the take
+     * @param takeDirectory the take's directory under the project's {@code audio/takes}
+     */
+    static String rescuedTakeSealedEarlyMessage(DeviceId device, EarlySeal seal, int clipCount, Path takeDirectory) {
+        return deviceDisconnectedText(device) + ". Saving the take ended early — "
+                + sealedEarlyText(seal, clipCount, takeDirectory);
+    }
+
+    /** The cause of an early seal and what it kept or left: the body {@link #takeSealedEarlyMessage} and {@link #rescuedTakeSealedEarlyMessage} share. */
+    private static String sealedEarlyText(EarlySeal seal, int clipCount, Path takeDirectory) {
         String cause = switch (seal) {
             case EarlySeal.DiskExhausted disk when disk.freeSpaceUnknown() ->
                     "the free disk space could not be read";
@@ -1085,7 +1762,7 @@ final class RecordCoordinator {
         } else {
             kept = "no audio had been recorded before that";
         }
-        return "Recording stopped — " + cause + "; " + kept;
+        return cause + "; " + kept;
     }
 
     /**
@@ -1125,6 +1802,59 @@ final class RecordCoordinator {
             left = "no audio had been recorded";
         }
         return "Recording stopped — " + finishingFailedText(failure.failure()) + "; " + left;
+    }
+
+    /**
+     * What rebuilds the manifest of a take whose final write failed: the
+     * recovery scan ({@code TakeRecovery.scan}), from the sealed segments.
+     * {@code IncompleteTakeStore.registerRecoveredTakes} runs the scan;
+     * story 332 calls it on project open, and until then
+     * {@code registerRecoveredTakes} has no production caller. The
+     * single-failure reports ({@link #finalManifestNotWrittenMessage} and
+     * {@link #rescuedTakeManifestNotWrittenMessage}) say it only of a take
+     * that holds a clip: with no clip there is no segment to rebuild it
+     * from (story 327, Known limitations). The joined report of
+     * {@link #finalizationFailureReport} — an early seal or a lane failure
+     * beside the failed write — says it whatever the clip count, since a
+     * lane's {@code .part} may remain for the scan.
+     */
+    private static final String MANIFEST_REBUILT_BY_RECOVERY_TEXT = "take recovery rebuilds it from the segments";
+
+    /**
+     * The ERROR toast and status text of a Stop whose every lane sealed but
+     * whose final manifest write failed on every attempt
+     * ({@link FinalManifestFailure}; PR #982 review), shown once by the turn
+     * that publishes the take instead of the SUCCESS: the manifest could not
+     * be written, with the reason ({@link #manifestNotWrittenText}); that
+     * the audio recorded is kept, with the clips created, and that take
+     * recovery rebuilds the manifest ({@link #MANIFEST_REBUILT_BY_RECOVERY_TEXT});
+     * or, with no clip — no track recorded a frame, and the live seal
+     * deleted the empty tails — that no audio had been recorded, with no
+     * word of a rebuild. Never "Recording stopped — N clips created" alone:
+     * the manifest on disk still reads streaming, and the next scan treats
+     * the take as a crash candidate.
+     *
+     * @param failure   the failure of the final manifest write
+     * @param clipCount the clips the Stop created from the take
+     */
+    static String finalManifestNotWrittenMessage(FinalManifestFailure failure, int clipCount) {
+        if (clipCount == 0) {
+            return "Recording stopped — " + manifestNotWrittenText(failure) + "; no audio had been recorded";
+        }
+        return "Recording stopped — " + manifestNotWrittenText(failure) + "; the audio recorded is kept ("
+                + clipsCreatedText(clipCount) + "); " + MANIFEST_REBUILT_BY_RECOVERY_TEXT;
+    }
+
+    /**
+     * The cause of a {@link FinalManifestFailure}: that the take's manifest
+     * could not be written, with the reason of the innermost
+     * {@link IOException} when there is one in the cause chain, otherwise
+     * the throwable's type and, when it has one, its message.
+     */
+    private static String manifestNotWrittenText(FinalManifestFailure failure) {
+        IOException ioFailure = innermostIOException(failure.failure());
+        String reason = ioFailure != null ? ioReason(ioFailure) : shortDescription(failure.failure());
+        return "the take's manifest could not be written (" + reason + ")";
     }
 
     /** {@code 1 clip created}, {@code 2 clips created}. */
@@ -1262,7 +1992,7 @@ final class RecordCoordinator {
 
     /**
      * Test seam: {@code setup} runs on each take's pipeline once it is built
-     * and before its {@code prepare()} — so that a test can configure the
+     * and before its {@code prepare(long)} — so that a test can configure the
      * real pipeline through its public setters (its clock, say). FX thread,
      * before the take starts.
      */
@@ -1279,10 +2009,11 @@ final class RecordCoordinator {
     }
 
     /**
-     * Test seam: replaces how the outcome of a take's Stop seal is read (see
-     * {@link StopSealOutcome}). FX thread, before the take is stopped.
+     * Test seam: replaces how the outcome of a take's Stop or rescue seal is
+     * read (see {@link StopSealOutcomeReader}). FX thread, before the take
+     * is stopped.
      */
-    void setStopSealOutcomeForTest(StopSealOutcome outcome) {
+    void setStopSealOutcomeForTest(StopSealOutcomeReader outcome) {
         stopSealOutcome = Objects.requireNonNull(outcome, "outcome must not be null");
     }
 
@@ -1347,7 +2078,8 @@ final class RecordCoordinator {
      * take opens the device, then enters PREPARING and returns: the take
      * directory is allocated on the storage executor
      * ({@link #onTakeDirectoryAllocated}), the take's capture thread creates
-     * its files ({@code RecordingPipeline.prepare()}), and capture begins on
+     * its files ({@code RecordingPipeline.prepare(long)}, handed the
+     * capture-halt baseline the take's start read here), and capture begins on
      * the readiness turn ({@link #onTakeReady}). This handler does no storage
      * I/O and never waits for the take's capture thread (PR #978 review
      * 5391920205, F2; {@code javafx-application-design} §11); its one
@@ -1364,6 +2096,12 @@ final class RecordCoordinator {
         // or not everything could be removed. Refused before anything is
         // touched: no pipeline, no device, no MIDI recorder, and the
         // transport stays where it is.
+        if (state.get() == RecordState.DEVICE_LOST) {
+            // Story 327: Record is refused while the device is lost — the
+            // WARNING names the device and the ways out (refuseWhileDeviceLost).
+            refuseWhileDeviceLost("Record");
+            return;
+        }
         if (state.get() != RecordState.IDLE || isTakeBeingWritten()) {
             LOG.warning("Recording refused — the last take has not been finished yet");
             setRecordingStatus(RECORD_WHILE_WRITING_MESSAGE);
@@ -1448,6 +2186,10 @@ final class RecordCoordinator {
             return;
         }
 
+        // The start reads the engine's capture-halt baseline here, on FX and
+        // before sessionInputCheck opens the take's stream: a device-loss
+        // halt from now on, up to the final check of the take's
+        // beginCapture(), rejects the start.
         PendingStart start = new PendingStart(armedTracks.size(), List.copyOf(armedAudioTracks),
                 List.copyOf(armedMidiTracks), countIn);
         pendingStart = start;
@@ -1594,12 +2336,14 @@ final class RecordCoordinator {
      * the format the engine is streaming ({@code AudioEngine.getFormat()}),
      * never the project's, and with the take's live peak channels opened
      * and set as its peak sink ({@link #openCapturePeaks}) — and
-     * prepared ({@code RecordingPipeline.prepare()}, which touches no storage
-     * and waits for nothing: the take's capture thread creates the files),
+     * prepared ({@code RecordingPipeline.prepare(long)}, with the
+     * capture-halt baseline read when Record was pressed; it touches no
+     * storage and waits for nothing: the take's capture thread creates the
+     * files),
      * and the readiness turn ({@link #onTakeReady}) is posted once that
      * thread reports. A failure before the pipeline is prepared ends the
      * start with the ERROR of {@link #abortRecordingTake}, and the take
-     * directory is removed off the FX thread; a failure of {@code prepare()}
+     * directory is removed off the FX thread; a failure of {@code prepare(long)}
      * itself abandons the start ({@link #abandonStart}).
      *
      * <p>Failed allocation closes the opened stream immediately. Once a take directory
@@ -1665,9 +2409,11 @@ final class RecordCoordinator {
         start.pipeline = pipeline;
         CompletionStage<Void> readiness;
         try {
-            readiness = pipeline.prepare();
+            // The baseline read at the Record press, before the stream was
+            // opened: a halt of that stream since then rejects the start.
+            readiness = pipeline.prepare(start.captureHaltGenerationBaseline);
         } catch (RuntimeException e) {
-            // prepare() rolled itself back without waiting and rethrew.
+            // prepare(long) rolled itself back without waiting and rethrew.
             abandonStart(start, e);
             return;
         }
@@ -1753,7 +2499,7 @@ final class RecordCoordinator {
                 written = pipeline.termination();
             }
         } else {
-            written = requestTakeStop(pipeline);
+            written = requestTakeStop(pipeline, TakeManifest.SealedBy.STOP);
         }
         try {
             if (project.getTransport().getState() != TransportState.STOPPED) project.getTransport().stop();
@@ -1822,7 +2568,7 @@ final class RecordCoordinator {
 
     /**
      * Ends a start that failed after its take directory was allocated — its
-     * pipeline's {@code prepare()} threw, its readiness failed, or its
+     * pipeline's {@code prepare(long)} threw, its readiness failed, or its
      * {@code beginCapture()} threw — with its live peak channels closed, the
      * take's files handed back to
      * its capture thread ({@link #discardTake}), and the take directory, if
@@ -1853,7 +2599,7 @@ final class RecordCoordinator {
      * still preparing is cancelled ({@code RecordingPipeline.cancelStart()}:
      * the thread deletes the segment and manifest files it created for the
      * take, unless it had already ended on its own); one whose own rollback
-     * already ran — a failed {@code prepare()} or {@code beginCapture()},
+     * already ran — a failed {@code prepare(long)} or {@code beginCapture()},
      * which asked the thread the same — is followed through its
      * {@code termination()}. FX thread.
      */
@@ -1971,10 +2717,21 @@ final class RecordCoordinator {
         boolean warningPublished;
         final List<com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.Route> routeSnapshots;
         final com.benesquivelmusic.daw.core.audio.StreamingProvision provision;
+        /**
+         * The engine's capture-halt generation when Record was pressed, read
+         * before the take's stream is opened and handed to the take's
+         * {@code RecordingPipeline.prepare(long)}: a device-loss halt from
+         * the Record press up to the final check of the take's
+         * {@code beginCapture()} — a halt of this take's own stream
+         * included — rejects the start (story 327, PR #982 review
+         * r4297840180).
+         */
+        final long captureHaltGenerationBaseline;
         Throwable failure;
 
         PendingStart(int trackCount, List<Track> armedAudioTracks, List<Track> armedMidiTracks,
                      CountInMode countIn) {
+            this.captureHaltGenerationBaseline = audioEngine.getCaptureHaltGeneration();
             this.trackCount = trackCount;
             this.armedAudioTracks = armedAudioTracks;
             this.routeSnapshots = com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.snapshot(armedAudioTracks);

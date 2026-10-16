@@ -5,10 +5,10 @@ package com.benesquivelmusic.daw.app.ui;
  *
  * <p>Distinct from {@link com.benesquivelmusic.daw.core.transport.TransportState}
  * (which is about play/record/stop) and from the audio stream's open/closed
- * flag — this captures the engine's overall availability so the transport bar
- * can show a "Reconnecting…" indicator while the audio device is gone, and so
- * tests can deterministically assert which lifecycle state the controller is
- * in after a disconnect.</p>
+ * flag — this captures the engine's overall availability so the transport
+ * status can show the loss while the audio device is gone, and so tests can
+ * deterministically assert which lifecycle state the controller is in after
+ * a disconnect.</p>
  */
 public enum EngineState {
 
@@ -23,10 +23,21 @@ public enum EngineState {
 
     /**
      * The active audio device disappeared mid-session (USB unplug, driver
-     * crash, JACK server shutdown). The render thread is halted, the
-     * in-flight recording take has been persisted, and the controller is
-     * waiting for a matching {@code DeviceArrived} event so it can
-     * automatically reopen the stream and transition to {@link #STOPPED}.
+     * crash, JACK server shutdown). The render thread is halted, an
+     * in-flight take is rescued on disk by the record coordinator (story
+     * 327 — this state reaches it through {@code engineStateEvents()}, as
+     * an {@link EngineStateChange} carrying the lost device), and the
+     * controller is waiting for a matching {@code DeviceArrived} event so
+     * it can automatically reopen the stream, park it and only then
+     * transition to {@link #STOPPED}. Any other stream opening ends this
+     * state too (story 327): a loss is over once a stream is open again.
+     *
+     * <p>Publisher contract (story 327): a publisher of this state closes
+     * the stream first ({@code AudioEngine.stopAudioOutput()}, then
+     * {@code stop()}), because the record coordinator's stop tail
+     * ({@code TransportController.finishDeviceLossStop}) treats any stream
+     * it finds open on the loss turn as a post-loss reopen and leaves it
+     * alone.</p>
      *
      * <p>While the engine is in this state, the rest of the application
      * remains fully responsive — only audio I/O is suspended.</p>

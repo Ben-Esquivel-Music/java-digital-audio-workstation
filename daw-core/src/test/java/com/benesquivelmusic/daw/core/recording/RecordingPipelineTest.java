@@ -101,7 +101,7 @@ class RecordingPipelineTest {
                 audioEngine, transport, format, tempDir, List.of(track));
         startRecording(pipeline);
 
-        assertThatThrownBy(pipeline::prepare)
+        assertThatThrownBy(() -> pipeline.prepare(audioEngine.getCaptureHaltGeneration()))
                 .isInstanceOf(IllegalStateException.class);
     }
 

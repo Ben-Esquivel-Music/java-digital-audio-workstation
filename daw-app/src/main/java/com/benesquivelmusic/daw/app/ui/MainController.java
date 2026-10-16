@@ -205,6 +205,18 @@ public final class MainController {
     // mixer's input-meter column and the arrangement-view clip indicator.
     private final InputLevelMonitorRegistry inputLevelMonitorRegistry = new InputLevelMonitorRegistry();
     private DefaultAudioEngineController audioEngineController;
+    /**
+     * Story 327 — the one subscription to
+     * {@code audioEngineController.engineStateEvents()}, feeding the current
+     * {@link #transportController}'s {@link TransportController#onEngineState}
+     * on the FX thread ({@link EngineStateBridge}) with each
+     * {@link EngineStateChange} as published — the state and the device the
+     * controller watched at that transition; the bridge looks nothing up at
+     * delivery. Built and subscribed in {@link #initialize()} right after
+     * the controller is built, over the {@link #dispatcher()} of that
+     * moment; cancelled in the window teardown.
+     */
+    private EngineStateBridge engineStateBridge;
     /** Per-track CPU budget enforcer wired into the engine (story 129 UI). */
     private com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer cpuBudgetEnforcer;
     /** UI binding that subscribes to enforcer events and surfaces badges/notifications. */
@@ -959,6 +971,25 @@ public final class MainController {
         // taps the raw input signal per armed track before any processing.
         audioEngine.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
+        // Story 327 (Recording Reliability book §6.3): the engine
+        // controller's messages — a lost device, a failed reopen, a backend
+        // fallback — ride a toast-backed sink, the same shape as the
+        // track-budget sink below; the no-op sink is never a construction
+        // default. Story 339 owns the app-wide notification injection this
+        // sink stands in for. Messages come from the device-event and format
+        // worker threads, so each is posted to the FX thread, and the bar is
+        // read THERE: postFx always ends in a Platform.runLater (FxDispatcher:
+        // unconditional, never run inline), and this is initialize() on the
+        // FX thread, so no posted runnable can run before initialize() has
+        // returned — by which time initializeNotificationBar() below has
+        // built the bar. A null check on the calling thread would instead
+        // have dropped the startup apply's messages, which can arrive before
+        // the bar exists.
+        NotificationManager engineNotifications = message -> postFx(() -> {
+            if (notificationBar != null) {
+                notificationBar.show(NotificationLevel.WARNING, message);
+            }
+        });
         audioEngineController = new DefaultAudioEngineController(audioEngine, () ->
                 postFx(() -> {
                     applyProjectInfoLabels();
@@ -976,7 +1007,18 @@ public final class MainController {
                     // originated format/buffer change), so the refresh covers every
                     // path that mutates the engine format.
                     engineBinder.refreshPerformanceMonitor();
-                }));
+                }), engineNotifications);
+        // Story 327 — the DEVICE_LOST / reconnect bridge (Recording
+        // Reliability book §6.5): subscribed once, here, before the default
+        // provision below can open the first stream — the controller's
+        // constructor publishes no state, so nothing is missed. Every
+        // EngineStateChange — state plus the device watched at that
+        // transition, captured by the controller — is posted as-is to
+        // whatever transport controller is current when it is delivered;
+        // the subscriber never blocks (setEngineState offers with a drop
+        // handler). Cancelled in the window teardown below.
+        engineStateBridge = new EngineStateBridge(() -> transportController, dispatcher());
+        engineStateBridge.subscribeTo(audioEngineController);
         // Story 316: install the blank-name default streaming provision
         // (PortAudio first, then Java Sound as the final attempted rung) so
         // the engine has an open ladder before the persisted settings refine
@@ -1217,6 +1259,12 @@ public final class MainController {
                         if (trackControlWiring != null) {
                             trackControlWiring.dispose();
                             trackControlWiring = null;
+                        }
+                    }, () -> {
+                        // Story 327 — end the DEVICE_LOST / reconnect bridge
+                        // before the engine is torn down.
+                        if (engineStateBridge != null) {
+                            engineStateBridge.cancel();
                         }
                     }, () -> {
                         // Story 318 — detach every meter consumer (and the

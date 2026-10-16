@@ -308,7 +308,7 @@ class EarlySealSignalContractTest {
     @Test
     void aPreparedTakeThatSealsEarlyCannotBeginCaptureAndPreservesItsPartialPublication() throws Exception {
         RecordingPipeline pipeline = newPipeline(track);
-        pipeline.prepare().toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS);
         assertThat(pipeline.hasViableCaptureService()).isTrue();
         CaptureFlushService service = pipeline.getCaptureFlushService();
         IllegalStateException fault = new IllegalStateException("prepared drain-loop failure");
