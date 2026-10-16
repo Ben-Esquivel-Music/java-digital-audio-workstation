@@ -58,11 +58,12 @@ import java.util.logging.Logger;
  * <p>Capture state is the recording pipeline's, driven from the FX thread —
  * with one deliberate exception (story 327, PR #982 review): on a device
  * loss, {@link #onDeviceRemoved(DeviceId)} ends capture on the device-event
- * thread through {@link AudioEngine#haltRecordingCapture()} (volatile
- * stores: every installed recording callback closes its ring's producer
- * gate and both callback slots are emptied) before it closes the lost
- * stream, so that no stream reopened before the loss's FX turn can publish
- * into the take being rescued. The seal, the transport stop, the flags and
+ * thread through {@link AudioEngine#haltRecordingCapture()} (lock-free: the
+ * engine's capture-halt generation is advanced atomically, then every
+ * installed recording callback closes its ring's producer gate and both
+ * callback slots are emptied, with volatile stores) before it closes the
+ * lost stream, so that no stream reopened before the loss's FX turn can
+ * publish into the take being rescued. The seal, the transport stop, the flags and
  * the UI transitions stay on FX (Recording Reliability book §5.5, §6.1).</p>
  */
 final class DefaultAudioEngineController implements AudioEngineController {
@@ -1314,9 +1315,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
      *
      * <p>Story 327 (PR #982 review): for the device of an open stream, the
      * first step — before {@link AudioEngine#stopAudioOutput()} closes the
-     * stream — is {@link AudioEngine#haltRecordingCapture()}: each
+     * stream — is {@link AudioEngine#haltRecordingCapture()}: the engine's
+     * capture-halt generation is advanced (an atomic update: the
+     * device-loss fence of a capture start still under way), then each
      * installed recording callback closes its ring's producer gate and both
-     * callback slots are emptied, all volatile stores, on this thread. This
+     * callback slots are emptied (volatile stores), all lock-free, on this
+     * thread. This
      * is the one place the device-event thread touches capture state
      * (Recording Reliability book §6.1): the engine's {@code stop()} leaves
      * the recording callback installed, the pipeline's own stop — which
@@ -1352,8 +1356,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // stop() leaves the recording callback installed and the pipeline's
         // own stop runs later, on the FX thread; a pump started in between
         // would have published the reopened stream into the rescued take.
-        // Volatile stores only (each callback closes its ring's gate, then
-        // both callback slots are emptied); a no-op while nothing records.
+        // Lock-free: an atomic advance of the capture-halt generation (the
+        // device-loss fence of a capture start still under way), then
+        // volatile stores (each callback closes its ring's gate, then both
+        // callback slots are emptied); while nothing records, only the
+        // advance and the stores of the two empty slots.
         try {
             audioEngine.haltRecordingCapture();
         } catch (RuntimeException e) {

@@ -27,7 +27,7 @@ import java.util.logging.Logger;
  * lanes, and the loop-take stack built lap by lap.
  *
  * <p><strong>Threads.</strong> Constructed, with its unstarted lane-0
- * session, on the caller thread by {@code RecordingPipeline.prepare()} (which
+ * session, on the caller thread by {@code RecordingPipeline.prepare(long)} (which
  * also reads the {@link Track} once to take the snapshot — the flush thread
  * never touches a {@code Track}). Everything else runs on the
  * {@code capture-flush} thread, which is the only thread that touches the

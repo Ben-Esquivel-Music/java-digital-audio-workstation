@@ -1374,7 +1374,7 @@ class TransportControllerTest {
         // STOPPED: a count-in take before its deferred transport.record(), or
         // an internal caller stopping the transport under a running pipeline.
         // (Before story 323 a throw inside RecordingPipeline.start() was a
-        // third way in — its start is now all-or-nothing, prepare() then
+        // third way in — its start is now all-or-nothing, prepare(long) then
         // beginCapture(), and a failed start is abandoned on its allocation
         // turn or its readiness turn.) This test reproduces exactly that end state — an
         // active pipeline over a stopped transport — and asserts Stop finalizes

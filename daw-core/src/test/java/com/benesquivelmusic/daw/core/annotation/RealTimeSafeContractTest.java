@@ -123,7 +123,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       installs a callback passes a {@code CaptureCallback} constructed in
  *       place, and no class nested in {@code RecordingPipeline} implements
  *       the callback interface. The two instruction orders the producer
- *       gate rests on are pinned. The callback-side methods carry
+ *       gate rests on are pinned, and so are those of the device-loss fence
+ *       of a capture start ({@code AudioEngine.haltRecordingCapture} against
+ *       {@code RecordingPipeline.beginCapture}), with the volatile fields
+ *       each rests on. The callback-side methods carry
  *       {@code @RealTimeSafe}.</li>
  * </ol>
  *
@@ -1885,6 +1888,193 @@ class RealTimeSafeContractTest {
                     .as("CaptureRing#%s is a word of one take's ring, not a static", word.getKey())
                     .isFalse();
         }
+    }
+
+    private static final String ATOMIC_LONG = "java/util/concurrent/atomic/AtomicLong";
+    private static final String CAPTURE_START_GATE = CAPTURE_CALLBACK + "$StartGate";
+    private static final String CAPTURE_HALT_CHECK = "requireNoCaptureHaltSinceBaseline";
+
+    /**
+     * The device-loss fence of a capture start (story 327, PR #982 review
+     * r4297840180; the argument is on {@code AudioEngine.haltRecordingCapture})
+     * is a Dekker pair: the halt advances the capture-halt generation and
+     * then loads the two callback slots; the start stores both slots and
+     * then reads the generation, before it opens the start gate. Two moves
+     * that break these orders leave every behavioural fence test green, and
+     * only this pin fails: the halt's advance moved below its loads of the
+     * two slots but kept above its {@code onCaptureHalted} calls — the
+     * advance and the loads are adjacent, and no test can hold the halting
+     * thread between them while a start runs; and the final check moved
+     * below the store that opens the start gate — the tests' halts all come
+     * before that check, and the rejected start's rollback closes the gate
+     * all the same. The start's other orders are caught behaviourally too
+     * ({@code CaptureStartOverlappingALossHaltIsRejectedTest}): the capture
+     * activation runs between the installs and the final check, so the
+     * final check moved above an install fails both of its tests that halt
+     * from the capture activation, and an install moved past the final
+     * check fails the one whose premise reads that install at the halt.
+     *
+     * <ul>
+     *   <li>{@code AudioEngine.haltRecordingCapture}: exactly the advance
+     *       ({@code AtomicLong.incrementAndGet} on {@code captureHaltGeneration}),
+     *       the loads of {@code recordingCallback} and
+     *       {@code additionalRecordingCallbacks}, the callbacks told, then the
+     *       two stores.</li>
+     *   <li>{@code AudioEngine.getCaptureHaltGeneration}: one
+     *       {@code AtomicLong.get} of that same field.</li>
+     *   <li>{@code RecordingPipeline.beginCapture(Runnable)}: two calls of
+     *       the check {@code requireNoCaptureHaltSinceBaseline}, the first
+     *       before both installs, the one {@code AudioEngine.start} call and
+     *       every call of the {@code Transport}; the
+     *       installing {@code setRecordingCallback} (its argument a
+     *       {@code CaptureCallback} constructed in place) and the
+     *       {@code setAdditionalRecordingCallbacks} call both precede the
+     *       last check, which precedes the one store of
+     *       {@code StartGate.active}; and the check reads the generation
+     *       through {@code AudioEngine.getCaptureHaltGeneration}.</li>
+     * </ul>
+     */
+    @Test
+    void theDeviceLossFenceKeepsTheInstructionOrdersItsDekkerPairRestsOn() throws Exception {
+        Map<String, ClassModel> models = new HashMap<>();
+        ClassModel engine = modelOf(AUDIO_ENGINE, models);
+        assertThat(fieldAndInvokeSequence(codeOfTheOneMethodNamed(engine, "haltRecordingCapture")))
+                .as("AudioEngine#haltRecordingCapture advances the generation before it loads either callback "
+                        + "slot, tells the callbacks it loaded, and only then empties both slots")
+                .containsExactly("GETFIELD captureHaltGeneration", ATOMIC_LONG + "#incrementAndGet",
+                        "GETFIELD recordingCallback", "GETFIELD additionalRecordingCallbacks",
+                        RECORDING_CALLBACK + "#onCaptureHalted", RECORDING_CALLBACK + "#onCaptureHalted",
+                        "PUTFIELD recordingCallback", "PUTFIELD additionalRecordingCallbacks");
+        assertThat(fieldAndInvokeSequence(codeOfTheOneMethodNamed(engine, "getCaptureHaltGeneration")))
+                .as("AudioEngine#getCaptureHaltGeneration reads the field the halt advances")
+                .containsExactly("GETFIELD captureHaltGeneration", ATOMIC_LONG + "#get");
+
+        ClassModel pipeline = modelOf(RECORDING_PIPELINE, models);
+        assertThat(fieldAndInvokeSequence(codeOfTheOneMethodNamed(pipeline, CAPTURE_HALT_CHECK)))
+                .as("RecordingPipeline#%s compares the engine's generation now with the take's baseline",
+                        CAPTURE_HALT_CHECK)
+                .startsWith("GETFIELD audioEngine", AUDIO_ENGINE + "#getCaptureHaltGeneration",
+                        "GETFIELD preparedCaptureHaltGeneration");
+
+        MethodModel beginCapture = findMethod(pipeline, "beginCapture", "(Ljava/lang/Runnable;)V");
+        assertThat(beginCapture).as("RecordingPipeline#beginCapture(Runnable) is declared").isNotNull();
+        CodeAttribute code = codeOf(beginCapture);
+        assertThat(code).as("RecordingPipeline#beginCapture(Runnable) has code").isNotNull();
+        List<Integer> installs = new ArrayList<>();
+        List<Integer> additionalInstalls = new ArrayList<>();
+        List<Integer> checks = new ArrayList<>();
+        List<Integer> gateOpenings = new ArrayList<>();
+        List<Integer> engineStarts = new ArrayList<>();
+        List<Integer> transportCalls = new ArrayList<>();
+        int index = 0;
+        Instruction previous = null;
+        for (var element : code) {
+            if (element instanceof InvokeInstruction invoke) {
+                String owner = invoke.owner().asInternalName();
+                String name = invoke.name().stringValue();
+                if (owner.equals(AUDIO_ENGINE) && name.equals("setRecordingCallback")
+                        && previous instanceof InvokeInstruction constructed
+                        && constructed.owner().asInternalName().equals(CAPTURE_CALLBACK)
+                        && constructed.name().stringValue().equals("<init>")) {
+                    installs.add(index);
+                } else if (owner.equals(AUDIO_ENGINE) && name.equals("setAdditionalRecordingCallbacks")) {
+                    additionalInstalls.add(index);
+                } else if (owner.equals(AUDIO_ENGINE) && name.equals("start")) {
+                    engineStarts.add(index);
+                } else if (owner.equals(TRANSPORT)) {
+                    transportCalls.add(index);
+                } else if (owner.equals(RECORDING_PIPELINE) && name.equals(CAPTURE_HALT_CHECK)) {
+                    checks.add(index);
+                }
+            } else if (element instanceof FieldInstruction field && field.opcode() == Opcode.PUTFIELD
+                    && field.owner().asInternalName().equals(CAPTURE_START_GATE)
+                    && field.name().stringValue().equals("active")) {
+                gateOpenings.add(index);
+            }
+            if (element instanceof Instruction instruction) {
+                previous = instruction;
+                index++;
+            }
+        }
+        assertThat(installs).as("beginCapture(Runnable) installs the take's CaptureCallback once").hasSize(1);
+        assertThat(additionalInstalls).as("beginCapture(Runnable) installs the sibling callbacks once").hasSize(1);
+        assertThat(checks).as("beginCapture(Runnable) checks for a halt twice: before it installs a callback, "
+                + "starts the engine or calls the transport, and after both installations").hasSize(2);
+        assertThat(gateOpenings).as("beginCapture(Runnable) opens the start gate once").hasSize(1);
+        assertThat(engineStarts).as("beginCapture(Runnable) starts the engine once").hasSize(1);
+        assertThat(transportCalls).as("beginCapture(Runnable) calls the transport").isNotEmpty();
+        int firstCheck = checks.getFirst();
+        assertThat(firstCheck).as("the first halt check precedes the installation of the recording callback")
+                .isLessThan(installs.getFirst());
+        assertThat(firstCheck).as("the first halt check precedes the installation of the sibling callbacks")
+                .isLessThan(additionalInstalls.getFirst());
+        assertThat(firstCheck).as("the first halt check precedes the engine's start")
+                .isLessThan(engineStarts.getFirst());
+        assertThat(firstCheck).as("the first halt check precedes every call of the transport")
+                .isLessThan(transportCalls.getFirst());
+        int lastCheck = checks.getLast();
+        assertThat(installs.getFirst()).as("the recording callback is installed before the last halt check")
+                .isLessThan(lastCheck);
+        assertThat(additionalInstalls.getFirst()).as("the sibling callbacks are installed before the last halt check")
+                .isLessThan(lastCheck);
+        assertThat(lastCheck).as("the last halt check precedes the opening of the start gate")
+                .isLessThan(gateOpenings.getFirst());
+    }
+
+    /**
+     * The fence's orders mean something only between volatile accesses (and
+     * the atomic's update): with a callback slot a plain field, the halt's
+     * load and the start's store need not be ordered against the
+     * generation, and no order pin or behavioural test notices. So
+     * {@code AudioEngine}'s field table is pinned: {@code recordingCallback}
+     * and {@code additionalRecordingCallbacks} are each declared once, of the
+     * callback type (and its array), volatile and not static; the generation
+     * {@code captureHaltGeneration} is a final, non-static
+     * {@code AtomicLong}.
+     */
+    @Test
+    void theCallbackSlotsTheDeviceLossFenceReadsAreVolatileAndItsGenerationIsAnAtomicLong() throws Exception {
+        ClassModel engine = modelOf(AUDIO_ENGINE, new HashMap<>());
+        Map<String, String> slots = Map.of(
+                "recordingCallback", "L" + RECORDING_CALLBACK + ";",
+                "additionalRecordingCallbacks", "[L" + RECORDING_CALLBACK + ";");
+        for (Map.Entry<String, String> slot : slots.entrySet()) {
+            var field = theOneFieldNamed(engine, slot.getKey());
+            assertThat(field.fieldType().stringValue()).as("AudioEngine#%s has the slot's type", slot.getKey())
+                    .isEqualTo(slot.getValue());
+            assertThat(field.flags().has(AccessFlag.VOLATILE))
+                    .as("AudioEngine#%s must be volatile: the device-loss fence is a store-then-load handshake",
+                            slot.getKey())
+                    .isTrue();
+            assertThat(field.flags().has(AccessFlag.STATIC)).as("AudioEngine#%s is per engine", slot.getKey())
+                    .isFalse();
+        }
+        var generation = theOneFieldNamed(engine, "captureHaltGeneration");
+        assertThat(generation.fieldType().stringValue()).as("AudioEngine#captureHaltGeneration is an AtomicLong")
+                .isEqualTo("L" + ATOMIC_LONG + ";");
+        assertThat(generation.flags().has(AccessFlag.FINAL)).as("AudioEngine#captureHaltGeneration is final")
+                .isTrue();
+        assertThat(generation.flags().has(AccessFlag.STATIC)).as("AudioEngine#captureHaltGeneration is per engine")
+                .isFalse();
+    }
+
+    private static java.lang.classfile.FieldModel theOneFieldNamed(ClassModel model, String name) {
+        var declared = model.fields().stream().filter(field -> field.fieldName().stringValue().equals(name)).toList();
+        assertThat(declared).as("%s declares %s once", model.thisClass().asInternalName(), name).hasSize(1);
+        return declared.getFirst();
+    }
+
+    /** The field accesses ({@code OPCODE name}) and calls ({@code owner#name}) of {@code code}, in order. */
+    private static List<String> fieldAndInvokeSequence(CodeAttribute code) {
+        List<String> sequence = new ArrayList<>();
+        for (var element : code) {
+            if (element instanceof FieldInstruction field) {
+                sequence.add(field.opcode() + " " + field.name().stringValue());
+            } else if (element instanceof InvokeInstruction invoke) {
+                sequence.add(invoke.owner().asInternalName() + "#" + invoke.name().stringValue());
+            }
+        }
+        return sequence;
     }
 
     private static CodeAttribute codeOfTheOneMethodNamed(ClassModel model, String name) {

@@ -540,7 +540,7 @@ final class TransportController implements TransportIntentHandler {
      * caller that stopped the transport underneath a running pipeline (count-in
      * does not defer {@code Transport.record()} today; story 328 owns
      * count-in). (Before story 323 a throw inside the pipeline's start was a
-     * second way in; its start is now all-or-nothing — {@code prepare()},
+     * second way in; its start is now all-or-nothing — {@code prepare(long)},
      * then {@code beginCapture()} — and a failed start is abandoned
      * ({@link #abandonStart}), so no active pipeline is left behind.)
      * Returning early on that

@@ -591,7 +591,7 @@ class StopFenceTailIntegrityContractTest {
         // The same pipeline prepares its next take: a new ring, its gate
         // open. Whether that take's files could be created next to the
         // first take's does not matter here; the readiness is only waited out.
-        PipelineLifecycleTestSupport.failureWithinTheGuard(pipeline.prepare(), "the next take's readiness");
+        PipelineLifecycleTestSupport.failureWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the next take's readiness");
         CaptureRing nextRing = pipeline.getCaptureRing();
         assertThat(nextRing).isNotSameAs(earlierRing);
         assertThat(nextRing.isProducerClosed()).isFalse();

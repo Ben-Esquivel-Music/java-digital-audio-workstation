@@ -352,7 +352,24 @@ final class RecordCoordinator {
      *   <li>PREPARING: the start is cancelled as Stop cancels it
      *       ({@link #cancelPendingStart}) and ends ABORTED with an ERROR
      *       naming the device — book §3.2 has no arrow from PREPARING to
-     *       DEVICE_LOST, and no take had begun.</li>
+     *       DEVICE_LOST, and no take had begun. A start whose readiness turn
+     *       ran before this one is no longer PREPARING. Its
+     *       {@code PendingStart} read the engine's capture-halt baseline
+     *       when Record was pressed, before the take's stream was opened:
+     *       if the halt began after that read and before the final capture
+     *       check of the take's {@code RecordingPipeline.beginCapture()},
+     *       the pipeline's device-loss fence rejected the start (PR #982
+     *       review r4297840180), {@link #abandonStart} reported it as a
+     *       failed start — the audio device was lost while the take was
+     *       starting — and this turn finds ABORTED or IDLE and changes
+     *       nothing (the last case below); if after the final check, the
+     *       halt closed the take's producer gates and the take is
+     *       RECORDING, rescued as the first case above describes. A halt
+     *       that began before the Record press is not this take's to
+     *       reject: its start goes on, and this turn cancels it while it is
+     *       PREPARING, or rescues it once it is RECORDING — the pipeline's
+     *       own stop then closing the producer gates, which that halt never
+     *       read.</li>
      *   <li>DEVICE_LOST: the device was lost again — the stream the lost
      *       device's return (or an open the controller did not drive)
      *       reopened is closed once more. The take was sealed at the first
@@ -371,9 +388,10 @@ final class RecordCoordinator {
      *       ({@link #deviceLostStatus}), and {@link #lostDevice} keeps
      *       the device whose loss sealed the take, which the rescue's
      *       messages and registration name.</li>
-     *   <li>Anything else — IDLE, or the FINALIZING or ABORTED of an earlier
-     *       take — changes nothing here: the controller's own notification
-     *       covers the playback loss.</li>
+     *   <li>Anything else — IDLE, the FINALIZING or ABORTED of an earlier
+     *       take, or the ABORTED or IDLE that a start the device-loss fence
+     *       rejected left behind — changes nothing here: the controller's own
+     *       notification covers the playback loss.</li>
      * </ul>
      * A {@linkplain #retire() retired} coordinator ignores it: its take was
      * handed to {@link #reportTakeOfAReplacedProject}. Nothing here touches
@@ -476,7 +494,7 @@ final class RecordCoordinator {
      * controller's own predicate,
      * {@link DefaultAudioEngineController#sameDevice} — the transport is
      * seeked to the rescued take's start anchor — the beat the pipeline
-     * read at {@code prepare()},
+     * read at {@code prepare(long)},
      * {@code RecordingPipeline.getRecordingStartBeat()}, which outlives the
      * take — and the user is told it reconnected, that the tracks are
      * still armed and that Record continues. When it is another device
@@ -855,7 +873,7 @@ final class RecordCoordinator {
     private Executor storageExecutor = RecordCoordinator::onAVirtualThread;
     /**
      * What is done to a take's pipeline after it is built and before its
-     * {@code prepare()} — nothing in production; replaced only by
+     * {@code prepare(long)} — nothing in production; replaced only by
      * {@link #setPipelineSetupForTest}.
      */
     private Consumer<RecordingPipeline> pipelineSetup = _ -> { };
@@ -1974,7 +1992,7 @@ final class RecordCoordinator {
 
     /**
      * Test seam: {@code setup} runs on each take's pipeline once it is built
-     * and before its {@code prepare()} — so that a test can configure the
+     * and before its {@code prepare(long)} — so that a test can configure the
      * real pipeline through its public setters (its clock, say). FX thread,
      * before the take starts.
      */
@@ -2060,7 +2078,8 @@ final class RecordCoordinator {
      * take opens the device, then enters PREPARING and returns: the take
      * directory is allocated on the storage executor
      * ({@link #onTakeDirectoryAllocated}), the take's capture thread creates
-     * its files ({@code RecordingPipeline.prepare()}), and capture begins on
+     * its files ({@code RecordingPipeline.prepare(long)}, handed the
+     * capture-halt baseline the take's start read here), and capture begins on
      * the readiness turn ({@link #onTakeReady}). This handler does no storage
      * I/O and never waits for the take's capture thread (PR #978 review
      * 5391920205, F2; {@code javafx-application-design} §11); its one
@@ -2167,6 +2186,10 @@ final class RecordCoordinator {
             return;
         }
 
+        // The start reads the engine's capture-halt baseline here, on FX and
+        // before sessionInputCheck opens the take's stream: a device-loss
+        // halt from now on, up to the final check of the take's
+        // beginCapture(), rejects the start.
         PendingStart start = new PendingStart(armedTracks.size(), List.copyOf(armedAudioTracks),
                 List.copyOf(armedMidiTracks), countIn);
         pendingStart = start;
@@ -2313,12 +2336,14 @@ final class RecordCoordinator {
      * the format the engine is streaming ({@code AudioEngine.getFormat()}),
      * never the project's, and with the take's live peak channels opened
      * and set as its peak sink ({@link #openCapturePeaks}) — and
-     * prepared ({@code RecordingPipeline.prepare()}, which touches no storage
-     * and waits for nothing: the take's capture thread creates the files),
+     * prepared ({@code RecordingPipeline.prepare(long)}, with the
+     * capture-halt baseline read when Record was pressed; it touches no
+     * storage and waits for nothing: the take's capture thread creates the
+     * files),
      * and the readiness turn ({@link #onTakeReady}) is posted once that
      * thread reports. A failure before the pipeline is prepared ends the
      * start with the ERROR of {@link #abortRecordingTake}, and the take
-     * directory is removed off the FX thread; a failure of {@code prepare()}
+     * directory is removed off the FX thread; a failure of {@code prepare(long)}
      * itself abandons the start ({@link #abandonStart}).
      *
      * <p>Failed allocation closes the opened stream immediately. Once a take directory
@@ -2384,9 +2409,11 @@ final class RecordCoordinator {
         start.pipeline = pipeline;
         CompletionStage<Void> readiness;
         try {
-            readiness = pipeline.prepare();
+            // The baseline read at the Record press, before the stream was
+            // opened: a halt of that stream since then rejects the start.
+            readiness = pipeline.prepare(start.captureHaltGenerationBaseline);
         } catch (RuntimeException e) {
-            // prepare() rolled itself back without waiting and rethrew.
+            // prepare(long) rolled itself back without waiting and rethrew.
             abandonStart(start, e);
             return;
         }
@@ -2541,7 +2568,7 @@ final class RecordCoordinator {
 
     /**
      * Ends a start that failed after its take directory was allocated — its
-     * pipeline's {@code prepare()} threw, its readiness failed, or its
+     * pipeline's {@code prepare(long)} threw, its readiness failed, or its
      * {@code beginCapture()} threw — with its live peak channels closed, the
      * take's files handed back to
      * its capture thread ({@link #discardTake}), and the take directory, if
@@ -2572,7 +2599,7 @@ final class RecordCoordinator {
      * still preparing is cancelled ({@code RecordingPipeline.cancelStart()}:
      * the thread deletes the segment and manifest files it created for the
      * take, unless it had already ended on its own); one whose own rollback
-     * already ran — a failed {@code prepare()} or {@code beginCapture()},
+     * already ran — a failed {@code prepare(long)} or {@code beginCapture()},
      * which asked the thread the same — is followed through its
      * {@code termination()}. FX thread.
      */
@@ -2690,10 +2717,21 @@ final class RecordCoordinator {
         boolean warningPublished;
         final List<com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.Route> routeSnapshots;
         final com.benesquivelmusic.daw.core.audio.StreamingProvision provision;
+        /**
+         * The engine's capture-halt generation when Record was pressed, read
+         * before the take's stream is opened and handed to the take's
+         * {@code RecordingPipeline.prepare(long)}: a device-loss halt from
+         * the Record press up to the final check of the take's
+         * {@code beginCapture()} — a halt of this take's own stream
+         * included — rejects the start (story 327, PR #982 review
+         * r4297840180).
+         */
+        final long captureHaltGenerationBaseline;
         Throwable failure;
 
         PendingStart(int trackCount, List<Track> armedAudioTracks, List<Track> armedMidiTracks,
                      CountInMode countIn) {
+            this.captureHaltGenerationBaseline = audioEngine.getCaptureHaltGeneration();
             this.trackCount = trackCount;
             this.armedAudioTracks = armedAudioTracks;
             this.routeSnapshots = com.benesquivelmusic.daw.core.audio.CaptureRoutingPlan.snapshot(armedAudioTracks);

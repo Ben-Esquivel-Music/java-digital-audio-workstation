@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The readiness gate of a record start (PR #978 review 5391920205 F2;
- * Recording Reliability book §3.2, §5.1, §5.2): {@link RecordingPipeline#prepare()}
+ * Recording Reliability book §3.2, §5.1, §5.2): {@link RecordingPipeline#prepare(long)}
  * touches no storage and waits for nothing — the {@code capture-flush}
  * thread creates the take's files as its first act — and capture begins
  * ({@link RecordingPipeline#beginCapture()}) only once the take's readiness
@@ -143,10 +143,10 @@ class RecordStartReadinessGateContractTest {
         };
     }
 
-    /** Runs {@code prepare()} under the guard and returns its readiness. */
+    /** Runs {@code prepare(long)} under the guard and returns its readiness. */
     private CompletionStage<Void> prepareWithinTheGuard() throws InterruptedException {
         AtomicReference<CompletionStage<Void>> readiness = new AtomicReference<>();
-        assertThat(outcomeWithinTheGuard("prepare", () -> readiness.set(pipeline.prepare())))
+        assertThat(outcomeWithinTheGuard("prepare", () -> readiness.set(pipeline.prepare(engine.getCaptureHaltGeneration()))))
                 .as("prepare returns at once, and throws nothing").isNull();
         return readiness.get();
     }
@@ -190,7 +190,7 @@ class RecordStartReadinessGateContractTest {
     }
 
     /**
-     * A {@code prepare()} refused because the previous take's flush thread
+     * A {@code prepare(long)} refused because the previous take's flush thread
      * has not terminated: it returns at once with an
      * {@link IllegalStateException} that points at {@code termination()},
      * and touches nothing — the pipeline is not preparing, its flush service,
@@ -201,7 +201,7 @@ class RecordStartReadinessGateContractTest {
         CaptureRing previousRing = pipeline.getCaptureRing();
         List<Path> entriesBefore = takeDirectoryEntries();
 
-        Throwable refused = outcomeWithinTheGuard("restart", pipeline::prepare);
+        Throwable refused = outcomeWithinTheGuard("restart", () -> pipeline.prepare(engine.getCaptureHaltGeneration()));
 
         assertThat(refused).as("the restart is refused at once while the previous take's flush thread runs")
                 .isInstanceOf(IllegalStateException.class)
@@ -368,7 +368,7 @@ class RecordStartReadinessGateContractTest {
     @Test
     void aFailedBeginCaptureRollsBackWithoutWaitingAndTheFlushThreadDeletesTheFiles() throws Exception {
         pipeline = newPipeline(track);
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         CaptureFlushService service = pipeline.getCaptureFlushService();
         Path part = firstSegmentPart(track);
         assertThat(part).as("fixture: the take is ready").exists();
@@ -402,7 +402,7 @@ class RecordStartReadinessGateContractTest {
     @ValueSource(booleans = {false, true})
     void aFailedPreparedInputActivationUsesTheCompleteCaptureStartRollback(boolean error) throws Exception {
         pipeline = newPipeline(track);
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         CaptureFlushService service = pipeline.getCaptureFlushService();
         holdTheFlushThreadInAPass(service);
         Throwable original = error ? new AssertionError("input activation failed")
@@ -424,7 +424,7 @@ class RecordStartReadinessGateContractTest {
         assertThat(pipeline.isPreparing()).isFalse();
         assertThat(track.isRecording()).isFalse();
         assertThat(service.isTerminated()).isFalse();
-        assertThatThrownBy(pipeline::prepare).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> pipeline.prepare(engine.getCaptureHaltGeneration())).isInstanceOf(IllegalStateException.class);
         release.countDown();
         awaitWithinTheGuard(service.termination(), "the rolled-back take's termination");
         assertThat(takeDirectoryEntries()).isEmpty();
@@ -493,7 +493,7 @@ class RecordStartReadinessGateContractTest {
         }
 
         assertThat(transport.getState()).isEqualTo(TransportState.RECORDING);
-        assertThat(transport.getPositionInBeats()).as("the playhead is not set back to where prepare() read it")
+        assertThat(transport.getPositionInBeats()).as("the playhead is not set back to where prepare(long) read it")
                 .isEqualTo(rolledTo);
         assertThat(changes).as("beginning capture changed the state and fired no position change")
                 .containsExactly(Transport.ChangeKind.STATE);
@@ -588,7 +588,7 @@ class RecordStartReadinessGateContractTest {
     @Test
     void aRestartAfterARolledBackBeginCaptureIsRefusedUntilThatTakesFlushThreadHasTerminated() throws Exception {
         pipeline = newPipeline(track);
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         CaptureFlushService rolledBack = pipeline.getCaptureFlushService();
         holdTheFlushThreadInAPass(rolledBack);
         engine.shutdown(); // the engine start inside beginCapture() throws
@@ -621,7 +621,7 @@ class RecordStartReadinessGateContractTest {
         CompletionStage<Void> readiness = prepareWithinTheGuard();
         awaitTheHeldOpen();
 
-        assertThatThrownBy(pipeline::prepare).isInstanceOf(IllegalStateException.class)
+        assertThatThrownBy(() -> pipeline.prepare(engine.getCaptureHaltGeneration())).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("already preparing");
         assertThatThrownBy(pipeline::beginCapture).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not ready");

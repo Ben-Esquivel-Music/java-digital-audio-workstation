@@ -250,7 +250,7 @@ class RecordedAudioAttachedBeforePublicationContractTest {
     void theListsAreRefusedWhileTheTakeIsStillBeingWrittenAndWhileOneIsBeingPrepared() {
         Track vocal = RampCaptureTestSupport.armedMonoTrack("Vocal");
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, List.of(vocal));
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         assertThatThrownBy(pipeline::recordedSegmentPaths).as("while a take is being prepared")
                 .isInstanceOf(IllegalStateException.class);
         pipeline.beginCapture();

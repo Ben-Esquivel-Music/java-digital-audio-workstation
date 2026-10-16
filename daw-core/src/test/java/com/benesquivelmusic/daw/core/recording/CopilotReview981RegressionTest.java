@@ -70,7 +70,7 @@ class CopilotReview981RegressionTest {
 
     private RecordingPipeline ready(AudioEngine engine, Transport transport, List<Track> tracks, String name) throws Exception {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, FORMAT, directory.resolve(name), tracks);
-        pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
         return pipeline;
     }
 
@@ -107,7 +107,7 @@ class CopilotReview981RegressionTest {
             engine.startAudioInputOutput(tracks);
             engine.pauseAudioOutput();
             pipeline.setWarningSink(warnings::add);
-            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
             pipeline.beginCapture();
             for (int block = 0; block < 2; block++) {
                 float[][] input = primaryUnavailable ? new float[0][] : signal(.5f);
@@ -204,7 +204,7 @@ class CopilotReview981RegressionTest {
                 RecordingPipeline pipeline = new RecordingPipeline(engine, new Transport(), FORMAT,
                         directory.resolve(frames + "-" + includeCalibrated), tracks);
                 pipeline.setReportedLatency(new DeviceId(backend.name(), "Interface A"), new RoundTripLatency(frames, 0, 0));
-                pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
                 pipeline.beginCapture();
                 try {
                     assertThat(pipeline.getSession(uncalibrated).getCompensationFrames()).isEqualTo(12);
@@ -651,7 +651,7 @@ class CopilotReview981RegressionTest {
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, FORMAT, directory.resolve(name), tracks);
         pipeline.setWarningSink(warnings::add);
         try {
-            pipeline.prepare().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            pipeline.prepare(engine.getCaptureHaltGeneration()).toCompletableFuture().get(5, TimeUnit.SECONDS);
             pipeline.beginCapture();
         } catch (Exception | Error failure) {
             stop(pipeline, engine);

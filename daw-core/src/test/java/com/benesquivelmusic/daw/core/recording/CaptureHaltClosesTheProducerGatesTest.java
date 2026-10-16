@@ -64,7 +64,7 @@ class CaptureHaltClosesTheProducerGatesTest {
         transport.setTempo(120.0);
         Track track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         pipeline = newPipeline(engine, transport, track);
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         CaptureRing ring = pipeline.getCaptureRing();
         CaptureFlushService service = pipeline.getCaptureFlushService();
         // The take's callback and a sibling input's, as beginCapture() wires

@@ -148,7 +148,7 @@ class DiskExhaustionSealsCleanlyContractTest {
      * and then throws (a sink that touches the UI off its thread does). The
      * test gives the same sink to the headroom watch it injects and, through
      * {@code setWarningSink}, to the flush service — the pairing
-     * {@code RecordingPipeline.prepare()} makes itself when no watch is
+     * {@code RecordingPipeline.prepare(long)} makes itself when no watch is
      * injected.
      */
     private RecordingPipeline pipelineWithAThrowingSink(DiskHeadroomWatch watch, AtomicLong clock) {

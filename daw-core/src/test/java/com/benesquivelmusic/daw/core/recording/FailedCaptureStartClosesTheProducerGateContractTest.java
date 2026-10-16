@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (Recording Reliability book §5.2): removing the recording callback does
  * not stop a callback the audio thread has already loaded, so it is the
  * gate that keeps such a callback from publishing into the ring of a take
- * that is being discarded. Every rollback closes it — a {@code prepare()}
+ * that is being discarded. Every rollback closes it — a {@code prepare(long)}
  * that failed after it allocated the ring, a {@code beginCapture()} that
  * failed — and the rollback of {@code beginCapture()} closes it first,
  * before it removes the callback and before it stops the transport.
@@ -64,7 +64,7 @@ class FailedCaptureStartClosesTheProducerGateContractTest {
         transport.setTempo(120.0);
         Track track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         pipeline = newPipeline(engine, transport, track);
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         CaptureRing ring = pipeline.getCaptureRing();
         CaptureFlushService service = pipeline.getCaptureFlushService();
         assertThat(ring.isProducerClosed()).as("fixture: the prepared take's gate is open").isFalse();
@@ -96,7 +96,7 @@ class FailedCaptureStartClosesTheProducerGateContractTest {
         Transport transport = new Transport();
         Track track = RampCaptureTestSupport.armedMonoTrack("Vocal");
         pipeline = newPipeline(engine, transport, track);
-        awaitWithinTheGuard(pipeline.prepare(), "the take's readiness");
+        awaitWithinTheGuard(pipeline.prepare(engine.getCaptureHaltGeneration()), "the take's readiness");
         CaptureRing ring = pipeline.getCaptureRing();
 
         // The transport tells its listeners from inside record() and stop(),
@@ -153,9 +153,9 @@ class FailedCaptureStartClosesTheProducerGateContractTest {
             throw new IllegalStateException("injected factory failure");
         });
 
-        Throwable thrown = outcomeWithinTheGuard("prepare", pipeline::prepare);
+        Throwable thrown = outcomeWithinTheGuard("prepare", () -> pipeline.prepare(engine.getCaptureHaltGeneration()));
 
-        assertThat(thrown).as("fixture: prepare() failed and rolled back")
+        assertThat(thrown).as("fixture: prepare(long) failed and rolled back")
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("injected factory failure");
         CaptureRing ring = pipeline.getCaptureRing();
         assertThat(ring).as("fixture: the failed prepare had allocated the take's ring, which stays reachable")

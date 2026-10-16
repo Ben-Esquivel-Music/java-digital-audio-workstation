@@ -43,7 +43,7 @@ import java.util.function.LongSupplier;
  * deletes the take's segment files and its manifest, and writes the
  * sessions' staging blocks and the ring's read index; no thread keeps a copy
  * of the captured audio in memory. The caller thread (FX in the app) runs
- * the take's lifecycle — {@link #prepare()}, {@link #beginCapture()} or
+ * the take's lifecycle — {@link #prepare(long)}, {@link #beginCapture()} or
  * {@link #cancelStart()}, then {@link #requestStop()} and
  * {@link #completeStop()} — and none of those touches storage or waits for
  * the flush thread: what that thread does is reported through signals a
@@ -76,11 +76,11 @@ import java.util.function.LongSupplier;
  *
  * <p>Usage:</p>
  * <ol>
- *   <li>Call {@link #prepare()} to read the take's anchor, flag the armed
+ *   <li>Call {@link #prepare(long)} to read the take's anchor, flag the armed
  *       tracks, create the ring and the per-track captures, and start the
  *       flush thread, which creates the take's files — the take directory,
  *       each armed track's first segment, the initial manifest — and then
- *       completes the readiness stage {@code prepare()} returned. Nothing is
+ *       completes the readiness stage {@code prepare(long)} returned. Nothing is
  *       captured yet: capture must not begin before the files exist, because
  *       by default the ring holds only the blocks that cover
  *       {@link CaptureRing#DEFAULT_HANDOFF_TOLERANCE} (250 ms) of audio,
@@ -102,7 +102,7 @@ import java.util.function.LongSupplier;
  *       that escaped that thread's drain loop had already sealed the take
  *       early and ended the thread, either discard deletes nothing and that
  *       take stays as it was sealed: {@link #cancelStart()}.) Either way the
- *       next {@link #prepare()} of the same pipeline is refused until that
+ *       next {@link #prepare(long)} of the same pipeline is refused until that
  *       thread has marked itself terminated
  *       ({@link CaptureFlushService#isTerminated()}; {@link #termination()}
  *       completes right after).</li>
@@ -141,7 +141,7 @@ public final class RecordingPipeline {
 
     /**
      * The current take's ring and flush service, or the last take's until
-     * the next {@link #prepare()}. Written on the caller thread; volatile
+     * the next {@link #prepare(long)}. Written on the caller thread; volatile
      * for the getters any thread may call. The audio thread reads neither:
      * each take's {@link CaptureCallback} carries its own.
      */
@@ -156,14 +156,14 @@ public final class RecordingPipeline {
      */
     private Track[] instrumentTracks = new Track[0];
     /**
-     * The tempo read when {@link #prepare()} ran — the one the take's anchor
+     * The tempo read when {@link #prepare(long)} ran — the one the take's anchor
      * frame is computed at, and the one the take's {@link CaptureCallback}
      * converts each block's beat position to a start frame with.
      */
     private double takeTempoBpm;
     private boolean loopRecord;
     /**
-     * A take is being prepared: set by {@link #prepare()}, cleared by
+     * A take is being prepared: set by {@link #prepare(long)}, cleared by
      * {@link #beginCapture()}, {@link #cancelStart()} and the rollback of a
      * failed start.
      */
@@ -188,12 +188,25 @@ public final class RecordingPipeline {
     private double recordingStartBeat;
     private long recordingStartFrame;
     /**
-     * The transport's position when {@link #prepare()} read the anchor;
+     * The transport's position when {@link #prepare(long)} read the anchor;
      * {@link #beginCapture()} puts the transport back there if it moved while
      * the take was being prepared and the transport is not rolling — stopped
      * or paused — when capture begins.
      */
     private double preparedPositionBeats;
+    /**
+     * The take's baseline of the engine's
+     * {@linkplain AudioEngine#getCaptureHaltGeneration() capture-halt
+     * generation}, read by the caller and handed to
+     * {@link #prepare(long)}. A {@link #beginCapture()} that
+     * reads another value overlapped a device-loss halt and is rejected.
+     * Caller thread only.
+     */
+    private long preparedCaptureHaltGeneration;
+
+    /** What a start rejected by a device-loss halt rethrows: the user reads it in the abort report. */
+    static final String DEVICE_LOST_DURING_START_MESSAGE =
+            "the audio device was lost while the take was starting";
 
     private Duration maxSegmentDuration = RecordingSession.DEFAULT_MAX_SEGMENT_DURATION;
     private long maxSegmentBytes = RecordingSession.DEFAULT_MAX_SEGMENT_BYTES;
@@ -226,7 +239,7 @@ public final class RecordingPipeline {
      */
     private boolean applyLatencyCompensation = true;
     /**
-     * Resolved compensation frames captured at {@link #prepare()} so the
+     * Resolved compensation frames captured at {@link #prepare(long)} so the
      * value cannot drift mid-session if the user toggles the dialog or
      * the device re-reports its latency. {@code 0} means no compensation
      * is applied to recorded clip start positions.
@@ -383,6 +396,20 @@ public final class RecordingPipeline {
      * the transport's position then differs from where capture begins by
      * about the time the preparation took (see {@code beginCapture()}).</p>
      *
+     * <p><strong>The device-loss fence</strong> (story 327, PR #982 review
+     * r4297840180). The take keeps a baseline of the engine's
+     * {@linkplain AudioEngine#getCaptureHaltGeneration() capture-halt
+     * generation}, and its {@link #beginCapture()} rejects the start if the
+     * generation has moved since: a device-loss halt
+     * ({@link AudioEngine#haltRecordingCapture()}) ran after the baseline
+     * was read. The caller reads the baseline and hands it in: a caller
+     * that opens the take's stream before it prepares the take reads it
+     * before that open, so that a halt of that stream between the open and
+     * this call rejects the start as well — the record coordinator reads it
+     * when Record is pressed; a caller that opens no stream for the take
+     * reads it just before this call. A halt before the baseline was read is
+     * not fenced.</p>
+     *
      * <p>A failure here — a ring size the ring refuses, a session factory
      * that throws, a flush thread that cannot be started — rolls back what
      * this call did: the take's flush service, if one was created, is asked
@@ -418,8 +445,12 @@ public final class RecordingPipeline {
      * {@code CREATE_NEW} of the same
      * {@code segment-000.wav.part} — or lose the new take's
      * {@code take.manifest} to the old thread's deletion (book §2.3: one
-     * writer per byte). A failed {@code prepare()} leaves no such thread.</p>
+     * writer per byte). A failed {@code prepare(long)} leaves no such thread.</p>
      *
+     * @param captureHaltGenerationBaseline the take's baseline of the
+     *                                      engine's capture-halt generation,
+     *                                      read by the caller (see "The
+     *                                      device-loss fence")
      * @return the take's readiness ({@link CaptureFlushService#readiness()}):
      *         it completes normally on the {@code capture-flush} thread once
      *         every file exists and the thread is draining; or exceptionally,
@@ -447,8 +478,18 @@ public final class RecordingPipeline {
      *                               that was cancelled, or whose failed
      *                               {@code beginCapture()} was rolled back,
      *                               has not terminated yet
+     * @throws IllegalArgumentException if {@code captureHaltGenerationBaseline}
+     *                                  is greater than the engine's
+     *                                  capture-halt generation now — a value
+     *                                  the engine has not reached (touching
+     *                                  nothing)
      */
-    public CompletionStage<Void> prepare() {
+    public CompletionStage<Void> prepare(long captureHaltGenerationBaseline) {
+        long generationNow = audioEngine.getCaptureHaltGeneration();
+        if (captureHaltGenerationBaseline > generationNow) {
+            throw new IllegalArgumentException("captureHaltGenerationBaseline " + captureHaltGenerationBaseline
+                    + " is ahead of the engine's capture-halt generation " + generationNow);
+        }
         if (finalizationPending) {
             throw new IllegalStateException("Recording pipeline is still finalising its previous take under "
                     + outputDirectory + "; call completeStop() once that take's finalisation has completed");
@@ -465,6 +506,9 @@ public final class RecordingPipeline {
                     + " has not terminated yet: it was asked to discard that take's files; prepare again once"
                     + " termination() has completed");
         }
+        // A device-loss halt after the baseline was read is one this take's
+        // beginCapture() must not survive.
+        preparedCaptureHaltGeneration = captureHaltGenerationBaseline;
         preparing = true;
         try {
             doPrepare();
@@ -619,11 +663,11 @@ public final class RecordingPipeline {
 
     /**
      * Begins capture — the second half of a start, once the stage
-     * {@link #prepare()} returned has completed normally. Caller thread (FX
+     * {@link #prepare(long)} returned has completed normally. Caller thread (FX
      * in the app); no storage I/O, and it never waits for the flush thread
      * (what the engine start and the transport do is theirs). In order: if
      * the transport is not rolling, put it back at the position
-     * {@code prepare()} read, if it has moved since — only the transport's
+     * {@code prepare(long)} read, if it has moved since — only the transport's
      * position: a take anchored at a punch region or range keeps that
      * anchor — then create the take's {@link CaptureCallback} and wire it as
      * the engine's recording callback, start the audio engine if it is not
@@ -643,9 +687,9 @@ public final class RecordingPipeline {
      * would jump back by the time the take took to prepare. So a take
      * anchored at the transport's position and started over a rolling
      * transport — Record pressed during playback — keeps the anchor
-     * {@code prepare()} read, while capture begins here, where the transport
+     * {@code prepare(long)} read, while capture begins here, where the transport
      * has rolled to: its clips are placed at, and its manifest anchored to, a
-     * position about the preparation time (from {@code prepare()} to this
+     * position about the preparation time (from {@code prepare(long)} to this
      * call) earlier than the transport's when the first block was captured,
      * and the stop {@link #requestStop()} makes returns the playhead, with
      * {@link Transport#isReturnToStartOnStop()} set, to where
@@ -672,10 +716,33 @@ public final class RecordingPipeline {
      * the take directory is left for the caller), the recording flags are
      * cleared, the pipeline is idle again, and the failure is rethrown,
      * carrying anything the rollback threw as suppressed; the next
-     * {@link #prepare()} is refused until that thread has marked itself
+     * {@link #prepare(long)} is refused until that thread has marked itself
      * terminated ({@link CaptureFlushService#isTerminated()};
      * {@link #termination()} completes right after). An engine this call
      * started is left running, and a restored position stays restored.</p>
+     *
+     * <p><strong>The device-loss fence</strong> (story 327, PR #982 review
+     * r4297840180). A start that overlaps the engine's capture halt
+     * ({@link AudioEngine#haltRecordingCapture()}, run on the device-event
+     * thread when the device is lost) fails that same way, with an
+     * {@link IllegalStateException} whose message — "the audio device was
+     * lost while the take was starting" — the caller can show as it is:
+     * the halt reaches only the callbacks it reads, and a stream reopened
+     * before the loss reaches the caller would otherwise feed callbacks this
+     * call installed after that read. "Overlaps" is any halt that begins
+     * after the take's baseline of the engine's
+     * {@linkplain AudioEngine#getCaptureHaltGeneration() capture-halt
+     * generation} was read (by the caller of {@link #prepare(long)}, which
+     * is handed it): one before this call (refused
+     * before the engine is started or the transport touched), one during it
+     * before the callbacks are installed, one between their installation
+     * and the final check — such as one run from {@code captureActivation}
+     * — and one whose own slot-read-to-store window the installation falls
+     * into. A halt the final check misses read both installed callbacks and
+     * closed their producer gates (the ordering argument is on
+     * {@code haltRecordingCapture()}): the start succeeds with those gates
+     * closed or about to be, and the caller's handling of the loss stops
+     * the take.</p>
      *
      * <p>Refused, touching nothing, when no take is being prepared — never
      * prepared, already begun, cancelled, or rolled back — and while the
@@ -684,6 +751,10 @@ public final class RecordingPipeline {
      *
      * @throws IllegalStateException if no take is being prepared, or the take's
      *                               readiness has not completed normally
+     *                               (touching nothing); or, after the
+     *                               rollback, if the engine's capture halt
+     *                               ran since the take's baseline was read —
+     *                               the device-loss fence above
      */
     public void beginCapture() {
         beginCapture(() -> { });
@@ -696,24 +767,33 @@ public final class RecordingPipeline {
      * complete start rollback if it throws a runtime exception or error.
      *
      * @param captureActivation the activation of the take's other prepared inputs
-     * @throws IllegalStateException if this take is not ready to begin
+     * @throws IllegalStateException if this take is not ready to begin; or,
+     *                               after the rollback, if the engine's
+     *                               capture halt ran since the take's
+     *                               baseline was read — a halt run by
+     *                               {@code captureActivation} included
+     *                               ({@link #beginCapture()}'s device-loss fence)
      */
     public void beginCapture(Runnable captureActivation) {
         Objects.requireNonNull(captureActivation, "captureActivation must not be null");
         if (!preparing) {
-            throw new IllegalStateException("Recording pipeline has no take being prepared; call prepare() first");
+            throw new IllegalStateException("Recording pipeline has no take being prepared; call prepare(long) first");
         }
         CaptureRing takeRing = ring;
         CaptureFlushService service = flush;
         if (!hasViableCaptureService()) {
             throw new IllegalStateException("The take under " + outputDirectory + " is not ready: capture begins"
-                    + " only once prepare() has completed normally and its flush service is still running"
+                    + " only once prepare(long) has completed normally and its flush service is still running"
                     + " without having sealed or terminated");
         }
         preparing = false;
         active = true;
         CaptureCallback.StartGate startGate = new CaptureCallback.StartGate();
         try {
+            // A halt since the baseline is refused before the engine is
+            // started or the transport touched; the check after the
+            // installation below is the fence itself.
+            requireNoCaptureHaltSinceBaseline();
             TransportState state = transport.getState();
             boolean rolling = state == TransportState.PLAYING || state == TransportState.RECORDING;
             if (!rolling && transport.getPositionInBeats() != preparedPositionBeats) {
@@ -741,6 +821,9 @@ public final class RecordingPipeline {
             // Transition transport to recording
             transport.record();
             captureActivation.run();
+            // The device-loss fence: after both installing stores, before the
+            // start gate opens (see requireNoCaptureHaltSinceBaseline).
+            requireNoCaptureHaltSinceBaseline();
             if (!active || transport.getState() != TransportState.RECORDING || !hasViableCaptureService()) {
                 throw new IllegalStateException("Recording start was cancelled before capture activation");
             }
@@ -786,7 +869,7 @@ public final class RecordingPipeline {
      * as it was sealed early, and the termination has already completed. The
      * recording flags are cleared, the take's captures are dropped and the
      * pipeline is idle again; its flush service stays reachable until the
-     * next {@link #prepare()}, which is refused until that thread has marked
+     * next {@link #prepare(long)}, which is refused until that thread has marked
      * itself terminated ({@link CaptureFlushService#isTerminated()};
      * {@link #termination()} completes right after). Nothing was captured,
      * and the engine and the transport were never touched.
@@ -855,7 +938,7 @@ public final class RecordingPipeline {
     }
 
     /**
-     * The common tail of a failed {@link #prepare()} or
+     * The common tail of a failed {@link #prepare(long)} or
      * {@link #beginCapture()}: the rollback fault seam, the take's flush
      * service — if this start created one — asked to discard the take
      * without waiting, the captures dropped, the recording flags cleared.
@@ -895,6 +978,29 @@ public final class RecordingPipeline {
         } finally {
             preparing = false;
             active = false;
+        }
+    }
+
+    /**
+     * Refuses the start being begun if the engine's capture halt has run
+     * since the take's baseline of its generation
+     * ({@link AudioEngine#getCaptureHaltGeneration()}) was read: the audio
+     * device was lost while the take was starting.
+     * {@link #beginCapture(Runnable)} calls it twice inside its rollback
+     * scope. The first call, before the engine is started or the transport
+     * touched, spares both when the halt came before the start. The second,
+     * after both callbacks are installed and before the start gate opens, is
+     * the fence: its read of the generation follows the two installing
+     * stores (the argument is on {@link AudioEngine#haltRecordingCapture()}).
+     * Caller thread.
+     *
+     * @throws IllegalStateException carrying
+     *                               {@link #DEVICE_LOST_DURING_START_MESSAGE}
+     *                               if a halt has run since the baseline was read
+     */
+    private void requireNoCaptureHaltSinceBaseline() {
+        if (audioEngine.getCaptureHaltGeneration() != preparedCaptureHaltGeneration) {
+            throw new IllegalStateException(DEVICE_LOST_DURING_START_MESSAGE);
         }
     }
 
@@ -1341,10 +1447,10 @@ public final class RecordingPipeline {
     }
 
     /**
-     * Returns whether a take is being prepared: {@link #prepare()} has
+     * Returns whether a take is being prepared: {@link #prepare(long)} has
      * returned and neither {@link #beginCapture()} nor {@link #cancelStart()}
      * has run since. Meanwhile the pipeline is not
-     * {@linkplain #isActive() active}, {@code prepare()} and
+     * {@linkplain #isActive() active}, {@code prepare(long)} and
      * {@link #requestStop()} are refused, and every setter that refuses a
      * change while recording refuses it too. Any thread.
      *
@@ -1359,7 +1465,7 @@ public final class RecordingPipeline {
      * {@link #completeStop()} has not yet returned the take's clips — the
      * take is being finalised: its flush thread may still be draining,
      * sealing or writing the manifest. Meanwhile the pipeline is not
-     * {@linkplain #isActive() active}, {@link #prepare()} is refused, every
+     * {@linkplain #isActive() active}, {@link #prepare(long)} is refused, every
      * setter that refuses a change while recording refuses it too, and the
      * {@code completeStop()} made once the flush thread has terminated
      * completes the stop. Any thread.
@@ -1373,7 +1479,7 @@ public final class RecordingPipeline {
     /**
      * Returns the termination signal of the current take's
      * {@code capture-flush} thread, or of the last take's until the next
-     * {@link #prepare()} — the stage {@link #cancelStart()} and
+     * {@link #prepare(long)} — the stage {@link #cancelStart()} and
      * {@link #requestStop()} return ({@link CaptureFlushService#termination()}).
      * It is how a caller follows the thread after a {@link #beginCapture()}
      * that failed: that rollback asked the thread to discard the take and
@@ -1384,7 +1490,7 @@ public final class RecordingPipeline {
      * already ended on its own before the discard was asked for — a
      * throwable that escaped its drain loop sealed the take early — the
      * discard deletes nothing, the take stays as it was sealed early, and
-     * the signal has already completed. The next {@code prepare()} of this
+     * the signal has already completed. The next {@code prepare(long)} of this
      * pipeline is refused until that thread has marked itself terminated
      * ({@link CaptureFlushService#isTerminated()}), right before the signal
      * completes. A completed stage when no
@@ -1404,7 +1510,7 @@ public final class RecordingPipeline {
 
     /**
      * Returns the early-seal signal of the current take, or of the last take
-     * until the next {@link #prepare()}: it completes, at most once, on the
+     * until the next {@link #prepare(long)}: it completes, at most once, on the
      * {@code capture-flush} thread, when that thread has sealed the take on
      * its own — disk exhaustion or a write failure ({@link EarlySeal}) — and
      * that seal is done; never before the take's readiness. It never
@@ -1428,7 +1534,7 @@ public final class RecordingPipeline {
      *         runs on the {@code capture-flush} thread, or on the registering
      *         thread if the signal has completed already
      * @throws IllegalStateException if no prepare has created a take's flush
-     *                               service yet ({@link #prepare()} never
+     *                               service yet ({@link #prepare(long)} never
      *                               called, or the last one failed before it
      *                               created one)
      */
@@ -1442,7 +1548,7 @@ public final class RecordingPipeline {
 
     /**
      * Returns the failure of the seal {@link #requestStop()} requested for the
-     * current take, or for the last take until the next {@link #prepare()}, if
+     * current take, or for the last take until the next {@link #prepare(long)}, if
      * a lane's seal threw in it ({@link StopSealFailure}): a segment whose
      * seal failed is left as its {@code .part} for recovery, the take's final
      * manifest reads {@code seal-status=aborted} with
@@ -1463,7 +1569,7 @@ public final class RecordingPipeline {
      *
      * @return the failure of the stop's seal, or empty
      * @throws IllegalStateException if no prepare has created a take's flush
-     *                               service yet ({@link #prepare()} never
+     *                               service yet ({@link #prepare(long)} never
      *                               called, or the last one failed before it
      *                               created one)
      */
@@ -1477,7 +1583,7 @@ public final class RecordingPipeline {
 
     /**
      * Returns the failure of the final manifest write of the current take, or
-     * of the last take until the next {@link #prepare()}, if the write of the
+     * of the last take until the next {@link #prepare(long)}, if the write of the
      * manifest that carries the take's seal — {@code sealed}/{@code stop},
      * {@code aborted}/{@code device-loss}, {@code aborted}/{@code write-failure}
      * — failed on every attempt and no later attempt landed it
@@ -1503,7 +1609,7 @@ public final class RecordingPipeline {
      *
      * @return the failure of the final manifest write, or empty
      * @throws IllegalStateException if no prepare has created a take's flush
-     *                               service yet ({@link #prepare()} never
+     *                               service yet ({@link #prepare(long)} never
      *                               called, or the last one failed before it
      *                               created one)
      */
@@ -1518,7 +1624,7 @@ public final class RecordingPipeline {
     /**
      * Returns the recording session for the given track (its current lane
      * while recording, its last lane after a stop), or {@code null} before
-     * {@link #prepare()} and after a start that was cancelled or rolled
+     * {@link #prepare(long)} and after a start that was cancelled or rolled
      * back. While the take is being prepared the {@code capture-flush}
      * thread may still be starting that session; while the finalisation is
      * {@linkplain #isFinalizationPending() pending} it may still be sealing
@@ -1591,7 +1697,7 @@ public final class RecordingPipeline {
     /**
      * Returns the beat position at which recording started.
      *
-     * <p>This is captured when {@link #prepare()} is called and used to
+     * <p>This is captured when {@link #prepare(long)} is called and used to
      * position recorded clips on the timeline. When the transport is stopped
      * or paused as capture begins, {@link #beginCapture()} puts the transport
      * back at the position it had then, so a seek while the take was being
@@ -1601,7 +1707,7 @@ public final class RecordingPipeline {
      * {@code beginCapture()}).</p>
      *
      * <p>It is the manifest's {@code start-beat}, and it outlives the take:
-     * only the next {@link #prepare()} replaces it, so after a stop or a
+     * only the next {@link #prepare(long)} replaces it, so after a stop or a
      * device-loss rescue ({@link #requestStop(TakeManifest.SealedBy)}) it
      * still names where the last take began — the position the record
      * coordinator seeks to when the lost device returns (story 327).</p>
@@ -1614,7 +1720,7 @@ public final class RecordingPipeline {
 
     /**
      * Returns the frame position of {@link #getRecordingStartBeat()} at the
-     * tempo current when {@link #prepare()} ran — the manifest's {@code start-frame}.
+     * tempo current when {@link #prepare(long)} ran — the manifest's {@code start-frame}.
      */
     public long getRecordingStartFrame() {
         return recordingStartFrame;
@@ -1670,7 +1776,7 @@ public final class RecordingPipeline {
     /**
      * Returns how many incoming blocks the callback dropped because the ring
      * was full, in the current take or in the last one until the next
-     * {@link #prepare()}; {@code 0} while the pipeline holds no ring (see
+     * {@link #prepare(long)}; {@code 0} while the pipeline holds no ring (see
      * {@link #getCaptureRing()}).
      */
     public long getOverflowCount() {
@@ -1682,7 +1788,7 @@ public final class RecordingPipeline {
     /**
      * Returns how many blocks the callbacks have published into the take's
      * rings — the take's own and each sibling input's — in the current take
-     * or in the last one until the next {@link #prepare()}; {@code 0} while
+     * or in the last one until the next {@link #prepare(long)}; {@code 0} while
      * the pipeline holds no ring (see {@link #getCaptureRing()}). Published
      * blocks are what the flush thread writes, so a count that no longer
      * grows says that no callback publishes any more. Any thread.
@@ -1697,7 +1803,7 @@ public final class RecordingPipeline {
      * Returns how many delivered frames the callback had to cut off because
      * their block was longer than a ring slot ({@code format.bufferSize()}
      * frames), in the current take or in the last one until the next
-     * {@link #prepare()}; {@code 0} while the pipeline holds no ring (see
+     * {@link #prepare(long)}; {@code 0} while the pipeline holds no ring (see
      * {@link #getCaptureRing()}). Any thread.
      */
     public long getTruncatedFrames() {
@@ -1708,7 +1814,7 @@ public final class RecordingPipeline {
 
     /**
      * Sets the segment rotation caps (defaults 30 min / 500 MB). Must be
-     * called before {@link #prepare()}.
+     * called before {@link #prepare(long)}.
      *
      * @param maxSegmentDuration rotate when a segment holds this much audio; positive
      * @param maxSegmentBytes    rotate when a segment's data chunk reaches this size, and
@@ -1742,7 +1848,7 @@ public final class RecordingPipeline {
     /**
      * Sets the writers' force-to-storage cadence (default
      * {@link SegmentWriter#DEFAULT_FORCE_CADENCE}, 5 s). Must be called
-     * before {@link #prepare()}.
+     * before {@link #prepare(long)}.
      */
     public void setForceCadence(Duration forceCadence) {
         requireInactive("force cadence");
@@ -1763,7 +1869,7 @@ public final class RecordingPipeline {
      * watch, the manifest retry interval and the peak publication interval
      * read (default
      * {@code System::nanoTime}). Test/diagnostic seam; must be called before
-     * {@link #prepare()}.
+     * {@link #prepare(long)}.
      */
     public void setNanoClock(LongSupplier nanoClock) {
         requireInactive("nano clock");
@@ -1778,7 +1884,7 @@ public final class RecordingPipeline {
      * thread only; a sink that touches the UI must marshal itself. A sink
      * that throws a {@link RuntimeException} is logged and ignored; it can
      * never end a take. Story 339 injects the production notification seam.
-     * Must be called before {@link #prepare()}.
+     * Must be called before {@link #prepare(long)}.
      */
     public void setWarningSink(Consumer<String> warningSink) {
         requireInactive("warning sink");
@@ -1800,7 +1906,7 @@ public final class RecordingPipeline {
      * {@link RuntimeException} or an {@link Error} — is logged, once per
      * track of a take, and ignored; it can never end a take, and it never
      * replaces the failure of a seal. Must be called before
-     * {@link #prepare()}.
+     * {@link #prepare(long)}.
      *
      * @param peakSnapshotSink the sink; not {@code null}
      * @throws IllegalStateException if a take is being prepared or is recording, or the
@@ -1821,7 +1927,7 @@ public final class RecordingPipeline {
      * Requests a ring of at least {@code slots} slots (0 = the
      * format-derived default). A request the ring refuses — more than
      * {@link CaptureRing#MAX_SLOTS} — is accepted here and fails the next
-     * {@link #prepare()} at the ring allocation.
+     * {@link #prepare(long)} at the ring allocation.
      */
     void setRingSlots(int slots) {
         requireInactive("ring size");
@@ -1842,7 +1948,7 @@ public final class RecordingPipeline {
      * pipeline's own factory builds (test seam: a delegating channel makes
      * the writers' {@code force} calls observable). A factory installed
      * with {@link #setSessionFactory} builds its sessions itself and is not
-     * affected. Must be called before {@link #prepare()}.
+     * affected. Must be called before {@link #prepare(long)}.
      *
      * @throws IllegalStateException if a take is being prepared or is recording, or the
      *                               previous take is still being finalised
@@ -1854,7 +1960,7 @@ public final class RecordingPipeline {
 
     /**
      * Fault seam (test-only): {@code fault} runs inside the rollback of a
-     * failed {@link #prepare()} or {@link #beginCapture()} — after
+     * failed {@link #prepare(long)} or {@link #beginCapture()} — after
      * {@code beginCapture()}'s rollback has removed the recording callback,
      * and before the take's flush service is asked to discard the take — so
      * a test can make the rollback itself throw. {@code null} removes it.
@@ -1865,7 +1971,7 @@ public final class RecordingPipeline {
 
     /**
      * Returns the flush service of the current take, or of the last take
-     * until the next {@link #prepare()}; {@code null} before the first
+     * until the next {@link #prepare(long)}; {@code null} before the first
      * prepare and after a prepare that failed before it created one.
      */
     CaptureFlushService getCaptureFlushService() {
@@ -1874,7 +1980,7 @@ public final class RecordingPipeline {
 
     /**
      * Returns the capture ring of the current take, or of the last take
-     * until the next {@link #prepare()}; {@code null} before the first
+     * until the next {@link #prepare(long)}; {@code null} before the first
      * prepare and after a prepare that failed before it allocated one.
      */
     CaptureRing getCaptureRing() {
@@ -1910,7 +2016,7 @@ public final class RecordingPipeline {
 
     /**
      * Returns the driver-reported round-trip latency this pipeline will
-     * compensate for at {@link #prepare()}. Defaults to
+     * compensate for at {@link #prepare(long)}. Defaults to
      * {@link RoundTripLatency#UNKNOWN} (no compensation).
      *
      * @return the configured round-trip latency; never {@code null}
@@ -1921,7 +2027,7 @@ public final class RecordingPipeline {
 
     /**
      * Configures the primary device's effective round-trip latency, including user calibration.
-     * Must be called <em>before</em> {@link #prepare()} — the pipeline
+     * Must be called <em>before</em> {@link #prepare(long)} — the pipeline
      * captures the value once when each session starts so it cannot
      * drift mid-take. Typical use is to read
      * {@code AudioBackend.reportedLatency()} once per opened stream and
@@ -1944,7 +2050,7 @@ public final class RecordingPipeline {
     /**
      * Configures a device-qualified calibration, including an explicit zero.
      * Physical sources on other devices retain their own driver latency.
-     * Must be called before {@link #prepare()}.
+     * Must be called before {@link #prepare(long)}.
      */
     public void setReportedLatency(DeviceId device, RoundTripLatency latency) {
         setReportedLatency(latency);
@@ -1972,7 +2078,7 @@ public final class RecordingPipeline {
      * Enables or disables driver round-trip compensation. Useful for
      * diagnostic listening or for users wired through a hardware
      * monitor mixer who already pre-compensate. Must be called
-     * <em>before</em> {@link #prepare()}.
+     * <em>before</em> {@link #prepare(long)}.
      *
      * @param apply {@code true} to compensate, {@code false} to leave
      *              recorded takes uncompensated
@@ -1983,10 +2089,10 @@ public final class RecordingPipeline {
 
     /**
      * Returns the compensation amount (in sample frames) the pipeline
-     * resolved at {@link #prepare()} from the configured
+     * resolved at {@link #prepare(long)} from the configured
      * {@link #getReportedLatency()} and toggle state. {@code 0} when
      * compensation is disabled or the driver reports zero latency. Only
-     * meaningful after {@link #prepare()}.
+     * meaningful after {@link #prepare(long)}.
      *
      * @return resolved compensation in sample frames (never negative)
      */
@@ -2194,7 +2300,7 @@ public final class RecordingPipeline {
 
     /**
      * Enables or disables loop-record mode. Must be called before
-     * {@link #prepare()}: the mode is part of the take's configuration, and a
+     * {@link #prepare(long)}: the mode is part of the take's configuration, and a
      * change while a take is being prepared or is recording is refused.
      *
      * @throws IllegalStateException if a take is being prepared or is recording, or the

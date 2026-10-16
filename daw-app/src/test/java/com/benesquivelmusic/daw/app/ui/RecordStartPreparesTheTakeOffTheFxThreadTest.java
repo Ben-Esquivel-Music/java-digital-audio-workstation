@@ -928,7 +928,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             awaitOnFx(() -> storage.pending() == 1, "the input worker handed allocation to the held storage executor");
             storage.runPendingOffTheFxThread(); // the allocation; the turns it leads to prepare the take and begin capture
             preparationHold.awaitHolding(Duration.ofSeconds(10));
-            // prepare() has returned and the app has attached its readiness dependent
+            // prepare(long) has returned and the app has attached its readiness dependent
             // before initialisation resumes, so its post runs on capture-flush.
             runOnFx(() -> { });
             preparationHold.release();
