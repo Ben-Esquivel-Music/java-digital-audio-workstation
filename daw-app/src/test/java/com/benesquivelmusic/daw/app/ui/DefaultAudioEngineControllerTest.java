@@ -340,6 +340,117 @@ class DefaultAudioEngineControllerTest {
     }
 
     /**
+     * Story 327 fix round (PR #982 review, r4289337584): the loss ends
+     * capture on the device-event thread, inside {@code onDeviceRemoved},
+     * BEFORE it closes the stream and before it publishes DEVICE_LOST —
+     * {@code AudioEngine.haltRecordingCapture()}: the installed callback is
+     * told ({@code onCaptureHalted}, where the pipeline's callback closes
+     * its ring's gate) and the callback slot is emptied. Pinned on the
+     * acting thread, not by timing: the render pump's stop cancels its
+     * capture subscription synchronously on the stopping thread, inside
+     * {@code stopAudioOutput()}, before the stream leaves RUNNING, so the
+     * spy's cancel hook reads what that thread has already done in its own
+     * program order — the callback removed, the halt delivered on this very
+     * thread, the stream still open, the controller's monitor held and its
+     * state not yet DEVICE_LOST. The DEVICE_LOST delivered afterwards
+     * samples the slot empty as well (the offer follows the halt in program
+     * order; the publisher's hand-off to the subscriber orders the read).
+     */
+    @Test
+    void theLossHaltsCaptureOnTheDeviceEventThreadBeforeTheStreamClosesAndBeforeDeviceLostIsPublished()
+            throws InterruptedException {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop());
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyHaltedCapture");
+        DeviceId active = new DeviceId("SpyHaltedCapture", "Mock Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyHaltedCapture",
+                List.of(new BackendStreamRung(backend, active))));
+        AtomicInteger halts = new AtomicInteger();
+        AtomicReference<Thread> haltedOn = new AtomicReference<>();
+        AudioEngine.RecordingCallback take = new AudioEngine.RecordingCallback() {
+            @Override public void onAudioCaptured(float[][] inputBuffer, int numFrames) { /* the pump's */ }
+            @Override public void onCaptureHalted() {
+                halts.incrementAndGet();
+                haltedOn.set(Thread.currentThread());
+            }
+        };
+        engine.setRecordingCallback(take);
+        record AtTheClose(AudioEngine.RecordingCallback installed, int halts, boolean haltedOnThisThread,
+                          EngineState state, boolean streamOpen, boolean underTheControllersMonitor) {
+        }
+        AtomicReference<AtTheClose> atTheClose = new AtomicReference<>();
+        // Armed before the open, so the stream the loss closes is the one
+        // whose capture subscription carries the hook.
+        backend.armNextInputCancelHook(() -> atTheClose.compareAndSet(null, new AtTheClose(
+                engine.getRecordingCallback(), halts.get(), haltedOn.get() == Thread.currentThread(),
+                controller.engineState(), engine.isStreamOpen(), Thread.holdsLock(controller))));
+        record AtDelivery(EngineStateChange change, AudioEngine.RecordingCallback installed, int halts) {
+        }
+        List<AtDelivery> seen = new ArrayList<>();
+        controller.engineStateEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(EngineStateChange change) {
+                synchronized (seen) { seen.add(new AtDelivery(change, engine.getRecordingCallback(), halts.get())); }
+            }
+            @Override public void onError(Throwable t) { /* ignore */ }
+            @Override public void onComplete() { /* ignore */ }
+        });
+        engine.startAudioOutput();
+        assertThat(controller.getWatchedDevice()).as("premise: the seam bound the watch").contains(active);
+        assertThat(engine.getRecordingCallback()).as("premise: the take's callback is installed").isSameAs(take);
+
+        try {
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+            waitFor(() -> { synchronized (seen) { return seen.size() == 1; } });
+
+            assertThat(atTheClose.get())
+                    .as("at the stream's close, in the device-event thread's program order, capture is already"
+                            + " halted — callback removed, the halt delivered on that thread — and the loss is"
+                            + " not yet declared")
+                    .isEqualTo(new AtTheClose(null, 1, true, EngineState.STOPPED, true, true));
+            synchronized (seen) {
+                assertThat(seen).as("DEVICE_LOST is published with the callback slot already empty")
+                        .containsExactly(new AtDelivery(
+                                new EngineStateChange(EngineState.DEVICE_LOST, Optional.of(active)), null, 1));
+            }
+            assertThat(engine.getRecordingCallback()).isNull();
+            assertThat(engine.isStreamOpen()).as("the loss closed the stream").isFalse();
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    /** The halt is the loss path's only: a loss while nothing records finds no callback and touches none. */
+    @Test
+    void aLossWhileNothingRecordsHaltsNoCallback() throws InterruptedException {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop());
+        SpyStreamingBackend backend = new SpyStreamingBackend("SpyPlaybackLoss");
+        DeviceId active = new DeviceId("SpyPlaybackLoss", "Mock Device");
+        engine.setStreamingProvision(new StreamingProvision("SpyPlaybackLoss",
+                List.of(new BackendStreamRung(backend, active))));
+        engine.startAudioOutput();
+        assertThat(engine.getRecordingCallback()).as("premise: nothing records").isNull();
+
+        try {
+            backend.simulateDeviceRemoved(active);
+            waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+
+            assertThat(engine.getRecordingCallback()).isNull();
+            assertThat(engine.isStreamOpen()).as("the playback loss closes the stream as before").isFalse();
+        } finally {
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    /**
      * Story 327 fix round: DEVICE_LOST ends when ANY stream opens — the
      * engine's stream-open seam, which a bare Play fires without this
      * controller in the loop, resets it to STOPPED. Pinned through its two

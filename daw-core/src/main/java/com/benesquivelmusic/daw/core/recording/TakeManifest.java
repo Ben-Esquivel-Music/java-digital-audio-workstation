@@ -6,6 +6,7 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -97,7 +98,13 @@ import java.util.regex.Pattern;
  * — the Persistence Integrity book §4.1 idiom (same-directory sibling →
  * fsync → atomic move), implemented locally here; story 331 centralises it.
  * A write that fails leaves the previous manifest untouched (and possibly a
- * stale {@code .tmp}, which the next write truncates). On Windows a target
+ * stale {@code .tmp}, which the next write truncates). The staging file is
+ * opened {@code NOFOLLOW_LINKS} ({@link #STAGING_CHANNEL}): a
+ * {@code take.manifest.tmp} that is a link — planted, or dangling — is
+ * refused, the write fails before a byte is written, the file behind the
+ * link and the previous manifest stay as they were, and the link stays
+ * where it was for the next write to refuse again; the same opener serves
+ * the live flush path and the recovery scan. On Windows a target
  * that another process holds open without delete sharing makes the move
  * fail with a {@code FileSystemException} (a sharing violation or access
  * denial) — not {@code AtomicMoveNotSupportedException}, so the fallback
@@ -132,9 +139,23 @@ public final class TakeManifest {
      */
     private static final Pattern WINDOWS_DEVICE_STEM = Pattern.compile("con|prn|aux|nul|com[0-9]|lpt[0-9]");
 
-    /** Opens the staging file of {@link #write(Path)}: created if missing, truncated if a stale one is left over. */
+    /**
+     * Opens the staging file of {@link #write(Path)}: created if missing,
+     * truncated if a stale regular one is left over, and never opened
+     * through a link ({@code NOFOLLOW_LINKS}): a {@code take.manifest.tmp}
+     * that is a symbolic link — to a file outside the take, or dangling — is
+     * refused with an {@code IOException} and nothing is written or created
+     * behind it (PR #982 review, Copilot r4289337635). Measured with JDK 26:
+     * on Windows the open fails with {@code IOException("File is symbolic
+     * link")} — the JDK opens the reparse point itself and refuses it before
+     * any write; on Linux with {@code IOException("Too many levels of
+     * symbolic links (NOFOLLOW_LINKS specified)")}, the kernel's
+     * {@code O_NOFOLLOW} refusal. On both, a dangling link is refused the
+     * same way and its target is not created.
+     */
     static final SegmentWriter.ChannelOpener STAGING_CHANNEL = path -> FileChannel.open(path,
-            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE,
+            LinkOption.NOFOLLOW_LINKS);
 
     /** Seal state of the take as a whole. */
     public enum SealStatus {

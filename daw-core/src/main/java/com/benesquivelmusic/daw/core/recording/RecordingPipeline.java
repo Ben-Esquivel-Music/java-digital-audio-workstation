@@ -969,6 +969,18 @@ public final class RecordingPipeline {
      * the manifest as a gap if it is in the ring once the lanes have been
      * sealed.</p>
      *
+     * <p>On a device loss the gate is already closed and the callback
+     * already removed when this runs: the engine controller's loss path
+     * calls {@link AudioEngine#haltRecordingCapture()} on the device-event
+     * thread, before it closes the lost stream (story 327, PR #982 review),
+     * so that a stream reopened before this FX turn cannot publish into the
+     * take. The closing of the gate and the removal of the callback here are
+     * then idempotent repeats — {@link CaptureRing#closeProducer()} twice is
+     * one more volatile store of {@code true}, {@code setRecordingCallback(null)}
+     * twice one more store of {@code null} — and no step here presumes the
+     * callback is still installed; the flags, the transport stop and the
+     * seal request are this method's alone, as before.</p>
+     *
      * @return the flush thread's termination ({@link CaptureFlushService#termination()}):
      *         once it has completed, {@link #completeStop()} builds the
      *         clips. A holder cannot complete it. A dependent registered with
@@ -1664,6 +1676,20 @@ public final class RecordingPipeline {
     public long getOverflowCount() {
         long total = 0;
         for (CaptureRing input : inputRings) total += input.overflowCount();
+        return total;
+    }
+
+    /**
+     * Returns how many blocks the callbacks have published into the take's
+     * rings — the take's own and each sibling input's — in the current take
+     * or in the last one until the next {@link #prepare()}; {@code 0} while
+     * the pipeline holds no ring (see {@link #getCaptureRing()}). Published
+     * blocks are what the flush thread writes, so a count that no longer
+     * grows says that no callback publishes any more. Any thread.
+     */
+    public long getPublishedBlocks() {
+        long total = 0;
+        for (CaptureRing input : inputRings) total += input.publishedBlocks();
         return total;
     }
 

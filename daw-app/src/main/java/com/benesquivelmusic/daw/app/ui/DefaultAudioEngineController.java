@@ -54,6 +54,16 @@ import java.util.logging.Logger;
  * existing engine references intact. The controller owns every provision
  * backend instance's lifecycle; the engine only opens and closes streams on
  * them.</p>
+ *
+ * <p>Capture state is the recording pipeline's, driven from the FX thread —
+ * with one deliberate exception (story 327, PR #982 review): on a device
+ * loss, {@link #onDeviceRemoved(DeviceId)} ends capture on the device-event
+ * thread through {@link AudioEngine#haltRecordingCapture()} (volatile
+ * stores: every installed recording callback closes its ring's producer
+ * gate and both callback slots are emptied) before it closes the lost
+ * stream, so that no stream reopened before the loss's FX turn can publish
+ * into the take being rescued. The seal, the transport stop, the flags and
+ * the UI transitions stay on FX (Recording Reliability book §5.5, §6.1).</p>
  */
 final class DefaultAudioEngineController implements AudioEngineController {
 
@@ -1301,6 +1311,23 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * had recorded — and because {@link #onDeviceArrived(DeviceId)} is gated
      * on {@code DEVICE_LOST}, re-plugging it then OPENED a stream the user
      * never asked for.</p>
+     *
+     * <p>Story 327 (PR #982 review): for the device of an open stream, the
+     * first step — before {@link AudioEngine#stopAudioOutput()} closes the
+     * stream — is {@link AudioEngine#haltRecordingCapture()}: each
+     * installed recording callback closes its ring's producer gate and both
+     * callback slots are emptied, all volatile stores, on this thread. This
+     * is the one place the device-event thread touches capture state
+     * (Recording Reliability book §6.1): the engine's {@code stop()} leaves
+     * the recording callback installed, the pipeline's own stop — which
+     * seals the take — runs on the FX thread when the DEVICE_LOST published
+     * below is delivered, and a reopen can only follow a closed stream, so
+     * halting here is what keeps a stream reopened before that FX turn —
+     * {@link #onDeviceArrived(DeviceId)}'s reopen of the returned device,
+     * or an open this controller did not drive — from publishing into the
+     * take being rescued. The pipeline's stop then repeats the gate close
+     * and the callback removal harmlessly; the seal, the transport stop,
+     * the flags and every UI transition stay on FX.</p>
      */
     private synchronized void onDeviceRemoved(DeviceId removed) {
         if (!audioEngine.isStreamOpen()) {
@@ -1318,6 +1345,20 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return;
         }
         LOG.warning("Active audio device removed: " + removed);
+        // Story 327 (PR #982 review): end capture into the take FIRST, on
+        // this thread, before the stream is closed — a reopen needs a closed
+        // stream, so this precedes every reopen: the lost device's return
+        // below, and an open this controller does not drive. The engine's
+        // stop() leaves the recording callback installed and the pipeline's
+        // own stop runs later, on the FX thread; a pump started in between
+        // would have published the reopened stream into the rescued take.
+        // Volatile stores only (each callback closes its ring's gate, then
+        // both callback slots are emptied); a no-op while nothing records.
+        try {
+            audioEngine.haltRecordingCapture();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to halt recording capture during disconnect", e);
+        }
         // Halt the render thread cleanly. Best-effort; never let an
         // exception from the device-event thread escape and crash the
         // engine — the issue requires "no exceptions on the audio thread".
@@ -1331,13 +1372,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to stop engine during disconnect", e);
         }
-        // Story 327: an in-flight take is not rescued here. DEVICE_LOST
-        // reaches RecordCoordinator through engineStateEvents() on the FX
-        // thread, and the coordinator seals the take on disk through the
-        // pipeline's ordinary stop (Recording Reliability book §2.9, §5.5);
-        // there is no second in-RAM copy of the audio to flush. The message
-        // below is the playback case; when a take was recording, the
-        // coordinator's rescue message says what became of it.
+        // Story 327: an in-flight take is not SEALED here — only its capture
+        // was ended above. DEVICE_LOST reaches RecordCoordinator through
+        // engineStateEvents() on the FX thread, and the coordinator seals
+        // the take on disk through the pipeline's ordinary stop (Recording
+        // Reliability book §2.9, §5.5); there is no second in-RAM copy of
+        // the audio to flush. The message below is the playback case; when
+        // a take was recording, the coordinator's rescue message says what
+        // became of it.
         setEngineState(EngineState.DEVICE_LOST);
         try {
             notifications.notify("Audio device disconnected — playback paused");

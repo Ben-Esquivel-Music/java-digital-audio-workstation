@@ -30,6 +30,7 @@ import java.util.stream.Stream;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.assumeSymbolicLinks;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampValue;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link TakeRecovery} follows no link (PR #982 review, Copilot
@@ -39,7 +40,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * stats, truncates, renames or deletes anything behind the link. Likewise a
  * take directory that is itself a link is no candidate: {@code recover}
  * returns empty before reading the manifest through it, and {@code scan}
- * does not list it. Every case here plants real files in a directory
+ * does not list it. And the staging file the final manifest write opens,
+ * {@code take.manifest.tmp}, is opened {@code NOFOLLOW_LINKS}
+ * ({@code TakeManifest.STAGING_CHANNEL}), so one planted as a link to a
+ * file outside the take, or dangling, is refused before a byte is written.
+ * Every case here plants real files in a directory
  * outside the take and proves, byte for byte and by listing, that nothing
  * there changed. Each case aborts where the platform refuses to create a
  * symbolic link ({@link RampCaptureTestSupport#assumeSymbolicLinks}).
@@ -193,6 +198,81 @@ class TakeRecoveryNeverFollowsALinkTest {
         assertThat(externalTake.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX)).doesNotExist();
         assertThat(externalTake.resolve(SEGMENT_000)).doesNotExist();
         assertThat(Files.isSymbolicLink(link)).isTrue();
+    }
+
+    /**
+     * The staging name itself as the link (PR #982 review, Copilot
+     * r4289337635): a real take directory, a regular streaming manifest, a
+     * real track directory — every other check passes — and
+     * {@code take.manifest.tmp} a symbolic link to a regular file outside
+     * the project. {@code TakeManifest.write} opens the staging file with
+     * {@code CREATE + TRUNCATE_EXISTING}; without {@code NOFOLLOW_LINKS}
+     * that truncates and overwrites the external file and the move then
+     * installs the link as the manifest. The zero-frame standby is the
+     * fixture whose fate the ordering rule decides: its delete waits for the
+     * write, so a refused write must leave it on disk.
+     */
+    @Test
+    void aStagingFileThatIsALinkToAnExternalFileRefusesTheWriteAndLeavesBothFilesUnchanged() throws IOException {
+        Path external = Files.write(elsewhere.resolve("precious.txt"), "do not overwrite me".getBytes());
+        Path standby = partWithFrames(takeDir.resolve(TRACK).resolve("segment-000.wav.part"), 0);
+        Path manifestFile = manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        byte[] manifestBefore = Files.readAllBytes(manifestFile);
+        byte[] standbyBefore = Files.readAllBytes(standby);
+        Path link = Files.createSymbolicLink(takeDir.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX), external);
+        var before = snapshot(elsewhere);
+
+        assertThatThrownBy(() -> TakeRecovery.recover(takeDir))
+                .as("the write through the link is refused, and recover lets the failure out")
+                .isInstanceOf(IOException.class);
+
+        assertThat(snapshot(elsewhere)).as("the external file is byte-identical").isEqualTo(before);
+        assertThat(Files.readAllBytes(manifestFile)).as("the previous manifest is byte-identical").isEqualTo(manifestBefore);
+        assertThat(Files.isSymbolicLink(manifestFile)).as("the move never ran: the manifest is not the link").isFalse();
+        assertThat(Files.isSymbolicLink(link)).as("the link is left where it was").isTrue();
+        assertThat(standby).as("the delete waits for the write, so the standby is still there").isRegularFile();
+        assertThat(Files.readAllBytes(standby)).isEqualTo(standbyBefore);
+        assertThat(takeDir.resolve(SEGMENT_000)).doesNotExist();
+    }
+
+    @Test
+    void aStagingFileThatIsALinkMakesScanLogTheTakeAndGoOn() throws IOException {
+        Path external = Files.write(elsewhere.resolve("precious.txt"), "do not overwrite me".getBytes());
+        partWithFrames(takeDir.resolve(TRACK).resolve("segment-000.wav.part"), 0);
+        Path manifestFile = manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        byte[] manifestBefore = Files.readAllBytes(manifestFile);
+        Files.createSymbolicLink(takeDir.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX), external);
+        var before = snapshot(elsewhere);
+
+        List<String> warnings = new ArrayList<>();
+        List<RecoveredTake> recovered = warningsLoggedBy(() -> TakeRecovery.scan(takesDir), warnings);
+
+        assertThat(recovered).as("the take whose write was refused is skipped, not reported recovered").isEmpty();
+        assertThat(warnings).singleElement().asString().contains("take recovery skipped " + takeDir);
+        assertThat(snapshot(elsewhere)).isEqualTo(before);
+        assertThat(Files.readAllBytes(manifestFile)).isEqualTo(manifestBefore);
+    }
+
+    @Test
+    void aDanglingStagingLinkIsRefusedAndNothingIsCreatedBehindIt() throws IOException {
+        Path absent = elsewhere.resolve("never-created.manifest");
+        Path standby = partWithFrames(takeDir.resolve(TRACK).resolve("segment-000.wav.part"), 0);
+        Path manifestFile = manifestFor(takeDir, streaming(SEGMENT_000, 0)).build().write(takeDir);
+        byte[] manifestBefore = Files.readAllBytes(manifestFile);
+        byte[] standbyBefore = Files.readAllBytes(standby);
+        Path link = Files.createSymbolicLink(takeDir.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX), absent);
+        assertThat(Files.exists(link)).as("fixture: the link dangles").isFalse();
+        var before = snapshot(elsewhere);
+
+        assertThatThrownBy(() -> TakeRecovery.recover(takeDir)).isInstanceOf(IOException.class);
+
+        assertThat(absent).as("CREATE did not create the target through the link").doesNotExist();
+        assertThat(snapshot(elsewhere)).isEqualTo(before);
+        assertThat(Files.readAllBytes(manifestFile)).isEqualTo(manifestBefore);
+        assertThat(Files.isSymbolicLink(link)).isTrue();
+        assertThat(standby).as("the delete waits for the write, so the standby is still there").isRegularFile();
+        assertThat(Files.readAllBytes(standby)).isEqualTo(standbyBefore);
+        assertThat(takeDir.resolve(SEGMENT_000)).doesNotExist();
     }
 
     @Test

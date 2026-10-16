@@ -4928,6 +4928,51 @@ public final class AudioEngine {
         return recordingCallback;
     }
 
+    /**
+     * Ends capture into the callbacks installed now — the recording callback
+     * and the additional recording callbacks — without waiting for the audio
+     * thread and without touching the stream: each installed callback is
+     * told through {@link RecordingCallback#onCaptureHalted()} first (the
+     * recording pipeline's callback closes its ring's producer gate there),
+     * then both slots are emptied, so a render pump started afterwards
+     * reads {@code null} and runs no callback, and a callback a running pump
+     * has already loaded finishes its block under the gate it reads. Any
+     * thread but the audio callback; no locks, no waiting; nothing when no
+     * callback is installed.
+     *
+     * <p>Story 327 (PR #982 review): the device-loss path calls this on the
+     * device-event thread, inside {@code onDeviceRemoved}, BEFORE the lost
+     * stream is closed — a reopen needs a closed stream, so the halt
+     * precedes every reopen, the lost device's return included — because
+     * {@link #stop()} leaves the recording callback installed and the
+     * pipeline's own stop runs later, on the FX thread; a stream reopened in
+     * between would otherwise have published into the take being rescued.
+     * The stores are volatile: the pump's next
+     * {@link #processBlock(float[][], float[][], int, float[])} loads
+     * {@code null}; a callback in flight read the gate before this store or
+     * after it, and publishes only if it read it open — the stop fence of
+     * {@code RecordingPipeline.requestStop}, whose own closing of the gate
+     * and removal of the callback then repeat these stores harmlessly.
+     * One window is not pinned: a {@code RecordingPipeline.beginCapture}
+     * that installs its callback between the snapshot of the slots here and
+     * the {@code null} store would have that callback removed with its gate
+     * still open — harmless, because the {@code DEVICE_LOST} this loss then
+     * publishes has the record coordinator request that take's stop with
+     * {@code DEVICE_LOSS}, which closes its gate.</p>
+     */
+    public void haltRecordingCapture() {
+        RecordingCallback primary = this.recordingCallback;
+        RecordingCallback[] additional = this.additionalRecordingCallbacks;
+        if (primary != null) {
+            primary.onCaptureHalted();
+        }
+        for (RecordingCallback callback : additional) {
+            callback.onCaptureHalted();
+        }
+        this.recordingCallback = null;
+        this.additionalRecordingCallbacks = new RecordingCallback[0];
+    }
+
     /** Whether the track can record a hosted instrument without an input device. */
     public boolean hasGraphInstrument(Track track) {
         EngineGraph current = graph;
@@ -5508,5 +5553,17 @@ public final class AudioEngine {
          */
         @RealTimeSafe
         void onAudioCaptured(float[][] inputBuffer, int numFrames);
+
+        /**
+         * Called once, on the thread that removed this callback through
+         * {@link AudioEngine#haltRecordingCapture()}, never on the audio
+         * thread: the capture it fed has ended for good. An implementation
+         * closes whatever gate it publishes behind (one volatile store, no
+         * waiting), so that a render pump started afterwards — one that
+         * never sees this callback — cannot be joined by a block of this
+         * callback's either. Default: nothing.
+         */
+        default void onCaptureHalted() {
+        }
     }
 }

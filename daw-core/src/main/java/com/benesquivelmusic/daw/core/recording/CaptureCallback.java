@@ -78,7 +78,12 @@ import java.util.Objects;
  * header was stamped before that read, before the stop moved the playhead.
  * The flush thread waits for producer quiescence before its final drain,
  * so a successful wait includes that late publication in the sealed take.
- * See {@link CaptureRing} for the bounded wait and the gate argument.</p>
+ * See {@link CaptureRing} for the bounded wait and the gate argument. On a
+ * device loss the gate is closed earlier, by the engine's
+ * {@link AudioEngine#haltRecordingCapture()} on the device-event thread
+ * ({@link #onCaptureHalted()}), before the lost stream is closed and so
+ * before any stream can be reopened; the pipeline's stop then closes it
+ * again.</p>
  */
 final class CaptureCallback implements AudioEngine.RecordingCallback {
 
@@ -166,6 +171,23 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         } finally {
             publishAndLeave(filled);
         }
+    }
+
+    /**
+     * The engine removed this callback through
+     * {@link AudioEngine#haltRecordingCapture()} — the device-loss path, on
+     * the device-event thread (story 327, PR #982 review): closes the ring's
+     * producer gate, one volatile store, so a later call of this callback —
+     * a pump a reopened stream starts before the pipeline's own stop has
+     * run on the FX thread — claims nothing, and a call already inside drops
+     * its block if its final gate read observes the close. Not the audio
+     * thread's, and not reachable from {@link #onAudioCaptured}: it carries
+     * no {@code @RealTimeSafe}. The pipeline's stop closes the same gate
+     * again, harmlessly.
+     */
+    @Override
+    public void onCaptureHalted() {
+        ring.closeProducer();
     }
 
     /**

@@ -64,7 +64,15 @@ import java.util.logging.Logger;
  * that is not a real directory — a symbolic link, a junction, a file — is
  * skipped and logged at {@link Level#WARNING} before its manifest is read,
  * and {@link #scan(Path)} does not list one; a manifest the scan writes
- * lands only in a real take directory.</p>
+ * lands only in a real take directory, and its staging file
+ * {@code take.manifest.tmp} is opened {@code NOFOLLOW_LINKS}
+ * ({@link TakeManifest#write(Path)}), so one planted as a link makes the
+ * write fail — the {@code IOException} leaves {@link #recover} with the
+ * previous manifest and the file behind the link untouched; as for any
+ * failed final write, the segments sealed before it stay sealed
+ * ({@code .part} to {@code .wav}) and the zero-frame {@code .part}
+ * files, whose delete waits for the write, are still on disk, listed as
+ * they were — and {@link #scan} logs it and goes on to the next take.</p>
  *
  * <p><strong>What the seal does.</strong> For every manifest segment entry
  * in state {@code streaming}:</p>

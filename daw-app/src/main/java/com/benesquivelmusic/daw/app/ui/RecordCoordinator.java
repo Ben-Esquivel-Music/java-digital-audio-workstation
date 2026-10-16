@@ -327,7 +327,12 @@ final class RecordCoordinator {
      *   <li>RECORDING with an audio pipeline: the take is rescued FIRST —
      *       the pipeline's ordinary stop with reason
      *       {@link TakeManifest.SealedBy#DEVICE_LOSS}
-     *       ({@link #requestTakeRescue}): gate closed, callback removed,
+     *       ({@link #requestTakeRescue}): gate closed and callback removed
+     *       — already done, by the engine controller's
+     *       {@code AudioEngine.haltRecordingCapture()} on the device-event
+     *       thread before it closed the lost stream (PR #982 review: a
+     *       stream reopened before this turn must not publish into the
+     *       take), so the stop repeats both harmlessly — then
      *       flags cleared, transport stopped, and the seal requested of the
      *       capture thread, which the take's publication then follows on a
      *       later FX turn exactly as after a Stop ({@link #publishWhenWritten},

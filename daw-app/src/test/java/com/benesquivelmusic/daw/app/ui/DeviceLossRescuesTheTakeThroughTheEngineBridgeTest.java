@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -349,6 +350,76 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         assertThat(fixture.engine().isStreamOpen()).isTrue();
         assertThat(fixture.engine().isStreamPaused()).as("open but parked; nothing records").isTrue();
         assertThat(fixture.engineNotices()).anyMatch(notice -> notice.contains("reconnected"));
+        assertThat(onFx(() -> fixture.guitar().isArmed())).as("the armed set is kept").isTrue();
+    }
+
+    /**
+     * Fix round (PR #982 review, Copilot r4289337584 — high): a stream
+     * reopened before the loss's FX turn has run renders with the engine's
+     * stop having left the take's recording callback installed; before the
+     * fix the pipeline's stop on that FX turn was the first thing to close
+     * the take's producer gate, so every block the reopened pump rendered
+     * meanwhile entered the rescued take. Now {@code onDeviceRemoved} halts
+     * capture on the device-event thread before it closes the lost stream
+     * ({@code AudioEngine.haltRecordingCapture()}: gate closed, callback
+     * removed), and a reopen can only follow that close. The FX thread is
+     * held across the loss and the reopen; the reopened stream is an open
+     * the controller did not drive — the shape of
+     * {@code MainController.pluginGraphChanged}, which runs under no monitor
+     * of the controller — on the same rung, and it is left RUNNING until the
+     * backend has sunk three blocks' worth of output, a premise that reads
+     * nothing of the take. The take's published-block count, sampled once
+     * the loss had joined the old pump (the stream is closed), is unchanged
+     * after the reopened pump has rendered, and the sealed take holds
+     * exactly those blocks' frames. The STOPPED the open publishes names the
+     * lost device and ends the loss as its return.
+     */
+    @Test
+    void aStreamReopenedBeforeTheLossTurnRunsPublishesNothingIntoTheRescuedTake() throws Exception {
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        DeviceId device = fixture.activeDevice();
+        DefaultAudioEngineController engineController = fixture.engineController().orElseThrow();
+        RecordingPipeline pipeline = fixture.pipeline();
+        int blockFrames = fixture.project().getFormat().bufferSize();
+        int bytesPerSunkBlock = blockFrames * fixture.project().getFormat().channels() * Short.BYTES;
+        long publishedAtTheLoss;
+
+        try (DeviceLossRecordingFixture.FxHold hold = DeviceLossRecordingFixture.holdTheFxThread()) {
+            fixture.unplug();
+            await(() -> engineController.engineState() == EngineState.DEVICE_LOST, "the controller declared the loss");
+            assertThat(fixture.engine().isStreamOpen())
+                    .as("premise: the loss closed the stream, so the old pump has joined").isFalse();
+            publishedAtTheLoss = pipeline.getPublishedBlocks();
+            assertThat(publishedAtTheLoss).as("premise: the take had published blocks before the loss").isPositive();
+
+            // An open the controller did not drive, before the loss's FX
+            // turn, on the lost device's rung: its pump renders — and would
+            // have run the callback the engine's stop left installed.
+            fixture.engine().startAudioOutput();
+            await(() -> fixture.backend().recordedOutput().length >= 3 * bytesPerSunkBlock,
+                    "premise: the reopened pump rendered at least three blocks");
+            fixture.engine().pauseAudioOutput();
+
+            assertThat(pipeline.getPublishedBlocks())
+                    .as("no block of the reopened stream reached the take's ring").isEqualTo(publishedAtTheLoss);
+            assertThat(fixture.engine().getRecordingCallback())
+                    .as("the loss removed the take's callback on the device-event thread; the reopen found none").isNull();
+        }
+        awaitOnFx(() -> fixture.coordinator().getState() == RecordState.IDLE, "the loss ended on the reopened stream");
+        fixture.awaitPublished();
+
+        TakeManifest manifest = TakeManifest.read(TakeManifest.manifestPath(takeDirectory));
+        assertThat(manifest.sealedBy()).contains(TakeManifest.SealedBy.DEVICE_LOSS);
+        long sealedFrames = manifest.segments().stream().mapToLong(TakeManifest.SegmentEntry::frames).sum();
+        assertThat(sealedFrames)
+                .as("the sealed take holds exactly the frames published before the loss; none of the reopened stream's")
+                .isEqualTo(publishedAtTheLoss * blockFrames);
+        assertThat(pipeline.getPublishedBlocks()).isEqualTo(publishedAtTheLoss);
+        assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().rescuedTakes())
+                .extracting(IncompleteTakeStore.RescuedTake::takeDirectory, IncompleteTakeStore.RescuedTake::deviceName)
+                .containsExactly(tuple(takeDirectory.toAbsolutePath().normalize(), Optional.of(device.name())));
+        assertThat(fixture.engine().isStreamOpen()).isTrue();
+        assertThat(fixture.engine().isStreamPaused()).as("open but parked; nothing records").isTrue();
         assertThat(onFx(() -> fixture.guitar().isArmed())).as("the armed set is kept").isTrue();
     }
 

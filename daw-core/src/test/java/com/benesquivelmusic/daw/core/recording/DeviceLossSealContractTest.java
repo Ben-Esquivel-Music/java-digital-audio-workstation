@@ -29,6 +29,7 @@ import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.BLO
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.assertClipHoldsRamp;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.feedRamp;
+import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -123,6 +124,61 @@ class DeviceLossSealContractTest {
         try (var files = Files.walk(takeDir)) {
             assertThat(files.filter(SegmentFile::isStreamingName)).as("no .part survives the rescue").isEmpty();
         }
+    }
+
+    /**
+     * The loss path's order (book §5.5, §6.1): the device-event thread's
+     * {@link AudioEngine#haltRecordingCapture()} closes the take's producer
+     * gate and empties the callback slot first; the FX thread's
+     * {@code requestStop(DEVICE_LOSS)} comes later and finds the gate
+     * already closed. Its one-shot steps are then repeats, and the seal it
+     * requests must still run to termination: a stop that short-circuited on
+     * a closed gate would leave the flush thread parked and the manifest
+     * streaming.
+     */
+    @Test
+    void theStopRequestedAfterTheLossPathHaltSealsTheTakeAllTheSame() throws Exception {
+        RecordingPipeline pipeline = newPipeline();
+        startRecording(pipeline);
+        Instant before = Instant.now();
+        feedRamp(engine, transport, pipeline, 0, 2, 1);
+        CaptureRing ring = pipeline.getCaptureRing();
+        AudioEngine.RecordingCallback installed = engine.getRecordingCallback();
+        assertThat(installed).as("premise: the take's own callback is installed").isInstanceOf(CaptureCallback.class);
+        assertThat(ring.isProducerClosed()).as("premise: the gate is open").isFalse();
+        long publishedBeforeTheHalt = ring.publishedBlocks();
+
+        engine.haltRecordingCapture();
+
+        assertThat(ring.isProducerClosed()).as("the halt closed the take's gate").isTrue();
+        assertThat(engine.getRecordingCallback()).as("the halt emptied the callback slot").isNull();
+        installed.onAudioCaptured(rampBlock(2L * BLOCK_FRAMES), BLOCK_FRAMES);
+        assertThat(ring.publishedBlocks()).as("a block offered to the halted callback publishes nothing")
+                .isEqualTo(publishedBeforeTheHalt);
+
+        List<AudioClip> clips = rescue(pipeline);
+
+        CaptureFlushService service = pipeline.getCaptureFlushService();
+        assertThat(service.isTerminated()).as("the stop requested after the halt still ran the seal").isTrue();
+        assertThat(service.sealReason()).contains(SealedBy.DEVICE_LOSS);
+        assertThat(pipeline.isActive()).isFalse();
+        assertThat(pipeline.isFinalizationPending()).isFalse();
+        assertThat(pipeline.stopSealFailure()).isEmpty();
+        assertThat(pipeline.finalManifestFailure()).isEmpty();
+        assertThat(clips).hasSize(1);
+        assertClipHoldsRamp(clips.getFirst(), 0, 2L * BLOCK_FRAMES);
+
+        TakeManifest manifest = manifestOnDisk(pipeline);
+        assertThat(manifest.sealStatus()).isEqualTo(SealStatus.ABORTED);
+        assertThat(manifest.sealedBy()).contains(SealedBy.DEVICE_LOSS);
+        assertThat(manifest.sealedAt().orElseThrow()).isBetween(before, Instant.now());
+        assertThat(manifest.segments()).isNotEmpty().allSatisfy(segment -> {
+            assertThat(segment.state()).isEqualTo(SegmentState.SEALED);
+            assertThat(segment.resolve(takeDir)).isRegularFile();
+            assertThat(SegmentWriter.partPathFor(segment.resolve(takeDir))).doesNotExist();
+        });
+        assertThat(manifest.segments().stream().mapToLong(SegmentEntry::frames).sum())
+                .as("the frames are those published before the halt").isEqualTo(2L * BLOCK_FRAMES);
     }
 
     @Test
