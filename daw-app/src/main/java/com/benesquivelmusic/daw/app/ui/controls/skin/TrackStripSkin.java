@@ -184,9 +184,14 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         // Bidirectional binding avoids losing user toggle clicks while
         // still letting programmatic property writes propagate to the UI.
         // We listen instead of bind so dispose() can detach cleanly.
-        mutedSyncListener = (obs, was, now) -> muteBtn.setSelected(now);
-        soloedSyncListener = (obs, was, now) -> soloBtn.setSelected(now);
-        armedSyncListener = (obs, was, now) -> armBtn.setSelected(now);
+        // Each sync pushes the control's LIVE value, never `now`: the binder
+        // snaps a refused arm back from inside armedProperty's own
+        // notification, and JavaFX 27 hands the later listeners the outer
+        // change's stale new value — pushing it would bounce button ↔ control
+        // without end.
+        mutedSyncListener = (obs, was, now) -> muteBtn.setSelected(control.isMuted());
+        soloedSyncListener = (obs, was, now) -> soloBtn.setSelected(control.isSoloed());
+        armedSyncListener = (obs, was, now) -> armBtn.setSelected(control.isArmed());
         control.mutedProperty().addListener(mutedSyncListener);
         control.soloedProperty().addListener(soloedSyncListener);
         control.armedProperty().addListener(armedSyncListener);

@@ -342,9 +342,15 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         registeredListenerCount++;
 
         // Pan: two-way sync control.panProperty() ↔ knob.valueProperty().
+        // The control→widget legs push the control's LIVE value, never the
+        // listener's `now`: a binder snap-back nests a write into the same
+        // property, and JavaFX 27 then hands the listeners after the nesting
+        // one the outer change's stale new value. Pushing that would bounce
+        // widget ↔ control without end; the live value is a no-op there.
         panToWidget = (obs, was, now) -> {
-            if (now != null && panKnob.getValue() != now.doubleValue()) {
-                panKnob.setValue(now.doubleValue());
+            double live = control.getPan();
+            if (panKnob.getValue() != live) {
+                panKnob.setValue(live);
             }
         };
         control.panProperty().addListener(panToWidget);
@@ -359,8 +365,9 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
 
         // Fader: two-way sync control.faderDbProperty() ↔ fader.valueProperty().
         faderToWidget = (obs, was, now) -> {
-            if (now != null && fader.getValue() != now.doubleValue()) {
-                fader.setValue(now.doubleValue());
+            double live = control.getFaderDb();
+            if (fader.getValue() != live) {
+                fader.setValue(live);
             }
         };
         control.faderDbProperty().addListener(faderToWidget);
@@ -386,9 +393,11 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         registeredListenerCount++;
 
         // M/S/R two-way sync (mirrors TrackStripSkin exactly).
-        mutedSyncListener = (obs, was, now) -> muteBtn.setSelected(now);
-        soloedSyncListener = (obs, was, now) -> soloBtn.setSelected(now);
-        armedSyncListener = (obs, was, now) -> armBtn.setSelected(now);
+        // Live values, as for pan/fader: the binder snaps a refused arm back
+        // from inside armedProperty's own notification.
+        mutedSyncListener = (obs, was, now) -> muteBtn.setSelected(control.isMuted());
+        soloedSyncListener = (obs, was, now) -> soloBtn.setSelected(control.isSoloed());
+        armedSyncListener = (obs, was, now) -> armBtn.setSelected(control.isArmed());
         control.mutedProperty().addListener(mutedSyncListener);
         control.soloedProperty().addListener(soloedSyncListener);
         control.armedProperty().addListener(armedSyncListener);

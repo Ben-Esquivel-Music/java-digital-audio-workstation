@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/actions/workflows/ci.yml/badge.svg)](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/actions/workflows/ci.yml)
 
-An open-source, state-of-the-art Digital Audio Workstation (DAW) built with **JavaFX** and **Java 26** for recording, mixing, and mastering audio.
+An open-source, state-of-the-art Digital Audio Workstation (DAW) built with **JavaFX** and **Java 27** for recording, mixing, and mastering audio.
 
 ## Screenshots
 

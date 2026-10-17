@@ -223,16 +223,20 @@ class TrackControlBinderStripTest {
      * PR #977 verification round 2 — finding 3 with the REAL skin attached. The
      * skinless test above pins one {@code faderDb} listener; production has
      * three ({@code MixerChannelStripSkin.faderToWidget}, guarded by
-     * {@code fader.getValue() != now}, its {@code readoutRefreshListener}, and
-     * the binder's {@code faderToCommand}) and the snap-back re-enters
-     * {@code faderDb} from inside its own notification. JavaFX 26's
-     * {@code ExpressionHelper} hands the listeners after the nesting one
-     * {@code (outerOld, nestedNew)} — old == new — so the skin's guard swallows
-     * it; a dispatcher that handed them a stale value would, in the binder-first
-     * order, ping-pong widget ↔ control to a {@code StackOverflowError}, which
-     * {@link #onFx} rethrows (in the skin-first order the binder's listener is
-     * the last one on {@code faderDb}, so nothing after it can see a stale
-     * value; that order pins the command count and the readout).
+     * {@code fader.getValue() != control.getFaderDb()}, its
+     * {@code readoutRefreshListener}, and the binder's {@code faderToCommand})
+     * and the snap-back re-enters {@code faderDb} from inside its own
+     * notification. JavaFX 26's {@code ExpressionHelper} handed the listeners
+     * after the nesting one {@code (outerOld, nestedNew)} — old == new; JavaFX
+     * 27's captures the outer value once ({@code final T newValue =
+     * currentValue;}, JDK-8387655) and hands them {@code (outerOld, outerNew)},
+     * here a stale {@code (0, +6)} after the snap-back to 0. A skin guard on
+     * {@code now} would, in the binder-first order, push that +6 back into the
+     * widget and ping-pong widget ↔ control to a {@code StackOverflowError},
+     * which {@link #onFx} rethrows; the guard on the live value makes the stale
+     * call a no-op (in the skin-first order the binder's listener is the last
+     * one on {@code faderDb}, so nothing after it can see a stale value; that
+     * order pins the command count and the readout).
      * The gesture is the WIDGET's value, as a drag is; the widget is found by
      * {@code lookupAll(".fader")} — no reflection into the skin.
      */
