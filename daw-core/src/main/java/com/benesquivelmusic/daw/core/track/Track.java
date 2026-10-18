@@ -477,13 +477,37 @@ public final class Track {
     }
 
     /**
-     * Adds an audio clip to this track.
+     * Adds an audio clip to this track — unless it is comp output that a
+     * later compile of this track's comping replaced
+     * ({@link TakeComping#isSupersededOutput}).
+     *
+     * <p>Output a later compile replaced never re-enters its own track: the
+     * recompile already represents the comp, so the clip would play that
+     * range a second time (Recording Reliability book §3.5; PR #984
+     * review). This is the one choke point every undo and redo that puts a
+     * clip back goes through — an erase, a cut, a paste-over or crop, a
+     * move between tracks, undone after a swipe, a swipe's undo or an
+     * audition recompiled the main lane. The callers that put back a clip
+     * snapshot and announce it — the undo of an erase
+     * ({@code RemoveClipAction}), a cut ({@code CutClipsAction}) or a glue
+     * ({@code GlueClipsAction}), and the undo and redo of a move between
+     * tracks ({@code CrossTrackMoveAction}, {@code GroupMoveClipsAction}) —
+     * publish {@code ClipEvent.Added} only when this returns {@code true}.
+     * The undo of a paste-over or crop ({@code ClipEditOperations}, daw-app)
+     * and of a render in place ({@code RenderInPlaceService}) put clips back
+     * without a clip event.</p>
      *
      * @param clip the clip to add
+     * @return {@code true} if the clip was added; {@code false} if it is
+     *         superseded comp output of this track and was refused
      */
-    public void addClip(AudioClip clip) {
+    public boolean addClip(AudioClip clip) {
         Objects.requireNonNull(clip, "clip must not be null");
+        if (takeComping.isSupersededOutput(clip)) {
+            return false;
+        }
         clips.add(clip);
+        return true;
     }
 
     /**

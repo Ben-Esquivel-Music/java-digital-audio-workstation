@@ -50,7 +50,7 @@ class TrackCaptureDiscardTest {
 
     /** A capture of the fixture's track into {@code trackDir} whose lane sessions {@code sessions} creates. */
     private TrackCapture captureWith(TrackCapture.SessionFactory sessions) {
-        return new TrackCapture(track, track.getInputRouting(), -1, 1, BLOCK_FRAMES, 0L, 0.0,
+        return new TrackCapture(track, track.getInputRouting(), -1, 1, BLOCK_FRAMES, 0L,
                 SAMPLE_RATE, 120.0, trackDir, sessions);
     }
 

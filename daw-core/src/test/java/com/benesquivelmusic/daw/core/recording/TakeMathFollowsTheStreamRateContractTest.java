@@ -207,7 +207,11 @@ class TakeMathFollowsTheStreamRateContractTest {
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).startFrame()).isEqualTo(captureIn);
         assertThat(clips).hasSize(1);
         AudioClip clip = clips.getFirst();
-        assertThat(clip.getStartBeat()).isCloseTo(punchBeat, within(1e-9));
+        // The clip starts at the first frame it holds — the punch-in rounded
+        // into a capture frame — not at the project punch beat half a
+        // capture frame away (PR #984 review: a take starts at its first
+        // written frame).
+        assertThat(clip.getStartBeat()).isCloseTo(captureIn / captureRate * (BPM / 60.0), within(1e-9));
         assertThat(clip.getSourceRateMetadata())
                 .isEqualTo(new SourceRateMetadata((int) captureRate, 2, capturedFrames));
         assertThat(clip.getDurationBeats())

@@ -550,4 +550,93 @@ class AudioClipTest {
         assertThat(second.getSourceFilePath()).isEqualTo("/take/segment-000.wav");
         assertThat(clip.getSourceSegmentPaths()).hasSize(2);
     }
+
+    @Test
+    void aNewClipIsAUserClip() {
+        AudioClip clip = new AudioClip("Take", 0.0, 8.0, null);
+
+        assertThat(clip.compOutputOwner()).isEmpty();
+        assertThat(clip.isCompOutputOf(new CompOutputOwner() { })).isFalse();
+    }
+
+    @Test
+    void theCompOwnerIsComparedByIdentityAndCanBeCleared() {
+        CompOutputOwner owner = new CompOutputOwner() { };
+        CompOutputOwner other = new CompOutputOwner() { };
+        AudioClip clip = new AudioClip("Comp", 0.0, 8.0, null);
+
+        clip.setCompOutputOwner(owner);
+        assertThat(clip.compOutputOwner()).containsSame(owner);
+        assertThat(clip.isCompOutputOf(owner)).isTrue();
+        assertThat(clip.isCompOutputOf(other)).isFalse();
+
+        clip.setCompOutputOwner(null);
+        assertThat(clip.compOutputOwner()).isEmpty();
+        assertThatThrownBy(() -> clip.isCompOutputOf(null)).isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void splitAtKeepsTheCompOwnerOnBothHalves() {
+        CompOutputOwner owner = new CompOutputOwner() { };
+        AudioClip clip = new AudioClip("Comp", 0.0, 8.0, null);
+        clip.setCompOutputOwner(owner);
+
+        AudioClip second = clip.splitAt(3.0);
+
+        assertThat(clip.isCompOutputOf(owner)).isTrue();
+        assertThat(second.isCompOutputOf(owner)).isTrue();
+    }
+
+    @Test
+    void duplicateDropsTheCompOwner() {
+        CompOutputOwner owner = new CompOutputOwner() { };
+        AudioClip clip = new AudioClip("Comp", 0.0, 8.0, null);
+        clip.setCompOutputOwner(owner);
+
+        AudioClip copy = clip.duplicate();
+
+        assertThat(copy.compOutputOwner()).as("a copy the user places is a user clip").isEmpty();
+        assertThat(clip.isCompOutputOf(owner)).as("the original is unchanged").isTrue();
+    }
+
+    @Test
+    void trimmedCopyKeepsTheCompOwnerAndCoversExactlyTheRange() {
+        CompOutputOwner owner = new CompOutputOwner() { };
+        AudioClip clip = new AudioClip("Comp", 2.0, 8.0, "/take/segment-000.wav");
+        clip.setSourceOffsetBeats(1.0);
+        clip.setFadeInBeats(0.5);
+        clip.setGainDb(-3.0);
+        clip.setCompOutputOwner(owner);
+
+        AudioClip remnant = clip.trimmedCopy(4.0, 7.0);
+
+        assertThat(remnant).isNotSameAs(clip);
+        assertThat(remnant.getId()).isNotEqualTo(clip.getId());
+        assertThat(remnant.isCompOutputOf(owner)).isTrue();
+        assertThat(remnant.getStartBeat()).isEqualTo(4.0);
+        assertThat(remnant.getDurationBeats()).isEqualTo(3.0);
+        assertThat(remnant.getSourceOffsetBeats()).as("the audio at beat 4 is 2 beats into the clip").isEqualTo(3.0);
+        assertThat(remnant.getGainDb()).isEqualTo(-3.0);
+        assertThat(remnant.getFadeInBeats()).as("the clip's other properties, as duplicate() copies them")
+                .isEqualTo(0.5);
+        assertThat(clip.getStartBeat()).as("the clip itself is unchanged").isEqualTo(2.0);
+        assertThat(clip.getDurationBeats()).isEqualTo(8.0);
+        assertThat(clip.getSourceOffsetBeats()).isEqualTo(1.0);
+    }
+
+    @Test
+    void trimmedCopyOfAUserClipIsAUserClip() {
+        AudioClip clip = new AudioClip("Take", 0.0, 8.0, null);
+
+        assertThat(clip.trimmedCopy(0.0, 4.0).compOutputOwner()).isEmpty();
+    }
+
+    @Test
+    void trimmedCopyRejectsARangeOutsideTheClip() {
+        AudioClip clip = new AudioClip("Take", 2.0, 4.0, null);
+
+        assertThatThrownBy(() -> clip.trimmedCopy(1.0, 4.0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> clip.trimmedCopy(3.0, 7.0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> clip.trimmedCopy(4.0, 4.0)).isInstanceOf(IllegalArgumentException.class);
+    }
 }

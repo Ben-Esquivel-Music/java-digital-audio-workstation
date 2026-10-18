@@ -613,6 +613,8 @@ public final class ArrangementCanvas extends Pane {
      * Resolves the take lane under the pointer for the COMP tool (story
      * 328, book §5.6): the track's take lanes are stacked under its main
      * lane, {@link #TAKE_LANE_HEIGHT} each, in {@link TakeComping} order.
+     * Every other tool uses it to stay inert over a take lane rather than
+     * act on the main-lane clip at the same beat.
      *
      * @param trackIndex the track the pointer is over ({@link #trackIndexAtY(double)})
      * @param y          the Y pixel coordinate (in canvas space)
@@ -775,27 +777,34 @@ public final class ArrangementCanvas extends Pane {
         for (int i = 0; i < tracks.size(); i++) {
             Track track = tracks.get(i);
             double laneY = laneYCache[i];
-            if (laneY + trackHeight < 0 || laneY > canvasHeight) {
+            // The track's clip area is its main lane plus the take lanes
+            // under it, sized by the same height the hit-test resolves
+            // against: a main lane scrolled above the viewport can leave
+            // its take lanes on screen.
+            double takeLanesTop = laneY + trackHeight;
+            if (takeLanesTop + takeLanesHeight(track) < 0 || laneY > canvasHeight) {
                 continue;
             }
 
             Color trackColor = parseTrackColor(track);
 
-            for (AudioClip clip : track.getClips()) {
-                ClipOverlayRenderer.drawAudioClip(gc, clip, trackColor,
-                        laneY, trackHeight, pixelsPerBeat, scrollXBeats,
-                        canvasWidth, canvasHeight, selectionModel,
-                        samplesPerBeat, sessionRateHz);
+            if (takeLanesTop >= 0) {
+                for (AudioClip clip : track.getClips()) {
+                    ClipOverlayRenderer.drawAudioClip(gc, clip, trackColor,
+                            laneY, trackHeight, pixelsPerBeat, scrollXBeats,
+                            canvasWidth, canvasHeight, selectionModel,
+                            samplesPerBeat, sessionRateHz);
+                }
+
+                MidiClip midiClip = track.getMidiClip();
+                if (!midiClip.isEmpty() && track.getType() == TrackType.MIDI) {
+                    ClipOverlayRenderer.drawMidiClip(gc, track, midiClip, trackColor,
+                            laneY, trackHeight, pixelsPerBeat, scrollXBeats,
+                            canvasWidth, canvasHeight, selectionModel);
+                }
             }
 
-            MidiClip midiClip = track.getMidiClip();
-            if (!midiClip.isEmpty() && track.getType() == TrackType.MIDI) {
-                ClipOverlayRenderer.drawMidiClip(gc, track, midiClip, trackColor,
-                        laneY, trackHeight, pixelsPerBeat, scrollXBeats,
-                        canvasWidth, canvasHeight, selectionModel);
-            }
-
-            drawTakeLanes(gc, track, trackColor, laneY + trackHeight, canvasWidth, canvasHeight);
+            drawTakeLanes(gc, track, trackColor, takeLanesTop, canvasWidth, canvasHeight);
         }
     }
 

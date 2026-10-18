@@ -35,7 +35,12 @@ import java.util.Objects;
  * <p>The main lane is never restored from a snapshot of clips: every path
  * recompiles from the live comping state through {@link CompileCompAction},
  * so an audition (a lane solo, not an edit) between a take and its undo
- * cannot leave its clips orphaned or doubled.</p>
+ * cannot leave its clips orphaned or doubled. Nor does undo or redo replay
+ * an audition: both end it ({@link TakeComping#endAuditions()}) before they
+ * recompile, so undo plays the selection from before the take and redo the
+ * selection the take left — a lane the user Alt-clicked would otherwise
+ * play whole in place of either, since {@code TakeComping.compile()} prefers
+ * a soloed lane (PR #984 review).</p>
  */
 public final class RecordedTakeAction implements UndoableAction {
 
@@ -96,6 +101,9 @@ public final class RecordedTakeAction implements UndoableAction {
                 comping.setCompRegions(selectionAfter.get(track));
                 changed = true;
             }
+            // A lane audition since the take is not replayed: the redo
+            // plays the selection the take left (PR #984 review).
+            changed |= comping.endAuditions();
             // The first run finds the take as the pipeline applied it, comp
             // clips included; only a redo has something to put back.
             if (changed) {
@@ -117,6 +125,10 @@ public final class RecordedTakeAction implements UndoableAction {
         for (Map.Entry<Track, List<TakeLane>> entry : lanes.entrySet()) {
             Track track = entry.getKey();
             TakeComping comping = track.getTakeComping();
+            // An audition started since the take ends here, on this take's
+            // lanes too before they leave: the comp below plays the
+            // selection, and a redo does not find a lane still soloed.
+            comping.endAuditions();
             for (TakeLane lane : entry.getValue()) {
                 comping.removeTakeLane(lane);
             }

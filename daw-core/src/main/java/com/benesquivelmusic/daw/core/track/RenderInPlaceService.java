@@ -202,6 +202,8 @@ public final class RenderInPlaceService {
         boolean replaceMode = result.destinationTrack() == track
                 && !track.getClips().containsAll(result.originalClips());
         if (replaceMode) {
+            // Comp output a recompile replaced since the render is refused
+            // by Track.addClip: the comp the track holds now plays it.
             for (AudioClip c : result.originalClips()) {
                 track.addClip(c);
             }

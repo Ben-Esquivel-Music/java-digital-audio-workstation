@@ -16,6 +16,21 @@ import java.util.UUID;
  * <p>Executing this action removes both clips from the track and adds a new
  * merged clip that spans from the start of the first clip to the end of the
  * second clip. Undoing restores the original two clips.</p>
+ *
+ * <p>The merged clip is comp output only if both clips are output of the
+ * same comp ({@link AudioClip#compOutputOwner()}) — two halves of a split
+ * comp clip glued back — so the next recompile replaces it; a glue of
+ * anything else is a user clip.</p>
+ *
+ * <p>A glue whose clips are not both on the track when it runs does
+ * nothing, and its undo does nothing unless the merged clip is still on the
+ * track. A recompile in between can have replaced them: glue two comp
+ * halves, swipe, undo the swipe — the swipe's undo recompiled the main
+ * lane, so the merged clip is gone. The defence against the comp then
+ * playing twice is {@link Track#addClip}, which refuses comp output a
+ * recompile replaced; these guards keep off-track clips unmutated and the
+ * clip events honest — no merged clip is built, and nothing is announced,
+ * for clips that are not there.</p>
  */
 public final class GlueClipsAction implements UndoableAction {
 
@@ -24,6 +39,8 @@ public final class GlueClipsAction implements UndoableAction {
     private final AudioClip second;
 
     private AudioClip merged;
+    /** Whether the last {@link #execute()} glued the clips; its undo reverts only then. */
+    private boolean applied;
 
     /** Tolerance for comparing beat positions (accommodates floating-point imprecision). */
     private static final double BEAT_EPSILON = 0.001;
@@ -79,6 +96,10 @@ public final class GlueClipsAction implements UndoableAction {
 
     @Override
     public void execute() {
+        applied = track.getClips().contains(first) && track.getClips().contains(second);
+        if (!applied) {
+            return;
+        }
         double mergedStart = first.getStartBeat();
         double mergedDuration = second.getEndBeat() - first.getStartBeat();
         merged = new AudioClip(first.getName(), mergedStart, mergedDuration,
@@ -97,6 +118,8 @@ public final class GlueClipsAction implements UndoableAction {
         merged.setPitchShiftSemitones(first.getPitchShiftSemitones());
         merged.setStretchQuality(first.getStretchQuality());
         merged.setAudioData(first.getAudioData());
+        // Comp output only when both clips are the same comp's output.
+        merged.setCompOutputOwner(sameCompOutputOwner(first, second));
 
         track.removeClip(first);
         track.removeClip(second);
@@ -113,16 +136,40 @@ public final class GlueClipsAction implements UndoableAction {
 
     @Override
     public void undo() {
-        track.removeClip(merged);
-        track.addClip(first);
-        track.addClip(second);
+        if (!applied) {
+            return;
+        }
+        applied = false;
+        if (!track.removeClip(merged)) {
+            // A recompile replaced the merged clip: its halves are not put
+            // back over the comp the main lane holds now.
+            return;
+        }
+        boolean firstAdded = track.addClip(first);
+        boolean secondAdded = track.addClip(second);
         UUID trackId = UUID.fromString(track.getId());
         Instant now = Instant.now();
         EventBusPublisher.publish(new ClipEvent.Removed(
                 trackId, UUID.fromString(merged.getId()), now));
-        EventBusPublisher.publish(new ClipEvent.Added(
-                trackId, UUID.fromString(first.getId()), now));
-        EventBusPublisher.publish(new ClipEvent.Added(
-                trackId, UUID.fromString(second.getId()), now));
+        if (firstAdded) {
+            EventBusPublisher.publish(new ClipEvent.Added(
+                    trackId, UUID.fromString(first.getId()), now));
+        }
+        if (secondAdded) {
+            EventBusPublisher.publish(new ClipEvent.Added(
+                    trackId, UUID.fromString(second.getId()), now));
+        }
+    }
+
+    /**
+     * The comp both clips are output of, or {@code null} unless they share
+     * one. The owner is a comp's compile pass, so one owner means one
+     * comping and one compile: on that comping's own track, pieces of the
+     * comp it holds now; on another track, where a moved comp clip keeps its
+     * owner, pieces of that pass's output, whose tag is inert there.
+     */
+    private static CompOutputOwner sameCompOutputOwner(AudioClip first, AudioClip second) {
+        CompOutputOwner owner = first.compOutputOwner().orElse(null);
+        return owner != null && second.isCompOutputOf(owner) ? owner : null;
     }
 }

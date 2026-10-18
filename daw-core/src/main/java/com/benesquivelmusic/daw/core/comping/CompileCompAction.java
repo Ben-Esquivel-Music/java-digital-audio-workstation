@@ -13,12 +13,17 @@ import java.util.Objects;
  *
  * <p>{@link #execute()} compiles the current comp selection
  * ({@link TakeComping#compile()} — one clip per selected lane range, or the
- * soloed lane whole, each referencing the take's segment files), removes
- * from the track exactly the clips the comp currently occupies
- * ({@link TakeComping#getCompClips()}) and adds the new ones. Clips that are
- * not comp output — an earlier recording, an import — are never touched.
- * The take stack itself is preserved, so the user can go on comping; every
- * swipe runs one of these ({@link SetCompRegionAction}).</p>
+ * soloed lane whole, each referencing the take's segment files and tagged
+ * as the comping's output), removes from the track every clip that is the
+ * comping's output now ({@link TakeComping#compOutputOn(Track)}) and adds
+ * the new ones. Occupancy is read from the live track, not remembered: comp
+ * output a clip edit kept as comp output — both halves of a Scissors split,
+ * the remnants of a paste-over or crop, a glue of two halves — is replaced
+ * as a whole, and so is comp output the user trimmed or moved on the main
+ * lane (PR #984 review). Clips that are not comp output — an earlier
+ * recording, an import, a duplicate or paste of comp output — are never
+ * touched. The take stack itself is preserved, so the user can go on
+ * comping; every swipe runs one of these ({@link SetCompRegionAction}).</p>
  *
  * <p>{@link #undo()} recompiles the same way from the LIVE comping state —
  * it does not put back a snapshot of the clips the previous compile had.
@@ -31,7 +36,25 @@ import java.util.Objects;
  * itself changes no selection, so its own undo is a recompile of the same
  * state; it is meaningful as the second half of {@link SetCompRegionAction}
  * and of the recording coordinator's "Record Audio" entry, which restore
- * the selection before calling it.</p>
+ * the selection — and end any audition ({@link TakeComping#endAuditions()})
+ * — before calling it. Called on its own, as the audition gesture does, it
+ * compiles whatever the comping state is, a soloed lane included.</p>
+ *
+ * <p>Every compile is a new pass of the comping, and the clips of every
+ * earlier pass are superseded output that never re-enters the track
+ * ({@link TakeComping#isSupersededOutput}, {@link Track#addClip}). That
+ * keeps the invariant against the undo of a clip edit, too: an erase, a
+ * cut, a paste-over or crop, a move to another track, undone after a
+ * recompile, cannot put back a clip this compile replaced and so leave the
+ * comp playing twice (PR #984 review).</p>
+ *
+ * <p>A recompile publishes no {@code ClipEvent}: neither {@link #execute()}
+ * nor {@link #undo()} announces the clips it removes from the track or the
+ * ones it adds ({@link Track#removeClip} and {@link Track#addClip} publish
+ * nothing themselves). So a subscriber cannot pair each {@code ClipEvent.Added}
+ * for a track with a later {@code ClipEvent.Removed} for it across a
+ * recompile: a comp clip a clip edit announced as added to its track can
+ * leave that track in a recompile without a removal ever being published.</p>
  */
 public final class CompileCompAction implements UndoableAction {
 
@@ -67,12 +90,13 @@ public final class CompileCompAction implements UndoableAction {
 
     /**
      * Replaces the clips the comp occupies on the main lane with a fresh
-     * compile of the live comping state: the clips in
-     * {@link TakeComping#getCompClips()} leave the track, the compile's
-     * clips join it, and the comping records the new occupancy.
+     * compile of the live comping state: every clip of the track that is
+     * the comping's output ({@link TakeComping#compOutputOn(Track)}), of any
+     * pass, leaves the track, and the compile's clips, tagged with its new
+     * pass, join it.
      */
     private void recompile() {
-        List<AudioClip> occupied = List.copyOf(comping.getCompClips());
+        List<AudioClip> occupied = comping.compOutputOn(track);
         compiledClips = List.copyOf(comping.compile());
         for (AudioClip previous : occupied) {
             track.removeClip(previous);
@@ -80,7 +104,6 @@ public final class CompileCompAction implements UndoableAction {
         for (AudioClip compiled : compiledClips) {
             track.addClip(compiled);
         }
-        comping.setCompClips(compiledClips);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.SplitClipAction;
 import com.benesquivelmusic.daw.core.comping.CompRegion;
 import com.benesquivelmusic.daw.core.comping.CompileCompAction;
 import com.benesquivelmusic.daw.core.comping.TakeComping;
@@ -11,6 +12,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -67,7 +70,7 @@ class CompToolHandlerTest {
         assertThat(restored.getDurationBeats()).isEqualTo(before.getDurationBeats());
         assertThat(restored.getSourceOffsetBeats()).isEqualTo(before.getSourceOffsetBeats());
         assertThat(restored.getAudioData()).isSameAs(audioOfLane(0));
-        assertThat(comping.getCompClips()).containsExactly(restored);
+        assertThat(comping.compOutputOn(track)).containsExactly(restored);
     }
 
     @Test
@@ -89,11 +92,11 @@ class CompToolHandlerTest {
         undo.undo();
         assertThat(track.getClips()).as("the audition's clip is gone, nothing is doubled")
                 .doesNotContain(audition).hasSize(1)
-                .containsExactlyElementsOf(comping.getCompClips());
+                .containsExactlyElementsOf(comping.compOutputOn(track));
         assertThat(comping.getCompRegions()).containsExactly(new CompRegion(0, 0.0, 4.0));
 
         handler.clickMainLane();
-        assertThat(track.getClips()).hasSize(1).containsExactlyElementsOf(comping.getCompClips());
+        assertThat(track.getClips()).hasSize(1).containsExactlyElementsOf(comping.compOutputOn(track));
         assertThat(track.getClips().getFirst().getAudioData()).isSameAs(audioOfLane(0));
         assertThat(track.getClips().getFirst().getDurationBeats()).isEqualTo(4.0);
     }
@@ -164,6 +167,37 @@ class CompToolHandlerTest {
         handler.altClickLane(1);
         handler.clickMainLane();
         assertThat(comping.getTakeLanes()).allMatch(l -> !l.isSoloed());
+    }
+
+    @Test
+    void aMainLaneClickRecompilesOnlyToEndAnAudition() {
+        // PR #984 review: with no audition playing, a main-lane click must
+        // not recompile — that would replace the user's edit of the comp
+        // output with no undo entry and make the edited clips superseded.
+        handler.beginSwipe(0, 0.0);
+        handler.endSwipe(8.0);
+        undo.execute(new SplitClipAction(track, track.getClips().getFirst(), 4.0));
+        List<AudioClip> edited = List.copyOf(track.getClips());
+        List<List<Double>> bounds = edited.stream()
+                .map(clip -> List.of(clip.getStartBeat(), clip.getEndBeat())).toList();
+        int undoEntries = undo.undoSize();
+
+        handler.clickMainLane();
+
+        assertThat(track.getClips()).as("the same clips: no compile ran").containsExactlyElementsOf(edited);
+        assertThat(track.getClips().stream().map(clip -> List.of(clip.getStartBeat(), clip.getEndBeat())))
+                .as("with their bounds").containsExactlyElementsOf(bounds);
+        assertThat(edited).as("no new pass superseded them").noneMatch(comping::isSupersededOutput);
+        assertThat(undo.undoSize()).as("no undo entry").isEqualTo(undoEntries);
+
+        handler.altClickLane(1);
+        handler.clickMainLane();
+
+        assertThat(comping.getTakeLanes()).as("the audition ended").noneMatch(TakeLane::isSoloed);
+        assertThat(track.getClips()).as("the recompile replaced the edited clips").doesNotContainAnyElementsOf(edited)
+                .singleElement().matches(clip -> clip.getStartBeat() == 0.0 && clip.getEndBeat() == 8.0
+                        && clip.getAudioData() == audioOfLane(0), "lane 0 over [0, 8)");
+        assertThat(undo.undoSize()).as("an audition is not an undo entry").isEqualTo(undoEntries);
     }
 
     @Test

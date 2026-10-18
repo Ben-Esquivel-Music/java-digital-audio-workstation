@@ -92,7 +92,7 @@ class CreateTakeAndSetCompRegionActionTest {
         assertThat(restored.getDurationBeats()).isEqualTo(before.getFirst().getDurationBeats());
         assertThat(restored.getSourceOffsetBeats()).isEqualTo(before.getFirst().getSourceOffsetBeats());
         assertThat(restored.getAudioData()).isSameAs(before.getFirst().getAudioData());
-        assertThat(comping.getCompClips()).containsExactly(restored);
+        assertThat(comping.compOutputOn(track)).containsExactly(restored);
     }
 
     private static TakeLane laneWithClip(String name) {

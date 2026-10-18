@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.comping;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.CompOutputOwner;
+import com.benesquivelmusic.daw.core.track.Track;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,15 +31,80 @@ import java.util.Objects;
  * <p>This is the one take model (Recording Reliability book §3.5, story
  * 328): loop-record ingests each lap as a lane ({@code RecordingPipeline}),
  * the COMP tool selects across the lanes, and the compiled output is what
- * the main lane plays. The clips that output currently occupies on the main
- * lane are remembered here ({@link #getCompClips()}) so a re-compile can
- * replace exactly them and nothing else on the track.</p>
+ * the main lane plays. Every {@link #compile()} is a new <em>pass</em>, and
+ * every clip it produces is tagged with that pass as its
+ * {@link CompOutputOwner}; the main lane's comp output is whatever clips of
+ * the live track carry a pass of this comping ({@link #isCompOutput},
+ * {@link #compOutputOn(Track)}) — not a remembered list. So the output
+ * stays comp output through clip edits that keep the tag — a Scissors split
+ * gives it to both halves, a paste-over or crop to the remnants it leaves
+ * ({@link AudioClip#splitAt}, {@link AudioClip#trimmedCopy}) — and a
+ * re-compile ({@link CompileCompAction}) replaces all of it, of every pass,
+ * and nothing else on the track: a duplicate or paste of comp output, an
+ * earlier recording, an import is a user clip and is never touched. A comp
+ * clip the user trimmed or deleted is replaced by the next compile as well
+ * — the main lane is what the comping state says it is. A swipe's compile
+ * is undoable; an audition's (the COMP tool's Alt-click, or the main-lane
+ * click that ends it) is not, so it discards such an edit with no undo
+ * entry (future story 353). A comp clip moved to another track keeps its
+ * tag, which is inert there: only this comping's own track scans for its
+ * output ({@link #compOutputOn(Track)}) or refuses it ({@link Track#addClip}),
+ * and {@link #isCompOutput} holds only for this comping's passes, so on
+ * another track the clip behaves as a user clip — a swipe there never
+ * touches it. Moved back before a recompile here, it is this comping's
+ * output again and the next swipe replaces it; a move clears the tag only
+ * when the destination's comping holds the clip as superseded output
+ * ({@code CrossTrackMoveAction}, {@code GroupMoveClipsAction}).</p>
+ *
+ * <p><strong>Superseded output never re-enters its track</strong> (PR #984
+ * review). Output of an earlier pass ({@link #isSupersededOutput}) is what a
+ * later compile replaced, and the later compile already represents the
+ * comp; {@link Track#addClip} refuses it. So an undo that puts back a clip
+ * snapshot — of an erase, a cut, a paste-over, a crop, a move to another
+ * track — after a swipe, a swipe's undo or an audition recompiled the main
+ * lane cannot leave the comp playing twice. That is the one choke point
+ * every such undo and redo goes through; no action needs a guard of its
+ * own.</p>
+ *
+ * <p><strong>Every comp clip on this comping's track is output of the
+ * current pass</strong>, or derived from such a clip by an edit that keeps
+ * the tag. In production only {@link CompileCompAction} advances the pass
+ * — {@link #compile()} is package-private — and it removes every clip of the
+ * track that is this comping's output, of any pass, before it adds the new
+ * pass's clips; from then on {@link Track#addClip} keeps the earlier
+ * passes' clips off the track. That is why an edit that adds a clip
+ * derived from one on the track — the second half of a Scissors split, a
+ * glue of two halves ({@code SplitClipAction}, {@code GlueClipsAction}) —
+ * or a fresh clip ({@code AddClipAction}) is never refused, and announces
+ * the clip without checking {@link Track#addClip}'s result.</p>
+ *
+ * <p><strong>Auditions.</strong> A soloed lane ({@link TakeLane#isSoloed()},
+ * the COMP tool's Alt-click) makes {@link #compile()} play that lane whole
+ * instead of the selection. An audition is a monitoring state, not an edit:
+ * no undo or redo replays it, and every undoable action that recompiles
+ * ends it first ({@link #endAuditions()}).</p>
  */
 public final class TakeComping {
 
     private final List<TakeLane> takeLanes = new ArrayList<>();
     private final List<CompRegion> compRegions = new ArrayList<>();
-    private List<AudioClip> compClips = List.of();
+    /** The pass the last {@link #compile()} tagged its clips with. */
+    private CompPass currentPass = new CompPass(this);
+
+    /**
+     * One {@link #compile()} of a comping: the owner its clips carry. Clips
+     * derived from them by edits that keep the tag (a split's halves, a
+     * remnant, a glue of halves) share the pass, so they stand or fall with
+     * it.
+     */
+    private static final class CompPass implements CompOutputOwner {
+
+        private final TakeComping comping;
+
+        private CompPass(TakeComping comping) {
+            this.comping = comping;
+        }
+    }
 
     /**
      * Adds a new take lane.
@@ -181,11 +248,21 @@ public final class TakeComping {
      * <p>For each comp region, the corresponding audio clip from the
      * referenced take lane is located, and a new clip is created that
      * covers exactly the comp region's beat range. The returned clips
-     * represent the composite and can replace the track's existing clips.</p>
+     * represent the composite and can replace the track's existing clips.
+     * Each compile is a new pass, and each clip is tagged with it as this
+     * comping's output ({@link #isCompOutput}); every clip of an earlier
+     * pass is superseded from then on ({@link #isSupersededOutput}).</p>
+     *
+     * <p>Package-private: a pass supersedes the clips of the previous one, so
+     * its only production caller is {@link CompileCompAction}, which replaces
+     * the comp's output on the track with the clips this returns. A call that
+     * did not would leave the live output on the track superseded — refused
+     * by {@link Track#addClip} if an undo ever tried to put it back.</p>
      *
      * @return an unmodifiable list of compiled audio clips
      */
-    public List<AudioClip> compile() {
+    List<AudioClip> compile() {
+        currentPass = new CompPass(this);
         List<AudioClip> compiled = new ArrayList<>();
         for (TakeLane lane : takeLanes) {
             if (lane.isSoloed()) {
@@ -223,9 +300,10 @@ public final class TakeComping {
      * A main-lane clip playing {@code [clipStart, clipEnd)} of {@code takeClip}:
      * it references the take's segment files (all of them — a take that
      * rotated spans several) at the matching source offset and shares the
-     * take's audio array, so nothing is copied or invented.
+     * take's audio array, so nothing is copied or invented. It is output of
+     * this comping's current pass.
      */
-    private static AudioClip slice(AudioClip takeClip, double clipStart, double clipEnd) {
+    private AudioClip slice(AudioClip takeClip, double clipStart, double clipEnd) {
         AudioClip compClip = new AudioClip(
                 takeClip.getName(),
                 clipStart,
@@ -236,30 +314,76 @@ public final class TakeComping {
         compClip.setGainDb(takeClip.getGainDb());
         compClip.setAudioData(takeClip.getAudioData());
         compClip.setSourceRateMetadata(takeClip.getSourceRateMetadata());
+        compClip.setCompOutputOwner(currentPass);
         return compClip;
     }
 
     /**
-     * Returns the clips the compiled comp currently occupies on the main
-     * lane — what {@link CompileCompAction} last put there — so the next
-     * compile replaces exactly those. Empty until a comp is compiled.
+     * Returns whether {@code clip} is output of this comping — a clip
+     * {@link #compile()} produced, of any pass, or one an edit derived from
+     * it that kept its tag ({@link AudioClip#splitAt},
+     * {@link AudioClip#trimmedCopy}, a glue of two such clips). This is the
+     * one owner predicate: a recompile replaces every clip of the track it
+     * holds for ({@link #compOutputOn(Track)}).
      *
-     * @return the comp's main-lane clips (unmodifiable; never {@code null})
+     * @param clip the clip to test; not {@code null}
+     * @return {@code true} if the clip is this comping's output
      */
-    public List<AudioClip> getCompClips() {
-        return compClips;
+    public boolean isCompOutput(AudioClip clip) {
+        Objects.requireNonNull(clip, "clip must not be null");
+        return clip.compOutputOwner().orElse(null) instanceof CompPass pass && pass.comping == this;
     }
 
     /**
-     * Records the clips the compiled comp occupies on the main lane. Called
-     * by {@link CompileCompAction} (execute and undo); not a mutation of the
-     * track itself.
+     * Returns whether {@code clip} is this comping's output of an earlier
+     * pass than the last {@link #compile()}: output that compile replaced.
+     * Such a clip never re-enters this comping's track
+     * ({@link Track#addClip}) — the later compile already represents the
+     * comp, so putting it back would play that range twice.
      *
-     * @param clips the comp's main-lane clips (copied)
+     * @param clip the clip to test; not {@code null}
+     * @return {@code true} if the clip is superseded output of this comping
      */
-    public void setCompClips(List<AudioClip> clips) {
-        Objects.requireNonNull(clips, "clips must not be null");
-        compClips = List.copyOf(clips);
+    public boolean isSupersededOutput(AudioClip clip) {
+        return isCompOutput(clip) && !clip.isCompOutputOf(currentPass);
+    }
+
+    /**
+     * Returns the clips on {@code track} that are this comping's output, in
+     * the track's order: what the main lane's comp occupies now, after
+     * whatever edits were made to it. {@link CompileCompAction} replaces
+     * exactly these.
+     *
+     * @param track the track to scan — this comping's own track
+     * @return the comp output on the track (unmodifiable; possibly empty)
+     */
+    public List<AudioClip> compOutputOn(Track track) {
+        Objects.requireNonNull(track, "track must not be null");
+        List<AudioClip> output = new ArrayList<>();
+        for (AudioClip clip : track.getClips()) {
+            if (isCompOutput(clip)) {
+                output.add(clip);
+            }
+        }
+        return Collections.unmodifiableList(output);
+    }
+
+    /**
+     * Ends every lane audition: clears the solo of every take lane, so the
+     * next {@link #compile()} plays the comp selection. Every undoable
+     * action that recompiles calls this first — an audition is a monitoring
+     * state, never an edit, so no execute, undo or redo may present one in
+     * place of the selection it restores.
+     *
+     * @return whether a lane was soloed
+     */
+    public boolean endAuditions() {
+        boolean auditioning = false;
+        for (TakeLane lane : takeLanes) {
+            auditioning |= lane.isSoloed();
+            lane.setSoloed(false);
+        }
+        return auditioning;
     }
 
     /**

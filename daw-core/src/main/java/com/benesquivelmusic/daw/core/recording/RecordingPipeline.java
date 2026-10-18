@@ -157,7 +157,6 @@ public final class RecordingPipeline {
      * whatever earlier regions it overlaps.
      */
     private final Map<Track, List<CompRegion>> compSelectionBeforeIngestion = new LinkedHashMap<>();
-    private final Map<Track, Long> trackCompensationFrames = new LinkedHashMap<>();
 
     /**
      * The current take's ring and flush service, or the last take's until
@@ -565,13 +564,14 @@ public final class RecordingPipeline {
         recordedClips.clear();
         recordedTakeLanes.clear();
         compSelectionBeforeIngestion.clear();
-        trackCompensationFrames.clear();
         captures.clear();
 
         // Capture the recording start position before any transport changes.
         // When the transport has an enabled (frame-based) punch region, prefer
-        // its start position so that recorded clips are anchored at the
-        // punch-in point even when playback began earlier (e.g. pre-roll).
+        // its start position as the take's anchor (the manifest's start beat)
+        // even when playback began earlier (e.g. pre-roll). The clips are not
+        // placed from it: each starts at its first written frame
+        // (TrackCapture.noteWrittenSlice).
         // The transport's own position is kept for beginCapture(), which
         // restores it if it moved while the take was being prepared — only
         // over a transport that is stopped or paused then; a rolling one is
@@ -668,11 +668,10 @@ public final class RecordingPipeline {
                 }
                 compensation = Math.max(0, latency.totalFrames());
             }
-            trackCompensationFrames.put(track, compensation);
             int source = instrument ? 1 + instrumentIndex++ : -1;
             int routedChannels = instrument ? format.channels() : routing.channelCount();
             captures.put(track, new TrackCapture(track, routing, source, routedChannels,
-                    format.bufferSize(), compensation, compensatedStartBeat(track, tempo),
+                    format.bufferSize(), compensation,
                     format.sampleRate(), tempo, outputDirectory.resolve(track.getId()), sessionFactory));
             if (!instrument && plan != null) {
                 int ordinal = plan.sourceFor(track);
@@ -1529,7 +1528,7 @@ public final class RecordingPipeline {
 
     /**
      * Builds the take's clips on the caller thread once the flush thread has
-     * terminated — a plain take's from the captured start position at
+     * terminated — a plain take's from its first written frame at
      * {@link #clipTempoBpm}, a loop-record take's from the stacks the flush
      * thread built — gives each the audio {@code loadedAudio} has for it,
      * and only then adds them to the armed tracks and records them in
@@ -1572,9 +1571,7 @@ public final class RecordingPipeline {
                     // so the take would publish no clip (story 328 review
                     // round 2). The undo restores the selection, not the
                     // audition.
-                    for (TakeLane lane : comping.getTakeLanes()) {
-                        lane.setSoloed(false);
-                    }
+                    comping.endAuditions();
                     List<TakeLane> lanes = new ArrayList<>(laps.size());
                     int firstLaneIndex = comping.getTakeLaneCount();
                     for (AudioClip lap : laps) {
@@ -1616,9 +1613,13 @@ public final class RecordingPipeline {
                 }
                 List<String> segmentPaths = capture.sealedSegmentPaths();
 
+                // The clip starts where its first frame was written, less
+                // the track's compensation — under punch gating that is the
+                // punch-in point or the record position inside the region,
+                // whichever writing began at (PR #984 review).
                 AudioClip clip = new AudioClip(
                         "Recording — " + track.getName(),
-                        compensatedStartBeat(track, clipTempoBpm),
+                        capture.laneStartBeat(clipTempoBpm),
                         durationBeats,
                         segmentPaths.isEmpty() ? null : segmentPaths.getFirst());
                 clip.setSourceSegmentPaths(segmentPaths);
@@ -1899,8 +1900,13 @@ public final class RecordingPipeline {
     /**
      * Returns the beat position at which recording started.
      *
-     * <p>This is captured when {@link #prepare(long)} is called and used to
-     * position recorded clips on the timeline. When the transport is stopped
+     * <p>This is captured when {@link #prepare(long)} is called — the punch
+     * start when a punch is set, otherwise the transport's position — and is
+     * the take's anchor. It does not position the recorded clips: each clip
+     * starts where its first frame was actually written, less the track's
+     * compensation (PR #984 review), which under punch gating can be later
+     * than this anchor — a record start inside the punch region writes from
+     * the playhead. When the transport is stopped
      * or paused as capture begins, {@link #beginCapture()} puts the transport
      * back at the position it had then, so a seek while the take was being
      * prepared cannot separate recording from this anchor; over a rolling
@@ -2461,17 +2467,6 @@ public final class RecordingPipeline {
     }
 
     /**
-     * Returns the clip start beat after applying driver-round-trip
-     * compensation. The take is shifted *earlier* on the timeline by
-     * the source-specific compensation captured at session start so the recorded
-     * wave aligns with the bar where the user played, not the (later)
-     * sample position the DAW wrote it to. Negative results are clamped
-     * to zero so {@link AudioClip} validation does not reject the clip
-     * for early takes near the start of the timeline. {@code bpm} converts
-     * the compensation to beats: the tempo at start for the capture's
-     * snapshot, {@link #clipTempoBpm} for the clip.
-     */
-    /**
      * Whether {@code compClip} is a main-lane slice of one of {@code laps}:
      * a slice lists exactly its lap's segment files
      * ({@code TakeComping.compile}), which no other lap shares.
@@ -2484,16 +2479,6 @@ public final class RecordingPipeline {
             }
         }
         return false;
-    }
-
-    private double compensatedStartBeat(Track track, double bpm) {
-        long compensationFrames = trackCompensationFrames.getOrDefault(track, 0L);
-        if (compensationFrames <= 0) {
-            return recordingStartBeat;
-        }
-        double compensationSeconds = compensationFrames / format.sampleRate();
-        double compensationBeats = compensationSeconds * (bpm / 60.0);
-        return Math.max(0.0, recordingStartBeat - compensationBeats);
     }
 
     // ─────────────────────────────────────────────────────────────────────

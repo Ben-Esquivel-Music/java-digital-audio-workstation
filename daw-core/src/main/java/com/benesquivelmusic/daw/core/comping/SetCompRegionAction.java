@@ -20,7 +20,10 @@ import java.util.Objects;
  * selection as soon as the swipe ends, and undo restores the previous
  * selection and recompiles it from the live comping state (story 328
  * review: not from a snapshot of clips, so an audition in between leaves
- * nothing orphaned). The lanes are never touched.</p>
+ * nothing orphaned). Both execute and undo end any lane audition first
+ * ({@link TakeComping#endAuditions()}): a swipe, its undo and its redo
+ * present the selection, never a soloed lane (PR #984 review). The lanes'
+ * clips are never touched.</p>
  */
 public final class SetCompRegionAction implements UndoableAction {
 
@@ -51,6 +54,7 @@ public final class SetCompRegionAction implements UndoableAction {
     public void execute() {
         previousRegions = new ArrayList<>(comping.getCompRegions());
         comping.addCompRegion(region);
+        comping.endAuditions();
         recompile.execute();
     }
 
@@ -59,6 +63,7 @@ public final class SetCompRegionAction implements UndoableAction {
         if (previousRegions != null) {
             // The selection first: the recompile reads the live state.
             comping.setCompRegions(previousRegions);
+            comping.endAuditions();
             recompile.undo();
         }
     }

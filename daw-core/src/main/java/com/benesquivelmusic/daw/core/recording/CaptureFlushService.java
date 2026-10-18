@@ -1118,9 +1118,10 @@ public final class CaptureFlushService {
                     && previousBeat >= 0.0
                     && currentBeatPosition < previousBeat
                     && slot.loopEnabled()) {
-                // The lane opened at the wrap starts where this block does:
-                // the loop start plus the wrap's overshoot (story 328 review).
-                finalizeLoopLap(currentBeatPosition);
+                // The lane opened at the wrap starts where its first frame is
+                // written — this block's, or a later one's under punch
+                // gating (TrackCapture.noteWrittenSlice; PR #984 review).
+                finalizeLoopLap();
             }
             previousBeat = currentBeatPosition;
 
@@ -1283,6 +1284,11 @@ public final class CaptureFlushService {
                 // a block whose append failed.
                 int counted = (int) Math.min(sliceFrames, session.getTotalSamplesRecorded() - framesBefore);
                 capture.notePeaks(Math.clamp(chCount, 0, routed.length), counted);
+                if (counted > 0) {
+                    // The lane's first written frame anchors its clip on the
+                    // timeline, wherever punch gating let writing begin.
+                    capture.noteWrittenSlice(slot.beatPosition(), offset);
+                }
             }
         }
     }
@@ -1327,16 +1333,15 @@ public final class CaptureFlushService {
      * ({@link #discardStandbyLanes()}) — the entry is gone from the
      * manifest, the capture keeps the session for a later retry of the
      * delete, the warning sink is told — and the track's next lane is
-     * recording, opened past that file.
-     *
-     * @param lapStartBeat the header beat of the block that wrapped — where
-     *                     the lane opened here starts on the timeline
+     * recording, opened past that file. The lane opened here has no start
+     * yet: the first slice written into it sets one
+     * ({@link #recordToSessions}, {@link TrackCapture#noteWrittenSlice}).
      */
-    private void finalizeLoopLap(double lapStartBeat) {
+    private void finalizeLoopLap() {
         for (TrackCapture capture : captures) {
             if (capture.inputSource() != inputSource) continue;
             try {
-                capture.finalizeLane(true, true, lapStartBeat);
+                capture.finalizeLane(true, true);
             } finally {
                 RuntimeException undeletable = capture.takeStandbyDiscardFailure();
                 if (undeletable != null) {

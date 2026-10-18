@@ -59,7 +59,8 @@ class ClipTrimHandlerTest {
                 y -> {
                     int index = (int) Math.floor((y + scrollYPixels) / trackHeight);
                     return (index < 0 || index >= tracks.size()) ? -1 : index;
-                }));
+                },
+                trackIndex -> trackIndex * trackHeight - scrollYPixels));
     }
 
     // ── Edge detection ───────────────────────────────────────────────────────
@@ -120,6 +121,39 @@ class ClipTrimHandlerTest {
 
         // y=200 is outside track bounds (1 track × 80px)
         assertThat(handler.hitTestEdge(160.0, 200.0)).isNull();
+    }
+
+    @Test
+    void anEdgeXOverATakeLaneOfTheTrackIsNoEdge() {
+        // PR #984 review F3: the track's slot runs on below its main lane
+        // through three take lanes, so the track index alone resolves the
+        // track there; only the main lane's band has clip edges.
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, null);
+        track.addClip(clip);
+        tracks.add(track);
+        double slotHeight = trackHeight + 3 * ArrangementCanvas.TAKE_LANE_HEIGHT;
+        ClipTrimHandler handler = new ClipTrimHandler(new ClipTrimHandler.Deps(
+                () -> pixelsPerBeat,
+                () -> scrollXBeats,
+                () -> scrollYPixels,
+                () -> trackHeight,
+                () -> tracks,
+                () -> undoManager,
+                () -> snapEnabled,
+                () -> gridResolution,
+                () -> beatsPerBar,
+                () -> refreshCount++,
+                y -> y >= 0 && y < slotHeight ? 0 : -1,
+                trackIndex -> 0.0));
+
+        double overTakeLane = trackHeight + ArrangementCanvas.TAKE_LANE_HEIGHT / 2;
+        assertThat(handler.hitTestEdge(160.0, overTakeLane)).as("left edge X over a take lane").isNull();
+        assertThat(handler.hitTestEdge(480.0, overTakeLane)).as("right edge X over a take lane").isNull();
+        assertThat(handler.hitTestEdge(160.0, trackHeight)).as("the main lane's bottom bound").isNull();
+        ClipTrimHandler.EdgeHit onMainLane = handler.hitTestEdge(160.0, trackHeight - 1.0);
+        assertThat(onMainLane).isNotNull();
+        assertThat(onMainLane.clip()).isSameAs(clip);
     }
 
     // ── Left edge trim ───────────────────────────────────────────────────────

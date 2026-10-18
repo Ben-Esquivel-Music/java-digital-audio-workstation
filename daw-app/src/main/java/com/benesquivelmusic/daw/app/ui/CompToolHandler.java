@@ -129,16 +129,12 @@ public final class CompToolHandler {
     }
 
     /**
-     * Click on the main (composite) lane: clears any take-lane solo state
-     * and re-compiles, restoring composite playback.
+     * Click on the main (composite) lane: ends any lane audition
+     * ({@link TakeComping#endAuditions()}) and, if one was playing,
+     * re-compiles, restoring composite playback.
      */
     public void clickMainLane() {
-        boolean wasSoloed = false;
-        for (TakeLane lane : comping.getTakeLanes()) {
-            wasSoloed |= lane.isSoloed();
-            lane.setSoloed(false);
-        }
-        if (wasSoloed) {
+        if (comping.endAuditions()) {
             new CompileCompAction(track).execute();
         }
     }

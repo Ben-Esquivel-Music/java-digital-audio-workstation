@@ -13,7 +13,9 @@ import java.util.UUID;
  * An undoable action that removes an {@link AudioClip} from a {@link Track}.
  *
  * <p>Executing this action removes the clip from the track. Undoing it
- * re-adds the clip.</p>
+ * re-adds the clip — unless it is comp output a recompile has replaced
+ * since, which {@link Track#addClip} refuses: the comp the main lane holds
+ * now already plays that range.</p>
  */
 public final class RemoveClipAction implements UndoableAction {
 
@@ -48,10 +50,11 @@ public final class RemoveClipAction implements UndoableAction {
 
     @Override
     public void undo() {
-        track.addClip(clip);
-        EventBusPublisher.publish(new ClipEvent.Added(
-                UUID.fromString(track.getId()),
-                UUID.fromString(clip.getId()),
-                Instant.now()));
+        if (track.addClip(clip)) {
+            EventBusPublisher.publish(new ClipEvent.Added(
+                    UUID.fromString(track.getId()),
+                    UUID.fromString(clip.getId()),
+                    Instant.now()));
+        }
     }
 }

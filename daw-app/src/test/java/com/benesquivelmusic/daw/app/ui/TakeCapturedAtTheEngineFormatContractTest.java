@@ -142,7 +142,12 @@ class TakeCapturedAtTheEngineFormatContractTest {
 
         long expectedFrames = capturePunchOut - capturePunchIn;
         AudioClip clip = SteppedTakeFixture.get(() -> armed.getClips()).getFirst();
-        assertThat(clip.getStartBeat()).isCloseTo(punchInBeat, within(1e-9));
+        // The clip starts at its first written frame: the punch-in rounded
+        // into a capture frame (at 44.1 kHz the project punch-in falls at
+        // frame 44 375.625, written from 44 376), not the project punch beat
+        // that anchors the take.
+        assertThat(clip.getStartBeat())
+                .isCloseTo(capturePunchIn / (double) engineRate * (BPM / 60.0), within(1e-9));
         assertThat(clip.getDurationBeats())
                 .isCloseTo(expectedFrames / (double) engineRate * (BPM / 60.0), within(1e-9));
         assertThat(clip.getSourceRateMetadata()).isEqualTo(new SourceRateMetadata(engineRate, 2, expectedFrames));

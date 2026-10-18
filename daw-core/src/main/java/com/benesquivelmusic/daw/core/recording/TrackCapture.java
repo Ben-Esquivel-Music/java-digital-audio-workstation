@@ -134,7 +134,6 @@ final class TrackCapture {
     private final int instrumentSource;
     private final float[][] routed;
     private final long compensationFrames;
-    private final double compensatedStartBeat;
     private final double sampleRate;
     private final double tempoBpm;
     private final Path trackDirectory;
@@ -159,15 +158,21 @@ final class TrackCapture {
      */
     private volatile int completeLaps;
     /**
-     * The timeline beat the lane now recording starts at, after
-     * compensation: lane 0's is the take's {@link #compensatedStartBeat},
-     * and every lane a loop wrap opens starts at the header beat of the
-     * first block routed into it — the loop start plus the wrap's overshoot
-     * — less the same compensation (story 328 review: a lap that begins at
-     * the loop start must be placed there, not at the record position).
-     * Flush thread only, after construction.
+     * The timeline beat, before compensation, of the first frame the lane
+     * now recording actually wrote, or {@code NaN} while it has written
+     * none ({@link #noteWrittenSlice}). The lane's clip starts there less
+     * the compensation ({@link #laneStartBeat(double)}). Without a punch
+     * that is the header beat of the lane's first block — the record
+     * position for lane 0, the loop start plus the wrap's overshoot for a
+     * lane a wrap opened (story 328 review) — but not in general: punch
+     * gating can keep the first blocks of a lane, or the head of one,
+     * unwritten, and a record start inside the punch region writes from the
+     * playhead, not from the region's start (PR #984 review). A wrap clears
+     * it for the lane it opens. Written by the flush
+     * thread; volatile so the pipeline can read the last lane's on the
+     * caller thread once the flush thread has terminated.
      */
-    private double laneStartBeat;
+    private volatile double firstWrittenBeat = Double.NaN;
     private SegmentEvents events;
     /** The session whose lane bookkeeping is done; flush thread only. */
     private RecordingSession finalizedSession;
@@ -231,14 +236,14 @@ final class TrackCapture {
      * @param routedChannels       rows of the routed scratch block
      * @param slotFrames           frames per ring slot (the scratch block length)
      * @param compensationFrames   driver round-trip compensation for this track
-     * @param compensatedStartBeat the clip start beat after compensation
      * @param sampleRate           stream sample rate
-     * @param tempoBpm             tempo at record start (lap clip durations)
+     * @param tempoBpm             tempo at record start: the one the take's block headers
+     *                             convert beats to frames with (lap clip starts and durations)
      * @param trackDirectory       {@code <take>/<trackId>}
      * @param sessionFactory       creates each lane's session
      */
     TrackCapture(Track track, InputRouting routing, int instrumentSource, int routedChannels,
-                 int slotFrames, long compensationFrames, double compensatedStartBeat,
+                 int slotFrames, long compensationFrames,
                  double sampleRate, double tempoBpm, Path trackDirectory,
                  SessionFactory sessionFactory) {
         this.track = Objects.requireNonNull(track, "track must not be null");
@@ -258,8 +263,6 @@ final class TrackCapture {
             throw new IllegalArgumentException("compensationFrames must not be negative: " + compensationFrames);
         }
         this.compensationFrames = compensationFrames;
-        this.compensatedStartBeat = compensatedStartBeat;
-        this.laneStartBeat = compensatedStartBeat;
         this.sampleRate = sampleRate;
         this.tempoBpm = tempoBpm;
         this.trackDirectory = Objects.requireNonNull(trackDirectory, "trackDirectory must not be null");
@@ -628,6 +631,13 @@ final class TrackCapture {
      * failure is rethrown after the bookkeeping so the caller can abort the
      * take with an honest manifest.</p>
      *
+     * <p>The lane's clip starts at the lane's first written frame less this
+     * capture's compensation ({@link #laneStartBeat(double)}); a lane made
+     * current here has written nothing yet, so its start is set by the
+     * first slice routed into it ({@link #noteWrittenSlice}) — the loop
+     * start plus the wrap's overshoot, or the punch-in point of a punched
+     * loop, wherever its first frame was actually written.</p>
+     *
      * <p>Idempotent per lane: a lane is finalized once. A second call while
      * the same session is still current — the early seal that answers a
      * failure thrown by the first call — does nothing, so a lap is stacked
@@ -643,25 +653,6 @@ final class TrackCapture {
      *                              threw, likewise after the bookkeeping
      */
     void finalizeLane(boolean buildTake, boolean openNext) {
-        finalizeLane(buildTake, openNext, Double.NaN);
-    }
-
-    /**
-     * {@link #finalizeLane(boolean, boolean)} for a loop wrap: the lane
-     * opened next starts at {@code nextLaneHeaderBeat} — the header beat of
-     * the first block routed into it, i.e. the loop start plus the wrap's
-     * overshoot — less this capture's compensation, so the lap's clip is
-     * placed where its audio belongs on the timeline rather than at the
-     * take's start. {@code NaN} keeps the current lane's start for the next
-     * lane.
-     *
-     * @param buildTake          whether to append this lane to {@link #lapClips()}
-     * @param openNext           whether to open lane + 1
-     * @param nextLaneHeaderBeat the timeline beat the next lane's first block
-     *                           starts at, before compensation; {@code NaN}
-     *                           to keep the current start
-     */
-    void finalizeLane(boolean buildTake, boolean openNext, double nextLaneHeaderBeat) {
         RecordingSession previous = session;
         if (previous == finalizedSession) {
             return;
@@ -694,7 +685,7 @@ final class TrackCapture {
                 if (durationBeats <= 0) {
                     durationBeats = 0.01;
                 }
-                AudioClip clip = new AudioClip("Take — " + trackName, laneStartBeat,
+                AudioClip clip = new AudioClip("Take — " + trackName, laneStartBeat(tempoBpm),
                         durationBeats, lanePaths.isEmpty() ? null : lanePaths.getFirst());
                 clip.setSourceSegmentPaths(lanePaths);
                 clip.setSourceRateMetadata(declaredRate(previous, samples));
@@ -724,9 +715,6 @@ final class TrackCapture {
             throw runtime;
         }
         if (openNext) {
-            if (!Double.isNaN(nextLaneHeaderBeat)) {
-                laneStartBeat = Math.max(0.0, nextLaneHeaderBeat - compensationBeats());
-            }
             int nextLane = previousLane + 1;
             int firstIndex = previous.getNextSegmentIndex();
             RecordingSession next = standby;
@@ -755,6 +743,8 @@ final class TrackCapture {
             }
             peaks.reset();
             standbyRefused = false;
+            // The new lane has written nothing: its first slice anchors it.
+            firstWrittenBeat = Double.NaN;
             lane = nextLane;
             session = next;
         }
@@ -870,20 +860,48 @@ final class TrackCapture {
         return compensationFrames;
     }
 
-    double compensatedStartBeat() {
-        return compensatedStartBeat;
+    /**
+     * Notes that the current lane has just written frames of a block, the
+     * first of them {@code offsetFrames} into the block whose header beat is
+     * {@code headerBeat}. The first such slice of a lane anchors it: that
+     * frame's timeline beat — the header beat plus the offset at the take's
+     * tempo, the conversion the block headers use — is where the lane's
+     * audio begins, and so where its clip starts
+     * ({@link #laneStartBeat(double)}). Later slices change nothing. Called
+     * by the flush thread after a write that counted at least one frame; a
+     * wrap clears the anchor for the lane it opens.
+     *
+     * @param headerBeat   the beat position stamped on the block's header
+     * @param offsetFrames where in the block the written slice begins; not negative
+     */
+    void noteWrittenSlice(double headerBeat, int offsetFrames) {
+        if (!Double.isNaN(firstWrittenBeat)) {
+            return;
+        }
+        firstWrittenBeat = headerBeat + offsetFrames / sampleRate * (tempoBpm / 60.0);
     }
 
     /**
-     * This capture's compensation in beats — the same conversion the
-     * pipeline applied to the take's start ({@code compensationFrames} at
-     * the stream rate, at the take's tempo).
+     * Returns where a clip of the current lane starts on the timeline: its
+     * first written frame ({@link #noteWrittenSlice}) less this capture's
+     * compensation converted at {@code bpm}. The driver round trip delays
+     * every captured frame, so the take is shifted earlier by it and its
+     * audio lines up with where the user played, not with the later
+     * position the frame was written at. The result is clamped to zero so
+     * that {@link AudioClip} does not reject a take near the start of the
+     * timeline. A lane with frames but no noted slice — only a test that
+     * writes to the session directly makes one — starts at zero.
+     *
+     * @param bpm the tempo the compensation is converted at: the take's for
+     *            a lap, the tempo at the stop for a plain take's clip
      */
-    private double compensationBeats() {
-        if (compensationFrames <= 0) {
+    double laneStartBeat(double bpm) {
+        double first = firstWrittenBeat;
+        if (Double.isNaN(first)) {
             return 0.0;
         }
-        return compensationFrames / sampleRate * (tempoBpm / 60.0);
+        double compensationBeats = compensationFrames <= 0 ? 0.0 : compensationFrames / sampleRate * (bpm / 60.0);
+        return Math.max(0.0, first - compensationBeats);
     }
 
     Path trackDirectory() {
