@@ -126,14 +126,14 @@ class RotationReferencesEverySegmentContractTest {
 
         stopRecording(pipeline);
 
-        TakeGroup group = pipeline.getTakeGroups().get(track);
-        assertThat(group).isNotNull();
-        assertThat(group.size()).isGreaterThanOrEqualTo(3);
+        List<AudioClip> laps = pipeline.getLapClips().get(track);
+        assertThat(laps).isNotNull();
+        assertThat(laps.size()).isGreaterThanOrEqualTo(3);
         TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(manifest.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
         Set<String> seen = new HashSet<>();
         for (int lane = 0; lane < 3; lane++) {
-            AudioClip clip = group.takes().get(lane).clip();
+            AudioClip clip = laps.get(lane);
             List<String> paths = clip.getSourceSegmentPaths();
             assertThat(paths).as("lane %d has two segments", lane).hasSize(2);
             assertThat(clip.getSourceFilePath()).isEqualTo(paths.getFirst());
@@ -156,9 +156,9 @@ class RotationReferencesEverySegmentContractTest {
             assertThat(laneFromManifest).as("manifest lane %d", lane).isEqualTo(paths);
         }
         // Segment numbering continues across lanes inside <trackId>/.
-        assertThat(group.takes().get(0).clip().getSourceSegmentPaths().getFirst()).endsWith("segment-000.wav");
-        assertThat(group.takes().get(0).clip().getSourceSegmentPaths().get(1)).endsWith("segment-001.wav");
-        assertThat(group.takes().get(1).clip().getSourceSegmentPaths().getFirst()).endsWith("segment-002.wav");
-        assertThat(group.takes().get(2).clip().getSourceSegmentPaths().getFirst()).endsWith("segment-004.wav");
+        assertThat(laps.get(0).getSourceSegmentPaths().getFirst()).endsWith("segment-000.wav");
+        assertThat(laps.get(0).getSourceSegmentPaths().get(1)).endsWith("segment-001.wav");
+        assertThat(laps.get(1).getSourceSegmentPaths().getFirst()).endsWith("segment-002.wav");
+        assertThat(laps.get(2).getSourceSegmentPaths().getFirst()).endsWith("segment-004.wav");
     }
 }

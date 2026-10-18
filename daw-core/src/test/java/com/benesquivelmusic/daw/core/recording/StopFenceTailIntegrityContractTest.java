@@ -531,7 +531,7 @@ class StopFenceTailIntegrityContractTest {
         pipeline.completeStop();
 
         assertThat(pipeline.getCaptureRing().publishedBlocks()).as("the straggler published nothing").isEqualTo(4);
-        assertThat(pipeline.getTakeGroups().get(track).size())
+        assertThat(pipeline.getLapClips().get(track).size())
                 .as("one lap was recorded: the rewound straggler started no second one").isEqualTo(1);
         TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(manifest.segmentsFor(track.getId())).singleElement()

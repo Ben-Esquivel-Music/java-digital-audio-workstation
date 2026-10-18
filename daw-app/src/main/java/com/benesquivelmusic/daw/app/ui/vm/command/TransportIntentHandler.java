@@ -79,4 +79,36 @@ public interface TransportIntentHandler {
 
     /** Toggles loop playback on or off (§5.2 "Toggle loop"). */
     void toggleLoop();
+
+    /**
+     * Toggles loop-record on or off (story 328, book §5.6): whether a take
+     * recorded over an enabled loop stacks each lap as a take lane. The
+     * production controller refuses the toggle while a take is being
+     * prepared, counting in or recording, and says so on the status line.
+     */
+    void toggleLoopRecord();
+
+    /**
+     * Sets the punch-in point at the playhead (story 328, book §5.6). The
+     * point just set wins; if that leaves less than the minimum punch length
+     * before the existing punch-out, the punch-out moves to keep it. With no
+     * region installed, an ENABLED region of the minimum length is created.
+     */
+    void setPunchIn();
+
+    /**
+     * Sets the punch-out point at the playhead (story 328, book §5.6). The
+     * point just set wins; if that leaves less than the minimum punch length
+     * after the existing punch-in, the punch-in moves to keep it (never a
+     * silent swap). With no region installed, an ENABLED region of the
+     * minimum length ending here is created.
+     */
+    void setPunchOut();
+
+    /**
+     * Flips the enabled flag of the existing punch region (story 328, book
+     * §5.6). With no region installed nothing changes — the production
+     * controller reports that on the status line.
+     */
+    void togglePunch();
 }

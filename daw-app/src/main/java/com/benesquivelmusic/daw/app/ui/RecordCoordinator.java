@@ -8,10 +8,14 @@ import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.CountInSchedule;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.MidiRecorder;
 import com.benesquivelmusic.daw.core.midi.RecordMidiNotesAction;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -23,16 +27,14 @@ import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.SegmentFile;
 import com.benesquivelmusic.daw.core.recording.StopSealFailure;
-import com.benesquivelmusic.daw.core.recording.Take;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
-import com.benesquivelmusic.daw.core.recording.TakeGroup;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.core.recording.RecordedTakeAction;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
-import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
@@ -122,6 +124,66 @@ final class RecordCoordinator {
     private boolean unannouncedStreamClosed;
     private String unannouncedCleanupFailure;
     private Supplier<Boolean> confirmStopAndApply = this::showStopAndApplyConfirmation;
+
+    /** The status text of a count-in that Stop, Record again or a device loss cancelled before it fired. */
+    static final String COUNT_IN_CANCELLED_MESSAGE = "Count-in cancelled — no take was started";
+
+    /**
+     * Story 328 (Recording Reliability book §5.6) — the count-in of the take
+     * in flight while the state is COUNT_IN: the schedule the render thread
+     * walks on the engine's frame clock, whose record start it runs at the
+     * count-in's last block boundary. {@code null} in every other state. Set
+     * by {@link #observeCountIn}, cleared by the fire's FX turn
+     * ({@link #onCountInFired}) and by every cancellation
+     * ({@link #endCountIn}, {@link #cancelCountInQuietly}). FX thread.
+     */
+    private CountInSchedule countInSchedule;
+    /**
+     * The audio take's start while it counts in — its take directory and
+     * warning flag belong to the announcement the fire owes; {@code null}
+     * for a MIDI-only count-in and outside COUNT_IN. FX thread.
+     */
+    private PendingStart countInStart;
+    /**
+     * The removal of the transport observer registered for the count-in's
+     * fire; {@code null} when none is registered. FX thread.
+     */
+    private Runnable countInObserverRemoval;
+    /**
+     * The fire's FX turn, allocated once: the observer below posts it only
+     * in the pure-unit context that has no dispatcher at all.
+     */
+    private final Runnable countInFiredHop = this::onCountInFired;
+    /**
+     * The lock-free channel the count-in's observer publishes the fire into
+     * (story 328 review): opened on the FX thread by {@link #observeCountIn}
+     * on the coordinator's dispatcher, drained by the dispatcher's pulse on
+     * the FX thread into {@link #onCountInFired}, closed by
+     * {@link #endCountInObservation}. {@code null} outside COUNT_IN, and
+     * when no dispatcher is reachable (then the observer falls back to
+     * {@link #postFx}, which is the pure-unit context's {@code runLater}).
+     * Volatile: written on the FX thread, read on the render thread.
+     */
+    private volatile FxDispatcher.ContinuousChannel<Transport.ChangeKind> countInFireChannel;
+    /**
+     * The transport observer of a count-in, registered while COUNT_IN. It runs
+     * ON THE RENDER THREAD — {@code Transport.record()} fires
+     * {@code ChangeKind.STATE} through the RT-safe {@code ChangeNotifier}
+     * from the schedule's record start — so it does one wait-free publish
+     * into {@link #countInFireChannel}: no {@code Platform.runLater} (the
+     * toolkit's queue lock and a wrapper allocation), no allocation of its
+     * own, no logging, no state read. {@link #onCountInFired} decides on the
+     * FX thread whether the hop means anything.
+     */
+    private final Consumer<Transport.ChangeKind> countInObserver = kind -> {
+        if (kind != Transport.ChangeKind.STATE) return;
+        FxDispatcher.ContinuousChannel<Transport.ChangeKind> channel = countInFireChannel;
+        if (channel != null) {
+            channel.publish(kind);
+        } else {
+            postFx(countInFiredHop);
+        }
+    };
 
     ReadOnlyObjectProperty<RecordState> stateProperty() { return state.getReadOnlyProperty(); }
     ReadOnlyBooleanProperty recordingProperty() { return recording.getReadOnlyProperty(); }
@@ -286,11 +348,53 @@ final class RecordCoordinator {
         }
         refreshRecordAvailability();
         if (pendingStart != null) cancelPendingStart();
+        // Story 328: a count-in of the replaced project's take never fires
+        // into this coordinator; the take itself is the replacement's Stop's.
+        cancelCountInQuietly();
         closeCapturePeaks();
     }
 
     void stopAudioTake() {
         requireFxThread();
+        CountInSchedule ending = countInSchedule;
+        CountInEnd verdict = endCountIn();
+        if (verdict == CountInEnd.CANCELLED) {
+            // Story 328 (book §5.6): the Stop won the count-in — no take
+            // recorded. A MIDI-only count-in ends here; an audio take's
+            // pipeline is active (its capture began at the count-in, gate
+            // closed) and is stopped through the ordinary path below, which
+            // publishes a take of no clips with this status left in place.
+            transition(RecordState.FINALIZING);
+            discardMidiRecording(null);
+            LOG.info("Recording cancelled during its count-in");
+            setRecordingStatus(COUNT_IN_CANCELLED_MESSAGE);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+            if (recordingPipeline == null) {
+                // The one-instruction window of CountInSchedule.cancel(): a
+                // render thread that fired all the same put the transport
+                // in recording with no recorder listening; stop it.
+                if (project.getTransport().getState() == TransportState.RECORDING) project.getTransport().stop();
+                settle();
+                // The render thread may still be inside that window: look
+                // again on later FX turns (story 328 review).
+                lookAgainAtTheEndedCountIn(ending);
+                return;
+            }
+            RecordingPipeline stopping = recordingPipeline;
+            recordingPipeline = null;
+            CompletionStage<Void> written = requestTakeStop(stopping, TakeManifest.SealedBy.STOP);
+            publishWhenWritten(stopping, written);
+            stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
+            return;
+        }
+        if (verdict == CountInEnd.FIRED && recordingPipeline == null) {
+            // A MIDI-only count-in the render thread won: its record start
+            // may still be between its fired store and its RECORDING store
+            // when the caller's requestStop() reads the transport, which
+            // then stops nothing (story 328 review round 2). Same second
+            // look as the cancelled verdict's.
+            lookAgainAtTheEndedCountIn(ending);
+        }
         if (state.get() == RecordState.DEVICE_LOST
                 && (recordingPipeline == null || !recordingPipeline.isActive())) {
             // Story 327 (book §5.2 "Rescue seal"): the user's Stop is one of
@@ -440,6 +544,42 @@ final class RecordCoordinator {
                     + "; the take was sealed at the first loss and is not rescued twice");
             lostDeviceReturned = false;
             setRecordingStatus(deviceLostStatus(device, !publicationPending));
+            return;
+        }
+        if (state.get() == RecordState.COUNT_IN && endCountIn() == CountInEnd.CANCELLED) {
+            // Story 328 (book §5.6): the device was lost while the take was
+            // counting in and the count-in had not fired — no take recorded,
+            // nothing to rescue. The halt already cancelled the schedule and
+            // closed an audio take's producer gates; the take ends ABORTED
+            // with the ERROR of a start the loss rejected, as the PREPARING
+            // branch above ends one. (A count-in that fired first is a
+            // RECORDING take by now — endCountIn announced it — and is
+            // rescued below like any other.)
+            LOG.warning("Audio device " + device.name() + " was lost during the take's count-in");
+            Throwable failure = new IllegalStateException("audio device " + device.name()
+                    + " was lost during the count-in");
+            abortStep(failure, () -> transition(RecordState.ABORTED));
+            discardMidiRecording(failure);
+            if (recordingPipeline != null) {
+                RecordingPipeline stopping = recordingPipeline;
+                recordingPipeline = null;
+                CompletionStage<Void> written = requestTakeStop(stopping, TakeManifest.SealedBy.STOP);
+                publishWhenWritten(stopping, written);
+                stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
+            }
+            if (project.getTransport().getState() == TransportState.RECORDING) {
+                abortStep(failure, project.getTransport()::stop);
+            }
+            String message = "Recording aborted — no take was started: " + failure.getMessage();
+            abortStep(failure, () -> setRecordingStatus(message));
+            abortStep(failure, () -> statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12)));
+            abortStep(failure, () -> notificationBar.show(NotificationLevel.ERROR, message));
+            abortStep(failure, () -> transport.finishDeviceLossStop(false,
+                    core.beatsToFrames(project.getTransport().getPositionInBeats())));
+            abortStep(failure, this::settle);
+            if (failure.getSuppressed().length > 0) {
+                LOG.log(Level.WARNING, "A step of the lost-device count-in cancellation failed", failure);
+            }
             return;
         }
         if (state.get() != RecordState.RECORDING) return;
@@ -710,20 +850,38 @@ final class RecordCoordinator {
         try {
             setRecordingStatus(deviceLostStatus(device, true));
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
-            double recordedSeconds = recordedSeconds(clips);
-            double anchor = pipeline.getRecordingStartBeat();
-            Path takeDirectory = pipeline.getTakeDirectory();
-            rescuedTakeNotification.accept(message, () -> {
-                Transport transportModel = project.getTransport();
-                TransportState transportState = transportModel.getState();
-                if (transportState == TransportState.STOPPED || transportState == TransportState.PAUSED) {
-                    transportModel.setPositionInBeats(anchor);
-                }
-                setRecordingStatus(rescuedTakeReviewStatus(takeDirectory, recordedSeconds));
-            });
+            rescuedTakeNotification.accept(message, rescuedTakeReview(
+                    pipeline.getRecordingStartBeat(), pipeline.getTakeDirectory(), recordedSeconds(clips)));
         } catch (RuntimeException failure) {
             LOG.log(Level.WARNING, "Could not show the rescued take under " + pipeline.getTakeDirectory(), failure);
         }
+    }
+
+    /**
+     * The rescued take's "Review" action (see {@link #showRescuedTake}). The
+     * notification bar's history re-arms it verbatim for as long as the
+     * entry lives, so it can be clicked during a later take's count-in,
+     * when the transport is held STOPPED at the record position: it is a
+     * user seek and asks {@code TransportController.refuseSeekWhileCountingIn()}
+     * first, like every other seek entry (story 328 review round 2) — a
+     * refused review moves nothing and says so in the status line.
+     * Package-visible so the gate can be pinned without a device loss. FX
+     * thread.
+     *
+     * @param anchor          the take's start anchor, in beats
+     * @param takeDirectory   the take's folder, for the review status
+     * @param recordedSeconds the take's recorded length, for the review status
+     */
+    Runnable rescuedTakeReview(double anchor, Path takeDirectory, double recordedSeconds) {
+        return () -> {
+            if (transport.refuseSeekWhileCountingIn()) return;
+            Transport transportModel = project.getTransport();
+            TransportState transportState = transportModel.getState();
+            if (transportState == TransportState.STOPPED || transportState == TransportState.PAUSED) {
+                transportModel.setPositionInBeats(anchor);
+            }
+            setRecordingStatus(rescuedTakeReviewStatus(takeDirectory, recordedSeconds));
+        };
     }
 
     /**
@@ -990,30 +1148,12 @@ final class RecordCoordinator {
         if (recordedClips.isEmpty()) {
             return;
         }
-        // Register undo action for the recorded clips
-        Map<Track, AudioClip> clipMap = Map.copyOf(pipeline.getRecordedClips());
-        undoManager.execute(new UndoableAction() {
-            @Override
-            public String description() { return "Record Audio"; }
-
-            @Override
-            public void execute() {
-                // Clips are already added by the pipeline on first execution;
-                // on redo, re-add them.
-                for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
-                    if (!entry.getKey().getClips().contains(entry.getValue())) {
-                        entry.getKey().addClip(entry.getValue());
-                    }
-                }
-            }
-
-            @Override
-            public void undo() {
-                for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
-                    entry.getKey().removeClip(entry.getValue());
-                }
-            }
-        });
+        // The history entry of the take: the recorded clips and, for a
+        // loop-record take, its lanes and comp selection (story 328, book
+        // §3.5). Undo removes the lanes, restores the selection the tracks
+        // had before the take's laps were ingested and recompiles; Redo
+        // puts the lanes and the take's selection back (story 328 review).
+        undoManager.execute(new RecordedTakeAction(pipeline));
         project.markDirty();
     }
 
@@ -1430,8 +1570,8 @@ final class RecordCoordinator {
      * The report of a published take's audio that could not be read back:
      * empty when {@code unread} is; otherwise a clause that names each clip
      * that was published without its audio — by the clip's name, looked up
-     * here, on the FX thread, among {@code clips} and every take of the
-     * pipeline's take groups by its segment-path list; by the file name of
+     * here, on the FX thread, among {@code clips} and every take lane the
+     * pipeline added to a track by its segment-path list; by the file name of
      * its first segment when no published clip has that list — with the
      * reason, and names the take's folder under {@code audio/takes}, where
      * the files stay. The caller puts what became of the take in front of
@@ -1449,9 +1589,11 @@ final class RecordCoordinator {
         for (AudioClip clip : clips) {
             names.putIfAbsent(clip.getSourceSegmentPaths(), clip.getName());
         }
-        for (TakeGroup group : pipeline.getTakeGroups().values()) {
-            for (Take take : group.takes()) {
-                names.putIfAbsent(take.clip().getSourceSegmentPaths(), take.clip().getName());
+        for (List<TakeLane> lanes : pipeline.getRecordedTakeLanes().values()) {
+            for (TakeLane lane : lanes) {
+                for (AudioClip lap : lane.getClips()) {
+                    names.putIfAbsent(lap.getSourceSegmentPaths(), lap.getName());
+                }
             }
         }
         List<String> unloaded = new ArrayList<>();
@@ -2054,8 +2196,12 @@ final class RecordCoordinator {
      * ({@link #onTakeReady}), the MIDI-only path via
      * {@link Transport#record()}; announcing on the actual transition keeps the
      * bus truthful for both, and declines only when an internal caller stopped
-     * the transport underneath a running pipeline (count-in does not defer
-     * {@code Transport.record()} today; story 328 owns count-in).</p>
+     * the transport underneath a running pipeline. A take that counts in
+     * (story 328, book §5.6) defers {@code Transport.record()} to the render
+     * thread, at the count-in's last block boundary; the announcement then
+     * follows on the FX turn that observes the fire
+     * ({@link #onCountInFired}), and Record pressed again during the
+     * count-in is a Stop, which cancels it.</p>
      */
     public void toggleRecord() {
         requireFxThread();
@@ -2169,13 +2315,21 @@ final class RecordCoordinator {
         if (armedAudioTracks.isEmpty()) {
             // MIDI-only: the output stream was proved RUNNING above, and the
             // take writes no audio files, so it starts at once and the
-            // transport may enter recording.
+            // transport may enter recording — or, with a count-in over a
+            // transport that is not rolling (story 328, book §5.6), the
+            // recorders are anchored now and the render thread records the
+            // transport at the count-in's end.
+            Optional<CountInSchedule> schedule = countInScheduleFor(countIn);
             try {
-                startMidiRecording(armedMidiTracks, countIn);
+                startMidiRecording(armedMidiTracks, schedule);
                 if (activeMidiRecorders.isEmpty()) {
                     throw new IllegalStateException("MIDI input precondition failed — no armed MIDI track opened a device");
                 }
                 transition(RecordState.COUNT_IN);
+                if (schedule.isPresent()) {
+                    beginMidiOnlyCountIn(schedule.get(), countIn);
+                    return;
+                }
                 project.getTransport().record();
                 activateMidiRecording();
             } catch (RuntimeException | Error failure) {
@@ -2298,10 +2452,12 @@ final class RecordCoordinator {
         if (state.get() == RecordState.PREPARING) transition(RecordState.COUNT_IN);
         transition(RecordState.RECORDING);
         // ANNOUNCE (story 315) — only once the transport actually transitioned.
-        // Both paths call Transport.record(), so the guard declines only
-        // when an internal caller stopped the transport underneath a running
-        // pipeline; announcing then would put a fiction on the bus (count-in
-        // does not defer Transport.record() today; story 328 owns count-in).
+        // Every path reaches here after Transport.record() — the immediate
+        // paths call it themselves; a count-in's render thread called it at
+        // the count-in's end (story 328), and this turn observed the fire —
+        // so the guard declines only when an internal caller stopped the
+        // transport underneath a running pipeline; announcing then would put
+        // a fiction on the bus.
         if (project.getTransport().getState() == TransportState.RECORDING) {
             EventBusPublisher.publish(new TransportEvent.Started(
                     core.beatsToFrames(project.getTransport().getPositionInBeats()), Instant.now()));
@@ -2379,6 +2535,10 @@ final class RecordCoordinator {
                     audioEngine, project.getTransport(), audioEngine.getFormat(),
                     project.getFormat().sampleRate(), takeDirectory,
                     start.armedAudioTracks, start.countIn, InputMonitoringMode.OFF, null);
+            // Story 328 (book §5.6): the loop-record toggle's fact lives on the
+            // transport; it is handed to the take here, before prepare, and a
+            // toggle during the take is refused (TransportController).
+            pipeline.setLoopRecord(project.getTransport().isLoopRecordEnabled());
             pipeline.setWarningSink(message -> postFx(() -> {
                 RecordState current = state.get();
                 if (!retired && (current == RecordState.PREPARING || current == RecordState.COUNT_IN || current == RecordState.RECORDING)
@@ -2451,14 +2611,28 @@ final class RecordCoordinator {
             finishUnannouncedTake(start);
             return;
         }
+        // Story 328 (book §5.6): a count-in over a transport that is not
+        // rolling. The MIDI window is the schedule's length, and the
+        // recorders are anchored at the count-in's start — the origin read
+        // here, before the schedule is installed — so the window spans the
+        // count-in and a note played from bar 1 is never lost; the schedule's
+        // fire then tells the recorders where bar 1 really was.
+        Optional<CountInSchedule> schedule = countInScheduleFor(start.countIn);
         try {
             audioEngine.requireCaptureRoutingUnchanged(start.armedAudioTracks, start.routeSnapshots);
-            if (!start.armedMidiTracks.isEmpty()) startMidiRecording(start.armedMidiTracks, start.countIn);
+            if (!start.armedMidiTracks.isEmpty()) {
+                startMidiRecording(start.armedMidiTracks, schedule);
+            }
             if (earlySealOf(pipeline).isPresent() || !pipeline.hasViableCaptureService()) {
                 finishUnannouncedTake(start);
                 return;
             }
-            pipeline.beginCapture(this::activateMidiRecording);
+            if (schedule.isPresent()) {
+                anchorMidiRecording(midiMonotonicNanos.getAsLong());
+                pipeline.beginCapture(RecordCoordinator::refuseActivationDuringCountIn, schedule.get());
+            } else {
+                pipeline.beginCapture(this::activateMidiRecording);
+            }
         } catch (RuntimeException | Error e) {
             if (pipeline.isPreparing() && !pipeline.hasViableCaptureService()) finishUnannouncedTake(start);
             else abandonStart(start, e);
@@ -2478,7 +2652,25 @@ final class RecordCoordinator {
             finishUnannouncedTake(start);
             return;
         }
+        if (schedule.isPresent()) {
+            // The take counts in: PREPARING → COUNT_IN, and the announcement
+            // waits for the FX turn that observes the render thread's fire.
+            observeCountIn(schedule.get(), start, start.countIn);
+            return;
+        }
         announceRecordingStarted(start.armedAudioTracks.size() + activeMidiRecorders.size(), start.takeDirectory, start.warningPublished);
+    }
+
+    /**
+     * The activation handed to {@code RecordingPipeline.beginCapture(Runnable,
+     * CountInSchedule)}, which never runs it: the take's MIDI recorders were
+     * anchored at the count-in's start, before the schedule was installed,
+     * and the fire is observed by {@link #onCountInFired}. A pipeline that
+     * ever did run it would be a changed contract, and fails the start
+     * loudly rather than activating twice.
+     */
+    private static void refuseActivationDuringCountIn() {
+        throw new IllegalStateException("A count-in take's activation is the coordinator's, at the fire — never the pipeline's");
     }
 
     /** Preserves a take that ended during readiness without ever announcing a live recording. */
@@ -2777,6 +2969,7 @@ final class RecordCoordinator {
     }
 
     private void abortRecordingTake(Throwable failure) {
+        abortStep(failure, this::cancelCountInQuietly);
         abortStep(failure, () -> transition(RecordState.ABORTED));
         stopMidiRecording(failure);
         abortStep(failure, project.getTransport()::stop);
@@ -2863,24 +3056,30 @@ final class RecordCoordinator {
      * discard all events until {@link #activateMidiRecording()} activates the
      * successful inputs together at the transport's recording transition.
      *
-     * <p>When a count-in mode is active, the recorder's count-in duration is
-     * set so that notes played during the pre-roll are discarded. An event
-     * listener is registered on each recorder to flash a MIDI activity
-     * indicator on the track's arm button during capture.</p>
+     * <p>With a count-in (story 328, book §5.6) the recorder's window is the
+     * schedule's {@code countInDurationMicros()}, anchored to the origin
+     * {@link #anchorMidiRecording} passes at the count-in's start, so notes
+     * played during the count-in are discarded and none of bar 1 is. That
+     * origin is read on this thread before the schedule is installed, and
+     * the render thread starts walking the schedule at its next block
+     * boundary, so the predicted window end precedes the rendered downbeat
+     * by that block phase; the schedule is therefore also the recorder's
+     * {@link MidiRecorder#setCountInDownbeat downbeat}, whose fire — stamped
+     * by the render thread on the same monotonic clock — the recorder
+     * measures bar 1 from once it is published. A take that records at once
+     * — no count-in configured, or a rolling transport that skips it — has
+     * no window, since nothing precedes its first beat. An event listener is
+     * registered on each recorder to flash a MIDI activity indicator on the
+     * track's arm button during capture.</p>
      *
      * @param midiTracks the armed MIDI tracks
-     * @param countIn    the count-in mode (may be {@link CountInMode#OFF})
+     * @param countIn    the take's count-in, or empty for a take that records at once
      */
-    private void startMidiRecording(List<Track> midiTracks, CountInMode countIn) {
+    private void startMidiRecording(List<Track> midiTracks, Optional<CountInSchedule> countIn) {
         Transport transport = project.getTransport();
         double startBeat = transport.getPositionInBeats();
         int startColumnOffset = (int) Math.round(startBeat / MidiRecorder.BEATS_PER_COLUMN);
-
-        // Compute count-in duration in microseconds
-        int beatsPerBar = transport.getTimeSignatureNumerator();
-        int countInBeats = countIn.getTotalBeats(beatsPerBar);
-        double countInSeconds = countInBeats * (60.0 / transport.getTempo());
-        long countInDurationUs = Math.round(countInSeconds * 1_000_000L);
+        long countInDurationUs = countIn.map(CountInSchedule::countInDurationMicros).orElse(0L);
 
         for (Track track : midiTracks) {
             MidiDevice device;
@@ -2904,6 +3103,7 @@ final class RecordCoordinator {
                     device, track.getMidiClip(), transport.getTempo(), 0, midiMonotonicNanos);
             recorder.setStartColumnOffset(startColumnOffset);
             recorder.setCountInDurationUs(countInDurationUs);
+            countIn.ifPresent(recorder::setCountInDownbeat);
 
             // Wire MIDI activity indicator — flash the track strip on each
             // event. The recorder fires on the MIDI receiver thread, so the
@@ -2926,17 +3126,279 @@ final class RecordCoordinator {
         }
     }
 
-    /** No device calls: every ready input receives the same capture origin. */
+    /** No device calls: every ready input receives the same capture origin, the transport's record time. */
     private void activateMidiRecording() {
         if (project.getTransport().getState() != TransportState.RECORDING) {
             throw new IllegalStateException("Transport recording precondition failed — the transport stopped during start");
         }
-        if (activeMidiRecorders.isEmpty()) return;
-        long originNanos = midiMonotonicNanos.getAsLong();
+        anchorMidiRecording(midiMonotonicNanos.getAsLong());
+    }
+
+    /**
+     * Activates every prepared input at {@code originNanos} and marks its
+     * track recording. For a take that records at once this is the
+     * transport's record time ({@link #activateMidiRecording}); for a take
+     * that counts in it is the count-in's start (story 328), read on this
+     * thread immediately before the schedule is installed, so the recorders'
+     * window — the schedule's length — spans the count-in; the render thread
+     * starts walking the schedule at its next block boundary, so bar 1 is
+     * rendered up to one block after that window's end, and the recorders
+     * take bar 1 from the schedule's fire once it is published
+     * ({@link MidiRecorder#setCountInDownbeat}).
+     */
+    private void anchorMidiRecording(long originNanos) {
         for (Map.Entry<Track, MidiRecorder> entry : activeMidiRecorders.entrySet()) {
             entry.getValue().beginRecording(originNanos);
             entry.getKey().setRecording(true);
         }
+    }
+
+    /**
+     * Story 328 (Recording Reliability book §5.6) — the count-in of
+     * {@code mode} for a take starting now, or empty when there is none to
+     * play: the mode is {@link CountInMode#OFF}, or the transport is already
+     * rolling (PLAYING: punch on the fly records at once; RECORDING: a
+     * running take). The schedule runs on the engine's stream clock, so its
+     * frames are at the engine's rate and block size
+     * ({@code AudioEngine.getFormat()}, read after Record opened the
+     * stream); the beat grid is the tempo and time-signature numerator at
+     * the record position. The clicks are emitted early by the bound
+     * mixer's serial master-insert and mastering latency — the PDC the
+     * running click is advanced by — so the schedule's pad is sized for it
+     * and click 1 lands on its beat like every later one. FX thread.
+     */
+    private Optional<CountInSchedule> countInScheduleFor(CountInMode mode) {
+        Transport transportModel = project.getTransport();
+        TransportState current = transportModel.getState();
+        if (current == TransportState.PLAYING || current == TransportState.RECORDING) return Optional.empty();
+        AudioFormat engineFormat = audioEngine.getFormat();
+        Mixer mixer = audioEngine.getMixer();
+        int masterLatencyFrames = mixer == null ? 0 : mixer.getDelayCompensation().getMasterLatencySamples();
+        return CountInSchedule.forMode(mode, transportModel.getTimeSignatureNumerator(), transportModel.getTempo(),
+                engineFormat.sampleRate(), engineFormat.bufferSize(), masterLatencyFrames);
+    }
+
+    /**
+     * A MIDI-only take's count-in (story 328): the schedule's record start
+     * is the transport's record transition — two stores and an RT-safe
+     * change notification, run by the render thread at the count-in's last
+     * block boundary — the recorders are anchored at the count-in's start,
+     * the fire is observed ({@link #observeCountIn}) and the schedule is
+     * installed on the engine, in that order: the origin precedes the
+     * installation, and the observer is in place before anything can fire.
+     * A start that throws here is aborted by the caller
+     * ({@link #abortRecordingTake}), which cancels the count-in. FX thread.
+     */
+    private void beginMidiOnlyCountIn(CountInSchedule schedule, CountInMode mode) {
+        schedule.setRecordStart(project.getTransport()::record);
+        anchorMidiRecording(midiMonotonicNanos.getAsLong());
+        observeCountIn(schedule, null, mode);
+        audioEngine.scheduleCountIn(schedule);
+    }
+
+    /**
+     * Enters COUNT_IN for {@code schedule} (story 328, book §5.6): remembers
+     * it and the audio take's start, registers {@link #countInObserver} on
+     * the transport — the render thread's {@code Transport.record()} at the
+     * count-in's end fires {@code ChangeKind.STATE}, and the observer hops
+     * to {@link #onCountInFired} — and shows "Count-in — N bars". A schedule
+     * that fired before the observer was in place is observed at once. FX
+     * thread.
+     *
+     * @param schedule the take's count-in, pending or just fired
+     * @param start    the audio take's start, or {@code null} for a MIDI-only take
+     * @param mode     the count-in mode, for the status line
+     */
+    private void observeCountIn(CountInSchedule schedule, PendingStart start, CountInMode mode) {
+        countInSchedule = schedule;
+        countInStart = start;
+        if (state.get() != RecordState.COUNT_IN) transition(RecordState.COUNT_IN);
+        FxDispatcher dispatcher = fxDispatcher != null ? fxDispatcher : FxDispatcher.getDefault();
+        countInFireChannel = dispatcher == null ? null : dispatcher.openContinuous(kind -> onCountInFired());
+        countInObserverRemoval = project.getTransport().addChangeListener(countInObserver);
+        setRecordingStatus(countInStatus(mode));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+        updateStatus();
+        if (schedule.isFired()) onCountInFired();
+    }
+
+    /** "Count-in — N bars" for the status line while the take counts in. */
+    private static String countInStatus(CountInMode mode) {
+        int bars = mode.getBars();
+        return "Count-in — " + bars + " bar" + (bars == 1 ? "" : "s");
+    }
+
+    /**
+     * The FX turn the count-in's observer hands over — the dispatcher's
+     * pulse draining {@link #countInFireChannel} — for every transport state
+     * change while COUNT_IN (story 328): if the schedule fired and the
+     * transport is RECORDING — the render thread ran the record start — the
+     * observer is removed and the take is announced
+     * ({@link #announceRecordingStarted}: COUNT_IN → RECORDING,
+     * {@code TransportEvent.Started}, the status line, the INFO toast).
+     * Otherwise nothing: the hop was a stop's, a cancel's, or ran after the
+     * count-in ended by another route. A {@linkplain #retire() retired}
+     * coordinator ignores it. FX thread.
+     */
+    private void onCountInFired() {
+        if (retired || state.get() != RecordState.COUNT_IN) return;
+        CountInSchedule schedule = countInSchedule;
+        if (schedule == null || !schedule.isFired()) return;
+        if (project.getTransport().getState() != TransportState.RECORDING) return;
+        PendingStart start = countInStart;
+        endCountInObservation();
+        announceRecordingStarted(0, start == null ? null : start.takeDirectory,
+                start != null && start.warningPublished);
+    }
+
+    /**
+     * Schedules the MIDI-only count-in end's second looks (story 328 review
+     * rounds 1 and 2): one on the next FX turn, one a block period of the
+     * schedule's stream later through {@link #stillWritingDelay} — the FX
+     * timer the coordinator already uses — so a render thread descheduled
+     * across the whole Stop turn and the turn after it is still caught once
+     * it has run the block the fire belongs to. Residual window: a render
+     * thread kept off-CPU for longer than a block period past both looks
+     * leaves the transport rolling in RECORDING with the coordinator IDLE
+     * until the next Stop press, which recovers it ({@code wasRolling},
+     * {@code requestStop}). FX thread.
+     */
+    private void lookAgainAtTheEndedCountIn(CountInSchedule ended) {
+        if (ended == null) return;
+        postFx(() -> stopIfTheEndedCountInFiredAfterAll(ended));
+        stillWritingDelay.after(blockPeriodOf(ended), () -> stopIfTheEndedCountInFiredAfterAll(ended));
+    }
+
+    /** One block of the schedule's stream, as the delay of the later second look. */
+    static java.time.Duration blockPeriodOf(CountInSchedule schedule) {
+        return java.time.Duration.ofNanos(Math.round(schedule.blockSize() * 1_000_000_000.0 / schedule.sampleRate()));
+    }
+
+    /**
+     * The MIDI-only count-in end's second look (story 328 review): a render
+     * thread descheduled between its cancel check and its {@code fired}
+     * store runs the record start after the cancel reported a win, and the
+     * one read {@link #stopAudioTake} made saw a transport still STOPPED; a
+     * render thread descheduled between its {@code fired} store and the
+     * transport's RECORDING store makes the FIRED verdict's
+     * {@code requestStop()} a no-op on a still-STOPPED transport. If either
+     * happened, the transport now rolls in RECORDING with no recorder and
+     * this coordinator IDLE; it is stopped here. Nothing to do when the
+     * schedule never fired, when a new take has started since, or when the
+     * coordinator was retired. FX thread.
+     */
+    private void stopIfTheEndedCountInFiredAfterAll(CountInSchedule ended) {
+        if (retired || ended == null || !ended.isFired()) return;
+        Transport transportModel = project.getTransport();
+        if (transportModel.getState() == TransportState.RECORDING && state.get() == RecordState.IDLE
+                && recordingPipeline == null && countInSchedule == null && activeMidiRecorders.isEmpty()) {
+            LOG.info("The ended count-in fired inside the stop's window; the transport is stopped");
+            transportModel.stop();
+            updateStatus();
+        }
+    }
+
+    /** How a count-in ended for the caller that ended it; see {@link #endCountIn()}. */
+    private enum CountInEnd { NONE, CANCELLED, FIRED }
+
+    /**
+     * Ends the count-in in flight, if any, from the caller's side (story
+     * 328, book §5.6): the schedule is cancelled
+     * ({@code AudioEngine.cancelCountIn}: the render thread renders no
+     * further click and, unless it had already passed its check, never runs
+     * the record start) and the observer removed; then the verdict is
+     * reconciled. {@code CANCELLED}: the cancel won, no take recorded —
+     * the caller ends the take as one that never started. {@code FIRED}:
+     * the render thread fired first, the transport is RECORDING, and the
+     * take is announced here as the fire's turn would have announced it —
+     * so the caller finds an ordinary RECORDING take and ends it through the
+     * ordinary path, notes and captured audio kept. {@code NONE}: no
+     * count-in was in flight. FX thread.
+     */
+    private CountInEnd endCountIn() {
+        CountInSchedule schedule = countInSchedule;
+        if (schedule == null) return CountInEnd.NONE;
+        boolean cancelWon = audioEngine.cancelCountIn(schedule);
+        PendingStart start = countInStart;
+        endCountInObservation();
+        if (cancelWon) return CountInEnd.CANCELLED;
+        LOG.info("The count-in fired before it could be cancelled; the take is recording and is stopped as one");
+        announceRecordingStarted(0, start == null ? null : start.takeDirectory,
+                start != null && start.warningPublished);
+        return CountInEnd.FIRED;
+    }
+
+    /**
+     * Cancels the count-in in flight, if any, without reconciling its
+     * verdict: for a start that is being aborted ({@link #abortRecordingTake})
+     * and for a {@linkplain #retire() retirement}, where nothing is
+     * announced either way. FX thread.
+     */
+    private void cancelCountInQuietly() {
+        CountInSchedule schedule = countInSchedule;
+        if (schedule == null) return;
+        audioEngine.cancelCountIn(schedule);
+        endCountInObservation();
+    }
+
+    /** Removes the count-in's observer, closes its channel and forgets the schedule and its start. FX thread. */
+    private void endCountInObservation() {
+        Runnable removal = countInObserverRemoval;
+        FxDispatcher.ContinuousChannel<Transport.ChangeKind> channel = countInFireChannel;
+        countInObserverRemoval = null;
+        countInFireChannel = null;
+        countInSchedule = null;
+        countInStart = null;
+        if (removal != null) removal.run();
+        if (channel != null) channel.close();
+    }
+
+    /**
+     * Stops the MIDI recorders of a count-in that never fired (story 328),
+     * discarding what they hold: nothing of the count-in was recorded by
+     * design, and a pickup note kept within
+     * {@link MidiRecorder#PICKUP_TOLERANCE_US} of a window that was then
+     * cancelled belongs to no take — it is removed from the clip again, no
+     * undo entry is registered and the project is not marked dirty. The
+     * tracks are unmarked. A stop that throws is logged, or added to
+     * {@code failure} when the caller is aborting. FX thread.
+     */
+    private void discardMidiRecording(Throwable failure) {
+        if (activeMidiRecorders.isEmpty()) return;
+        List<Map.Entry<Track, MidiRecorder>> discarding = new ArrayList<>(activeMidiRecorders.entrySet());
+        activeMidiRecorders.clear();
+        for (Map.Entry<Track, MidiRecorder> entry : discarding.reversed()) {
+            Track track = entry.getKey();
+            MidiRecorder recorder = entry.getValue();
+            try {
+                recorder.stopRecording();
+            } catch (RuntimeException | Error stopFailure) {
+                if (failure == null) {
+                    LOG.log(Level.WARNING, "MIDI provider close failed on track: " + track.getName(), stopFailure);
+                } else if (stopFailure != failure) {
+                    failure.addSuppressed(stopFailure);
+                }
+            }
+            for (MidiNoteData note : recorder.getRecordedNotes()) {
+                track.getMidiClip().removeNote(note);
+            }
+            track.setRecording(false);
+        }
+    }
+
+    /**
+     * Whether the take in flight is counting in (COUNT_IN with a schedule
+     * pending): Play is refused meanwhile, as it is while a take is being
+     * prepared — a transport that rolled would park the count-in for good.
+     * FX thread.
+     */
+    boolean isCountingIn() {
+        return countInSchedule != null;
+    }
+
+    /** Test seam: whether the count-in's transport observer is registered. FX thread. */
+    boolean isObservingCountInForTest() {
+        return countInObserverRemoval != null;
     }
 
     /**

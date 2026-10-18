@@ -85,7 +85,7 @@ import java.util.logging.Logger;
  *
  * <p><strong>Per block</strong> (context D9): (a) loop-wrap check from the
  * slot header — beat decreased while looping — seals the lane, builds the
- * lap's {@link Take} and makes the pre-opened next lane the current one
+ * lap's clip ({@code TrackCapture.lapClips}) and makes the pre-opened next lane the current one
  * (below); (b) the disk-headroom check
  * ({@link DiskHeadroomWatch#check(long)}; EXHAUSTED seals the take before
  * the block is written); (c) punch gating with the header's start frame,
@@ -258,8 +258,12 @@ public final class CaptureFlushService {
      */
     public static final Duration PEAK_PUBLISH_INTERVAL = Duration.ofMillis(33);
 
-    /** Duration, in seconds, of the cosine crossfade at the punch-in and punch-out boundaries. */
-    static final double PUNCH_CROSSFADE_SECONDS = 0.005;
+    /**
+     * Duration, in seconds, of the cosine crossfade at the punch-in and
+     * punch-out boundaries. Public since story 328: the shortest punch region
+     * a creation gesture may install is twice this (both ramps must exist).
+     */
+    public static final double PUNCH_CROSSFADE_SECONDS = 0.005;
 
     private static final Logger LOG = Logger.getLogger(CaptureFlushService.class.getName());
     private static final long PARK_BACKSTOP_NANOS = PARK_BACKSTOP.toNanos();
@@ -1114,7 +1118,9 @@ public final class CaptureFlushService {
                     && previousBeat >= 0.0
                     && currentBeatPosition < previousBeat
                     && slot.loopEnabled()) {
-                finalizeLoopLap();
+                // The lane opened at the wrap starts where this block does:
+                // the loop start plus the wrap's overshoot (story 328 review).
+                finalizeLoopLap(currentBeatPosition);
             }
             previousBeat = currentBeatPosition;
 
@@ -1322,12 +1328,15 @@ public final class CaptureFlushService {
      * manifest, the capture keeps the session for a later retry of the
      * delete, the warning sink is told — and the track's next lane is
      * recording, opened past that file.
+     *
+     * @param lapStartBeat the header beat of the block that wrapped — where
+     *                     the lane opened here starts on the timeline
      */
-    private void finalizeLoopLap() {
+    private void finalizeLoopLap(double lapStartBeat) {
         for (TrackCapture capture : captures) {
             if (capture.inputSource() != inputSource) continue;
             try {
-                capture.finalizeLane(true, true);
+                capture.finalizeLane(true, true, lapStartBeat);
             } finally {
                 RuntimeException undeletable = capture.takeStandbyDiscardFailure();
                 if (undeletable != null) {

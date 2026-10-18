@@ -109,14 +109,17 @@ class TransportBindingTest {
             assertThat(computeOnFx(() -> isActive(play))).isFalse();
             assertThat(computeOnFx(() -> isActive(record))).isFalse();
 
+            // A STATE fired off the FX thread (this test thread, as the render
+            // thread at a count-in's end) reaches the VM through the pulse's
+            // lock-free drain, not runLater (story 328 review).
             transport.play();
-            flushFx();
+            computeOnFx(() -> { dispatcher.pulse(); return null; });
             assertThat(computeOnFx(() -> isActive(play)))
                     .as("play button :active follows state == PLAYING").isTrue();
             assertThat(computeOnFx(() -> isActive(record))).isFalse();
 
             transport.record();
-            flushFx();
+            computeOnFx(() -> { dispatcher.pulse(); return null; });
             assertThat(computeOnFx(() -> isActive(record)))
                     .as("transport state alone cannot claim a coordinator recording").isFalse();
             computeOnFx(() -> { recordState.set(com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING); return null; });

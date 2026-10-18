@@ -103,6 +103,11 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     private EngineStateBridge bridge;
 
     private DeviceLossRecordingFixture(Path projectDirectory, boolean withEngineBridge) throws Exception {
+        this(projectDirectory, withEngineBridge, CountInMode.OFF);
+    }
+
+    private DeviceLossRecordingFixture(Path projectDirectory, boolean withEngineBridge, CountInMode countIn)
+            throws Exception {
         project = new DawProject("Demo", new AudioFormat(44_100.0, 2, 24, 256));
         project.setMetadata(project.getMetadata().withPath(projectDirectory));
         guitar = project.createAudioTrack("Guitar");
@@ -125,7 +130,7 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
                     transportStatus, statusBar, recIndicator, new Button(), new Button(),
                     () -> false,
                     () -> GridResolution.QUARTER,
-                    () -> CountInMode.OFF,
+                    () -> countIn,
                     track -> { },
                     () -> true,
                     () -> RoundTripLatency.UNKNOWN);
@@ -149,6 +154,16 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     /** The coordinator alone; the test reports the loss itself. */
     static DeviceLossRecordingFixture withoutEngineBridge(Path projectDirectory) throws Exception {
         return new DeviceLossRecordingFixture(projectDirectory, false);
+    }
+
+    /** {@link #withEngineBridge(Path)} with Record counting in by {@code countIn} (story 328). */
+    static DeviceLossRecordingFixture withEngineBridge(Path projectDirectory, CountInMode countIn) throws Exception {
+        return new DeviceLossRecordingFixture(projectDirectory, true, countIn);
+    }
+
+    /** {@link #withoutEngineBridge(Path)} with Record counting in by {@code countIn} (story 328). */
+    static DeviceLossRecordingFixture withoutEngineBridge(Path projectDirectory, CountInMode countIn) throws Exception {
+        return new DeviceLossRecordingFixture(projectDirectory, false, countIn);
     }
 
     DawProject project() {

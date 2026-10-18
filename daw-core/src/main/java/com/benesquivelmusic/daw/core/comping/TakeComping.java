@@ -25,11 +25,19 @@ import java.util.Objects;
  *       comp regions into a flat list of {@link AudioClip}s for the main
  *       track lane.</li>
  * </ul>
+ *
+ * <p>This is the one take model (Recording Reliability book §3.5, story
+ * 328): loop-record ingests each lap as a lane ({@code RecordingPipeline}),
+ * the COMP tool selects across the lanes, and the compiled output is what
+ * the main lane plays. The clips that output currently occupies on the main
+ * lane are remembered here ({@link #getCompClips()}) so a re-compile can
+ * replace exactly them and nothing else on the track.</p>
  */
 public final class TakeComping {
 
     private final List<TakeLane> takeLanes = new ArrayList<>();
     private final List<CompRegion> compRegions = new ArrayList<>();
+    private List<AudioClip> compClips = List.of();
 
     /**
      * Adds a new take lane.
@@ -167,23 +175,6 @@ public final class TakeComping {
     }
 
     /**
-     * Returns the comp regions that reference the given take lane index,
-     * representing the "active" (highlighted) portions of that take.
-     *
-     * @param takeIndex the take lane index
-     * @return the list of comp regions for that take
-     */
-    public List<CompRegion> getCompRegionsForTake(int takeIndex) {
-        List<CompRegion> result = new ArrayList<>();
-        for (CompRegion region : compRegions) {
-            if (region.takeIndex() == takeIndex) {
-                result.add(region);
-            }
-        }
-        return Collections.unmodifiableList(result);
-    }
-
-    /**
      * Compiles the selected comp regions into a list of audio clips
      * suitable for placement on the main track lane.
      *
@@ -196,6 +187,16 @@ public final class TakeComping {
      */
     public List<AudioClip> compile() {
         List<AudioClip> compiled = new ArrayList<>();
+        for (TakeLane lane : takeLanes) {
+            if (lane.isSoloed()) {
+                // Audition (Alt-click): the soloed lane plays whole, in
+                // place of the composite, until the main lane is clicked.
+                for (AudioClip takeClip : lane.getClips()) {
+                    compiled.add(slice(takeClip, takeClip.getStartBeat(), takeClip.getEndBeat()));
+                }
+                return Collections.unmodifiableList(compiled);
+            }
+        }
         for (CompRegion region : compRegions) {
             if (region.takeIndex() >= takeLanes.size()) {
                 continue;
@@ -208,28 +209,57 @@ public final class TakeComping {
                     // Create a new clip covering the comp region
                     double clipStart = Math.max(region.startBeat(), takeClip.getStartBeat());
                     double clipEnd = Math.min(region.endBeat(), takeClip.getEndBeat());
-                    double duration = clipEnd - clipStart;
-                    if (duration <= 0) {
+                    if (clipEnd - clipStart <= 0) {
                         continue;
                     }
-                    double sourceOffset = takeClip.getSourceOffsetBeats()
-                            + (clipStart - takeClip.getStartBeat());
-                    AudioClip compClip = new AudioClip(
-                            takeClip.getName(),
-                            clipStart,
-                            duration,
-                            takeClip.getSourceFilePath());
-                    // A take that rotated spans several segment files; the
-                    // comp clip references all of them, not only the head.
-                    compClip.setSourceSegmentPaths(takeClip.getSourceSegmentPaths());
-                    compClip.setSourceOffsetBeats(sourceOffset);
-                    compClip.setGainDb(takeClip.getGainDb());
-                    compClip.setAudioData(takeClip.getAudioData());
-                    compiled.add(compClip);
+                    compiled.add(slice(takeClip, clipStart, clipEnd));
                 }
             }
         }
         return Collections.unmodifiableList(compiled);
+    }
+
+    /**
+     * A main-lane clip playing {@code [clipStart, clipEnd)} of {@code takeClip}:
+     * it references the take's segment files (all of them — a take that
+     * rotated spans several) at the matching source offset and shares the
+     * take's audio array, so nothing is copied or invented.
+     */
+    private static AudioClip slice(AudioClip takeClip, double clipStart, double clipEnd) {
+        AudioClip compClip = new AudioClip(
+                takeClip.getName(),
+                clipStart,
+                clipEnd - clipStart,
+                takeClip.getSourceFilePath());
+        compClip.setSourceSegmentPaths(takeClip.getSourceSegmentPaths());
+        compClip.setSourceOffsetBeats(takeClip.getSourceOffsetBeats() + (clipStart - takeClip.getStartBeat()));
+        compClip.setGainDb(takeClip.getGainDb());
+        compClip.setAudioData(takeClip.getAudioData());
+        compClip.setSourceRateMetadata(takeClip.getSourceRateMetadata());
+        return compClip;
+    }
+
+    /**
+     * Returns the clips the compiled comp currently occupies on the main
+     * lane — what {@link CompileCompAction} last put there — so the next
+     * compile replaces exactly those. Empty until a comp is compiled.
+     *
+     * @return the comp's main-lane clips (unmodifiable; never {@code null})
+     */
+    public List<AudioClip> getCompClips() {
+        return compClips;
+    }
+
+    /**
+     * Records the clips the compiled comp occupies on the main lane. Called
+     * by {@link CompileCompAction} (execute and undo); not a mutation of the
+     * track itself.
+     *
+     * @param clips the comp's main-lane clips (copied)
+     */
+    public void setCompClips(List<AudioClip> clips) {
+        Objects.requireNonNull(clips, "clips must not be null");
+        compClips = List.copyOf(clips);
     }
 
     /**

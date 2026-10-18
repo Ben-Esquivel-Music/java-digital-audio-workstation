@@ -141,6 +141,14 @@ final class KeyboardShortcutController {
         default void onTogglePreRoll() { }
         /** Story 134 — toggle the post-roll feature on/off. Default no-op. */
         default void onTogglePostRoll() { }
+        /** Story 328 — toggle loop-record (book §5.6); optional, no-op by default. */
+        default void onToggleLoopRecord() { }
+        /** Story 328 — set punch-in at the playhead (book §5.6). Default no-op. */
+        default void onSetPunchIn() { }
+        /** Story 328 — set punch-out at the playhead (book §5.6). Default no-op. */
+        default void onSetPunchOut() { }
+        /** Story 328 — flip the punch region's enabled flag (book §5.6). Default no-op. */
+        default void onTogglePunch() { }
         /**
          * Toggle the mixer's A/B snapshot slots — Story 103. Default no-op
          * keeps existing test stubs source-compatible.
@@ -196,7 +204,12 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.SKIP_TO_START, host::onSkipBack);
         actionHandlers.put(DawAction.SKIP_TO_END, host::onSkipForward);
         actionHandlers.put(DawAction.TOGGLE_LOOP, host::onToggleLoop);
+        actionHandlers.put(DawAction.TOGGLE_LOOP_RECORD, host::onToggleLoopRecord);
         actionHandlers.put(DawAction.TOGGLE_METRONOME, host::onToggleMetronome);
+        // ── Punch creation (story 328, book §5.6) ────────────────────────────
+        actionHandlers.put(DawAction.SET_PUNCH_IN, host::onSetPunchIn);
+        actionHandlers.put(DawAction.SET_PUNCH_OUT, host::onSetPunchOut);
+        actionHandlers.put(DawAction.TOGGLE_PUNCH, host::onTogglePunch);
         actionHandlers.put(DawAction.UNDO, host::onUndo);
         actionHandlers.put(DawAction.REDO, host::onRedo);
         actionHandlers.put(DawAction.SAVE, host::onSaveProject);

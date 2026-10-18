@@ -514,7 +514,7 @@ final class ClipInteractionController {
             case ERASER -> handleEraserPress(track, beat);
             case SCISSORS -> handleScissorsPress(track, beat);
             case GLUE -> handleGluePress(track, beat);
-            case COMP -> handleCompPress(track, beat, event);
+            case COMP -> handleCompPress(track, trackIndex, beat, event);
         }
     }
 
@@ -1075,28 +1075,29 @@ final class ClipInteractionController {
     }
 
     /**
-     * Handles a press with the {@link EditTool#COMP} tool. Alt+Click solos the
-     * track's first take lane for auditioning (without retaining handler state);
-     * a regular press begins a comp swipe on take lane 0 (the default lane).
-     * The beat is clamped to {@code >= 0} to avoid negative-position exceptions.
+     * Handles a press with the {@link EditTool#COMP} tool (story 328, book
+     * §5.6). The pointer's Y resolves the take lane under the track's main
+     * lane ({@link ArrangementCanvas#takeLaneIndexAtY}): a press on the main
+     * lane clears any lane solo (composite playback); Alt+Click on a take
+     * lane solos it for auditioning; a regular press on a take lane begins a
+     * comp swipe on that lane, committed on release. The beat is clamped to
+     * {@code >= 0} to avoid negative-position exceptions.
      */
-    private void handleCompPress(Track track, double beat, MouseEvent event) {
-        var takeComping = track.getTakeComping();
-        if (!takeComping.isActive()) {
+    private void handleCompPress(Track track, int trackIndex, double beat, MouseEvent event) {
+        if (!track.getTakeComping().isActive()) {
             return;
         }
+        int laneIndex = canvas.takeLaneIndexAtY(trackIndex, event.getY());
         double clampedBeat = Math.max(0.0, beat);
-        if (event.isAltDown()) {
-            // TODO: derive take-lane index from pointer Y once take lanes are
-            //       hit-testable; for now, solo lane 0 as the default.
-            var handler = new CompToolHandler(takeComping, deps.undoManager().get());
-            handler.altClickLane(0);
+        if (laneIndex < 0) {
+            new CompToolHandler(track, deps.undoManager().get()).clickMainLane();
+            deps.refreshCanvas().run();
+        } else if (event.isAltDown()) {
+            new CompToolHandler(track, deps.undoManager().get()).altClickLane(laneIndex);
             deps.refreshCanvas().run();
         } else {
-            // TODO: derive take-lane index from pointer Y once take lanes are
-            //       hit-testable; for now, swipe on lane 0 as the default.
-            compToolHandler = new CompToolHandler(takeComping, deps.undoManager().get());
-            compToolHandler.beginSwipe(0, clampedBeat);
+            compToolHandler = new CompToolHandler(track, deps.undoManager().get());
+            compToolHandler.beginSwipe(laneIndex, clampedBeat);
         }
     }
 

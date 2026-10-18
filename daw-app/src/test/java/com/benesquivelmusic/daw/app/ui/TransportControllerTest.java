@@ -118,6 +118,45 @@ class TransportControllerTest {
                         || f.getName().equals("timeDisplay"));
     }
 
+    @Test
+    void loopRecordToggleIsHandedToTheTakeBeforePrepareAndRefusedWhileATakeIsInProgress() throws Exception {
+        // Story 328 (book §5.6): the toggle flips the transport's fact and
+        // reports on the status line; the coordinator hands the fact to the
+        // pipeline it builds, before prepare; while the take is in progress
+        // the toggle is refused (the mode is part of the take's configuration).
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = newController(project, new MockAudioBackend());
+        AtomicReference<RecordingPipeline> built = new AtomicReference<>();
+        runHandler(() -> controller.setPipelineSetupForTest(pipeline -> {
+            built.set(pipeline);
+            pipeline.setNanoClock(hold);
+        }));
+
+        runHandler(controller::toggleLoopRecord);
+        assertThat(project.getTransport().isLoopRecordEnabled()).isTrue();
+        assertThat(statusBarLabel.getText()).startsWith("Loop Record: ON");
+
+        try {
+            record(controller);
+            assertThat(built.get()).as("the take built a pipeline").isNotNull();
+            assertThat(built.get().isLoopRecord())
+                    .as("the coordinator handed the transport's fact to the take before prepare").isTrue();
+
+            runHandler(controller::toggleLoopRecord);
+            assertThat(project.getTransport().isLoopRecordEnabled()).as("refused during the take").isTrue();
+            assertThat(statusBarLabel.getText()).contains("cannot change while a take is in progress");
+        } finally {
+            stopAndAwaitTheTake(controller);
+        }
+
+        runHandler(controller::toggleLoopRecord);
+        assertThat(project.getTransport().isLoopRecordEnabled()).as("accepted again once the take is published").isFalse();
+        assertThat(statusBarLabel.getText()).isEqualTo("Loop Record: OFF");
+    }
+
     // ── Harness ──────────────────────────────────────────────────────────────
 
     /** The play button handed to the controller, for enablement assertions. */

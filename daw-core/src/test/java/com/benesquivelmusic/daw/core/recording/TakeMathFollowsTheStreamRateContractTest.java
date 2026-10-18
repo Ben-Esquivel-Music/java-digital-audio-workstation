@@ -291,18 +291,18 @@ class TakeMathFollowsTheStreamRateContractTest {
         feed(engine, transport, pipeline, format, 2 * blocksPerLap + 1);
         stopRecording(pipeline);
 
-        TakeGroup group = pipeline.getTakeGroups().get(track);
-        assertThat(group).isNotNull();
-        assertThat(group.size()).as("two whole laps and the lap the stop ended").isEqualTo(3);
+        List<AudioClip> laps = pipeline.getLapClips().get(track);
+        assertThat(laps).isNotNull();
+        assertThat(laps.size()).as("two whole laps and the lap the stop ended").isEqualTo(3);
         long lapFrames = (long) blocksPerLap * BLOCK;
         for (int lap = 0; lap < 2; lap++) {
-            AudioClip clip = group.takes().get(lap).clip();
+            AudioClip clip = laps.get(lap);
             assertThat(clip.getSourceRateMetadata()).as("lap %d declares the stream's rate", lap)
                     .isEqualTo(new SourceRateMetadata((int) rate, 2, lapFrames));
             assertThat(clip.getDurationBeats()).as("lap %d: %d frames at %.0f Hz", lap, lapFrames, rate)
                     .isCloseTo(lapFrames / rate * (BPM / 60.0), within(1e-9));
         }
-        AudioClip last = group.takes().get(2).clip();
+        AudioClip last = laps.get(2);
         assertThat(last.getSourceRateMetadata()).isEqualTo(new SourceRateMetadata((int) rate, 2, BLOCK));
         assertThat(last.getDurationBeats()).isCloseTo(BLOCK / rate * (BPM / 60.0), within(1e-9));
         assertThat(snapshots).allSatisfy(snapshot ->

@@ -169,7 +169,9 @@ public final class Transport {
         /** The loop region or loop-enabled flag changed. */
         LOOP,
         /** The playback position changed (seek, scrub, or per-block advance). */
-        POSITION
+        POSITION,
+        /** The punch-in/out region was installed, changed, or cleared (story 328, book §5.6). */
+        PUNCH
     }
 
     /**
@@ -215,6 +217,8 @@ public final class Transport {
     private final TempoMap tempoMap = new TempoMap();
     private volatile LoopWindow loopWindow =
             new LoopWindow(false, DEFAULT_LOOP_START, DEFAULT_LOOP_END);
+    /** Loop-record: every loop lap of a take stacks a new take lane (story 328, book §4.6/§5.6). */
+    private volatile boolean loopRecordEnabled;
     private volatile PunchRegion punchRegion;
     private volatile PreRollPostRoll preRollPostRoll = PreRollPostRoll.DISABLED;
     private volatile boolean inPreRoll = false;
@@ -429,7 +433,16 @@ public final class Transport {
      * Starts recording from the current position, anchoring the play-start
      * position exactly as {@link #play()} does — {@link #stop()} after a
      * recording pass returns the playhead to where the pass started.
+     *
+     * <p>Story 328 (book §5.6): a count-in's record start runs this on the
+     * render thread at the count-in's last block boundary. It is two plain
+     * stores and the lock-free, allocation-free change notification;
+     * {@code RealTimeSafeContractTest} walks it from the schedule's fire.
+     * The listeners it reaches must be lock-free too: the view-model routes
+     * a {@link ChangeKind#STATE STATE} fired off the FX thread through the
+     * dispatcher's single-reader buffer, never {@code Platform.runLater}.</p>
      */
+    @RealTimeSafe
     public void record() {
         playStartAnchor = positionInBeats;
         state = TransportState.RECORDING;
@@ -853,6 +866,33 @@ public final class Transport {
     }
 
     /**
+     * Returns whether loop-record is enabled: whether a take recorded over
+     * an enabled loop stacks each lap as a take lane of the armed tracks'
+     * take comping instead of recording one session across the laps
+     * (story 328, book §5.6). The fact lives here, beside the loop window,
+     * and is read by the record coordinator when a take starts
+     * ({@code RecordingPipeline.setLoopRecord}); it has no effect on a
+     * take already in progress.
+     *
+     * @return {@code true} if loop-record is enabled
+     */
+    public boolean isLoopRecordEnabled() {
+        return loopRecordEnabled;
+    }
+
+    /**
+     * Enables or disables loop-record (the loop-record toggle). Fires
+     * {@link ChangeKind#LOOP}, as the loop window's mutators do, so the
+     * {@code TransportVM} mirror re-reads it with the loop region.
+     *
+     * @param enabled whether loop-record is engaged
+     */
+    public void setLoopRecordEnabled(boolean enabled) {
+        this.loopRecordEnabled = enabled;
+        notifyChange(ChangeKind.LOOP);
+    }
+
+    /**
      * Advances the playback position by the given number of beats — the RT
      * audio callback's per-block clock tick (sole production caller:
      * {@code RenderPipeline}, at the end of each rendered block).
@@ -1059,6 +1099,9 @@ public final class Transport {
      * arm can remain pressed across multiple passes and only the punch range
      * is captured each time.</p>
      *
+     * <p>Fires {@link ChangeKind#PUNCH} so observers (the {@code TransportVM}
+     * mirror) re-read the region (story 328, book §5.6).</p>
+     *
      * @param punchRegion the punch region to install (must not be {@code null};
      *                    use {@link #clearPunchRegion()} to remove)
      * @throws NullPointerException if {@code punchRegion} is {@code null}
@@ -1068,15 +1111,18 @@ public final class Transport {
             throw new NullPointerException("punchRegion must not be null; use clearPunchRegion() to remove");
         }
         this.punchRegion = punchRegion;
+        notifyChange(ChangeKind.PUNCH);
     }
 
     /**
      * Removes any installed punch region. After this call
      * {@link #isPunchEnabled()} returns {@code false} and
-     * {@link #getPunchRegion()} returns {@code null}.
+     * {@link #getPunchRegion()} returns {@code null}. Fires
+     * {@link ChangeKind#PUNCH}.
      */
     public void clearPunchRegion() {
         this.punchRegion = null;
+        notifyChange(ChangeKind.PUNCH);
     }
 
     /**

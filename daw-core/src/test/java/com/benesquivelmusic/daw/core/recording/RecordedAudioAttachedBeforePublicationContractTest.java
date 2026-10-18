@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * ({@link RecordingPipeline#recordedSegmentPaths()}, then
  * {@link RecordingPipeline#completeStop(Function)}): the plain take's clip
  * of each armed track and, in loop-record, the clip of every lap — the very
- * arrays the lookup returned, attached before the clip or its take group is
+ * arrays the lookup returned, attached before the clip or its take lane is
  * on the track. A lookup that has nothing for a clip leaves it without
  * audio, and the lookup is never asked about a clip that lists no segment.
  *
@@ -68,7 +68,7 @@ class RecordedAudioAttachedBeforePublicationContractTest {
     }
 
     /** One call of the lookup: the list it was asked about and what the tracks held at that moment. */
-    private record Asked(List<String> segmentPaths, int clipsOnTheTracks, int takeGroupsOnTheTracks) {
+    private record Asked(List<String> segmentPaths, int clipsOnTheTracks, int takeLanesOnTheTracks) {
     }
 
     /** A lookup over arrays "read" beforehand: one distinct array per segment-path list. */
@@ -91,7 +91,7 @@ class RecordedAudioAttachedBeforePublicationContractTest {
             int groups = 0;
             for (Track track : tracks) {
                 clips += track.getClips().size();
-                groups += track.getTakeGroups().size();
+                groups += track.getTakeComping().getTakeLaneCount();
             }
             asked.add(new Asked(List.copyOf(segmentPaths), clips, groups));
             return audio.get(segmentPaths);
@@ -143,7 +143,7 @@ class RecordedAudioAttachedBeforePublicationContractTest {
     }
 
     @Test
-    void everyLapOfALoopTakeHasItsAudioBeforeTheTakeGroupOrItsActiveClipIsOnTheTrack() {
+    void everyLapOfALoopTakeHasItsAudioBeforeItsTakeLaneOrTheCompClipIsOnTheTrack() {
         Track vocal = RampCaptureTestSupport.armedMonoTrack("Vocal");
         List<Track> tracks = List.of(vocal);
         RecordingPipeline pipeline = new RecordingPipeline(engine, transport, MONO_16, takeDir, tracks);
@@ -166,21 +166,25 @@ class RecordedAudioAttachedBeforePublicationContractTest {
 
         List<AudioClip> clips = pipeline.completeStop(loaded);
 
-        TakeGroup group = pipeline.getTakeGroups().get(vocal);
-        assertThat(group.size()).isEqualTo(3);
+        List<AudioClip> laps = pipeline.getLapClips().get(vocal);
+        assertThat(laps.size()).isEqualTo(3);
         Map<AudioClip, Boolean> seen = new IdentityHashMap<>();
         for (int lap = 0; lap < 3; lap++) {
-            AudioClip clip = group.takes().get(lap).clip();
+            AudioClip clip = laps.get(lap);
             seen.put(clip, true);
             assertThat(clip.getSourceSegmentPaths()).isEqualTo(segmentPathLists.get(lap));
             assertThat(clip.getAudioData()).as("lap %d — not only the active take — carries its own array", lap)
                     .isSameAs(loaded.audio.get(segmentPathLists.get(lap)));
         }
         assertThat(seen).hasSize(3);
-        assertThat(clips).as("the active take's clip is the one on the track").containsExactly(group.activeClip());
-        assertThat(vocal.getClips()).containsExactly(group.activeClip());
-        assertThat(vocal.getTakeGroups()).hasSize(1);
-        assertThat(loaded.asked).as("every lap was asked about before the track held the clip or the take group")
+        // Story 328 (book §3.5): the default selection is the last whole lap
+        // (lap 1 of the two whole laps; lap 2 is the partial one), and the
+        // comp clip on the track shares that lap's array.
+        assertThat(clips).as("the compiled comp clip is the one on the track").hasSize(1);
+        assertThat(vocal.getClips()).containsExactlyElementsOf(clips);
+        assertThat(clips.getFirst().getAudioData()).isSameAs(loaded.audio.get(segmentPathLists.get(1)));
+        assertThat(vocal.getTakeComping().getTakeLaneCount()).isEqualTo(3);
+        assertThat(loaded.asked).as("every lap was asked about before the track held the clip or the take lane")
                 .containsExactly(new Asked(segmentPathLists.get(0), 0, 0), new Asked(segmentPathLists.get(1), 0, 0),
                         new Asked(segmentPathLists.get(2), 0, 0));
     }

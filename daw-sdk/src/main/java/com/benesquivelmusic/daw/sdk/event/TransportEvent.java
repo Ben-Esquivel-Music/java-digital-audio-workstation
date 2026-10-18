@@ -21,7 +21,9 @@ public sealed interface TransportEvent extends DawEvent
                 TransportEvent.Stopped,
                 TransportEvent.Seeked,
                 TransportEvent.TempoChanged,
-                TransportEvent.LoopChanged {
+                TransportEvent.LoopChanged,
+                TransportEvent.LoopRecordChanged,
+                TransportEvent.PunchChanged {
 
     /** Returns the wall-clock instant at which this event was produced. */
     @Override
@@ -120,6 +122,45 @@ public sealed interface TransportEvent extends DawEvent
             if (endFrames < startFrames) {
                 throw new IllegalArgumentException(
                         "endFrames must be >= startFrames: " + endFrames + " < " + startFrames);
+            }
+            Objects.requireNonNull(timestamp, "timestamp must not be null");
+        }
+    }
+
+    /**
+     * Emitted when the loop-record flag changes (story 328, book §5.6):
+     * whether a take recorded over an enabled loop stacks each lap as a
+     * take lane.
+     *
+     * @param enabled   whether loop-record is now enabled
+     * @param timestamp wall-clock instant of the event
+     */
+    record LoopRecordChanged(boolean enabled, Instant timestamp) implements TransportEvent {
+        public LoopRecordChanged {
+            Objects.requireNonNull(timestamp, "timestamp must not be null");
+        }
+    }
+
+    /**
+     * Emitted when the punch-in/out region or its enabled flag changes
+     * (story 328, book §5.6). The frame fields are PROJECT-rate sample
+     * frames &mdash; the same frames the capture gate acts on.
+     *
+     * @param enabled     whether punch recording is now enabled
+     * @param startFrames punch-in position in sample frames; must be non-negative
+     * @param endFrames   punch-out position in sample frames; must be {@code > startFrames}
+     * @param timestamp   wall-clock instant of the event
+     */
+    record PunchChanged(boolean enabled, long startFrames, long endFrames, Instant timestamp)
+            implements TransportEvent {
+        public PunchChanged {
+            if (startFrames < 0L) {
+                throw new IllegalArgumentException(
+                        "startFrames must be non-negative: " + startFrames);
+            }
+            if (endFrames <= startFrames) {
+                throw new IllegalArgumentException(
+                        "endFrames must be > startFrames: " + endFrames + " <= " + startFrames);
             }
             Objects.requireNonNull(timestamp, "timestamp must not be null");
         }

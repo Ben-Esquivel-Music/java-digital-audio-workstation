@@ -56,7 +56,8 @@ class EngineBindingWiringTest {
             assertThat(engine.getMixer()).isSameAs(projectA.getMixer());
             assertThat(engine.getTracks()).isEqualTo(projectA.getTracks());
             assertThat(dispatcher.openChannelCount())
-                    .as("epoch A opens exactly one playhead channel").isEqualTo(1);
+                    .as("epoch A opens exactly its TransportVM's two channels: the playhead and the off-FX STATE hop")
+                    .isEqualTo(2);
 
             // Switch to B — dispose epoch-A consumers, bind, rebuild.
             EpochSurface epochSurfaceB = rebuild(binder, dispatcher, projectB);
@@ -67,8 +68,8 @@ class EngineBindingWiringTest {
             assertThat(engine.getMixer()).isSameAs(projectB.getMixer());
             assertThat(dispatcher.openChannelCount())
                     .as("the old TransportVM is disposed back to baseline before epoch B's "
-                            + "channel opens — one channel total, not two")
-                    .isEqualTo(1);
+                            + "channels open — epoch B's two channels total, not four")
+                    .isEqualTo(2);
             assertThat(vmA).isNotSameAs(vmB);
 
             // A post-switch gesture goes through epoch B's PRODUCTION command
@@ -82,6 +83,9 @@ class EngineBindingWiringTest {
                     .as("A's transport stays STOPPED").isEqualTo(TransportState.STOPPED);
             assertThat(engine.getTransport().getState())
                     .as("the engine sees the playing transport").isEqualTo(TransportState.PLAYING);
+            // The command ran on this (non-FX) thread: its STATE reaches the
+            // VM through the pulse's lock-free drain (story 328 review).
+            pulseFx(dispatcher);
             assertThat(vmB.getState()).isEqualTo(TransportState.PLAYING);
 
             // Structural change on the live project refreshes the engine snapshot.
@@ -132,5 +136,19 @@ class EngineBindingWiringTest {
         Platform.runLater(latch::countDown);
         assertThat(latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
                 .as("FX queue must flush within %ds", TIMEOUT_SECONDS).isTrue();
+    }
+
+    /** One manual drain of the dispatcher's channels on the FX thread. */
+    private static void pulseFx(FxDispatcher dispatcher) throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                dispatcher.pulse();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .as("the pulse must run within %ds", TIMEOUT_SECONDS).isTrue();
     }
 }

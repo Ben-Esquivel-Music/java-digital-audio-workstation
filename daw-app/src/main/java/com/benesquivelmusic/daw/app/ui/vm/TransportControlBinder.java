@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui.vm;
 import com.benesquivelmusic.daw.app.ui.vm.command.SetTempoCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.StopTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TogglePlayPauseCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
@@ -130,6 +131,24 @@ public final class TransportControlBinder {
         vm.loopRegionProperty().addListener(listener);
         disposers.add(() -> vm.loopRegionProperty().removeListener(listener));
         onAction(loop, new ToggleLoopCommand());
+    }
+
+    /**
+     * Binds a Loop Record control (story 328, book §5.6): its {@code :active}
+     * pseudo-class follows {@code TransportVM.loopRecord}; a click raises
+     * {@link ToggleLoopRecordCommand}. Like {@link #bindLoop}, the button's
+     * lit state is a pure function of the VM fact, so a toggle from the
+     * shortcut lights it the same way.
+     *
+     * @param loopRecord the loop-record toggle/button; must not be {@code null}
+     */
+    public void bindLoopRecord(ButtonBase loopRecord) {
+        Objects.requireNonNull(loopRecord, "loopRecord must not be null");
+        updateActive(loopRecord, vm.isLoopRecord());
+        ChangeListener<Boolean> listener = (obs, was, now) -> updateActive(loopRecord, now);
+        vm.loopRecordProperty().addListener(listener);
+        disposers.add(() -> vm.loopRecordProperty().removeListener(listener));
+        onAction(loopRecord, new ToggleLoopRecordCommand());
     }
 
     /**

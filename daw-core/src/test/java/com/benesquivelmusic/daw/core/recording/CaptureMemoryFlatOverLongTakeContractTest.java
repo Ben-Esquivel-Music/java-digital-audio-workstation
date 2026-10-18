@@ -235,7 +235,7 @@ class CaptureMemoryFlatOverLongTakeContractTest {
         TrackCapture capture = service.captures().getFirst();
         assertThat(pipeline.getOverflowCount()).as("fixture: no block was dropped").isZero();
         assertThat(capture.lane()).as("fixture: every lap but the last wrapped").isEqualTo(laps - 1);
-        assertThat(capture.takeGroup().size()).isEqualTo(laps - 1);
+        assertThat(capture.lapClips().size()).isEqualTo(laps - 1);
         assertThat(capture.hasStandby()).as("fixture: a standby is held").isTrue();
 
         int stagingBlocks = afterTheFirstLaps.stagingBlocks(MONO_16.channels()).size();
@@ -263,7 +263,7 @@ class CaptureMemoryFlatOverLongTakeContractTest {
 
         List<AudioClip> clips = stopRecording(pipeline);
         assertThat(clips).hasSize(1);
-        assertThat(pipeline.getTakeGroups().get(track).size()).isEqualTo(laps);
+        assertThat(pipeline.getLapClips().get(track).size()).isEqualTo(laps);
     }
 
     private static Footprint footprintOfTheCapture(RecordingPipeline pipeline, CaptureFlushService service) {

@@ -4,6 +4,9 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
+import com.benesquivelmusic.daw.core.comping.CompRegion;
+import com.benesquivelmusic.daw.core.comping.TakeComping;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackFoldState;
@@ -57,6 +60,18 @@ public final class ArrangementCanvas extends Pane {
      * at 4/4. Shared with {@link EditorView#BEATS_PER_COLUMN}.
      */
     static final double BEATS_PER_COLUMN = EditorView.BEATS_PER_COLUMN;
+
+    /**
+     * Height of one take lane drawn under a track whose
+     * {@link TakeComping#isActive() comping is active} (story 328, book
+     * §5.6): a 4 px-grid multiple, half the default track height. The
+     * track's slot grows by {@code laneCount × TAKE_LANE_HEIGHT} through
+     * the one slot-height computation ({@link #rebuildLaneYCache()}).
+     */
+    static final double TAKE_LANE_HEIGHT = 40.0;
+
+    /** Inset of a take-lane clip body and its name label from the lane edge. */
+    private static final double TAKE_LANE_INSET = 4.0;
 
     private final Canvas canvas;
 
@@ -591,7 +606,39 @@ public final class ArrangementCanvas extends Pane {
         }
         double adjustedY = y + scrollYPixels;
         double slotTop = trackIndex == 0 ? 0 : slotBottomCache[trackIndex - 1];
-        return adjustedY >= slotTop + trackHeight;
+        return adjustedY >= slotTop + trackHeight + takeLanesHeight(tracks.get(trackIndex));
+    }
+
+    /**
+     * Resolves the take lane under the pointer for the COMP tool (story
+     * 328, book §5.6): the track's take lanes are stacked under its main
+     * lane, {@link #TAKE_LANE_HEIGHT} each, in {@link TakeComping} order.
+     *
+     * @param trackIndex the track the pointer is over ({@link #trackIndexAtY(double)})
+     * @param y          the Y pixel coordinate (in canvas space)
+     * @return the zero-based take lane index, or {@code -1} for the main
+     *         lane, a Y outside the take lanes (the automation lane below),
+     *         a track without active comping, or an invalid track index
+     */
+    int takeLaneIndexAtY(int trackIndex, double y) {
+        if (trackIndex < 0 || trackIndex >= tracks.size()) {
+            return -1;
+        }
+        TakeComping comping = tracks.get(trackIndex).getTakeComping();
+        if (!comping.isActive()) {
+            return -1;
+        }
+        if (slotBottomCache.length != tracks.size()) {
+            rebuildLaneYCache();
+        }
+        double adjustedY = y + scrollYPixels;
+        double slotTop = trackIndex == 0 ? 0 : slotBottomCache[trackIndex - 1];
+        double offset = adjustedY - slotTop - trackHeight;
+        if (offset < 0) {
+            return -1;
+        }
+        int lane = (int) Math.floor(offset / TAKE_LANE_HEIGHT);
+        return lane < comping.getTakeLaneCount() ? lane : -1;
     }
 
     /**
@@ -605,7 +652,18 @@ public final class ArrangementCanvas extends Pane {
         if (!automationLaneVisibility.containsKey(tracks.get(trackIndex).getId())) {
             return -1;
         }
-        return computeLaneY(trackIndex) + trackHeight;
+        return computeLaneY(trackIndex) + trackHeight + takeLanesHeight(tracks.get(trackIndex));
+    }
+
+    /**
+     * Returns the height the take lanes of {@code track} add to its slot:
+     * {@code laneCount × }{@link #TAKE_LANE_HEIGHT} while its comping is
+     * active, else {@code 0}. The one place a take lane's height enters
+     * the layout (story 328).
+     */
+    double takeLanesHeight(Track track) {
+        TakeComping comping = track.getTakeComping();
+        return comping.isActive() ? comping.getTakeLaneCount() * TAKE_LANE_HEIGHT : 0.0;
     }
 
     /**
@@ -637,7 +695,8 @@ public final class ArrangementCanvas extends Pane {
         double cumulative = 0;
         for (int i = 0; i < n; i++) {
             laneYCache[i] = cumulative - scrollYPixels;
-            double effective = trackHeight + automationLaneRenderHeight(tracks.get(i));
+            double effective = trackHeight + takeLanesHeight(tracks.get(i))
+                    + automationLaneRenderHeight(tracks.get(i));
             effectiveHeightCache[i] = effective;
             cumulative += effective;
             slotBottomCache[i] = cumulative;
@@ -653,7 +712,7 @@ public final class ArrangementCanvas extends Pane {
         for (int i = 0; i < trackIndex; i++) {
             y += trackHeight;
             if (i < tracks.size()) {
-                y += automationLaneRenderHeight(tracks.get(i));
+                y += takeLanesHeight(tracks.get(i)) + automationLaneRenderHeight(tracks.get(i));
             }
         }
         return y - scrollYPixels;
@@ -735,6 +794,74 @@ public final class ArrangementCanvas extends Pane {
                         laneY, trackHeight, pixelsPerBeat, scrollXBeats,
                         canvasWidth, canvasHeight, selectionModel);
             }
+
+            drawTakeLanes(gc, track, trackColor, laneY + trackHeight, canvasWidth, canvasHeight);
+        }
+    }
+
+    /**
+     * Draws the take lanes of a track whose comping is active (story 328,
+     * book §5.6) under its main lane, one strip of {@link #TAKE_LANE_HEIGHT}
+     * per {@link TakeLane} in lane order: the lane's name, its clips as
+     * muted outlined bodies, and the comp-selected ranges in the one
+     * accent the clip selection already uses. The compiled comp itself is
+     * drawn with the main-lane clips above; nothing here is interactive
+     * beyond {@link #takeLaneIndexAtY(int, double)}.
+     */
+    private void drawTakeLanes(GraphicsContext gc, Track track, Color trackColor,
+                               double lanesTop, double canvasWidth, double canvasHeight) {
+        TakeComping comping = track.getTakeComping();
+        if (!comping.isActive()) {
+            return;
+        }
+        List<TakeLane> lanes = comping.getTakeLanes();
+        for (int laneIndex = 0; laneIndex < lanes.size(); laneIndex++) {
+            double laneTop = lanesTop + laneIndex * TAKE_LANE_HEIGHT;
+            if (laneTop + TAKE_LANE_HEIGHT < 0 || laneTop > canvasHeight) {
+                continue;
+            }
+            TakeLane lane = lanes.get(laneIndex);
+            gc.setFill(laneIndex % 2 == 0 ? TrackLaneRenderer.LANE_COLOR_ODD : TrackLaneRenderer.LANE_COLOR_EVEN);
+            gc.fillRect(0, laneTop, canvasWidth, TAKE_LANE_HEIGHT);
+            gc.setStroke(TrackLaneRenderer.LANE_SEPARATOR_COLOR);
+            gc.setLineWidth(1.0);
+            gc.strokeLine(0, laneTop + TAKE_LANE_HEIGHT, canvasWidth, laneTop + TAKE_LANE_HEIGHT);
+
+            double bodyTop = laneTop + TAKE_LANE_INSET;
+            double bodyHeight = TAKE_LANE_HEIGHT - 2 * TAKE_LANE_INSET;
+            for (AudioClip clip : lane.getClips()) {
+                double clipX = (clip.getStartBeat() - scrollXBeats) * pixelsPerBeat;
+                double clipWidth = clip.getDurationBeats() * pixelsPerBeat;
+                if (clipX + clipWidth < 0 || clipX > canvasWidth) {
+                    continue;
+                }
+                // Muted body: the lane does not play; the comp above does.
+                gc.setFill(trackColor.deriveColor(0, 1.0, 1.0, lane.isMuted() ? 0.12 : 0.25));
+                gc.fillRoundRect(clipX, bodyTop, clipWidth, bodyHeight,
+                        ClipOverlayRenderer.CLIP_CORNER_RADIUS, ClipOverlayRenderer.CLIP_CORNER_RADIUS);
+                gc.setStroke(ClipOverlayRenderer.CLIP_BORDER_COLOR);
+                gc.strokeRoundRect(clipX, bodyTop, clipWidth, bodyHeight,
+                        ClipOverlayRenderer.CLIP_CORNER_RADIUS, ClipOverlayRenderer.CLIP_CORNER_RADIUS);
+            }
+            // One pass over the unmodifiable view, filtered by lane: no
+            // per-lane list copy on every redraw (story 328 review).
+            for (CompRegion region : comping.getCompRegions()) {
+                if (region.takeIndex() != laneIndex) {
+                    continue;
+                }
+                double regionX = (region.startBeat() - scrollXBeats) * pixelsPerBeat;
+                double regionWidth = region.durationBeats() * pixelsPerBeat;
+                if (regionX + regionWidth < 0 || regionX > canvasWidth) {
+                    continue;
+                }
+                gc.setFill(ClipOverlayRenderer.CLIP_SELECTED_OVERLAY_COLOR);
+                gc.fillRect(regionX, bodyTop, regionWidth, bodyHeight);
+                gc.setStroke(ClipOverlayRenderer.CLIP_SELECTED_BORDER_COLOR);
+                gc.strokeRect(regionX, bodyTop, regionWidth, bodyHeight);
+            }
+            gc.setFill(ClipOverlayRenderer.CLIP_LABEL_COLOR);
+            gc.fillText(lane.isSoloed() ? lane.getName() + " (solo)" : lane.getName(),
+                    TAKE_LANE_INSET, laneTop + TAKE_LANE_HEIGHT / 2 + TAKE_LANE_INSET);
         }
     }
 
@@ -746,7 +873,7 @@ public final class ArrangementCanvas extends Pane {
                 continue;
             }
 
-            double autoLaneY = laneYCache[i] + trackHeight;
+            double autoLaneY = laneYCache[i] + trackHeight + takeLanesHeight(track);
             double autoLaneHeight = automationLaneRenderHeight(track);
             if (autoLaneHeight <= 0
                     || autoLaneY + autoLaneHeight < 0

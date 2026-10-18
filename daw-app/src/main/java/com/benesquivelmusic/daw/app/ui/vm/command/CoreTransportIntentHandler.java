@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.app.ui.vm.command;
 
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.recording.CaptureFlushService;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import java.time.Instant;
 import java.util.Objects;
@@ -202,6 +204,98 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
                 beatsToFrames(transport.getLoopStartInBeats()),
                 beatsToFrames(transport.getLoopEndInBeats()),
                 Instant.now()));
+    }
+
+    @Override
+    public void toggleLoopRecord() {
+        boolean nowEnabled = !transport.isLoopRecordEnabled();
+        transport.setLoopRecordEnabled(nowEnabled);
+        EventBusPublisher.publish(new TransportEvent.LoopRecordChanged(nowEnabled, Instant.now()));
+    }
+
+    // ── Punch (story 328, book §5.6) ─────────────────────────────────────────
+
+    /**
+     * Sets punch-in at the playhead. The point just set wins: an existing
+     * punch-out that would leave less than {@link #minPunchFrames()} after it
+     * moves to {@code in + minPunchFrames()}; it is never swapped with the
+     * in-point. With no region installed an ENABLED region of the minimum
+     * length is created so the capture gate has both cosine ramps.
+     */
+    @Override
+    public void setPunchIn() {
+        long in = positionFrames();
+        long shortest = minPunchFrames();
+        PunchRegion current = transport.getPunchRegion();
+        boolean enabled = current == null || current.enabled();
+        long out = current == null ? in + shortest : Math.max(current.endFrames(), in + shortest);
+        installPunch(new PunchRegion(in, out, enabled));
+    }
+
+    /**
+     * Sets punch-out at the playhead. The point just set wins: an existing
+     * punch-in that would leave less than {@link #minPunchFrames()} before it
+     * moves to {@code out - minPunchFrames()}; it is never swapped with the
+     * out-point. The one case in which the set point itself moves is a
+     * playhead closer than the minimum length to frame 0 — the in-point is
+     * clamped to 0 and the out-point to the minimum length, because a region
+     * cannot start before the project does. With no region installed an
+     * ENABLED region of the minimum length ending here is created.
+     */
+    @Override
+    public void setPunchOut() {
+        long out = positionFrames();
+        long shortest = minPunchFrames();
+        PunchRegion current = transport.getPunchRegion();
+        boolean enabled = current == null || current.enabled();
+        long in = current == null ? out - shortest : Math.min(current.startFrames(), out - shortest);
+        if (in < 0L) {
+            in = 0L;
+            out = Math.max(out, shortest);
+        }
+        installPunch(new PunchRegion(in, out, enabled));
+    }
+
+    /**
+     * Flips the enabled flag of the installed punch region; a no-op (no
+     * MUTATE, no ANNOUNCE) when none is installed.
+     */
+    @Override
+    public void togglePunch() {
+        PunchRegion current = transport.getPunchRegion();
+        if (current == null) {
+            return; // VALIDATE: nothing to toggle — the controller reports it
+        }
+        installPunch(current.withEnabled(!current.enabled()));
+    }
+
+    private void installPunch(PunchRegion region) {
+        transport.setPunchRegion(region);
+        EventBusPublisher.publish(new TransportEvent.PunchChanged(
+                region.enabled(), region.startFrames(), region.endFrames(), Instant.now()));
+    }
+
+    /**
+     * The shortest punch region a creation gesture may install, in frames at
+     * this handler's (project) sample rate: both cosine crossfades of the
+     * capture gate ({@link CaptureFlushService#PUNCH_CROSSFADE_SECONDS} each)
+     * must fit inside the region.
+     *
+     * @return the minimum punch length in project-rate frames, at least 1
+     */
+    public long minPunchFrames() {
+        return minPunchFrames(sampleRate);
+    }
+
+    /**
+     * {@link #minPunchFrames()} for an arbitrary project sample rate — the
+     * ruler's gestures share this single definition.
+     *
+     * @param sampleRate the project sample rate in Hz (positive)
+     * @return the minimum punch length in frames at that rate, at least 1
+     */
+    public static long minPunchFrames(double sampleRate) {
+        return Math.max(1L, Math.round(2.0 * CaptureFlushService.PUNCH_CROSSFADE_SECONDS * sampleRate));
     }
 
     private long positionFrames() {

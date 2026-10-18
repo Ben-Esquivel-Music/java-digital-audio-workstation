@@ -37,7 +37,7 @@ import java.util.logging.Logger;
  * later lane — the scratch/session accessors used while
  * routing, {@link #discardAllFiles()} (a start that failed or was aborted)
  * and {@link #abandonWithoutSeal()} (the {@code stopAndAbandon} test seam).
- * The results ({@link #takeGroup()}, {@link #sealedSegments()},
+ * The results ({@link #lapClips()}, {@link #sealedSegments()},
  * {@link #session()}) are volatile or copy-on-write so the pipeline can read
  * them on the caller thread once the flush thread has terminated
  * ({@code CaptureFlushService.isTerminated()}).</p>
@@ -143,7 +143,31 @@ final class TrackCapture {
 
     private volatile RecordingSession session;
     private volatile int lane;
-    private volatile TakeGroup takeGroup = TakeGroup.empty();
+    /**
+     * The loop-record laps stacked so far, in lap order: one clip per lap
+     * that captured frames, each listing the lap's sealed segments. The
+     * ingestion path of the one take model (book §3.5): appended by the
+     * flush thread at each wrap and at the seal, copy-on-append and
+     * immutable, read by the pipeline on the caller thread once the flush
+     * thread has terminated, where each lap becomes a take lane.
+     */
+    private volatile List<AudioClip> lapClips = List.of();
+    /**
+     * How many of {@link #lapClips} a loop wrap sealed (a whole lap); the
+     * rest — at most the last — the stop sealed mid-lap. Flush thread
+     * writes, caller thread reads after termination.
+     */
+    private volatile int completeLaps;
+    /**
+     * The timeline beat the lane now recording starts at, after
+     * compensation: lane 0's is the take's {@link #compensatedStartBeat},
+     * and every lane a loop wrap opens starts at the header beat of the
+     * first block routed into it — the loop start plus the wrap's overshoot
+     * — less the same compensation (story 328 review: a lap that begins at
+     * the loop start must be placed there, not at the record position).
+     * Flush thread only, after construction.
+     */
+    private double laneStartBeat;
     private SegmentEvents events;
     /** The session whose lane bookkeeping is done; flush thread only. */
     private RecordingSession finalizedSession;
@@ -235,6 +259,7 @@ final class TrackCapture {
         }
         this.compensationFrames = compensationFrames;
         this.compensatedStartBeat = compensatedStartBeat;
+        this.laneStartBeat = compensatedStartBeat;
         this.sampleRate = sampleRate;
         this.tempoBpm = tempoBpm;
         this.trackDirectory = Objects.requireNonNull(trackDirectory, "trackDirectory must not be null");
@@ -564,8 +589,8 @@ final class TrackCapture {
 
     /**
      * Seals the current lane: stops its session (exact-count seal), records
-     * its sealed segments, optionally appends the lane as a {@link Take}
-     * (loop-record), hands the peak sink, if one is installed, the lane's
+     * its sealed segments, optionally appends the lane's clip to the lap
+     * stack (loop-record), hands the peak sink, if one is installed, the lane's
      * last snapshot — whether or not the seal failed, and without letting
      * anything that hand-over throws out: it is attached as suppressed to
      * the seal's failure when there is one ({@link #handOverPeaks}) — and
@@ -608,7 +633,7 @@ final class TrackCapture {
      * failure thrown by the first call — does nothing, so a lap is stacked
      * once and a sealed segment is listed once.</p>
      *
-     * @param buildTake whether to append this lane to {@link #takeGroup()}
+     * @param buildTake whether to append this lane to {@link #lapClips()}
      *                  (skipped when the lane captured no frames)
      * @param openNext  whether to open lane + 1
      * @throws UncheckedIOException if the seal or the next lane's open fails
@@ -618,6 +643,25 @@ final class TrackCapture {
      *                              threw, likewise after the bookkeeping
      */
     void finalizeLane(boolean buildTake, boolean openNext) {
+        finalizeLane(buildTake, openNext, Double.NaN);
+    }
+
+    /**
+     * {@link #finalizeLane(boolean, boolean)} for a loop wrap: the lane
+     * opened next starts at {@code nextLaneHeaderBeat} — the header beat of
+     * the first block routed into it, i.e. the loop start plus the wrap's
+     * overshoot — less this capture's compensation, so the lap's clip is
+     * placed where its audio belongs on the timeline rather than at the
+     * take's start. {@code NaN} keeps the current lane's start for the next
+     * lane.
+     *
+     * @param buildTake          whether to append this lane to {@link #lapClips()}
+     * @param openNext           whether to open lane + 1
+     * @param nextLaneHeaderBeat the timeline beat the next lane's first block
+     *                           starts at, before compensation; {@code NaN}
+     *                           to keep the current start
+     */
+    void finalizeLane(boolean buildTake, boolean openNext, double nextLaneHeaderBeat) {
         RecordingSession previous = session;
         if (previous == finalizedSession) {
             return;
@@ -650,11 +694,19 @@ final class TrackCapture {
                 if (durationBeats <= 0) {
                     durationBeats = 0.01;
                 }
-                AudioClip clip = new AudioClip("Take — " + trackName, compensatedStartBeat,
+                AudioClip clip = new AudioClip("Take — " + trackName, laneStartBeat,
                         durationBeats, lanePaths.isEmpty() ? null : lanePaths.getFirst());
                 clip.setSourceSegmentPaths(lanePaths);
                 clip.setSourceRateMetadata(declaredRate(previous, samples));
-                takeGroup = takeGroup.withTakeAppended(Take.of(clip));
+                List<AudioClip> stacked = new ArrayList<>(lapClips.size() + 1);
+                stacked.addAll(lapClips);
+                stacked.add(clip);
+                lapClips = List.copyOf(stacked);
+                if (openNext) {
+                    // A wrap sealed this lane: the lap is whole. The stop
+                    // seals the last lane wherever the playhead is.
+                    completeLaps = lapClips.size();
+                }
             }
         }
         // The lane's last peaks, whatever the seal did: the mirror holds
@@ -672,6 +724,9 @@ final class TrackCapture {
             throw runtime;
         }
         if (openNext) {
+            if (!Double.isNaN(nextLaneHeaderBeat)) {
+                laneStartBeat = Math.max(0.0, nextLaneHeaderBeat - compensationBeats());
+            }
             int nextLane = previousLane + 1;
             int firstIndex = previous.getNextSegmentIndex();
             RecordingSession next = standby;
@@ -765,7 +820,8 @@ final class TrackCapture {
             }
         }
         sealedSegments.clear();
-        takeGroup = TakeGroup.empty();
+        lapClips = List.of();
+        completeLaps = 0;
         if (createdTrackDirectory) {
             try {
                 Files.deleteIfExists(trackDirectory);
@@ -777,7 +833,7 @@ final class TrackCapture {
         }
     }
 
-    /** Returns the armed track (caller-thread use only: {@code addClip}, {@code putTakeGroup}). */
+    /** Returns the armed track (caller-thread use only: {@code addClip}, {@code getTakeComping}). */
     Track track() {
         return track;
     }
@@ -816,6 +872,18 @@ final class TrackCapture {
 
     double compensatedStartBeat() {
         return compensatedStartBeat;
+    }
+
+    /**
+     * This capture's compensation in beats — the same conversion the
+     * pipeline applied to the take's start ({@code compensationFrames} at
+     * the stream rate, at the take's tempo).
+     */
+    private double compensationBeats() {
+        if (compensationFrames <= 0) {
+            return 0.0;
+        }
+        return compensationFrames / sampleRate * (tempoBpm / 60.0);
     }
 
     Path trackDirectory() {
@@ -867,9 +935,22 @@ final class TrackCapture {
         return List.copyOf(paths);
     }
 
-    /** Returns the loop-take stack built so far (empty outside loop-record). */
-    TakeGroup takeGroup() {
-        return takeGroup;
+    /**
+     * Returns the loop-record laps stacked so far, in lap order (empty
+     * outside loop-record): an immutable snapshot, one clip per lap that
+     * captured frames.
+     */
+    List<AudioClip> lapClips() {
+        return lapClips;
+    }
+
+    /**
+     * Returns how many of {@link #lapClips()} a loop wrap sealed, i.e. are
+     * whole laps; the remaining lap, if any, is the one the stop ended
+     * mid-lap.
+     */
+    int completeLaps() {
+        return completeLaps;
     }
 
     @Override

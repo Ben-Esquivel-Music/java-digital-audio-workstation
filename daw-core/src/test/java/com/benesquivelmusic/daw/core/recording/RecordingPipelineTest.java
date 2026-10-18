@@ -381,35 +381,6 @@ class RecordingPipelineTest {
     }
 
     @Test
-    void shouldGenerateCountInAudio() {
-        Track track = new Track("Audio 1", TrackType.AUDIO);
-        track.setArmed(true);
-
-        RecordingPipeline pipeline = new RecordingPipeline(
-                audioEngine, transport, format, tempDir, List.of(track),
-                CountInMode.ONE_BAR, InputMonitoringMode.OFF, null);
-
-        float[][] countInAudio = pipeline.generateCountInAudio();
-
-        // 4 beats at 120 BPM (default tempo), 44100 Hz = 88200 samples
-        assertThat(countInAudio).hasNumberOfRows(2);
-        assertThat(countInAudio[0].length).isEqualTo(88200);
-    }
-
-    @Test
-    void shouldReturnEmptyCountInAudioWhenOff() {
-        Track track = new Track("Audio 1", TrackType.AUDIO);
-        track.setArmed(true);
-
-        RecordingPipeline pipeline = new RecordingPipeline(
-                audioEngine, transport, format, tempDir, List.of(track));
-
-        float[][] countInAudio = pipeline.generateCountInAudio();
-
-        assertThat(countInAudio[0]).isEmpty();
-    }
-
-    @Test
     void monitoringShouldBeActiveWhenAlwaysAndRecording() {
         Track track = new Track("Audio 1", TrackType.AUDIO);
         track.setArmed(true);

@@ -3,7 +3,12 @@ package com.benesquivelmusic.daw.core.recording;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.CountInSchedule;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
+import com.benesquivelmusic.daw.core.comping.CompRegion;
+import com.benesquivelmusic.daw.core.comping.CompileCompAction;
+import com.benesquivelmusic.daw.core.comping.TakeComping;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -49,8 +54,8 @@ import java.util.function.LongSupplier;
  * the flush thread: what that thread does is reported through signals a
  * holder cannot complete (the take's readiness, the thread's termination,
  * {@link #earlySeal()}). {@code completeStop()} reads what the flush thread
- * wrote, and adds clips and take groups to {@link Track}s ({@code addClip},
- * {@code putTakeGroup}), only once the flush thread has terminated; until
+ * wrote, and adds clips and take lanes to {@link Track}s ({@code addClip},
+ * {@code getTakeComping().addTakeLane}), only once the flush thread has terminated; until
  * then the pipeline stays
  * {@linkplain #isFinalizationPending() finalization pending}. When the flush
  * thread seals the take on its own — disk exhaustion, a write failure — it
@@ -60,8 +65,13 @@ import java.util.function.LongSupplier;
  *
  * <p>The pipeline supports:</p>
  * <ul>
- *   <li><strong>Count-in</strong> — An audible metronome click for a configurable
- *       number of bars before recording starts (see {@link CountInMode}).</li>
+ *   <li><strong>Count-in</strong> — A {@link CountInSchedule} handed to
+ *       {@link #beginCapture(Runnable, CountInSchedule)}: the render thread
+ *       plays its clicks on the engine's frame clock while the playhead holds
+ *       at the record position, and at the count-in's end the render thread
+ *       itself puts the transport in recording and opens the capture start
+ *       gate (story 328, Recording Reliability book §5.6). The configured
+ *       {@link CountInMode} is the caller's to turn into a schedule.</li>
  *   <li><strong>Input monitoring</strong> — Routes the audio input through the
  *       track's mixer channel so the performer can hear themselves in real time
  *       (see {@link InputMonitoringMode}).</li>
@@ -69,9 +79,10 @@ import java.util.function.LongSupplier;
  *       beat range on the timeline (see {@link PunchRange}), or sample-accurately
  *       within the transport's frame-based {@link PunchRegion}. The gating math
  *       runs on the flush thread from each block's header snapshot.</li>
- *   <li><strong>Loop-record</strong> — Each loop lap becomes a {@link Take} in a
- *       {@link TakeGroup} per armed track; wrap detection and lap finalisation
- *       run on the flush thread.</li>
+ *   <li><strong>Loop-record</strong> — Each loop lap becomes a {@link TakeLane}
+ *       of the armed track's {@link TakeComping} (the one take model, book
+ *       §3.5); wrap detection and lap finalisation run on the flush thread,
+ *       the lanes are ingested by {@link #completeStop()}.</li>
  * </ul>
  *
  * <p>Usage:</p>
@@ -137,6 +148,15 @@ public final class RecordingPipeline {
     private final PunchRange punchRange;
     private final Map<Track, TrackCapture> captures = new LinkedHashMap<>();
     private final Map<Track, AudioClip> recordedClips = new LinkedHashMap<>();
+    /** The take lanes a loop-record take's {@link #completeStop()} added, per track (book §3.5). */
+    private final Map<Track, List<TakeLane>> recordedTakeLanes = new LinkedHashMap<>();
+    /**
+     * Each track's comp selection as it was immediately before this take's
+     * laps were ingested (story 328 review): what the caller's undo of the
+     * take restores, since ingesting the take's default region deselects
+     * whatever earlier regions it overlaps.
+     */
+    private final Map<Track, List<CompRegion>> compSelectionBeforeIngestion = new LinkedHashMap<>();
     private final Map<Track, Long> trackCompensationFrames = new LinkedHashMap<>();
 
     /**
@@ -203,6 +223,21 @@ public final class RecordingPipeline {
      * Caller thread only.
      */
     private long preparedCaptureHaltGeneration;
+    /**
+     * The count-in {@link #beginCapture(Runnable, CountInSchedule)} hands to
+     * the one start body, {@link #beginCapture(Runnable)}, which consumes it
+     * at once. Caller thread only. (The contract test pins that body's
+     * instruction orders by descriptor and counts its callback installation
+     * across every {@code beginCapture}, so the start sequence exists once
+     * and the overload passes its schedule here rather than duplicating it.)
+     */
+    private CountInSchedule startCountIn;
+    /**
+     * The current take's count-in, from its installation until the take ends;
+     * {@code null} for a take that began capture at once. Cancelled by the
+     * start's rollback and by {@link #requestStop(TakeManifest.SealedBy)}.
+     */
+    private volatile CountInSchedule countInSchedule;
 
     /** What a start rejected by a device-loss halt rethrows: the user reads it in the abort report. */
     static final String DEVICE_LOST_DURING_START_MESSAGE =
@@ -528,6 +563,8 @@ public final class RecordingPipeline {
         inputRings = new CaptureRing[0];
         instrumentTracks = new Track[0];
         recordedClips.clear();
+        recordedTakeLanes.clear();
+        compSelectionBeforeIngestion.clear();
         trackCompensationFrames.clear();
         captures.clear();
 
@@ -646,9 +683,13 @@ public final class RecordingPipeline {
         DiskHeadroomWatch watch = diskHeadroomWatch != null
                 ? diskHeadroomWatch
                 : DiskHeadroomWatch.forDirectory(outputDirectory, warningSink);
+        // Loop-record stacks LAPS, and a lap is a loop pass: with loop
+        // playback off there is no wrap to seal one, so the take is a plain
+        // session (story 328 review) — not a one-lane stack with a comp clip.
+        boolean loopRecordTake = loopRecord && transport.isLoopEnabled();
         CaptureFlushService.TakeConfig config = new CaptureFlushService.TakeConfig(
                 outputDirectory, format, tempo, recordingStartBeat, recordingStartFrame,
-                punchRange, loopRecord, forceCadence, Instant.now());
+                punchRange, loopRecordTake, forceCadence, Instant.now());
         flush = new CaptureFlushService(ring, config, List.copyOf(captures.values()), watch,
                 warningSink, peakSnapshotSink, nanoClock);
         // Starts the thread only: the take's files are its first act.
@@ -776,6 +817,8 @@ public final class RecordingPipeline {
      */
     public void beginCapture(Runnable captureActivation) {
         Objects.requireNonNull(captureActivation, "captureActivation must not be null");
+        CountInSchedule countIn = startCountIn;
+        startCountIn = null;
         if (!preparing) {
             throw new IllegalStateException("Recording pipeline has no take being prepared; call prepare(long) first");
         }
@@ -788,6 +831,8 @@ public final class RecordingPipeline {
         }
         preparing = false;
         active = true;
+        // Remembered before anything can fail, so the rollback cancels it.
+        countInSchedule = countIn;
         CaptureCallback.StartGate startGate = new CaptureCallback.StartGate();
         try {
             // A halt since the baseline is refused before the engine is
@@ -799,12 +844,18 @@ public final class RecordingPipeline {
             if (!rolling && transport.getPositionInBeats() != preparedPositionBeats) {
                 transport.setPositionInBeats(preparedPositionBeats);
             }
+            if (countIn != null && rolling) {
+                throw new IllegalStateException("The transport is already rolling: a count-in holds at the record"
+                        + " position, so a rolling transport records at once — begin without a schedule");
+            }
 
             // Wire the take's own recording callback on the audio engine: it
             // carries the take's ring, flush service and tempo in final
             // fields, so the audio thread reads nothing of this pipeline.
+            // With a count-in it carries the schedule too, for the halt's
+            // onCaptureHalted to cancel.
             audioEngine.setRecordingCallback(new CaptureCallback(takeRing, service, instrumentTracks,
-                    transport, audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm, startGate));
+                    transport, audioEngine, format.sampleRate(), projectSampleRate, takeTempoBpm, startGate, countIn));
 
             AudioEngine.RecordingCallback[] extraCallbacks = new AudioEngine.RecordingCallback[Math.max(0, inputRings.length - 1)];
             for (int i = 1; i < inputRings.length; i++) {
@@ -818,12 +869,34 @@ public final class RecordingPipeline {
             // Start the audio engine if it is not already running
             audioEngine.start();
 
-            // Transition transport to recording
-            transport.record();
-            captureActivation.run();
+            if (countIn == null) {
+                // Transition transport to recording
+                transport.record();
+                captureActivation.run();
+            } else {
+                // Story 328: the record transition and the gate's opening are
+                // the render thread's, at the count-in's end — no FX hop
+                // between the last count-in bar and bar 1. The stamps are the
+                // @RealTimeSafe transport getters; record() is two stores and
+                // an RT-safe change notification.
+                countIn.setRecordStart(() -> {
+                    transport.record();
+                    startGate.positionSeek = transport.getPositionSeek();
+                    startGate.seekPending = transport.hasPendingPositionSeek();
+                    startGate.beat = transport.getPositionInBeats();
+                    startGate.active = true;
+                });
+                audioEngine.scheduleCountIn(countIn);
+            }
             // The device-loss fence: after both installing stores, before the
             // start gate opens (see requireNoCaptureHaltSinceBaseline).
             requireNoCaptureHaltSinceBaseline();
+            if (countIn != null) {
+                if (!active || countIn.isCancelled() || !hasViableCaptureService()) {
+                    throw new IllegalStateException("Recording start was cancelled during its count-in");
+                }
+                return;
+            }
             if (!active || transport.getState() != TransportState.RECORDING || !hasViableCaptureService()) {
                 throw new IllegalStateException("Recording start was cancelled before capture activation");
             }
@@ -832,8 +905,11 @@ public final class RecordingPipeline {
             startGate.beat = transport.getPositionInBeats();
             startGate.active = true;
         } catch (RuntimeException | Error e) {
-            // The gate first: later entries claim nothing, and a callback
-            // already inside drops its block if its final read sees the close.
+            // The count-in first, so a render thread reaching its end during
+            // the rollback runs no record start over a closed take; then the
+            // gate: later entries claim nothing, and a callback already
+            // inside drops its block if its final read sees the close.
+            rollbackStep(e, this::cancelPendingCountIn);
             rollbackStep(e, () -> takeRing.closeProducer());
             rollbackStep(e, this::closeInputProducers);
             rollbackStep(e, () -> audioEngine.setRecordingCallback(null));
@@ -845,6 +921,79 @@ public final class RecordingPipeline {
             releaseFailedStart(e);
             throw e;
         }
+    }
+
+    /**
+     * Begins capture after a count-in (story 328, Recording Reliability book
+     * §5.6). Everything {@link #beginCapture(Runnable)} does up to and
+     * including the engine's start, the two callback installations and the
+     * halt-fence checks happens here too, on the caller thread; but instead
+     * of the transport's record transition and the gate's opening, the
+     * caller thread installs {@code countIn} on the engine
+     * ({@link AudioEngine#scheduleCountIn(CountInSchedule)}) with a record
+     * start that the <em>render thread</em> runs at the count-in's last
+     * block boundary: {@code transport.record()}, the start gate's origin
+     * stamps from the {@code @RealTimeSafe} transport getters, and the gate's
+     * opening — so the first captured block is the first one rendered from
+     * the record position, and nothing of the count-in is in the take. The
+     * playhead holds at the record position meanwhile; the count-in's clicks
+     * sound through the metronome voice in the main mix whether or not the
+     * running click is enabled.
+     *
+     * <p>{@code captureActivation} — the take's MIDI activation — is
+     * <strong>not</strong> run by the render thread and not run here: the
+     * caller runs it itself once it observes the schedule
+     * {@linkplain CountInSchedule#isFired() fired} (its MIDI window is
+     * anchored to the origin it read before this call, with
+     * {@link CountInSchedule#countInDurationMicros()} as the count-in).</p>
+     *
+     * <p><strong>The device-loss fence with a deferred activation.</strong>
+     * The final {@code requireNoCaptureHaltSinceBaseline} check runs after
+     * both callbacks and the schedule are installed and before this method
+     * returns, and it still guarantees what it did: a halt whose slot loads
+     * preceded the installations advanced the generation first, so the check
+     * rejects the start and the rollback cancels the schedule, closes the
+     * gates and removes the callbacks — no reopened stream feeds this take's
+     * callbacks and no record start ever runs for it. What the check cannot
+     * see is a halt <em>after</em> it, during the count-in, which previously
+     * could not matter (the gate was already open and the take recording)
+     * but now would let the record start run on a halted take. Cancel-on-halt
+     * closes that: such a halt read the installed callbacks, and the take's
+     * {@link CaptureCallback#onCaptureHalted()} cancels the schedule before
+     * closing the ring's producer gate, so the render thread renders no
+     * further click and never runs the record start — unless it had already
+     * passed the schedule's cancel check, in which case the transport goes to
+     * recording over a closed producer gate and the loss's handling stops the
+     * take through the ordinary path. A stop or abort during the count-in
+     * ({@link #requestStop()}) cancels the schedule the same way; its
+     * {@link CountInSchedule#cancel()} verdict says whether the take ever
+     * recorded.</p>
+     *
+     * @param captureActivation the activation of the take's other prepared
+     *                          inputs — run by the caller after the schedule
+     *                          fires, never by this method or the render thread
+     * @param countIn           the count-in to play first; still pending, its
+     *                          record start unset
+     * @throws IllegalStateException if this take is not ready to begin; if
+     *                               the transport is already rolling (a
+     *                               count-in holds at the record position —
+     *                               begin without one to punch on the fly);
+     *                               or, after the rollback, if the engine's
+     *                               capture halt ran since the take's baseline
+     *                               was read, or the count-in was cancelled
+     *                               before this method returned
+     */
+    public void beginCapture(Runnable captureActivation, CountInSchedule countIn) {
+        Objects.requireNonNull(captureActivation, "captureActivation must not be null");
+        Objects.requireNonNull(countIn, "countIn must not be null");
+        if (!countIn.isPending()) {
+            throw new IllegalArgumentException("the count-in is " + countIn.phase() + "; a take counts in with a pending schedule");
+        }
+        if (countIn.hasRecordStart()) {
+            throw new IllegalArgumentException("the count-in's record start is the pipeline's to set");
+        }
+        startCountIn = countIn;
+        beginCapture(captureActivation);
     }
 
     /**
@@ -960,6 +1109,7 @@ public final class RecordingPipeline {
             if (fault != null) {
                 rollbackStep(cause, fault);
             }
+            rollbackStep(cause, this::cancelPendingCountIn);
             rollbackStep(cause, () -> {
                 CaptureRing takeRing = ring;
                 if (takeRing != null) {
@@ -998,6 +1148,13 @@ public final class RecordingPipeline {
      *                               {@link #DEVICE_LOST_DURING_START_MESSAGE}
      *                               if a halt has run since the baseline was read
      */
+    private void cancelPendingCountIn() {
+        CountInSchedule schedule = countInSchedule;
+        if (schedule != null) {
+            audioEngine.cancelCountIn(schedule);
+        }
+    }
+
     private void requireNoCaptureHaltSinceBaseline() {
         if (audioEngine.getCaptureHaltGeneration() != preparedCaptureHaltGeneration) {
             throw new IllegalStateException(DEVICE_LOST_DURING_START_MESSAGE);
@@ -1158,6 +1315,11 @@ public final class RecordingPipeline {
         finalizationPending = true;
         clipTempoBpm = transport.getTempo();
         try {
+            // A count-in still pending is cancelled before anything else
+            // (story 328): a stop during the count-in ends a take that never
+            // recorded, and a render thread that fired first put the
+            // transport in recording — stopped below like any other take.
+            cancelPendingCountIn();
             // The fence, first: from this store on no callback publishes a
             // block it had not already decided to publish — and every block
             // that is published was stamped before the transport stop below
@@ -1190,9 +1352,11 @@ public final class RecordingPipeline {
      * what the flush thread wrote, at the tempo read when the stop began:
      * {@link AudioClip}s on the armed tracks referencing every sealed
      * segment of the take in manifest order, or, in loop-record, each
-     * track's take stack with its active take's clip. It adds them to the
-     * tracks ({@code addClip}, {@code putTakeGroup}), records them in
-     * {@link #getRecordedClips()} and ends the finalisation. It repeats none
+     * track's laps as take lanes with the compiled comp clip of the default
+     * selection — the last whole lap — on the main lane. It adds them to the
+     * tracks ({@code addClip}, {@code getTakeComping()}), records them in
+     * {@link #getRecordedClips()} / {@link #getRecordedTakeLanes()} and ends
+     * the finalisation. It repeats none
      * of {@code requestStop()}'s one-shot steps.
      *
      * <p>The clips carry no audio data ({@link AudioClip#getAudioData()} is
@@ -1237,7 +1401,7 @@ public final class RecordingPipeline {
      * ({@link AudioClip#getSourceSegmentPaths()}, one of the lists
      * {@link #recordedSegmentPaths()} returned), and what it returns is
      * attached with {@link AudioClip#setAudioData} <em>before</em> the clip
-     * is added to its track ({@code addClip}, {@code putTakeGroup}). So no
+     * is added to its track ({@code addClip}, {@code addTakeLane}). So no
      * clip of the take is ever visible on a track without its audio, unless
      * the lookup had none for it.
      *
@@ -1328,8 +1492,8 @@ public final class RecordingPipeline {
                 continue;
             }
             if (loopRecorded) {
-                for (Take take : capture.takeGroup().takes()) {
-                    List<String> lapPaths = take.clip().getSourceSegmentPaths();
+                for (AudioClip lap : capture.lapClips()) {
+                    List<String> lapPaths = lap.getSourceSegmentPaths();
                     if (!lapPaths.isEmpty()) {
                         lists.add(List.copyOf(lapPaths));
                     }
@@ -1385,22 +1549,60 @@ public final class RecordingPipeline {
                 continue;
             }
 
-            // In loop-record mode the takes were stacked on the flush thread.
-            // Expose the active take's clip on the track lane and attach the
-            // group to the track.
+            // In loop-record mode the laps were stacked on the flush thread.
+            // Ingest each as a take lane of the track's one take model (book
+            // §3.5), select the last whole lap, and put the compiled comp on
+            // the main lane: that is what plays.
             if (loopRecorded) {
-                TakeGroup group = capture.takeGroup();
-                if (!group.isEmpty()) {
+                List<AudioClip> laps = capture.lapClips();
+                if (!laps.isEmpty()) {
                     // Every lap's clip gets its audio before any of them
                     // can be seen through the track.
-                    for (Take take : group.takes()) {
-                        attachLoadedAudio(take.clip(), loadedAudio);
+                    for (AudioClip lap : laps) {
+                        attachLoadedAudio(lap, loadedAudio);
                     }
-                    AudioClip activeClip = group.activeClip();
-                    track.addClip(activeClip);
-                    track.putTakeGroup(group);
-                    recordedClips.put(track, activeClip);
-                    clips.add(activeClip);
+                    TakeComping comping = track.getTakeComping();
+                    // The selection before this take touches it: the default
+                    // region below deselects what it overlaps, and the
+                    // caller's undo puts this back.
+                    compSelectionBeforeIngestion.put(track, List.copyOf(comping.getCompRegions()));
+                    // A lane audition (Alt-click solo) is transient by
+                    // design and ends with this take: a solo makes
+                    // compile() play that lane whole and slice no region,
+                    // so the take would publish no clip (story 328 review
+                    // round 2). The undo restores the selection, not the
+                    // audition.
+                    for (TakeLane lane : comping.getTakeLanes()) {
+                        lane.setSoloed(false);
+                    }
+                    List<TakeLane> lanes = new ArrayList<>(laps.size());
+                    int firstLaneIndex = comping.getTakeLaneCount();
+                    for (AudioClip lap : laps) {
+                        TakeLane lane = new TakeLane("Take " + (firstLaneIndex + lanes.size() + 1));
+                        lane.addClip(lap);
+                        comping.addTakeLane(lane);
+                        lanes.add(lane);
+                    }
+                    // Default selection: the last COMPLETE lap over its whole
+                    // extent; a lone partial lap is the selection itself.
+                    int completeLaps = Math.min(capture.completeLaps(), laps.size());
+                    int selectedLap = completeLaps > 0 ? completeLaps - 1 : laps.size() - 1;
+                    AudioClip selected = laps.get(selectedLap);
+                    comping.addCompRegion(new CompRegion(
+                            firstLaneIndex + selectedLap, selected.getStartBeat(), selected.getDurationBeats()));
+                    CompileCompAction compile = new CompileCompAction(track);
+                    compile.execute();
+                    recordedTakeLanes.put(track, List.copyOf(lanes));
+                    // This take's outcome is the comp slice(s) of ITS laps: a
+                    // recompile also re-slices an earlier take's surviving
+                    // regions, which are not clips this take produced.
+                    for (AudioClip compClip : compile.getCompiledClips()) {
+                        if (!isSliceOfAnyOf(compClip, laps)) {
+                            continue;
+                        }
+                        recordedClips.putIfAbsent(track, compClip);
+                        clips.add(compClip);
+                    }
                 }
                 continue;
             }
@@ -2101,20 +2303,15 @@ public final class RecordingPipeline {
     }
 
     /**
-     * Generates count-in click audio for this pipeline's configuration.
+     * The current take's count-in: the schedule
+     * {@link #beginCapture(Runnable, CountInSchedule)} installed, in whatever
+     * phase it is now, until the next {@link #prepare(long)}. Empty for a take
+     * that began capture at once.
      *
-     * <p>Returns audio data containing metronome clicks for the configured
-     * number of count-in bars. Returns an empty buffer if count-in is
-     * {@link CountInMode#OFF}.</p>
-     *
-     * @return audio data as {@code [channel][sample]} in [-1.0, 1.0]
+     * @return the take's count-in, or empty
      */
-    public float[][] generateCountInAudio() {
-        Metronome metronome = new Metronome(format.sampleRate(), format.channels());
-        return metronome.generateCountIn(
-                countInMode,
-                transport.getTempo(),
-                transport.getTimeSignatureNumerator());
+    public Optional<CountInSchedule> countInSchedule() {
+        return Optional.ofNullable(countInSchedule);
     }
 
     /**
@@ -2274,6 +2471,21 @@ public final class RecordingPipeline {
      * the compensation to beats: the tempo at start for the capture's
      * snapshot, {@link #clipTempoBpm} for the clip.
      */
+    /**
+     * Whether {@code compClip} is a main-lane slice of one of {@code laps}:
+     * a slice lists exactly its lap's segment files
+     * ({@code TakeComping.compile}), which no other lap shares.
+     */
+    private static boolean isSliceOfAnyOf(AudioClip compClip, List<AudioClip> laps) {
+        for (AudioClip lap : laps) {
+            if (!lap.getSourceSegmentPaths().isEmpty()
+                    && lap.getSourceSegmentPaths().equals(compClip.getSourceSegmentPaths())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private double compensatedStartBeat(Track track, double bpm) {
         long compensationFrames = trackCompensationFrames.getOrDefault(track, 0L);
         if (compensationFrames <= 0) {
@@ -2290,9 +2502,9 @@ public final class RecordingPipeline {
 
     /**
      * Returns whether loop-record mode is enabled. When {@code true}, each
-     * loop lap of the {@link Transport} is stamped as a new {@link Take}
-     * grouped under a {@link TakeGroup} per armed track, rather than the
-     * pipeline overwriting the previous capture.
+     * loop lap of the {@link Transport} is stacked as a new {@link TakeLane}
+     * of each armed track's {@link TakeComping}, rather than the pipeline
+     * recording one long session across the laps.
      */
     public boolean isLoopRecord() {
         return loopRecord;
@@ -2303,6 +2515,11 @@ public final class RecordingPipeline {
      * {@link #prepare(long)}: the mode is part of the take's configuration, and a
      * change while a take is being prepared or is recording is refused.
      *
+     * <p>The mode takes effect only over an enabled loop: a take prepared
+     * with loop playback disabled is a plain session whatever this flag
+     * says (story 328 review) — laps are loop passes, and without a wrap
+     * there is none to stack.</p>
+     *
      * @throws IllegalStateException if a take is being prepared or is recording, or the
      *                               previous take is still being finalised
      */
@@ -2312,24 +2529,59 @@ public final class RecordingPipeline {
     }
 
     /**
-     * Returns an unmodifiable map of the {@link TakeGroup}s accumulated so
-     * far during a loop-record session, keyed by armed track. The map is
-     * populated as each loop lap wraps (on the flush thread; the values are
-     * immutable snapshots); once {@link #completeStop()} has returned the clips it
-     * contains the final stacks. While the finalisation is
+     * Returns an unmodifiable map of the loop-record laps stacked so far,
+     * keyed by armed track, in lap order — the ingestion path of the one
+     * take model (book §3.5). The map is populated as each loop lap wraps
+     * (on the flush thread; the values are immutable snapshots); once
+     * {@link #completeStop()} has returned the clips it holds the final
+     * laps, which are then also the track's take lanes
+     * ({@link #getRecordedTakeLanes()}). While the finalisation is
      * {@linkplain #isFinalizationPending() pending} the flush thread may not
      * have stacked the last lap yet.
      *
-     * @return the per-track take groups (never {@code null})
+     * <p>Package-private: an observation seam for the package's tests, which
+     * read the laps while the finalisation is pending; the one take model's
+     * public face is {@link #getRecordedTakeLanes()}.</p>
+     *
+     * @return the per-track lap clips (never {@code null}; tracks without a lap are absent)
      */
-    public Map<Track, TakeGroup> getTakeGroups() {
-        Map<Track, TakeGroup> groups = new LinkedHashMap<>();
+    Map<Track, List<AudioClip>> getLapClips() {
+        Map<Track, List<AudioClip>> laps = new LinkedHashMap<>();
         for (Map.Entry<Track, TrackCapture> entry : captures.entrySet()) {
-            TakeGroup group = entry.getValue().takeGroup();
-            if (!group.isEmpty()) {
-                groups.put(entry.getKey(), group);
+            List<AudioClip> lapClips = entry.getValue().lapClips();
+            if (!lapClips.isEmpty()) {
+                laps.put(entry.getKey(), lapClips);
             }
         }
-        return Collections.unmodifiableMap(groups);
+        return Collections.unmodifiableMap(laps);
+    }
+
+    /**
+     * Returns an unmodifiable map of the take lanes the {@link #completeStop()}
+     * that returned them added to each armed track's {@link TakeComping}, in
+     * lap order — empty for a plain take and while the finalisation is
+     * {@linkplain #isFinalizationPending() pending}. The caller's undo
+     * removes these lanes together with the comp clip in
+     * {@link #getRecordedClips()}.
+     *
+     * @return the per-track take lanes (never {@code null})
+     */
+    public Map<Track, List<TakeLane>> getRecordedTakeLanes() {
+        return Collections.unmodifiableMap(recordedTakeLanes);
+    }
+
+    /**
+     * Returns, per track whose lanes {@link #completeStop()} added, the comp
+     * selection the track had immediately before this take's laps were
+     * ingested (story 328 review). Ingesting the take's default region
+     * deselects every earlier region it overlaps; the caller's undo of the
+     * take restores this selection and recompiles, so an earlier take's
+     * comp plays again exactly as it did before Record was pressed. Empty
+     * for a plain take and while the finalisation is pending.
+     *
+     * @return the per-track pre-ingestion comp regions (never {@code null})
+     */
+    public Map<Track, List<CompRegion>> getCompSelectionBeforeIngestion() {
+        return Collections.unmodifiableMap(compSelectionBeforeIngestion);
     }
 }

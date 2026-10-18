@@ -370,5 +370,9 @@ class TransportCommandEventTest {
         @Override public void toggleRecord() { calls.add("toggleRecord"); }
         @Override public void setTempo(double bpm) { calls.add("setTempo(" + bpm + ")"); }
         @Override public void toggleLoop() { calls.add("toggleLoop"); }
+        @Override public void toggleLoopRecord() { calls.add("toggleLoopRecord"); }
+        @Override public void setPunchIn() { calls.add("setPunchIn"); }
+        @Override public void setPunchOut() { calls.add("setPunchOut"); }
+        @Override public void togglePunch() { calls.add("togglePunch"); }
     }
 }

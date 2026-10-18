@@ -238,6 +238,88 @@ class ClipInteractionControllerTest {
     // ── Pencil tool (via mouse event dispatch) ───────────────────────────────
 
     @Test
+    void compPressOnATakeLaneBeginsASwipeOnThatLaneAndReleaseRecompilesTheComp() throws Exception {
+        // Story 328 (book §5.6): the COMP tool resolves the take lane from the
+        // pointer's Y — lane 2 sits at trackHeight + 2 × TAKE_LANE_HEIGHT —
+        // and the swipe's release compiles that lane's slice onto the main lane.
+        Track track = compedTrack();
+        tracks.add(track);
+        activeTool = EditTool.COMP;
+        double lane2Y = trackHeight + 2 * ArrangementCanvas.TAKE_LANE_HEIGHT + 10.0;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                canvas.fireEvent(mousePressed(160.0, lane2Y));   // beat 4.0 on lane 2
+                canvas.fireEvent(mouseReleased(240.0, lane2Y));  // beat 6.0
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(track.getTakeComping().getCompRegions())
+                .containsExactly(new com.benesquivelmusic.daw.core.comping.CompRegion(2, 4.0, 2.0));
+        assertThat(track.getClips()).as("the comped clip plays the selection").hasSize(1);
+        assertThat(track.getClips().getFirst().getAudioData())
+                .isSameAs(track.getTakeComping().getTakeLane(2).getClips().getFirst().getAudioData());
+        assertThat(undoManager.canUndo()).isTrue();
+        assertThat(refreshCount).isEqualTo(1);
+    }
+
+    @Test
+    void compPressOnTheMainLaneClearsALaneSoloAndRestoresTheComp() throws Exception {
+        Track track = compedTrack();
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 8.0));
+        new CompToolHandler(track, undoManager).altClickLane(1);
+        assertThat(track.getClips().getFirst().getAudioData())
+                .isSameAs(track.getTakeComping().getTakeLane(1).getClips().getFirst().getAudioData());
+        tracks.add(track);
+        activeTool = EditTool.COMP;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                canvas.fireEvent(mousePressed(160.0, trackHeight / 2));  // the main lane
+                canvas.fireEvent(mouseReleased(160.0, trackHeight / 2));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(track.getTakeComping().getTakeLanes()).allMatch(lane -> !lane.isSoloed());
+        assertThat(track.getClips()).hasSize(1);
+        assertThat(track.getClips().getFirst().getAudioData()).as("back to the comp")
+                .isSameAs(track.getTakeComping().getTakeLane(0).getClips().getFirst().getAudioData());
+        assertThat(track.getTakeComping().getCompRegions()).hasSize(1);
+    }
+
+    /** An audio track with three take lanes, each holding one 8-beat clip with its own audio array. */
+    private static Track compedTrack() {
+        Track track = new Track("Vox", TrackType.AUDIO);
+        for (int i = 1; i <= 3; i++) {
+            com.benesquivelmusic.daw.core.comping.TakeLane lane =
+                    new com.benesquivelmusic.daw.core.comping.TakeLane("Take " + i);
+            AudioClip clip = new AudioClip("Take " + i, 0.0, 8.0, null);
+            clip.setAudioData(new float[][] { new float[16] });
+            lane.addClip(clip);
+            track.getTakeComping().addTakeLane(lane);
+        }
+        return track;
+    }
+
+    @Test
     void pencilShouldCreateClipViaMousePress() throws Exception {
 
         Track track = new Track("Track 1", TrackType.AUDIO);

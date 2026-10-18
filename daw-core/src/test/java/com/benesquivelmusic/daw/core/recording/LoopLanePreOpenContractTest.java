@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.recording;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -224,12 +225,12 @@ class LoopLanePreOpenContractTest {
         assertThat(capture.hasStandby()).isFalse();
 
         // The laps hold the ramp end to end: nothing was lost or repeated at a seam.
-        List<Take> takes = pipeline.getTakeGroups().get(track).takes();
+        List<AudioClip> takes = pipeline.getLapClips().get(track);
         assertThat(takes).hasSize(4);
         long frame = 0;
         for (int lap = 0; lap < 4; lap++) {
             long frames = lap < 3 ? 1024 : 512;
-            assertClipHoldsRamp(takes.get(lap).clip(), frame, frames);
+            assertClipHoldsRamp(takes.get(lap), frame, frames);
             frame += frames;
         }
         assertThat(frame).isEqualTo(nextFrame);
@@ -266,13 +267,13 @@ class LoopLanePreOpenContractTest {
         assertThat(opens).extracting(open -> open.file() + "@" + open.releasedBlocks())
                 .containsExactly("segment-000.wav.part@0", "segment-001.wav.part@0", "segment-002.wav.part@1",
                         "segment-003.wav.part@3", "segment-004.wav.part@4");
-        List<Take> takes = pipeline.getTakeGroups().get(track).takes();
+        List<AudioClip> takes = pipeline.getLapClips().get(track);
         assertThat(takes).hasSize(2);
-        assertThat(takes.get(0).clip().getSourceSegmentPaths()).as("a lap lists its segments in capture order")
+        assertThat(takes.get(0).getSourceSegmentPaths()).as("a lap lists its segments in capture order")
                 .extracting(path -> Path.of(path).getFileName().toString())
                 .containsExactly("segment-000.wav", "segment-001.wav");
-        assertClipHoldsRamp(takes.get(0).clip(), 0, 1536);
-        assertClipHoldsRamp(takes.get(1).clip(), 1536, 1536);
+        assertClipHoldsRamp(takes.get(0), 0, 1536);
+        assertClipHoldsRamp(takes.get(1), 1536, 1536);
     }
 
     @Test
@@ -297,11 +298,11 @@ class LoopLanePreOpenContractTest {
                 .containsExactly("0|0|SEALED|1024", "1|1|SEALED|1024", "2|2|SEALED|512");
         assertThat(filesInTheTrackDirectory())
                 .containsExactly("segment-000.wav", "segment-001.wav", "segment-002.wav");
-        List<Take> takes = pipeline.getTakeGroups().get(track).takes();
+        List<AudioClip> takes = pipeline.getLapClips().get(track);
         assertThat(takes).hasSize(3);
-        assertClipHoldsRamp(takes.get(0).clip(), 0, 1024);
-        assertClipHoldsRamp(takes.get(1).clip(), 1024, 1024);
-        assertClipHoldsRamp(takes.get(2).clip(), 2048, 512);
+        assertClipHoldsRamp(takes.get(0), 0, 1024);
+        assertClipHoldsRamp(takes.get(1), 1024, 1024);
+        assertClipHoldsRamp(takes.get(2), 2048, 512);
     }
 
     @Test
@@ -388,10 +389,10 @@ class LoopLanePreOpenContractTest {
                 .containsExactly("0|0|SEALED|1024", "1|1|SEALED|1024", "2|2|SEALED|512");
         assertThat(filesInTheTrackDirectory())
                 .containsExactly("segment-000.wav", "segment-001.wav", "segment-002.wav");
-        List<Take> takes = pipeline.getTakeGroups().get(track).takes();
-        assertClipHoldsRamp(takes.get(0).clip(), 0, 1024);
-        assertClipHoldsRamp(takes.get(1).clip(), 1024, 1024);
-        assertClipHoldsRamp(takes.get(2).clip(), 2048, 512);
+        List<AudioClip> takes = pipeline.getLapClips().get(track);
+        assertClipHoldsRamp(takes.get(0), 0, 1024);
+        assertClipHoldsRamp(takes.get(1), 1024, 1024);
+        assertClipHoldsRamp(takes.get(2), 2048, 512);
     }
 
     @Test

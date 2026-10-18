@@ -27,11 +27,15 @@ import com.benesquivelmusic.daw.app.ui.vm.TransportVM;
 import com.benesquivelmusic.daw.app.ui.vm.command.HistoryCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.PlayWithPreRollCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.RedoCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.SetPunchInCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.SetPunchOutCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.SkipBackCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.SkipForwardCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.StopTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TogglePlayPauseCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TogglePunchCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.UndoCommand;
@@ -126,6 +130,8 @@ public final class MainController {
     @FXML private Button skipBackButton;
     @FXML private Button skipForwardButton;
     @FXML private Button loopButton;
+    /** Story 328 — the loop-record toggle, bound like {@link #loopButton} (book §5.6). */
+    @FXML private Button loopRecordButton;
     @FXML private Button playButton;
     @FXML private Button stopButton;
     @FXML private Button recordButton;
@@ -611,6 +617,11 @@ public final class MainController {
         // project's (the story-314 epoch rule applied to the ruler).
         if (timelineRuler != null) {
             timelineRuler.rebind(project.getTransport());
+            // Story 328 — the punch region is PROJECT-rate frames (the rate the
+            // capture gate and CoreTransportIntentHandler.beatsToFrames use), so
+            // the ruler's frames→beats conversion follows the NEW project's
+            // format — never audioEngine.getFormat() (book §5.6).
+            timelineRuler.setSampleRate(project.getFormat().sampleRate());
         }
 
         // Story 315 — seed the fresh project's transport from the story-305
@@ -691,6 +702,7 @@ public final class MainController {
         transportBinder.bindStop(stopButton);
         transportBinder.bindRecord(recordButton);
         transportBinder.bindLoop(loopButton);
+        transportBinder.bindLoopRecord(loopRecordButton);
         transportBinder.bindTempoLabel(tempoLabel);
         transportBinder.bindTimeDisplay(timeDisplay);
         vmDisposers.add(transportBinder::dispose);
@@ -1519,7 +1531,7 @@ public final class MainController {
         toolbarAppearanceController = new ToolbarAppearanceController(
                 new ToolbarAppearanceController.TransportButtons(
                         skipBackButton, playButton, stopButton,
-                        recordButton, skipForwardButton, loopButton, metronomeButton),
+                        recordButton, skipForwardButton, loopButton, loopRecordButton, metronomeButton),
                 new ToolbarAppearanceController.ToolbarButtons(
                         addAudioTrackButton, addMidiTrackButton, undoButton,
                         redoButton, snapButton, saveButton, pluginsButton),
@@ -1717,7 +1729,7 @@ public final class MainController {
                 playButton, recordButton,
                 new Button[]{
                         skipBackButton, playButton, stopButton, recordButton,
-                        skipForwardButton, loopButton, metronomeButton,
+                        skipForwardButton, loopButton, loopRecordButton, metronomeButton,
                         addAudioTrackButton, addMidiTrackButton,
                         undoButton, redoButton, snapButton, saveButton, pluginsButton},
                 () -> project.getTransport().getState());
@@ -2592,6 +2604,11 @@ public final class MainController {
                     @Override public void onSkipBack() { dispatchTransportCommand(new SkipBackCommand()); }
                     @Override public void onSkipForward() { dispatchTransportCommand(new SkipForwardCommand()); }
                     @Override public void onToggleLoop() { dispatchTransportCommand(new ToggleLoopCommand()); }
+                    // Story 328 — loop-record and punch creation ride the same command path (book §5.6).
+                    @Override public void onToggleLoopRecord() { dispatchTransportCommand(new ToggleLoopRecordCommand()); }
+                    @Override public void onSetPunchIn() { dispatchTransportCommand(new SetPunchInCommand()); }
+                    @Override public void onSetPunchOut() { dispatchTransportCommand(new SetPunchOutCommand()); }
+                    @Override public void onTogglePunch() { dispatchTransportCommand(new TogglePunchCommand()); }
                     @Override public void onToggleMetronome() { metronomeController.onToggleMetronome(); }
                     @Override public void onUndo() { MainController.this.onUndo(); }
                     @Override public void onRedo() { MainController.this.onRedo(); }
@@ -4998,6 +5015,7 @@ public final class MainController {
         tagHelpTopic(stopButton, "transport");
         tagHelpTopic(recordButton, "transport");
         tagHelpTopic(loopButton, "transport");
+        tagHelpTopic(loopRecordButton, "transport");
         tagHelpTopic(metronomeButton, "transport");
         tagHelpTopic(skipBackButton, "transport");
         tagHelpTopic(skipForwardButton, "transport");
@@ -5011,6 +5029,7 @@ public final class MainController {
         registerHelpControl(stopButton, "transport");
         registerHelpControl(recordButton, "transport");
         registerHelpControl(loopButton, "transport");
+        registerHelpControl(loopRecordButton, "transport");
         registerHelpControl(metronomeButton, "transport");
         registerHelpControl(skipBackButton, "transport");
         registerHelpControl(skipForwardButton, "transport");
@@ -5212,6 +5231,11 @@ public final class MainController {
      * on the gesture — that is the ruler's business, not this seam's.</p>
      */
     private void seekToPosition(double beat) {
+        // Story 328 review: no seek while a take counts in — the ruler's
+        // click and the clip gestures all land here.
+        if (transportController != null && transportController.refuseSeekWhileCountingIn()) {
+            return;
+        }
         double position = Math.max(0.0, beat);
         boolean snap = viewNavigationController != null ? viewNavigationController.isSnapEnabled() : snapEnabled;
         if (snap) {

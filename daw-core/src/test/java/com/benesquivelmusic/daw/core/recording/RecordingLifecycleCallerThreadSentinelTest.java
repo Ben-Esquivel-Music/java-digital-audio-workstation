@@ -202,11 +202,12 @@ class RecordingLifecycleCallerThreadSentinelTest {
         for (String root : List.of("prepare", "beginCapture", "cancelStart", "requestStopBeforeCapture", "requestStop", "completeStop",
                 "recordedSegmentPaths", "newSession")) {
             Walk walk = walk(PIPELINE, root);
-            // completeStop and beginCapture each have a no-argument and a callback form;
+            // completeStop has a no-argument and a callback form; beginCapture a no-argument,
+            // an activation and an activation-plus-count-in form (story 328);
             // requestStop a no-argument and a seal-reason form (the device-loss rescue, story 327).
             assertThat(walk.roots()).as("RecordingPipeline#%s exists with code", root)
-                    .isEqualTo(root.equals("completeStop") || root.equals("beginCapture")
-                            || root.equals("requestStop") ? 2 : 1);
+                    .isEqualTo(root.equals("beginCapture") ? 3
+                            : root.equals("completeStop") || root.equals("requestStop") ? 2 : 1);
             assertThat(walk.findings())
                     .as("storage I/O or waits reachable from RecordingPipeline#%s; reached: %s", root, walk.reached())
                     .isEmpty();

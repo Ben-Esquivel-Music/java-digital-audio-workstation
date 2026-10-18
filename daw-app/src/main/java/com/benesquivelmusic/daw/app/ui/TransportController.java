@@ -25,6 +25,7 @@ import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
@@ -377,7 +378,10 @@ final class TransportController implements TransportIntentHandler {
     @Override
     public void start() {
         TransportState state = project.getTransport().getState();
-        if (recordCoordinator.isPreparingTake() || state == TransportState.PLAYING || state == TransportState.RECORDING) {
+        // Story 328: a Play during a count-in would roll the transport under
+        // the schedule, which the render thread then parks for good.
+        if (recordCoordinator.isPreparingTake() || recordCoordinator.isCountingIn()
+                || state == TransportState.PLAYING || state == TransportState.RECORDING) {
             return;
         }
         if (refusePlaybackWhileDeviceLost()) {
@@ -506,7 +510,7 @@ final class TransportController implements TransportIntentHandler {
      */
     @Override
     public void togglePlayPause() {
-        if (recordCoordinator.isPreparingTake()) {
+        if (recordCoordinator.isPreparingTake() || recordCoordinator.isCountingIn()) {
             return;
         }
         if (project.getTransport().getState() == TransportState.PLAYING) {
@@ -536,10 +540,12 @@ final class TransportController implements TransportIntentHandler {
      * alone.</p>
      *
      * <p><strong>Why the rewind is gated on "nothing is recording"</strong>: the
-     * pipeline can be ACTIVE while the transport is still STOPPED — an internal
-     * caller that stopped the transport underneath a running pipeline (count-in
-     * does not defer {@code Transport.record()} today; story 328 owns
-     * count-in). (Before story 323 a throw inside the pipeline's start was a
+     * pipeline can be ACTIVE while the transport is still STOPPED — for the
+     * whole of every audio count-in (story 328, book §5.6: {@code beginCapture}
+     * has run and the engine is started, while {@code Transport.record()} is
+     * deferred to the render thread at the count-in's last block boundary),
+     * and after an internal caller stopped the transport underneath a running
+     * pipeline. (Before story 323 a throw inside the pipeline's start was a
      * second way in; its start is now all-or-nothing — {@code prepare(long)},
      * then {@code beginCapture()} — and a failed start is abandoned
      * ({@link #abandonStart}), so no active pipeline is left behind.)
@@ -755,7 +761,8 @@ final class TransportController implements TransportIntentHandler {
         }
         String cell = stripCellSeparator(text);
         return cell.startsWith("Recording stopped") || cell.startsWith("MIDI recording stopped")
-                || cell.equals(RECORDING_CANCELLED_MESSAGE);
+                || cell.equals(RECORDING_CANCELLED_MESSAGE)
+                || cell.equals(RecordCoordinator.COUNT_IN_CANCELLED_MESSAGE);
     }
 
     void stopAudioOutputWhenIdle() {
@@ -1143,8 +1150,41 @@ final class TransportController implements TransportIntentHandler {
         recordButton.setStyle("");
     }
 
+    /** The status text of a seek refused while a take counts in (story 328 review). */
+    static final String SEEK_REFUSED_DURING_COUNT_IN = "Cannot move the playhead during the count-in — stop first";
+
+    /** The status text of a loop toggle refused while a loop-record take is in progress (story 328 review round 2). */
+    static final String LOOP_REFUSED_DURING_LOOP_RECORD_TAKE =
+            "Loop: cannot change while a loop-record take is in progress — stop first";
+
+    /**
+     * Story 328 review — a seek while a take counts in is refused at the
+     * same layer that refuses Play: the take's clip and MIDI anchors were
+     * fixed at the record position when the count-in began, and the render
+     * thread's record start stamps the capture origin from the live
+     * position, so a seek in between would record from one place and place
+     * the take at another. Every user seek entry — Home/End and the skip
+     * buttons here, the ruler click and clip-gesture seeks through
+     * {@code MainController.seekToPosition} — asks this first. Stop cancels
+     * the count-in and frees the playhead. FX thread.
+     *
+     * @return {@code true} when the seek was refused and the status line says so
+     */
+    boolean refuseSeekWhileCountingIn() {
+        if (!recordCoordinator.isCountingIn()) {
+            return false;
+        }
+        statusBarLabel.setText(SEEK_REFUSED_DURING_COUNT_IN);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+        LOG.fine(SEEK_REFUSED_DURING_COUNT_IN);
+        return true;
+    }
+
     @Override
     public void skipBack() {
+        if (refuseSeekWhileCountingIn()) {
+            return;
+        }
         // While PLAYING/RECORDING the seek is queued and lands at the next
         // block boundary (story 315); when idle it applies immediately. Either
         // way the bound time display follows the VM playhead — no direct write.
@@ -1156,6 +1196,9 @@ final class TransportController implements TransportIntentHandler {
 
     @Override
     public void skipForward() {
+        if (refuseSeekWhileCountingIn()) {
+            return;
+        }
         Transport transport = project.getTransport();
         double jump = 4.0 * transport.getTimeSignatureNumerator();
         // RELATIVE seek — compose against the pending seek target, not the
@@ -1201,11 +1244,100 @@ final class TransportController implements TransportIntentHandler {
      */
     @Override
     public void toggleLoop() {
+        if (project.getTransport().isLoopRecordEnabled() && recordCoordinator.isRecordingInFlight()) {
+            // Story 328 review round 2 (book §5.6): a loop-record take took
+            // "loop playback on" into its configuration once, before
+            // prepare — the flush thread seals a lap per wrap. Loop off
+            // mid-take would wrap no more and the take would end as a
+            // one-lane stack with a comp clip; refused like Loop Rec
+            // itself. Every loop-enable entry — the Loop button, the
+            // keyboard shortcut — is the one command cascade through here;
+            // the ruler's gestures move the loop's bounds only.
+            statusBarLabel.setText(LOOP_REFUSED_DURING_LOOP_RECORD_TAKE);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
+            LOG.fine(LOOP_REFUSED_DURING_LOOP_RECORD_TAKE);
+            return;
+        }
         core.toggleLoop();
         String loopState = project.getTransport().isLoopEnabled() ? "Loop: ON" : "Loop: OFF";
         statusBarLabel.setText(loopState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
         LOG.fine(loopState);
+    }
+
+    /**
+     * Toggles loop-record (story 328, book §5.6; sibling of
+     * {@link #toggleLoop()}). VALIDATE: refused — no MUTATE, no ANNOUNCE,
+     * a status-line message — while a take is being prepared, counting in,
+     * recording or still being written, because the mode is part of a
+     * take's configuration and the pipeline takes it once, before prepare
+     * ({@code RecordCoordinator}). The Loop Rec button's {@code :active}
+     * pseudo-class follows {@code TransportVM.loopRecord} through
+     * {@code TransportControlBinder.bindLoopRecord}.
+     */
+    @Override
+    public void toggleLoopRecord() {
+        if (recordCoordinator.isRecordingInFlight() || recordCoordinator.isTakeBeingWritten()) {
+            String refused = "Loop Record: cannot change while a take is in progress — stop first";
+            statusBarLabel.setText(refused);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
+            LOG.fine(refused);
+            return;
+        }
+        core.toggleLoopRecord();
+        String state = project.getTransport().isLoopRecordEnabled()
+                ? "Loop Record: ON — each loop lap stacks a take lane"
+                : "Loop Record: OFF";
+        statusBarLabel.setText(state);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
+        LOG.fine(state);
+    }
+
+    // ── Punch (story 328, book §5.6) ─────────────────────────────────────────
+
+    /**
+     * Sets punch-in at the playhead (sibling of {@link #toggleLoop()}): the
+     * composed cascade owns the region rules and the {@code PunchChanged}
+     * announce; this layer only reports the result on the status line.
+     */
+    @Override
+    public void setPunchIn() {
+        core.setPunchIn();
+        reportPunch("Punch In set");
+    }
+
+    /** Sets punch-out at the playhead; see {@link #setPunchIn()}. */
+    @Override
+    public void setPunchOut() {
+        core.setPunchOut();
+        reportPunch("Punch Out set");
+    }
+
+    /**
+     * Flips the punch region's enabled flag. With no region installed the
+     * cascade leaves the transport untouched and the status line explains
+     * how to create one.
+     */
+    @Override
+    public void togglePunch() {
+        core.togglePunch();
+        reportPunch("Punch");
+    }
+
+    private void reportPunch(String prefix) {
+        PunchRegion region = project.getTransport().getPunchRegion();
+        String text = region == null
+                ? "Punch: no region — set Punch In (I) or Punch Out (O) at the playhead first"
+                : prefix + " — " + (region.enabled() ? "ON" : "OFF")
+                        + " [" + formatFrames(region.startFrames()) + " .. " + formatFrames(region.endFrames()) + "]";
+        statusBarLabel.setText(text);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.MARKER, 12));
+        LOG.fine(text);
+    }
+
+    private String formatFrames(long projectFrames) {
+        double seconds = projectFrames / project.getFormat().sampleRate();
+        return String.format("%.3f s", seconds);
     }
 
     // ── Pre-Roll / Post-Roll (Story 134) ─────────────────────────────────────
@@ -1242,7 +1374,8 @@ final class TransportController implements TransportIntentHandler {
         // Story 315 review — VALIDATE before touching the engine (mirrors
         // start()): Shift+Space while RECORDING must not leave record, nor
         // start playback under a take that is being prepared.
-        if (recordCoordinator.isPreparingTake() || project.getTransport().getState() == TransportState.RECORDING) {
+        if (recordCoordinator.isPreparingTake() || recordCoordinator.isCountingIn()
+                || project.getTransport().getState() == TransportState.RECORDING) {
             return;
         }
         if (refusePlaybackWhileDeviceLost()) {
@@ -1488,6 +1621,7 @@ final class TransportController implements TransportIntentHandler {
     @Override public void toggleRecord() { recordCoordinator.toggleRecord(); }
     boolean isRecordingInFlight() { return recordCoordinator.isRecordingInFlight(); }
     boolean isPreparingTake() { return recordCoordinator.isPreparingTake(); }
+    boolean isCountingIn() { return recordCoordinator.isCountingIn(); }
     boolean isTakeBeingWritten() { return recordCoordinator.isTakeBeingWritten(); }
     Optional<CapturePeakSnapshot> liveCapturePeaks(String id) { return recordCoordinator.liveCapturePeaks(id); }
     Optional<Thread> pendingSessionInputCheck() { return recordCoordinator.pendingSessionInputCheck(); }

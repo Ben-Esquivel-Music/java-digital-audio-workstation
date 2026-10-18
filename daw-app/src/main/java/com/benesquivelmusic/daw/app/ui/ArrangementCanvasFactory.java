@@ -47,6 +47,11 @@ final class ArrangementCanvasFactory {
         canvas.prefHeightProperty().bind(arrangementContentPane.heightProperty());
 
         TimelineRuler ruler = new TimelineRuler(host.project().getTransport());
+        // Story 328 — punch frames are PROJECT-rate; the ruler converts them to
+        // beats at that rate so the drawn region matches the frames the capture
+        // gate acts on (book §5.6). Re-applied on every project switch by
+        // MainController.rebuildViewModels().
+        ruler.setSampleRate(host.project().getFormat().sampleRate());
         Parent contentParent = arrangementContentPane.getParent();
         if (contentParent instanceof VBox vbox) {
             int idx = vbox.getChildren().indexOf(arrangementContentPane);

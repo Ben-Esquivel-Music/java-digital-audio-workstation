@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.comping.CompRegion;
+import com.benesquivelmusic.daw.core.comping.CompileCompAction;
 import com.benesquivelmusic.daw.core.comping.SetCompRegionAction;
 import com.benesquivelmusic.daw.core.comping.TakeComping;
 import com.benesquivelmusic.daw.core.comping.TakeLane;
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import java.util.Objects;
@@ -12,24 +14,29 @@ import java.util.Objects;
  * Headless logic for the comp tool ({@link EditTool#COMP}).
  *
  * <p>Translates pointer gestures (begin / drag / end + Alt-modifier) into
- * undoable comping actions on a {@link TakeComping}. Kept JavaFX-free so it
- * can be exercised in headless tests without a display.</p>
+ * comping actions on a {@link Track}'s {@link TakeComping}. Kept JavaFX-free
+ * so it can be exercised in headless tests without a display. Every gesture
+ * is audible at once (story 328, book §5.6): the track's main lane holds the
+ * compiled comp, re-compiled after each gesture through the core's
+ * {@link CompileCompAction}; the lanes are never touched.</p>
  *
  * <ul>
  *   <li>{@link #beginSwipe(int, double)} starts a swipe at a beat position
  *       on a take lane index.</li>
  *   <li>{@link #endSwipe(double)} finalizes the swipe by committing a
  *       {@link CompRegion} via {@link SetCompRegionAction} (routed through
- *       the {@link UndoManager}). Overlapping regions on other take lanes
- *       are deselected by {@link TakeComping#addCompRegion(CompRegion)}.</li>
+ *       the {@link UndoManager}), which re-compiles the comp. Overlapping
+ *       regions on other take lanes are deselected by
+ *       {@link TakeComping#addCompRegion(CompRegion)}.</li>
  *   <li>{@link #altClickLane(int)} solos the given take lane (auditioning),
- *       unsoloing every other lane.</li>
+ *       unsoloing every other lane; the main lane then plays that lane.</li>
  *   <li>{@link #clickMainLane()} clears any solo state, returning to
  *       composite playback.</li>
  * </ul>
  */
 public final class CompToolHandler {
 
+    private final Track track;
     private final TakeComping comping;
     private final UndoManager undoManager;
 
@@ -40,11 +47,12 @@ public final class CompToolHandler {
     /**
      * Creates a new comp-tool handler.
      *
-     * @param comping     the take comping to mutate
+     * @param track       the track whose take comping to mutate
      * @param undoManager the undo manager that all comp actions route through
      */
-    public CompToolHandler(TakeComping comping, UndoManager undoManager) {
-        this.comping = Objects.requireNonNull(comping, "comping must not be null");
+    public CompToolHandler(Track track, UndoManager undoManager) {
+        this.track = Objects.requireNonNull(track, "track must not be null");
+        this.comping = track.getTakeComping();
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
     }
 
@@ -66,9 +74,9 @@ public final class CompToolHandler {
 
     /**
      * Finalizes the in-flight swipe at {@code endBeat}, committing the
-     * resulting {@link CompRegion} via the {@link UndoManager}. If the swipe
-     * is empty (zero or negative duration) the gesture is silently
-     * cancelled.
+     * resulting {@link CompRegion} via the {@link UndoManager} and
+     * re-compiling the track's comp. If the swipe is empty (zero or negative
+     * duration) the gesture is silently cancelled.
      *
      * @return the committed {@link CompRegion}, or {@code null} if cancelled
      */
@@ -87,7 +95,7 @@ public final class CompToolHandler {
             return null;
         }
         CompRegion region = new CompRegion(swipeTakeIndex, lo, duration);
-        undoManager.execute(new SetCompRegionAction(comping, region));
+        undoManager.execute(new SetCompRegionAction(track, region));
         return region;
     }
 
@@ -97,8 +105,15 @@ public final class CompToolHandler {
     }
 
     /**
-     * Alt-click on a take lane: solo that lane and unsolo every other lane.
-     * Mirrors the standard pro-DAW take-audition gesture.
+     * Alt-click on a take lane: solo that lane and unsolo every other lane,
+     * and re-compile so the main lane plays the soloed lane whole. Mirrors
+     * the standard pro-DAW take-audition gesture. An audition is not an
+     * edit: it is not recorded in the undo history. It cannot orphan the
+     * main lane either (story 328 review): every undo that touches the comp
+     * — a swipe's, a recorded take's — recompiles from the live comping
+     * state through {@link CompileCompAction}, removing whatever the comp
+     * occupies at that moment, this audition's clips included, rather than
+     * restoring a snapshot taken before the audition.
      *
      * @param takeIndex the take lane index to solo
      */
@@ -110,15 +125,21 @@ public final class CompToolHandler {
             TakeLane lane = comping.getTakeLane(i);
             lane.setSoloed(i == takeIndex);
         }
+        new CompileCompAction(track).execute();
     }
 
     /**
-     * Click on the main (composite) lane: clears any take-lane solo state,
-     * restoring composite playback.
+     * Click on the main (composite) lane: clears any take-lane solo state
+     * and re-compiles, restoring composite playback.
      */
     public void clickMainLane() {
+        boolean wasSoloed = false;
         for (TakeLane lane : comping.getTakeLanes()) {
+            wasSoloed |= lane.isSoloed();
             lane.setSoloed(false);
+        }
+        if (wasSoloed) {
+            new CompileCompAction(track).execute();
         }
     }
 }

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -38,6 +39,56 @@ class ArrangementCanvasTest {
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
         assertThat(ref.get()).isNotNull();
+    }
+
+    // ── Take lanes (story 328, book §5.6) ──────────────────────────────────
+
+    @Test
+    void takeLanesGrowTheTrackSlotThroughTheOneHeightComputationAndResolveByY() throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTrackHeight(80.0);
+                Track comped = new Track("Vox", TrackType.AUDIO);
+                for (int i = 1; i <= 3; i++) {
+                    TakeLane lane = new TakeLane("Take " + i);
+                    lane.addClip(new AudioClip("Take " + i, 0.0, 4.0, null));
+                    comped.getTakeComping().addTakeLane(lane);
+                }
+                Track plain = new Track("Gtr", TrackType.AUDIO);
+                canvas.setTracks(List.of(comped, plain));
+                double laneHeight = ArrangementCanvas.TAKE_LANE_HEIGHT;
+                double lanes = 3 * laneHeight;
+
+                assertThat(laneHeight % 4.0).as("4 px grid").isZero();
+                assertThat(canvas.takeLanesHeight(comped)).isEqualTo(lanes);
+                assertThat(canvas.takeLanesHeight(plain)).isZero();
+                assertThat(canvas.computeLaneY(1)).as("the next track starts below the lanes").isEqualTo(80.0 + lanes);
+                assertThat(canvas.trackIndexAtY(80.0 + 10.0)).as("a take lane still belongs to its track").isZero();
+                assertThat(canvas.trackIndexAtY(80.0 + lanes + 1.0)).isEqualTo(1);
+
+                assertThat(canvas.takeLaneIndexAtY(0, 40.0)).as("the main lane above").isEqualTo(-1);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + 1.0)).isZero();
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + laneHeight + 1.0)).isEqualTo(1);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + 2 * laneHeight + 1.0)).isEqualTo(2);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + lanes + 1.0)).as("below the last lane").isEqualTo(-1);
+                assertThat(canvas.takeLaneIndexAtY(1, 80.0 + lanes + 10.0)).as("no comping on this track").isEqualTo(-1);
+                assertThat(canvas.takeLaneIndexAtY(-1, 10.0)).isEqualTo(-1);
+
+                canvas.setScrollYPixels(50.0);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + laneHeight + 1.0 - 50.0)).as("scroll-aware").isEqualTo(1);
+            } catch (Throwable t) {
+                failure.set(t);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        if (failure.get() != null) {
+            throw new AssertionError("failed on the FX thread", failure.get());
+        }
     }
 
     // ── Property setters ────────────────────────────────────────────────────
