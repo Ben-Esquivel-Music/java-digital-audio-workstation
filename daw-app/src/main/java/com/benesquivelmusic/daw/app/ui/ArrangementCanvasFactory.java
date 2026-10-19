@@ -84,7 +84,9 @@ final class ArrangementCanvasFactory {
                         host::showNotification,
                         () -> host.project().getTransport().getTempo(),
                         host::onTimeStretchClip,
-                        host::onPitchShiftClip));
+                        host::onPitchShiftClip,
+                        // Read live: the project is swapped on Open / New.
+                        () -> host.project().markDirty()));
         clipInteraction.install();
 
         return new Result(canvas, ruler, clipInteraction);

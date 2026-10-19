@@ -47,6 +47,10 @@ import static org.assertj.core.api.Assertions.tuple;
  * reported, never registered. The
  * loss is reported to the coordinator directly here; the production wiring
  * is pinned by {@code DeviceLossRescuesTheTakeThroughTheEngineBridgeTest}.
+ * A test that asserts the exact toasts shown from a point while its take
+ * still records records it over the fixture's {@link CaptureBlockBudget}
+ * device, so a capture thread slowed by a busy machine cannot add a
+ * "Capture ring overflow" WARNING to them.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class DeviceLossRescueStepIndependenceTest {
@@ -86,13 +90,14 @@ class DeviceLossRescueStepIndependenceTest {
         runOnFx(() -> fixture.coordinator().setRescuedTakeNotificationForTest((message, review) -> {
             throw new IllegalStateException("the notification bar is broken");
         }));
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         int before = fixture.shownCount();
 
         fixture.closeTheStreamAsTheLossDoes();
         runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
         fixture.awaitPublished();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         assertSealedByDeviceLoss(takeDirectory);
         assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().rescuedTakes())
                 .extracting(IncompleteTakeStore.RescuedTake::reason, IncompleteTakeStore.RescuedTake::takeDirectory,
@@ -113,13 +118,14 @@ class DeviceLossRescueStepIndependenceTest {
         runOnFx(() -> fixture.coordinator().setRescuedTakeRegistrationForTest(take -> {
             throw new IllegalStateException("the registry is broken");
         }));
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         int before = fixture.shownCount();
 
         fixture.closeTheStreamAsTheLossDoes();
         runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
         fixture.awaitPublished();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         assertSealedByDeviceLoss(takeDirectory);
         assertThat(onFx(() -> List.copyOf(fixture.guitar().getClips()))).as("the clip is published").hasSize(1);
         assertThat(onFx(() -> fixture.project().isDirty())).isTrue();
@@ -135,7 +141,7 @@ class DeviceLossRescueStepIndependenceTest {
 
     @Test
     void aRescueWhoseSealFailsIsReportedAsAnErrorAndNeverAsSaved() throws Exception {
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         Path sealedPath = takeDirectory.resolve(fixture.guitar().getId()).resolve("segment-000.wav");
         Files.writeString(sealedPath, ALREADY_THERE, StandardCharsets.UTF_8);
         List<RecordState> states = new ArrayList<>();
@@ -146,6 +152,7 @@ class DeviceLossRescueStepIndependenceTest {
         runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
         fixture.awaitPublished();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
                 + " left under audio/takes/" + takeDirectory.getFileName() + " (1 clip created)";
@@ -211,7 +218,7 @@ class DeviceLossRescueStepIndependenceTest {
      */
     @Test
     void aRescueWhoseAudioCannotBeReadBackIsStillRegisteredAndReportedAsADeviceLoss() throws Exception {
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         // Installed once the take records: the record start allocates the
         // take directory on the same executor.
         runOnFx(() -> fixture.coordinator().setStorageExecutorForTest(_ -> {
@@ -225,6 +232,7 @@ class DeviceLossRescueStepIndependenceTest {
         runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
         fixture.awaitPublished();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         assertSealedByDeviceLoss(takeDirectory);
         assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().rescuedTakes())
                 .as("registered: every lane sealed")
@@ -261,7 +269,7 @@ class DeviceLossRescueStepIndependenceTest {
      */
     @Test
     void aRescueWhoseManifestCannotBeWrittenIsReportedAsAnErrorAndNeverRegistered() throws Exception {
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         Path staging = takeDirectory.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX);
         Files.createDirectory(staging);
         Files.writeString(staging.resolve("occupied"), "the staging file cannot be opened", StandardCharsets.UTF_8);
@@ -274,6 +282,7 @@ class DeviceLossRescueStepIndependenceTest {
         runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
         fixture.awaitPublished();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         List<NotificationEntry> entries = fixture.entriesSince(before);
         assertThat(entries).as("one ERROR, no WARNING, no SUCCESS").hasSize(1);
         NotificationEntry report = entries.getFirst();
@@ -319,7 +328,7 @@ class DeviceLossRescueStepIndependenceTest {
      */
     @Test
     void aRescueWhoseManifestFailureNamesItsReasonIsReportedAsAnErrorAndNeverRegistered() throws Exception {
-        fixture.recordUntilABlockIsOnDisk();
+        fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         FinalManifestFailure notWritten = new FinalManifestFailure(
                 new IllegalStateException("manifest build failed"), TakeManifest.SealedBy.DEVICE_LOSS);
         runOnFx(() -> fixture.coordinator().setStopSealOutcomeForTest(_ ->
@@ -332,6 +341,7 @@ class DeviceLossRescueStepIndependenceTest {
         runOnFx(() -> fixture.coordinator().onDeviceLost(lost));
         fixture.awaitPublished();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         String report = lost.name() + " disconnected during recording. The audio was saved up to the dropout"
                 + " (1 clip on 1 track), but the take's manifest could not be written (IllegalStateException:"
                 + " manifest build failed); take recovery rebuilds it from the segments";
@@ -370,7 +380,7 @@ class DeviceLossRescueStepIndependenceTest {
     void aRescueSealedEarlyInsideItsOwnStopIsReportedAsAnErrorAndNeverRegistered() throws Exception {
         CompletableFuture<EarlySeal> earlySeal = new CompletableFuture<>();
         runOnFx(() -> fixture.controller().setEarlySealSignalForTest(_ -> earlySeal));
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         EarlySeal seal = new EarlySeal.WriteFailed(new IOException("injected lane write failure"), false);
         List<RecordState> states = new ArrayList<>();
         runOnFx(() -> fixture.coordinator().stateProperty().addListener((_, _, state) -> states.add(state)));
@@ -386,6 +396,7 @@ class DeviceLossRescueStepIndependenceTest {
         });
         fixture.awaitPublished();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         String report = RecordCoordinator.rescuedTakeSealedEarlyMessage(lost, seal, 1, takeDirectory);
         assertThat(report)
                 .isEqualTo(lost.name() + " disconnected during recording. Saving the take ended early — writing the"

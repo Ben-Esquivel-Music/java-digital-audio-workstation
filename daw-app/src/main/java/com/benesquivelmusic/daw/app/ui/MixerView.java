@@ -507,7 +507,7 @@ public final class MixerView extends VBox implements Dockable {
         // SetSoloSafeAction (or a snapshot recall, etc.) is undone or
         // redone. The listener runs on whatever thread fired the event;
         // hop to the FX application thread to mutate widgets safely.
-        this.undoHistoryListener = _ -> {
+        this.undoHistoryListener = (_, _) -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 onUndoHistoryChanged();
             } else {
@@ -719,7 +719,7 @@ public final class MixerView extends VBox implements Dockable {
         // Keep slot button highlights in sync after undo/redo of saves/
         // recalls so the "active" slot indicator never goes stale.
         if (this.undoManager != null) {
-            this.undoManager.addHistoryListener(_ -> {
+            this.undoManager.addHistoryListener((_, _) -> {
                 if (javafx.application.Platform.isFxApplicationThread()) {
                     snapshotsPanel.refresh();
                     syncSlotButtons();

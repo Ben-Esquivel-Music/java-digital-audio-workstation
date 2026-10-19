@@ -1,7 +1,14 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
+import com.benesquivelmusic.daw.app.ui.vm.UndoHistoryDirtyBinder;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.FadeClipAction;
+import com.benesquivelmusic.daw.core.audio.FadeCurveType;
+import com.benesquivelmusic.daw.core.audio.SplitClipAction;
+import com.benesquivelmusic.daw.core.comping.CompileCompAction;
+import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
@@ -33,6 +40,7 @@ import static org.assertj.core.api.Assertions.within;
 class ClipInteractionControllerTest {
 
     private UndoManager undoManager;
+    private DawProject project;
     private List<Track> tracks;
     private EditTool activeTool;
     private double pixelsPerBeat;
@@ -50,6 +58,7 @@ class ClipInteractionControllerTest {
     @BeforeEach
     void setUp() {
         undoManager = new UndoManager();
+        project = new DawProject("Test", AudioFormat.STUDIO_QUALITY);
         tracks = new ArrayList<>();
         activeTool = EditTool.POINTER;
         pixelsPerBeat = 40.0;
@@ -88,7 +97,8 @@ class ClipInteractionControllerTest {
                 (level, message) -> { /* no-op in tests */ },
                 () -> 120.0,
                 () -> { /* onTimeStretchClip no-op */ },
-                () -> { /* onPitchShiftClip no-op */ });
+                () -> { /* onPitchShiftClip no-op */ },
+                () -> project.markDirty());
     }
 
     /**
@@ -308,6 +318,158 @@ class ClipInteractionControllerTest {
         assertThat(track.getClips().getFirst().getAudioData()).as("back to the comp")
                 .isSameAs(track.getTakeComping().getTakeLane(0).getClips().getFirst().getAudioData());
         assertThat(track.getTakeComping().getCompRegions()).hasSize(1);
+    }
+
+    // ── Dirty bit (PR #984 review: canvas edits must reach the save prompt) ──
+
+    @Test
+    void aSwipeAfterASaveMarksTheProjectDirtyThroughTheUndoHistory() throws Exception {
+        // Copilot's sequence: a take is recorded, the project is saved, then a
+        // swipe on another lane changes the comp. The swipe is an undo entry
+        // executed by the canvas, which calls no markDirty of its own; the
+        // per-generation UndoHistoryDirtyBinder must still flip the bit that
+        // ProjectLifecycleController.confirmDiscardUnsavedChanges gates on.
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        Track track = compedTrack();
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 8.0));
+        undoManager.execute(new CompileCompAction(track));   // the take's history entry
+        assertThat(project.isDirty()).as("the take is unsaved").isTrue();
+        project.markClean();                                  // Save
+        tracks.add(track);
+        activeTool = EditTool.COMP;
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(80.0, takeLaneY(1)));    // beat 2 on lane 1
+            canvas.fireEvent(mouseReleased(160.0, takeLaneY(1)));  // beat 4
+        });
+
+        assertThat(track.getTakeComping().getCompRegions())
+                .contains(new com.benesquivelmusic.daw.core.comping.CompRegion(1, 2.0, 2.0));
+        assertThat(project.isDirty()).as("the swipe is an unsaved change").isTrue();
+        binder.dispose();
+    }
+
+    @Test
+    void anAuditionOverAnUneditedCompAndItsEndNeverDirtyTheProject() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+        project.markClean();
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(2)));
+            assertThat(project.isDirty()).as("a pure listen").isFalse();
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));   // the main lane ends it
+            canvas.fireEvent(mouseReleased(80.0, trackHeight / 2));
+        });
+
+        assertThat(track.getTakeComping().isAuditioning()).isFalse();
+        assertThat(project.isDirty()).isFalse();
+        assertThat(String.valueOf(lastStatusBarText)).as("no discard notice")
+                .doesNotContain("Audition discarded");
+        binder.dispose();
+    }
+
+    @Test
+    void anAuditionThatDiscardsAFadedCompClipMarksDirtyAndSaysSo() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+        AudioClip compClip = track.getClips().getFirst();
+        undoManager.execute(new FadeClipAction(compClip, 1.0, 0.0,
+                compClip.getFadeInCurveType(), compClip.getFadeOutCurveType()));
+        assertThat(project.isDirty()).as("the fade is an unsaved change").isTrue();
+        project.markClean();                                  // Save: the file holds the fade
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(2)));
+        });
+
+        assertThat(project.isDirty()).as("the next save drops the fade").isTrue();
+        assertThat(lastStatusBarText).isEqualTo("Audition discarded edits to comp clips on Vox");
+        binder.dispose();
+    }
+
+    @Test
+    void switchingFromOneAuditionToAnotherNeverDirtiesTheProject() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(1)));
+            project.markClean();                              // Save mid-audition
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(2)));
+        });
+
+        assertThat(track.getTakeComping().getTakeLane(2).isSoloed()).isTrue();
+        assertThat(project.isDirty()).as("audition output replaced, not comp output").isFalse();
+        binder.dispose();
+    }
+
+    @Test
+    void endingAnAuditionWhoseClipWasFadedLeavesTheSavedProjectClean() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+        new CompToolHandler(track, undoManager).altClickLane(1);
+        AudioClip auditionClip = track.getClips().getFirst();
+        undoManager.execute(new FadeClipAction(auditionClip, 0.5, 0.0,
+                FadeCurveType.LINEAR, auditionClip.getFadeOutCurveType()));
+        project.markClean();                                  // Save: the selection, not the audition
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));   // the main lane ends it
+            canvas.fireEvent(mouseReleased(80.0, trackHeight / 2));
+        });
+
+        assertThat(track.getTakeComping().isAuditioning()).isFalse();
+        assertThat(project.isDirty()).isFalse();
+        binder.dispose();
+    }
+
+    @Test
+    void anAuditionAfterASplitOfTheCompOutputMarksDirty() throws Exception {
+        // Accepted: the saved file goes from the two split halves to one clip.
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = compedTrack();
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 8.0));
+        new CompileCompAction(track).execute();
+        undoManager.execute(new SplitClipAction(track, track.getClips().getFirst(), 3.0));
+        assertThat(track.getClips()).hasSize(2);
+        project.markClean();
+        tracks.add(track);
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(1)));
+        });
+
+        assertThat(project.isDirty()).isTrue();
+        assertThat(lastStatusBarText).startsWith("Audition discarded edits");
+        binder.dispose();
     }
 
     /** An audio track with three take lanes, each holding one 8-beat clip with its own audio array. */

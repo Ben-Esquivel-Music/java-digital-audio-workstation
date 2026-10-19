@@ -162,7 +162,7 @@ class UndoManagerHistoryTest {
     @Test
     void listenerIsNotifiedOnExecute() {
         AtomicInteger callCount = new AtomicInteger();
-        undoManager.addHistoryListener(manager -> callCount.incrementAndGet());
+        undoManager.addHistoryListener((manager, _) -> callCount.incrementAndGet());
 
         undoManager.execute(action("A", new ArrayList<>()));
 
@@ -174,7 +174,7 @@ class UndoManagerHistoryTest {
         undoManager.execute(action("A", new ArrayList<>()));
 
         AtomicInteger callCount = new AtomicInteger();
-        undoManager.addHistoryListener(manager -> callCount.incrementAndGet());
+        undoManager.addHistoryListener((manager, _) -> callCount.incrementAndGet());
 
         undoManager.undo();
 
@@ -187,7 +187,7 @@ class UndoManagerHistoryTest {
         undoManager.undo();
 
         AtomicInteger callCount = new AtomicInteger();
-        undoManager.addHistoryListener(manager -> callCount.incrementAndGet());
+        undoManager.addHistoryListener((manager, _) -> callCount.incrementAndGet());
 
         undoManager.redo();
 
@@ -199,7 +199,7 @@ class UndoManagerHistoryTest {
         undoManager.execute(action("A", new ArrayList<>()));
 
         AtomicInteger callCount = new AtomicInteger();
-        undoManager.addHistoryListener(manager -> callCount.incrementAndGet());
+        undoManager.addHistoryListener((manager, _) -> callCount.incrementAndGet());
 
         undoManager.clear();
 
@@ -212,7 +212,7 @@ class UndoManagerHistoryTest {
         undoManager.execute(action("B", new ArrayList<>()));
 
         AtomicInteger callCount = new AtomicInteger();
-        undoManager.addHistoryListener(manager -> callCount.incrementAndGet());
+        undoManager.addHistoryListener((manager, _) -> callCount.incrementAndGet());
 
         undoManager.goToHistoryIndex(0);
 
@@ -222,7 +222,7 @@ class UndoManagerHistoryTest {
     @Test
     void removedListenerIsNoLongerCalled() {
         AtomicInteger callCount = new AtomicInteger();
-        UndoHistoryListener listener = manager -> callCount.incrementAndGet();
+        UndoHistoryListener listener = (manager, _) -> callCount.incrementAndGet();
         undoManager.addHistoryListener(listener);
 
         undoManager.execute(action("A", new ArrayList<>()));
@@ -237,13 +237,63 @@ class UndoManagerHistoryTest {
     void multipleListenersAreAllNotified() {
         AtomicInteger count1 = new AtomicInteger();
         AtomicInteger count2 = new AtomicInteger();
-        undoManager.addHistoryListener(manager -> count1.incrementAndGet());
-        undoManager.addHistoryListener(manager -> count2.incrementAndGet());
+        undoManager.addHistoryListener((manager, _) -> count1.incrementAndGet());
+        undoManager.addHistoryListener((manager, _) -> count2.incrementAndGet());
 
         undoManager.execute(action("A", new ArrayList<>()));
 
         assertThat(count1.get()).isEqualTo(1);
         assertThat(count2.get()).isEqualTo(1);
+    }
+
+    @Test
+    void listenerReceivesTheKindOfEachChange() {
+        List<UndoHistoryChange> changes = new ArrayList<>();
+        undoManager.addHistoryListener((manager, change) -> changes.add(change));
+
+        undoManager.execute(action("A", new ArrayList<>()));
+        undoManager.execute(action("B", new ArrayList<>()));
+        undoManager.undo();
+        undoManager.redo();
+        undoManager.goToHistoryIndex(-1);
+        undoManager.goToHistoryIndex(1);
+        undoManager.goToHistoryIndex(1);   // no-op: no notification
+        undoManager.undo();
+        undoManager.clearRedoStack();
+        undoManager.clear();
+
+        assertThat(changes).containsExactly(
+                UndoHistoryChange.EXECUTED, UndoHistoryChange.EXECUTED,
+                UndoHistoryChange.UNDONE, UndoHistoryChange.REDONE,
+                UndoHistoryChange.JUMPED, UndoHistoryChange.JUMPED,
+                UndoHistoryChange.UNDONE,
+                UndoHistoryChange.REDO_CLEARED, UndoHistoryChange.CLEARED);
+    }
+
+    @Test
+    void executeAtTheHistoryCapIsStillReportedAsAnExecute() {
+        // At the cap an execute pushes one action and trims the oldest, so the
+        // stack sizes do not change: the kind, not the sizes, says what happened.
+        UndoManager capped = new UndoManager(2);
+        capped.execute(action("A", new ArrayList<>()));
+        capped.execute(action("B", new ArrayList<>()));
+        List<UndoHistoryChange> changes = new ArrayList<>();
+        capped.addHistoryListener((manager, change) -> changes.add(change));
+
+        capped.execute(action("C", new ArrayList<>()));
+
+        assertThat(capped.undoSize()).isEqualTo(capped.getMaxHistory());
+        assertThat(changes).containsExactly(UndoHistoryChange.EXECUTED);
+    }
+
+    @Test
+    void onlyExecuteUndoRedoAndJumpMutateTheProject() {
+        assertThat(UndoHistoryChange.EXECUTED.mutatesProject()).isTrue();
+        assertThat(UndoHistoryChange.UNDONE.mutatesProject()).isTrue();
+        assertThat(UndoHistoryChange.REDONE.mutatesProject()).isTrue();
+        assertThat(UndoHistoryChange.JUMPED.mutatesProject()).isTrue();
+        assertThat(UndoHistoryChange.CLEARED.mutatesProject()).isFalse();
+        assertThat(UndoHistoryChange.REDO_CLEARED.mutatesProject()).isFalse();
     }
 
     @Test

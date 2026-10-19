@@ -184,6 +184,11 @@ class TransportControllerTest {
     private ManualFxDelay stillWritingDelay;
     /** Holds the latest take's capture thread, for the tests that stop a take still being written. */
     private final CaptureThreadHold hold = new CaptureThreadHold();
+    /**
+     * Caps the blocks a take is handed, for the tests that read every notification shown around its Stop
+     * or what the bar shows while it records.
+     */
+    private final CaptureBlockBudget blockBudget = new CaptureBlockBudget(hold::latestPipeline);
 
     /** The hang guard of a wait for a real take's capture thread: its files created, or the take published. */
     private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
@@ -304,6 +309,20 @@ class TransportControllerTest {
                         List.of(new BackendStreamRung(streamingBackend,
                                 DeviceId.defaultFor(streamingBackend.name()))));
         return newControllerWithProvision(project, provision);
+    }
+
+    /**
+     * {@link #newController(DawProject, AudioBackend)} over {@link #blockBudget}'s device in front of
+     * {@code backend}, the instance the test built — every call on the device reaches it, on the thread that
+     * makes the call, so the device the test names from it and the calls it counts stay its own — with the
+     * {@link #hold} installed, unarmed, only so that the budget sees the take. Once the take has published
+     * its {@link CaptureBlockBudget#BLOCKS} blocks the device stops: no block of it can be dropped, so no
+     * "Capture ring overflow" WARNING replaces the level and message the bar shows while the take records.
+     */
+    private TransportController newBudgetedController(DawProject project, AudioBackend backend) throws Exception {
+        TransportController controller = newController(project, blockBudget.backend(backend));
+        runHandler(() -> hold.installOn(controller));
+        return controller;
     }
 
     private TransportController newControllerWithProvision(
@@ -1050,13 +1069,14 @@ class TransportControllerTest {
         MockAudioBackend backend = new MockAudioBackend();
         AudioDeviceInfo mockDevice = backend.listDevices().get(0);
         vox.setInputDevice(java.util.Optional.of(new DeviceId(backend.name(), mockDevice.qualifiedName())));
-        TransportController controller = newController(project, backend);
+        TransportController controller = newBudgetedController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
             record(controller);
             awaitSessionInputCheck(controller);
 
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
+            blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(hold.pipeline());
             assertThat(audioEngine.getCaptureRoutingPlan().trackSources()).containsKey(vox.getId());
             assertThat(audioEngine.getCaptureRoutingPlan().sources().get(0).device().name()).isEqualTo(mockDevice.qualifiedName());
         } finally {
@@ -1076,7 +1096,7 @@ class TransportControllerTest {
         EnumerationTrackingBackend backend = new EnumerationTrackingBackend();
         AudioDeviceInfo mockDevice = new MockAudioBackend().listDevices().get(0);
         vox.setInputDevice(java.util.Optional.of(new DeviceId(backend.name(), mockDevice.qualifiedName())));
-        TransportController controller = newController(project, backend);
+        TransportController controller = newBudgetedController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
             record(controller);
@@ -1087,6 +1107,7 @@ class TransportControllerTest {
             assertThat(backend.enumerations.get()).as("the check did enumerate (off-thread)").isPositive();
             assertThat(backend.enumerationsOnFxThread.get()).as("never on the FX thread").isZero();
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
+            blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(hold.pipeline());
             assertThat(audioEngine.getCaptureRoutingPlan().trackSources()).containsKey(vox.getId());
         } finally {
             stopAndAwaitTheTake(controller);
@@ -1115,7 +1136,7 @@ class TransportControllerTest {
         AudioDeviceInfo mockDevice = backend.listDevices().get(0);
         vox.setInputDevice(java.util.Optional.of(new DeviceId(backend.name(), mockDevice.qualifiedName())));
         giveTheProjectADirectory(project);   // story 323: the take lives in the project
-        TransportController controller = newController(project, backend);
+        TransportController controller = newBudgetedController(project, backend);
         audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
         try {
             record(controller);
@@ -1123,6 +1144,7 @@ class TransportControllerTest {
 
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.INFO);
             assertThat(notificationBar.getMessage()).contains("Recording started");
+            blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(hold.pipeline());
         } finally {
             stopAndAwaitTheTake(controller);
         }
@@ -2115,13 +2137,14 @@ class TransportControllerTest {
             public boolean isOpen() { return delegate.isOpen(); }
             public void close() { delegate.close(); }
         };
-        TransportController controller = newController(project, backend);
+        TransportController controller = newBudgetedController(project, backend);
         audioEngine.validateInputRouting(List.of(vox));
         try {
             record(controller);
             assertThat(project.getTransport().getState()).isEqualTo(TransportState.RECORDING);
             assertThat(notificationBar.getCurrentLevel()).isEqualTo(NotificationLevel.WARNING);
             assertThat(notificationBar.getMessage()).contains("Vox", "Mock Device", "Input 1-2");
+            blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(hold.pipeline());
             TakeManifest manifest = TakeManifest.read(TakeManifest.manifestPath(controller.activeTakeDirectory().orElseThrow()));
             assertThat(manifest.routingFlags()).hasSize(1);
         } finally { stopAndAwaitTheTake(controller); }
@@ -2487,7 +2510,7 @@ class TransportControllerTest {
         var note = new javax.sound.midi.ShortMessage(javax.sound.midi.ShortMessage.NOTE_ON, 0, 60, 100);
         input1.getTransmitters().getFirst().getReceiver().send(note, -1);
         input2.getTransmitters().getFirst().getReceiver().send(note, -1);
-        UndoHistoryListener listener = history -> {
+        UndoHistoryListener listener = (history, _) -> {
             if (failUndoListener && history.undoSize() == 1) throw new AssertionError("MIDI undo listener failed");
         };
         runStrictHandler(() -> undoManager.addHistoryListener(listener));
@@ -2780,7 +2803,38 @@ class TransportControllerTest {
                                                           TransportController.TakeCompletion completion,
                                                           TransportController.EarlySealSignal earlySeal)
             throws Exception {
-        TransportController controller = newController(project, new MockAudioBackend());
+        return recordingWithABlockOnDisk(project, armed, completion, earlySeal, new MockAudioBackend());
+    }
+
+    /**
+     * {@link #recordingWithABlockOnDisk(DawProject, Track, TransportController.TakeCompletion,
+     * TransportController.EarlySealSignal)} over {@link #blockBudget}'s device, whose clock stops once the
+     * take's capture ring has been handed its budget: no block of the take can be dropped, so no capture
+     * thread slowed by a loaded machine adds a "Capture ring overflow" WARNING to what a test reads.
+     */
+    private TransportController recordingABudgetedTakeWithABlockOnDisk(DawProject project, Track armed,
+                                                                       TransportController.TakeCompletion completion,
+                                                                       TransportController.EarlySealSignal earlySeal)
+            throws Exception {
+        return recordingWithABlockOnDisk(project, armed, completion, earlySeal, blockBudget.backend());
+    }
+
+    /**
+     * {@link #recordingABudgetedTakeWithABlockOnDisk(DawProject, Track, TransportController.TakeCompletion,
+     * TransportController.EarlySealSignal)} with the production early-seal signal.
+     */
+    private TransportController recordingABudgetedTakeWithABlockOnDisk(DawProject project, Track armed,
+                                                                       TransportController.TakeCompletion completion)
+            throws Exception {
+        return recordingABudgetedTakeWithABlockOnDisk(project, armed, completion, RecordingPipeline::earlySeal);
+    }
+
+    private TransportController recordingWithABlockOnDisk(DawProject project, Track armed,
+                                                          TransportController.TakeCompletion completion,
+                                                          TransportController.EarlySealSignal earlySeal,
+                                                          AudioBackend device)
+            throws Exception {
+        TransportController controller = newController(project, device);
         runHandler(() -> {
             hold.installOn(controller);
             controller.setTakeCompletionForTest(completion);
@@ -2791,9 +2845,16 @@ class TransportControllerTest {
         return controller;
     }
 
-    /** Holds the recording take's capture thread mid-pass, so its Stop leaves the take still being written. */
+    /**
+     * Holds the recording take's capture thread mid-pass, so its Stop leaves the take still being written.
+     * A take over {@link #blockBudget}'s device is granted one block beyond its allowance once the hold is
+     * armed: at least that block is published after the arm, and the capture thread reads the clock when it
+     * applies it, if not before, so it is held at the latest there — and no block beyond the new allowance
+     * follows while the thread is held.
+     */
     private void holdTheCaptureThread() throws InterruptedException {
         hold.arm();
+        blockBudget.grantOneMoreBlock();
         hold.awaitHolding(Duration.ofSeconds(10));
     }
 
@@ -3178,9 +3239,10 @@ class TransportControllerTest {
         armed.setArmed(true);
         CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         NotificationHistoryService shown = notificationsFromNowOn();
         List<BusEvent> published = new CopyOnWriteArrayList<>();
         var previousBus = EventBusPublisher.getDefault();
@@ -3200,6 +3262,7 @@ class TransportControllerTest {
         assertThat(recIndicator.isVisible()).as("the REC indicator is hidden").isFalse();
         assertThat(armed.isRecording()).isFalse();
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(completions.calls).as("the take was completed once").hasSize(1);
         assertThat(completions.onFxThread).as("on the FX thread").containsExactly(true);
         assertThat(armed.getClips()).as("the take's clip is published").hasSize(1);
@@ -3360,9 +3423,10 @@ class TransportControllerTest {
         armed.setArmed(true);
         CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         NotificationHistoryService shown = notificationsFromNowOn();
         EarlySeal seal = new EarlySeal.WriteFailed(
                 new UncheckedIOException("write failed on segment-000.wav.part", new IOException("injected")), true);
@@ -3376,6 +3440,7 @@ class TransportControllerTest {
         flushFx(); // the posted turn
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(completions.calls).as("stopped once, by the user's Stop, and completed once").hasSize(1);
         String expected = TransportController.takeSealedEarlyMessage(seal, 1, takeDirectory);
         assertThat(expected).isEqualTo("Recording stopped — writing the take to disk failed (injected);"
@@ -3403,10 +3468,12 @@ class TransportControllerTest {
         armed.setArmed(true);
         CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
+        RecordingPipeline take = hold.pipeline();
         NotificationHistoryService shown = notificationsFromNowOn();
         stopAndAwaitTheTake(controller);
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(completions.calls).as("fixture: the user's Stop, and its take published").hasSize(1);
 
         earlySeal.sealEarlyOnTheCaptureThread(DISK_EXHAUSTED);
@@ -3469,14 +3536,16 @@ class TransportControllerTest {
         armed.setArmed(true);
         CountingCompletion completions = new CountingCompletion();
         ControlledEarlySeal earlySeal = new ControlledEarlySeal();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, completions, earlySeal);
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, completions, earlySeal);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         NotificationHistoryService shown = notificationsFromNowOn();
         holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
         assertThat(controller.isTakeBeingWritten()).as("fixture: the take is still being written").isTrue();
         runHandler(stillWritingDelay::fireAll); // the delay has passed and the take is still being written
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
 
         earlySeal.sealEarlyOnTheCaptureThread(DISK_EXHAUSTED);
         flushFx();
@@ -3489,6 +3558,7 @@ class TransportControllerTest {
         releaseAndAwaitThePublication(controller);
 
         assertThat(completions.calls).as("only the publishing turn completed the take").hasSize(1);
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         String expected = TransportController.takeSealedEarlyMessage(DISK_EXHAUSTED, 1, takeDirectory);
         assertThat(shown.getEntries()).as("the still-writing WARNING, then one ERROR, and no SUCCESS")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
@@ -3774,12 +3844,14 @@ class TransportControllerTest {
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
         CountingCompletion completions = new CountingCompletion();
-        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, completions);
         awaitSessionInputCheck(controller);
+        RecordingPipeline take = hold.pipeline();
         NotificationHistoryService shown = notificationsFromNowOn();
 
         stopAndAwaitTheTake(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(completions.calls.getFirst().stopSealFailure()).as("the core reports no failure of the Stop's seal")
                 .isEmpty();
         assertThat(shown.getEntries()).extracting(NotificationEntry::level, NotificationEntry::message)
@@ -3798,15 +3870,17 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, new CountingCompletion());
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         project.markClean();
         NotificationHistoryService shown = notificationsFromNowOn();
 
         stopAndAwaitTheTake(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory);
         assertThat(expected).isEqualTo("Recording stopped — finishing the take on disk failed (injected rename"
                 + " failure); one or more segment files that could not be finished are left under audio/takes/"
@@ -3833,14 +3907,16 @@ class TransportControllerTest {
         armed.setArmed(true);
         CountingCompletion completions = new CountingCompletion();
         completions.firstReturnsNothing = true;
-        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, completions);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         NotificationHistoryService shown = notificationsFromNowOn();
 
         stopAndAwaitTheTake(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 0, takeDirectory);
         assertThat(expected).isEqualTo("Recording stopped — finishing the take on disk failed (injected rename"
                 + " failure); no audio had been recorded, and one or more segment files that could not be finished"
@@ -3865,18 +3941,21 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, new CountingCompletion());
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         project.markClean();
         NotificationHistoryService shown = notificationsFromNowOn();
         holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
         runHandler(stillWritingDelay::fireAll); // the delay has passed and the take is still being written
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
 
         releaseAndAwaitThePublication(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory);
         assertThat(shown.getEntries()).as("the still-writing WARNING, then one ERROR, and no SUCCESS")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
@@ -3899,17 +3978,20 @@ class TransportControllerTest {
         armed.setArmed(true);
         CountingCompletion completions = new CountingCompletion();
         completions.firstReturnsNothing = true;
-        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, completions);
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         runHandler(() -> controller.setStopSealOutcomeForTest(stopSealFailedWith(RENAME_FAILED)));
         NotificationHistoryService shown = notificationsFromNowOn();
         holdTheCaptureThread();
         assertThat(runHandlerCatching(controller::stop)).isNull();
         runHandler(stillWritingDelay::fireAll); // the delay has passed and the take is still being written
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
 
         releaseAndAwaitThePublication(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 0, takeDirectory);
         assertThat(shown.getEntries()).as("the still-writing WARNING, then one ERROR, and no SUCCESS")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
@@ -3933,8 +4015,9 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, new CountingCompletion());
         awaitSessionInputCheck(controller);
+        RecordingPipeline take = hold.pipeline();
         List<RecordState> states = new CopyOnWriteArrayList<>();
         runHandler(() -> {
             controller.setStopSealOutcomeForTest(manifestNotWrittenWith(MANIFEST_NOT_WRITTEN));
@@ -3945,6 +4028,7 @@ class TransportControllerTest {
 
         stopAndAwaitTheTake(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         String expected = TransportController.finalManifestNotWrittenMessage(MANIFEST_NOT_WRITTEN, 1);
         assertThat(expected).isEqualTo("Recording stopped — the take's manifest could not be written (injected"
                 + " manifest write failure); the audio recorded is kept (1 clip created); take recovery rebuilds it"
@@ -3969,15 +4053,17 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, new CountingCompletion());
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         runHandler(() -> controller.setStopSealOutcomeForTest(_ -> new TransportController.StopSealOutcome(
                 Optional.of(RENAME_FAILED), Optional.of(MANIFEST_NOT_WRITTEN))));
         NotificationHistoryService shown = notificationsFromNowOn();
 
         stopAndAwaitTheTake(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         String expected = TransportController.stopSealFailedMessage(RENAME_FAILED, 1, takeDirectory)
                 + "; the take's manifest could not be written (injected manifest write failure);"
                 + " take recovery rebuilds it from the segments";
@@ -4003,9 +4089,10 @@ class TransportControllerTest {
         giveTheProjectADirectory(project);
         Track armed = project.createAudioTrack("Vox");
         armed.setArmed(true);
-        TransportController controller = recordingWithABlockOnDisk(project, armed, new CountingCompletion());
+        TransportController controller = recordingABudgetedTakeWithABlockOnDisk(project, armed, new CountingCompletion());
         awaitSessionInputCheck(controller);
         Path takeDirectory = controller.activeTakeDirectory().orElseThrow();
+        RecordingPipeline take = hold.pipeline();
         Path staging = takeDirectory.resolve(TakeManifest.FILE_NAME + TakeManifest.TMP_SUFFIX);
         Files.createDirectory(staging);
         Files.writeString(staging.resolve("occupied"), "the staging file cannot be opened");
@@ -4014,6 +4101,7 @@ class TransportControllerTest {
 
         stopAndAwaitTheTake(controller);
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(shown.getEntries()).as("one ERROR, and no SUCCESS").singleElement().satisfies(entry -> {
             assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
             assertThat(entry.message())

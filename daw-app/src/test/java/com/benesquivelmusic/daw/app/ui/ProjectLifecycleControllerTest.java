@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.vm.UndoHistoryDirtyBinder;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -16,9 +18,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -200,6 +205,96 @@ class ProjectLifecycleControllerTest {
 
         assertThat(loaded.get()).isTrue();
         assertThat(pm.getLastMigrationReport().wasMigrated()).isTrue();
+    }
+
+    // ── PR #984 review: Open leaves the project clean under the dirty binder ──
+
+    @Test
+    void openingAProjectLeavesItCleanWithTheNewGenerationsDirtyBinderAttached() throws Exception {
+        ProjectManager pm = dummyProjectManager();
+        ProjectMetadata metadata = pm.createProject("Song", tempDir);
+        java.nio.file.Files.writeString(metadata.projectPath().resolve("project.daw"),
+                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
+                        .serialize(new DawProject("Song", AudioFormat.CD_QUALITY)));
+        pm.abandonProject();
+
+        AtomicReference<DawProject> project =
+                new AtomicReference<>(new DawProject("Outgoing", AudioFormat.CD_QUALITY));
+        AtomicReference<UndoManager> undoManager = new AtomicReference<>(new UndoManager());
+        List<UndoHistoryDirtyBinder> binders = new ArrayList<>();
+        // What MainController.rebuildViewModels() does for each generation — dispose
+        // the previous binder, attach one over the generation's manager and project
+        // (pinned there by UndoHistoryWiringSentinelTest). The controller reaches it
+        // through onProjectUIRebuild, after it installed the fresh manager.
+        Runnable rebuildGeneration = () -> {
+            binders.forEach(UndoHistoryDirtyBinder::dispose);
+            binders.clear();
+            binders.add(new UndoHistoryDirtyBinder(undoManager.get(), project.get()));
+        };
+        rebuildGeneration.run();                                   // the startup generation
+        DawProject outgoing = project.get();
+        UndoManager outgoingHistory = undoManager.get();
+        outgoingHistory.execute(edit("edit in the outgoing project"));
+        assertThat(outgoing.isDirty()).as("premise: the outgoing project is dirty").isTrue();
+
+        // ProjectManager.openProject already leaves the loaded project clean, so the
+        // install step dirties it: only the controller's own markClean() — after the
+        // fresh manager is installed, before the UI rebuild — can make it clean again.
+        Consumer<DawProject> installIncomingDirty = incoming -> {
+            project.set(incoming);
+            incoming.markDirty();
+        };
+        ProjectLifecycleController.Deps deps = new ProjectLifecycleController.Deps(
+                project::get, installIncomingDirty, undoManager::get, undoManager::set,
+                () -> { }, () -> { }, rebuildGeneration, () -> null, json -> { });
+        AtomicReference<Boolean> loaded = new AtomicReference<>();
+        runOnFxThread(() -> loaded.set(new ProjectLifecycleController(
+                pm, dummySessionInterchange(), dummyNotificationBar(),
+                dummyProgress(), dummyBorderPane(),
+                dummyVBox(), deps, dummyArchiver())
+                .loadProjectFromPath(metadata.projectPath())));
+
+        assertThat(loaded.get()).isTrue();
+        DawProject opened = project.get();
+        assertThat(opened).as("Open installed the loaded project").isNotSameAs(outgoing);
+        assertThat(undoManager.get()).as("and a fresh manager").isNotSameAs(outgoingHistory);
+        assertThat(opened.isDirty())
+                .as("a just-opened project is clean, even when installing it dirtied it")
+                .isFalse();
+
+        // This cannot detect a missing dispose: the old generation's binder
+        // captured `outgoing`, not `opened`. What it pins is ordering —
+        // setUndoManager runs before the UI rebuild, so no binder ever pairs
+        // the abandoned manager with the opened project. Production disposal
+        // of the old binder is pinned by UndoHistoryWiringSentinelTest.
+        outgoingHistory.execute(edit("late edit on the abandoned manager"));
+        assertThat(opened.isDirty())
+                .as("the fresh manager is installed before the UI rebuild, so no binder "
+                        + "attaches the abandoned manager to the opened project")
+                .isFalse();
+
+        undoManager.get().execute(edit("first edit after Open"));
+        assertThat(opened.isDirty())
+                .as("non-vacuity: the binder is attached to the new generation")
+                .isTrue();
+        binders.forEach(UndoHistoryDirtyBinder::dispose);
+    }
+
+    private static com.benesquivelmusic.daw.core.undo.UndoableAction edit(String description) {
+        return new com.benesquivelmusic.daw.core.undo.UndoableAction() {
+            @Override
+            public String description() {
+                return description;
+            }
+
+            @Override
+            public void execute() {
+            }
+
+            @Override
+            public void undo() {
+            }
+        };
     }
 
     @Test

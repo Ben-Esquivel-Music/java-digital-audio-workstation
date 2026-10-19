@@ -105,7 +105,7 @@ public final class UndoHistoryPanel extends VBox {
         getChildren().addAll(headerLabel, historyListView);
 
         // ── Listen for history changes ──────────────────────────────────────
-        listener = manager -> {
+        listener = (manager, _) -> {
             if (Platform.isFxApplicationThread()) {
                 refreshHistory();
             } else {

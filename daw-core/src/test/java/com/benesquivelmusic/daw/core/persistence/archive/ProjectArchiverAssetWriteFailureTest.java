@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.persistence.archive;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,6 +15,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,112 +27,90 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Story 323 fault-injection probe (fix round 1b, item 1; re-based on a fault
- * seam in fix round 2): {@link ProjectArchiver#saveAsArchive} rewrites every
- * planned reference to its archive-relative {@code assets/…} path
- * <em>inside</em> the {@code try} whose {@code finally} restores them, so a
- * rewrite that throws part-way through leaves the in-memory project exactly
- * as it was.
- *
- * <p>No production reference can throw from its update any more (a recorded
- * take contributes one segment reference per element, and none of them trips
- * the head invariant), so every other archiver test passes with the rewrite
- * moved back outside the {@code try}. This test injects the failure the
- * {@code try} exists for through {@link ProjectArchiver#failRewriteAfter(int)}:
- * the rewrite throws right after the n-th reference was re-pointed. The
- * project holds three references in walk order — the import on the earlier
- * track, then the take's two segments. The seam is consumed by the rewrite
- * that throws, which the same test pins by archiving the same project with
- * the same archiver straight afterwards. Deterministic; one thread; no
- * timing.</p>
+ * {@link ProjectArchiver#saveAsArchive} never rewrites a live reference: the
+ * archived document's {@code assets/…} references are substituted as the
+ * serializer writes it, so the project holds its own references for the
+ * whole write — while the assets are being packed, when the pack fails
+ * part-way through, and afterwards — and a failed pack publishes nothing.
+ * The asset-write seam ({@link ProjectArchiver.AssetWriteHook}) observes the
+ * project mid-write and injects the failure. Deterministic; one thread; no
+ * timing.
  */
-class ProjectArchiverRewriteRollbackTest {
+class ProjectArchiverAssetWriteFailureTest {
 
-    /** References the fixture project holds, in the order the archiver walks them. */
-    private static final int REFERENCES = 3;
+    /** Assets the fixture project packs: the import, then the take's two segments. */
+    private static final int ASSETS = 3;
 
     @TempDir
     Path tmp;
 
-    @ParameterizedTest(name = "the rewrite throws after {0} of 3 references")
+    @ParameterizedTest(name = "the pack fails at asset {0} of 3")
     @ValueSource(ints = {1, 2, 3})
-    void aRewriteThatThrowsPartWayThroughLeavesEveryReferenceAsItWas(int rewrittenBeforeTheThrow)
+    void aPackThatFailsPartWayThroughLeavesNoArchiveAndEveryReferenceAsItWas(int failingAsset)
             throws IOException {
         Fixture fixture = new Fixture(tmp);
         Path archiveDir = Files.createDirectories(tmp.resolve("out"));
         Path archive = archiveDir.resolve("mixed.dawz");
-        ProjectArchiver archiver = new ProjectArchiver();
-        archiver.failRewriteAfter(rewrittenBeforeTheThrow);
+        List<String> entriesReached = new ArrayList<>();
+        ProjectArchiver archiver = archiver(entryName -> {
+            entriesReached.add(entryName);
+            fixture.assertReferencesAreTheProjectsOwn();
+            if (entriesReached.size() == failingAsset) {
+                throw new IOException("injected asset write failure at " + entryName);
+            }
+        });
 
-        // Non-vacuity: the rewrite really had begun when it threw — the
-        // message names the archive-relative path the last reference had
-        // already been re-pointed to.
-        String lastRepointed = List.of("_loop.wav", "_segment-000.wav", "_segment-001.wav")
-                .get(rewrittenBeforeTheThrow - 1);
         assertThatThrownBy(() -> archiver.saveAsArchive(fixture.project, archive))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("injected archive rewrite failure")
-                .hasMessageContaining("after " + rewrittenBeforeTheThrow + " reference(s)")
-                .hasMessageContaining("re-pointed to assets/")
-                .hasMessageEndingWith(lastRepointed);
+                .isInstanceOf(IOException.class)
+                .hasMessageStartingWith("injected asset write failure at assets/");
 
-        assertThat(fixture.importClip.getSourceFilePath())
-                .as("the import on the earlier track has its path back")
-                .isEqualTo(fixture.imported.toString());
-        assertThat(fixture.importClip.getSourceSegmentPaths()).isEmpty();
-        assertThat(fixture.recorded.getSourceSegmentPaths())
-                .as("the take references its own segments again, in order")
-                .containsExactly(fixture.first.toString(), fixture.second.toString());
-        assertThat(fixture.recorded.getSourceFilePath()).isEqualTo(fixture.first.toString());
+        // Non-vacuity: the pack really had begun when it failed.
+        assertThat(entriesReached).hasSize(failingAsset);
+        fixture.assertReferencesAreTheProjectsOwn();
         assertThat(archive).as("no archive was published").doesNotExist();
         try (Stream<Path> entries = Files.list(archiveDir)) {
             assertThat(entries).as("nor a partial one left beside it").isEmpty();
         }
 
-        // The seam is consumed by the rewrite that threw: the same archiver
-        // archives the same project at the next attempt.
-        ProjectArchiveSummary summary = archiver.saveAsArchive(fixture.project, archive);
+        // The same project archives at the next attempt.
+        ProjectArchiveSummary summary = new ProjectArchiver().saveAsArchive(fixture.project, archive);
 
-        assertThat(summary.uniqueAssetCount()).isEqualTo(REFERENCES);
-        assertThat(archive).isRegularFile();
+        assertThat(summary.uniqueAssetCount()).isEqualTo(ASSETS);
         Map<String, byte[]> assets = assetsOf(archive);
-        assertThat(assets).as("the import and every segment of the take").hasSize(REFERENCES);
+        assertThat(assets).as("the import and every segment of the take").hasSize(ASSETS);
         assertThat(assetEndingWith(assets, "_loop.wav")).isEqualTo(Files.readAllBytes(fixture.imported));
         assertThat(assetEndingWith(assets, "_segment-000.wav")).isEqualTo(Files.readAllBytes(fixture.first));
         assertThat(assetEndingWith(assets, "_segment-001.wav")).isEqualTo(Files.readAllBytes(fixture.second));
-        assertThat(fixture.importClip.getSourceFilePath())
-                .as("and the project's references are its own again after the save that succeeded")
-                .isEqualTo(fixture.imported.toString());
-        assertThat(fixture.recorded.getSourceSegmentPaths())
-                .containsExactly(fixture.first.toString(), fixture.second.toString());
+        fixture.assertReferencesAreTheProjectsOwn();
     }
 
     @Test
-    void theSameProjectArchivesAndIsRestoredWhenNoRewriteThrows() throws IOException {
-        // Non-vacuity of the probe above: the seam changes nothing but the
-        // one injected throw. Armed one reference past the last, it never
-        // fires, and the rewrite it would have interrupted is the one that
-        // puts assets/… into the archived document.
+    void theArchivedDocumentHoldsArchiveRelativeReferencesWhileTheProjectKeepsItsOwn() throws IOException {
         Fixture fixture = new Fixture(tmp);
         Path archive = tmp.resolve("out").resolve("mixed.dawz");
-        ProjectArchiver archiver = new ProjectArchiver();
-        archiver.failRewriteAfter(REFERENCES + 1);
+        List<String> entriesReached = new ArrayList<>();
+        ProjectArchiver archiver = archiver(entryName -> {
+            entriesReached.add(entryName);
+            fixture.assertReferencesAreTheProjectsOwn();
+        });
 
         ProjectArchiveSummary summary = archiver.saveAsArchive(fixture.project, archive);
 
-        assertThat(summary.uniqueAssetCount()).isEqualTo(REFERENCES);
-        assertThat(archive).isRegularFile();
+        assertThat(summary.uniqueAssetCount()).isEqualTo(ASSETS);
+        assertThat(entriesReached).as("the project was checked at every asset write").hasSize(ASSETS);
         String document = projectDocumentOf(archive);
         assertThat(document).contains("_loop.wav", "_segment-000.wav", "_segment-001.wav");
         assertThat(document)
                 .as("the archived document holds archive-relative references only")
                 .contains("assets/")
                 .doesNotContain(fixture.imported.toString())
-                .doesNotContain(fixture.first.toString());
-        assertThat(fixture.importClip.getSourceFilePath()).isEqualTo(fixture.imported.toString());
-        assertThat(fixture.recorded.getSourceSegmentPaths())
-                .containsExactly(fixture.first.toString(), fixture.second.toString());
-        assertThat(fixture.recorded.getSourceFilePath()).isEqualTo(fixture.first.toString());
+                .doesNotContain(fixture.first.toString())
+                .doesNotContain(fixture.second.toString());
+        fixture.assertReferencesAreTheProjectsOwn();
+    }
+
+    private static ProjectArchiver archiver(ProjectArchiver.AssetWriteHook hook) {
+        return new ProjectArchiver(new ProjectSerializer(), new ProjectDeserializer(), "test", hook);
     }
 
     private static String projectDocumentOf(Path archive) throws IOException {
@@ -188,6 +169,17 @@ class ProjectArchiverRewriteRollbackTest {
             project = new DawProject("Mixed", AudioFormat.CD_QUALITY);
             project.createAudioTrack("Loops").addClip(importClip);   // earlier track
             project.createAudioTrack("Vox").addClip(recorded);       // later track
+        }
+
+        void assertReferencesAreTheProjectsOwn() {
+            assertThat(importClip.getSourceFilePath())
+                    .as("the import keeps its own path")
+                    .isEqualTo(imported.toString());
+            assertThat(importClip.getSourceSegmentPaths()).isEmpty();
+            assertThat(recorded.getSourceSegmentPaths())
+                    .as("the take keeps its own segments, in order")
+                    .containsExactly(first.toString(), second.toString());
+            assertThat(recorded.getSourceFilePath()).isEqualTo(first.toString());
         }
     }
 }

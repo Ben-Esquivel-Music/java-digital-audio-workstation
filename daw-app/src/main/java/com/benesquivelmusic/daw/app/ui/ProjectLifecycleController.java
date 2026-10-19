@@ -632,42 +632,89 @@ final class ProjectLifecycleController {
         if (plan.isEmpty()) {
             return;
         }
+        archiveInBackground(current, archivePath, plan.get());
+    }
 
-        // Run the potentially expensive ZIP I/O on a background virtual thread
-        // and surface progress through the strip's ProjectOperationProgress
-        // model only; the preflight dialog has already dismissed.
+    /**
+     * Writes {@code project} to {@code archivePath} on a background virtual
+     * thread and surfaces progress through the strip's
+     * {@link ProjectOperationProgress} model only; the preflight dialog has
+     * already dismissed. Package-private so a test can run an archive without
+     * the {@code FileChooser} and the plan dialog.
+     *
+     * <p>The strip operation is removed however the worker ends, an
+     * {@link Error} included, so it never outlives the worker. Any
+     * {@link IOException} or {@link RuntimeException} from the archiver (for
+     * example a {@code ConcurrentModificationException} from an edit that runs
+     * while the archive reads the live model) is reported as
+     * "Archive failed: &lt;reason&gt;" and logged; SUCCESS is shown only when
+     * the archiver returned, and once it has returned nothing else can turn
+     * it into a failure (the headline falls back to a plain text, the log
+     * line runs after the outcome is fixed). The archiver itself never leaves a partial
+     * {@code .dawz} at the target.</p>
+     */
+    void archiveInBackground(DawProject project, Path archivePath, ArchiveSummaryDialog.ArchivePlan plan) {
         ProjectOperationProgress.NamedOperation archiveOp =
                 new ProjectOperationProgress.NamedOperation("Archiving project\u2026");
         progress.addOperation(archiveOp);
 
-        Path finalArchivePath = archivePath;
         Thread.ofVirtual()
                 .name("daw-archive-worker")
                 .start(() -> {
+                    Runnable outcome = () -> { };
+                    ProjectArchiveSummary archived = null;
                     try {
                         ProjectArchiveSummary summary = projectArchiver.saveAsArchive(
-                                current, finalArchivePath,
-                                plan.get().options(),
-                                plan.get().missingAssetDecisions());
-                        String headline = ArchiveSummaryDialog.formatHeadline(summary);
+                                project, archivePath,
+                                plan.options(),
+                                plan.missingAssetDecisions());
+                        // Only saveAsArchive decides success or failure: the
+                        // assignment cannot throw, the headline is formatted
+                        // under a guard, and the log line runs after the try.
+                        archived = summary;
+                        outcome = () -> notificationBar.show(NotificationLevel.SUCCESS,
+                                archivedMessage(summary, archivePath));
+                    } catch (IOException | RuntimeException e) {
+                        String reason = archiveFailureReason(e);
+                        outcome = () -> notificationBar.show(NotificationLevel.ERROR,
+                                "Archive failed: " + reason);
+                        LOG.log(Level.WARNING, "Failed to archive project", e);
+                    } finally {
+                        Runnable shown = outcome;
                         postFx(() -> {
                             progress.removeOperation(archiveOp);
-                            notificationBar.show(NotificationLevel.SUCCESS,
-                                    headline + " \u2014 "
-                                            + ArchiveSummaryDialog.archivePathDisplay(finalArchivePath));
+                            shown.run();
                         });
+                    }
+                    if (archived != null) {
+                        ProjectArchiveSummary summary = archived;
                         LOG.info(() -> "Archived project to " + summary.outputPath()
                                 + " (" + summary.uniqueAssetCount() + " assets, "
                                 + summary.totalAssetBytes() + " bytes)");
-                    } catch (IOException | IllegalArgumentException e) {
-                        postFx(() -> {
-                            progress.removeOperation(archiveOp);
-                            notificationBar.show(NotificationLevel.ERROR,
-                                    "Archive failed: " + e.getMessage());
-                        });
-                        LOG.log(Level.WARNING, "Failed to archive project", e);
                     }
                 });
+    }
+
+    /**
+     * The SUCCESS text for a published archive. The archive is already on
+     * disk, so a formatting failure must not turn it into a failure: it is
+     * logged and the text falls back to a plain "Archived project to
+     * &lt;path&gt;".
+     */
+    private static String archivedMessage(ProjectArchiveSummary summary, Path archivePath) {
+        try {
+            return ArchiveSummaryDialog.formatHeadline(summary) + " — "
+                    + ArchiveSummaryDialog.archivePathDisplay(archivePath);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Could not format the archive headline", e);
+            return "Archived project to " + archivePath;
+        }
+    }
+
+    /** The failure's message, or its simple class name when it has none, so the user never reads "null". */
+    private static String archiveFailureReason(Exception failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank() ? failure.getClass().getSimpleName() : message;
     }
 
     /**
@@ -818,7 +865,9 @@ final class ProjectLifecycleController {
     static List<String> collectMissingAssetPaths(DawProject project) {
         List<String> missing = new ArrayList<>();
         for (Track track : project.getTracks()) {
-            for (AudioClip clip : track.getClips()) {
+            // The same holders the archiver walks: mid-audition, the take-lane
+            // clips the comp selection slices, not the soloed lane (PR #984 review).
+            for (AudioClip clip : track.getTakeComping().referenceHoldersAsSaved(track)) {
                 List<String> segments = clip.getSourceSegmentPaths();
                 if (!segments.isEmpty()) {
                     for (String segment : segments) {

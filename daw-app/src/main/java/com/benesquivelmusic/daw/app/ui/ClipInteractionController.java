@@ -83,6 +83,10 @@ final class ClipInteractionController {
      * @param projectTempoBpm  project tempo in BPM (slip source-length math)
      * @param onTimeStretchClip opens the time-stretch dialog (story 042)
      * @param onPitchShiftClip  opens the pitch-shift dialog (story 042)
+     * @param markProjectDirty  marks the live project dirty — for a change
+     *                          that is not an undo entry and so escapes the
+     *                          undo-history dirty path (a take audition that
+     *                          discards comp edits)
      */
     record Deps(Supplier<List<Track>> tracks,
                 Supplier<EditTool> activeTool,
@@ -102,7 +106,8 @@ final class ClipInteractionController {
                 BiConsumer<NotificationLevel, String> showNotification,
                 DoubleSupplier projectTempoBpm,
                 Runnable onTimeStretchClip,
-                Runnable onPitchShiftClip) {
+                Runnable onPitchShiftClip,
+                Runnable markProjectDirty) {
     }
 
     private final ArrangementCanvas canvas;
@@ -1173,7 +1178,14 @@ final class ClipInteractionController {
             new CompToolHandler(track, deps.undoManager().get()).clickMainLane();
             deps.refreshCanvas().run();
         } else if (event.isAltDown()) {
-            new CompToolHandler(track, deps.undoManager().get()).altClickLane(laneIndex);
+            // An audition is not an undo entry, so the undo-history dirty path
+            // does not see it: when it discards hand edits to the comp output,
+            // the saved comp changed — mark dirty here and say why (PR #984 review).
+            if (new CompToolHandler(track, deps.undoManager().get()).altClickLane(laneIndex)) {
+                deps.markProjectDirty().run();
+                deps.updateStatusBar().accept(
+                        "Audition discarded edits to comp clips on " + track.getName());
+            }
             deps.refreshCanvas().run();
         } else {
             compToolHandler = new CompToolHandler(track, deps.undoManager().get());

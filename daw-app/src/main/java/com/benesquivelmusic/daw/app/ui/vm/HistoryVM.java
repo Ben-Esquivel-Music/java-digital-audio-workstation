@@ -30,10 +30,13 @@ import java.util.Objects;
  *
  * <p>{@link UndoManager} predates the {@code Consumer<ChangeKind>} seam used by
  * {@code Track}/{@code Transport}/{@code DawProject}; it exposes the older
- * {@link UndoHistoryListener} (a {@code void historyChanged(UndoManager)} callback
- * removed via {@link UndoManager#removeHistoryListener(UndoHistoryListener)}).
- * {@code HistoryVM} registers one and, on every history change (execute / undo /
- * redo / clear), re-reads {@code canUndo}/{@code canRedo}/{@code undoDescription}/
+ * {@link UndoHistoryListener} (a
+ * {@code void historyChanged(UndoManager, UndoHistoryChange)} callback removed
+ * via {@link UndoManager#removeHistoryListener(UndoHistoryListener)}).
+ * {@code HistoryVM} registers one and, on every history change — each
+ * {@link com.benesquivelmusic.daw.core.undo.UndoHistoryChange}: execute, undo,
+ * redo, history jump, clear and redo-stack clear, whatever its kind — re-reads
+ * {@code canUndo}/{@code canRedo}/{@code undoDescription}/
  * {@code redoDescription} and republishes — the same projection discipline as the
  * other VMs. It does <em>not</em> publish the {@code UiEvent.UndoStateChanged}
  * bus event; that is the command handler's ANNOUNCE step
@@ -90,7 +93,7 @@ public final class HistoryVM {
         // correct state before the first history change arrives.
         republish();
 
-        this.listener = _ -> dispatcher.onFx(this::republish);
+        this.listener = (_, _) -> dispatcher.onFx(this::republish);
         undoManager.addHistoryListener(listener);
     }
 

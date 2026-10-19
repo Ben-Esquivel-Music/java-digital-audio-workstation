@@ -115,23 +115,41 @@ public final class CompToolHandler {
      * occupies at that moment, this audition's clips included, rather than
      * restoring a snapshot taken before the audition.
      *
+     * <p>Nor does it change what a save writes — every project writer saves
+     * the selection, not the soloed lane ({@link TakeComping#clipsAsSaved})
+     * — with one exception: the audition replaces the comp output on the
+     * main lane, so a hand edit to a comp clip (a fade, a trim, a split) is
+     * discarded when the audition ends, and from its start a save writes the
+     * selection compile instead of the edited clip (future story 353). Only
+     * the start of an audition can do that: Alt-click while another lane is
+     * already soloed replaces audition output, never comp output. The
+     * result tells the caller to mark the project dirty and say so.</p>
+     *
      * @param takeIndex the take lane index to solo
+     * @return {@code true} if this started an audition that discards edits to
+     *         the comp output — the saved comp changed; {@code false} for a
+     *         pure listen over an unedited comp, or a switch between auditions
      */
-    public void altClickLane(int takeIndex) {
+    public boolean altClickLane(int takeIndex) {
         if (takeIndex < 0 || takeIndex >= comping.getTakeLaneCount()) {
             throw new IndexOutOfBoundsException("takeIndex out of range: " + takeIndex);
         }
+        boolean discardsCompEdits = !comping.isAuditioning()
+                && !comping.compOutputSavesAsSelection(track);
         for (int i = 0; i < comping.getTakeLaneCount(); i++) {
             TakeLane lane = comping.getTakeLane(i);
             lane.setSoloed(i == takeIndex);
         }
         new CompileCompAction(track).execute();
+        return discardsCompEdits;
     }
 
     /**
      * Click on the main (composite) lane: ends any lane audition
      * ({@link TakeComping#endAuditions()}) and, if one was playing,
-     * re-compiles, restoring composite playback.
+     * re-compiles, restoring composite playback. It never changes what a
+     * save writes: during the audition the saved comp was already the
+     * selection compile, which is what this puts back on the main lane.
      */
     public void clickMainLane() {
         if (comping.endAuditions()) {

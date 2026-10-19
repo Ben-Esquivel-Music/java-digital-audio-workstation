@@ -24,6 +24,7 @@ import com.benesquivelmusic.daw.app.ui.recording.SettingsBackedSessionInputSelec
 import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
 import com.benesquivelmusic.daw.app.ui.vm.TransportControlBinder;
 import com.benesquivelmusic.daw.app.ui.vm.TransportVM;
+import com.benesquivelmusic.daw.app.ui.vm.UndoHistoryDirtyBinder;
 import com.benesquivelmusic.daw.app.ui.vm.command.HistoryCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.PlayWithPreRollCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.RedoCommand;
@@ -717,6 +718,46 @@ public final class MainController {
         historyBinder.bindRedoButton(redoButton);
         vmDisposers.add(historyBinder::dispose);
 
+        // One dirty path for every undoable edit (PR #984 review): an execute,
+        // undo, redo or history jump on this generation's manager marks this
+        // generation's project dirty, whichever surface ran it (canvas, mixer,
+        // history panel, menu). MIDI editor edits are not yet undo-tracked,
+        // dirty-marking or persisted (stories 330 and 355). Only a clear of
+        // either stack (UndoManager.clear / clearRedoStack) does not. A trim at the history
+        // cap happens only inside execute(), redo() or a forward history jump,
+        // each of which reports a mutating change (EXECUTED, REDONE, JUMPED)
+        // and so marks dirty.
+        // Attached here, beside HistoryVM, so every generation (startup, New,
+        // Open, import, recovery, archive open, snapshot restore — each installs
+        // a FRESH manager and then rebuilds) re-attaches it to the fresh manager
+        // and project, and the old manager is released.
+        UndoHistoryDirtyBinder dirtyBinder = new UndoHistoryDirtyBinder(undoManager, project);
+        vmDisposers.add(dirtyBinder::dispose);
+        // Menu enablement + arrangement repaint on every history change — the
+        // ONE owner per generation (PR #984 review). It used to be split: a
+        // listener initialize() registered covered the first generation (and
+        // stayed registered on that discarded manager after the first Open /
+        // New — a leak, not a dead sync), and HistoryPanelController.rebuild()
+        // covered every later generation. Adding this copy beside the latter
+        // ran the sync twice per history change from the first Open / New on,
+        // so both older registrations are gone. Registered after the dirty
+        // binder so a menu sync reads the bit it just set; the manager is
+        // captured so the disposer detaches from this generation's.
+        UndoManager syncedUndoManager = undoManager;
+        com.benesquivelmusic.daw.core.undo.UndoHistoryListener menuAndCanvasSync = (_, _) -> {
+            if (javafx.application.Platform.isFxApplicationThread()) {
+                syncMenuStateIfPresent();
+                repaintArrangementCanvas();
+            } else {
+                postFx(() -> {
+                    syncMenuStateIfPresent();
+                    repaintArrangementCanvas();
+                });
+            }
+        };
+        syncedUndoManager.addHistoryListener(menuAndCanvasSync);
+        vmDisposers.add(() -> syncedUndoManager.removeHistoryListener(menuAndCanvasSync));
+
         // Menu enablement (§6.9) — sync once here, AFTER the VMs are (re)built, so
         // the Save action's `projectVM.isDirty()` supplier reads the FRESH VM. The
         // dirty listener above only fires on a later flip, never on the seeded
@@ -954,17 +995,10 @@ public final class MainController {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
         pluginRegistry = new PluginRegistry();
         undoManager = new UndoManager();
-        undoManager.addHistoryListener(_ -> {
-            if (javafx.application.Platform.isFxApplicationThread()) {
-                syncMenuStateIfPresent();
-                repaintArrangementCanvas();
-            } else {
-                postFx(() -> {
-                    syncMenuStateIfPresent();
-                    repaintArrangementCanvas();
-                });
-            }
-        });
+        // The undo-history listeners (dirty bit, menu sync + repaint) are
+        // per-generation: rebuildViewModels() attaches them to this manager and
+        // to every fresh manager a later generation (New, Open, import,
+        // recovery, archive open, snapshot restore) installs.
 
         SettingsModel startupSettings = new SettingsModel(
                 Preferences.userNodeForPackage(SettingsModel.class));
@@ -1927,6 +1961,10 @@ public final class MainController {
         // built MixerView's per-channel right-click menu still exposes
         // "Save channel strip\u2026" and "Apply channel strip\u2026".
         newMixerView.setTrackTemplateController(trackTemplateController);
+        // Story 035: re-attach the one freeze controller (it reads the live
+        // project and undo manager per gesture) so the fresh MixerView keeps
+        // its per-channel "Freeze track" / "Unfreeze track" entries.
+        newMixerView.setTrackFreezeController(trackFreezeController);
         // Story 137: a fresh project means fresh tracks — drop the old
         // per-track input monitors and let the engine/UI recreate them
         // lazily as tracks are armed.
@@ -1954,6 +1992,14 @@ public final class MainController {
         // and possibly a different sample-rate / buffer-size — rewire
         // the per-track CPU budget enforcer and its UI binding.
         installTrackCpuBudgetEnforcer();
+        // The constructor's refresh() built the strips before the template
+        // and freeze controllers, the input-monitor registry, the
+        // channel-info suppliers, the degraded predicate and the "CPU
+        // Budget…" handler were set, and none of those setters refreshes —
+        // rebuild once now so every strip carries their menu entries,
+        // armed-track input meters, driver-named routing options and
+        // badges.
+        newMixerView.refresh();
         // Story 287 — the shared telemetry view (formerly owned by the
         // plugin controller's standalone window) now follows the project.
         if (telemetryView != null) {
@@ -1967,6 +2013,9 @@ public final class MainController {
         createTrackStripController();
         if (trackStripController != null) {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+            // Story 035: the rebuilt strip controller keeps the freeze
+            // entries of the track-list context menu.
+            trackStripController.setTrackFreezeController(trackFreezeController);
         }
         applyProjectInfoLabels();
         rebuildViewModels();
@@ -2540,11 +2589,20 @@ public final class MainController {
      * menu. Refresh callbacks rebuild the affected track strip and
      * mixer channel so the ❄ snowflake glyph reflects the current
      * frozen state of every track.</p>
+     *
+     * <p>Built once, at init: the project and undo manager are live
+     * suppliers (the {@link #createHistoryPanelController()} convention),
+     * read once per gesture, so the controller follows every Open, New,
+     * import, recovery and snapshot restore, and {@link #handleProjectRebuild()}
+     * re-attaches it to the rebuilt mixer and track strip. The callbacks
+     * only refresh: every freeze and unfreeze runs through the generation's
+     * {@code UndoManager.execute}, so that generation's
+     * {@code UndoHistoryDirtyBinder} marks the project dirty.</p>
      */
     private void createTrackFreezeController() {
         trackFreezeController = new TrackFreezeController(
-                project,
-                undoManager,
+                () -> project,
+                () -> undoManager,
                 rootPane.getScene() != null ? rootPane.getScene().getWindow() : null,
                 track -> {
                     // Single-track callback: refresh the affected strip
@@ -2556,7 +2614,6 @@ public final class MainController {
                     if (viewNavigationController != null) {
                         viewNavigationController.getMixerView().refresh();
                     }
-                    project.markDirty();
                 },
                 () -> {
                     // Batch callback: refresh every strip plus the mixer.
@@ -2566,7 +2623,6 @@ public final class MainController {
                     if (viewNavigationController != null) {
                         viewNavigationController.getMixerView().refresh();
                     }
-                    project.markDirty();
                 },
                 this::status,
                 dispatcher());
@@ -2580,8 +2636,6 @@ public final class MainController {
         historyPanelController = new HistoryPanelController(
                 rootPane, historyButton,
                 () -> undoManager,
-                this::syncMenuStateIfPresent,
-                this::repaintArrangementCanvas,
                 () -> browserPanelController.isPanelVisible(),
                 () -> browserPanelController.toggleBrowserPanel(),
                 this::status,
@@ -4504,8 +4558,9 @@ public final class MainController {
 
     @FXML private void onUndo() {
         if (undoManager.undo()) {
+            // The project is marked dirty by the per-generation
+            // UndoHistoryDirtyBinder (rebuildViewModels) on the UNDONE change.
             status("Undo: " + undoManager.redoDescription(), DawIcon.UNDO);
-            project.markDirty();
         } else {
             status("Nothing to undo", DawIcon.INFO_CIRCLE);
         }
@@ -4514,8 +4569,8 @@ public final class MainController {
 
     @FXML private void onRedo() {
         if (undoManager.redo()) {
+            // Dirty via UndoHistoryDirtyBinder on the REDONE change.
             status("Redo: " + undoManager.undoDescription(), DawIcon.REDO);
-            project.markDirty();
         } else {
             status("Nothing to redo", DawIcon.INFO_CIRCLE);
         }

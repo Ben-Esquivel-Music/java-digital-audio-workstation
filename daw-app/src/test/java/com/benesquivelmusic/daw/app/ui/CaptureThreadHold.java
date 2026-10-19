@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -111,6 +112,16 @@ final class CaptureThreadHold implements LongSupplier {
     RecordingPipeline pipeline() {
         assertThat(pipelines).as("fixture: a take's pipeline was built").isNotEmpty();
         return pipelines.getLast();
+    }
+
+    /**
+     * The pipeline of the latest take built since {@link #installOn}, or
+     * empty before the first — for a reader that must not throw an
+     * {@link AssertionError} where it asks (the engine's render pump, say).
+     * Any thread: the list only grows.
+     */
+    Optional<RecordingPipeline> latestPipeline() {
+        return pipelines.isEmpty() ? Optional.empty() : Optional.of(pipelines.getLast());
     }
 
     @Override

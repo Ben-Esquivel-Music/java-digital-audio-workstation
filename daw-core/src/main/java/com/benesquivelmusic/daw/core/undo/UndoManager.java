@@ -16,7 +16,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <p>{@link UndoHistoryListener} instances may be registered to receive
  * notifications whenever the undo/redo state changes (e.g. for updating an
- * undo history panel in the UI).</p>
+ * undo history panel in the UI), each with the {@link UndoHistoryChange} that
+ * says what happened: an execute, undo, redo or jump changes the project; a
+ * clear of either stack only discards history.</p>
  */
 public final class UndoManager {
 
@@ -59,7 +61,7 @@ public final class UndoManager {
         undoStack.push(action);
         redoStack.clear();
         trimHistory();
-        fireHistoryChanged();
+        fireHistoryChanged(UndoHistoryChange.EXECUTED);
     }
 
     /**
@@ -74,7 +76,7 @@ public final class UndoManager {
         UndoableAction action = undoStack.pop();
         action.undo();
         redoStack.push(action);
-        fireHistoryChanged();
+        fireHistoryChanged(UndoHistoryChange.UNDONE);
         return true;
     }
 
@@ -91,7 +93,7 @@ public final class UndoManager {
         action.execute();
         undoStack.push(action);
         trimHistory();
-        fireHistoryChanged();
+        fireHistoryChanged(UndoHistoryChange.REDONE);
         return true;
     }
 
@@ -127,7 +129,7 @@ public final class UndoManager {
                 action.undo();
                 redoStack.push(action);
             }
-            fireHistoryChanged();
+            fireHistoryChanged(UndoHistoryChange.JUMPED);
         } else if (targetIndex > currentIndex) {
             int steps = targetIndex - currentIndex;
             for (int i = 0; i < steps; i++) {
@@ -136,7 +138,7 @@ public final class UndoManager {
                 undoStack.push(action);
             }
             trimHistory();
-            fireHistoryChanged();
+            fireHistoryChanged(UndoHistoryChange.JUMPED);
         }
     }
 
@@ -213,7 +215,7 @@ public final class UndoManager {
     public void clear() {
         undoStack.clear();
         redoStack.clear();
-        fireHistoryChanged();
+        fireHistoryChanged(UndoHistoryChange.CLEARED);
     }
 
     /**
@@ -226,7 +228,7 @@ public final class UndoManager {
      */
     public void clearRedoStack() {
         redoStack.clear();
-        fireHistoryChanged();
+        fireHistoryChanged(UndoHistoryChange.REDO_CLEARED);
     }
 
     /** Returns the maximum history depth. */
@@ -259,9 +261,9 @@ public final class UndoManager {
         }
     }
 
-    private void fireHistoryChanged() {
+    private void fireHistoryChanged(UndoHistoryChange change) {
         for (UndoHistoryListener listener : listeners) {
-            listener.historyChanged(this);
+            listener.historyChanged(this, change);
         }
     }
 }

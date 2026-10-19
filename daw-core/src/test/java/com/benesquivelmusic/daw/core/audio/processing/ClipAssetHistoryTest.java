@@ -110,7 +110,7 @@ class ClipAssetHistoryTest {
         Path b = tempDir.resolve("b.wav");
 
         UndoManager um = new UndoManager(1);
-        um.addHistoryListener(m -> h.syncPinsFromHistory(m));
+        um.addHistoryListener((m, _) -> h.syncPinsFromHistory(m));
         um.execute(new StubReferencingAction(List.of(a)));
         assertThat(h.isPinned(a)).isTrue();
 

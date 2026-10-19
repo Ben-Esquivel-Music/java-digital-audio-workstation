@@ -154,7 +154,7 @@ class RecordedAudioLoadsOffTheFxThreadContractTest {
         // What the clip looked like, and on which thread, the moment the take was published.
         List<Boolean> publishedOnFx = new CopyOnWriteArrayList<>();
         List<Boolean> publishedWithAudio = new CopyOnWriteArrayList<>();
-        SteppedTakeFixture.onFx(() -> fixture.undoManager().addHistoryListener(_ -> {
+        SteppedTakeFixture.onFx(() -> fixture.undoManager().addHistoryListener((_, _) -> {
             publishedOnFx.add(Platform.isFxApplicationThread());
             publishedWithAudio.add(!armed.getClips().isEmpty()
                     && armed.getClips().stream().allMatch(clip -> clip.getAudioData() != null));
