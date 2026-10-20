@@ -30,12 +30,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (javafx-application-design §15: one listener owner, every registration
  * paired with its removal), or if the arrangement canvas's
  * {@code markProjectDirty} captures a project instead of reading the live
- * one. It also fails if {@code handleProjectRebuild()} stops re-attaching the
- * one {@code TrackFreezeController} to the rebuilt mixer and track strip, or
- * stops refreshing that mixer once the controller is attached, or
- * if that controller stops reading the live project and undo manager or
- * marks the project dirty itself. Every scan first proves it found a non-trivial body, so none can pass
- * vacuously.</p>
+ * one, or is no longer wired. The factory body must hold no bound
+ * {@code ::markDirty} reference at all; the timeline ruler's edit callback,
+ * the dirty mark of a loop or punch gesture (PR #984 review), is otherwise
+ * pinned by behaviour, headlessly, in
+ * {@code ArrangementCanvasFactoryRulerRateTest}. It also fails if
+ * {@code handleProjectRebuild()} stops re-attaching the one
+ * {@code TrackFreezeController} to the rebuilt mixer and track strip, or
+ * stops refreshing that mixer once the controller is attached, or if that
+ * controller stops reading the live project and undo manager or marks the
+ * project dirty itself. Every scan first proves it found a non-trivial body,
+ * so none can pass vacuously.</p>
  */
 final class UndoHistoryWiringSentinelTest {
 
@@ -160,7 +165,7 @@ final class UndoHistoryWiringSentinelTest {
                 .contains(", () -> host.project().markDirty()));");
         assertThat(body)
                 .as("never a bound reference (host.project()::markDirty), which would capture "
-                        + "the project the canvas was created with")
+                        + "the project the canvas and the ruler were created with")
                 .doesNotContain("::markDirty");
 
         String controller = sourceCode("ClipInteractionController.java");

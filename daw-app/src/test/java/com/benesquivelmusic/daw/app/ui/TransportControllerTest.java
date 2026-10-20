@@ -157,6 +157,86 @@ class TransportControllerTest {
         assertThat(statusBarLabel.getText()).isEqualTo("Loop Record: OFF");
     }
 
+    // PR #984 review — the loop window and the punch region are saved with the
+    // project, so the controller's real cascade (no seam stub: the controller
+    // builds its own CoreTransportIntentHandler) marks ITS project dirty for an
+    // edit of either, and for nothing that is not one.
+
+    @Test
+    void setPunchInMarksTheProjectDirty() throws Exception {
+        DawProject project = new DawProject("punch", new AudioFormat(48000, 2, 16, 256));
+        TransportController controller = newController(project);
+        runHandler(project::markClean);
+
+        runHandler(controller::setPunchIn);
+
+        assertThat(project.getTransport().getPunchRegion()).as("a region was created").isNotNull();
+        assertThat(project.isDirty()).as("Save is offered and Open/Close prompts").isTrue();
+    }
+
+    @Test
+    void toggleLoopMarksTheProjectDirty() throws Exception {
+        DawProject project = new DawProject("loop", new AudioFormat(48000, 2, 16, 256));
+        TransportController controller = newController(project);
+        runHandler(project::markClean);
+
+        runHandler(controller::toggleLoop);
+
+        assertThat(project.getTransport().isLoopEnabled()).isTrue();
+        assertThat(project.isDirty()).isTrue();
+    }
+
+    @Test
+    void toggleLoopRecordLeavesTheProjectClean() throws Exception {
+        DawProject project = new DawProject("loop record", new AudioFormat(48000, 2, 16, 256));
+        TransportController controller = newController(project);
+        runHandler(project::markClean);
+
+        runHandler(controller::toggleLoopRecord);
+
+        assertThat(project.getTransport().isLoopRecordEnabled()).as("guard: the toggle was accepted").isTrue();
+        assertThat(project.isDirty()).as("loop-record is not saved with the project").isFalse();
+    }
+
+    @Test
+    void togglePunchWithNoRegionLeavesTheProjectClean() throws Exception {
+        DawProject project = new DawProject("no punch", new AudioFormat(48000, 2, 16, 256));
+        TransportController controller = newController(project);
+        runHandler(project::markClean);
+
+        runHandler(controller::togglePunch);
+
+        assertThat(project.getTransport().getPunchRegion()).isNull();
+        assertThat(statusBarLabel.getText()).as("guard: the toggle was refused").startsWith("Punch: no region");
+        assertThat(project.isDirty()).isFalse();
+    }
+
+    @Test
+    void aLoopToggleRefusedDuringALoopRecordTakeLeavesTheProjectClean() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = newController(project, new MockAudioBackend());
+        runHandler(controller::toggleLoopRecord);
+
+        try {
+            record(controller);
+            runHandler(() -> {
+                assertThat(controller.isRecordingInFlight()).as("guard: the take records").isTrue();
+                project.markClean();
+                controller.toggleLoop();
+                assertThat(statusBarLabel.getText())
+                        .as("guard: the toggle was refused")
+                        .isEqualTo(TransportController.LOOP_REFUSED_DURING_LOOP_RECORD_TAKE);
+                assertThat(project.getTransport().isLoopEnabled()).isFalse();
+                assertThat(project.isDirty()).as("a refused toggle changed nothing").isFalse();
+            });
+        } finally {
+            stopAndAwaitTheTake(controller);
+        }
+    }
+
     // ── Harness ──────────────────────────────────────────────────────────────
 
     /** The play button handed to the controller, for enablement assertions. */

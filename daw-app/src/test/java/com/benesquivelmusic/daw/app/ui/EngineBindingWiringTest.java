@@ -121,7 +121,7 @@ class EngineBindingWiringTest {
         TransportVM vm = new TransportVM(project.getTransport(), dispatcher);
         vmDisposers.add(vm::dispose);
         return new EpochSurface(vm,
-                new CoreTransportIntentHandler(project.getTransport(), FORMAT.sampleRate()));
+                new CoreTransportIntentHandler(project.getTransport(), FORMAT.sampleRate(), project::markDirty));
     }
 
     private void disposeAll() {

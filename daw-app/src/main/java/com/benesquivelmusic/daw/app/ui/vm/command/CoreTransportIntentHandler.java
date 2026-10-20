@@ -11,28 +11,49 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * The production {@link TransportIntentHandler}: it wraps the {@link Transport}
- * mutation path and runs the universal cascade for each transport intent
- * (Control Synchronization Design Book §5.1, §5.2).
+ * The neutral transport cascade that the production
+ * {@link TransportIntentHandler}, {@code TransportController}, composes: it
+ * wraps the {@link Transport} mutation path and runs the universal cascade for
+ * each transport intent (Control Synchronization Design Book §5.1, §5.2).
  *
- * <p>For every intent the handler runs, in order:</p>
+ * <p>For every intent the handler runs, in order, the phases that intent
+ * has:</p>
  * <ol>
  *   <li><strong>VALIDATE</strong> — reject out-of-range tempo / no-op state
- *       transitions before mutating.</li>
+ *       transitions, and a punch toggle with no region installed, before
+ *       mutating.</li>
  *   <li><strong>MUTATE</strong> — call the {@code Transport} method. That fires
  *       the toolkit-neutral change signal, so {@code TransportVM} re-reads and
  *       republishes its properties (the REPUBLISH phase happens automatically via
  *       the signal + dispatcher; this handler does not touch any
  *       {@code Property}).</li>
+ *   <li><strong>PROJECT</strong> — run the {@code markProjectDirty} seam
+ *       (production: {@code DawProject.markDirty()}) after a mutation of a
+ *       setting the project file stores ({@code ProjectSerializer} writes the
+ *       loop window and the punch region): {@link #toggleLoop()} always, and
+ *       {@link #setPunchIn()}, {@link #setPunchOut()} and {@link #togglePunch()}
+ *       when the region installed differs from the one installed before — a
+ *       repeated Set In at the same playhead changes nothing and does not run
+ *       it. There is no undo entry for either: loop and punch are dirty-only
+ *       transport settings (§5.2).</li>
  *   <li><strong>ANNOUNCE</strong> — publish the existing typed
  *       {@link TransportEvent} on the bus via {@link EventBusPublisher} (live
  *       since story 283) so unrelated surfaces react.</li>
  * </ol>
  *
- * <p>The PROJECT phase ({@code ProjectVM.dirty}) is story 292's concern and is
- * skipped here (§5.1 permits skipping a phase). Tempo capture for undo is left to
- * the existing {@code TransportController} path that this handler is wired behind;
- * this class is the neutral seam the commands target.</p>
+ * <p>The other intents skip PROJECT (§5.1 permits skipping a phase). Play,
+ * pause, stop, the seeks and record are not edits of the project, although
+ * {@code ProjectSerializer} writes the playhead position too; a recorded take
+ * marks the project dirty when it is published ({@code RecordCoordinator}), not
+ * here. Loop-record is not written to the project file at all. And
+ * {@link #setTempo(double)} is reached only through {@link SetTempoCommand},
+ * whose one raiser, {@code TransportControlBinder.bindTempoField}, has no
+ * production caller: the transport bar's tempo edit is
+ * {@code TempoEditController}'s {@code UndoableAction}, executed through the
+ * {@code UndoManager}, and {@code UndoHistoryDirtyBinder} marks the project
+ * dirty for it. (Settings Apply also writes the open project's tempo, in
+ * {@code LiveSettingsApplier.apply}, with no undo entry and no dirty mark — a
+ * defect story 335 owns.)</p>
  */
 public final class CoreTransportIntentHandler implements TransportIntentHandler {
 
@@ -41,23 +62,28 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
 
     private final Transport transport;
     private final double sampleRate;
+    private final Runnable markProjectDirty;
 
     /**
      * Creates a handler bound to {@code transport}.
      *
-     * @param transport  the authoritative transport to mutate; must not be {@code null}
-     * @param sampleRate the sample rate in Hz used to convert beat positions to
-     *                   the sample-frame positions carried by {@link TransportEvent}
-     *                   (must be positive)
-     * @throws NullPointerException     if {@code transport} is {@code null}
+     * @param transport        the authoritative transport to mutate; must not be {@code null}
+     * @param sampleRate       the sample rate in Hz used to convert beat positions to
+     *                         the sample-frame positions carried by {@link TransportEvent}
+     *                         (must be positive)
+     * @param markProjectDirty the PROJECT phase: marks the project that owns
+     *                         {@code transport} dirty (production:
+     *                         {@code DawProject::markDirty}); must not be {@code null}
+     * @throws NullPointerException     if {@code transport} or {@code markProjectDirty} is {@code null}
      * @throws IllegalArgumentException if {@code sampleRate} is not positive
      */
-    public CoreTransportIntentHandler(Transport transport, double sampleRate) {
+    public CoreTransportIntentHandler(Transport transport, double sampleRate, Runnable markProjectDirty) {
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         if (sampleRate <= 0.0 || !Double.isFinite(sampleRate)) {
             throw new IllegalArgumentException("sampleRate must be positive and finite: " + sampleRate);
         }
         this.sampleRate = sampleRate;
+        this.markProjectDirty = Objects.requireNonNull(markProjectDirty, "markProjectDirty must not be null");
     }
 
     @Override
@@ -195,10 +221,15 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
         EventBusPublisher.publish(new TransportEvent.TempoChanged(previousBpm, bpm, Instant.now()));
     }
 
+    /**
+     * Flips loop playback, keeping the loop bounds. A toggle always changes
+     * the stored enabled flag, so PROJECT always runs, before the announce.
+     */
     @Override
     public void toggleLoop() {
         boolean nowEnabled = !transport.isLoopEnabled();
         transport.setLoopEnabled(nowEnabled);
+        markProjectDirty.run();
         EventBusPublisher.publish(new TransportEvent.LoopChanged(
                 nowEnabled,
                 beatsToFrames(transport.getLoopStartInBeats()),
@@ -209,6 +240,7 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
     @Override
     public void toggleLoopRecord() {
         boolean nowEnabled = !transport.isLoopRecordEnabled();
+        // No PROJECT: loop-record is not written to the project file.
         transport.setLoopRecordEnabled(nowEnabled);
         EventBusPublisher.publish(new TransportEvent.LoopRecordChanged(nowEnabled, Instant.now()));
     }
@@ -258,7 +290,7 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
 
     /**
      * Flips the enabled flag of the installed punch region; a no-op (no
-     * MUTATE, no ANNOUNCE) when none is installed.
+     * MUTATE, no PROJECT, no ANNOUNCE) when none is installed.
      */
     @Override
     public void togglePunch() {
@@ -269,8 +301,17 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
         installPunch(current.withEnabled(!current.enabled()));
     }
 
+    /**
+     * MUTATE, then PROJECT when {@code region} differs from the region
+     * installed before it (none counts as different), then ANNOUNCE. The
+     * announce follows every install, a repeated identical one included.
+     */
     private void installPunch(PunchRegion region) {
+        boolean changed = !region.equals(transport.getPunchRegion());
         transport.setPunchRegion(region);
+        if (changed) {
+            markProjectDirty.run();
+        }
         EventBusPublisher.publish(new TransportEvent.PunchChanged(
                 region.enabled(), region.startFrames(), region.endFrames(), Instant.now()));
     }

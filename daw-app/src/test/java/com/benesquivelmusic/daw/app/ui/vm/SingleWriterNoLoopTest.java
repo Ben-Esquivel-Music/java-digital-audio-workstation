@@ -48,7 +48,7 @@ class SingleWriterNoLoopTest {
         Transport transport = new Transport();
         FxDispatcher dispatcher = new FxDispatcher();
         TransportVM vm = new TransportVM(transport, dispatcher);
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0, () -> { });
 
         AtomicInteger handlerInvocations = new AtomicInteger();
         // The full production write path: a gesture raises a command, which we COUNT

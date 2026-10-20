@@ -58,6 +58,10 @@ final class ArrangementCanvasFactory {
             if (idx >= 0) { vbox.getChildren().add(idx, ruler); }
         }
         ruler.addSeekListener(seekConsumer::accept);
+        // A loop or punch gesture that changed the transport marks the project
+        // dirty (PR #984 review). Read live: the project is swapped on Open / New,
+        // and the ruler is rebound to the new transport, not rebuilt.
+        ruler.setOnTransportEdited(() -> host.project().markDirty());
 
         // Story 293 — the ClipInteractionController's former Host is retired;
         // adapt this factory's host into a Deps record of direct functional

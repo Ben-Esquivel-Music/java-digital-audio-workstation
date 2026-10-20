@@ -62,11 +62,12 @@ import java.util.logging.Logger;
  * <p>Extracted from {@link MainController} to isolate transport behavior into
  * a dedicated, independently testable class. All dependencies are received via
  * constructor injection (story 293 retired the former {@code Host} callback-up
- * interface). Each intent method composes the pure VALIDATE→MUTATE→ANNOUNCE
+ * interface). Most intent methods compose the VALIDATE→MUTATE→PROJECT→ANNOUNCE
  * cascade of {@link CoreTransportIntentHandler} with the engine-lifecycle and
- * status-bar side effects that belong to this surface; where a flow cannot
- * delegate (the recording pipeline mutates the transport itself), the ANNOUNCE
- * is published here at the point where the transport actually transitions.</p>
+ * status-bar side effects that belong to this surface (stop, the skips, record
+ * and play-with-pre-roll run their own); where a flow cannot delegate (the
+ * recording pipeline mutates the transport itself), the ANNOUNCE is published
+ * here at the point where the transport actually transitions.</p>
  *
  * <p>The time display is no longer written here: it is bound to the
  * beats→time projection by {@code TransportControlBinder.bindTimeDisplay}
@@ -175,8 +176,9 @@ final class TransportController implements TransportIntentHandler {
     private final Button recordButton;
 
     /**
-     * Story 315 — the pure VALIDATE→MUTATE→ANNOUNCE cascade over this
-     * controller's transport. Composed (not inherited) so the flows that align
+     * Story 315 — the VALIDATE→MUTATE→PROJECT→ANNOUNCE cascade over this
+     * controller's transport, PROJECT marking this controller's project dirty
+     * for a loop or punch edit. Composed (not inherited) so the flows that align
      * with the neutral cascade delegate to it, while the flows with UI /
      * engine side effects (stop's recording finalize, record's pipeline) keep
      * their orchestration here and announce at the true transition points.
@@ -343,12 +345,16 @@ final class TransportController implements TransportIntentHandler {
         // May be null in a pure-unit context; postFx() falls back to the
         // static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
-        // Story 315 — the composed VALIDATE→MUTATE→ANNOUNCE cascade over this
-        // controller's (per-project-load) transport. It also owns the single
-        // beats→frames conversion behind every TransportEvent frame field
-        // (core.beatsToFrames); this class keeps no copy.
+        // Story 315 — the composed VALIDATE→MUTATE→PROJECT→ANNOUNCE cascade over
+        // this controller's (per-project-load) transport; its PROJECT phase marks
+        // this controller's project dirty for a loop or punch edit (PR #984
+        // review). A bound reference is right here, unlike in the session-lifetime
+        // ruler: MainController builds a new controller, and so a new core, for
+        // every project it loads. The core also owns the single beats→frames
+        // conversion behind every TransportEvent frame field (core.beatsToFrames);
+        // this class keeps no copy.
         this.core = new CoreTransportIntentHandler(
-                project.getTransport(), project.getFormat().sampleRate());
+                project.getTransport(), project.getFormat().sampleRate(), project::markDirty);
         this.recordCoordinator = new RecordCoordinator(this, project, audioEngine, undoManager,
                 notificationBar, statusBarLabel, recIndicator, core, countInMode,
                 flashMidiActivity, applyLatencyCompensation, reportedLatency, fxDispatcher);
@@ -1234,8 +1240,10 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * Toggles loop playback (§5.2 "Toggle loop"). MUTATE + ANNOUNCE delegate
-     * to the composed cascade; the Loop button's {@code :active} pseudo-class
+     * Toggles loop playback (§5.2 "Toggle loop"). MUTATE, PROJECT (the
+     * project is marked dirty: the loop's enabled flag is saved with it) and
+     * ANNOUNCE delegate to the composed cascade; a toggle refused below
+     * reaches none of them. The Loop button's {@code :active} pseudo-class
      * is driven solely by {@code TransportControlBinder.bindLoop} observing
      * {@code TransportVM.loopRegion} — the imperative poke (and the retired
      * {@code syncLoopButtonState()}) are gone, so a loop defined from ANY
@@ -1250,9 +1258,11 @@ final class TransportController implements TransportIntentHandler {
             // prepare — the flush thread seals a lap per wrap. Loop off
             // mid-take would wrap no more and the take would end as a
             // one-lane stack with a comp clip; refused like Loop Rec
-            // itself. Every loop-enable entry — the Loop button, the
-            // keyboard shortcut — is the one command cascade through here;
-            // the ruler's gestures move the loop's bounds only.
+            // itself. Every loop toggle — the Loop button, the keyboard
+            // shortcut — is the one command cascade through here. The
+            // ruler's gestures are not gated (future story 358): they move
+            // the loop's bounds, and an upper-half Shift+press defines and
+            // enables a loop.
             statusBarLabel.setText(LOOP_REFUSED_DURING_LOOP_RECORD_TAKE);
             statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
             LOG.fine(LOOP_REFUSED_DURING_LOOP_RECORD_TAKE);
@@ -1297,8 +1307,10 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Sets punch-in at the playhead (sibling of {@link #toggleLoop()}): the
-     * composed cascade owns the region rules and the {@code PunchChanged}
-     * announce; this layer only reports the result on the status line.
+     * composed cascade owns the region rules, the dirty mark — when the region
+     * it installs differs from the one installed before — and the
+     * {@code PunchChanged} announce; this layer only reports the result on the
+     * status line.
      */
     @Override
     public void setPunchIn() {
@@ -1314,9 +1326,10 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * Flips the punch region's enabled flag. With no region installed the
-     * cascade leaves the transport untouched and the status line explains
-     * how to create one.
+     * Flips the punch region's enabled flag, which marks the project dirty.
+     * With no region installed the cascade leaves the transport and the
+     * project's dirty flag untouched, and the status line explains how to
+     * create one.
      */
     @Override
     public void togglePunch() {

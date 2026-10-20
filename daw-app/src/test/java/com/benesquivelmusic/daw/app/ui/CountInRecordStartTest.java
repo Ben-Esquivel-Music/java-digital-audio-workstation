@@ -406,8 +406,9 @@ class CountInRecordStartTest {
         // Story 328 review round 2: a loop-record take took "loop playback
         // on" into its configuration once, before prepare; loop off during
         // the count-in or the first lap would end it as a one-lane stack
-        // with a comp clip. Every loop-enable entry is the one command
-        // cascade through TransportController.toggleLoop.
+        // with a comp clip. Every loop toggle is the one command cascade
+        // through TransportController.toggleLoop; the ruler's gestures are
+        // not gated (future story 358).
         midiRig = new MidiOnlyRig(CountInMode.ONE_BAR, 120);
         runOnFx(() -> {
             midiRig.transport().setLoopRegion(0.0, 8.0);

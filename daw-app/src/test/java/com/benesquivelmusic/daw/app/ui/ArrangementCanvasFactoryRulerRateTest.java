@@ -2,12 +2,18 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import javafx.application.Platform;
+import javafx.event.Event;
+import javafx.event.EventType;
 import javafx.scene.Scene;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import org.junit.jupiter.api.Test;
@@ -31,6 +37,12 @@ import static org.assertj.core.api.Assertions.within;
  * the PROJECT rate, not its 44.1 kHz default, and the rebind path re-applies
  * the next project's rate. {@code TimelineRulerPunchGestureTest} pins the
  * ruler's own draw math with a rate it sets itself; this pins who sets it.
+ *
+ * <p>PR #984 review — likewise the production wiring of
+ * {@link TimelineRuler#setOnTransportEdited}: after a project switch, the
+ * factory's ruler marks the project it was rebound to dirty, not the one it
+ * was built with. {@code TimelineRulerGesturesReportEditsOnReleaseTest} pins
+ * when the ruler runs the callback; this pins what the factory wires.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class ArrangementCanvasFactoryRulerRateTest {
@@ -83,21 +95,82 @@ class ArrangementCanvasFactoryRulerRateTest {
                 .contains("timelineRuler.setSampleRate(project.getFormat().sampleRate())");
     }
 
+    @Test
+    void theFactoryRulerMarksTheLiveProjectDirtyAfterAProjectSwitch() throws Exception {
+        DawProject opened = new DawProject("opened", new AudioFormat(48_000.0, 2, 24, 256));
+        DawProject next = new DawProject("next", AudioFormat.STUDIO_QUALITY);
+        next.getTransport().setLoopWindow(true, 2.0, 6.0);
+        AtomicReference<DawProject> live = new AtomicReference<>(opened);
+        ArrangementCanvasFactory.Result result = computeOnFx(() -> create(new StubHost(live)));
+        TimelineRuler ruler = result.ruler();
+
+        // The project switch as MainController.rebuildViewModels() performs it on
+        // the ruler: the host answers the new project, the ruler is rebound to it.
+        live.set(next);
+        computeOnFx(() -> {
+            ruler.setAutoScroll(false);
+            ruler.rebind(next.getTransport());
+            ruler.setSampleRate(next.getFormat().sampleRate());
+            ruler.getParent().applyCss();
+            ruler.getParent().layout();
+            opened.markClean();
+            next.markClean();
+            return null;
+        });
+        Canvas canvas = computeOnFx(() -> (Canvas) ruler.getChildrenUnmodifiable().getFirst());
+
+        computeOnFx(() -> {
+            // 40 px per beat, no scroll: the loop's end handle (beat 6) to beat 8.
+            Event.fireEvent(canvas, mouse(MouseEvent.MOUSE_PRESSED, 240.0));
+            Event.fireEvent(canvas, mouse(MouseEvent.MOUSE_DRAGGED, 320.0));
+            Event.fireEvent(canvas, mouse(MouseEvent.MOUSE_RELEASED, 320.0));
+            return null;
+        });
+
+        assertThat(next.getTransport().getLoopWindow())
+                .as("guard: the gesture moved the loop of the project the ruler was rebound to")
+                .isEqualTo(new Transport.LoopWindow(true, 2.0, 8.0));
+        assertThat(next.isDirty()).as("the project the ruler is rebound to is marked").isTrue();
+        assertThat(opened.isDirty()).as("not the project the ruler was built with").isFalse();
+    }
+
     private static ArrangementCanvasFactory.Result create(DawProject project) {
+        return create(new StubHost(project));
+    }
+
+    private static ArrangementCanvasFactory.Result create(ArrangementCanvasFactory.Host host) {
         StackPane content = new StackPane();
         VBox column = new VBox(content);
         new Scene(column, 800, 400);
-        return ArrangementCanvasFactory.create(content, new StubHost(project), beat -> { });
+        return ArrangementCanvasFactory.create(content, host, beat -> { });
     }
 
-    /** A host that answers the project and inert defaults for everything else. */
-    private record StubHost(DawProject project, UndoManager undoManager, SelectionModel selectionModel)
+    /** An upper-half (loop) primary-button event without modifiers; y = 8 on the 32 px ruler. */
+    private static MouseEvent mouse(EventType<MouseEvent> type, double x) {
+        double y = 8.0;
+        boolean primaryDown = type != MouseEvent.MOUSE_RELEASED;
+        return new MouseEvent(type, x, y, x, y, MouseButton.PRIMARY, 1,
+                false, false, false, false,
+                primaryDown, false, false,
+                false, false, false, null);
+    }
+
+    /**
+     * A host that answers the live project — swappable, as {@code MainController}'s
+     * is on Open / New — and inert defaults for everything else.
+     */
+    private record StubHost(AtomicReference<DawProject> live, UndoManager undoManager, SelectionModel selectionModel)
             implements ArrangementCanvasFactory.Host {
 
         StubHost(DawProject project) {
-            this(project, new UndoManager(), new SelectionModel());
+            this(new AtomicReference<>(project));
         }
 
+        StubHost(AtomicReference<DawProject> live) {
+            this(live, new UndoManager(), new SelectionModel());
+        }
+
+        @Override public DawProject project() { return live.get(); }
         @Override public EditTool activeEditTool() { return EditTool.POINTER; }
         @Override public boolean isSnapEnabled() { return false; }
         @Override public GridResolution gridResolution() { return GridResolution.QUARTER; }

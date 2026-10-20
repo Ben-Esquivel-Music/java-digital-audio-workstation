@@ -38,6 +38,8 @@ class TransportCommandEventTest {
 
     private static final long TIMEOUT_SECONDS = 5;
     private static final double SAMPLE_RATE = 48_000.0;
+    /** The PROJECT phase, unobserved here: {@code LoopAndPunchIntentsMarkTheProjectDirtyTest} asserts it. */
+    private static final Runnable NO_DIRTY_OBSERVER = () -> { };
 
     private DefaultEventBus bus;
 
@@ -57,7 +59,7 @@ class TransportCommandEventTest {
     void setTempoCommandMutatesTransportAndAnnouncesTempoChangedOnTheBus() throws InterruptedException {
         Transport transport = new Transport();
         transport.setTempo(120.0);
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         CountDownLatch delivered = new CountDownLatch(1);
         AtomicReference<TransportEvent.TempoChanged> captured = new AtomicReference<>();
@@ -82,7 +84,7 @@ class TransportCommandEventTest {
     @Test
     void startCommandMutatesAndAnnouncesStarted() throws InterruptedException {
         Transport transport = new Transport();
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         CountDownLatch delivered = new CountDownLatch(1);
         try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
@@ -99,7 +101,7 @@ class TransportCommandEventTest {
     void startCommandIsANoOpWhileRecordingAndNeverDropsOutOfRecordOrAnnounces() {
         Transport transport = new Transport();
         transport.record();
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         AtomicReference<TransportEvent.Started> announced = new AtomicReference<>();
         try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
@@ -126,7 +128,7 @@ class TransportCommandEventTest {
         transport.setPositionInBeats(20.0);
         transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
         transport.record();
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         AtomicReference<TransportEvent.Started> announced = new AtomicReference<>();
         try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
@@ -152,7 +154,7 @@ class TransportCommandEventTest {
     void pauseCommandPausesAPlayingTransportAndAnnouncesNothing() {
         Transport transport = new Transport();
         transport.play();
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         AtomicReference<TransportEvent> any = new AtomicReference<>();
         try (EventBus.Subscription sub = bus.on(TransportEvent.class,
@@ -174,7 +176,7 @@ class TransportCommandEventTest {
     void pauseCommandIsANoOpWhileStopped() {
         Transport transport = new Transport();
         transport.setPositionInBeats(7.0);
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         new PauseTransportCommand().execute(handler);
 
@@ -190,7 +192,7 @@ class TransportCommandEventTest {
         // starts an idle transport and pauses a rolling one. Nothing about the
         // command carries the choice.
         Transport transport = new Transport();
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         new TogglePlayPauseCommand().execute(handler);
         assertThat(transport.getState())
@@ -215,7 +217,7 @@ class TransportCommandEventTest {
         // mapping preserved exactly.
         Transport transport = new Transport();
         transport.record();
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         AtomicReference<TransportEvent> any = new AtomicReference<>();
         try (EventBus.Subscription sub = bus.on(TransportEvent.class,
@@ -248,7 +250,7 @@ class TransportCommandEventTest {
     void skipBackCommandSeeksToZeroAndAnnouncesNothing() {
         Transport transport = new Transport();
         transport.setPositionInBeats(9.0);
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         AtomicReference<TransportEvent> any = new AtomicReference<>();
         try (EventBus.Subscription sub = bus.on(TransportEvent.class,
@@ -276,7 +278,7 @@ class TransportCommandEventTest {
         transport.play();
         transport.setRealTimeClockActive(true); // an audio callback owns the clock
         double jump = 4.0 * transport.getTimeSignatureNumerator(); // 4 bars of 4/4 = 16 beats
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         // A seek already sits queued (rolling + claimed → deferred)…
         transport.setPositionInBeats(8.0);
@@ -305,7 +307,7 @@ class TransportCommandEventTest {
         transport.setTempo(120.0);
         transport.setPositionInBeats(20.0);
         transport.setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         CountDownLatch delivered = new CountDownLatch(1);
         AtomicReference<TransportEvent.Started> captured = new AtomicReference<>();
@@ -335,7 +337,7 @@ class TransportCommandEventTest {
     void outOfRangeTempoIsRejectedInValidateAndNeverMutatesOrAnnounces() {
         Transport transport = new Transport();
         transport.setTempo(120.0);
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE, NO_DIRTY_OBSERVER);
 
         AtomicReference<TransportEvent> any = new AtomicReference<>();
         try (EventBus.Subscription sub = bus.on(TransportEvent.class,

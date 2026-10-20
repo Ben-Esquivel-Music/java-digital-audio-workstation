@@ -46,6 +46,12 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * defines a loop. Punch frames are PROJECT-rate frames, converted with the
  * rate wired through {@link #setSampleRate(double)}.</p>
  *
+ * <p>The loop window and the punch region are saved with the project, so a
+ * loop or punch gesture that changed either runs the
+ * {@linkplain #setOnTransportEdited edit callback} once, at its release (or,
+ * if the release never reached the ruler, at its next button release or
+ * primary press; PR #984 review).</p>
+ *
  * <p>Click-to-seek: clicking anywhere on the ruler fires the registered
  * seek callback with the corresponding beat position.</p>
  */
@@ -123,6 +129,22 @@ public final class TimelineRuler extends Pane {
     private double dragAnchorBeat = 0.0;
 
     /**
+     * What a loop or punch gesture's press found, read before the press wrote
+     * anything (PR #984 review): the two of the transport's settings a ruler
+     * gesture can change, both saved with the project. The gesture's end
+     * compares the transport's values with these to decide, once, whether the
+     * project was edited.
+     */
+    private record GestureStart(Transport.LoopWindow loopWindow, PunchRegion punchRegion) {
+    }
+
+    /** The loop or punch gesture in progress, or {@code null} when none is. */
+    private GestureStart gestureStart;
+
+    /** Runs once per gesture that changed the loop window or the punch region; see {@link #setOnTransportEdited}. */
+    private Runnable onTransportEdited = () -> { };
+
+    /**
      * Story 328 draw-truth seam: the x positions at which the punch handles
      * were last drawn ({@code NaN} when the handle was not drawn). Lets a test
      * assert where the region landed without reading canvas pixels.
@@ -192,6 +214,10 @@ public final class TimelineRuler extends Pane {
      * fast path every launch threw away a just-built model and repainted an
      * unchanged ruler.</p>
      *
+     * <p>A loop or punch gesture in progress ends at a rebind to another
+     * transport: the rest of its drag writes nothing, and its release runs no
+     * {@linkplain #setOnTransportEdited edit callback}.</p>
+     *
      * @param transport the live project's transport; must not be {@code null}
      * @throws NullPointerException if {@code transport} is {@code null}
      */
@@ -200,6 +226,11 @@ public final class TimelineRuler extends Pane {
         if (model.getTransport() == transport) {
             return;
         }
+        // A gesture still in progress belongs to the project being replaced: it
+        // ends here, so it neither writes the new transport nor marks the new
+        // project dirty at its release.
+        gestureStart = null;
+        dragMode = DragMode.NONE;
         TimelineRulerModel fresh = new TimelineRulerModel(transport);
         fresh.setDisplayMode(model.getDisplayMode());
         this.model = fresh;
@@ -209,6 +240,30 @@ public final class TimelineRuler extends Pane {
     /** Adds a listener that is called when the user clicks on the ruler to seek. */
     public void addSeekListener(Consumer<Double> listener) {
         seekListeners.add(Objects.requireNonNull(listener, "listener must not be null"));
+    }
+
+    /**
+     * Sets what runs when a loop or punch gesture on this ruler has edited the
+     * transport — the PROJECT phase of the gesture (Control Synchronization
+     * Design Book §5.1, §5.2): the composition root marks the live project
+     * dirty. It runs once, at the gesture's release (or, if the release never
+     * reached the ruler, at its next button release or primary press), and
+     * only when the transport's loop window or punch region then differs from
+     * what the gesture's press found. A click to seek, a handle pressed and
+     * released without moving, a drag back to the starting value or a punch
+     * Shift-drag that never spans the minimum does not run it; an upper-half
+     * Shift+click, which defines a loop on the press itself, does whenever
+     * that loop differs from the one before. It never runs for a gesture that
+     * a {@link #rebind(Transport)} interrupted. The ruler outlives projects,
+     * so the callback should look the project up when it runs rather than
+     * capture one. FX thread. The default does nothing; {@code () -> { }}
+     * restores it.
+     *
+     * @param onTransportEdited the callback; must not be {@code null}
+     * @throws NullPointerException if {@code onTransportEdited} is {@code null}
+     */
+    public void setOnTransportEdited(Runnable onTransportEdited) {
+        this.onTransportEdited = Objects.requireNonNull(onTransportEdited, "onTransportEdited must not be null");
     }
 
     /** Returns the current pixels-per-beat scale. */
@@ -686,6 +741,9 @@ public final class TimelineRuler extends Pane {
         if (event.getButton() != MouseButton.PRIMARY) {
             return;
         }
+        // A gesture whose release never reached this ruler is decided now,
+        // before this press can begin another.
+        finishGesture();
 
         Transport transport = model.getTransport();
         double beatPos = pixelToScrolledBeat(event.getX());
@@ -694,6 +752,9 @@ public final class TimelineRuler extends Pane {
         if (event.isShiftDown()) {
             double snapped = snapBeat(beatPos);
             dragAnchorBeat = snapped;
+            // Before the upper half's loop write below: a Shift+click that
+            // defines a loop without dragging has edited the transport.
+            beginGesture(transport);
             if (punchHalf) {
                 // Shift+click in the lower half: anchor a punch definition.
                 // Nothing is written until the drag spans the minimum punch
@@ -716,11 +777,12 @@ public final class TimelineRuler extends Pane {
                 ? firstHit(hitPunchHandle(event.getX()), hitLoopHandle(event.getX()))
                 : firstHit(hitLoopHandle(event.getX()), hitPunchHandle(event.getX()));
         if (hit != DragMode.NONE) {
+            beginGesture(transport);
             dragMode = hit;
             return;
         }
 
-        // Default: click-to-seek
+        // Default: click-to-seek — a playhead move, not an edit of the project.
         dragMode = DragMode.NONE;
         setPlayheadPositionBeats(beatPos);
         for (Consumer<Double> listener : seekListeners) {
@@ -730,6 +792,32 @@ public final class TimelineRuler extends Pane {
 
     private static DragMode firstHit(DragMode preferred, DragMode fallback) {
         return preferred != DragMode.NONE ? preferred : fallback;
+    }
+
+    /** Remembers what a loop or punch gesture's press found; called before the press writes anything. */
+    private void beginGesture(Transport transport) {
+        gestureStart = new GestureStart(transport.getLoopWindow(), transport.getPunchRegion());
+    }
+
+    /**
+     * Ends the gesture in progress, if any: runs {@link #onTransportEdited}
+     * once when the transport's loop window or punch region differs from the
+     * press's. Values are compared, not pointer travel — a drag back to where
+     * it started edited nothing. The transport compared is the one the press
+     * read: {@link #rebind(Transport)}, the only place the model is replaced,
+     * ends the gesture first.
+     */
+    private void finishGesture() {
+        GestureStart start = gestureStart;
+        gestureStart = null;
+        if (start == null) {
+            return;
+        }
+        Transport transport = model.getTransport();
+        if (!Objects.equals(transport.getLoopWindow(), start.loopWindow())
+                || !Objects.equals(transport.getPunchRegion(), start.punchRegion())) {
+            onTransportEdited.run();
+        }
     }
 
     private DragMode hitLoopHandle(double mouseX) {
@@ -833,8 +921,14 @@ public final class TimelineRuler extends Pane {
         return CoreTransportIntentHandler.minPunchFrames(sampleRate);
     }
 
+    /**
+     * Any button's release ends the drag, as it always has; JavaFX delivers
+     * the release to the node that received the press even when the pointer
+     * has left it. The gesture's PROJECT decision is made here, once.
+     */
     private void handleMouseReleased(MouseEvent event) {
         dragMode = DragMode.NONE;
+        finishGesture();
     }
 
     private void handleMouseMoved(MouseEvent event) {

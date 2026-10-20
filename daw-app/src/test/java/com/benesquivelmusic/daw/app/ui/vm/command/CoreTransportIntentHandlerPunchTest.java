@@ -35,6 +35,8 @@ class CoreTransportIntentHandlerPunchTest {
     private static final double PROJECT_RATE = 96_000.0;
     /** 2 × 5 ms at 96 kHz. */
     private static final long MIN_FRAMES = 960L;
+    /** The PROJECT phase, unobserved here: {@code LoopAndPunchIntentsMarkTheProjectDirtyTest} asserts it. */
+    private static final Runnable NO_DIRTY_OBSERVER = () -> { };
 
     private DefaultEventBus bus;
 
@@ -54,7 +56,7 @@ class CoreTransportIntentHandlerPunchTest {
     void minimumPunchLengthIsTwoCrossfadesAtTheProjectRate() {
         assertThat(CoreTransportIntentHandler.minPunchFrames(PROJECT_RATE)).isEqualTo(MIN_FRAMES);
         assertThat(CoreTransportIntentHandler.minPunchFrames(48_000.0)).isEqualTo(480L);
-        assertThat(new CoreTransportIntentHandler(new Transport(), PROJECT_RATE).minPunchFrames())
+        assertThat(new CoreTransportIntentHandler(new Transport(), PROJECT_RATE, NO_DIRTY_OBSERVER).minPunchFrames())
                 .isEqualTo(MIN_FRAMES);
     }
 
@@ -72,7 +74,7 @@ class CoreTransportIntentHandlerPunchTest {
     @Test
     void setPunchInWithNoRegionCreatesAnEnabledRegionOfTheMinimumLengthAtProjectRateFrames() {
         Transport transport = transportAt120Bpm(4.0); // beat 4 @ 120 BPM = 2 s = 192 000 frames @ 96 kHz
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         new SetPunchInCommand().execute(handler);
 
@@ -83,7 +85,7 @@ class CoreTransportIntentHandlerPunchTest {
     @Test
     void setPunchOutWithNoRegionCreatesAnEnabledRegionEndingAtThePlayhead() {
         Transport transport = transportAt120Bpm(4.0);
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         new SetPunchOutCommand().execute(handler);
 
@@ -95,7 +97,7 @@ class CoreTransportIntentHandlerPunchTest {
     void setPunchInBeforeExistingOutKeepsTheOutPointAndEnabledFlag() {
         Transport transport = transportAt120Bpm(4.0);
         transport.setPunchRegion(new PunchRegion(10_000L, 400_000L, false));
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         new SetPunchInCommand().execute(handler);
 
@@ -108,7 +110,7 @@ class CoreTransportIntentHandlerPunchTest {
     void setPunchInAfterExistingOutMovesTheOutPointToInPlusMinimumNeverSwaps() {
         Transport transport = transportAt120Bpm(4.0);
         transport.setPunchRegion(PunchRegion.enabled(10_000L, 100_000L)); // out is before the playhead
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         new SetPunchInCommand().execute(handler);
 
@@ -121,7 +123,7 @@ class CoreTransportIntentHandlerPunchTest {
     void setPunchOutBeforeExistingInMovesTheInPointToOutMinusMinimumNeverSwaps() {
         Transport transport = transportAt120Bpm(4.0);
         transport.setPunchRegion(PunchRegion.enabled(300_000L, 400_000L)); // in is after the playhead
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         new SetPunchOutCommand().execute(handler);
 
@@ -132,7 +134,7 @@ class CoreTransportIntentHandlerPunchTest {
     @Test
     void setPunchOutAtTheProjectStartClampsToAMinimumRegionFromFrameZero() {
         Transport transport = transportAt120Bpm(0.0);
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         new SetPunchOutCommand().execute(handler);
 
@@ -145,7 +147,7 @@ class CoreTransportIntentHandlerPunchTest {
     void togglePunchFlipsTheEnabledFlagOfAnExistingRegionAndKeepsItsBounds() {
         Transport transport = transportAt120Bpm(4.0);
         transport.setPunchRegion(PunchRegion.enabled(1_000L, 50_000L));
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         new TogglePunchCommand().execute(handler);
         assertThat(transport.getPunchRegion()).isEqualTo(new PunchRegion(1_000L, 50_000L, false));
@@ -157,7 +159,7 @@ class CoreTransportIntentHandlerPunchTest {
     @Test
     void togglePunchWithNoRegionNeitherMutatesNorAnnounces() {
         Transport transport = transportAt120Bpm(4.0);
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         AtomicReference<TransportEvent> any = new AtomicReference<>();
         try (EventBus.Subscription sub = bus.on(TransportEvent.class,
@@ -173,7 +175,7 @@ class CoreTransportIntentHandlerPunchTest {
     @Test
     void setPunchInAnnouncesPunchChangedWithTheInstalledRegion() throws InterruptedException {
         Transport transport = transportAt120Bpm(4.0);
-        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE);
+        CoreTransportIntentHandler handler = new CoreTransportIntentHandler(transport, PROJECT_RATE, NO_DIRTY_OBSERVER);
 
         // ON_CALLER_THREAD still hands delivery to the bus's drain worker, so
         // the two announces are awaited through a latch (as the LoopChanged

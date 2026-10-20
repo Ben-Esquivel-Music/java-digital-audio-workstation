@@ -196,7 +196,7 @@ class TransportBindingTest {
         // transport, which VALIDATE silently dropped — the click did nothing.
         Transport transport = new Transport();
         TransportVM vm = new TransportVM(transport, new FxDispatcher());
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0, () -> { });
         List<TransportCommand> issued = new CopyOnWriteArrayList<>();
 
         Button play = computeOnFx(Button::new);
@@ -247,7 +247,7 @@ class TransportBindingTest {
         // against the validating handler, which throws IllegalArgumentException
         // for an out-of-range tempo (the VALIDATE phase). The binder must catch
         // that and snap back — not let it escape onto the FX thread.
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0, () -> { });
         Consumer<TransportCommand> sink = cmd -> cmd.execute(handler);
 
         TextField field = computeOnFx(TextField::new);

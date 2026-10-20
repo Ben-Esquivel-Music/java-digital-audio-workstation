@@ -466,7 +466,9 @@ Undo capture is part of phase 2 so redo replays the identical cascade.
 | Start / Play | engine ready, not already playing | `Transport.start()` | `TransportVM.state, playhead` | `TransportStateChanged(PLAYING)` → meters arm, glow on, menu/toolbar enablement, status bar |
 | Stop | playing or paused | `Transport.stop()` | `state, playhead→anchor` | `TransportStateChanged(STOPPED)` → meters idle, recording finalised, dirty if take captured |
 | Record | armed track exists | `RecordingPipeline.begin()` | `state=RECORDING` | `TransportStateChanged(RECORDING)` → REC indicator, count‑in, arm lock |
-| Toggle loop | — | `Transport.loop` | `TransportVM.loopRegion` | `LoopChanged` → canvas loop overlay, transport button pseudo‑class |
+| Toggle loop | not while Loop Rec is on and a take is in flight | `Transport.loop` (no undo); then PROJECT dirty — the loop is saved with the project | `TransportVM.loopRegion` | `LoopChanged` → canvas loop overlay, transport button pseudo‑class |
+| Set punch in / out, toggle punch | toggle: a region is installed | `Transport.punchRegion` (no undo); then PROJECT dirty when the region differs from the one installed before | `TransportVM.punchRegion` | `PunchChanged` (no consumer yet) |
+| Ruler loop / punch gesture (handle drag, Shift‑drag define) | loop: start stays before end; punch: at least `minPunchFrames`, handles never cross | `Transport` loop window / punch region (no undo), written as the pointer moves — an upper‑half Shift+press writes its loop on the press itself; PROJECT dirty once at the release (or, if the release never reached the ruler, at its next button release or primary press), when either differs from what the press found | `TransportVM.loopRegion`, `punchRegion` | none — no bus event |
 | Set tempo | in range | `Transport.tempo` + undo | `TransportVM.tempo` | `TempoChanged` → metronome reschedule, grid recompute, tempo label |
 | Seek / scrub | — | `Transport.position` | `TransportVM.playhead` | (continuous; no event) → canvas + time display via binding |
 
@@ -513,9 +515,14 @@ Every row ends, implicitly, with phases 3 (dirty) and the undo capture in phase 
 | Undo / Redo | `UndoManager.undo/redo` | **replay the captured cascade** | `UndoStateChanged` + the original action's events |
 
 > **Undo is a first‑class cascade.** Because every mutating intent captures into
-> `UndoManager` in phase 2, undo simply *replays the inverse cascade* and re‑emits the same
-> events. There is no separate "after undo, also refresh X" code — the contract guarantees
-> parity (fixes the stale‑Undo‑label class of bug, §1.2).
+> `UndoManager` in phase 2 — except the transport intents that take no undo entry there:
+> §5.2's playback and seeks, which are not edits of the project; Record, whose recorded
+> clips and notes get their own undo entries once the take ends; the loop and punch edits,
+> which mark the project dirty instead; pre/post‑roll edits (dirty‑only once story 330
+> restores them; today they do not mark it); and the loop‑record mode, which is not
+> saved — undo simply *replays the inverse cascade* and re‑emits the same events. There
+> is no separate "after undo, also refresh X" code — the contract guarantees parity (fixes
+> the stale‑Undo‑label class of bug, §1.2).
 
 ### 5.7 The full‑load cascade (the §1.6 flicker fix)
 
