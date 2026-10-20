@@ -8,7 +8,6 @@ import com.benesquivelmusic.daw.core.concurrent.ChangeNotifier;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
-import com.benesquivelmusic.daw.core.recording.TakeGroup;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import java.util.*;
@@ -110,7 +109,6 @@ public final class Track {
     private boolean frozen;
     private float[][] frozenAudioData;
     private final TakeComping takeComping = new TakeComping();
-    private final Map<UUID, TakeGroup> takeGroups = new LinkedHashMap<>();
     private SoundFontAssignment soundFontAssignment;
     private String midiInputDeviceName;
     private final List<com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin> midiEffectChain
@@ -479,13 +477,37 @@ public final class Track {
     }
 
     /**
-     * Adds an audio clip to this track.
+     * Adds an audio clip to this track — unless it is comp output that a
+     * later compile of this track's comping replaced
+     * ({@link TakeComping#isSupersededOutput}).
+     *
+     * <p>Output a later compile replaced never re-enters its own track: the
+     * recompile already represents the comp, so the clip would play that
+     * range a second time (Recording Reliability book §3.5; PR #984
+     * review). This is the one choke point every undo and redo that puts a
+     * clip back goes through — an erase, a cut, a paste-over or crop, a
+     * move between tracks, undone after a swipe, a swipe's undo or an
+     * audition recompiled the main lane. The callers that put back a clip
+     * snapshot and announce it — the undo of an erase
+     * ({@code RemoveClipAction}), a cut ({@code CutClipsAction}) or a glue
+     * ({@code GlueClipsAction}), and the undo and redo of a move between
+     * tracks ({@code CrossTrackMoveAction}, {@code GroupMoveClipsAction}) —
+     * publish {@code ClipEvent.Added} only when this returns {@code true}.
+     * The undo of a paste-over or crop ({@code ClipEditOperations}, daw-app)
+     * and of a render in place ({@code RenderInPlaceService}) put clips back
+     * without a clip event.</p>
      *
      * @param clip the clip to add
+     * @return {@code true} if the clip was added; {@code false} if it is
+     *         superseded comp output of this track and was refused
      */
-    public void addClip(AudioClip clip) {
+    public boolean addClip(AudioClip clip) {
         Objects.requireNonNull(clip, "clip must not be null");
+        if (takeComping.isSupersededOutput(clip)) {
+            return false;
+        }
         clips.add(clip);
+        return true;
     }
 
     /**
@@ -780,57 +802,14 @@ public final class Track {
      *
      * <p>The take comping manager holds stacked take lanes recorded on this
      * track and the user's comp selections. Use it to add takes, select
-     * comp regions, and compile the composite.</p>
+     * comp regions, and compile the composite. It is the track's one take
+     * model (Recording Reliability book §3.5): loop-record stacks each lap
+     * as a lane here.</p>
      *
      * @return the take comping manager (never {@code null})
      */
     public TakeComping getTakeComping() {
         return takeComping;
-    }
-
-    /**
-     * Returns an unmodifiable snapshot of the {@link TakeGroup}s recorded on
-     * this track, keyed by {@link TakeGroup#id()}. Each group represents a
-     * stack of loop-record takes captured for the same clip slot.
-     *
-     * @return the take groups (never {@code null}; may be empty)
-     */
-    public Map<UUID, TakeGroup> getTakeGroups() {
-        return Collections.unmodifiableMap(new LinkedHashMap<>(takeGroups));
-    }
-
-    /**
-     * Returns the {@link TakeGroup} with the given id, or {@code null}
-     * if no such group exists on this track.
-     */
-    public TakeGroup getTakeGroup(UUID id) {
-        if (id == null) {
-            return null;
-        }
-        return takeGroups.get(id);
-    }
-
-    /**
-     * Stores or replaces a {@link TakeGroup} on this track. The track keeps
-     * the take group indexed by {@link TakeGroup#id()}; immutable record
-     * semantics mean callers always get back the latest instance via
-     * {@link #getTakeGroup(UUID)}.
-     */
-    public void putTakeGroup(TakeGroup group) {
-        Objects.requireNonNull(group, "group must not be null");
-        takeGroups.put(group.id(), group);
-    }
-
-    /**
-     * Removes the take group with the given id from this track.
-     *
-     * @return the removed group, or {@code null} if there was none
-     */
-    public TakeGroup removeTakeGroup(UUID id) {
-        if (id == null) {
-            return null;
-        }
-        return takeGroups.remove(id);
     }
 
     /**

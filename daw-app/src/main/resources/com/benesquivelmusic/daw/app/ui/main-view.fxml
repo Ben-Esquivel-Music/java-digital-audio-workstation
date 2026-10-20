@@ -39,6 +39,9 @@
                             styleClass="dawg-button, size-transport"/>
                     <Button fx:id="loopButton" text="Loop"
                             styleClass="dawg-button, size-transport, loop-button"/>
+                    <!-- Story 328 — loop-record toggle, bound like the loop button (book §5.6) -->
+                    <Button fx:id="loopRecordButton" text="Loop Rec"
+                            styleClass="dawg-button, size-transport, loop-button"/>
                 </HBox>
 
                 <Separator orientation="VERTICAL"/>

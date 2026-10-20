@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.audio.SplitClipAction;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.export.MidiFileExporter;
@@ -25,6 +26,7 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.core.undo.CompoundUndoableAction;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
@@ -1118,47 +1120,13 @@ final class TrackStripController {
         }
         splitItem.setOnAction(_ -> {
             double playhead = project.getTransport().getPositionInBeats();
-            List<AudioClip> clipsToSplit = new ArrayList<>();
-            for (AudioClip clip : track.getClips()) {
-                if (playhead > clip.getStartBeat() && playhead < clip.getEndBeat()) {
-                    clipsToSplit.add(clip);
-                }
-            }
-            if (clipsToSplit.isEmpty()) {
+            Optional<UndoableAction> split = splitAtPlayheadAction(track, playhead);
+            if (split.isEmpty()) {
                 statusBarLabel.setText("No clips at playhead to split on: " + track.getName());
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
                 return;
             }
-            undoManager.execute(new UndoableAction() {
-                private final List<AudioClip> originals = new ArrayList<>(clipsToSplit);
-                private final List<double[]> savedState = new ArrayList<>();
-                private final List<AudioClip> newClips = new ArrayList<>();
-                {
-                    for (AudioClip clip : originals) {
-                        savedState.add(new double[]{
-                                clip.getDurationBeats(), clip.getFadeOutBeats()});
-                    }
-                }
-                @Override public String description() { return "Split at Playhead: " + track.getName(); }
-                @Override public void execute() {
-                    newClips.clear();
-                    for (AudioClip clip : originals) {
-                        AudioClip second = clip.splitAt(playhead);
-                        track.addClip(second);
-                        newClips.add(second);
-                    }
-                }
-                @Override public void undo() {
-                    for (int i = 0; i < originals.size(); i++) {
-                        AudioClip clip = originals.get(i);
-                        double[] saved = savedState.get(i);
-                        clip.setDurationBeats(saved[0]);
-                        clip.setFadeOutBeats(saved[1]);
-                        track.removeClip(newClips.get(i));
-                    }
-                    newClips.clear();
-                }
-            });
+            undoManager.execute(split.get());
             syncMenuState.run();
             statusBarLabel.setText("Split: " + track.getName() + " at beat " + String.format("%.1f", playhead));
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SPLIT, 12));
@@ -1784,6 +1752,31 @@ final class TrackStripController {
         });
 
         return menu;
+    }
+
+    /**
+     * Builds the track menu's "Split at Playhead" action: one
+     * {@link SplitClipAction} per clip of {@code track} that straddles
+     * {@code playhead} (start &lt; playhead &lt; end). Both halves keep a comp
+     * clip's owner, and a redo of a split whose clip a recompile has since
+     * replaced does nothing instead of adding a stray half.
+     *
+     * @param track    the track whose clips to split
+     * @param playhead the beat to split at
+     * @return the action, described {@code "Split at Playhead: <track>"}, or
+     *         empty when no clip straddles the playhead
+     */
+    static Optional<UndoableAction> splitAtPlayheadAction(Track track, double playhead) {
+        List<UndoableAction> splits = new ArrayList<>();
+        for (AudioClip clip : track.getClips()) {
+            if (playhead > clip.getStartBeat() && playhead < clip.getEndBeat()) {
+                splits.add(new SplitClipAction(track, clip, playhead));
+            }
+        }
+        if (splits.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(new CompoundUndoableAction("Split at Playhead: " + track.getName(), splits));
     }
 
     // ── Drag-and-drop reordering ────────────────────────────────────────────

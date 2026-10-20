@@ -38,7 +38,7 @@ final class ToolbarAppearanceController {
     /** Transport-bar buttons. */
     record TransportButtons(Button skipBack, Button play,
                             Button stop, Button record, Button skipForward,
-                            Button loop, Button metronome) {}
+                            Button loop, Button loopRecord, Button metronome) {}
 
     /** Main toolbar buttons. */
     record ToolbarButtons(Button addAudioTrack, Button addMidiTrack,
@@ -123,6 +123,7 @@ final class ToolbarAppearanceController {
         clearGraphic(transportButtons.record);
         clearGraphic(transportButtons.skipForward);
         clearGraphic(transportButtons.loop);
+        clearGraphic(transportButtons.loopRecord);
         clearGraphic(transportButtons.metronome);
 
         clearGraphic(toolbarButtons.addAudioTrack);
@@ -194,6 +195,9 @@ final class ToolbarAppearanceController {
         transportButtons.record.setTooltip(styledTooltip(tooltipFor("Record", DawAction.RECORD)));
         transportButtons.skipForward.setTooltip(styledTooltip(tooltipFor("Skip Forward", DawAction.SKIP_TO_END)));
         transportButtons.loop.setTooltip(styledTooltip(tooltipFor("Toggle Loop", DawAction.TOGGLE_LOOP)));
+        transportButtons.loopRecord.setTooltip(styledTooltip(
+                tooltipFor("Toggle Loop Record", DawAction.TOGGLE_LOOP_RECORD)
+                        + " · Each loop lap stacks a take lane"));
         transportButtons.metronome.setTooltip(styledTooltip(
                 tooltipFor("Toggle Metronome", DawAction.TOGGLE_METRONOME) + " \u00b7 Right-click for options"));
 
@@ -244,6 +248,7 @@ final class ToolbarAppearanceController {
                 transportButtons.skipBack, transportButtons.play,
                 transportButtons.stop, transportButtons.record,
                 transportButtons.skipForward, transportButtons.loop,
+                transportButtons.loopRecord,
                 toolbarButtons.addAudioTrack, toolbarButtons.addMidiTrack,
                 toolbarButtons.undo, toolbarButtons.redo, toolbarButtons.snap,
                 toolbarButtons.save, toolbarButtons.plugins}) {

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui.vm;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import javafx.application.Platform;
 import javafx.beans.property.Property;
@@ -86,13 +87,18 @@ class TransportVMTest {
     @Test
     void stateAndTempoAndLoopPropertiesFollowCoreSignals() throws InterruptedException {
         Transport transport = new Transport();
-        TransportVM vm = new TransportVM(transport, new FxDispatcher());
+        FxDispatcher dispatcher = new FxDispatcher();
+        TransportVM vm = new TransportVM(transport, dispatcher);
         try {
+            // This test thread is not the FX thread: a STATE fired here goes
+            // through the lock-free channel the pulse drains (story 328
+            // review); the other discrete facts are posted with runLater.
             transport.play();
             transport.setTempo(140.0);
             transport.setTimeSignature(3, 4);
             transport.setLoopRegion(2.0, 6.0);
             flushFx();
+            runOnFx(dispatcher::pulse);
 
             assertThat(vm.getState()).isEqualTo(TransportState.PLAYING);
             assertThat(vm.getTempo()).isEqualTo(140.0);
@@ -100,8 +106,96 @@ class TransportVMTest {
             assertThat(vm.getLoopRegion()).isEqualTo(new LoopRegion(false, 2.0, 6.0));
 
             transport.stop();
-            flushFx();
+            runOnFx(dispatcher::pulse);
             assertThat(vm.getState()).isEqualTo(TransportState.STOPPED);
+
+            // From the FX thread a STATE change is posted with runLater, as before.
+            runOnFx(transport::play);
+            flushFx();
+            assertThat(vm.getState()).isEqualTo(TransportState.PLAYING);
+        } finally {
+            vm.dispose();
+        }
+    }
+
+    @Test
+    void aStateFiredOffTheFxThreadReachesTheVmThroughThePulseNotThroughRunLater() throws InterruptedException {
+        // Story 328 review: the count-in's record start fires STATE on the
+        // RENDER thread. Platform.runLater takes the toolkit's queue lock and
+        // allocates; the VM must therefore route an off-FX STATE through the
+        // dispatcher's wait-free channel — observable here as "a runLater
+        // drain alone does not deliver it; the pulse does" — and re-read the
+        // live state on the drain, so a later FX-thread change is never
+        // overwritten by the earlier value.
+        Transport transport = new Transport();
+        FxDispatcher dispatcher = new FxDispatcher();
+        runOnFx(dispatcher::pulse); // records the FX thread: isFxThread() is one volatile read from now on
+        TransportVM vm = new TransportVM(transport, dispatcher);
+        try {
+            Thread renderThread = new Thread(transport::record, "render-thread-stand-in");
+            renderThread.start();
+            renderThread.join();
+            flushFx();
+            assertThat(vm.getState()).as("no runLater was posted off the FX thread").isEqualTo(TransportState.STOPPED);
+            runOnFx(dispatcher::pulse);
+            assertThat(vm.getState()).as("the pulse drains the lock-free channel").isEqualTo(TransportState.RECORDING);
+
+            // The fire followed at once by a Stop on the FX thread: the drain
+            // re-reads the live state, so the VM ends STOPPED, never RECORDING.
+            Thread again = new Thread(transport::record, "render-thread-stand-in");
+            again.start();
+            again.join();
+            runOnFx(transport::stop);
+            flushFx();
+            runOnFx(dispatcher::pulse);
+            assertThat(vm.getState()).isEqualTo(TransportState.STOPPED);
+        } finally {
+            vm.dispose();
+        }
+    }
+
+    @Test
+    void loopRecordPropertyFollowsTheLoopSignal() throws InterruptedException {
+        // Story 328 — the loop-record mirror's producer is the transport's
+        // LOOP signal, fired by Transport.setLoopRecordEnabled (the command
+        // cascade behind the Loop Rec toggle and Shift+L).
+        Transport transport = new Transport();
+        transport.setLoopRecordEnabled(true);
+        TransportVM vm = new TransportVM(transport, new FxDispatcher());
+        try {
+            assertThat(vm.isLoopRecord()).as("seeded from the transport").isTrue();
+            assertThat(vm.loopRecordProperty()).isNotInstanceOf(Property.class);
+
+            transport.setLoopRecordEnabled(false);
+            flushFx();
+            assertThat(vm.isLoopRecord()).isFalse();
+
+            transport.setLoopRecordEnabled(true);
+            flushFx();
+            assertThat(vm.isLoopRecord()).isTrue();
+            assertThat(vm.getLoopRegion().enabled()).as("loop-record is independent of loop playback").isFalse();
+        } finally {
+            vm.dispose();
+        }
+    }
+
+    @Test
+    void punchRegionPropertyFollowsThePunchSignalAndIsEmptyWhenCleared() throws InterruptedException {
+        // Story 328 — the punch mirror's producer is Transport.setPunchRegion /
+        // clearPunchRegion (fired by the command cascade and the ruler gestures).
+        Transport transport = new Transport();
+        TransportVM vm = new TransportVM(transport, new FxDispatcher());
+        try {
+            assertThat(vm.getPunchRegion()).as("seeded empty with no region installed").isEmpty();
+            assertThat(vm.punchRegionProperty()).isNotInstanceOf(Property.class);
+
+            transport.setPunchRegion(PunchRegion.enabled(96_000L, 288_000L));
+            flushFx();
+            assertThat(vm.getPunchRegion()).contains(PunchRegion.enabled(96_000L, 288_000L));
+
+            transport.clearPunchRegion();
+            flushFx();
+            assertThat(vm.getPunchRegion()).isEmpty();
         } finally {
             vm.dispose();
         }
@@ -195,7 +289,8 @@ class TransportVMTest {
 
         TransportVM vm = new TransportVM(transport, dispatcher);
         assertThat(dispatcher.openChannelCount())
-                .as("the VM opens exactly one continuous playhead channel").isEqualTo(1);
+                .as("the VM opens exactly two continuous channels: the playhead and the off-FX STATE hop")
+                .isEqualTo(2);
 
         vm.dispose();
         // The leak this guards is observationally silent within a single lifecycle
@@ -204,7 +299,7 @@ class TransportVMTest {
         // channel, not merely unregister the upstream listener (story 290 AC —
         // "no leaked listeners"). A leak would accumulate across create/dispose.
         assertThat(dispatcher.openChannelCount())
-                .as("dispose() must close the playhead channel, not leak it in the "
+                .as("dispose() must close both channels, not leak them in the "
                         + "long-lived dispatcher")
                 .isZero();
 

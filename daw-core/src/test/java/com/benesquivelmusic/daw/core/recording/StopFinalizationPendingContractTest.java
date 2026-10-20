@@ -370,13 +370,13 @@ class StopFinalizationPendingContractTest {
         pipeline.setLoopRecord(true);
         startRecording(pipeline);
         feedRamp(engine, transport, pipeline, 0, 3 * blocksPerLoop + 1, 1); // 3 laps + one block of the 4th
-        int stackedBeforeStop = pipeline.getTakeGroups().get(track).size();
+        int stackedBeforeStop = pipeline.getLapClips().get(track).size();
         holdNextForce.set(true); // the seal of the lap in flight
 
         CompletionStage<Void> written = requestStopWithinTheGuard();
 
         assertThat(held.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
-        assertThat(track.getTakeGroups()).as("no take group is attached while the take is being written").isEmpty();
+        assertThat(track.getTakeComping().isActive()).as("no take lane is attached while the take is being written").isFalse();
         assertThat(track.getClips()).isEmpty();
         assertThat(pipeline.getRecordedClips()).isEmpty();
 
@@ -384,14 +384,17 @@ class StopFinalizationPendingContractTest {
         awaitWithinTheGuard(written, "the capture-flush thread's termination");
         List<AudioClip> clips = completeStopWithinTheGuard();
 
-        TakeGroup group = pipeline.getTakeGroups().get(track);
-        assertThat(group.size()).as("the lap in flight became the last take").isEqualTo(stackedBeforeStop + 1);
-        assertThat(track.getTakeGroups()).containsExactly(entry(group.id(), group));
-        assertThat(clips).containsExactly(group.activeClip());
-        assertThat(track.getClips()).containsExactly(group.activeClip());
+        List<AudioClip> laps = pipeline.getLapClips().get(track);
+        assertThat(laps.size()).as("the lap in flight became the last take").isEqualTo(stackedBeforeStop + 1);
+        // Story 328 (book §3.5): every lap is a take lane of the track's one
+        // take model, and the main lane holds the compiled comp clip.
+        assertThat(track.getTakeComping().getTakeLanes()).as("stop attached every lap as a lane")
+                .extracting(lane -> lane.getClips().getFirst()).containsExactlyElementsOf(laps);
+        assertThat(clips).as("the compiled comp clip is what was published").hasSize(1);
+        assertThat(track.getClips()).containsExactlyElementsOf(clips);
         List<String> everyTakesSegments = new ArrayList<>();
-        for (Take take : group.takes()) {
-            everyTakesSegments.addAll(take.clip().getSourceSegmentPaths());
+        for (AudioClip lap : laps) {
+            everyTakesSegments.addAll(lap.getSourceSegmentPaths());
         }
         assertThat(everyTakesSegments)
                 .as("the stack references every sealed segment of the take, in manifest order")

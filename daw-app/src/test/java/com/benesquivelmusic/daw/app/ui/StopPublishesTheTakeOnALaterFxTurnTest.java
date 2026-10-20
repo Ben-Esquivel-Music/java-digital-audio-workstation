@@ -6,9 +6,11 @@ import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
@@ -48,10 +50,15 @@ import static org.assertj.core.api.Assertions.tuple;
  * reported as {@link TransportController#TAKE_STILL_WRITING_MESSAGE}.
  *
  * <p>The take is real: a {@link TransportController} over a real
- * {@link AudioEngine} on a {@link MockAudioBackend}, recording into the
+ * {@link AudioEngine} on a {@link MockAudioBackend} whose clock stops once
+ * the take has been handed its budget of blocks ({@link CaptureBlockBudget}),
+ * so no block of it can be dropped and no "Capture ring overflow" WARNING
+ * joins the toasts a test reads, recording into the
  * project's {@code audio/takes}. Its capture thread is held mid-pass by
  * {@link CaptureThreadHold}, released by every test that arms it, in a
- * {@code finally}.
+ * {@code finally}; a test that holds it grants the take one more block
+ * as it arms the hold. Each test counts the toasts shown before its Stop
+ * on the FX thread, behind every turn posted until then.
  * The still-writing warning's delay is fired by hand ({@link ManualFxDelay})
  * except in the one test that runs the production delay, a
  * {@code PauseTransition}, against a take held past it. Every FX action is
@@ -74,6 +81,7 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
     private Label recIndicator;
     private final NotificationHistoryService shown = new NotificationHistoryService();
     private final CaptureThreadHold hold = new CaptureThreadHold();
+    private final CaptureBlockBudget blockBudget = new CaptureBlockBudget(hold::latestPipeline);
 
     @BeforeEach
     void armATrack() {
@@ -106,9 +114,9 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
     void stopReturnsWhileTheSealIsHeldAndTheTakeIsPublishedOnceTheCaptureThreadIsReleased() throws Exception {
         ManualFxDelay delay = new ManualFxDelay();
         recordingWithABlockOnDisk(delay);
-        hold.arm();
-        hold.awaitHolding(Duration.ofSeconds(10));
-        int before = shown.size();
+        RecordingPipeline take = hold.pipeline();
+        holdTheCaptureThread();
+        int before = onFx(shown::size);
 
         try {
             runOnFx(controller::stop); // returns within the FX bound although the capture thread is held
@@ -126,6 +134,7 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
         }
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(onFx(() -> List.copyOf(armed.getClips()))).as("the take is published").hasSize(1);
         assertThat(entriesSince(before)).extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.SUCCESS, ONE_CLIP_CREATED));
@@ -136,9 +145,9 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
     void theStillWritingWarningAppearsOnlyOnceTheDelayHasPassedWithTheTakeUnpublished() throws Exception {
         ManualFxDelay delay = new ManualFxDelay();
         recordingWithABlockOnDisk(delay);
-        hold.arm();
-        hold.awaitHolding(Duration.ofSeconds(10));
-        int before = shown.size();
+        RecordingPipeline take = hold.pipeline();
+        holdTheCaptureThread();
+        int before = onFx(shown::size);
 
         try {
             runOnFx(controller::stop);
@@ -158,6 +167,7 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
         }
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(entriesSince(before)).extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.WARNING, TransportController.TAKE_STILL_WRITING_MESSAGE),
                         tuple(NotificationLevel.SUCCESS, ONE_CLIP_CREATED));
@@ -168,10 +178,12 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
     void aTakePublishedBeforeTheDelayNeverShowsTheStillWritingWarning() throws Exception {
         ManualFxDelay delay = new ManualFxDelay();
         recordingWithABlockOnDisk(delay);
-        int before = shown.size();
+        RecordingPipeline take = hold.pipeline();
+        int before = onFx(shown::size);
 
         runOnFx(controller::stop);
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(delay.delays()).as("fixture: the Stop scheduled the warning").hasSize(1);
 
         runOnFx(delay::fireAll); // the delay passes after the take was published
@@ -185,9 +197,9 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
     @Test
     void theProductionDelayReportsATakeStillHeldOnlyAfterTheDelay() throws Exception {
         recordingWithABlockOnDisk(null); // the production delay: a PauseTransition on the FX thread
-        hold.arm();
-        hold.awaitHolding(Duration.ofSeconds(10));
-        int before = shown.size();
+        RecordingPipeline take = hold.pipeline();
+        holdTheCaptureThread();
+        int before = onFx(shown::size);
 
         try {
             long stopPressed = System.nanoTime();
@@ -210,18 +222,34 @@ class StopPublishesTheTakeOnALaterFxTurnTest {
             hold.release();
         }
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take was published");
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
         assertThat(onFx(statusBar::getText)).isEqualTo(ONE_CLIP_CREATED);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /**
+     * Holds the take's capture thread mid-pass, so its Stop leaves the take
+     * still being written. The take is granted one block beyond its
+     * allowance once the hold is armed: at least that block is published
+     * after the arm, and the capture thread reads the clock when it applies
+     * it, if not before, so it is held at the latest there — and no block
+     * beyond the new allowance follows while the thread is held.
+     */
+    private void holdTheCaptureThread() throws InterruptedException {
+        hold.arm();
+        blockBudget.grantOneMoreBlock();
+        hold.awaitHolding(Duration.ofSeconds(10));
+    }
+
+    /**
      * Builds the controller — with {@code delay} as its still-writing delay,
-     * or the production one when {@code null} — records a take, and waits,
-     * bounded, until a recorded block has reached its first segment.
+     * or the production one when {@code null} — over {@link #blockBudget}'s
+     * device, records a take, and waits, bounded, until a recorded block has
+     * reached its first segment.
      */
     private void recordingWithABlockOnDisk(ManualFxDelay delay) throws Exception {
-        MockAudioBackend backend = new MockAudioBackend();
+        AudioBackend backend = blockBudget.backend();
         StreamingProvision provision = new StreamingProvision(backend.name(),
                 List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name()))));
         runOnFx(() -> {

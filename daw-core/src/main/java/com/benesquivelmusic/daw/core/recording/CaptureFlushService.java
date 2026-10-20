@@ -85,7 +85,7 @@ import java.util.logging.Logger;
  *
  * <p><strong>Per block</strong> (context D9): (a) loop-wrap check from the
  * slot header — beat decreased while looping — seals the lane, builds the
- * lap's {@link Take} and makes the pre-opened next lane the current one
+ * lap's clip ({@code TrackCapture.lapClips}) and makes the pre-opened next lane the current one
  * (below); (b) the disk-headroom check
  * ({@link DiskHeadroomWatch#check(long)}; EXHAUSTED seals the take before
  * the block is written); (c) punch gating with the header's start frame,
@@ -258,8 +258,12 @@ public final class CaptureFlushService {
      */
     public static final Duration PEAK_PUBLISH_INTERVAL = Duration.ofMillis(33);
 
-    /** Duration, in seconds, of the cosine crossfade at the punch-in and punch-out boundaries. */
-    static final double PUNCH_CROSSFADE_SECONDS = 0.005;
+    /**
+     * Duration, in seconds, of the cosine crossfade at the punch-in and
+     * punch-out boundaries. Public since story 328: the shortest punch region
+     * a creation gesture may install is twice this (both ramps must exist).
+     */
+    public static final double PUNCH_CROSSFADE_SECONDS = 0.005;
 
     private static final Logger LOG = Logger.getLogger(CaptureFlushService.class.getName());
     private static final long PARK_BACKSTOP_NANOS = PARK_BACKSTOP.toNanos();
@@ -1114,6 +1118,9 @@ public final class CaptureFlushService {
                     && previousBeat >= 0.0
                     && currentBeatPosition < previousBeat
                     && slot.loopEnabled()) {
+                // The lane opened at the wrap starts where its first frame is
+                // written — this block's, or a later one's under punch
+                // gating (TrackCapture.noteWrittenSlice; PR #984 review).
                 finalizeLoopLap();
             }
             previousBeat = currentBeatPosition;
@@ -1277,6 +1284,11 @@ public final class CaptureFlushService {
                 // a block whose append failed.
                 int counted = (int) Math.min(sliceFrames, session.getTotalSamplesRecorded() - framesBefore);
                 capture.notePeaks(Math.clamp(chCount, 0, routed.length), counted);
+                if (counted > 0) {
+                    // The lane's first written frame anchors its clip on the
+                    // timeline, wherever punch gating let writing begin.
+                    capture.noteWrittenSlice(slot.beatPosition(), offset);
+                }
             }
         }
     }
@@ -1321,7 +1333,9 @@ public final class CaptureFlushService {
      * ({@link #discardStandbyLanes()}) — the entry is gone from the
      * manifest, the capture keeps the session for a later retry of the
      * delete, the warning sink is told — and the track's next lane is
-     * recording, opened past that file.
+     * recording, opened past that file. The lane opened here has no start
+     * yet: the first slice written into it sets one
+     * ({@link #recordToSessions}, {@link TrackCapture#noteWrittenSlice}).
      */
     private void finalizeLoopLap() {
         for (TrackCapture capture : captures) {

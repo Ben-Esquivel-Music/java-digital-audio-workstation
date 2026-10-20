@@ -77,6 +77,32 @@ class ProjectLifecycleArchiveTest {
     }
 
     @Test
+    void collectMissingAssetPathsDuringAnAuditionChecksTheSelectionsTakeNotTheSoloedOne() {
+        // PR #984 review: mid-audition the archive packages the take files the
+        // SAVED comp references (the selection), so the pre-archive dialog must
+        // list those — not the soloed lane playing on the main lane.
+        DawProject project = new DawProject("Audition", AudioFormat.CD_QUALITY);
+        Track vox = project.createAudioTrack("Vox");
+        String selectedGone = tmp.resolve("take-1-segment-000.wav").toString();
+        String soloedGone = tmp.resolve("take-2-segment-000.wav").toString();
+        vox.getTakeComping().addTakeLane(lane("Take 1", selectedGone));
+        vox.getTakeComping().addTakeLane(lane("Take 2", soloedGone));
+        vox.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 2.0, 3.0));
+        vox.getTakeComping().getTakeLane(1).setSoloed(true);
+        new com.benesquivelmusic.daw.core.comping.CompileCompAction(vox).execute();
+
+        assertThat(ProjectLifecycleController.collectMissingAssetPaths(project)).containsExactly(selectedGone);
+    }
+
+    private static com.benesquivelmusic.daw.core.comping.TakeLane lane(String name, String segment) {
+        AudioClip take = new AudioClip(name, 0.0, 8.0, null);
+        take.setSourceSegmentPaths(List.of(segment));
+        com.benesquivelmusic.daw.core.comping.TakeLane lane = new com.benesquivelmusic.daw.core.comping.TakeLane(name);
+        lane.addClip(take);
+        return lane;
+    }
+
+    @Test
     void collectMissingAssetPathsChecksEverySegmentOfARecordedTakeAndReportsEachOnce()
             throws IOException {
         // Story 323: a recorded take references an ordered segment list; the

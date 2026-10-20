@@ -11,6 +11,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 import java.util.function.DoubleToIntFunction;
 import java.util.function.IntSupplier;
+import java.util.function.IntToDoubleFunction;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
 
@@ -65,6 +66,9 @@ final class ClipTrimHandler {
      * @param refreshCanvas  requests a canvas repaint
      * @param trackIndexAtY  resolves the track index at a canvas Y pixel
      *                       (automation-lane aware on the production path)
+     * @param laneYForTrack  resolves the Y pixel offset of a track's main lane
+     *                       (take- and automation-lane aware on the production
+     *                       path)
      */
     record Deps(DoubleSupplier pixelsPerBeat,
                 DoubleSupplier scrollXBeats,
@@ -76,7 +80,8 @@ final class ClipTrimHandler {
                 Supplier<GridResolution> gridResolution,
                 IntSupplier beatsPerBar,
                 Runnable refreshCanvas,
-                DoubleToIntFunction trackIndexAtY) {
+                DoubleToIntFunction trackIndexAtY,
+                IntToDoubleFunction laneYForTrack) {
     }
 
     private final Deps deps;
@@ -111,7 +116,9 @@ final class ClipTrimHandler {
      * Hit-tests the given pixel position against all clip edges on the
      * resolved track. Returns an {@link EdgeHit} containing both the clip
      * and the detected edge, or {@code null} if the position is not within
-     * trim threshold of any clip edge.
+     * trim threshold of any clip edge. Only the track's main lane, where its
+     * clips are drawn, has edges: a Y over the take lanes or the automation
+     * lane under it never resolves to a main-lane clip.
      *
      * @param x the mouse X coordinate in canvas pixels
      * @param y the mouse Y coordinate in canvas pixels
@@ -120,6 +127,10 @@ final class ClipTrimHandler {
     EdgeHit hitTestEdge(double x, double y) {
         int trackIndex = trackIndexAt(y);
         if (trackIndex < 0) {
+            return null;
+        }
+        double laneY = deps.laneYForTrack().applyAsDouble(trackIndex);
+        if (y < laneY || y >= laneY + deps.trackHeight().getAsDouble()) {
             return null;
         }
         Track track = deps.tracks().get().get(trackIndex);

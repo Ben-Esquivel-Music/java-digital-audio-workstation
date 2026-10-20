@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.comping;
 
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import java.util.ArrayList;
@@ -8,28 +9,40 @@ import java.util.Objects;
 
 /**
  * Undoable action that adds (or replaces) a single {@link CompRegion} on a
- * {@link TakeComping}, applying the standard "swipe comping" behavior:
- * the new region's beat range deselects any overlapping regions on every
- * other take of the same track.
+ * {@link Track}'s {@link TakeComping}, applying the standard "swipe comping"
+ * behavior: the new region's beat range deselects any overlapping regions on
+ * every other take of the same track.
  *
  * <p>This is the action invoked by the comp tool ({@code EditTool.COMP})
- * when the user click-drags across a take's waveform.</p>
+ * when the user click-drags across a take's waveform. The swipe is audible
+ * at once (story 328, book §5.6): the action composes a
+ * {@link CompileCompAction}, so the track's main lane plays the new
+ * selection as soon as the swipe ends, and undo restores the previous
+ * selection and recompiles it from the live comping state (story 328
+ * review: not from a snapshot of clips, so an audition in between leaves
+ * nothing orphaned). Both execute and undo end any lane audition first
+ * ({@link TakeComping#endAuditions()}): a swipe, its undo and its redo
+ * present the selection, never a soloed lane (PR #984 review). The lanes'
+ * clips are never touched.</p>
  */
 public final class SetCompRegionAction implements UndoableAction {
 
     private final TakeComping comping;
     private final CompRegion region;
+    private final CompileCompAction recompile;
     private List<CompRegion> previousRegions;
 
     /**
      * Creates a new set-comp-region action.
      *
-     * @param comping the take comping instance to modify
-     * @param region  the comp region to apply
+     * @param track  the track whose take comping to modify
+     * @param region the comp region to apply
      */
-    public SetCompRegionAction(TakeComping comping, CompRegion region) {
-        this.comping = Objects.requireNonNull(comping, "comping must not be null");
+    public SetCompRegionAction(Track track, CompRegion region) {
+        Objects.requireNonNull(track, "track must not be null");
+        this.comping = track.getTakeComping();
         this.region = Objects.requireNonNull(region, "region must not be null");
+        this.recompile = new CompileCompAction(track);
     }
 
     @Override
@@ -41,12 +54,17 @@ public final class SetCompRegionAction implements UndoableAction {
     public void execute() {
         previousRegions = new ArrayList<>(comping.getCompRegions());
         comping.addCompRegion(region);
+        comping.endAuditions();
+        recompile.execute();
     }
 
     @Override
     public void undo() {
         if (previousRegions != null) {
+            // The selection first: the recompile reads the live state.
             comping.setCompRegions(previousRegions);
+            comping.endAuditions();
+            recompile.undo();
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.core.transport.TimeDisplayMode;
 import com.benesquivelmusic.daw.core.transport.TimelineRulerModel;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -37,6 +38,19 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * positions, with draggable locator handles at each boundary. Users can
  * Shift+click-drag on the ruler to define a new loop region in a single
  * gesture.</p>
+ *
+ * <p>Story 328 (book §5.6): the punch region is drawn the same way, with its
+ * handles in the LOWER half of the ruler (loop handles sit in the upper
+ * half). Punch handles can be dragged, and a Shift+click-drag that starts in
+ * the lower half defines a punch region; one that starts in the upper half
+ * defines a loop. Punch frames are PROJECT-rate frames, converted with the
+ * rate wired through {@link #setSampleRate(double)}.</p>
+ *
+ * <p>The loop window and the punch region are saved with the project, so a
+ * loop or punch gesture that changed either runs the
+ * {@linkplain #setOnTransportEdited edit callback} once, at its release (or,
+ * if the release never reached the ruler, at its next button release or
+ * primary press; PR #984 review).</p>
  *
  * <p>Click-to-seek: clicking anywhere on the ruler fires the registered
  * seek callback with the corresponding beat position.</p>
@@ -82,6 +96,8 @@ public final class TimelineRuler extends Pane {
     private static final double LOOP_HANDLE_WIDTH = 6.0;
     private static final double LOOP_HANDLE_HIT_ZONE = 8.0;
     private static final double PUNCH_HANDLE_WIDTH = 6.0;
+    /** Story 328 — horizontal hit tolerance around a drawn punch handle (lower half of the ruler). */
+    static final double PUNCH_HANDLE_HIT_ZONE = 8.0;
 
     /**
      * The backing model — replaced wholesale by {@link #rebind(Transport)} on
@@ -99,10 +115,42 @@ public final class TimelineRuler extends Pane {
     private double totalBeats = 0.0;
     private boolean autoScroll = true;
 
-    // Loop handle dragging state
-    private enum LoopDragMode { NONE, START_HANDLE, END_HANDLE, DEFINING_REGION }
-    private LoopDragMode loopDragMode = LoopDragMode.NONE;
-    private double loopDragAnchorBeat = 0.0;
+    /**
+     * Handle/definition drag state. Loop gestures own the UPPER half of the
+     * ruler, punch gestures (story 328, book §5.6) the LOWER half — the halves
+     * the respective handles are drawn in.
+     */
+    private enum DragMode {
+        NONE,
+        LOOP_START_HANDLE, LOOP_END_HANDLE, DEFINING_LOOP,
+        PUNCH_IN_HANDLE, PUNCH_OUT_HANDLE, DEFINING_PUNCH
+    }
+    private DragMode dragMode = DragMode.NONE;
+    private double dragAnchorBeat = 0.0;
+
+    /**
+     * What a loop or punch gesture's press found, read before the press wrote
+     * anything (PR #984 review): the two of the transport's settings a ruler
+     * gesture can change, both saved with the project. The gesture's end
+     * compares the transport's values with these to decide, once, whether the
+     * project was edited.
+     */
+    private record GestureStart(Transport.LoopWindow loopWindow, PunchRegion punchRegion) {
+    }
+
+    /** The loop or punch gesture in progress, or {@code null} when none is. */
+    private GestureStart gestureStart;
+
+    /** Runs once per gesture that changed the loop window or the punch region; see {@link #setOnTransportEdited}. */
+    private Runnable onTransportEdited = () -> { };
+
+    /**
+     * Story 328 draw-truth seam: the x positions at which the punch handles
+     * were last drawn ({@code NaN} when the handle was not drawn). Lets a test
+     * assert where the region landed without reading canvas pixels.
+     */
+    private double lastDrawnPunchInX = Double.NaN;
+    private double lastDrawnPunchOutX = Double.NaN;
 
     // Snap configuration
     private boolean snapEnabled = false;
@@ -166,6 +214,10 @@ public final class TimelineRuler extends Pane {
      * fast path every launch threw away a just-built model and repainted an
      * unchanged ruler.</p>
      *
+     * <p>A loop or punch gesture in progress ends at a rebind to another
+     * transport: the rest of its drag writes nothing, and its release runs no
+     * {@linkplain #setOnTransportEdited edit callback}.</p>
+     *
      * @param transport the live project's transport; must not be {@code null}
      * @throws NullPointerException if {@code transport} is {@code null}
      */
@@ -174,6 +226,11 @@ public final class TimelineRuler extends Pane {
         if (model.getTransport() == transport) {
             return;
         }
+        // A gesture still in progress belongs to the project being replaced: it
+        // ends here, so it neither writes the new transport nor marks the new
+        // project dirty at its release.
+        gestureStart = null;
+        dragMode = DragMode.NONE;
         TimelineRulerModel fresh = new TimelineRulerModel(transport);
         fresh.setDisplayMode(model.getDisplayMode());
         this.model = fresh;
@@ -183,6 +240,30 @@ public final class TimelineRuler extends Pane {
     /** Adds a listener that is called when the user clicks on the ruler to seek. */
     public void addSeekListener(Consumer<Double> listener) {
         seekListeners.add(Objects.requireNonNull(listener, "listener must not be null"));
+    }
+
+    /**
+     * Sets what runs when a loop or punch gesture on this ruler has edited the
+     * transport — the PROJECT phase of the gesture (Control Synchronization
+     * Design Book §5.1, §5.2): the composition root marks the live project
+     * dirty. It runs once, at the gesture's release (or, if the release never
+     * reached the ruler, at its next button release or primary press), and
+     * only when the transport's loop window or punch region then differs from
+     * what the gesture's press found. A click to seek, a handle pressed and
+     * released without moving, a drag back to the starting value or a punch
+     * Shift-drag that never spans the minimum does not run it; an upper-half
+     * Shift+click, which defines a loop on the press itself, does whenever
+     * that loop differs from the one before. It never runs for a gesture that
+     * a {@link #rebind(Transport)} interrupted. The ruler outlives projects,
+     * so the callback should look the project up when it runs rather than
+     * capture one. FX thread. The default does nothing; {@code () -> { }}
+     * restores it.
+     *
+     * @param onTransportEdited the callback; must not be {@code null}
+     * @throws NullPointerException if {@code onTransportEdited} is {@code null}
+     */
+    public void setOnTransportEdited(Runnable onTransportEdited) {
+        this.onTransportEdited = Objects.requireNonNull(onTransportEdited, "onTransportEdited must not be null");
     }
 
     /** Returns the current pixels-per-beat scale. */
@@ -459,6 +540,8 @@ public final class TimelineRuler extends Pane {
     }
 
     private void drawPunchHandles(GraphicsContext gc, double h) {
+        lastDrawnPunchInX = Double.NaN;
+        lastDrawnPunchOutX = Double.NaN;
         Transport transport = model.getTransport();
         PunchRegion punch = transport.getPunchRegion();
         if (punch == null) {
@@ -470,6 +553,7 @@ public final class TimelineRuler extends Pane {
 
         double startX = (punchStartBeats - scrollOffsetBeats) * pixelsPerBeat;
         if (startX >= -PUNCH_HANDLE_WIDTH && startX <= w + PUNCH_HANDLE_WIDTH) {
+            lastDrawnPunchInX = startX;
             gc.setStroke(PUNCH_HANDLE_LINE_COLOR);
             gc.setLineWidth(1.5);
             gc.strokeLine(startX, 0, startX, h);
@@ -483,6 +567,7 @@ public final class TimelineRuler extends Pane {
 
         double endX = (punchEndBeats - scrollOffsetBeats) * pixelsPerBeat;
         if (endX >= -PUNCH_HANDLE_WIDTH && endX <= w + PUNCH_HANDLE_WIDTH) {
+            lastDrawnPunchOutX = endX;
             gc.setStroke(PUNCH_HANDLE_LINE_COLOR);
             gc.setLineWidth(1.5);
             gc.strokeLine(endX, 0, endX, h);
@@ -499,6 +584,27 @@ public final class TimelineRuler extends Pane {
         Transport transport = model.getTransport();
         double seconds = frames / sampleRate;
         return transport.getTempoMap().secondsToBeats(seconds);
+    }
+
+    /** Inverse of {@link #framesToBeats(long)}: a beat position as a non-negative project-rate frame. */
+    private long beatsToFrames(double beats) {
+        Transport transport = model.getTransport();
+        double seconds = transport.getTempoMap().beatsToSeconds(Math.max(0.0, beats));
+        return Math.max(0L, Math.round(seconds * sampleRate));
+    }
+
+    /**
+     * Story 328 draw-truth seam — the x at which the punch-in handle was last
+     * drawn, or {@code NaN} when no handle was drawn. Package-private for
+     * {@code TimelineRulerPunchGestureTest}.
+     */
+    double lastDrawnPunchInX() {
+        return lastDrawnPunchInX;
+    }
+
+    /** The x at which the punch-out handle was last drawn, or {@code NaN}; see {@link #lastDrawnPunchInX()}. */
+    double lastDrawnPunchOutX() {
+        return lastDrawnPunchOutX;
     }
 
     /**
@@ -617,77 +723,188 @@ public final class TimelineRuler extends Pane {
         return playheadPositionBeats;
     }
 
-    // ── Mouse interaction for loop handles ──────────────────────────────────
+    // ── Mouse interaction: loop handles (upper half) and punch handles (lower half) ──
+
+    /**
+     * Story 328 (book §5.6): the ruler is split by height. Loop handles are
+     * drawn in the upper half, punch handles in the lower half, and a
+     * Shift-drag defines a loop when it starts in the upper half and a punch
+     * region when it starts in the lower half. A pointer exactly on the
+     * midline belongs to the upper (loop) half — the loop gestures behave
+     * there exactly as before this story.
+     */
+    private boolean inPunchHalf(MouseEvent event) {
+        return event.getY() > canvas.getHeight() * 0.5;
+    }
 
     private void handleMousePressed(MouseEvent event) {
         if (event.getButton() != MouseButton.PRIMARY) {
             return;
         }
+        // A gesture whose release never reached this ruler is decided now,
+        // before this press can begin another.
+        finishGesture();
 
         Transport transport = model.getTransport();
         double beatPos = pixelToScrolledBeat(event.getX());
+        boolean punchHalf = inPunchHalf(event);
 
-        // Shift+click: define a new loop region — flag and bounds published
-        // as one window so the RT clock never sees enabled + stale bounds
-        // (story 315 review).
         if (event.isShiftDown()) {
             double snapped = snapBeat(beatPos);
-            loopDragMode = LoopDragMode.DEFINING_REGION;
-            loopDragAnchorBeat = snapped;
+            dragAnchorBeat = snapped;
+            // Before the upper half's loop write below: a Shift+click that
+            // defines a loop without dragging has edited the transport.
+            beginGesture(transport);
+            if (punchHalf) {
+                // Shift+click in the lower half: anchor a punch definition.
+                // Nothing is written until the drag spans the minimum punch
+                // length — a short drag leaves the transport unchanged.
+                dragMode = DragMode.DEFINING_PUNCH;
+                return;
+            }
+            // Shift+click in the upper half: define a new loop region — flag
+            // and bounds published as one window so the RT clock never sees
+            // enabled + stale bounds (story 315 review).
+            dragMode = DragMode.DEFINING_LOOP;
             transport.setLoopWindow(true, snapped, snapped + 0.001);
             redraw();
             return;
         }
 
-        // Check if click is near a loop handle (when loop is enabled)
-        if (transport.isLoopEnabled()) {
-            double startX = (transport.getLoopStartInBeats() - scrollOffsetBeats) * pixelsPerBeat;
-            double endX = (transport.getLoopEndInBeats() - scrollOffsetBeats) * pixelsPerBeat;
-
-            if (Math.abs(event.getX() - startX) <= LOOP_HANDLE_HIT_ZONE) {
-                loopDragMode = LoopDragMode.START_HANDLE;
-                return;
-            }
-            if (Math.abs(event.getX() - endX) <= LOOP_HANDLE_HIT_ZONE) {
-                loopDragMode = LoopDragMode.END_HANDLE;
-                return;
-            }
+        // Handle hit-testing follows the drawn split: the half the pointer is
+        // in decides which family is tested first where the two overlap.
+        DragMode hit = punchHalf
+                ? firstHit(hitPunchHandle(event.getX()), hitLoopHandle(event.getX()))
+                : firstHit(hitLoopHandle(event.getX()), hitPunchHandle(event.getX()));
+        if (hit != DragMode.NONE) {
+            beginGesture(transport);
+            dragMode = hit;
+            return;
         }
 
-        // Default: click-to-seek
-        loopDragMode = LoopDragMode.NONE;
+        // Default: click-to-seek — a playhead move, not an edit of the project.
+        dragMode = DragMode.NONE;
         setPlayheadPositionBeats(beatPos);
         for (Consumer<Double> listener : seekListeners) {
             listener.accept(beatPos);
         }
     }
 
+    private static DragMode firstHit(DragMode preferred, DragMode fallback) {
+        return preferred != DragMode.NONE ? preferred : fallback;
+    }
+
+    /** Remembers what a loop or punch gesture's press found; called before the press writes anything. */
+    private void beginGesture(Transport transport) {
+        gestureStart = new GestureStart(transport.getLoopWindow(), transport.getPunchRegion());
+    }
+
+    /**
+     * Ends the gesture in progress, if any: runs {@link #onTransportEdited}
+     * once when the transport's loop window or punch region differs from the
+     * press's. Values are compared, not pointer travel — a drag back to where
+     * it started edited nothing. The transport compared is the one the press
+     * read: {@link #rebind(Transport)}, the only place the model is replaced,
+     * ends the gesture first.
+     */
+    private void finishGesture() {
+        GestureStart start = gestureStart;
+        gestureStart = null;
+        if (start == null) {
+            return;
+        }
+        Transport transport = model.getTransport();
+        if (!Objects.equals(transport.getLoopWindow(), start.loopWindow())
+                || !Objects.equals(transport.getPunchRegion(), start.punchRegion())) {
+            onTransportEdited.run();
+        }
+    }
+
+    private DragMode hitLoopHandle(double mouseX) {
+        Transport transport = model.getTransport();
+        if (!transport.isLoopEnabled()) {
+            return DragMode.NONE;
+        }
+        double startX = (transport.getLoopStartInBeats() - scrollOffsetBeats) * pixelsPerBeat;
+        double endX = (transport.getLoopEndInBeats() - scrollOffsetBeats) * pixelsPerBeat;
+        if (Math.abs(mouseX - startX) <= LOOP_HANDLE_HIT_ZONE) {
+            return DragMode.LOOP_START_HANDLE;
+        }
+        if (Math.abs(mouseX - endX) <= LOOP_HANDLE_HIT_ZONE) {
+            return DragMode.LOOP_END_HANDLE;
+        }
+        return DragMode.NONE;
+    }
+
+    private DragMode hitPunchHandle(double mouseX) {
+        PunchRegion punch = model.getTransport().getPunchRegion();
+        if (punch == null) {
+            return DragMode.NONE;
+        }
+        double inX = (framesToBeats(punch.startFrames()) - scrollOffsetBeats) * pixelsPerBeat;
+        double outX = (framesToBeats(punch.endFrames()) - scrollOffsetBeats) * pixelsPerBeat;
+        if (Math.abs(mouseX - inX) <= PUNCH_HANDLE_HIT_ZONE) {
+            return DragMode.PUNCH_IN_HANDLE;
+        }
+        if (Math.abs(mouseX - outX) <= PUNCH_HANDLE_HIT_ZONE) {
+            return DragMode.PUNCH_OUT_HANDLE;
+        }
+        return DragMode.NONE;
+    }
+
     private void handleMouseDragged(MouseEvent event) {
-        if (loopDragMode == LoopDragMode.NONE) {
+        if (dragMode == DragMode.NONE) {
             return;
         }
 
         Transport transport = model.getTransport();
         double beatPos = snapBeat(Math.max(0.0, pixelToScrolledBeat(event.getX())));
 
-        switch (loopDragMode) {
-            case START_HANDLE -> {
+        switch (dragMode) {
+            case LOOP_START_HANDLE -> {
                 double end = transport.getLoopEndInBeats();
                 if (beatPos < end) {
                     transport.setLoopRegion(beatPos, end);
                 }
             }
-            case END_HANDLE -> {
+            case LOOP_END_HANDLE -> {
                 double start = transport.getLoopStartInBeats();
                 if (beatPos > start) {
                     transport.setLoopRegion(start, beatPos);
                 }
             }
-            case DEFINING_REGION -> {
-                double regionStart = Math.min(loopDragAnchorBeat, beatPos);
-                double regionEnd = Math.max(loopDragAnchorBeat, beatPos);
+            case DEFINING_LOOP -> {
+                double regionStart = Math.min(dragAnchorBeat, beatPos);
+                double regionEnd = Math.max(dragAnchorBeat, beatPos);
                 if (regionEnd > regionStart) {
                     transport.setLoopRegion(regionStart, regionEnd);
+                }
+            }
+            case PUNCH_IN_HANDLE -> {
+                PunchRegion punch = transport.getPunchRegion();
+                if (punch != null) {
+                    long in = beatsToFrames(beatPos);
+                    if (punch.endFrames() - in >= minPunchFrames()) {
+                        transport.setPunchRegion(new PunchRegion(in, punch.endFrames(), punch.enabled()));
+                    }
+                }
+            }
+            case PUNCH_OUT_HANDLE -> {
+                PunchRegion punch = transport.getPunchRegion();
+                if (punch != null) {
+                    long out = beatsToFrames(beatPos);
+                    if (out - punch.startFrames() >= minPunchFrames()) {
+                        transport.setPunchRegion(new PunchRegion(punch.startFrames(), out, punch.enabled()));
+                    }
+                }
+            }
+            case DEFINING_PUNCH -> {
+                long in = beatsToFrames(Math.min(dragAnchorBeat, beatPos));
+                long out = beatsToFrames(Math.max(dragAnchorBeat, beatPos));
+                if (out - in >= minPunchFrames()) {
+                    // A gesture-defined region is ENABLED, as the Shift-drag
+                    // loop is — the user drew it to record into it.
+                    transport.setPunchRegion(PunchRegion.enabled(in, out));
                 }
             }
             default -> { /* NONE — handled above */ }
@@ -695,32 +912,55 @@ public final class TimelineRuler extends Pane {
         redraw();
     }
 
+    /**
+     * The shortest punch region a ruler gesture may install at this ruler's
+     * (project) sample rate — the single definition shared with the command
+     * cascade, so a dragged region and a shortcut-set region obey one rule.
+     */
+    private long minPunchFrames() {
+        return CoreTransportIntentHandler.minPunchFrames(sampleRate);
+    }
+
+    /**
+     * Any button's release ends the drag, as it always has; JavaFX delivers
+     * the release to the node that received the press even when the pointer
+     * has left it. The gesture's PROJECT decision is made here, once.
+     */
     private void handleMouseReleased(MouseEvent event) {
-        loopDragMode = LoopDragMode.NONE;
+        dragMode = DragMode.NONE;
+        finishGesture();
     }
 
     private void handleMouseMoved(MouseEvent event) {
         Transport transport = model.getTransport();
-        if (!transport.isLoopEnabled()) {
+        double mouseX = event.getX();
+        boolean punchHalf = inPunchHalf(event);
+
+        DragMode hover = punchHalf
+                ? firstHit(hitPunchHandle(mouseX), hitLoopHandle(mouseX))
+                : firstHit(hitLoopHandle(mouseX), hitPunchHandle(mouseX));
+        String text = switch (hover) {
+            case LOOP_START_HANDLE -> "Loop Start: " + model.formatPosition(transport.getLoopStartInBeats());
+            case LOOP_END_HANDLE -> "Loop End: " + model.formatPosition(transport.getLoopEndInBeats());
+            case PUNCH_IN_HANDLE -> "Punch In: " + punchHandleLabel(transport, true);
+            case PUNCH_OUT_HANDLE -> "Punch Out: " + punchHandleLabel(transport, false);
+            default -> null;
+        };
+        if (text == null) {
             Tooltip.uninstall(canvas, loopTooltip);
             return;
         }
+        loopTooltip.setText(text + "\nDrag to move. Shift-drag: upper half defines a loop, lower half a punch region.");
+        Tooltip.install(canvas, loopTooltip);
+    }
 
-        double startX = (transport.getLoopStartInBeats() - scrollOffsetBeats) * pixelsPerBeat;
-        double endX = (transport.getLoopEndInBeats() - scrollOffsetBeats) * pixelsPerBeat;
-        double mouseX = event.getX();
-
-        if (Math.abs(mouseX - startX) <= LOOP_HANDLE_HIT_ZONE) {
-            String label = model.formatPosition(transport.getLoopStartInBeats());
-            loopTooltip.setText("Loop Start: " + label);
-            Tooltip.install(canvas, loopTooltip);
-        } else if (Math.abs(mouseX - endX) <= LOOP_HANDLE_HIT_ZONE) {
-            String label = model.formatPosition(transport.getLoopEndInBeats());
-            loopTooltip.setText("Loop End: " + label);
-            Tooltip.install(canvas, loopTooltip);
-        } else {
-            Tooltip.uninstall(canvas, loopTooltip);
+    private String punchHandleLabel(Transport transport, boolean inPoint) {
+        PunchRegion punch = transport.getPunchRegion();
+        if (punch == null) {
+            return "";
         }
+        long frames = inPoint ? punch.startFrames() : punch.endFrames();
+        return model.formatPosition(framesToBeats(frames)) + (punch.enabled() ? "" : " (punch off)");
     }
 
     private double pixelToScrolledBeat(double pixelX) {

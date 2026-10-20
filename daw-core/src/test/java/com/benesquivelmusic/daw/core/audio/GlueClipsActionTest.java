@@ -239,4 +239,92 @@ class GlueClipsActionTest {
         assertThat(merged.getPitchShiftSemitones()).isEqualTo(3.5);
         assertThat(merged.getStretchQuality()).isEqualTo(StretchQuality.HIGH);
     }
+
+    @Test
+    void glueOfTwoClipsOfTheSameCompIsThatCompsOutput() {
+        CompOutputOwner owner = new CompOutputOwner() { };
+        AudioClip first = new AudioClip("A", 0.0, 4.0, null);
+        AudioClip second = new AudioClip("A (split)", 4.0, 4.0, null);
+        first.setCompOutputOwner(owner);
+        second.setCompOutputOwner(owner);
+        track.addClip(first);
+        track.addClip(second);
+
+        undoManager.execute(new GlueClipsAction(track, first, second));
+
+        assertThat(track.getClips()).singleElement().matches(merged -> merged.isCompOutputOf(owner));
+    }
+
+    @Test
+    void glueOfACompClipAndAUserClipIsAUserClip() {
+        CompOutputOwner owner = new CompOutputOwner() { };
+        AudioClip comp = new AudioClip("A", 0.0, 4.0, null);
+        comp.setCompOutputOwner(owner);
+        AudioClip user = new AudioClip("B", 4.0, 4.0, null);
+        track.addClip(comp);
+        track.addClip(user);
+
+        undoManager.execute(new GlueClipsAction(track, comp, user));
+
+        assertThat(track.getClips()).singleElement().matches(merged -> merged.compOutputOwner().isEmpty());
+        undoManager.undo();
+        assertThat(comp.isCompOutputOf(owner)).as("the undo puts the comp clip back as it was").isTrue();
+        assertThat(user.compOutputOwner()).isEmpty();
+    }
+
+    @Test
+    void glueOfClipsOfTwoDifferentCompsIsAUserClip() {
+        AudioClip first = new AudioClip("A", 0.0, 4.0, null);
+        AudioClip second = new AudioClip("B", 4.0, 4.0, null);
+        first.setCompOutputOwner(new CompOutputOwner() { });
+        second.setCompOutputOwner(new CompOutputOwner() { });
+        track.addClip(first);
+        track.addClip(second);
+
+        undoManager.execute(new GlueClipsAction(track, first, second));
+
+        assertThat(track.getClips()).singleElement().matches(merged -> merged.compOutputOwner().isEmpty());
+    }
+
+    @Test
+    void aGlueWhoseClipsLeftTheTrackDoesNothingOnRedo() {
+        // A recompile between the glue's undo and its redo replaced the
+        // clips: gluing them would add a merged clip over the fresh comp.
+        AudioClip first = new AudioClip("A", 0.0, 4.0, null);
+        AudioClip second = new AudioClip("B", 4.0, 4.0, null);
+        track.addClip(first);
+        track.addClip(second);
+        undoManager.execute(new GlueClipsAction(track, first, second));
+        undoManager.undo();
+        track.removeClip(first);
+        track.removeClip(second);
+        AudioClip replacement = new AudioClip("Comp", 0.0, 8.0, null);
+        track.addClip(replacement);
+
+        undoManager.redo();
+        assertThat(track.getClips()).containsExactly(replacement);
+
+        undoManager.undo();
+        assertThat(track.getClips()).as("an undo of a glue that did nothing puts nothing back")
+                .containsExactly(replacement);
+    }
+
+    @Test
+    void anUndoOfAGlueWhoseMergedClipLeftTheTrackPutsNothingBack() {
+        // Glue two comp halves, swipe, undo the swipe: the recompile replaced
+        // the merged clip, so restoring the halves would double the comp.
+        AudioClip first = new AudioClip("A", 0.0, 4.0, null);
+        AudioClip second = new AudioClip("B", 4.0, 4.0, null);
+        track.addClip(first);
+        track.addClip(second);
+        undoManager.execute(new GlueClipsAction(track, first, second));
+        AudioClip merged = track.getClips().getFirst();
+        track.removeClip(merged);
+        AudioClip recompiled = new AudioClip("Comp", 0.0, 8.0, null);
+        track.addClip(recompiled);
+
+        undoManager.undo();
+
+        assertThat(track.getClips()).containsExactly(recompiled);
+    }
 }

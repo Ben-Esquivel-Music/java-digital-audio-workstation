@@ -64,7 +64,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * transport showed, with its level and action label; the engine
  * controller's own messages go to {@link #engineNotices()}. The
  * still-writing warning's delay is a {@link ManualFxDelay} never fired, so
- * a slow disk cannot slip a WARNING into the sequence a test asserts. Every
+ * a slow disk cannot slip a WARNING into the sequence a test asserts. A test
+ * that asserts the exact toasts shown from a point while its take still
+ * records records over a {@link CaptureBlockBudget} device
+ * ({@link #recordABudgetedTakeUntilABlockIsOnDisk()}), so a capture thread
+ * slowed by a busy machine cannot slip a "Capture ring overflow" WARNING in
+ * either; every other test records over the stock mock. Every
  * FX action is bounded at 5 s; the waits on a real take's capture thread
  * at 30 s. {@link #close()} stops a take still in flight, waits until
  * nothing is being written, then shuts the engine and the engine controller
@@ -92,6 +97,8 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     private final NotificationHistoryService shown = new NotificationHistoryService();
     private final List<String> engineNotices = Collections.synchronizedList(new ArrayList<>());
     private final AtomicReference<RecordingPipeline> pipeline = new AtomicReference<>();
+    /** Caps the blocks a take is handed, for a test that opts in; the latest take is {@link #pipeline()}. */
+    private final CaptureBlockBudget blockBudget = new CaptureBlockBudget(() -> Optional.ofNullable(pipeline.get()));
     private final AtomicInteger engineStateDeliveries = new AtomicInteger();
     private AudioEngine engine;
     private TransportController controller;
@@ -103,6 +110,11 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     private EngineStateBridge bridge;
 
     private DeviceLossRecordingFixture(Path projectDirectory, boolean withEngineBridge) throws Exception {
+        this(projectDirectory, withEngineBridge, CountInMode.OFF);
+    }
+
+    private DeviceLossRecordingFixture(Path projectDirectory, boolean withEngineBridge, CountInMode countIn)
+            throws Exception {
         project = new DawProject("Demo", new AudioFormat(44_100.0, 2, 24, 256));
         project.setMetadata(project.getMetadata().withPath(projectDirectory));
         guitar = project.createAudioTrack("Guitar");
@@ -125,7 +137,7 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
                     transportStatus, statusBar, recIndicator, new Button(), new Button(),
                     () -> false,
                     () -> GridResolution.QUARTER,
-                    () -> CountInMode.OFF,
+                    () -> countIn,
                     track -> { },
                     () -> true,
                     () -> RoundTripLatency.UNKNOWN);
@@ -149,6 +161,16 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     /** The coordinator alone; the test reports the loss itself. */
     static DeviceLossRecordingFixture withoutEngineBridge(Path projectDirectory) throws Exception {
         return new DeviceLossRecordingFixture(projectDirectory, false);
+    }
+
+    /** {@link #withEngineBridge(Path)} with Record counting in by {@code countIn} (story 328). */
+    static DeviceLossRecordingFixture withEngineBridge(Path projectDirectory, CountInMode countIn) throws Exception {
+        return new DeviceLossRecordingFixture(projectDirectory, true, countIn);
+    }
+
+    /** {@link #withoutEngineBridge(Path)} with Record counting in by {@code countIn} (story 328). */
+    static DeviceLossRecordingFixture withoutEngineBridge(Path projectDirectory, CountInMode countIn) throws Exception {
+        return new DeviceLossRecordingFixture(projectDirectory, false, countIn);
     }
 
     DawProject project() {
@@ -274,6 +296,42 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
         return takeDirectory;
     }
 
+    /**
+     * {@link #recordUntilABlockIsOnDisk()} over a {@link CaptureBlockBudget}
+     * device. Before Record opens a stream, the engine's provision is
+     * swapped for one whose rung is the budget's proxy over this fixture's
+     * own mock — so {@link #unplug()}, {@link #plugIn} and {@link #backend()}
+     * still reach the device the stream runs on — and once the take has
+     * published {@link CaptureBlockBudget#BLOCKS} blocks it is handed no
+     * more: none can be dropped, so no "Capture ring overflow" WARNING joins
+     * the toasts a test reads from a point while the take records, up to its
+     * loss, whose close of the stream ends the device's park. Only for a
+     * test that waits for no block once the take has had its budget: the
+     * device also parks the pump of a stream reopened on it while this take
+     * is the latest, so a test that waits for such a stream to render
+     * records over the stock mock ({@link #recordUntilABlockIsOnDisk()}).
+     */
+    Path recordABudgetedTakeUntilABlockIsOnDisk() throws Exception {
+        StreamingProvision budgeted = new StreamingProvision(backend.name(),
+                List.of(new BackendStreamRung(blockBudget.backend(backend), activeDevice())));
+        runOnFx(() -> {
+            assertThat(engine.isStreamOpen()).as("fixture: the provision is swapped before any stream opens")
+                    .isFalse();
+            engine.setStreamingProvision(budgeted);
+        });
+        return recordUntilABlockIsOnDisk();
+    }
+
+    /**
+     * Asserts that the take of {@link #recordABudgetedTakeUntilABlockIsOnDisk()}
+     * was handed no block beyond its allowance and dropped none.
+     */
+    void assertNoBlockBeyondTheAllowanceAndNoneDropped() {
+        RecordingPipeline take = pipeline.get();
+        assertThat(take).as("fixture: the pipeline setup seam saw the take's pipeline").isNotNull();
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
+    }
+
     /** The guitar's first segment while it streams. */
     Path firstSegmentPart(Path takeDirectory) {
         return takeDirectory.resolve(guitar.getId()).resolve("segment-000.wav.part");
@@ -300,6 +358,15 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
         return entries.subList(before, entries.size());
     }
 
+    /**
+     * The number of toasts shown so far, read on the calling thread and not
+     * as an FX hop: {@code NotificationHistoryService.size()} reads under
+     * the lock its writers take ({@code synchronized (entries)}), so the read
+     * is thread-safe; each caller takes it after an FX barrier, so every
+     * toast posted before that barrier is counted; and it stays callable
+     * while a test holds the FX thread ({@link #holdTheFxThread()}), where
+     * an FX hop could not run.
+     */
     int shownCount() {
         return shown.size();
     }

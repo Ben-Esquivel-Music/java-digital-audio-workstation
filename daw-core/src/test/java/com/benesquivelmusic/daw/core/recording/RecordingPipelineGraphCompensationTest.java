@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.recording;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
@@ -27,6 +28,7 @@ import java.util.List;
 
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
+import static org.assertj.core.api.Assertions.offset;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
@@ -40,7 +42,8 @@ class RecordingPipelineGraphCompensationTest {
             "2400, 0, true, true, normal",
             "2400, 2400, false, true, normal",
             "2400, 2400, true, true, punch",
-            "2400, 2400, true, true, loop"
+            "2400, 2400, true, true, loop",
+            "2400, 2400, true, true, punchloop"
     })
     void hardwareCompensationIsPerSourceForEveryTake(int inputLatency, int outputLatency,
                                                     boolean compensate, boolean mixed, String mode) {
@@ -62,13 +65,27 @@ class RecordingPipelineGraphCompensationTest {
         engine.setGraph(transport, mixer, tracks);
         if (mode.equals("punch")) transport.setPunchRegion(new PunchRegion(96_000, 96_256, true));
         if (mode.equals("loop")) {
-            transport.setLoopRegion(4, 4 + 128.0 / 24_000);
+            // 7.3 blocks: not block-aligned, so every wrap lands with a real
+            // overshoot of 0.7 block inside (0, 1 block) — a block-aligned
+            // loop would wrap to exactly the loop start and the overshoot
+            // assertion below would be satisfied at its lower bound
+            // (story 328 review round 2).
+            transport.setLoopRegion(4, 4 + 7.3 * 64 / 24_000);
             transport.setLoopEnabled(true);
         }
+        if (mode.equals("punchloop")) {
+            // An 8-block loop punched over its blocks 2 and 3: every lap,
+            // the wrapped ones included, writes its first frame at the
+            // punch-in (PR #984 review), not at the loop start.
+            transport.setLoopRegion(4, 4 + 8 * 64 / 24_000.0);
+            transport.setLoopEnabled(true);
+            transport.setPunchRegion(new PunchRegion(96_000 + 128, 96_000 + 256, true));
+        }
+        boolean loopRecord = mode.equals("loop") || mode.equals("punchloop");
         var recording = new RecordingPipeline(engine, transport, format, directory, tracks);
         recording.setReportedLatency(new RoundTripLatency(inputLatency, outputLatency, 0));
         recording.setApplyLatencyCompensation(compensate);
-        recording.setLoopRecord(mode.equals("loop"));
+        recording.setLoopRecord(loopRecord);
         startRecording(recording);
         long expectedPhysical = compensate ? inputLatency + outputLatency : 0;
         try {
@@ -76,26 +93,66 @@ class RecordingPipelineGraphCompensationTest {
             if (mixed) assertThat(recording.getSession(physical).getCompensationFrames()).isEqualTo(expectedPhysical);
             float[][] input = new float[2][64];
             for (float[] samples : input) Arrays.fill(samples, 0.5f);
-            for (int block = 0; block < 6; block++) engine.processBlock(input, new float[2][64], 64);
+            // Punch-loop: two whole laps, then lap 3 past its punch region.
+            int blocks = mode.equals("punchloop") ? 21 : loopRecord ? 20 : 6;
+            for (int block = 0; block < blocks; block++) engine.processBlock(input, new float[2][64], 64);
             recording.awaitFlushed();
             assertThat(recording.getSession(instrument).getCompensationFrames()).isZero();
             if (mixed) assertThat(recording.getSession(physical).getCompensationFrames()).isEqualTo(expectedPhysical);
             stopRecording(recording);
 
             assertThat(instrument.getClips()).hasSize(1);
-            assertThat(instrument.getClips().getFirst().getStartBeat()).isEqualTo(4);
-            if (mixed) {
-                assertThat(physical.getClips()).hasSize(1);
+            if (mixed) assertThat(physical.getClips()).hasSize(1);
+            if (mode.equals("punchloop")) {
+                double punchIn = 4 + 128 / 24_000.0;
+                List<AudioClip> instrumentLaps = recording.getLapClips().get(instrument);
+                List<AudioClip> physicalLaps = recording.getLapClips().get(physical);
+                assertThat(instrumentLaps.size()).isGreaterThan(1);
+                assertThat(physicalLaps).hasSameSizeAs(instrumentLaps);
+                for (int lap = 0; lap < instrumentLaps.size(); lap++) {
+                    assertThat(instrumentLaps.get(lap).getStartBeat()).as("lap %d, uncompensated", lap + 1)
+                            .isCloseTo(punchIn, offset(1e-9));
+                    assertThat(instrumentLaps.get(lap).getDurationBeats()).as("lap %d", lap + 1)
+                            .isCloseTo(128 / 24_000.0, offset(1e-9));
+                    assertThat(physicalLaps.get(lap).getStartBeat()).as("lap %d, compensated", lap + 1)
+                            .isCloseTo(punchIn - expectedPhysical / 24_000.0, offset(1e-9));
+                }
+                assertThat(instrument.getClips().getFirst().getStartBeat()).isCloseTo(punchIn, offset(1e-9));
                 assertThat(physical.getClips().getFirst().getStartBeat())
-                        .isEqualTo(4 - expectedPhysical / 24_000.0);
-            }
-            if (mode.equals("loop")) {
-                assertThat(recording.getTakeGroups().get(instrument).size()).isGreaterThan(1);
-                assertThat(recording.getTakeGroups().get(instrument).takes())
-                        .allSatisfy(take -> assertThat(take.clip().getStartBeat()).isEqualTo(4));
-                assertThat(recording.getTakeGroups().get(physical).takes())
-                        .allSatisfy(take -> assertThat(take.clip().getStartBeat())
-                                .isEqualTo(4 - expectedPhysical / 24_000.0));
+                        .isCloseTo(punchIn - expectedPhysical / 24_000.0, offset(1e-9));
+            } else if (!mode.equals("loop")) {
+                assertThat(instrument.getClips().getFirst().getStartBeat()).isEqualTo(4);
+                if (mixed) {
+                    assertThat(physical.getClips().getFirst().getStartBeat())
+                            .isEqualTo(4 - expectedPhysical / 24_000.0);
+                }
+            } else {
+                // Story 328 review: lap 1 starts at the record position; a
+                // lap a wrap opened starts where its first block does — the
+                // loop start plus the wrap's overshoot, under one block —
+                // and every lap carries the track's own compensation.
+                List<AudioClip> instrumentLaps = recording.getLapClips().get(instrument);
+                assertThat(instrumentLaps.size()).isGreaterThan(1);
+                assertThat(instrumentLaps.getFirst().getStartBeat()).isEqualTo(4);
+                // Wrap 1 overshoots by 0.7 block, wrap 2 by 0.4 (8 and 15
+                // blocks into a 7.3-block loop): strictly inside (0, 1 block).
+                for (int lap = 1; lap < instrumentLaps.size(); lap++) {
+                    assertThat(instrumentLaps.get(lap).getStartBeat()).as("lap %d", lap + 1)
+                            .isGreaterThan(4.0)
+                            .isLessThan(4 + 64 / 24_000.0);
+                }
+                List<AudioClip> physicalLaps = recording.getLapClips().get(physical);
+                assertThat(physicalLaps).hasSameSizeAs(instrumentLaps);
+                for (int lap = 0; lap < physicalLaps.size(); lap++) {
+                    assertThat(physicalLaps.get(lap).getStartBeat()).as("lap %d, compensated", lap + 1)
+                            .isCloseTo(instrumentLaps.get(lap).getStartBeat() - expectedPhysical / 24_000.0,
+                                    offset(1e-9));
+                }
+                // The main lane holds the selected lap's comp slice, at that lap's own start.
+                AudioClip instrumentComp = instrument.getClips().getFirst();
+                assertThat(instrumentLaps).extracting(AudioClip::getStartBeat).contains(instrumentComp.getStartBeat());
+                AudioClip physicalComp = physical.getClips().getFirst();
+                assertThat(physicalLaps).extracting(AudioClip::getStartBeat).contains(physicalComp.getStartBeat());
             }
         } finally {
             if (recording.isActive()) stopRecording(recording);

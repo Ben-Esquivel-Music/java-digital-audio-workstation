@@ -1,6 +1,14 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
+import com.benesquivelmusic.daw.app.ui.vm.UndoHistoryDirtyBinder;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.FadeClipAction;
+import com.benesquivelmusic.daw.core.audio.FadeCurveType;
+import com.benesquivelmusic.daw.core.audio.SplitClipAction;
+import com.benesquivelmusic.daw.core.comping.CompileCompAction;
+import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
@@ -16,6 +24,8 @@ import javafx.scene.input.MouseEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,6 +40,7 @@ import static org.assertj.core.api.Assertions.within;
 class ClipInteractionControllerTest {
 
     private UndoManager undoManager;
+    private DawProject project;
     private List<Track> tracks;
     private EditTool activeTool;
     private double pixelsPerBeat;
@@ -42,10 +53,12 @@ class ClipInteractionControllerTest {
     private SelectionModel selectionModel;
     private String lastStatusBarText;
     private RippleMode rippleMode;
+    private boolean snapEnabled;
 
     @BeforeEach
     void setUp() {
         undoManager = new UndoManager();
+        project = new DawProject("Test", AudioFormat.STUDIO_QUALITY);
         tracks = new ArrayList<>();
         activeTool = EditTool.POINTER;
         pixelsPerBeat = 40.0;
@@ -57,6 +70,7 @@ class ClipInteractionControllerTest {
         selectionModel = new SelectionModel();
         lastStatusBarText = null;
         rippleMode = RippleMode.OFF;
+        snapEnabled = false;
     }
 
     private ClipInteractionController.Deps createHost() {
@@ -72,7 +86,7 @@ class ClipInteractionControllerTest {
                 () -> scrollXBeats,
                 () -> scrollYPixels,
                 () -> trackHeight,
-                () -> false,
+                () -> snapEnabled,
                 () -> GridResolution.QUARTER,
                 () -> 4,
                 () -> refreshCount++,
@@ -83,7 +97,8 @@ class ClipInteractionControllerTest {
                 (level, message) -> { /* no-op in tests */ },
                 () -> 120.0,
                 () -> { /* onTimeStretchClip no-op */ },
-                () -> { /* onPitchShiftClip no-op */ });
+                () -> { /* onPitchShiftClip no-op */ },
+                () -> project.markDirty());
     }
 
     /**
@@ -236,6 +251,716 @@ class ClipInteractionControllerTest {
     }
 
     // ── Pencil tool (via mouse event dispatch) ───────────────────────────────
+
+    @Test
+    void compPressOnATakeLaneBeginsASwipeOnThatLaneAndReleaseRecompilesTheComp() throws Exception {
+        // Story 328 (book §5.6): the COMP tool resolves the take lane from the
+        // pointer's Y — lane 2 sits at trackHeight + 2 × TAKE_LANE_HEIGHT —
+        // and the swipe's release compiles that lane's slice onto the main lane.
+        Track track = compedTrack();
+        tracks.add(track);
+        activeTool = EditTool.COMP;
+        double lane2Y = trackHeight + 2 * ArrangementCanvas.TAKE_LANE_HEIGHT + 10.0;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                canvas.fireEvent(mousePressed(160.0, lane2Y));   // beat 4.0 on lane 2
+                canvas.fireEvent(mouseReleased(240.0, lane2Y));  // beat 6.0
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(track.getTakeComping().getCompRegions())
+                .containsExactly(new com.benesquivelmusic.daw.core.comping.CompRegion(2, 4.0, 2.0));
+        assertThat(track.getClips()).as("the comped clip plays the selection").hasSize(1);
+        assertThat(track.getClips().getFirst().getAudioData())
+                .isSameAs(track.getTakeComping().getTakeLane(2).getClips().getFirst().getAudioData());
+        assertThat(undoManager.canUndo()).isTrue();
+        assertThat(refreshCount).isEqualTo(1);
+    }
+
+    @Test
+    void compPressOnTheMainLaneClearsALaneSoloAndRestoresTheComp() throws Exception {
+        Track track = compedTrack();
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 8.0));
+        new CompToolHandler(track, undoManager).altClickLane(1);
+        assertThat(track.getClips().getFirst().getAudioData())
+                .isSameAs(track.getTakeComping().getTakeLane(1).getClips().getFirst().getAudioData());
+        tracks.add(track);
+        activeTool = EditTool.COMP;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                canvas.fireEvent(mousePressed(160.0, trackHeight / 2));  // the main lane
+                canvas.fireEvent(mouseReleased(160.0, trackHeight / 2));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(track.getTakeComping().getTakeLanes()).allMatch(lane -> !lane.isSoloed());
+        assertThat(track.getClips()).hasSize(1);
+        assertThat(track.getClips().getFirst().getAudioData()).as("back to the comp")
+                .isSameAs(track.getTakeComping().getTakeLane(0).getClips().getFirst().getAudioData());
+        assertThat(track.getTakeComping().getCompRegions()).hasSize(1);
+    }
+
+    // ── Dirty bit (PR #984 review: canvas edits must reach the save prompt) ──
+
+    @Test
+    void aSwipeAfterASaveMarksTheProjectDirtyThroughTheUndoHistory() throws Exception {
+        // Copilot's sequence: a take is recorded, the project is saved, then a
+        // swipe on another lane changes the comp. The swipe is an undo entry
+        // executed by the canvas, which calls no markDirty of its own; the
+        // per-generation UndoHistoryDirtyBinder must still flip the bit that
+        // ProjectLifecycleController.confirmDiscardUnsavedChanges gates on.
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        Track track = compedTrack();
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 8.0));
+        undoManager.execute(new CompileCompAction(track));   // the take's history entry
+        assertThat(project.isDirty()).as("the take is unsaved").isTrue();
+        project.markClean();                                  // Save
+        tracks.add(track);
+        activeTool = EditTool.COMP;
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(80.0, takeLaneY(1)));    // beat 2 on lane 1
+            canvas.fireEvent(mouseReleased(160.0, takeLaneY(1)));  // beat 4
+        });
+
+        assertThat(track.getTakeComping().getCompRegions())
+                .contains(new com.benesquivelmusic.daw.core.comping.CompRegion(1, 2.0, 2.0));
+        assertThat(project.isDirty()).as("the swipe is an unsaved change").isTrue();
+        binder.dispose();
+    }
+
+    @Test
+    void anAuditionOverAnUneditedCompAndItsEndNeverDirtyTheProject() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+        project.markClean();
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(2)));
+            assertThat(project.isDirty()).as("a pure listen").isFalse();
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));   // the main lane ends it
+            canvas.fireEvent(mouseReleased(80.0, trackHeight / 2));
+        });
+
+        assertThat(track.getTakeComping().isAuditioning()).isFalse();
+        assertThat(project.isDirty()).isFalse();
+        assertThat(String.valueOf(lastStatusBarText)).as("no discard notice")
+                .doesNotContain("Audition discarded");
+        binder.dispose();
+    }
+
+    @Test
+    void anAuditionThatDiscardsAFadedCompClipMarksDirtyAndSaysSo() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+        AudioClip compClip = track.getClips().getFirst();
+        undoManager.execute(new FadeClipAction(compClip, 1.0, 0.0,
+                compClip.getFadeInCurveType(), compClip.getFadeOutCurveType()));
+        assertThat(project.isDirty()).as("the fade is an unsaved change").isTrue();
+        project.markClean();                                  // Save: the file holds the fade
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(2)));
+        });
+
+        assertThat(project.isDirty()).as("the next save drops the fade").isTrue();
+        assertThat(lastStatusBarText).isEqualTo("Audition discarded edits to comp clips on Vox");
+        binder.dispose();
+    }
+
+    @Test
+    void switchingFromOneAuditionToAnotherNeverDirtiesTheProject() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(1)));
+            project.markClean();                              // Save mid-audition
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(2)));
+        });
+
+        assertThat(track.getTakeComping().getTakeLane(2).isSoloed()).isTrue();
+        assertThat(project.isDirty()).as("audition output replaced, not comp output").isFalse();
+        binder.dispose();
+    }
+
+    @Test
+    void endingAnAuditionWhoseClipWasFadedLeavesTheSavedProjectClean() throws Exception {
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+        new CompToolHandler(track, undoManager).altClickLane(1);
+        AudioClip auditionClip = track.getClips().getFirst();
+        undoManager.execute(new FadeClipAction(auditionClip, 0.5, 0.0,
+                FadeCurveType.LINEAR, auditionClip.getFadeOutCurveType()));
+        project.markClean();                                  // Save: the selection, not the audition
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));   // the main lane ends it
+            canvas.fireEvent(mouseReleased(80.0, trackHeight / 2));
+        });
+
+        assertThat(track.getTakeComping().isAuditioning()).isFalse();
+        assertThat(project.isDirty()).isFalse();
+        binder.dispose();
+    }
+
+    @Test
+    void anAuditionAfterASplitOfTheCompOutputMarksDirty() throws Exception {
+        // Accepted: the saved file goes from the two split halves to one clip.
+        UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
+        activeTool = EditTool.COMP;
+        Track track = compedTrack();
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 8.0));
+        new CompileCompAction(track).execute();
+        undoManager.execute(new SplitClipAction(track, track.getClips().getFirst(), 3.0));
+        assertThat(track.getClips()).hasSize(2);
+        project.markClean();
+        tracks.add(track);
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(1)));
+        });
+
+        assertThat(project.isDirty()).isTrue();
+        assertThat(lastStatusBarText).startsWith("Audition discarded edits");
+        binder.dispose();
+    }
+
+    /** An audio track with three take lanes, each holding one 8-beat clip with its own audio array. */
+    private static Track compedTrack() {
+        Track track = new Track("Vox", TrackType.AUDIO);
+        for (int i = 1; i <= 3; i++) {
+            com.benesquivelmusic.daw.core.comping.TakeLane lane =
+                    new com.benesquivelmusic.daw.core.comping.TakeLane("Take " + i);
+            AudioClip clip = new AudioClip("Take " + i, 0.0, 8.0, null);
+            clip.setAudioData(new float[][] { new float[16] });
+            lane.addClip(clip);
+            track.getTakeComping().addTakeLane(lane);
+        }
+        return track;
+    }
+
+    // ── Take lanes under a non-COMP tool (PR #984 review, F3) ────────────────
+
+    @Test
+    void eraserOnATakeLaneLeavesTheCompAboveItInPlace() throws Exception {
+        activeTool = EditTool.ERASER;
+        assertTakeLaneGestureChangesNothing(canvas ->
+                canvas.fireEvent(mousePressed(80.0, takeLaneY(1))));   // beat 2: comp clip 0..4 above
+    }
+
+    @Test
+    void scissorsOnATakeLaneDoNotSplitTheComp() throws Exception {
+        activeTool = EditTool.SCISSORS;
+        assertTakeLaneGestureChangesNothing(canvas ->
+                canvas.fireEvent(mousePressed(80.0, takeLaneY(1))));
+    }
+
+    @Test
+    void pointerDragOnATakeLaneDoesNotMoveTheComp() throws Exception {
+        activeTool = EditTool.POINTER;
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            canvas.fireEvent(mousePressed(80.0, takeLaneY(1)));
+            canvas.fireEvent(mouseDragged(160.0, takeLaneY(1)));
+            canvas.fireEvent(mouseReleased(160.0, takeLaneY(1)));
+        });
+        assertThat(seekedPosition).as("no seek either: the press started no gesture").isEqualTo(-1.0);
+    }
+
+    @Test
+    void pointerTrimAtACompEdgeOverATakeLaneDoesNotTrimTheComp() throws Exception {
+        activeTool = EditTool.POINTER;
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            canvas.fireEvent(mousePressed(160.0, takeLaneY(0)));   // the comp boundary at beat 4
+            canvas.fireEvent(mouseDragged(120.0, takeLaneY(0)));
+            canvas.fireEvent(mouseReleased(120.0, takeLaneY(0)));
+        });
+    }
+
+    @Test
+    void glueOnATakeLaneDoesNotGlueTheComp() throws Exception {
+        activeTool = EditTool.GLUE;
+        assertTakeLaneGestureChangesNothing(canvas ->
+                canvas.fireEvent(mousePressed(160.0, takeLaneY(2))));  // the boundary of the two comp clips
+    }
+
+    @Test
+    void pencilOnATakeLaneAddsNoMainLaneClip() throws Exception {
+        activeTool = EditTool.PENCIL;
+        assertTakeLaneGestureChangesNothing(canvas ->
+                canvas.fireEvent(mousePressed(400.0, takeLaneY(1))));  // beat 10: no clip above
+    }
+
+    @Test
+    void rightClickOnATakeLaneNeitherSelectsTheCompNorOpensItsMenu() throws Exception {
+        activeTool = EditTool.POINTER;
+        assertTakeLaneGestureChangesNothing(canvas ->
+                canvas.fireEvent(mousePressedSecondary(80.0, takeLaneY(1))));
+        assertThat(selectionModel.getSelectedClips()).isEmpty();
+    }
+
+    @Test
+    void ctrlAltSlipOnATakeLaneDoesNotSlipTheComp() throws Exception {
+        activeTool = EditTool.POINTER;
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            // Beat 5: the comp clip 4..8, source offset 4, so a slip is never clamped.
+            canvas.fireEvent(mousePressedCtrlAlt(200.0, takeLaneY(1)));
+            canvas.fireEvent(mouseDraggedCtrlAlt(240.0, takeLaneY(1)));
+            canvas.fireEvent(mouseReleasedCtrlAlt(240.0, takeLaneY(1)));
+        });
+    }
+
+    @Test
+    void aRejectedTakeLanePressDoesNotBubbleToTheCanvasParent() throws Exception {
+        activeTool = EditTool.ERASER;
+        Track track = twoClipComp();
+        tracks.add(track);
+        AtomicReference<Integer> parentPresses = new AtomicReference<>(0);
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            javafx.scene.layout.StackPane parent = new javafx.scene.layout.StackPane(canvas);
+            // A handler, not a filter: a filter runs before the canvas and
+            // would see the press whether or not the canvas consumed it.
+            parent.addEventHandler(MouseEvent.MOUSE_PRESSED, _ -> parentPresses.set(parentPresses.get() + 1));
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(80.0, takeLaneY(1)));
+            canvas.fireEvent(mousePressed(400.0, trackHeight / 2));  // main lane, nothing under it
+        });
+        assertThat(parentPresses.get()).as("only the main-lane press reaches the parent").isEqualTo(1);
+    }
+
+    @Test
+    void pointerHoverAtACompEdgeOverATakeLaneShowsNoResizeCursor() throws Exception {
+        activeTool = EditTool.POINTER;
+        Track track = twoClipComp();
+        tracks.add(track);
+        AtomicReference<javafx.scene.Cursor> overLane = new AtomicReference<>();
+        AtomicReference<javafx.scene.Cursor> overMainLane = new AtomicReference<>();
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mouseMoved(160.0, takeLaneY(0)));
+            overLane.set(canvas.getCursor());
+            canvas.fireEvent(mouseMoved(160.0, trackHeight / 2));
+            overMainLane.set(canvas.getCursor());
+        });
+        assertThat(overLane.get()).isEqualTo(javafx.scene.Cursor.DEFAULT);
+        assertThat(overMainLane.get()).as("the same edge on the main lane still trims")
+                .isEqualTo(javafx.scene.Cursor.H_RESIZE);
+    }
+
+    @Test
+    void eraserOnTheMainLaneOfACompedTrackStillRemovesTheClipUnderIt() throws Exception {
+        activeTool = EditTool.ERASER;
+        Track track = twoClipComp();
+        tracks.add(track);
+        AudioClip firstComp = track.getClips().getFirst();
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));
+        });
+        assertThat(track.getClips()).hasSize(1).doesNotContain(firstComp);
+    }
+
+    @Test
+    void compAltClickOnATakeLaneStillAuditionsThatLane() throws Exception {
+        activeTool = EditTool.COMP;
+        Track track = twoClipComp();
+        tracks.add(track);
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressedAlt(80.0, takeLaneY(2)));
+        });
+        assertThat(track.getTakeComping().getTakeLane(2).isSoloed()).isTrue();
+        assertThat(track.getClips()).hasSize(1);
+        assertThat(track.getClips().getFirst().getAudioData())
+                .isSameAs(track.getTakeComping().getTakeLane(2).getClips().getFirst().getAudioData());
+    }
+
+    @Test
+    void pointerClickOnATakeLaneLocatesThePlayheadAndSelectsNothing() throws Exception {
+        // PR #984 review: the Pointer edits nothing through a take lane, but
+        // a click without drag still locates, as it does on empty space.
+        activeTool = EditTool.POINTER;
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            canvas.fireEvent(mousePressed(200.0, takeLaneY(1)));   // beat 5: comp clip 4..8 above
+            canvas.fireEvent(mouseReleased(200.0, takeLaneY(1)));
+        });
+        assertThat(seekedPosition).as("the playhead is located at the click").isEqualTo(5.0);
+        assertThat(selectionModel.getSelectedClips()).as("the comp above is not selected").isEmpty();
+        assertThat(selectionModel.hasSelection()).as("no time selection").isFalse();
+    }
+
+    @Test
+    void pointerDragOnATakeLaneSelectsAndMovesNothing() throws Exception {
+        activeTool = EditTool.POINTER;
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            canvas.fireEvent(mousePressed(80.0, takeLaneY(1)));
+            canvas.fireEvent(mouseDragged(240.0, takeLaneY(2)));
+            canvas.fireEvent(mouseReleased(240.0, takeLaneY(2)));
+        });
+        assertThat(seekedPosition).as("a drag does not locate").isEqualTo(-1.0);
+        assertThat(selectionModel.getSelectedClips()).as("no rubber band selected the comp").isEmpty();
+        assertThat(selectionModel.hasSelection()).as("no time selection").isFalse();
+    }
+
+    @Test
+    void eraserHoverOverATakeLaneShowsTheDefaultCursor() throws Exception {
+        activeTool = EditTool.ERASER;
+        Track track = twoClipComp();
+        tracks.add(track);
+        AtomicReference<javafx.scene.Cursor> overLane = new AtomicReference<>();
+        AtomicReference<javafx.scene.Cursor> overMainLane = new AtomicReference<>();
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mouseMoved(80.0, takeLaneY(1)));
+            overLane.set(canvas.getCursor());
+            canvas.fireEvent(mouseMoved(80.0, trackHeight / 2));
+            overMainLane.set(canvas.getCursor());
+        });
+        assertThat(overLane.get()).as("a press there does nothing").isEqualTo(javafx.scene.Cursor.DEFAULT);
+        assertThat(overMainLane.get()).as("the Eraser's cursor on the main lane").isEqualTo(javafx.scene.Cursor.HAND);
+    }
+
+    @Test
+    void aClipDragTheToolChangedUnderDoesNotOutliveItsGesture() throws Exception {
+        // PR #984 review: a Pointer clip drag whose release came under another
+        // tool left the drag armed, and a later Pointer release that started
+        // no drag of its own moved the old clip.
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            activeTool = EditTool.POINTER;
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));       // the comp clip 0..4
+            activeTool = EditTool.ERASER;                                // a tool shortcut mid-drag
+            canvas.fireEvent(mouseReleased(80.0, trackHeight / 2));
+            activeTool = EditTool.POINTER;
+            canvas.fireEvent(mousePressedSecondary(400.0, trackHeight / 2)); // beat 10: empty, starts nothing
+            canvas.fireEvent(mouseReleased(400.0, trackHeight / 2));
+        });
+    }
+
+    @Test
+    void aClipDragWhoseReleaseNeverCameIsCancelledByTheNextPress() throws Exception {
+        // PR #984 review: only the press-time cancel guards a drag whose
+        // release was lost. The next press starts nothing of its own, so
+        // without that cancel its release would complete the old drag.
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            activeTool = EditTool.POINTER;
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));          // the comp clip 0..4; release lost
+            canvas.fireEvent(mousePressedSecondary(400.0, trackHeight / 2)); // beat 10: empty, starts nothing
+            canvas.fireEvent(mouseDragged(440.0, trackHeight / 2));
+            canvas.fireEvent(mouseReleased(440.0, trackHeight / 2));
+        });
+    }
+
+    @Test
+    void aClipDragTheToolChangedUnderEndsItsDragVisualAtTheRelease() throws Exception {
+        // The release-time cancel: the drag visual ends at the release that
+        // came under another tool, not at some later press.
+        Track track = twoClipComp();
+        tracks.add(track);
+        AtomicReference<DragVisualAdvisor.State> whilePressed = new AtomicReference<>();
+        AtomicReference<DragVisualAdvisor.State> afterRelease = new AtomicReference<>();
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+            DragVisualAdvisor advisor = new DragVisualAdvisor();
+            controller.setDragVisualAdvisor(advisor);
+            controller.install();
+            activeTool = EditTool.POINTER;
+            canvas.fireEvent(mousePressed(80.0, trackHeight / 2));
+            whilePressed.set(advisor.state());
+            activeTool = EditTool.ERASER;
+            canvas.fireEvent(mouseReleased(80.0, trackHeight / 2));
+            afterRelease.set(advisor.state());
+        });
+        assertThat(whilePressed.get()).as("premise: the press began a drag").isEqualTo(DragVisualAdvisor.State.DRAGGING);
+        assertThat(afterRelease.get()).as("the release ended it").isNotEqualTo(DragVisualAdvisor.State.DRAGGING);
+    }
+
+    @Test
+    void aTakeLaneLocateWhoseReleaseNeverCameDoesNotTakeOverTheNextTrim() throws Exception {
+        // PR #984 review: a stale take-lane locate swallowed the next
+        // gesture's release, so the trim never completed and the playhead
+        // could jump.
+        Track track = twoClipComp();
+        tracks.add(track);
+        AudioClip second = track.getClips().stream()
+                .filter(clip -> clip.getStartBeat() == 4.0).findFirst().orElseThrow();
+        activeTool = EditTool.POINTER;
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(200.0, takeLaneY(1)));       // a take-lane locate; release lost
+            canvas.fireEvent(mousePressed(320.0, trackHeight / 2));    // the right edge of the clip 4..8
+            canvas.fireEvent(mouseDragged(280.0, trackHeight / 2));
+            canvas.fireEvent(mouseReleased(280.0, trackHeight / 2));   // beat 7
+        });
+        assertThat(undoManager.canUndo()).as("the trim recorded its undo entry").isTrue();
+        assertThat(second.getEndBeat()).as("the trim completed").isEqualTo(7.0);
+        assertThat(seekedPosition).as("no seek").isEqualTo(-1.0);
+    }
+
+    @Test
+    void aTakeLaneClickTheToolChangedUnderDoesNotLocate() throws Exception {
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            activeTool = EditTool.POINTER;
+            canvas.fireEvent(mousePressed(200.0, takeLaneY(1)));
+            activeTool = EditTool.ERASER;                              // a tool shortcut mid-click
+            canvas.fireEvent(mouseReleased(200.0, takeLaneY(1)));
+        });
+        assertThat(seekedPosition).as("the abandoned click does not seek").isEqualTo(-1.0);
+    }
+
+    @Test
+    void aShiftClickOnATakeLaneDoesNotLocateAsOnEmptySpace() throws Exception {
+        activeTool = EditTool.POINTER;
+        assertTakeLaneGestureChangesNothing(canvas -> {
+            canvas.fireEvent(mousePressedShift(200.0, takeLaneY(1)));
+            canvas.fireEvent(mouseReleased(200.0, takeLaneY(1)));
+        });
+        assertThat(seekedPosition).as("Shift-click seeks nowhere, as on empty space").isEqualTo(-1.0);
+    }
+
+    @Test
+    void aTakeLaneClickSnapsTheLocateAsAnEmptySpaceClickDoes() throws Exception {
+        activeTool = EditTool.POINTER;
+        snapEnabled = true;
+        Track track = twoClipComp();
+        tracks.add(track);
+        AtomicReference<Double> overTakeLane = new AtomicReference<>();
+        AtomicReference<Double> overEmptySpace = new AtomicReference<>();
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(410.0, takeLaneY(1)));       // beat 10.25, off the grid
+            canvas.fireEvent(mouseReleased(410.0, takeLaneY(1)));
+            overTakeLane.set(seekedPosition);
+            canvas.fireEvent(mousePressed(410.0, trackHeight / 2));    // the same beat on empty main lane
+            canvas.fireEvent(mouseReleased(410.0, trackHeight / 2));
+            overEmptySpace.set(seekedPosition);
+        });
+        assertThat(overEmptySpace.get()).as("premise: the empty-space click snapped")
+                .isEqualTo(SnapQuantizer.quantize(10.25, GridResolution.QUARTER, 4)).isNotEqualTo(10.25);
+        assertThat(overTakeLane.get()).as("the take-lane click locates to the same snapped beat")
+                .isEqualTo(overEmptySpace.get());
+    }
+
+    /** Where a Pointer click lands on a {@link #twoClipComp()} track: both paths that seek on a click. */
+    enum ClickSurface {
+        /** Take lane 1, beat 10. */
+        TAKE_LANE,
+        /** The empty main lane at beat 10, after the comp: the rubber-band release. */
+        EMPTY_SPACE
+    }
+
+    private double clickSurfaceY(ClickSurface surface) {
+        return switch (surface) {
+            case TAKE_LANE -> takeLaneY(1);
+            case EMPTY_SPACE -> trackHeight / 2;
+        };
+    }
+
+    @ParameterizedTest
+    @EnumSource(ClickSurface.class)
+    void aReleaseExactlyTheClickSlopFromThePressOnBothAxesIsStillAClickThatLocates(ClickSurface surface)
+            throws Exception {
+        // HEAD's empty-space rule: a drag is travel of more than 2 px on an axis.
+        activeTool = EditTool.POINTER;
+        Track track = twoClipComp();
+        tracks.add(track);
+        double y = clickSurfaceY(surface);
+        double slop = ClipInteractionController.CLICK_SLOP_PX;
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(400.0, y));                       // beat 10
+            canvas.fireEvent(mouseReleased(400.0 + slop, y + slop));
+        });
+        assertThat(seekedPosition).as("a click: it locates at the release")
+                .isCloseTo((400.0 + slop) / pixelsPerBeat, within(1e-9));
+    }
+
+    @ParameterizedTest
+    @EnumSource(ClickSurface.class)
+    void aReleaseHalfAPixelPastTheClickSlopIsADragThatDoesNotLocate(ClickSurface surface) throws Exception {
+        activeTool = EditTool.POINTER;
+        Track track = twoClipComp();
+        tracks.add(track);
+        double y = clickSurfaceY(surface);
+        double slop = ClipInteractionController.CLICK_SLOP_PX;
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            canvas.fireEvent(mousePressed(400.0, y));                       // beat 10
+            // Horizontal travel: on empty space a drag that covers no beats still seeks.
+            canvas.fireEvent(mouseReleased(400.0 + slop + 0.5, y));
+        });
+        assertThat(seekedPosition).as("a drag does not locate").isEqualTo(-1.0);
+    }
+
+    /** The Y of the middle of take lane {@code laneIndex} under the first track. */
+    private double takeLaneY(int laneIndex) {
+        return trackHeight + laneIndex * ArrangementCanvas.TAKE_LANE_HEIGHT
+                + ArrangementCanvas.TAKE_LANE_HEIGHT / 2;
+    }
+
+    /**
+     * {@link #compedTrack()} with lane 0 selected over beats 0-4 and again
+     * over beats 4-8, compiled: the main lane holds two adjacent comp clips
+     * of the same take, which the Glue tool could merge.
+     */
+    private static Track twoClipComp() {
+        Track track = compedTrack();
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 4.0));
+        track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 4.0, 4.0));
+        new com.benesquivelmusic.daw.core.comping.CompileCompAction(track).execute();
+        assertThat(track.getClips()).hasSize(2);
+        return track;
+    }
+
+    /** What a gesture could change: a clip's identity and its placement. */
+    private record ClipState(AudioClip clip, double startBeat, double durationBeats, double sourceOffsetBeats) {
+        static List<ClipState> of(List<AudioClip> clips) {
+            return clips.stream().map(clip -> new ClipState(clip, clip.getStartBeat(),
+                    clip.getDurationBeats(), clip.getSourceOffsetBeats())).toList();
+        }
+    }
+
+    /**
+     * Runs {@code gesture} on a {@link #twoClipComp()} track under the active
+     * tool and asserts it changed nothing: the main lane (every clip, its
+     * identity, position, length and source offset), each take lane, the
+     * comp selection, the lane solos and the undo history.
+     */
+    private void assertTakeLaneGestureChangesNothing(java.util.function.Consumer<ArrangementCanvas> gesture)
+            throws Exception {
+        Track track = twoClipComp();
+        tracks.add(track);
+        com.benesquivelmusic.daw.core.comping.TakeComping comping = track.getTakeComping();
+        List<ClipState> mainLane = ClipState.of(track.getClips());
+        List<List<ClipState>> lanes = comping.getTakeLanes().stream()
+                .map(lane -> ClipState.of(lane.getClips())).toList();
+        List<com.benesquivelmusic.daw.core.comping.CompRegion> regions = List.copyOf(comping.getCompRegions());
+
+        runOnFxThread(() -> {
+            ArrangementCanvas canvas = new ArrangementCanvas();
+            canvas.setTracks(tracks);
+            new ClipInteractionController(canvas, createHost()).install();
+            gesture.accept(canvas);
+        });
+
+        assertThat(ClipState.of(track.getClips())).as("the main lane").isEqualTo(mainLane);
+        assertThat(track.getClips()).allMatch(comping::isCompOutput);
+        assertThat(comping.getTakeLanes().stream().map(lane -> ClipState.of(lane.getClips())).toList())
+                .as("the take lanes").isEqualTo(lanes);
+        assertThat(comping.getCompRegions()).isEqualTo(regions);
+        assertThat(comping.getTakeLanes()).noneMatch(com.benesquivelmusic.daw.core.comping.TakeLane::isSoloed);
+        assertThat(undoManager.canUndo()).as("no undo entry").isFalse();
+    }
+
+    /** Runs {@code body} on the FX thread and rethrows anything it threw. */
+    private static void runOnFxThread(FxBody body) throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                failure.set(t);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        if (failure.get() != null) {
+            throw new AssertionError("failed on the FX thread", failure.get());
+        }
+    }
+
+    @FunctionalInterface
+    private interface FxBody {
+        void run() throws Exception;
+    }
+
+    private static MouseEvent mousePressedSecondary(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_PRESSED,
+                x, y, x, y, MouseButton.SECONDARY, 1,
+                false, false, false, false,
+                false, false, true, false, false, false, null);
+    }
+
+    private static MouseEvent mousePressedAlt(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_PRESSED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                false, false, true, false,
+                true, false, false, false, false, false, null);
+    }
+
+    private static MouseEvent mouseMoved(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_MOVED,
+                x, y, x, y, MouseButton.NONE, 0,
+                false, false, false, false,
+                false, false, false, false, false, false, null);
+    }
 
     @Test
     void pencilShouldCreateClipViaMousePress() throws Exception {

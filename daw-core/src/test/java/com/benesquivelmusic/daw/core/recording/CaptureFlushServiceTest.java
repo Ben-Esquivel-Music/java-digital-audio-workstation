@@ -74,7 +74,7 @@ class CaptureFlushServiceTest {
     }
 
     private TrackCapture instrumentCapture(Track track, TrackCapture.SessionFactory sessions) {
-        return new TrackCapture(track, InputRouting.NONE, 1, STEREO_16.channels(), SLOT_FRAMES, 0L, 0.0,
+        return new TrackCapture(track, InputRouting.NONE, 1, STEREO_16.channels(), SLOT_FRAMES, 0L,
                 STEREO_16.sampleRate(), 120.0, takeDir.resolve(track.getId()), sessions);
     }
 
@@ -145,7 +145,7 @@ class CaptureFlushServiceTest {
 
     private TrackCapture physicalPunchCapture(Track track, int source) {
         TrackCapture capture = new TrackCapture(track, new InputRouting(0, 1), -1, 1, SLOT_FRAMES, 0,
-                0, STEREO_16.sampleRate(), 120, takeDir.resolve(track.getId()),
+                STEREO_16.sampleRate(), 120, takeDir.resolve(track.getId()),
                 (t, dir) -> new RecordingSession(new AudioFormat(48_000, 1, 16, SLOT_FRAMES), dir));
         capture.setInputSource(source, "Input " + source);
         return capture;

@@ -140,7 +140,7 @@ public final class InsertEffectRack extends VBox {
 
         // Register listener to rebuild slots after undo/redo operations
         if (undoManager != null) {
-            historyListener = _ -> {
+            historyListener = (_, _) -> {
                 if (Platform.isFxApplicationThread()) {
                     rebuildSlots();
                 } else {

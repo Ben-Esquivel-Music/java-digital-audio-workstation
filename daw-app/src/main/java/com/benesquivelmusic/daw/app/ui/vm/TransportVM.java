@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.Transport.ChangeKind;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import javafx.beans.property.ReadOnlyBooleanProperty;
@@ -14,6 +15,7 @@ import javafx.beans.property.ReadOnlyObjectProperty;
 import javafx.beans.property.ReadOnlyObjectWrapper;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 /**
@@ -39,8 +41,18 @@ import java.util.function.Consumer;
  * <ul>
  *   <li><strong>Discrete</strong> facts ({@link ChangeKind#STATE STATE},
  *       {@link ChangeKind#TEMPO TEMPO}, {@link ChangeKind#TIME_SIGNATURE
- *       TIME_SIGNATURE}, {@link ChangeKind#LOOP LOOP}) are posted with
- *       {@link FxDispatcher#onFx(Runnable)}.</li>
+ *       TIME_SIGNATURE}, {@link ChangeKind#LOOP LOOP}, {@link ChangeKind#PUNCH
+ *       PUNCH}) are posted with
+ *       {@link FxDispatcher#onFx(Runnable)} — except a {@code STATE} fired
+ *       <em>off</em> the FX thread, which goes through a lock-free channel
+ *       (next item). Story 328 (book §5.6): a count-in's record start runs
+ *       {@code Transport.record()} on the RENDER thread, so its {@code STATE}
+ *       reaches this listener there; {@code Platform.runLater} takes the
+ *       toolkit's queue lock and allocates, which the render thread must
+ *       never do. The thread test is {@link FxDispatcher#isFxThread()} — one
+ *       volatile read — and the channel's consumer re-reads the live
+ *       transport state, so a later FX-thread change (a Stop right after
+ *       the fire) can never be overwritten by the earlier value.</li>
  *   <li>The <strong>continuous</strong> {@link #playhead} is published into the
  *       dispatcher's lock-free, single-reader primitive-{@code double} buffer and
  *       delivered once per frame by the drain (§4.5, §5.2) — never a per-tick
@@ -81,6 +93,20 @@ public final class TransportVM {
             new ReadOnlyObjectWrapper<>(this, "timeSignature");
     private final ReadOnlyObjectWrapper<LoopRegion> loopRegion =
             new ReadOnlyObjectWrapper<>(this, "loopRegion");
+    /**
+     * Story 328 — the loop-record flag mirror (book §5.6). Its producer is
+     * the transport's {@link ChangeKind#LOOP} signal, as the loop region's
+     * is: {@code Transport.setLoopRecordEnabled} fires it.
+     */
+    private final ReadOnlyBooleanWrapper loopRecord =
+            new ReadOnlyBooleanWrapper(this, "loopRecord");
+    /**
+     * Story 328 — the punch-in/out region mirror (book §5.6): empty when no
+     * region is installed. Produced by {@link ChangeKind#PUNCH}, which the
+     * command cascade fires through {@code Transport.setPunchRegion}.
+     */
+    private final ReadOnlyObjectWrapper<Optional<PunchRegion>> punchRegion =
+            new ReadOnlyObjectWrapper<>(this, "punchRegion", Optional.empty());
     private final ReadOnlyDoubleWrapper playhead =
             new ReadOnlyDoubleWrapper(this, "playhead");
 
@@ -92,6 +118,27 @@ public final class TransportVM {
      * allocates no {@link Double} box. Closed in {@link #dispose()}.
      */
     private final FxDispatcher.ContinuousDoubleChannel playheadChannel;
+
+    /**
+     * Lock-free, single-reader channel carrying a {@link ChangeKind#STATE}
+     * fired off the FX thread — by the render thread at a count-in's end
+     * (story 328) — to the pulse's drain, which re-reads the transport's
+     * live state. The published value is the enum constant: no allocation.
+     * Closed in {@link #dispose()}.
+     */
+    private final FxDispatcher.ContinuousChannel<ChangeKind> stateChannel;
+
+    /**
+     * The discrete facts' FX-thread republish runnables, built once here so
+     * {@link #onCoreChange} contains no lambda: a capturing lambda per
+     * signal is an allocation on whichever thread fires the signal (the
+     * {@code ChannelVM} precedent, story 322 fix round 1).
+     */
+    private final Runnable republishState;
+    private final Runnable republishTempo;
+    private final Runnable republishTimeSignature;
+    private final Runnable republishLoop;
+    private final Runnable republishPunch;
 
     /** Removal token returned by {@link Transport#addChangeListener(Consumer)}. */
     private final Runnable unregister;
@@ -111,6 +158,15 @@ public final class TransportVM {
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
 
         this.playheadChannel = dispatcher.openContinuousDouble(playhead::set);
+        this.stateChannel = dispatcher.openContinuous(kind -> state.set(transport.getState()));
+        this.republishState = () -> state.set(transport.getState());
+        this.republishTempo = () -> tempo.set(transport.getTempo());
+        this.republishTimeSignature = () -> timeSignature.set(readTimeSignature());
+        this.republishLoop = () -> {
+            loopRegion.set(readLoopRegion());
+            loopRecord.set(transport.isLoopRecordEnabled());
+        };
+        this.republishPunch = () -> punchRegion.set(readPunchRegion());
 
         // Seed every property with the current state so a control binding shows
         // the correct value before the first signal arrives.
@@ -118,6 +174,8 @@ public final class TransportVM {
         tempo.set(transport.getTempo());
         timeSignature.set(readTimeSignature());
         loopRegion.set(readLoopRegion());
+        loopRecord.set(transport.isLoopRecordEnabled());
+        punchRegion.set(readPunchRegion());
         playhead.set(transport.getPositionInBeats());
 
         this.unregister = transport.addChangeListener(this::onCoreChange);
@@ -127,20 +185,51 @@ public final class TransportVM {
      * Handles a core change signal. Runs on whatever thread mutated the
      * transport; routes each discrete fact onto the FX thread and the continuous
      * playhead through the lock-free buffer (§4.5).
+     *
+     * <p>The dispatch on {@code kind} is an identity if-chain, deliberately
+     * <em>not</em> a {@code switch}, and {@code STATE} and {@code POSITION}
+     * — the two kinds the render thread fires — come first (story 328
+     * review round 2; the {@code ChannelVM.onCoreChange} precedent). An enum
+     * {@code switch} over the cross-module {@code ChangeKind} compiles to a
+     * lookup through a synthetic {@code TransportVM$1.$SwitchMap$…} table
+     * whose class initialiser — an {@code int[]} allocation, a
+     * {@code values()} clone and the class-initialisation lock — runs on
+     * whichever thread reaches the switch first; after a fresh JVM with
+     * Record pressed before any play or seek, that is the render thread at
+     * the count-in's fire, the block before the first captured one
+     * ({@code dawg-annotations-reflection} §4 — never allocate or lock on
+     * the audio thread). {@code CountInRecordStartListenerBytecodeSentinelTest}
+     * walks this method's bytecode: no allocation, no monitor, no toolkit
+     * entry, no switch map, no lambda.</p>
      */
     private void onCoreChange(ChangeKind kind) {
-        switch (kind) {
+        if (kind == ChangeKind.STATE) {
             // Stop also resets the position to the anchor, so a STATE change
             // republishes the playhead too (§5.2 "state, playhead→anchor").
-            case STATE -> {
-                dispatcher.onFx(() -> state.set(transport.getState()));
-                playheadChannel.publish(transport.getPositionInBeats());
+            if (dispatcher.isFxThread()) {
+                dispatcher.onFx(republishState);
+            } else {
+                // The render thread's record start (story 328) lands
+                // here: no runLater, no lambda — a wait-free publish.
+                stateChannel.publish(kind);
             }
-            case TEMPO -> dispatcher.onFx(() -> tempo.set(transport.getTempo()));
-            case TIME_SIGNATURE -> dispatcher.onFx(() -> timeSignature.set(readTimeSignature()));
-            case LOOP -> dispatcher.onFx(() -> loopRegion.set(readLoopRegion()));
-            case POSITION -> playheadChannel.publish(transport.getPositionInBeats());
+            playheadChannel.publish(transport.getPositionInBeats());
+        } else if (kind == ChangeKind.POSITION) {
+            playheadChannel.publish(transport.getPositionInBeats());
+        } else if (kind == ChangeKind.TEMPO) {
+            dispatcher.onFx(republishTempo);
+        } else if (kind == ChangeKind.TIME_SIGNATURE) {
+            dispatcher.onFx(republishTimeSignature);
+        } else if (kind == ChangeKind.LOOP) {
+            dispatcher.onFx(republishLoop);
+        } else if (kind == ChangeKind.PUNCH) {
+            dispatcher.onFx(republishPunch);
         }
+    }
+
+    /** Reads the punch region as one snapshot — a single volatile load of the record reference. */
+    private Optional<PunchRegion> readPunchRegion() {
+        return Optional.ofNullable(transport.getPunchRegion());
     }
 
     private TimeSignature readTimeSignature() {
@@ -208,6 +297,33 @@ public final class TransportVM {
     }
 
     /**
+     * Whether loop-record is enabled (story 328, book §5.6). Read-only;
+     * bound by the Loop Rec toggle; follows {@link ChangeKind#LOOP}.
+     */
+    public ReadOnlyBooleanProperty loopRecordProperty() {
+        return loopRecord.getReadOnlyProperty();
+    }
+
+    /** Returns whether loop-record is enabled. */
+    public boolean isLoopRecord() {
+        return loopRecord.get();
+    }
+
+    /**
+     * The punch-in/out region in PROJECT-rate frames, empty when none is
+     * installed (story 328, book §5.6). Read-only; follows
+     * {@link ChangeKind#PUNCH}.
+     */
+    public ReadOnlyObjectProperty<Optional<PunchRegion>> punchRegionProperty() {
+        return punchRegion.getReadOnlyProperty();
+    }
+
+    /** Returns the current punch region, empty when none is installed. */
+    public Optional<PunchRegion> getPunchRegion() {
+        return punchRegion.get();
+    }
+
+    /**
      * The continuous playback position in beats. Read-only; bound by the
      * playhead/time display. Updated once per frame via the dispatcher drain.
      */
@@ -240,5 +356,6 @@ public final class TransportVM {
         disposed = true;
         unregister.run();
         playheadChannel.close();
+        stateChannel.close();
     }
 }

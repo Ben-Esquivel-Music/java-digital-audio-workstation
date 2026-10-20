@@ -15,7 +15,18 @@ import java.util.UUID;
  * <p>Executing this action splits the clip into two parts: the original clip
  * is truncated to end at the split point, and a new clip covering the
  * remainder is added to the same track. Undoing the action restores the
- * original clip's properties and removes the second clip from the track.</p>
+ * original clip's properties and removes the second clip from the track.
+ * Both halves keep the clip's comp owner ({@link AudioClip#splitAt}), so a
+ * recompile replaces both.</p>
+ *
+ * <p>A split whose clip is no longer on the track when it runs does nothing,
+ * and neither does its undo. That happens to a redo of a split of comp
+ * output: split, swipe, undo the swipe, undo the split, redo the split —
+ * the swipe's undo recompiled the main lane, so the clip the split names
+ * left the track. The defence against a stray half playing over the fresh
+ * comp is {@link Track#addClip}, which refuses comp output a recompile
+ * replaced; this guard keeps the off-track clip unmutated and the clip
+ * events honest.</p>
  */
 public final class SplitClipAction implements UndoableAction {
 
@@ -27,6 +38,8 @@ public final class SplitClipAction implements UndoableAction {
     private double originalDuration;
     private double originalFadeOutBeats;
     private AudioClip secondClip;
+    /** Whether the last {@link #execute()} split the clip; its undo reverts only then. */
+    private boolean applied;
 
     /**
      * Creates a new split-clip action.
@@ -48,6 +61,10 @@ public final class SplitClipAction implements UndoableAction {
 
     @Override
     public void execute() {
+        applied = track.getClips().contains(clip);
+        if (!applied) {
+            return;
+        }
         originalDuration = clip.getDurationBeats();
         originalFadeOutBeats = clip.getFadeOutBeats();
         secondClip = clip.splitAt(splitBeat);
@@ -65,6 +82,10 @@ public final class SplitClipAction implements UndoableAction {
 
     @Override
     public void undo() {
+        if (!applied) {
+            return;
+        }
+        applied = false;
         track.removeClip(secondClip);
         clip.setDurationBeats(originalDuration);
         clip.setFadeOutBeats(originalFadeOutBeats);

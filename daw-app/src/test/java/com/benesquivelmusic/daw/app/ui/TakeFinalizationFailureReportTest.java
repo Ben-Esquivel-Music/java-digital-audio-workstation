@@ -6,9 +6,11 @@ import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
@@ -66,11 +68,16 @@ import static org.assertj.core.api.Assertions.tuple;
  * stub with no hardware behind it. Neither Record nor Stop waits for the
  * take's capture thread (PR #978 review 5391920205): the take records, and a
  * stopped take is published, on a later FX turn, which the test waits for.
- * The one seam set is the still-writing warning's delay
+ * The seams set are the still-writing warning's delay
  * ({@link ManualFxDelay}, never fired), so that a seal slower than that
- * delay on a busy disk cannot slip a WARNING into the sequence asserted;
- * it stands in for nothing of the core. Every FX action and every wait is
- * bounded.</p>
+ * delay on a busy disk cannot slip a WARNING into the sequence asserted,
+ * and the pipeline-setup seam, which only tells the device below which
+ * take is the latest; neither stands in for anything of the core. For the
+ * same reason as the delay, the mock's clock stops once the take has been
+ * handed its budget of blocks ({@link CaptureBlockBudget}): no block of
+ * the take can be dropped, so a capture thread slowed by a busy machine
+ * cannot slip a "Capture ring overflow" WARNING in ahead of the Stop.
+ * Every FX action and every wait is bounded.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class TakeFinalizationFailureReportTest {
@@ -86,6 +93,11 @@ class TakeFinalizationFailureReportTest {
     Path projectDirectory;
 
     private final NotificationHistoryService shown = new NotificationHistoryService();
+    /** The pipeline of the latest take Record built; {@code null} before the first. */
+    private final AtomicReference<RecordingPipeline> latestTake = new AtomicReference<>();
+    /** Caps the blocks the take is handed, so none is dropped before its Stop. */
+    private final CaptureBlockBudget blockBudget =
+            new CaptureBlockBudget(() -> Optional.ofNullable(latestTake.get()));
     private final KeysInput keysInput = new KeysInput();
     private DawProject project;
     private Track guitar;
@@ -125,11 +137,12 @@ class TakeFinalizationFailureReportTest {
         newController();
         Path takeDirectory = recordUntilABlockIsOnDisk();
         Path sealedPath = occupyTheSealedPathOfTheFirstSegment(takeDirectory);
-        int before = shown.size();
+        int before = onFx(shown::size);
 
         runOnFx(controller::stop);
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the stopped take was published");
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(latestTake.get());
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
                 + " left under audio/takes/" + takeDirectory.getFileName() + " (1 clip created)";
@@ -157,11 +170,12 @@ class TakeFinalizationFailureReportTest {
         Path takeDirectory = recordUntilABlockIsOnDisk();
         keysInput.play(64);
         occupyTheSealedPathOfTheFirstSegment(takeDirectory);
-        int before = shown.size();
+        int before = onFx(shown::size);
 
         runOnFx(controller::stop);
         awaitOnFx(() -> !controller.isTakeBeingWritten(), "the stopped take was published");
 
+        blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(latestTake.get());
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
                 + " left under audio/takes/" + takeDirectory.getFileName() + " (1 clip created)";
@@ -176,8 +190,9 @@ class TakeFinalizationFailureReportTest {
         assertThat(keys.getMidiClip().size()).as("fixture: the note was recorded").isEqualTo(1);
     }
 
+    /** Builds the controller over {@link #blockBudget}'s device. */
     private void newController() throws Exception {
-        MockAudioBackend backend = new MockAudioBackend();
+        AudioBackend backend = blockBudget.backend();
         StreamingProvision provision = new StreamingProvision(backend.name(),
                 List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name()))));
         runOnFx(() -> {
@@ -197,6 +212,7 @@ class TakeFinalizationFailureReportTest {
                     () -> true,
                     () -> RoundTripLatency.UNKNOWN);
             controller.setStillWritingDelayForTest(new ManualFxDelay());
+            controller.setPipelineSetupForTest(latestTake::set);
         });
     }
 

@@ -24,6 +24,21 @@ import java.util.UUID;
  * head is <em>derived</em> from the list, the list is the authority. A clip
  * backed by a single file (an import, a bounce) has an empty list and a
  * free-standing {@code sourceFilePath}.</p>
+ *
+ * <p><strong>Comp output</strong> (book §3.5). A clip a comp compiled onto
+ * the main lane carries the compile pass that produced it as its owner
+ * ({@link #compOutputOwner()}); the next compile replaces every clip of the
+ * track that any pass of that comp owns. Edits that leave comp output comp
+ * output keep the owner: an in-place edit (move, trim, fade, gain, stretch,
+ * …) changes nothing about it, {@link #splitAt} gives it to both halves and
+ * {@link #trimmedCopy} to the remnant. A copy the user makes —
+ * {@link #duplicate()}, and every paste and track duplicate built on it — is
+ * a user clip. A comp clip moved to another track keeps its owner, which is
+ * inert there, so it behaves as a user clip on that track; the move clears
+ * the owner only when the destination's comping holds the clip as
+ * superseded output ({@link CrossTrackMoveAction}). Output a later compile
+ * replaced never re-enters its own track ({@code Track.addClip}). The owner
+ * is runtime state: it is not persisted.</p>
  */
 public final class AudioClip implements TimelineRegion, Clip {
 
@@ -49,6 +64,8 @@ public final class AudioClip implements TimelineRegion, Clip {
     private volatile float[][] audioData;
     private SourceRateMetadata sourceRateMetadata;
     private ClipGainEnvelope gainEnvelope;
+    /** The comp this clip is output of, or {@code null} for a user clip. */
+    private CompOutputOwner compOutputOwner;
 
     /**
      * Creates a new audio clip.
@@ -485,6 +502,40 @@ public final class AudioClip implements TimelineRegion, Clip {
         this.gainEnvelope = gainEnvelope;
     }
 
+    /**
+     * Returns the compile pass this clip is output of, if it is comp output;
+     * empty for a user clip.
+     *
+     * @return the owning compile pass, or empty
+     */
+    public Optional<CompOutputOwner> compOutputOwner() {
+        return Optional.ofNullable(compOutputOwner);
+    }
+
+    /**
+     * Returns whether this clip carries exactly {@code owner}: output of that
+     * one compile pass. It is not a comp-membership test — output of another
+     * pass of the same comp does not match; the comping's own
+     * {@code TakeComping.isCompOutput} matches every pass.
+     *
+     * @param owner the compile pass to test for; not {@code null}
+     * @return {@code true} if this clip's owner is {@code owner}
+     */
+    public boolean isCompOutputOf(CompOutputOwner owner) {
+        Objects.requireNonNull(owner, "owner must not be null");
+        return compOutputOwner == owner;
+    }
+
+    /**
+     * Makes this clip output of the compile pass {@code owner}, or, with
+     * {@code null}, a user clip.
+     *
+     * @param owner the owning compile pass, or {@code null} for a user clip
+     */
+    public void setCompOutputOwner(CompOutputOwner owner) {
+        this.compOutputOwner = owner;
+    }
+
     /** Returns the end beat position (start + duration). */
     public double getEndBeat() {
         return startBeat + durationBeats;
@@ -523,7 +574,11 @@ public final class AudioClip implements TimelineRegion, Clip {
     /**
      * Creates a duplicate of this clip with a new unique ID.
      *
-     * @return a new {@code AudioClip} with the same properties but a different ID
+     * <p>The duplicate is a user clip even when this clip is comp output: a
+     * copy the user placed is theirs, and no recompile removes it.</p>
+     *
+     * @return a new {@code AudioClip} with the same properties but a different
+     *         ID and no {@linkplain #compOutputOwner() comp owner}
      */
     public AudioClip duplicate() {
         AudioClip copy = new AudioClip(name, startBeat, durationBeats, sourceFilePath);
@@ -546,12 +601,36 @@ public final class AudioClip implements TimelineRegion, Clip {
     }
 
     /**
+     * Creates the remnant of this clip that covers {@code [newStartBeat,
+     * newEndBeat)}: a {@link #duplicate()} trimmed to that range
+     * ({@link #trimTo}) that keeps this clip's
+     * {@linkplain #compOutputOwner() comp owner}. For the piece of an
+     * existing clip an edit leaves in place of it — the parts of a clip a
+     * paste-over does not cover, the part of a clip a crop keeps — which is
+     * still what the clip was, comp output included. This clip is not
+     * changed.
+     *
+     * @param newStartBeat the remnant's start beat (must be &ge; this clip's start)
+     * @param newEndBeat   the remnant's end beat (must be &le; this clip's end
+     *                     and &gt; {@code newStartBeat})
+     * @return the remnant, with a new unique ID
+     * @throws IllegalArgumentException if the range is invalid
+     */
+    public AudioClip trimmedCopy(double newStartBeat, double newEndBeat) {
+        AudioClip remnant = duplicate();
+        remnant.trimTo(newStartBeat, newEndBeat);
+        remnant.setCompOutputOwner(compOutputOwner);
+        return remnant;
+    }
+
+    /**
      * Splits this clip at the given beat position, truncating this clip and
      * returning a new clip that covers the remainder.
      *
      * <p>After the split, this clip's duration is reduced so that it ends at
      * {@code splitBeat}, and the returned clip starts at {@code splitBeat}
-     * with the remaining duration.</p>
+     * with the remaining duration. Both halves keep this clip's
+     * {@linkplain #compOutputOwner() comp owner}.</p>
      *
      * @param splitBeat the beat position at which to split (must be strictly
      *                  between {@code startBeat} and {@code getEndBeat()})
@@ -581,6 +660,8 @@ public final class AudioClip implements TimelineRegion, Clip {
         second.setSourceRateMetadata(sourceRateMetadata);
         second.setGainEnvelope(gainEnvelope);
         second.setSourceSegmentPaths(sourceSegmentPaths);
+        // Both halves are what the clip was: comp output stays comp output.
+        second.setCompOutputOwner(compOutputOwner);
 
         // Truncate this clip
         this.durationBeats = splitBeat - startBeat;

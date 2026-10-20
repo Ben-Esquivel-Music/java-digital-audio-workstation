@@ -56,6 +56,8 @@ class DawEventExhaustiveSwitchTest {
         assertThat(classify(new TransportEvent.Seeked(0L, 1L, T0))).isEqualTo("transport");
         assertThat(classify(new TransportEvent.TempoChanged(120.0, 140.0, T0))).isEqualTo("transport");
         assertThat(classify(new TransportEvent.LoopChanged(true, 0L, 1L, T0))).isEqualTo("transport");
+        assertThat(classify(new TransportEvent.LoopRecordChanged(true, T0))).isEqualTo("transport");
+        assertThat(classify(new TransportEvent.PunchChanged(true, 0L, 1L, T0))).isEqualTo("transport");
     }
 
     @Test

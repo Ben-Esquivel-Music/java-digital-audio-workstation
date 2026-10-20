@@ -319,6 +319,235 @@ class MidiRecorderTest {
         assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
     }
 
+    /** Two bars of 4/4 at 120 BPM, as the engine's count-in schedule reports it. */
+    private static final long TWO_BARS_US = 4_000_000L;
+
+    private static MidiRecorder countingIn(CapturingMidiDevice device,
+                                           java.util.concurrent.atomic.AtomicLong clock) throws Exception {
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        recorder.setCountInDurationUs(TWO_BARS_US);
+        recorder.startRecording();
+        return recorder;
+    }
+
+    @Test
+    void aPerformerSilentThroughTheCountInWhoPlaysFromBarOneLosesNothingWithFallbackTiming() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = countingIn(device, clock);
+        clock.set(4_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+        clock.set(4_250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+        clock.set(5_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 62, 90, -1);
+        clock.set(5_500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 62, 0, -1);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(
+                new MidiNoteData(60, 0, 2, 100, 0), new MidiNoteData(62, 8, 4, 90, 0));
+    }
+
+    @Test
+    void aPerformerSilentThroughTheCountInWhoPlaysFromBarOneLosesNothingWithDeviceTimestamps() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = countingIn(device, clock);
+        // The device's clock has its own origin; the first message arrives at bar 1 exactly.
+        clock.set(4_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 987_654_321L);
+        clock.set(4_250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, 987_654_321L + 250_000L);
+        clock.set(5_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 62, 90, 987_654_321L + 1_000_000L);
+        clock.set(5_500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 62, 0, 987_654_321L + 1_500_000L);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).as("the window is anchored to the record origin, not to this message")
+                .containsExactly(new MidiNoteData(60, 0, 2, 100, 0), new MidiNoteData(62, 8, 4, 90, 0));
+    }
+
+    @Test
+    void notesDuringTheCountInAreDroppedWithoutShiftingTheAnchorAndLeaveNoHeadlessNote() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = countingIn(device, clock);
+        // A note inside the window, released inside it.
+        clock.set(1_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 48, 100, -1);
+        clock.set(1_500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 48, 0, -1);
+        // A note inside the window, released after it: no headless note.
+        clock.set(3_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 50, 100, -1);
+        clock.set(4_100_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 50, 0, -1);
+        // Bar 1, half a beat in.
+        clock.set(4_250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+        clock.set(4_500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
+    }
+
+    @Test
+    void aDeviceTimestampedNoteDuringTheCountInDoesNotShiftTheAnchorEither() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = countingIn(device, clock);
+        clock.set(1_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 48, 100, 5_000_000L);
+        clock.set(1_500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 48, 0, 5_500_000L);
+        // Device deltas carry on from the first message's receipt: 3.25 s later is bar 1 + half a beat.
+        clock.set(4_250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 8_250_000L);
+        clock.set(4_500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, 8_500_000L);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
+    }
+
+    @Test
+    void aPickupTenMillisecondsBeforeBarOneIsKeptAtColumnZeroAndOneFiftyMillisecondsBeforeIsDropped() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = countingIn(device, clock);
+        clock.set(3_950_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 48, 100, -1);
+        clock.set(3_990_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+        clock.set(4_250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 48, 0, -1);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+        recorder.stopRecording();
+        assertThat(MidiRecorder.PICKUP_TOLERANCE_US).isEqualTo(20_000L);
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 2, 100, 0));
+    }
+
+    @Test
+    void aNoteStillHeldAtStopIsEndedOnTheRecordOriginsClockNotTheFirstMessages() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        MidiRecorder recorder = countingIn(device, clock);
+        clock.set(4_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 123_456L);
+        clock.set(4_500_000_000L);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 4, 100, 0));
+    }
+
+    /** The render thread's fire as a recorder reads it: unfired until stamped, on the recorder's clock. */
+    private static final class StubDownbeat implements CountInDownbeat {
+        private volatile boolean fired;
+        private volatile long nanos;
+
+        void fireAt(long fireNanos) {
+            nanos = fireNanos;
+            fired = true;
+        }
+
+        @Override
+        public boolean isFired() {
+            return fired;
+        }
+
+        @Override
+        public long fireNanos() {
+            return nanos;
+        }
+    }
+
+    /** The predicted two-bar window, with the real downbeat 120 ms later than predicted (a late block phase). */
+    private static final long LATE_FIRE_NANOS = 4_120_000_000L;
+
+    private static MidiRecorder countingInWithDownbeat(CapturingMidiDevice device,
+                                                       java.util.concurrent.atomic.AtomicLong clock,
+                                                       StubDownbeat downbeat) throws Exception {
+        MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
+        recorder.setCountInDurationUs(TWO_BARS_US);
+        recorder.setCountInDownbeat(downbeat);
+        recorder.startRecording();
+        return recorder;
+    }
+
+    @Test
+    void onceTheCountInFiresBarOneIsMeasuredFromTheFireNotFromThePredictedWindowEnd() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        StubDownbeat downbeat = new StubDownbeat();
+        MidiRecorder recorder = countingInWithDownbeat(device, clock, downbeat);
+        downbeat.fireAt(LATE_FIRE_NANOS);
+        // Half a beat after the heard downbeat: column 2 from the fire, column 3 from the prediction.
+        clock.set(LATE_FIRE_NANOS + 250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+        clock.set(LATE_FIRE_NANOS + 500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
+    }
+
+    @Test
+    void deviceTimestampedNotesAfterTheFireAreMeasuredFromTheFireToo() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        StubDownbeat downbeat = new StubDownbeat();
+        MidiRecorder recorder = countingInWithDownbeat(device, clock, downbeat);
+        downbeat.fireAt(LATE_FIRE_NANOS);
+        clock.set(LATE_FIRE_NANOS + 250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 987_654_321L);
+        clock.set(LATE_FIRE_NANOS + 500_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, 987_654_321L + 250_000L);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 2, 2, 100, 0));
+    }
+
+    @Test
+    void untilTheFireThePredictedWindowDecidesWhichNotesAreCountInNotes() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        StubDownbeat downbeat = new StubDownbeat();
+        MidiRecorder recorder = countingInWithDownbeat(device, clock, downbeat);
+        // Inside the window, before the fire: dropped entirely, its note-off after the fire too.
+        clock.set(3_000_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 48, 100, -1);
+        // A pickup within the tolerance of the predicted end: kept at column 0.
+        clock.set(3_990_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 50, 100, -1);
+        // Past the predicted end but before the late fire: never dropped, placed at column 0.
+        clock.set(4_050_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 52, 100, -1);
+        downbeat.fireAt(LATE_FIRE_NANOS);
+        clock.set(LATE_FIRE_NANOS + 250_000_000L);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 48, 0, -1);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 50, 0, -1);
+        device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 52, 0, -1);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(
+                new MidiNoteData(50, 0, 2, 100, 0), new MidiNoteData(52, 0, 2, 100, 0));
+    }
+
+    @Test
+    void aNoteStillHeldAtStopIsEndedAgainstTheFire() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        CapturingMidiDevice device = new CapturingMidiDevice();
+        StubDownbeat downbeat = new StubDownbeat();
+        MidiRecorder recorder = countingInWithDownbeat(device, clock, downbeat);
+        downbeat.fireAt(LATE_FIRE_NANOS);
+        clock.set(LATE_FIRE_NANOS);
+        device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, -1);
+        clock.set(LATE_FIRE_NANOS + 500_000_000L);
+        recorder.stopRecording();
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 4, 100, 0));
+    }
+
+    @Test
+    void aDownbeatIsRequiredWhenSet() {
+        MidiRecorder recorder = new MidiRecorder(new StubMidiDevice(), new MidiClip(), 120.0, 0);
+        assertThatThrownBy(() -> recorder.setCountInDownbeat(null)).isInstanceOf(NullPointerException.class);
+    }
+
     @Test
     void providerCloseCanWaitForAReceiverCallbackWithoutDeadlockingStop() throws Exception {
         var callbackBlocked = new java.util.concurrent.atomic.AtomicBoolean();
@@ -437,8 +666,12 @@ class MidiRecorderTest {
         assertThat(device.closes).isEqualTo(2);
     }
 
+    // Story 328: the record origin is the anchor for every message kind. A
+    // timestamped first note half a second after the origin is one beat in
+    // (column 4), not column 0 as the first-device-event anchoring once made it.
+
     @Test
-    void timestampedFirstNoteAndFallbackNoteOffUseTheSameOrigin() throws Exception {
+    void timestampedFirstNoteAndFallbackNoteOffShareTheRecordOrigin() throws Exception {
         var clock = new java.util.concurrent.atomic.AtomicLong();
         CapturingMidiDevice device = new CapturingMidiDevice();
         MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
@@ -448,11 +681,11 @@ class MidiRecorderTest {
         clock.set(750_000_000L);
         device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, -1);
         recorder.stopRecording();
-        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 2, 100, 0));
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 4, 2, 100, 0));
     }
 
     @Test
-    void stoppingAHeldTimestampedNoteUsesItsCalibratedOrigin() throws Exception {
+    void stoppingAHeldTimestampedNoteEndsItOnTheRecordOriginsClock() throws Exception {
         var clock = new java.util.concurrent.atomic.AtomicLong();
         CapturingMidiDevice device = new CapturingMidiDevice();
         MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
@@ -462,7 +695,7 @@ class MidiRecorderTest {
         device.send(javax.sound.midi.ShortMessage.NOTE_ON, 60, 100, 1_000_000);
         clock.set(750_000_000L);
         recorder.stopRecording();
-        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 16, 2, 100, 0));
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 20, 2, 100, 0));
     }
 
     @Test
@@ -481,11 +714,11 @@ class MidiRecorderTest {
         device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 62, 0, 1_750_000);
         recorder.stopRecording();
         assertThat(recorder.getRecordedNotes()).containsExactly(
-                new MidiNoteData(60, 0, 2, 100, 0), new MidiNoteData(62, 4, 2, 90, 0));
+                new MidiNoteData(60, 4, 2, 100, 0), new MidiNoteData(62, 8, 2, 90, 0));
     }
 
     @Test
-    void timestampOnlyRecordingStillStartsAtTheFirstDeviceEvent() throws Exception {
+    void timestampOnlyRecordingPlacesTheFirstDeviceEventAtItsReceiptNotAtTheOrigin() throws Exception {
         var clock = new java.util.concurrent.atomic.AtomicLong();
         CapturingMidiDevice device = new CapturingMidiDevice();
         MidiRecorder recorder = new MidiRecorder(device, new MidiClip(), 120, 0, clock::get);
@@ -495,7 +728,7 @@ class MidiRecorderTest {
         clock.set(750_000_000L);
         device.send(javax.sound.midi.ShortMessage.NOTE_OFF, 60, 0, 1_250_000);
         recorder.stopRecording();
-        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 0, 2, 100, 0));
+        assertThat(recorder.getRecordedNotes()).containsExactly(new MidiNoteData(60, 4, 2, 100, 0));
     }
 
     private static final class SharedMidiDevice extends StubMidiDevice {

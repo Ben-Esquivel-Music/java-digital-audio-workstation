@@ -43,6 +43,12 @@ import static org.assertj.core.api.Assertions.within;
  * changes nothing and repeats the remediation; the lost device returning
  * settles to IDLE with the armed set kept, and recording resumes only when
  * the user presses Record again, into a new take.
+ *
+ * <p>A test that asserts the exact toasts shown from a point while the take
+ * still records records it over the fixture's {@link CaptureBlockBudget}
+ * device, so a capture thread slowed by a busy machine cannot add a
+ * "Capture ring overflow" WARNING to them; every other test records over
+ * the stock mock.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
@@ -69,7 +75,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
 
     @Test
     void unpluggingTheRecordingDeviceSealsRegistersAndReportsTheTake() throws Exception {
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         DeviceId device = fixture.activeDevice();
         assertThat(fixture.engineController().orElseThrow().getWatchedDevice())
                 .as("premise: the stream-open seam bound the controller to the recording device")
@@ -79,6 +85,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         fixture.unplug();
         fixture.awaitRescued();
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         TakeManifest manifest = TakeManifest.read(TakeManifest.manifestPath(takeDirectory));
         assertThat(manifest.sealStatus()).isEqualTo(TakeManifest.SealStatus.ABORTED);
         assertThat(manifest.sealedBy()).contains(TakeManifest.SealedBy.DEVICE_LOSS);
@@ -260,7 +267,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
     @Test
     void aLossDeliveredAfterTheWatchMovedToAnotherDeviceStillNamesTheLostDevice() throws Exception {
         runOnFx(() -> fixture.project().getTransport().setReturnToStartOnStop(false));
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         DeviceId lost = fixture.activeDevice();
         DeviceId other = new DeviceId(fixture.backend().name(), "Some Other Interface");
         DefaultAudioEngineController engineController = fixture.engineController().orElseThrow();
@@ -285,6 +292,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         }
         awaitOnFx(() -> fixture.coordinator().getState() == RecordState.IDLE, "the loss ended on the other device");
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().rescuedTakes())
                 .extracting(IncompleteTakeStore.RescuedTake::takeDirectory, IncompleteTakeStore.RescuedTake::deviceName)
                 .containsExactly(tuple(takeDirectory.toAbsolutePath().normalize(), Optional.of(lost.name())));
@@ -318,7 +326,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
     @Test
     void theLostDeviceReturningBeforeTheLossTurnRunsIsStillItsReturn() throws Exception {
         runOnFx(() -> fixture.project().getTransport().setReturnToStartOnStop(false));
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         DeviceId device = fixture.activeDevice();
         DefaultAudioEngineController engineController = fixture.engineController().orElseThrow();
         double anchor = fixture.pipeline().getRecordingStartBeat();
@@ -335,6 +343,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         }
         awaitOnFx(() -> fixture.coordinator().getState() == RecordState.IDLE, "the coordinator settled to IDLE");
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         assertThat(onFx(() -> fixture.coordinator().rescuedTakeStore()).orElseThrow().rescuedTakes())
                 .extracting(IncompleteTakeStore.RescuedTake::takeDirectory, IncompleteTakeStore.RescuedTake::deviceName)
                 .containsExactly(tuple(takeDirectory.toAbsolutePath().normalize(), Optional.of(device.name())));
@@ -444,7 +453,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
      */
     @Test
     void aSecondLossBeforeTheRescuedTakeIsPublishedUndoesTheReturnAndKeepsRecordUnavailable() throws Exception {
-        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        Path takeDirectory = fixture.recordABudgetedTakeUntilABlockIsOnDisk();
         DeviceId device = fixture.activeDevice();
         DefaultAudioEngineController engineController = fixture.engineController().orElseThrow();
         // Installed once the take records: the record start allocates the
@@ -489,6 +498,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         fixture.awaitPublished();
         runOnFx(() -> { }); // the settle the publication posted has run
 
+        fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         assertThat(onFx(() -> fixture.coordinator().getState()))
                 .as("the second loss undid the return: the publication settles to DEVICE_LOST, not IDLE")
                 .isEqualTo(RecordState.DEVICE_LOST);

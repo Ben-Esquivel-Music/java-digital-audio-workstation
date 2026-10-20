@@ -638,10 +638,10 @@ class RecordingPipelineFlushServiceTest {
         List<AudioClip> clips = stopRecording(pipeline);
 
         String firstSegment = trackDir.resolve("segment-000.wav").toAbsolutePath().toString();
-        TakeGroup group = pipeline.getTakeGroups().get(track);
-        assertThat(group).isNotNull();
-        assertThat(group.size()).as("the lap is stacked once, not once per finalize call").isEqualTo(1);
-        AudioClip lap = group.takes().getFirst().clip();
+        List<AudioClip> laps = pipeline.getLapClips().get(track);
+        assertThat(laps).isNotNull();
+        assertThat(laps.size()).as("the lap is stacked once, not once per finalize call").isEqualTo(1);
+        AudioClip lap = laps.getFirst();
         assertThat(lap.getSourceSegmentPaths()).as("the lap lists the segment that sealed, and only that one")
                 .containsExactly(firstSegment);
         assertThat(lap.getAudioData()).as("no audio is invented for the lap").isNull();
@@ -652,8 +652,13 @@ class RecordingPipelineFlushServiceTest {
         RampCaptureTestSupport.assertDecodedRamp(
                 SegmentFile.readFrames(List.of(trackDir.resolve("segment-001.wav.part")))[0],
                 2L * BLOCK_FRAMES, BLOCK_FRAMES); // the frames the list does not hold are in the .part
-        assertThat(clips).containsExactly(lap);
-        assertThat(track.getClips()).containsExactly(lap);
+        // Story 328 (book §3.5): the lap is the track's one take lane; what is
+        // published on the main lane is its comp clip, referencing the lap's
+        // sealed segment list.
+        assertThat(track.getTakeComping().getTakeLane(0).getClips()).containsExactly(lap);
+        assertThat(clips).as("the lap's comp clip").hasSize(1);
+        assertThat(clips.getFirst().getSourceSegmentPaths()).isEqualTo(lap.getSourceSegmentPaths());
+        assertThat(track.getClips()).containsExactlyElementsOf(clips);
         assertThat(service.sealedSegmentPaths().get(track.getId()))
                 .as("each sealed segment is listed once")
                 .containsExactly(trackDir.resolve("segment-000.wav"));
@@ -1527,12 +1532,13 @@ class RecordingPipelineFlushServiceTest {
         live.setBoolean(pipeline, false);
         List<AudioClip> clips = stopRecording(pipeline);
 
-        TakeGroup group = pipeline.getTakeGroups().get(track);
-        assertThat(group).isNotNull();
-        assertThat(group.size()).isEqualTo(3);
-        assertThat(track.getTakeGroups()).as("stop attached the take stack").containsKey(group.id());
-        assertThat(clips).containsExactly(group.activeClip());
-        assertThat(track.getClips()).containsExactly(group.activeClip());
+        List<AudioClip> laps = pipeline.getLapClips().get(track);
+        assertThat(laps).isNotNull();
+        assertThat(laps.size()).isEqualTo(3);
+        assertThat(track.getTakeComping().getTakeLanes()).as("stop attached the laps as take lanes")
+                .extracting(lane -> lane.getClips().getFirst()).containsExactlyElementsOf(laps);
+        assertThat(clips).as("the compiled comp clip").hasSize(1);
+        assertThat(track.getClips()).containsExactlyElementsOf(clips);
     }
 
     @Test

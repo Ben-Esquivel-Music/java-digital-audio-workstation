@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.*;
 
@@ -1224,6 +1225,11 @@ public final class AudioEngine {
      * their backend-only control-thread resolver, and InputLevelMonitorRegistry/InputLevelMonitor/InputSourceAvailability
      * to preallocate meter state and attach precomputed warning text. These collaborators
      * invoke no application listeners or UI callbacks; all user warnings remain outside the lock.</p>
+     * <p>Story 328: {@code stopLocked} and {@code clearOpenStream} cancel a pending
+     * {@link CountInSchedule} through {@code cancelPendingCountIn()}.
+     * {@link CountInSchedule#cancel()} is one volatile store and one volatile load;
+     * it never runs the schedule's record start (that {@code Runnable} is the render
+     * thread's alone, and only on a fire), so nothing outward happens under the lock.</p>
      */
     private final ReentrantLock lifecycleLock = new ReentrantLock();
 
@@ -1276,6 +1282,17 @@ public final class AudioEngine {
     private volatile Metronome metronome;
     private volatile MetronomeSideOutputRouter metronomeSideOutputRouter;
     private volatile CueBusManager cueBusManager;
+
+    /**
+     * The count-in the render thread is walking, or the last one until a
+     * caller clears it (story 328, book §5.6). Written on caller threads
+     * only — {@link #scheduleCountIn(CountInSchedule)},
+     * {@link #cancelCountIn(CountInSchedule)}, the stop and the stream close
+     * — so a render thread that loaded a spent schedule can never overwrite
+     * a newer one; {@link #processBlock(float[][], float[][], int, float[])}
+     * loads it once per block and hands the render pipeline only a pending one.
+     */
+    private volatile CountInSchedule countInSchedule;
 
     // Multi-core graph scheduling state (story 125). The pool size is
     // locked at start(); changing it requires a stop/start cycle. The
@@ -1596,6 +1613,9 @@ public final class AudioEngine {
         if (!running.compareAndSet(true, false)) {
             return false;
         }
+        // Story 328: no block will render until the next start, so a pending
+        // count-in could never fire; cancel it rather than strand it.
+        cancelPendingCountIn();
         if (pumpQuiesced) {
             tearDownRenderCollaborators();
         } else {
@@ -2147,6 +2167,8 @@ public final class AudioEngine {
         this.openBackend = null;
         this.openDevice = null;
         this.openSdkFormat = null;
+        // Story 328: the closed stream's pump renders no further block.
+        cancelPendingCountIn();
     }
 
     /**
@@ -5251,6 +5273,113 @@ public final class AudioEngine {
     }
 
     /**
+     * Installs a count-in for the render thread to walk (story 328, book
+     * §5.6): from the next block on, while the schedule is pending and the
+     * bound transport is not rolling, each block renders the schedule's
+     * clicks through the metronome voice into the main mix — whether or not
+     * the metronome's running click is enabled — and holds the transport
+     * where it is; at the block boundary where the schedule's
+     * {@link CountInSchedule#totalFrames()} is reached the render thread runs
+     * the schedule's record start. A schedule pending while the transport
+     * rolls is parked: no click, no progress; cancel it. The engine must be
+     * running for the walk to happen ({@link #start()}).
+     *
+     * <p>The schedule's frames are the engine's stream frames: it must have
+     * been built with this engine's {@link #getFormat() format} rate and
+     * block size, so that its block-aligned end frame is a boundary of the
+     * blocks the render thread walks and its clicks land where its beat grid
+     * says. A mismatch is refused here rather than walked, since the render
+     * thread would fire at the first boundary past the end frame — up to a
+     * block late — and the window the MIDI recorders were given would miss
+     * it. The format is the one the stream was opened with; a backend that
+     * hands out blocks of another size than it was opened with is not
+     * detected here (the render thread fires at the first boundary at or
+     * past the end frame regardless).</p>
+     *
+     * <p>Caller threads only. The slot keeps the schedule until
+     * {@link #cancelCountIn(CountInSchedule)}, a stop or a stream close
+     * clears it, or a later schedule replaces a fired or cancelled one; the
+     * render thread never writes it.</p>
+     *
+     * @param schedule the count-in, still pending, in this engine's rate and block size
+     * @throws IllegalStateException if the schedule's block size or sample
+     *                               rate is not the engine's, if the bound
+     *                               transport is already rolling (the
+     *                               count-in is skipped then: punch on the
+     *                               fly records at once), or a pending
+     *                               count-in is already installed
+     * @throws IllegalArgumentException if the schedule has fired or was cancelled
+     */
+    public void scheduleCountIn(CountInSchedule schedule) {
+        Objects.requireNonNull(schedule, "schedule must not be null");
+        if (!schedule.isPending()) {
+            throw new IllegalArgumentException("a count-in schedule is installed once, while pending; this one is "
+                    + schedule.phase());
+        }
+        AudioFormat streamFormat = this.format;
+        if (schedule.blockSize() != streamFormat.bufferSize() || schedule.sampleRate() != streamFormat.sampleRate()) {
+            throw new IllegalStateException("the count-in was built for " + schedule.blockSize() + "-frame blocks at "
+                    + schedule.sampleRate() + " Hz, but the engine's stream renders " + streamFormat.bufferSize()
+                    + "-frame blocks at " + streamFormat.sampleRate() + " Hz: build the schedule from the engine's format");
+        }
+        Transport current = graph.transport();
+        if (current != null && (current.getState() == TransportState.PLAYING
+                || current.getState() == TransportState.RECORDING)) {
+            throw new IllegalStateException("the transport is rolling: a count-in holds at the record position,"
+                    + " so a rolling transport records at once instead");
+        }
+        CountInSchedule installed = this.countInSchedule;
+        if (installed != null && installed.isPending()) {
+            throw new IllegalStateException("a count-in is already pending; cancel it first");
+        }
+        this.countInSchedule = schedule;
+    }
+
+    /**
+     * Cancels a count-in from a caller thread and clears the slot if it holds
+     * that schedule: {@link CountInSchedule#cancel()}, whose verdict this
+     * returns. Safe for a schedule that was never installed, or already fired.
+     *
+     * @param schedule the count-in to cancel
+     * @return whether the cancel won: the record start has not run and will not
+     */
+    public boolean cancelCountIn(CountInSchedule schedule) {
+        Objects.requireNonNull(schedule, "schedule must not be null");
+        boolean won = schedule.cancel();
+        if (this.countInSchedule == schedule) {
+            this.countInSchedule = null;
+        }
+        return won;
+    }
+
+    /**
+     * The count-in the render thread is walking, if one is pending. The
+     * engine's inspection contract for the count-in (story 328): production
+     * keeps its own handle on the schedule it installed, so this is read by
+     * the contract tests of the record coordinator and the render path,
+     * which live in other modules and packages.
+     *
+     * @return the pending count-in, or empty
+     */
+    public Optional<CountInSchedule> pendingCountIn() {
+        CountInSchedule installed = this.countInSchedule;
+        return installed != null && installed.isPending() ? Optional.of(installed) : Optional.empty();
+    }
+
+    /**
+     * Cancels whatever count-in is installed and empties the slot: a stopped
+     * engine or a closed stream renders no block that could ever fire it, so
+     * a schedule left pending would strand its record start for good.
+     */
+    private void cancelPendingCountIn() {
+        CountInSchedule installed = this.countInSchedule;
+        if (installed != null) {
+            installed.cancel();
+            this.countInSchedule = null;
+        }
+    }
+
+    /**
      * Story 136 — sets the {@link MetronomeSideOutputRouter} that gates
      * each generated click into (a) the main mix, (b) a direct hardware
      * channel via {@link AudioBackend#writeToChannel(int, float[])}, and
@@ -5378,6 +5507,12 @@ public final class AudioEngine {
         Metronome currentMetronome = this.metronome;
         MetronomeSideOutputRouter currentRouter = this.metronomeSideOutputRouter;
         CueBusManager currentCueBusManager = this.cueBusManager;
+        // Story 328: the count-in, one volatile load; a fired or cancelled
+        // schedule is handed on as none (the slot is the caller's to clear).
+        CountInSchedule currentCountIn = this.countInSchedule;
+        if (currentCountIn != null && !currentCountIn.isPending()) {
+            currentCountIn = null;
+        }
         // The OPEN stream's backend (story 316): metronome writeToChannel
         // routing finally targets the stream that is actually playing.
         AudioBackend currentBackend = this.openBackend;
@@ -5416,7 +5551,7 @@ public final class AudioEngine {
                     currentMidiRenderer, masteringChain, cb, monitor,
                     enforcer,
                     currentMetronome, currentRouter,
-                    currentCueBusManager, currentBackend, taps, interleavedOutput);
+                    currentCueBusManager, currentBackend, taps, interleavedOutput, currentCountIn);
             rendered = true;
         } finally {
             try {

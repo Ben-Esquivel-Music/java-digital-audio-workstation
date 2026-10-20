@@ -6,12 +6,15 @@ package com.benesquivelmusic.daw.app.ui.vm.command;
  * §3.4). A command never writes transport state directly; it asks the handler to
  * run the corresponding mutation path.
  *
- * <p>The production implementation ({@link CoreTransportIntentHandler}) wraps the
- * existing transport mutation path and runs the §5.1 cascade for each intent:
- * VALIDATE → MUTATE (which fires the core change signal, so {@code TransportVM}
- * republishes its properties) → ANNOUNCE (a typed {@code TransportEvent} on the
- * bus). Tests substitute a recording fake to assert that a control gesture issues
- * the right command without touching the engine.</p>
+ * <p>The production implementation is {@code TransportController}, which runs
+ * the §5.1 cascade for every intent, delegating most to
+ * {@link CoreTransportIntentHandler} (stop, the skips, record and
+ * play-with-pre-roll run their own): VALIDATE → MUTATE (which fires the core
+ * change signal, so {@code TransportVM} republishes its properties) → PROJECT
+ * (the project marked dirty, for loop and punch edits only) → ANNOUNCE (a typed
+ * {@code TransportEvent} on the bus). Tests substitute a recording fake to
+ * assert that a control gesture issues the right command without touching the
+ * engine.</p>
  */
 public interface TransportIntentHandler {
 
@@ -79,4 +82,36 @@ public interface TransportIntentHandler {
 
     /** Toggles loop playback on or off (§5.2 "Toggle loop"). */
     void toggleLoop();
+
+    /**
+     * Toggles loop-record on or off (story 328, book §5.6): whether a take
+     * recorded over an enabled loop stacks each lap as a take lane. The
+     * production controller refuses the toggle while a take is being
+     * prepared, counting in or recording, and says so on the status line.
+     */
+    void toggleLoopRecord();
+
+    /**
+     * Sets the punch-in point at the playhead (story 328, book §5.6). The
+     * point just set wins; if that leaves less than the minimum punch length
+     * before the existing punch-out, the punch-out moves to keep it. With no
+     * region installed, an ENABLED region of the minimum length is created.
+     */
+    void setPunchIn();
+
+    /**
+     * Sets the punch-out point at the playhead (story 328, book §5.6). The
+     * point just set wins; if that leaves less than the minimum punch length
+     * after the existing punch-in, the punch-in moves to keep it (never a
+     * silent swap). With no region installed, an ENABLED region of the
+     * minimum length ending here is created.
+     */
+    void setPunchOut();
+
+    /**
+     * Flips the enabled flag of the existing punch region (story 328, book
+     * §5.6). With no region installed nothing changes — the production
+     * controller reports that on the status line.
+     */
+    void togglePunch();
 }

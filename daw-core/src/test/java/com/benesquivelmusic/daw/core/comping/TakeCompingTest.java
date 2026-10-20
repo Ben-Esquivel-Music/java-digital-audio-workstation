@@ -211,7 +211,9 @@ class TakeCompingTest {
     }
 
     @Test
-    void shouldGetCompRegionsForTake() {
+    void compRegionsCarryTheirTakeIndexSoAReaderFiltersTheOneViewPerLane() {
+        // Story 328 review: the per-lane copy (getCompRegionsForTake) is gone;
+        // the arrangement's redraw filters the unmodifiable view by lane.
         comping.addTakeLane(new TakeLane("Take 1"));
         comping.addTakeLane(new TakeLane("Take 2"));
 
@@ -220,8 +222,8 @@ class TakeCompingTest {
         comping.addCompRegion(r1);
         comping.addCompRegion(r2);
 
-        assertThat(comping.getCompRegionsForTake(0)).containsExactly(r1);
-        assertThat(comping.getCompRegionsForTake(1)).containsExactly(r2);
+        assertThat(comping.getCompRegions().stream().filter(r -> r.takeIndex() == 0)).containsExactly(r1);
+        assertThat(comping.getCompRegions().stream().filter(r -> r.takeIndex() == 1)).containsExactly(r2);
     }
 
     @Test

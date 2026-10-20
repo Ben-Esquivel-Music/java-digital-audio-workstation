@@ -2291,6 +2291,264 @@ class RealTimeSafeContractTest {
     }
 
     // ------------------------------------------------------------------
+    // Story 328 — the count-in's record start on the render thread
+    // (Recording Reliability book §5.6; review round 1). RenderPipeline
+    // walks a pending CountInSchedule per block and, at the end frame, runs
+    // its record start: the lambda RecordingPipeline.beginCapture installs,
+    // which calls Transport.record() — whose STATE notification reaches the
+    // listeners on the render thread — and stamps the capture start gate.
+    // None of that is on the render-path walk (same-class callees only) nor
+    // the capture walk (rooted at the recording callback), so it is walked
+    // here with its own exact allow-list.
+    // ------------------------------------------------------------------
+
+    private static final String COUNT_IN_SCHEDULE = "com/benesquivelmusic/daw/core/audio/CountInSchedule";
+    private static final String CHANGE_NOTIFIER = "com/benesquivelmusic/daw/core/concurrent/ChangeNotifier";
+    private static final String START_GATE = CAPTURE_CALLBACK + "$StartGate";
+    private static final String TRANSPORT_STATE = "com/benesquivelmusic/daw/core/transport/TransportState";
+
+    /**
+     * The schedule's render-thread methods: the per-block walk
+     * {@code RenderPipeline.renderBlock} and {@code mixCountInClicks} make,
+     * the end-frame fire, and the two volatile reads of {@code isPending}.
+     * Every one must carry {@code @RealTimeSafe}; every other method of the
+     * schedule is the caller's.
+     */
+    private static final Set<String> COUNT_IN_RENDER_METHODS = Set.of(
+            "isPending", "cursor", "hasPendingClick", "nextClickFrame", "nextClickAccent", "consumeClick",
+            "hasPendingDownbeat", "downbeatFrame", "consumeDownbeat", "advance", "fire");
+
+    /** The classes the count-in fire walk follows callees into. */
+    private static final Set<String> COUNT_IN_FIRE_FOLLOWED = Set.of(
+            COUNT_IN_SCHEDULE, TRANSPORT, TRANSPORT + "$PositionSeek", TRANSPORT + "$ChangeKind",
+            TRANSPORT_STATE, CHANGE_NOTIFIER, RECORDING_PIPELINE, START_GATE);
+
+    /**
+     * The capture-path rule less the monotonic clock: the fire stamps
+     * {@code System.nanoTime()} once (the MIDI recorder measures bar 1 from
+     * it), and the {@code core.recording} producer-side rule, which is the
+     * recording callback's, not this path's.
+     */
+    private static final BiPredicate<String, String> COUNT_IN_FIRE_INVOKE_OFFENDER = (owner, name) ->
+            RENDER_PATH_INVOKE_OFFENDER.test(owner, name)
+                    || (BOXING_OWNERS.contains(owner) && name.equals("valueOf"))
+                    || STRING_OWNERS.contains(owner)
+                    || owner.startsWith("java/time/")
+                    || (owner.equals("java/lang/System") && name.equals("currentTimeMillis"))
+                    || owner.startsWith("java/nio/file/")
+                    || owner.startsWith("java/nio/channels/")
+                    || owner.startsWith("java/io/")
+                    || owner.equals("java/lang/Iterable")
+                    || (owner.startsWith("java/util/")
+                            && !owner.equals("java/util/Arrays")
+                            && !owner.equals("java/util/Objects")
+                            && !owner.equals("java/util/function/Consumer")
+                            && !owner.startsWith("java/util/concurrent/atomic/")
+                            && !owner.equals("java/util/concurrent/locks/LockSupport"));
+
+    /**
+     * Every call reachable on the fire path whose body is not walked, with
+     * the reason it is tolerated; exact in both directions
+     * ({@link #theCountInFireExternalCallAllowListIsExact}).
+     */
+    private static final Map<String, String> COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST = Map.of(
+            "java/lang/System#nanoTime",
+            "the fire's monotonic stamp (CountInSchedule.fireNanos): one intrinsic read, no allocation",
+            "java/lang/Runnable#run",
+            "the record start the schedule runs, reached through the interface: the lambda this walk roots at",
+            "java/util/function/Consumer#accept",
+            "ChangeNotifier.fire's listener call; the STATE listeners live in daw-app, where TransportVM routes a "
+                    + "STATE fired off the FX thread through the dispatcher's lock-free channel and the record "
+                    + "coordinator's count-in observer publishes into one (pinned behaviourally there)",
+            "java/util/concurrent/atomic/AtomicLong#get",
+            "a volatile load of the seek-queue word (Transport.hasPendingPositionSeek)");
+
+    /**
+     * The record-start lambda of {@code RecordingPipeline.beginCapture}:
+     * the one synthetic {@code lambda$beginCapture$N} whose body invokes
+     * {@code Transport#record}. Found by content, so a renumbering cannot
+     * silently point the walk at another lambda.
+     */
+    private static String recordStartLambdaName() throws Exception {
+        ClassModel pipeline = modelOf(RECORDING_PIPELINE, new HashMap<>());
+        List<String> candidates = new ArrayList<>();
+        for (MethodModel mm : pipeline.methods()) {
+            String name = mm.methodName().stringValue();
+            if (!name.startsWith("lambda$beginCapture$")) {
+                continue;
+            }
+            CodeAttribute code = codeOf(mm);
+            if (code == null) {
+                continue;
+            }
+            for (var element : code) {
+                if (element instanceof InvokeInstruction invoke
+                        && invoke.owner().asInternalName().equals(TRANSPORT)
+                        && invoke.name().stringValue().equals("record")) {
+                    candidates.add(name);
+                    break;
+                }
+            }
+        }
+        assertThat(candidates)
+                .as("exactly one lambda of RecordingPipeline#beginCapture calls Transport#record: the count-in's "
+                        + "record start")
+                .hasSize(1);
+        return candidates.getFirst();
+    }
+
+    /** The three walks of the fire path: the schedule's render methods, the record transition, the record start. */
+    private static List<ReachableScan> walkCountInFirePath() throws Exception {
+        Predicate<String> followed = COUNT_IN_FIRE_FOLLOWED::contains;
+        return List.of(
+                walkReachable(Class.forName(COUNT_IN_SCHEDULE.replace('/', '.')),
+                        namedAnyOf(COUNT_IN_RENDER_METHODS), COUNT_IN_FIRE_INVOKE_OFFENDER, followed),
+                walkReachable(Class.forName(TRANSPORT.replace('/', '.')),
+                        named("record"), COUNT_IN_FIRE_INVOKE_OFFENDER, followed),
+                walkReachable(Class.forName(RECORDING_PIPELINE.replace('/', '.')),
+                        named(recordStartLambdaName()), COUNT_IN_FIRE_INVOKE_OFFENDER, followed));
+    }
+
+    /**
+     * The render thread really enters the schedule: {@code renderBlock}'s
+     * own walk invokes exactly the schedule's render methods — nothing
+     * else of the schedule — and the fire runs the record start through
+     * {@code Runnable.run}, the record start calls {@code Transport#record},
+     * and the record transition notifies through {@code ChangeNotifier#fire}.
+     */
+    @Test
+    void theCountInFirePathIsRootedWhereTheRenderThreadEntersIt() throws Exception {
+        ReachableScan renderBlock = walkReachable(Class.forName(RENDER_PIPELINE.replace('/', '.')),
+                named("renderBlock"), RENDER_PATH_INVOKE_OFFENDER, owner -> owner.equals(RENDER_PIPELINE));
+        Set<String> scheduleCalls = renderBlock.invoked().stream()
+                .filter(call -> call.startsWith(COUNT_IN_SCHEDULE + "#"))
+                .map(call -> call.substring(call.indexOf('#') + 1))
+                .collect(Collectors.toCollection(TreeSet::new));
+        assertThat(scheduleCalls)
+                .as("RenderPipeline#renderBlock reaches exactly the schedule's render-thread methods")
+                .containsExactlyInAnyOrderElementsOf(COUNT_IN_RENDER_METHODS);
+
+        List<ReachableScan> scans = walkCountInFirePath();
+        assertThat(scans.get(0).scannedRoots()).isEqualTo(COUNT_IN_RENDER_METHODS.size());
+        assertThat(scans.get(1).scannedRoots()).isEqualTo(1);
+        assertThat(scans.get(2).scannedRoots()).isEqualTo(1);
+        assertThat(scans.get(0).invoked()).contains("java/lang/Runnable#run");
+        assertThat(scans.get(2).invoked()).contains(TRANSPORT + "#record", TRANSPORT + "#getPositionSeek",
+                TRANSPORT + "#hasPendingPositionSeek", TRANSPORT + "#getPositionInBeats");
+        assertThat(scans.get(1).reached()).anyMatch(key -> key.startsWith(CHANGE_NOTIFIER + "#fire("));
+        assertThat(scans.get(1).invoked()).contains("java/util/function/Consumer#accept");
+    }
+
+    /**
+     * From the schedule's render methods, the record transition and the
+     * record start, nothing reachable across the followed classes
+     * allocates, enters a monitor, declares {@code synchronized}, boxes,
+     * touches a string, a wall clock, a file, a collection, a lock, a
+     * publisher, a logger or an atomic read-modify-write.
+     */
+    @Test
+    void theCountInFirePathReachesNothingForbiddenOnTheRenderThread() throws Exception {
+        for (ReachableScan scan : walkCountInFirePath()) {
+            assertThat(scan.invokeFindings()).as("forbidden calls on the count-in fire path (reached: %s)",
+                    scan.reached()).isEmpty();
+            assertThat(scan.allocationFindings())
+                    .as("the count-in fire path (reached: %s) must not allocate (new / array / invokedynamic)",
+                            scan.reached())
+                    .isEmpty();
+            assertThat(scan.monitorFindings()).as("monitors on the count-in fire path").isEmpty();
+            assertThat(scan.synchronizedFindings()).as("synchronized methods on the count-in fire path").isEmpty();
+        }
+    }
+
+    /** Deny by default: every call on the fire path is walked or on the exact allow-list. */
+    @Test
+    void everyCallOnTheCountInFirePathIsWalkedOrOnTheExactAllowListOfExternalMembers() throws Exception {
+        for (ReachableScan scan : walkCountInFirePath()) {
+            List<String> unwalked = scan.invoked().stream()
+                    .filter(call -> !COUNT_IN_FIRE_FOLLOWED.contains(call.substring(0, call.indexOf('#'))))
+                    .filter(call -> !COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST.containsKey(call))
+                    .toList();
+            assertThat(unwalked)
+                    .as("calls reachable on the count-in fire path (reached: %s) whose body is not walked and which "
+                            + "are not on COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST: follow the owner, allow the member "
+                            + "with a reason, or take the call off the render thread", scan.reached())
+                    .isEmpty();
+            assertThat(scan.invoked().stream().filter(call -> call.startsWith("[")).toList())
+                    .as("calls on an array type on the count-in fire path").isEmpty();
+            assertThat(scan.unresolved()).as("followed methods the walk could not resolve to a body").isEmpty();
+            assertThat(scan.staticFields().stream()
+                    .filter(field -> !COUNT_IN_FIRE_FOLLOWED.contains(field.substring(0, field.indexOf('#'))))
+                    .toList())
+                    .as("static fields outside the followed classes on the count-in fire path").isEmpty();
+        }
+    }
+
+    /** {@link #COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST} is exact: every entry is a call a walk still sees. */
+    @Test
+    void theCountInFireExternalCallAllowListIsExact() throws Exception {
+        Set<String> observed = new TreeSet<>();
+        for (ReachableScan scan : walkCountInFirePath()) {
+            scan.invoked().stream().filter(COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST::containsKey).forEach(observed::add);
+        }
+        assertThat(observed)
+                .as("every COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST entry must still be observed")
+                .containsExactlyInAnyOrderElementsOf(COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST.keySet());
+        assertThat(COUNT_IN_FIRE_EXTERNAL_CALL_ALLOWLIST.keySet().stream()
+                .filter(call -> COUNT_IN_FIRE_FOLLOWED.contains(call.substring(0, call.indexOf('#')))).toList())
+                .as("an allow-list entry of a followed class is walked, not allowed").isEmpty();
+    }
+
+    /**
+     * The fire path's methods carry {@code @RealTimeSafe}: the transport's
+     * record transition and every render-thread method of the schedule.
+     * The schedule's caller-side methods — the cancel, the record start's
+     * installation, the phase read — must not.
+     */
+    @Test
+    void theCountInFirePathMethodsShouldBeRealTimeSafe() throws Exception {
+        Class<?> transport = Class.forName(TRANSPORT.replace('/', '.'));
+        Class<?> schedule = Class.forName(COUNT_IN_SCHEDULE.replace('/', '.'));
+        assertThat(transport.getDeclaredMethod("record").isAnnotationPresent(RealTimeSafe.class))
+                .as("Transport#record runs on the render thread at the count-in's end and must carry @RealTimeSafe")
+                .isTrue();
+        for (Method method : schedule.getDeclaredMethods()) {
+            if (method.isSynthetic()) {
+                continue;
+            }
+            boolean renderThread = COUNT_IN_RENDER_METHODS.contains(method.getName());
+            assertThat(method.isAnnotationPresent(RealTimeSafe.class))
+                    .as("CountInSchedule#%s %s carry @RealTimeSafe", method.getName(),
+                            renderThread ? "runs on the render thread and must" : "is the caller's and must not")
+                    .isEqualTo(renderThread);
+        }
+        assertThat(REAL_TIME_SAFE_METHODS)
+                .as("the suite's sweeps see the record transition and the fire")
+                .contains(transport.getDeclaredMethod("record"), schedule.getDeclaredMethod("fire"));
+    }
+
+    /** Non-vacuity: the fire predicate reports every forbidden kind on the capture fixture, and tolerates the clock. */
+    @Test
+    void theCountInFireWalkReportsEveryForbiddenKindOnAFixture() throws Exception {
+        String self = RealTimeSafeContractTest.class.getName().replace('.', '/');
+        ReachableScan scan = walkReachable(RealTimeSafeContractTest.class, named("capturePathForbiddenFixture"),
+                COUNT_IN_FIRE_INVOKE_OFFENDER, owner -> owner.equals(self));
+        assertThat(scan.scannedRoots()).isEqualTo(1);
+        String fixture = "RealTimeSafeContractTest#capturePathForbiddenFixture: ";
+        assertThat(scan.invokeFindings().stream().map(Finding::toString).toList())
+                .contains(fixture + "invokes java/lang/Long#valueOf",
+                        fixture + "invokes java/lang/String#length",
+                        fixture + "invokes java/time/Instant#now",
+                        fixture + "invokes java/lang/System#currentTimeMillis",
+                        fixture + "invokes java/util/List#size",
+                        fixture + "invokes java/util/concurrent/locks/ReentrantLock#lock",
+                        fixture + "invokes java/util/concurrent/atomic/AtomicLong#incrementAndGet",
+                        fixture + "invokes java/util/concurrent/SubmissionPublisher#offer")
+                .doesNotContain(fixture + "invokes java/lang/System#nanoTime");
+        assertThat(scan.allocationFindings()).isNotEmpty();
+        assertThat(scan.monitorFindings()).isNotEmpty();
+    }
+
+    // ------------------------------------------------------------------
     // Goal 5: Every concrete AudioProcessor in daw-core/dsp has @RealTimeSafe
     // on its process() (and processSidechain() if SidechainAwareProcessor).
     // ------------------------------------------------------------------

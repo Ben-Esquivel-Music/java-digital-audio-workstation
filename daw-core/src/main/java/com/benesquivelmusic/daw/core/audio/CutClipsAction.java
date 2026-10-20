@@ -13,7 +13,9 @@ import java.util.*;
  * their respective {@link Track}s in a single operation.
  *
  * <p>Executing this action removes every clip from its track. Undoing it
- * re-adds every clip to its original track.</p>
+ * re-adds every clip to its original track — except comp output a recompile
+ * has replaced since, which {@link Track#addClip} refuses: the comp the
+ * main lane holds now already plays that range.</p>
  */
 public final class CutClipsAction implements UndoableAction {
 
@@ -62,11 +64,12 @@ public final class CutClipsAction implements UndoableAction {
             Map.Entry<Track, AudioClip> entry = entries.get(i);
             Track t = entry.getKey();
             AudioClip c = entry.getValue();
-            t.addClip(c);
-            EventBusPublisher.publish(new ClipEvent.Added(
-                    UUID.fromString(t.getId()),
-                    UUID.fromString(c.getId()),
-                    Instant.now()));
+            if (t.addClip(c)) {
+                EventBusPublisher.publish(new ClipEvent.Added(
+                        UUID.fromString(t.getId()),
+                        UUID.fromString(c.getId()),
+                        Instant.now()));
+            }
         }
     }
 }

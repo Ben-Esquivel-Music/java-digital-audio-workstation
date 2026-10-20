@@ -42,6 +42,16 @@ final class ClipInteractionController {
 
     private static final Logger LOG = Logger.getLogger(ClipInteractionController.class.getName());
 
+    /**
+     * How far, in pixels on either axis, the pointer may travel between press
+     * and release for the gesture to count as a click rather than a drag. Both
+     * paths that tell a click from a drag by pointer travel use it — the
+     * empty-space click (the rubber-band release) and the take-lane click —
+     * through {@link #isClick}, so the two apply the same travel test. A
+     * travel of exactly this many pixels is still a click.
+     */
+    static final double CLICK_SLOP_PX = 2.0;
+
     /** Default duration in beats for newly created (pencil) clips. */
     static final double DEFAULT_NEW_CLIP_DURATION = 4.0;
 
@@ -73,6 +83,10 @@ final class ClipInteractionController {
      * @param projectTempoBpm  project tempo in BPM (slip source-length math)
      * @param onTimeStretchClip opens the time-stretch dialog (story 042)
      * @param onPitchShiftClip  opens the pitch-shift dialog (story 042)
+     * @param markProjectDirty  marks the live project dirty — for a change
+     *                          that is not an undo entry and so escapes the
+     *                          undo-history dirty path (a take audition that
+     *                          discards comp edits)
      */
     record Deps(Supplier<List<Track>> tracks,
                 Supplier<EditTool> activeTool,
@@ -92,7 +106,8 @@ final class ClipInteractionController {
                 BiConsumer<NotificationLevel, String> showNotification,
                 DoubleSupplier projectTempoBpm,
                 Runnable onTimeStretchClip,
-                Runnable onPitchShiftClip) {
+                Runnable onPitchShiftClip,
+                Runnable markProjectDirty) {
     }
 
     private final ArrangementCanvas canvas;
@@ -122,6 +137,11 @@ final class ClipInteractionController {
     private boolean rubberBandShift;
     private double rubberBandAnchorX;
     private double rubberBandAnchorY;
+
+    // Pointer click-to-locate over a take lane: a seek-only gesture
+    private boolean takeLaneLocating;
+    private double takeLaneLocateAnchorX;
+    private double takeLaneLocateAnchorY;
 
     /**
      * Identifies which edge of the time selection is being dragged for
@@ -171,7 +191,8 @@ final class ClipInteractionController {
                 deps.gridResolution(),
                 deps.beatsPerBar(),
                 deps.refreshCanvas(),
-                canvas::trackIndexAtY));
+                canvas::trackIndexAtY,
+                canvas::computeLaneY));
         this.fadeHandler = new ClipFadeHandler(new ClipFadeHandler.Deps(
                 deps.pixelsPerBeat(),
                 deps.scrollXBeats(),
@@ -284,6 +305,19 @@ final class ClipInteractionController {
     }
 
     /**
+     * Returns whether {@code y} is over one of the take lanes under track
+     * {@code trackIndex} while a tool other than {@link EditTool#COMP} is
+     * active. Take lanes are the COMP tool's surface (story 328, book §5.6):
+     * their auditions are COMP gestures too, and every other tool would
+     * resolve the main-lane clip at the pointer's beat ({@link #clipAt}),
+     * which is the comp drawn above the lane, not the take under it.
+     */
+    private boolean isOverTakeLaneOutsideCompTool(int trackIndex, double y) {
+        return deps.activeTool().get() != EditTool.COMP
+                && canvas.takeLaneIndexAtY(trackIndex, y) >= 0;
+    }
+
+    /**
      * Tests whether the given X coordinate is within the draggable handle
      * zone of either selection edge. Returns the hit edge, or {@code null}
      * if no handle was hit.
@@ -352,6 +386,12 @@ final class ClipInteractionController {
         if (!canvas.isFocused()) {
             canvas.requestFocus();
         }
+        // Neither a clip drag nor a take-lane locate outlives its gesture: one
+        // whose release never came through (or that the tool changed under)
+        // does not carry into this one — it would otherwise take over this
+        // gesture's release. The other gesture states are not reset here.
+        cancelClipDragInProgress();
+        takeLaneLocating = false;
         int trackIndex = trackIndexAt(event.getY());
         double beat = beatAt(event.getX());
 
@@ -409,6 +449,28 @@ final class ClipInteractionController {
                 }
                 return;
             }
+        }
+
+        // ── Take lanes: COMP only ─────────────────────────────────────────────
+        // Every other tool resolves main-lane clips by beat alone, so a press
+        // here would edit the comp drawn above the lane rather than the take
+        // under the pointer. Inert, and consumed so it never reaches them —
+        // except that the Pointer's primary click still locates the playhead
+        // (seek on a release without drag): no selection, no drag, no menu.
+        // Shift-click does not seek, as on empty space, where the rubber-band
+        // release never seeks under Shift. The two paths tell a click from a
+        // drag with the same travel test (isClick), but they do not agree in
+        // full: empty space also seeks on a drag that covers no beats (a
+        // purely vertical one), where a take lane seeks only on a click.
+        if (isOverTakeLaneOutsideCompTool(trackIndex, event.getY())) {
+            if (deps.activeTool().get() == EditTool.POINTER && event.getButton() == MouseButton.PRIMARY
+                    && !event.isShiftDown()) {
+                takeLaneLocating = true;
+                takeLaneLocateAnchorX = event.getX();
+                takeLaneLocateAnchorY = event.getY();
+            }
+            event.consume();
+            return;
         }
 
         // ── Normal clip interaction ──────────────────────────────────────────
@@ -514,7 +576,7 @@ final class ClipInteractionController {
             case ERASER -> handleEraserPress(track, beat);
             case SCISSORS -> handleScissorsPress(track, beat);
             case GLUE -> handleGluePress(track, beat);
-            case COMP -> handleCompPress(track, beat, event);
+            case COMP -> handleCompPress(track, trackIndex, beat, event);
         }
     }
 
@@ -592,6 +654,19 @@ final class ClipInteractionController {
     }
 
     private void onMouseReleased(MouseEvent event) {
+        // Complete a take-lane click-to-locate: seek as an empty-space click
+        // does, unless the pointer moved — a drag there does nothing — or the
+        // tool changed under the gesture, which abandons it.
+        if (takeLaneLocating) {
+            takeLaneLocating = false;
+            if (deps.activeTool().get() == EditTool.POINTER
+                    && isClick(takeLaneLocateAnchorX, takeLaneLocateAnchorY, event.getX(), event.getY())) {
+                deps.seekToPosition().accept(snapBeat(beatAt(event.getX())));
+                deps.refreshCanvas().run();
+            }
+            return;
+        }
+
         // Complete automation breakpoint drag — register undo action
         if (dragAutomationPoint != null && dragAutomationLane != null) {
             Track track = deps.tracks().get().get(dragAutomationTrackIndex);
@@ -678,7 +753,7 @@ final class ClipInteractionController {
             double y2 = event.getY();
             double beatStart = beatAt(Math.min(x1, x2));
             double beatEnd = beatAt(Math.max(x1, x2));
-            boolean dragged = Math.abs(x2 - x1) > 2 || Math.abs(y2 - y1) > 2;
+            boolean dragged = !isClick(x1, y1, x2, y2);
             if (dragged && beatStart < beatEnd) {
                 List<Track> coveredTracks = tracksInYRange(y1, y2);
                 if (!coveredTracks.isEmpty()) {
@@ -722,6 +797,9 @@ final class ClipInteractionController {
         }
 
         if (deps.activeTool().get() != EditTool.POINTER || dragClip == null) {
+            // A clip drag the tool changed under is abandoned with its
+            // gesture, not left armed for a later release to complete.
+            cancelClipDragInProgress();
             return;
         }
         double beat = beatAt(event.getX());
@@ -816,6 +894,13 @@ final class ClipInteractionController {
     }
 
     private void onMouseMoved(MouseEvent event) {
+        if (isOverTakeLaneOutsideCompTool(trackIndexAt(event.getY()), event.getY())) {
+            // No handle or clip a press could act on (see onMousePressed):
+            // the default cursor, not the tool's, which would promise one.
+            Tooltip.uninstall(canvas, fadeTooltip);
+            canvas.setCursor(Cursor.DEFAULT);
+            return;
+        }
         if (deps.activeTool().get() == EditTool.POINTER) {
             // Check fade handles first
             ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
@@ -1075,28 +1160,36 @@ final class ClipInteractionController {
     }
 
     /**
-     * Handles a press with the {@link EditTool#COMP} tool. Alt+Click solos the
-     * track's first take lane for auditioning (without retaining handler state);
-     * a regular press begins a comp swipe on take lane 0 (the default lane).
-     * The beat is clamped to {@code >= 0} to avoid negative-position exceptions.
+     * Handles a press with the {@link EditTool#COMP} tool (story 328, book
+     * §5.6). The pointer's Y resolves the take lane under the track's main
+     * lane ({@link ArrangementCanvas#takeLaneIndexAtY}): a press on the main
+     * lane clears any lane solo (composite playback); Alt+Click on a take
+     * lane solos it for auditioning; a regular press on a take lane begins a
+     * comp swipe on that lane, committed on release. The beat is clamped to
+     * {@code >= 0} to avoid negative-position exceptions.
      */
-    private void handleCompPress(Track track, double beat, MouseEvent event) {
-        var takeComping = track.getTakeComping();
-        if (!takeComping.isActive()) {
+    private void handleCompPress(Track track, int trackIndex, double beat, MouseEvent event) {
+        if (!track.getTakeComping().isActive()) {
             return;
         }
+        int laneIndex = canvas.takeLaneIndexAtY(trackIndex, event.getY());
         double clampedBeat = Math.max(0.0, beat);
-        if (event.isAltDown()) {
-            // TODO: derive take-lane index from pointer Y once take lanes are
-            //       hit-testable; for now, solo lane 0 as the default.
-            var handler = new CompToolHandler(takeComping, deps.undoManager().get());
-            handler.altClickLane(0);
+        if (laneIndex < 0) {
+            new CompToolHandler(track, deps.undoManager().get()).clickMainLane();
+            deps.refreshCanvas().run();
+        } else if (event.isAltDown()) {
+            // An audition is not an undo entry, so the undo-history dirty path
+            // does not see it: when it discards hand edits to the comp output,
+            // the saved comp changed — mark dirty here and say why (PR #984 review).
+            if (new CompToolHandler(track, deps.undoManager().get()).altClickLane(laneIndex)) {
+                deps.markProjectDirty().run();
+                deps.updateStatusBar().accept(
+                        "Audition discarded edits to comp clips on " + track.getName());
+            }
             deps.refreshCanvas().run();
         } else {
-            // TODO: derive take-lane index from pointer Y once take lanes are
-            //       hit-testable; for now, swipe on lane 0 as the default.
-            compToolHandler = new CompToolHandler(takeComping, deps.undoManager().get());
-            compToolHandler.beginSwipe(0, clampedBeat);
+            compToolHandler = new CompToolHandler(track, deps.undoManager().get());
+            compToolHandler.beginSwipe(laneIndex, clampedBeat);
         }
     }
 
@@ -1175,7 +1268,18 @@ final class ClipInteractionController {
     }
 
     /**
-     * Cancels the clip drag in progress (Esc key handler). Restores the
+     * Returns whether a press at {@code (anchorX, anchorY)} released at
+     * {@code (x, y)} is a click: the pointer stayed within
+     * {@link #CLICK_SLOP_PX} on both axes.
+     */
+    private static boolean isClick(double anchorX, double anchorY, double x, double y) {
+        return Math.abs(x - anchorX) <= CLICK_SLOP_PX && Math.abs(y - anchorY) <= CLICK_SLOP_PX;
+    }
+
+    /**
+     * Cancels the clip drag in progress (Esc key handler; also a drag whose
+     * gesture ended without completing it, so it never outlives that
+     * gesture). Restores the
      * dragged clip to its original beat and notifies the advisor so the
      * cancel-revert animation runs with the shared
      * {@link com.benesquivelmusic.daw.app.ui.drag.AnimationProfile}

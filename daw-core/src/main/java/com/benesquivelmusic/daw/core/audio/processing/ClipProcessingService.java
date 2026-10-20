@@ -120,7 +120,7 @@ public final class ClipProcessingService {
      * are discarded.
      */
     public com.benesquivelmusic.daw.core.undo.UndoHistoryListener createHistoryListener() {
-        return manager -> history.syncPinsFromHistory(manager);
+        return (manager, _) -> history.syncPinsFromHistory(manager);
     }
 
     // ---------------------------------------------------------------------

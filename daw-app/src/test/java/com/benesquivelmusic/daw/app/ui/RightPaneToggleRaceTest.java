@@ -95,8 +95,6 @@ class RightPaneToggleRaceTest {
             HistoryPanelController historyCtl =
                     new HistoryPanelController(root, historyButton,
                             () -> undoManager,
-                            () -> { /* no-op */ },
-                            () -> { /* no-op */ },
                             browserCtl::isPanelVisible,
                             browserCtl::toggleBrowserPanel,
                             (text, icon) -> { /* no-op */ });
@@ -165,8 +163,6 @@ class RightPaneToggleRaceTest {
             HistoryPanelController historyCtl =
                     new HistoryPanelController(root, historyButton,
                             () -> undoManager,
-                            () -> { /* no-op */ },
-                            () -> { /* no-op */ },
                             browserCtl::isPanelVisible,
                             browserCtl::toggleBrowserPanel,
                             (text, icon) -> { /* no-op */ });

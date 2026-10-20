@@ -25,6 +25,7 @@ import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
@@ -1211,6 +1212,23 @@ class ProjectSerializationRoundTripTest {
 
         assertThat(restored.getTransport().getPunchRegion()).isNull();
         assertThat(restored.getTransport().isPunchEnabled()).isFalse();
+    }
+
+    @Test
+    void shouldDeserializeALoopAndAnEnabledPunchRegionIntoACleanProject() throws IOException {
+        // PR #984 review: a loop or punch edit marks the project dirty in the
+        // app's intent and gesture paths, never from the transport's setters —
+        // which the deserializer calls — so loading these settings is no edit.
+        DawProject original = new DawProject("Loop And Punch", AudioFormat.CD_QUALITY);
+        original.getTransport().setLoopWindow(true, 4.0, 12.0);
+        original.getTransport().setPunchRegion(new PunchRegion(44_100L, 88_200L, true));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTransport().getLoopWindow()).isEqualTo(new Transport.LoopWindow(true, 4.0, 12.0));
+        assertThat(restored.getTransport().getPunchRegion()).isEqualTo(new PunchRegion(44_100L, 88_200L, true));
+        assertThat(restored.isDirty()).as("a freshly loaded project has nothing to save").isFalse();
     }
 
     @Test

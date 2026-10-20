@@ -8,9 +8,8 @@ import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.recording.Take;
-import com.benesquivelmusic.daw.core.recording.TakeGroup;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import javafx.application.Platform;
@@ -136,8 +135,8 @@ class RecordedAudioLoadsOffTheFxThreadContractTest {
 
     private void assertNothingOfTheTakeIsPublished(DawProject project) throws Exception {
         assertThat(SteppedTakeFixture.get(() -> project.getTracks().stream()
-                .allMatch(track -> track.getClips().isEmpty() && track.getTakeGroups().isEmpty())))
-                .as("no clip and no take stack of the take is on any track").isTrue();
+                .allMatch(track -> track.getClips().isEmpty() && !track.getTakeComping().isActive())))
+                .as("no clip and no take lane of the take is on any track").isTrue();
         assertThat(SteppedTakeFixture.get(() -> fixture.undoManager().canUndo())).as("no undo entry").isFalse();
         assertThat(SteppedTakeFixture.get(project::isDirty)).as("the project is not marked dirty").isFalse();
     }
@@ -155,7 +154,7 @@ class RecordedAudioLoadsOffTheFxThreadContractTest {
         // What the clip looked like, and on which thread, the moment the take was published.
         List<Boolean> publishedOnFx = new CopyOnWriteArrayList<>();
         List<Boolean> publishedWithAudio = new CopyOnWriteArrayList<>();
-        SteppedTakeFixture.onFx(() -> fixture.undoManager().addHistoryListener(_ -> {
+        SteppedTakeFixture.onFx(() -> fixture.undoManager().addHistoryListener((_, _) -> {
             publishedOnFx.add(Platform.isFxApplicationThread());
             publishedWithAudio.add(!armed.getClips().isEmpty()
                     && armed.getClips().stream().allMatch(clip -> clip.getAudioData() != null));
@@ -286,18 +285,26 @@ class RecordedAudioLoadsOffTheFxThreadContractTest {
 
         fixture.runTheHeldRead();
 
-        List<Take> takes = new ArrayList<>();
-        for (TakeGroup group : SteppedTakeFixture.get(() -> List.copyOf(armed.getTakeGroups().values()))) {
-            takes.addAll(group.takes());
+        List<AudioClip> takes = new ArrayList<>();
+        for (TakeLane lane : SteppedTakeFixture.get(() -> List.copyOf(armed.getTakeComping().getTakeLanes()))) {
+            takes.addAll(lane.getClips());
         }
         assertThat(takes).hasSizeGreaterThan(1);
         long frame = 0;
-        for (Take take : takes) {
-            float[][] audio = take.clip().getAudioData();
-            assertThat(audio).as("lap %s has its audio, active or not", take.clip().getName()).isNotNull();
+        for (AudioClip take : takes) {
+            float[][] audio = take.getAudioData();
+            assertThat(audio).as("lap %s has its audio, selected or not", take.getName()).isNotNull();
             TakeCapturedAtTheEngineFormatContractTest.assertHoldsTheRamp(audio, frame);
             frame += audio[0].length;
         }
+        // Story 328 (book §3.5): the lanes and the comp clip are one undo entry.
+        assertThat(SteppedTakeFixture.get(() -> armed.getClips())).as("the compiled comp plays").hasSize(1);
+        SteppedTakeFixture.onFx(() -> fixture.undoManager().undo());
+        assertThat(SteppedTakeFixture.get(() -> armed.getTakeComping().isActive())).as("undo removed the lanes").isFalse();
+        assertThat(SteppedTakeFixture.get(() -> armed.getClips())).as("undo removed the comp clip").isEmpty();
+        SteppedTakeFixture.onFx(() -> fixture.undoManager().redo());
+        assertThat(SteppedTakeFixture.get(() -> armed.getTakeComping().getTakeLaneCount())).isEqualTo(takes.size());
+        assertThat(SteppedTakeFixture.get(() -> armed.getClips())).as("redo restored the comp clip").hasSize(1);
         assertThat(frame).as("the laps hold every frame that was fed, end to end").isEqualTo(blocks * 1024L);
         assertThat(SteppedTakeFixture.get(() -> armed.getClips())).as("the active lap's clip is on the track")
                 .isNotEmpty().allMatch(clip -> clip.getAudioData() != null);

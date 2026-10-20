@@ -71,6 +71,13 @@ public final class MidiRecorder {
      */
     public static final double BEATS_PER_COLUMN = 0.25;
 
+    /**
+     * How early before the count-in window's end a note-on is still kept
+     * (story 328, book §5.6): a performer who leans into bar 1 by up to this
+     * much is recorded at column 0 rather than losing the note. 20 ms.
+     */
+    public static final long PICKUP_TOLERANCE_US = 20_000;
+
     private final MidiDevice device;
     private final MidiClip clip;
     private final double tempo;
@@ -88,13 +95,14 @@ public final class MidiRecorder {
     private long monotonicOriginNanos;
     private long deviceOriginRelativeUs;
     private long lastRelativeUs;
-    private boolean usedFallbackTime;
 
     // Active note tracking: index = MIDI note number, value = start column (-1 = inactive)
     private final int[] activeNoteStarts = new int[128];
     private final int[] activeNoteVelocities = new int[128];
     private int startColumnOffset;
     private long countInDurationUs;
+    /** The count-in's real end on the render clock, or {@code null} to trust {@link #countInDurationUs}. */
+    private CountInDownbeat countInDownbeat;
 
     /** Notes recorded during the current session only (not pre-existing clip notes). */
     private final List<MidiNoteData> sessionNotes = new ArrayList<>();
@@ -204,13 +212,36 @@ public final class MidiRecorder {
     }
 
     /**
-     * Sets the count-in duration during which incoming MIDI events are
-     * discarded. Notes played during the count-in pre-roll are ignored so
-     * they do not appear in the recorded clip.
+     * Sets the count-in duration during which incoming notes are discarded
+     * (story 328, book §5.6). The window is anchored to the origin passed to
+     * {@link #beginRecording(long)} — the transport's record time — and never
+     * to the first received message: a performer silent through the count-in
+     * who plays from bar 1 loses nothing. Device timestamps are mapped onto
+     * that same clock: the first timestamped message is placed at the
+     * monotonic time of its receipt and later ones by their device deltas
+     * from it.
      *
-     * <p>The duration is specified in microseconds and measured relative to
-     * capture activation for events without device timestamps, or the first
-     * timestamped MIDI message. A value of {@code 0} disables count-in filtering.</p>
+     * <p>A note whose note-on falls inside the window is dropped entirely —
+     * its note-off too, so no headless note is recorded — except within
+     * {@link #PICKUP_TOLERANCE_US} of the window's end, where it is kept and
+     * placed at column 0. A note at or after the window's end is never
+     * discarded. The duration is in microseconds; {@code 0} disables
+     * count-in filtering.</p>
+     *
+     * <p>This duration is the count-in's length as predicted when it began:
+     * the engine's schedule length in frames over its sample rate. Where it
+     * ends on the origin's clock and where bar 1 is actually rendered differ
+     * by the block phase — the origin is read before the schedule is
+     * installed, and the render thread starts walking it at its next block
+     * boundary, so the real downbeat is up to one block ({@code blockSize /
+     * sampleRate}) later than {@code origin + durationUs} — on top of the
+     * output latency every heard click carries. Without a
+     * {@link #setCountInDownbeat(CountInDownbeat) downbeat}, bar 1 is
+     * measured from the predicted end, so every recorded note is early by
+     * that phase, bounded by {@code blockSize / sampleRate +
+     * PICKUP_TOLERANCE_US}; with one, the real fire replaces the prediction
+     * the moment it is published and the phase cancels out. The prediction
+     * still decides, until the fire, which notes are count-in notes.</p>
      *
      * @param durationUs the count-in duration in microseconds (must be &ge; 0)
      */
@@ -227,6 +258,45 @@ public final class MidiRecorder {
      * @return the count-in duration
      */
     public long getCountInDurationUs() {
+        return countInDurationUs;
+    }
+
+    /**
+     * Gives the recorder the count-in's real end (story 328, book §5.6): the
+     * render thread's fire, stamped on the monotonic clock this recorder's
+     * origin is on. Set before {@link #beginRecording(long)} with the
+     * {@linkplain #setCountInDurationUs(long) predicted duration}; the
+     * receive path reads it per message, under the recorder's monitor, so
+     * every note is measured against one consistent window end: until the
+     * fire is published the predicted end (notes before it, less the pickup
+     * tolerance, are count-in notes and dropped), and from the first message
+     * after it the fire itself — bar 1's downbeat on the render clock, free
+     * of the block phase the prediction carries. No note received after the
+     * fire is ever dropped. The fire must be stamped on this recorder's
+     * clock source — {@code System.nanoTime()} for a recorder built without
+     * one — or the window end it yields is meaningless.
+     *
+     * @param downbeat the count-in's fire, read on the receive thread
+     */
+    public void setCountInDownbeat(CountInDownbeat downbeat) {
+        this.countInDownbeat = Objects.requireNonNull(downbeat, "downbeat must not be null");
+    }
+
+    /** Whether the count-in's fire is published; one volatile read. Under the recorder's monitor. */
+    private boolean countInFired() {
+        CountInDownbeat downbeat = countInDownbeat;
+        return downbeat != null && downbeat.isFired();
+    }
+
+    /**
+     * Where the count-in ends on the origin's clock, in microseconds: the
+     * fire when {@code fired}, the predicted duration otherwise. Under the
+     * recorder's monitor.
+     */
+    private long countInWindowEndUs(boolean fired) {
+        if (fired) {
+            return Math.max(0, (countInDownbeat.fireNanos() - monotonicOriginNanos) / 1_000);
+        }
         return countInDurationUs;
     }
 
@@ -302,7 +372,6 @@ public final class MidiRecorder {
                 recordingStartTimeUs = -1;
                 lastRelativeUs = 0;
                 deviceOriginRelativeUs = 0;
-                usedFallbackTime = false;
                 recording = true;
             }
         } finally {
@@ -468,11 +537,12 @@ public final class MidiRecorder {
     }
 
     private void finalizeHeldNotes() {
+        long windowEndUs = countInWindowEndUs(countInFired());
         for (int noteNumber = 0; noteNumber < 128; noteNumber++) {
             if (activeNoteStarts[noteNumber] >= 0) {
                 int startColumn = activeNoteStarts[noteNumber];
                 long elapsedUs = Math.max(lastRelativeUs, elapsedMonotonicUs());
-                int endColumn = timestampToColumn(Math.max(0, elapsedUs - countInDurationUs)) + startColumnOffset;
+                int endColumn = timestampToColumn(Math.max(0, elapsedUs - windowEndUs)) + startColumnOffset;
                 int duration = Math.max(1, endColumn - startColumn);
                 MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                         duration, activeNoteVelocities[noteNumber], channel);
@@ -531,17 +601,16 @@ public final class MidiRecorder {
 
             long relativeUs;
             if (timeStamp < 0) {
-                usedFallbackTime = true;
                 relativeUs = elapsedMonotonicUs();
             } else {
                 if (recordingStartTimeUs < 0) {
+                    // The first timestamped message is placed at the monotonic
+                    // time of its receipt; later ones follow by their device
+                    // deltas. The origin itself is beginRecording's and never
+                    // moves (story 328): the count-in window stays anchored to
+                    // the transport's record time, not to this message.
                     recordingStartTimeUs = timeStamp;
-                    if (usedFallbackTime) {
-                        deviceOriginRelativeUs = Math.max(lastRelativeUs, elapsedMonotonicUs());
-                    } else {
-                        // Device-timed sessions keep their first-event origin for fallback and Stop too.
-                        monotonicOriginNanos = monotonicNanos.getAsLong();
-                    }
+                    deviceOriginRelativeUs = Math.max(lastRelativeUs, elapsedMonotonicUs());
                 }
                 relativeUs = Math.max(0, timeStamp - recordingStartTimeUs + deviceOriginRelativeUs);
             }
@@ -565,16 +634,25 @@ public final class MidiRecorder {
                 notifyEventReceived(MidiEvent.noteOff(msgChannel, noteNumber));
             }
 
-            // Discard note data during count-in pre-roll
-            if (countInDurationUs > 0 && relativeUs < countInDurationUs) {
+            // A note-on inside the count-in window is dropped entirely: its
+            // start is never recorded, so its later note-off finds no active
+            // note and is ignored too (no headless note). Within the pickup
+            // tolerance of the window's end it is kept, at column 0 below.
+            // The window's end is the predicted duration until the render
+            // thread's fire is published, and the fire itself from then on;
+            // a note received after the fire is never a count-in note.
+            boolean noteOn = command == ShortMessage.NOTE_ON && velocity > 0;
+            boolean fired = countInFired();
+            long windowEndUs = countInWindowEndUs(fired);
+            if (noteOn && !fired && countInDurationUs > 0 && relativeUs < countInDurationUs - PICKUP_TOLERANCE_US) {
                 return;
             }
 
-            // Adjust relative time to exclude count-in period
-            long adjustedUs = countInDurationUs > 0
-                    ? relativeUs - countInDurationUs : relativeUs;
+            // Adjust relative time to exclude the count-in; a pickup note
+            // lands at the window's end.
+            long adjustedUs = Math.max(0, relativeUs - windowEndUs);
 
-            if (command == ShortMessage.NOTE_ON && velocity > 0) {
+            if (noteOn) {
                 // Note On
                 int column = timestampToColumn(adjustedUs) + startColumnOffset;
                 activeNoteStarts[noteNumber] = column;

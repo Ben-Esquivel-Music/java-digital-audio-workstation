@@ -31,7 +31,12 @@ final class ClipEditOperations {
             addedClips = List.copyOf(addedClips);
         }
 
-        /** Reverses the operation: removes added clips and restores removed clips. */
+        /**
+         * Reverses the operation: removes added clips and restores removed
+         * clips — except comp output a recompile has replaced since, which
+         * {@link Track#addClip} refuses, so a swipe or an audition between
+         * the edit and its undo cannot leave the comp playing twice.
+         */
         void undo(Track track) {
             for (AudioClip clip : addedClips) track.removeClip(clip);
             for (AudioClip clip : removedClips) track.addClip(clip);
@@ -69,6 +74,12 @@ final class ClipEditOperations {
      * pre-existing clips, so multiple clipboard entries do not interfere with
      * each other.</p>
      *
+     * <p>The pieces of an overlapped clip left either side of the paste are
+     * {@linkplain AudioClip#trimmedCopy trimmed copies}, so a remnant of comp
+     * output stays comp output; the pasted clips are
+     * {@linkplain AudioClip#duplicate() duplicates}, user clips that no
+     * recompile removes.</p>
+     *
      * @param track     the target track
      * @param clipsToPaste the clipboard clips to paste (originals — they will be duplicated)
      * @param playhead  the beat position at which to paste
@@ -99,18 +110,12 @@ final class ClipEditOperations {
                 track.removeClip(clip);
                 removedClips.add(clip);
                 if (clipStart < playhead) {
-                    AudioClip before = clip.duplicate();
-                    before.setStartBeat(clipStart);
-                    before.setSourceOffsetBeats(clip.getSourceOffsetBeats());
-                    before.setDurationBeats(playhead - clipStart);
+                    AudioClip before = clip.trimmedCopy(clipStart, playhead);
                     track.addClip(before);
                     addedClips.add(before);
                 }
                 if (clipEnd > pasteEnd) {
-                    AudioClip after = clip.duplicate();
-                    after.setSourceOffsetBeats(clip.getSourceOffsetBeats() + (pasteEnd - clipStart));
-                    after.setStartBeat(pasteEnd);
-                    after.setDurationBeats(clipEnd - pasteEnd);
+                    AudioClip after = clip.trimmedCopy(pasteEnd, clipEnd);
                     track.addClip(after);
                     addedClips.add(after);
                 }
@@ -178,8 +183,9 @@ final class ClipEditOperations {
      * the selection and trimming clips that partially overlap.
      *
      * <p>Clips fully inside the selection are left untouched. Clips that
-     * extend beyond the selection are replaced with trimmed duplicates.
-     * Clips entirely outside are removed.</p>
+     * extend beyond the selection are replaced with
+     * {@linkplain AudioClip#trimmedCopy trimmed copies}, which stay comp
+     * output when the clip was. Clips entirely outside are removed.</p>
      *
      * @param track    the target track
      * @param selStart the selection start beat
@@ -203,11 +209,7 @@ final class ClipEditOperations {
                 // Partially inside — replace with trimmed copy
                 double newStart = Math.max(clipStart, selStart);
                 double newEnd = Math.min(clipEnd, selEnd);
-                AudioClip trimmed = clip.duplicate();
-                double offsetDelta = newStart - clipStart;
-                trimmed.setSourceOffsetBeats(clip.getSourceOffsetBeats() + offsetDelta);
-                trimmed.setStartBeat(newStart);
-                trimmed.setDurationBeats(newEnd - newStart);
+                AudioClip trimmed = clip.trimmedCopy(newStart, newEnd);
                 track.removeClip(clip);
                 removedClips.add(clip);
                 track.addClip(trimmed);

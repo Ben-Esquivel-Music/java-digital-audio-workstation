@@ -27,6 +27,13 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.END)),
     TOGGLE_LOOP("Toggle Loop", Category.TRANSPORT,
             new KeyCodeCombination(KeyCode.L)),
+    /**
+     * Story 328 (book §5.6) — toggle loop-record: a take recorded over an
+     * enabled loop stacks each lap as a take lane. {@code Shift+L}, beside
+     * the loop toggle's {@code L}.
+     */
+    TOGGLE_LOOP_RECORD("Toggle Loop Record", Category.TRANSPORT,
+            new KeyCodeCombination(KeyCode.L, KeyCombination.SHIFT_DOWN)),
     TOGGLE_METRONOME("Toggle Metronome", Category.TRANSPORT,
             new KeyCodeCombination(KeyCode.M)),
     SET_PUNCH_IN("Set Punch In", Category.TRANSPORT,

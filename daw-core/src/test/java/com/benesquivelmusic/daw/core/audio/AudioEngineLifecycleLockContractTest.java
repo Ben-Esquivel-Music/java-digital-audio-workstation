@@ -177,6 +177,10 @@ class AudioEngineLifecycleLockContractTest {
             "com/benesquivelmusic/daw/core/audio/AudioGraphScheduler",
             "com/benesquivelmusic/daw/core/audio/AudioWorkerPool",
             "com/benesquivelmusic/daw/core/audio/BackendStreamRung",
+            // Story 328: the stop and the stream close cancel a pending count-in.
+            // CountInSchedule.cancel() is two volatile accesses and never runs
+            // the schedule's record start; see the lock's javadoc.
+            "com/benesquivelmusic/daw/core/audio/CountInSchedule",
             "com/benesquivelmusic/daw/core/audio/EffectsChain",
             "com/benesquivelmusic/daw/core/audio/EngineStreamPump",
             "com/benesquivelmusic/daw/core/audio/MidiTrackRenderer",

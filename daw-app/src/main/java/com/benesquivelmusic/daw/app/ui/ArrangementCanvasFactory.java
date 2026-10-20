@@ -47,12 +47,21 @@ final class ArrangementCanvasFactory {
         canvas.prefHeightProperty().bind(arrangementContentPane.heightProperty());
 
         TimelineRuler ruler = new TimelineRuler(host.project().getTransport());
+        // Story 328 — punch frames are PROJECT-rate; the ruler converts them to
+        // beats at that rate so the drawn region matches the frames the capture
+        // gate acts on (book §5.6). Re-applied on every project switch by
+        // MainController.rebuildViewModels().
+        ruler.setSampleRate(host.project().getFormat().sampleRate());
         Parent contentParent = arrangementContentPane.getParent();
         if (contentParent instanceof VBox vbox) {
             int idx = vbox.getChildren().indexOf(arrangementContentPane);
             if (idx >= 0) { vbox.getChildren().add(idx, ruler); }
         }
         ruler.addSeekListener(seekConsumer::accept);
+        // A loop or punch gesture that changed the transport marks the project
+        // dirty (PR #984 review). Read live: the project is swapped on Open / New,
+        // and the ruler is rebound to the new transport, not rebuilt.
+        ruler.setOnTransportEdited(() -> host.project().markDirty());
 
         // Story 293 — the ClipInteractionController's former Host is retired;
         // adapt this factory's host into a Deps record of direct functional
@@ -79,7 +88,9 @@ final class ArrangementCanvasFactory {
                         host::showNotification,
                         () -> host.project().getTransport().getTempo(),
                         host::onTimeStretchClip,
-                        host::onPitchShiftClip));
+                        host::onPitchShiftClip,
+                        // Read live: the project is swapped on Open / New.
+                        () -> host.project().markDirty()));
         clipInteraction.install();
 
         return new Result(canvas, ruler, clipInteraction);

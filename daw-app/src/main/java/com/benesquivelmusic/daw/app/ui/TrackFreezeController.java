@@ -22,6 +22,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -33,10 +34,14 @@ import java.util.logging.Logger;
  * batch variants {@link BatchFreezeTracksAction} /
  * {@link BatchUnfreezeTracksAction}) through the project's
  * {@link UndoManager} so every freeze/unfreeze is one reversible
- * step. Long-running offline renders are pushed to a background
- * virtual thread and surfaced through a modeless
- * {@link TaskProgressIndicator}; cancellation rolls back any
- * partially-rendered tracks via {@code undo()}.</p>
+ * step. A background virtual thread sequences each freeze gesture, but
+ * the offline render itself runs inside the action's {@code execute()},
+ * which that worker posts to the FX thread, so the render blocks the FX
+ * thread while it runs (pre-existing, story 035). A freeze is surfaced
+ * through a modeless {@link TaskProgressIndicator}. A batch
+ * cancellation that is seen rolls back any partially-rendered tracks via
+ * {@code undo()}; see {@code runFreezeAsync} for when a Cancel click is
+ * seen.</p>
  *
  * <p>For the on-track snowflake (❄) tooltip described in the story,
  * {@link #cacheState(Track)} reports whether the most recent freeze of
@@ -47,6 +52,19 @@ import java.util.logging.Logger;
  * a host application via constructor injection and notifies the host
  * after every successful freeze/unfreeze so the UI can refresh
  * (rebuild track strips, mixer channels, etc.).</p>
+ *
+ * <p>One controller serves every project generation: it reads the project
+ * and its {@link UndoManager} from live suppliers. Each gesture reads that
+ * pair once, on the FX thread, at its entry point, and runs entirely
+ * against it — the mixer-channel lookups, the render settings, the
+ * {@code execute} and a cancelled batch's rollback. A freeze still
+ * rendering when another project is opened finishes against the project it
+ * started on, and is then discarded without refreshing, recording or
+ * reporting anything for the new project. The project is never marked
+ * dirty here: every freeze and unfreeze goes through
+ * {@link UndoManager#execute}, and the generation's
+ * {@code UndoHistoryDirtyBinder} marks that generation's project
+ * (Control Synchronization Design Book §5.1, §7).</p>
  */
 public final class TrackFreezeController {
 
@@ -65,8 +83,8 @@ public final class TrackFreezeController {
         UNKNOWN
     }
 
-    private final DawProject project;
-    private final UndoManager undoManager;
+    private final Supplier<DawProject> project;
+    private final Supplier<UndoManager> undoManager;
     private final Consumer<Track> onTrackFreezeChanged;
     private final Runnable onSelectionFreezeChanged;
     private final BiConsumer<String, DawIcon> statusReporter;
@@ -80,22 +98,37 @@ public final class TrackFreezeController {
      */
     private final FxDispatcher fxDispatcher;
 
-    /** Per-track-id provenance map for the snowflake tooltip. Thread-safe
-     *  because recordFreeze() is called from the virtual worker thread while
-     *  tooltipFor()/cacheState() are read from the JavaFX application thread. */
+    /** Per-track-id provenance map for the snowflake tooltip. Written on the
+     *  FX thread, when a freeze gesture ends (only if its project is still
+     *  the current one) and by the unfreeze entry points; concurrent so a
+     *  tooltipFor()/cacheState() read is safe from any thread. */
     private final Map<String, FreezeRecord> records = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Captured state of the most recent freeze for tooltip rendering. */
     private record FreezeRecord(CacheState state, Instant when) { }
 
     /**
+     * The project and undo manager one gesture runs against, read once from
+     * the suppliers at the gesture's entry point.
+     */
+    private record Generation(DawProject project, UndoManager undoManager) {
+
+        MixerChannel channelFor(Track track) { return project.getMixerChannelForTrack(track); }
+        int sampleRate() { return (int) project.getFormat().sampleRate(); }
+        double tempo()   { return project.getTransport().getTempo(); }
+        int channels()   { return project.getFormat().channels(); }
+    }
+
+    /**
      * Creates a new controller.
      *
-     * @param project                  project supplying tracks, mixer,
-     *                                 sample rate and tempo (non-null)
-     * @param undoManager              undo manager to register actions
-     *                                 with so freeze/unfreeze are
-     *                                 reversible (non-null)
+     * @param project                  the current project, supplying tracks,
+     *                                 mixer, sample rate and tempo; read
+     *                                 once per gesture (non-null)
+     * @param undoManager              the current project's undo manager, to
+     *                                 register actions with so
+     *                                 freeze/unfreeze are reversible; read
+     *                                 once per gesture (non-null)
      * @param owner                    owning JavaFX window for the
      *                                 progress indicator; may be
      *                                 {@code null}
@@ -108,8 +141,8 @@ public final class TrackFreezeController {
      *                                 refresh every affected strip
      * @param statusReporter           status-bar reporter (message + icon)
      */
-    public TrackFreezeController(DawProject project,
-                                 UndoManager undoManager,
+    public TrackFreezeController(Supplier<DawProject> project,
+                                 Supplier<UndoManager> undoManager,
                                  Window owner,
                                  Consumer<Track> onTrackFreezeChanged,
                                  Runnable onSelectionFreezeChanged,
@@ -122,10 +155,10 @@ public final class TrackFreezeController {
      * Creates a new controller with an explicit FX-thread marshalling seam
      * (story 289).
      *
-     * @param project                  project supplying tracks, mixer,
-     *                                 sample rate and tempo (non-null)
-     * @param undoManager              undo manager to register actions with
-     *                                 (non-null)
+     * @param project                  the current project; read once per
+     *                                 gesture (non-null)
+     * @param undoManager              the current project's undo manager;
+     *                                 read once per gesture (non-null)
      * @param owner                    owning JavaFX window for the progress
      *                                 indicator; may be {@code null}
      * @param onTrackFreezeChanged     single-track freeze-state callback
@@ -135,8 +168,8 @@ public final class TrackFreezeController {
      *                                 {@code null} to use the
      *                                 {@link FxDispatcher#getDefault() default}
      */
-    public TrackFreezeController(DawProject project,
-                                 UndoManager undoManager,
+    public TrackFreezeController(Supplier<DawProject> project,
+                                 Supplier<UndoManager> undoManager,
                                  Window owner,
                                  Consumer<Track> onTrackFreezeChanged,
                                  Runnable onSelectionFreezeChanged,
@@ -162,6 +195,19 @@ public final class TrackFreezeController {
      */
     private void postFx(Runnable work) {
         FxDispatcher.runOnFx(fxDispatcher, work);
+    }
+
+    /** The current project and undo manager, read once at a gesture's entry point (FX thread). */
+    private Generation currentGeneration() {
+        return new Generation(
+                Objects.requireNonNull(project.get(), "project supplier returned null"),
+                Objects.requireNonNull(undoManager.get(), "undoManager supplier returned null"));
+    }
+
+    /** Whether {@code generation}'s project and undo manager are both still the current pair (FX thread). */
+    private boolean isCurrent(Generation generation) {
+        return project.get() == generation.project()
+                && undoManager.get() == generation.undoManager();
     }
 
     /**
@@ -205,6 +251,7 @@ public final class TrackFreezeController {
      * the request is silently ignored with a status-bar message.
      */
     public void freezeTrack(Track track) {
+        Generation generation = currentGeneration();
         if (track == null) {
             statusReporter.accept("No track selected to freeze", DawIcon.INFO_CIRCLE);
             return;
@@ -213,12 +260,12 @@ public final class TrackFreezeController {
             statusReporter.accept("Track is already frozen: " + track.getName(), DawIcon.INFO_CIRCLE);
             return;
         }
-        MixerChannel channel = project.getMixerChannelForTrack(track);
+        MixerChannel channel = generation.channelFor(track);
         if (channel == null) {
             statusReporter.accept("No mixer channel for: " + track.getName(), DawIcon.INFO_CIRCLE);
             return;
         }
-        runFreezeAsync(List.of(track), false);
+        runFreezeAsync(new FreezeRun(generation, List.of(track), false));
     }
 
     /**
@@ -227,6 +274,7 @@ public final class TrackFreezeController {
      * the request is silently ignored with a status-bar message.
      */
     public void unfreezeTrack(Track track) {
+        Generation generation = currentGeneration();
         if (track == null) {
             statusReporter.accept("No track selected to unfreeze", DawIcon.INFO_CIRCLE);
             return;
@@ -235,14 +283,14 @@ public final class TrackFreezeController {
             statusReporter.accept("Track is not frozen: " + track.getName(), DawIcon.INFO_CIRCLE);
             return;
         }
-        MixerChannel channel = project.getMixerChannelForTrack(track);
+        MixerChannel channel = generation.channelFor(track);
         if (channel == null) {
             statusReporter.accept("No mixer channel for: " + track.getName(), DawIcon.INFO_CIRCLE);
             return;
         }
         UnfreezeTrackAction action = new UnfreezeTrackAction(
-                track, channel, sampleRate(), tempo(), channels());
-        undoManager.execute(action);
+                track, channel, generation.sampleRate(), generation.tempo(), generation.channels());
+        generation.undoManager().execute(action);
         records.remove(track.getId());
         statusReporter.accept("Unfrozen: " + track.getName(), DawIcon.INFO_CIRCLE);
         onTrackFreezeChanged.accept(track);
@@ -258,14 +306,15 @@ public final class TrackFreezeController {
      * with a Cancel button that rolls the partial batch back.
      */
     public void freezeTracks(List<Track> selection) {
+        Generation generation = currentGeneration();
         List<Track> targets = selection == null ? List.of() : selection.stream()
-                .filter(t -> t != null && !t.isFrozen() && project.getMixerChannelForTrack(t) != null)
+                .filter(t -> t != null && !t.isFrozen() && generation.channelFor(t) != null)
                 .toList();
         if (targets.isEmpty()) {
             statusReporter.accept("Nothing to freeze in selection", DawIcon.INFO_CIRCLE);
             return;
         }
-        runFreezeAsync(targets, true);
+        runFreezeAsync(new FreezeRun(generation, targets, true));
     }
 
     /**
@@ -275,17 +324,18 @@ public final class TrackFreezeController {
      * progress indicator is shown.
      */
     public void unfreezeTracks(List<Track> selection) {
+        Generation generation = currentGeneration();
         List<Track> targets = selection == null ? List.of() : selection.stream()
-                .filter(t -> t != null && t.isFrozen() && project.getMixerChannelForTrack(t) != null)
+                .filter(t -> t != null && t.isFrozen() && generation.channelFor(t) != null)
                 .toList();
         if (targets.isEmpty()) {
             statusReporter.accept("Nothing to unfreeze in selection", DawIcon.INFO_CIRCLE);
             return;
         }
         BatchUnfreezeTracksAction action = new BatchUnfreezeTracksAction(
-                new ArrayList<>(targets), project::getMixerChannelForTrack,
-                sampleRate(), tempo(), channels());
-        undoManager.execute(action);
+                new ArrayList<>(targets), generation::channelFor,
+                generation.sampleRate(), generation.tempo(), generation.channels());
+        generation.undoManager().execute(action);
         for (Track t : targets) records.remove(t.getId());
         statusReporter.accept("Unfrozen " + targets.size() + " track(s)", DawIcon.INFO_CIRCLE);
         onSelectionFreezeChanged.run();
@@ -294,20 +344,65 @@ public final class TrackFreezeController {
     // ── Internal: async render with progress + cancel ───────────────────────
 
     /**
-     * Runs the freeze for one or more tracks on a background virtual
-     * thread. For {@code batch == true} (multi-track), the progress
+     * One freeze gesture: the generation it runs against, its targets, and
+     * the outcome its worker hands to the FX thread when it ends. The
+     * worker fills the outcome; {@link #finishFreeze} reads it on the FX
+     * thread after the worker's last write, through the {@link #postFx} hop.
+     */
+    private static final class FreezeRun {
+
+        private final Generation generation;
+        private final List<Track> targets;
+        private final boolean batch;
+        /** Tracks this gesture froze, in order; worker-written. */
+        private final List<Track> succeeded = new ArrayList<>();
+        /** Provenance of each track this gesture froze, committed to the controller's {@code records} only if still current. */
+        private final Map<String, FreezeRecord> rendered = new java.util.concurrent.ConcurrentHashMap<>();
+        /** The status to report, or {@code null} when the worker ended on an {@link Error}. */
+        private volatile String status;
+        /** Whether a cancelled batch was rolled back on {@link #generation}'s undo manager. */
+        private volatile boolean rolledBack;
+
+        FreezeRun(Generation generation, List<Track> targets, boolean batch) {
+            this.generation = generation;
+            this.targets = targets;
+            this.batch = batch;
+        }
+    }
+
+    /**
+     * Sequences the freeze for one or more tracks from a background
+     * virtual thread. For a batch (multi-track) run, the progress
      * indicator shows a Cancel button with cooperative cancellation;
      * for single-track requests the Cancel button is hidden because
      * the render is atomic and cannot be interrupted mid-way.
-     * Cancellation is cooperative — the worker checks the cancel flag
-     * between tracks and undoes the partial batch.
+     * The batch action checks the cancel flag between tracks, inside its
+     * {@code execute()} on the FX thread. Because the render blocks the FX
+     * thread for the whole batch, a Cancel click is effectively seen only
+     * if it arrives before the batch's {@code execute()} starts, and the
+     * per-track progress updates do not render while the batch runs
+     * (pre-existing, story 035). When the cancellation is seen, the worker
+     * undoes the partial batch on the run's captured undo manager.
      *
      * <p>All {@link UndoManager} mutations and status-bar updates are
      * serialized onto the JavaFX application thread so the undo
-     * history and UI are only ever modified from a single thread,
-     * even though the render itself runs on a virtual thread.</p>
+     * history and UI are only ever modified from a single thread. The
+     * virtual worker thread only sequences the gesture: the render
+     * itself runs inside {@code execute}, which the worker hands to the
+     * FX thread through {@code runOnFxThreadAndWait}
+     * ({@code FreezeTrackAction.execute()} and the batch action's
+     * {@code execute()} call {@code TrackFreezeService.freeze}), so it
+     * blocks the FX thread
+     * while it renders (pre-existing, story 035). Every
+     * mutation — the {@code execute} and a cancelled batch's
+     * {@code undo()} + {@code clearRedoStack()} — goes to the run's
+     * captured undo manager, never the live one: after an Open, a live
+     * lookup would roll back the new project's last edit.</p>
      */
-    private void runFreezeAsync(List<Track> targets, boolean batch) {
+    private void runFreezeAsync(FreezeRun run) {
+        Generation generation = run.generation;
+        List<Track> targets = run.targets;
+        boolean batch = run.batch;
         TaskProgressIndicator progress = new TaskProgressIndicator(
                 owner, batch ? "Freezing " + targets.size() + " tracks…" : "Freezing track…",
                 fxDispatcher);
@@ -325,15 +420,15 @@ public final class TrackFreezeController {
                 .start(() -> {
                     Instant start = Instant.now();
                     boolean partial = false;
-                    List<Track> succeeded = new ArrayList<>();
+                    List<Track> succeeded = run.succeeded;
                     try {
                         if (!batch) {
                             Track t = targets.get(0);
                             FreezeTrackAction action = new FreezeTrackAction(
-                                    t, project.getMixerChannelForTrack(t),
-                                    sampleRate(), tempo(), channels());
-                            runOnFxThreadAndWait(() -> undoManager.execute(action));
-                            recordFreeze(t, CacheState.FRESH, start);
+                                    t, generation.channelFor(t),
+                                    generation.sampleRate(), generation.tempo(), generation.channels());
+                            runOnFxThreadAndWait(() -> generation.undoManager().execute(action));
+                            run.rendered.put(t.getId(), new FreezeRecord(CacheState.FRESH, start));
                             succeeded.add(t);
                             progress.update(1.0, "Frozen: " + t.getName());
                         } else {
@@ -349,17 +444,18 @@ public final class TrackFreezeController {
                             ProgressAwareBatchFreezeAction batchAction =
                                     new ProgressAwareBatchFreezeAction(
                                             new ArrayList<>(targets),
-                                            project::getMixerChannelForTrack,
-                                            sampleRate(), tempo(), channels(),
+                                            generation::channelFor,
+                                            generation.sampleRate(), generation.tempo(), generation.channels(),
                                             cancelled,
                                             (i, t) -> progress.update((double) i / total,
                                                     "Freezing (" + (i + 1) + "/" + total + "): " + t.getName()),
                                             (i, t) -> {
-                                                recordFreeze(t, CacheState.FRESH, Instant.now());
+                                                run.rendered.put(t.getId(),
+                                                        new FreezeRecord(CacheState.FRESH, Instant.now()));
                                                 progress.update((double) (i + 1) / total,
                                                         "Frozen (" + (i + 1) + "/" + total + "): " + t.getName());
                                             });
-                            runOnFxThreadAndWait(() -> undoManager.execute(batchAction));
+                            runOnFxThreadAndWait(() -> generation.undoManager().execute(batchAction));
                             succeeded.addAll(batchAction.frozenByThisAction());
                             partial = batchAction.wasCancelled();
                         }
@@ -377,50 +473,63 @@ public final class TrackFreezeController {
                             // confusing "Redo" option.
                             int rolledBack = succeeded.size();
                             runOnFxThreadAndWait(() -> {
-                                undoManager.undo();
-                                undoManager.clearRedoStack();
+                                generation.undoManager().undo();
+                                generation.undoManager().clearRedoStack();
                             });
-                            for (Track t : succeeded) records.remove(t.getId());
-                            reportStatus(
-                                    "Freeze cancelled — rolled back " + rolledBack + " track(s)",
-                                    DawIcon.INFO_CIRCLE);
+                            run.rolledBack = true;
+                            run.status = "Freeze cancelled — rolled back " + rolledBack + " track(s)";
                         } else {
-                            reportStatus(
-                                    batch ? "Frozen " + succeeded.size() + " track(s)"
-                                          : "Frozen: " + succeeded.get(0).getName(),
-                                    DawIcon.INFO_CIRCLE);
+                            run.status = batch ? "Frozen " + succeeded.size() + " track(s)"
+                                               : "Frozen: " + succeeded.get(0).getName();
                         }
                     } catch (RuntimeException ex) {
                         LOG.log(Level.WARNING, "Track freeze failed", ex);
-                        reportStatus("Freeze failed: " + ex.getMessage(), DawIcon.INFO_CIRCLE);
+                        run.status = "Freeze failed: " + failureDetail(ex);
                     } finally {
                         progress.close();
-                        Runnable refresh = batch ? onSelectionFreezeChanged
-                                : () -> {
-                                    if (!succeeded.isEmpty()) {
-                                        onTrackFreezeChanged.accept(succeeded.get(0));
-                                    }
-                                };
                         if (Platform.isFxApplicationThread()) {
-                            refresh.run();
+                            finishFreeze(run);
                         } else {
-                            postFx(refresh);
+                            postFx(() -> finishFreeze(run));
                         }
                     }
                 });
     }
 
     /**
-     * Reports a status message on the FX thread. Safe to call from any
-     * thread — marshals through the {@link FxDispatcher} seam (story 289)
-     * when off the FX thread.
+     * Ends a freeze gesture on the FX thread. If the project the gesture
+     * started on is no longer the current one (the user opened, created or
+     * restored another project meanwhile), the finished freeze belongs to a
+     * closed project: nothing is refreshed or recorded and the status reads
+     * "Freeze discarded — project closed". Otherwise the gesture's cache
+     * provenance is recorded (or, for a rolled-back batch, cleared), its
+     * status reported and the host's refresh callback run.
      */
-    private void reportStatus(String message, DawIcon icon) {
-        if (Platform.isFxApplicationThread()) {
-            statusReporter.accept(message, icon);
-        } else {
-            postFx(() -> statusReporter.accept(message, icon));
+    private void finishFreeze(FreezeRun run) {
+        if (!isCurrent(run.generation)) {
+            for (Track t : run.targets) records.remove(t.getId());
+            statusReporter.accept("Freeze discarded — project closed", DawIcon.INFO_CIRCLE);
+            return;
         }
+        if (run.rolledBack) {
+            for (Track t : run.succeeded) records.remove(t.getId());
+        } else {
+            records.putAll(run.rendered);
+        }
+        if (run.status != null) {
+            statusReporter.accept(run.status, DawIcon.INFO_CIRCLE);
+        }
+        if (run.batch) {
+            onSelectionFreezeChanged.run();
+        } else if (!run.succeeded.isEmpty()) {
+            onTrackFreezeChanged.accept(run.succeeded.get(0));
+        }
+    }
+
+    /** The failure's message, or its simple class name when it has none, so the user never reads "null". */
+    private static String failureDetail(RuntimeException failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank() ? failure.getClass().getSimpleName() : message;
     }
 
     /**
@@ -463,14 +572,6 @@ public final class TrackFreezeController {
         }
         if (failure.get() != null) throw failure.get();
     }
-
-    private void recordFreeze(Track track, CacheState state, Instant when) {
-        records.put(track.getId(), new FreezeRecord(state, when));
-    }
-
-    private int sampleRate() { return (int) project.getFormat().sampleRate(); }
-    private double tempo()   { return project.getTransport().getTempo(); }
-    private int channels()   { return project.getFormat().channels(); }
 
     /**
      * Synthetic single-step undo action used by the batch-freeze path

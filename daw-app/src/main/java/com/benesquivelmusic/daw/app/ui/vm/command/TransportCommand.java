@@ -20,8 +20,12 @@ public sealed interface TransportCommand
                 ToggleRecordCommand,
                 SetTempoCommand,
                 ToggleLoopCommand,
+                ToggleLoopRecordCommand,
                 SkipBackCommand,
-                SkipForwardCommand {
+                SkipForwardCommand,
+                SetPunchInCommand,
+                SetPunchOutCommand,
+                TogglePunchCommand {
 
     /**
      * Runs this intent against the given handler.

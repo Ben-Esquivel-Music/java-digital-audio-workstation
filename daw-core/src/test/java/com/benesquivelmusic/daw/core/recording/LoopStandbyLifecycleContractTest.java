@@ -199,7 +199,7 @@ class LoopStandbyLifecycleContractTest {
                     .containsExactly("segment-000.wav", "segment-001.wav", "segment-002.wav");
             assertThat(manifestSegments(two, armed))
                     .containsExactly("0|0|SEALED|1024", "1|1|SEALED|1024", "2|2|SEALED|512");
-            assertThat(two.getTakeGroups().get(armed).size()).as("%s: three laps", armed.getName()).isEqualTo(3);
+            assertThat(two.getLapClips().get(armed).size()).as("%s: three laps", armed.getName()).isEqualTo(3);
         }
         for (TrackCapture capture : two.getCaptureFlushService().captures()) {
             assertThat(capture.hasStandby()).isFalse();
@@ -410,7 +410,7 @@ class LoopStandbyLifecycleContractTest {
         assertThat(capture.hasStandby()).isFalse();
         assertThat(capture.hasUnsealedSegment()).as("no lane of the take holds a segment that did not seal").isFalse();
         assertThat(pipeline.stopSealFailure()).as("the seal did not fail").isEmpty();
-        assertThat(pipeline.getTakeGroups().get(track).size()).isEqualTo(1);
+        assertThat(pipeline.getLapClips().get(track).size()).isEqualTo(1);
     }
 
     @Test
@@ -491,7 +491,7 @@ class LoopStandbyLifecycleContractTest {
                 .as("the file that could not be deleted is no segment of the take")
                 .containsExactly("segment-000.wav", "segment-002.wav.part", "segment-003.wav", "segment-004.wav");
         assertThat(pipeline.stopSealFailure()).as("the seal did not fail").isEmpty();
-        assertThat(pipeline.getTakeGroups().get(track).size()).as("three laps").isEqualTo(3);
+        assertThat(pipeline.getLapClips().get(track).size()).as("three laps").isEqualTo(3);
         assertThat(service.appliedBlocks()).as("every block was recorded").isEqualTo(5);
     }
 

@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
@@ -24,6 +26,7 @@ import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.a
 import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.decoded16;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.offset;
 
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
 class RecordingPipelineTest {
@@ -381,35 +384,6 @@ class RecordingPipelineTest {
     }
 
     @Test
-    void shouldGenerateCountInAudio() {
-        Track track = new Track("Audio 1", TrackType.AUDIO);
-        track.setArmed(true);
-
-        RecordingPipeline pipeline = new RecordingPipeline(
-                audioEngine, transport, format, tempDir, List.of(track),
-                CountInMode.ONE_BAR, InputMonitoringMode.OFF, null);
-
-        float[][] countInAudio = pipeline.generateCountInAudio();
-
-        // 4 beats at 120 BPM (default tempo), 44100 Hz = 88200 samples
-        assertThat(countInAudio).hasNumberOfRows(2);
-        assertThat(countInAudio[0].length).isEqualTo(88200);
-    }
-
-    @Test
-    void shouldReturnEmptyCountInAudioWhenOff() {
-        Track track = new Track("Audio 1", TrackType.AUDIO);
-        track.setArmed(true);
-
-        RecordingPipeline pipeline = new RecordingPipeline(
-                audioEngine, transport, format, tempDir, List.of(track));
-
-        float[][] countInAudio = pipeline.generateCountInAudio();
-
-        assertThat(countInAudio[0]).isEmpty();
-    }
-
-    @Test
     void monitoringShouldBeActiveWhenAlwaysAndRecording() {
         Track track = new Track("Audio 1", TrackType.AUDIO);
         track.setArmed(true);
@@ -764,6 +738,174 @@ class RecordingPipelineTest {
         assertThat(afterPass2).isEqualTo(afterPass1 + 512L);
 
         stopRecording(pipeline);
+    }
+
+    @Test
+    void aPunchedTakeStartedInsideThePunchRegionStartsAtThePlayheadLessTheCompensation() {
+        // PR #984 review: Record pressed at beat 5 inside punch [4, 6). The
+        // gate writes from the playhead, so the clip starts there — not at
+        // the punch-in, a beat before anything was recorded.
+        AudioFormat format48k = new AudioFormat(48_000.0, 2, 16, 256);
+        AudioEngine engine48k = new AudioEngine(format48k);
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPunchRegion(new PunchRegion(96_000L, 144_000L, true)); // beats [4, 6) at 120 BPM
+        transport.setPositionInBeats(5.0);
+        RecordingPipeline pipeline = new RecordingPipeline(
+                engine48k, transport, format48k, tempDir, List.of(track));
+        pipeline.setReportedLatency(new RoundTripLatency(128, 128, 0));
+        pipeline.setApplyLatencyCompensation(true);
+        startRecording(pipeline);
+        assertThat(pipeline.getSession(track).getCompensationFrames()).as("fixture: 256 frames").isEqualTo(256L);
+
+        long recordFrame = 120_000L; // beat 5
+        // A few blocks past the punch-out at beat 6, with every code fed
+        // inside 16 bits: the last block fed is the last to start before
+        // beat 6.1 (frame 146 400), at 120 000 + 103 × 256 = 146 368, and its
+        // last frame's code is 1 + 146 623 − 120 000 = 26 624.
+        processRampBlocksUntil(engine48k, pipeline, recordFrame, 6.1);
+        List<AudioClip> clips = stopRecording(pipeline);
+
+        assertThat(pipeline.getRecordingStartBeat()).as("the take's anchor is still the punch-in").isEqualTo(4.0);
+        assertThat(clips).singleElement().satisfies(clip -> {
+            assertThat(clip.getStartBeat()).isCloseTo(5.0 - 256 / 24_000.0, offset(1e-9));
+            assertThat(clip.getDurationBeats()).as("from the playhead to the punch-out")
+                    .isCloseTo(1.0, offset(1e-9));
+            assertThat(clip.getSourceOffsetBeats()).isZero();
+            float[][] onDisk = audioOnDisk(clip);
+            assertThat(onDisk).as("a stereo file").hasNumberOfRows(2);
+            int frameForBeat = (int) Math.round((5.5 - clip.getStartBeat()) * 24_000.0);
+            for (int channel = 0; channel < 2; channel++) {
+                // Entering the punch region fades in over the 5 ms fade cut to
+                // the block's slice: min(240, 256) = 240 frames here, as the
+                // first block lies wholly inside the region. So the block is
+                // checked just past it: still the block headed at beat 5,
+                // frame for frame.
+                assertThat(onDisk[channel][250]).as("channel %d: the clip opens with the block headed at beat 5", channel)
+                        .isEqualTo(decoded16(rampSample(channel, recordFrame + 250, recordFrame)));
+                // Timeline beat 5.5 plays what was captured 256 frames later (the round trip).
+                assertThat(onDisk[channel][frameForBeat]).as("channel %d: the sample the clip plays at beat 5.5", channel)
+                        .isEqualTo(decoded16(rampSample(channel, 132_000L + 256, recordFrame)));
+            }
+        });
+    }
+
+    @Test
+    void aPunchedTakeWhosePunchInIsNotBlockAlignedStartsAtThePunchInFrame() {
+        // PR #984 review: Record from beat 3.9 (blocks from frame 93 600) with
+        // the punch-in at frame 96 100, 196 frames into a block. The clip
+        // starts at that frame less the compensation, and plays from it.
+        AudioFormat format48k = new AudioFormat(48_000.0, 2, 16, 256);
+        AudioEngine engine48k = new AudioEngine(format48k);
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPunchRegion(new PunchRegion(96_100L, 120_000L, true)); // punch-out at beat 5
+        transport.setPositionInBeats(3.9);
+        RecordingPipeline pipeline = new RecordingPipeline(
+                engine48k, transport, format48k, tempDir, List.of(track));
+        pipeline.setReportedLatency(new RoundTripLatency(128, 128, 0));
+        pipeline.setApplyLatencyCompensation(true);
+        startRecording(pipeline);
+
+        long recordFrame = 93_600L; // beat 3.9
+        // The last block fed is the last to start before beat 5.2 (frame
+        // 124 800), at 93 600 + 121 × 256 = 124 576, and its last frame's
+        // code is 1 + 124 831 − 93 600 = 31 232, inside 16 bits.
+        processRampBlocksUntil(engine48k, pipeline, recordFrame, 5.2);
+        List<AudioClip> clips = stopRecording(pipeline);
+
+        assertThat(clips).singleElement().satisfies(clip -> {
+            assertThat(clip.getStartBeat()).as("the punch-in frame less the compensation")
+                    .isCloseTo((96_100 - 256) / 24_000.0, offset(1e-9));
+            assertThat(clip.getDurationBeats()).isCloseTo((120_000 - 96_100) / 24_000.0, offset(1e-9));
+            assertThat(clip.getSourceOffsetBeats()).isZero();
+            float[][] onDisk = audioOnDisk(clip);
+            assertThat(onDisk).as("a stereo file").hasNumberOfRows(2);
+            // Blocks run from frame 93 600 in steps of 256. The punch-in at
+            // 96 100 lies (96 100 − 93 600) mod 256 = 196 frames into the
+            // block headed 95 904, which keeps 256 − 196 = 60 frames; the
+            // punch-out at 120 000 lies (120 000 − 93 600) mod 256 = 32
+            // frames into the block headed 119 968, which keeps those 32.
+            // Each fade is the 5 ms (240-frame) fade cut to its block's
+            // slice: 60 frames in, 32 out. The file holds the frames from the
+            // punch-in to the punch-out: 120 000 − 96 100 = 23 900.
+            for (int channel = 0; channel < 2; channel++) {
+                float[] file = onDisk[channel];
+                assertThat(file).as("channel %d: the punch-in to the punch-out", channel).hasSize(23_900);
+                assertThat(Arrays.copyOf(file, 60)).as("channel %d: the punch-in block's slice, faded in", channel)
+                        .containsExactly(fadedRamp(channel, 96_100L, recordFrame, 60, 60, 0));
+                assertThat(file[300]).as("channel %d: the sample captured 300 frames after the punch-in", channel)
+                        .isEqualTo(decoded16(rampSample(channel, 96_100L + 300, recordFrame)));
+                // Timeline beat 4.5 plays what was captured 256 frames later.
+                int frameForBeat = (int) Math.round((4.5 - clip.getStartBeat()) * 24_000.0);
+                assertThat(file[frameForBeat]).as("channel %d: the sample the clip plays at beat 4.5", channel)
+                        .isEqualTo(decoded16(rampSample(channel, 108_000L + 256, recordFrame)));
+                // The punch-out block's 32 frames (119 968 to 119 999) close
+                // the file, faded out; frame 119 967, the one before them,
+                // ends the previous block unfaded.
+                assertThat(Arrays.copyOfRange(file, 23_900 - 32, 23_900))
+                        .as("channel %d: the punch-out block's slice, faded out", channel)
+                        .containsExactly(fadedRamp(channel, 119_968L, recordFrame, 32, 0, 32));
+                assertThat(file[23_900 - 33]).as("channel %d: the last sample before the fade-out", channel)
+                        .isEqualTo(decoded16(rampSample(channel, 119_967L, recordFrame)));
+            }
+        });
+    }
+
+    /**
+     * Feeds 256-frame blocks at 48 kHz (24 000 frames per beat) until the
+     * transport reaches {@code endBeat}. Every frame carries its own 16-bit
+     * code ({@link #rampSample}), so a sample on disk names the transport
+     * frame it was captured at and the channel it came in on. The callers
+     * choose {@code endBeat} so that the code of the last frame fed,
+     * {@code 1 + frame − baseFrame}, stays within 32 767.
+     */
+    private void processRampBlocksUntil(AudioEngine engine, RecordingPipeline pipeline,
+                                        long baseFrame, double endBeat) {
+        float[][] output = new float[2][256];
+        while (transport.getPositionInBeats() < endBeat) {
+            // As the capture callback stamps a block's start frame (120 BPM, 48 kHz).
+            long blockStartFrame = Math.round(transport.getPositionInBeats() * 60.0 / 120.0 * 48_000.0);
+            float[][] input = new float[2][256];
+            for (int channel = 0; channel < 2; channel++) {
+                for (int i = 0; i < 256; i++) {
+                    input[channel][i] = rampSample(channel, blockStartFrame + i, baseFrame);
+                }
+            }
+            engine.processBlock(input, output, 256);
+            pipeline.awaitFlushed();
+            transport.advancePosition(256 / 24_000.0);
+        }
+    }
+
+    /**
+     * The sample transport frame {@code frame} carries on {@code channel}:
+     * the code {@code 1 + frame − baseFrame} on channel 0, and that code
+     * negated on channel 1, so the two channels are told apart.
+     */
+    private static float rampSample(int channel, long frame, long baseFrame) {
+        int code = (int) (1 + frame - baseFrame);
+        return (channel == 0 ? code : -code) / 32767f;
+    }
+
+    /**
+     * What a file holds on {@code channel} for the {@code frames}-frame slice
+     * a block keeps from {@code firstFrame}: the ramp captured from that
+     * frame, under a cosine fade-in over its first {@code fadeIn} frames and
+     * a fade-out over its last {@code fadeOut}, decoded.
+     */
+    private static float[] fadedRamp(int channel, long firstFrame, long baseFrame,
+                                     int frames, int fadeIn, int fadeOut) {
+        float[][] slice = new float[1][frames];
+        for (int i = 0; i < frames; i++) {
+            slice[0][i] = rampSample(channel, firstFrame + i, baseFrame);
+        }
+        CaptureFlushService.applyCosineFades(slice, 1, frames, fadeIn, fadeOut);
+        float[] decoded = new float[frames];
+        for (int i = 0; i < frames; i++) {
+            decoded[i] = decoded16(slice[0][i]);
+        }
+        return decoded;
     }
 
     @Test

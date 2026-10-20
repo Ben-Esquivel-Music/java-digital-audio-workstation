@@ -21,6 +21,25 @@ import java.util.*;
  *
  * <p>Clips whose target track index would fall outside the track list
  * bounds are left on their original track (only the beat shift is applied).</p>
+ *
+ * <p>A comp clip ({@link AudioClip#compOutputOwner()}) moved to another track
+ * keeps its owner, as with {@link CrossTrackMoveAction}: the owner is inert
+ * on another track, where the clip behaves as a user clip. The move clears
+ * it only when the destination track's comping holds the clip as
+ * superseded output, so such a clip lands as a user clip instead of being
+ * refused. The undo puts the saved owner back before it returns the clip
+ * to its original track, where {@link Track#addClip} refuses it if a
+ * recompile has replaced it since (PR #984 review).</p>
+ *
+ * <p>As in {@link CrossTrackMoveAction}, whether the move clears a clip's
+ * owner is decided once per clip, on the first {@link #execute()}, and a
+ * redo replays that decision: a clip whose owner the first execute kept
+ * keeps the owner the undo restored, so {@link Track#addClip} refuses it if
+ * a recompile on the destination has replaced it since, and the destination
+ * ends without it, as that recompile left it after the original move.
+ * Deciding again would land the replaced clip as a user clip; when it sits
+ * where it was sliced from and the comp still selects its lane there, that
+ * range plays twice. Each entry replays its own decision.</p>
  */
 public final class GroupMoveClipsAction implements UndoableAction {
 
@@ -33,6 +52,15 @@ public final class GroupMoveClipsAction implements UndoableAction {
     private final List<Double> previousStartBeats = new ArrayList<>();
     private final List<Track> previousTracks = new ArrayList<>();
     private final List<Track> newTracks = new ArrayList<>();
+    /** Each clip's comp owner before the move ({@code null} for a user clip). */
+    private final List<CompOutputOwner> previousOwners = new ArrayList<>();
+    /**
+     * Per entry, whether the cross-track move clears the clip's comp owner.
+     * The array is {@code null} until the first {@link #execute()} decides
+     * every entry; every redo then replays it. Same-track entries stay
+     * {@code false}.
+     */
+    private boolean[] clearsOwners;
 
     /**
      * Creates a new group-move action.
@@ -87,6 +115,7 @@ public final class GroupMoveClipsAction implements UndoableAction {
         previousStartBeats.clear();
         previousTracks.clear();
         newTracks.clear();
+        previousOwners.clear();
 
         // Clamp the beat delta once for the whole group so that the
         // earliest clip does not go below beat 0 and relative spacing
@@ -108,11 +137,17 @@ public final class GroupMoveClipsAction implements UndoableAction {
             trackIndex = Map.of();
         }
 
-        for (Map.Entry<Track, AudioClip> entry : entries) {
-            Track sourceTrack = entry.getKey();
-            AudioClip clip = entry.getValue();
+        boolean firstExecute = clearsOwners == null;
+        if (firstExecute) {
+            clearsOwners = new boolean[entries.size()];
+        }
+
+        for (int i = 0; i < entries.size(); i++) {
+            Track sourceTrack = entries.get(i).getKey();
+            AudioClip clip = entries.get(i).getValue();
             previousStartBeats.add(clip.getStartBeat());
             previousTracks.add(sourceTrack);
+            previousOwners.add(clip.compOutputOwner().orElse(null));
 
             double newStart = clip.getStartBeat() + effectiveBeatDelta;
             Track targetTrack = sourceTrack;
@@ -128,15 +163,28 @@ public final class GroupMoveClipsAction implements UndoableAction {
             }
 
             if (targetTrack != sourceTrack) {
-                sourceTrack.removeClip(clip);
+                boolean removed = sourceTrack.removeClip(clip);
                 clip.setStartBeat(newStart);
-                targetTrack.addClip(clip);
+                if (firstExecute) {
+                    // Output a recompile replaced while the clip was away: the
+                    // user's move lands it as a user clip, not refused. Decided
+                    // now only; a redo replays it (see the class doc).
+                    clearsOwners[i] = targetTrack.getTakeComping().isSupersededOutput(clip);
+                }
+                if (clearsOwners[i]) {
+                    clip.setCompOutputOwner(null);
+                }
+                boolean added = targetTrack.addClip(clip);
                 Instant now = Instant.now();
                 UUID clipId = UUID.fromString(clip.getId());
-                EventBusPublisher.publish(new ClipEvent.Removed(
-                        UUID.fromString(sourceTrack.getId()), clipId, now));
-                EventBusPublisher.publish(new ClipEvent.Added(
-                        UUID.fromString(targetTrack.getId()), clipId, now));
+                if (removed) {
+                    EventBusPublisher.publish(new ClipEvent.Removed(
+                            UUID.fromString(sourceTrack.getId()), clipId, now));
+                }
+                if (added) {
+                    EventBusPublisher.publish(new ClipEvent.Added(
+                            UUID.fromString(targetTrack.getId()), clipId, now));
+                }
             } else {
                 clip.setStartBeat(newStart);
                 EventBusPublisher.publish(new ClipEvent.Moved(
@@ -157,15 +205,22 @@ public final class GroupMoveClipsAction implements UndoableAction {
             double originalStart = previousStartBeats.get(i);
 
             if (currentTrack != originalTrack) {
-                currentTrack.removeClip(clip);
+                // False when a recompile on that track took the clip off it since.
+                boolean removed = currentTrack.removeClip(clip);
                 clip.setStartBeat(originalStart);
-                originalTrack.addClip(clip);
+                clip.setCompOutputOwner(previousOwners.get(i));
+                // Refused when a recompile replaced the clip since (Track.addClip).
+                boolean added = originalTrack.addClip(clip);
                 Instant now = Instant.now();
                 UUID clipId = UUID.fromString(clip.getId());
-                EventBusPublisher.publish(new ClipEvent.Removed(
-                        UUID.fromString(currentTrack.getId()), clipId, now));
-                EventBusPublisher.publish(new ClipEvent.Added(
-                        UUID.fromString(originalTrack.getId()), clipId, now));
+                if (removed) {
+                    EventBusPublisher.publish(new ClipEvent.Removed(
+                            UUID.fromString(currentTrack.getId()), clipId, now));
+                }
+                if (added) {
+                    EventBusPublisher.publish(new ClipEvent.Added(
+                            UUID.fromString(originalTrack.getId()), clipId, now));
+                }
             } else {
                 clip.setStartBeat(originalStart);
                 EventBusPublisher.publish(new ClipEvent.Moved(

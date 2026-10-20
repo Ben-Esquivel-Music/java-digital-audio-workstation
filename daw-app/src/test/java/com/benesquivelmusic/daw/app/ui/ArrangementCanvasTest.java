@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -38,6 +39,135 @@ class ArrangementCanvasTest {
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
         assertThat(ref.get()).isNotNull();
+    }
+
+    // ── Take lanes (story 328, book §5.6) ──────────────────────────────────
+
+    @Test
+    void takeLanesGrowTheTrackSlotThroughTheOneHeightComputationAndResolveByY() throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTrackHeight(80.0);
+                Track comped = new Track("Vox", TrackType.AUDIO);
+                for (int i = 1; i <= 3; i++) {
+                    TakeLane lane = new TakeLane("Take " + i);
+                    lane.addClip(new AudioClip("Take " + i, 0.0, 4.0, null));
+                    comped.getTakeComping().addTakeLane(lane);
+                }
+                Track plain = new Track("Gtr", TrackType.AUDIO);
+                canvas.setTracks(List.of(comped, plain));
+                double laneHeight = ArrangementCanvas.TAKE_LANE_HEIGHT;
+                double lanes = 3 * laneHeight;
+
+                assertThat(laneHeight % 4.0).as("4 px grid").isZero();
+                assertThat(canvas.takeLanesHeight(comped)).isEqualTo(lanes);
+                assertThat(canvas.takeLanesHeight(plain)).isZero();
+                assertThat(canvas.computeLaneY(1)).as("the next track starts below the lanes").isEqualTo(80.0 + lanes);
+                assertThat(canvas.trackIndexAtY(80.0 + 10.0)).as("a take lane still belongs to its track").isZero();
+                assertThat(canvas.trackIndexAtY(80.0 + lanes + 1.0)).isEqualTo(1);
+
+                assertThat(canvas.takeLaneIndexAtY(0, 40.0)).as("the main lane above").isEqualTo(-1);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + 1.0)).isZero();
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + laneHeight + 1.0)).isEqualTo(1);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + 2 * laneHeight + 1.0)).isEqualTo(2);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + lanes + 1.0)).as("below the last lane").isEqualTo(-1);
+                assertThat(canvas.takeLaneIndexAtY(1, 80.0 + lanes + 10.0)).as("no comping on this track").isEqualTo(-1);
+                assertThat(canvas.takeLaneIndexAtY(-1, 10.0)).isEqualTo(-1);
+
+                canvas.setScrollYPixels(50.0);
+                assertThat(canvas.takeLaneIndexAtY(0, 80.0 + laneHeight + 1.0 - 50.0)).as("scroll-aware").isEqualTo(1);
+            } catch (Throwable t) {
+                failure.set(t);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        if (failure.get() != null) {
+            throw new AssertionError("failed on the FX thread", failure.get());
+        }
+    }
+
+    @Test
+    void takeLanesStayDrawnWhenTheirMainLaneScrollsAboveTheViewport() throws Exception {
+        // PR #984 review F2. An 80 px main lane scrolled 100 px up sits at
+        // Y -100..-20: its three take lanes sit at -20..20, 20..60 and 60..100.
+        // Lane 1 (odd index) is filled with LANE_COLOR_EVEN; nothing else paints
+        // its middle away from its name label and its clip.
+        int argb = renderedPixel(true, false, 100.0, 300, 40);
+        assertThat(argb).as("a pixel in the middle of take lane 1")
+                .isEqualTo(argbOf(TrackLaneRenderer.LANE_COLOR_EVEN));
+    }
+
+    @Test
+    void aMainLanePartlyScrolledAboveTheViewportStillDrawsItsClips() throws Exception {
+        // The main-lane clips are culled with the main lane's own extent:
+        // scrolled 40 px up, the lane is at Y -40..40 and its clip over
+        // beats 0-10 still covers Y 20, with or without take lanes under it.
+        int background = argbOf(TrackLaneRenderer.LANE_COLOR_EVEN);
+        assertThat(renderedPixel(true, true, 40.0, 100, 20)).as("comped").isNotEqualTo(background);
+        assertThat(renderedPixel(false, true, 40.0, 100, 20)).as("no take lanes").isNotEqualTo(background);
+        assertThat(renderedPixel(false, false, 40.0, 100, 20)).as("no clip: the lane fill")
+                .isEqualTo(background);
+    }
+
+    /**
+     * Snapshots a 400×200 canvas in a {@link javafx.scene.Scene} holding one
+     * 80 px audio track, at 20 px/beat, scrolled {@code scrollY} px, and
+     * returns the ARGB of pixel ({@code x}, {@code y}). With {@code comped}
+     * the track has three take lanes, each a clip over beats 0-2; with
+     * {@code mainLaneClip} its main lane holds a clip over beats 0-10.
+     */
+    private static int renderedPixel(boolean comped, boolean mainLaneClip, double scrollY, int x, int y)
+            throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        int[] argb = new int[1];
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                new javafx.scene.Scene(canvas, 400, 200);
+                canvas.setTrackHeight(80.0);
+                canvas.setPixelsPerBeat(20.0);
+                Track track = new Track("Vox", TrackType.AUDIO);
+                if (comped) {
+                    for (int i = 1; i <= 3; i++) {
+                        TakeLane lane = new TakeLane("Take " + i);
+                        lane.addClip(new AudioClip("Take " + i, 0.0, 2.0, null));
+                        track.getTakeComping().addTakeLane(lane);
+                    }
+                }
+                if (mainLaneClip) {
+                    track.addClip(new AudioClip("Comp", 0.0, 10.0, null));
+                }
+                canvas.setTracks(List.of(track));
+                canvas.applyCss();
+                canvas.layout();
+                canvas.setScrollYPixels(scrollY);
+                javafx.scene.image.WritableImage image =
+                        canvas.snapshot(new javafx.scene.SnapshotParameters(), null);
+                argb[0] = image.getPixelReader().getArgb(x, y);
+            } catch (Throwable t) {
+                failure.set(t);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        if (failure.get() != null) {
+            throw new AssertionError("failed on the FX thread", failure.get());
+        }
+        return argb[0];
+    }
+
+    private static int argbOf(javafx.scene.paint.Color color) {
+        return ((int) Math.round(color.getOpacity() * 255) << 24)
+                | ((int) Math.round(color.getRed() * 255) << 16)
+                | ((int) Math.round(color.getGreen() * 255) << 8)
+                | (int) Math.round(color.getBlue() * 255);
     }
 
     // ── Property setters ────────────────────────────────────────────────────

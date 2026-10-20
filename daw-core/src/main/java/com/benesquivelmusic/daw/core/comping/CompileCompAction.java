@@ -4,55 +4,73 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 /**
- * Undoable "Compile comp" maintenance command.
+ * Undoable "Compile comp" command: puts the compiled comp of a {@link Track}'s
+ * {@link TakeComping} on the main lane (story 328, book §3.5).
  *
- * <p>Renders the current comp regions on a {@link Track}'s {@link TakeComping}
- * stack into a single composite {@link AudioClip} and replaces any clips on
- * the main track lane that fall inside the composite's beat range with the
- * compiled clip. The take stack itself is preserved (collapsed beneath the
- * main lane) so the user can return to comping later or via {@link #undo()}.</p>
+ * <p>{@link #execute()} compiles the current comp selection
+ * ({@link TakeComping#compile()} — one clip per selected lane range, or the
+ * soloed lane whole, each referencing the take's segment files and tagged
+ * as the comping's output), removes from the track every clip that is the
+ * comping's output now ({@link TakeComping#compOutputOn(Track)}) and adds
+ * the new ones. Occupancy is read from the live track, not remembered: comp
+ * output a clip edit kept as comp output — both halves of a Scissors split,
+ * the remnants of a paste-over or crop, a glue of two halves — is replaced
+ * as a whole, and so is comp output the user trimmed or moved on the main
+ * lane (PR #984 review). Clips that are not comp output — an earlier
+ * recording, an import, a duplicate or paste of comp output — are never
+ * touched. The take stack itself is preserved, so the user can go on
+ * comping; every swipe runs one of these ({@link SetCompRegionAction}).</p>
  *
- * <p>Undo restores the prior clips on the main lane exactly as they were and
- * (because the take stack was never destroyed) leaves the take comping
- * untouched.</p>
+ * <p>{@link #undo()} recompiles the same way from the LIVE comping state —
+ * it does not put back a snapshot of the clips the previous compile had.
+ * The main lane is thereby always exactly what the comping state says it
+ * is: an audition ({@code CompToolHandler.altClickLane}, a solo that is not
+ * an edit and so not in the undo history) recompiles between a swipe and
+ * its undo without leaving its clips orphaned or doubled, because the undo
+ * removes whatever the comp occupies now and compiles afresh from the
+ * selection the composing action restored (story 328 review). The action
+ * itself changes no selection, so its own undo is a recompile of the same
+ * state; it is meaningful as the second half of {@link SetCompRegionAction}
+ * and of the recording coordinator's "Record Audio" entry, which restore
+ * the selection — and end any audition ({@link TakeComping#endAuditions()})
+ * — before calling it. Called on its own, as the audition gesture does, it
+ * compiles whatever the comping state is, a soloed lane included.</p>
+ *
+ * <p>Every compile is a new pass of the comping, and the clips of every
+ * earlier pass are superseded output that never re-enters the track
+ * ({@link TakeComping#isSupersededOutput}, {@link Track#addClip}). That
+ * keeps the invariant against the undo of a clip edit, too: an erase, a
+ * cut, a paste-over or crop, a move to another track, undone after a
+ * recompile, cannot put back a clip this compile replaced and so leave the
+ * comp playing twice (PR #984 review).</p>
+ *
+ * <p>A recompile publishes no {@code ClipEvent}: neither {@link #execute()}
+ * nor {@link #undo()} announces the clips it removes from the track or the
+ * ones it adds ({@link Track#removeClip} and {@link Track#addClip} publish
+ * nothing themselves). So a subscriber cannot pair each {@code ClipEvent.Added}
+ * for a track with a later {@code ClipEvent.Removed} for it across a
+ * recompile: a comp clip a clip edit announced as added to its track can
+ * leave that track in a recompile without a removal ever being published.</p>
  */
 public final class CompileCompAction implements UndoableAction {
 
     private final Track track;
-    private final CompManager compManager;
-    private final double sampleRate;
-    private final double tempoBpm;
+    private final TakeComping comping;
 
-    private List<AudioClip> previousMainLaneClips;
-    private AudioClip compiledClip;
+    private List<AudioClip> compiledClips = List.of();
 
     /**
-     * Creates a new compile-comp action.
+     * Creates a new compile-comp action for {@code track}'s take comping.
      *
-     * @param track       the track whose take comping should be compiled
-     * @param compManager the comp manager used to render the composite
-     * @param sampleRate  the sample-rate to render at, in Hz
-     * @param tempoBpm    the tempo to convert beats &harr; samples
+     * @param track the track whose take comping should be compiled
      */
-    public CompileCompAction(Track track,
-                             CompManager compManager,
-                             double sampleRate,
-                             double tempoBpm) {
+    public CompileCompAction(Track track) {
         this.track = Objects.requireNonNull(track, "track must not be null");
-        this.compManager = Objects.requireNonNull(compManager, "compManager must not be null");
-        if (sampleRate <= 0) {
-            throw new IllegalArgumentException("sampleRate must be > 0: " + sampleRate);
-        }
-        if (tempoBpm <= 0) {
-            throw new IllegalArgumentException("tempoBpm must be > 0: " + tempoBpm);
-        }
-        this.sampleRate = sampleRate;
-        this.tempoBpm = tempoBpm;
+        this.comping = track.getTakeComping();
     }
 
     @Override
@@ -62,41 +80,39 @@ public final class CompileCompAction implements UndoableAction {
 
     @Override
     public void execute() {
-        compiledClip = compManager.compileToClip(sampleRate, tempoBpm);
-        if (compiledClip == null) {
-            previousMainLaneClips = null;
-            return;
-        }
-        previousMainLaneClips = List.copyOf(track.getClips());
-        // Remove any existing main-lane clips that fall inside the composite
-        // beat range — the composite replaces them. Clips outside the range
-        // are left intact.
-        double start = compiledClip.getStartBeat();
-        double end = compiledClip.getEndBeat();
-        for (AudioClip existing : new ArrayList<>(track.getClips())) {
-            if (existing.getStartBeat() < end && existing.getEndBeat() > start) {
-                track.removeClip(existing);
-            }
-        }
-        track.addClip(compiledClip);
+        recompile();
     }
 
     @Override
     public void undo() {
-        if (previousMainLaneClips == null) {
-            return;
-        }
-        for (AudioClip clip : new ArrayList<>(track.getClips())) {
-            track.removeClip(clip);
-        }
-        for (AudioClip clip : previousMainLaneClips) {
-            track.addClip(clip);
-        }
-        compiledClip = null;
+        recompile();
     }
 
-    /** Returns the compiled clip produced by {@link #execute()}, or {@code null}. */
-    public AudioClip getCompiledClip() {
-        return compiledClip;
+    /**
+     * Replaces the clips the comp occupies on the main lane with a fresh
+     * compile of the live comping state: every clip of the track that is
+     * the comping's output ({@link TakeComping#compOutputOn(Track)}), of any
+     * pass, leaves the track, and the compile's clips, tagged with its new
+     * pass, join it.
+     */
+    private void recompile() {
+        List<AudioClip> occupied = comping.compOutputOn(track);
+        compiledClips = List.copyOf(comping.compile());
+        for (AudioClip previous : occupied) {
+            track.removeClip(previous);
+        }
+        for (AudioClip compiled : compiledClips) {
+            track.addClip(compiled);
+        }
+    }
+
+    /**
+     * Returns the clips the last {@link #execute()} or {@link #undo()} put
+     * on the main lane; empty before either, or when nothing is selected.
+     *
+     * @return the compiled clips (unmodifiable)
+     */
+    public List<AudioClip> getCompiledClips() {
+        return compiledClips;
     }
 }

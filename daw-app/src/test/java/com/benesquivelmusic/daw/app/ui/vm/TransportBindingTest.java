@@ -109,14 +109,17 @@ class TransportBindingTest {
             assertThat(computeOnFx(() -> isActive(play))).isFalse();
             assertThat(computeOnFx(() -> isActive(record))).isFalse();
 
+            // A STATE fired off the FX thread (this test thread, as the render
+            // thread at a count-in's end) reaches the VM through the pulse's
+            // lock-free drain, not runLater (story 328 review).
             transport.play();
-            flushFx();
+            computeOnFx(() -> { dispatcher.pulse(); return null; });
             assertThat(computeOnFx(() -> isActive(play)))
                     .as("play button :active follows state == PLAYING").isTrue();
             assertThat(computeOnFx(() -> isActive(record))).isFalse();
 
             transport.record();
-            flushFx();
+            computeOnFx(() -> { dispatcher.pulse(); return null; });
             assertThat(computeOnFx(() -> isActive(record)))
                     .as("transport state alone cannot claim a coordinator recording").isFalse();
             computeOnFx(() -> { recordState.set(com.benesquivelmusic.daw.app.ui.recording.RecordState.RECORDING); return null; });
@@ -193,7 +196,7 @@ class TransportBindingTest {
         // transport, which VALIDATE silently dropped — the click did nothing.
         Transport transport = new Transport();
         TransportVM vm = new TransportVM(transport, new FxDispatcher());
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0, () -> { });
         List<TransportCommand> issued = new CopyOnWriteArrayList<>();
 
         Button play = computeOnFx(Button::new);
@@ -244,7 +247,7 @@ class TransportBindingTest {
         // against the validating handler, which throws IllegalArgumentException
         // for an out-of-range tempo (the VALIDATE phase). The binder must catch
         // that and snap back — not let it escape onto the FX thread.
-        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0);
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0, () -> { });
         Consumer<TransportCommand> sink = cmd -> cmd.execute(handler);
 
         TextField field = computeOnFx(TextField::new);

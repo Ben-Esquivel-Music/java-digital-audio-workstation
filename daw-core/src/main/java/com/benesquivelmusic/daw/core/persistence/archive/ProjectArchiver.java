@@ -61,8 +61,8 @@ import java.util.zip.ZipOutputStream;
  * <h2>Operations</h2>
  * <ul>
  *   <li>{@link #saveAsArchive} — writes a {@code .dawz} ZIP for sharing or cold
- *       storage. The in-memory project is never mutated; original asset paths
- *       are restored after serialization.</li>
+ *       storage. The in-memory project is never mutated: the document's
+ *       archive-relative paths are substituted as it is serialized.</li>
  *   <li>{@link #openArchive} — extracts an archive into a temp directory and
  *       loads the project, rewriting asset paths to absolute locations under
  *       the temp directory. Missing assets are passed to the supplied
@@ -102,13 +102,12 @@ public final class ProjectArchiver {
 
     private static final String DEFAULT_DAW_VERSION = "0.1.0-SNAPSHOT";
     private static final int COPY_BUFFER_SIZE = 64 * 1024;
-    private static final int NO_REWRITE_FAULT = 0;
 
     private final ProjectSerializer serializer;
     private final ProjectDeserializer deserializer;
     private final String dawVersion;
-    /** Test seam ({@link #failRewriteAfter(int)}); consumed by the next rewrite that reaches it. */
-    private int failRewriteAfter = NO_REWRITE_FAULT;
+    private final AssetWriteHook assetWriteHook;
+    private final AssetPlanHook assetPlanHook;
 
     public ProjectArchiver() {
         this(new ProjectSerializer(), new ProjectDeserializer(), resolveDawVersion());
@@ -117,10 +116,63 @@ public final class ProjectArchiver {
     public ProjectArchiver(ProjectSerializer serializer,
                            ProjectDeserializer deserializer,
                            String dawVersion) {
+        this(serializer, deserializer, dawVersion, AssetWriteHook.NONE);
+    }
+
+    /**
+     * Test seam: {@code assetWriteHook} runs on the archiving thread before
+     * each asset entry of {@link #saveAsArchive} is written, so a test can
+     * hold an archive mid-write (and edit the live project meanwhile) or
+     * fail it part-way through.
+     */
+    ProjectArchiver(ProjectSerializer serializer,
+                    ProjectDeserializer deserializer,
+                    String dawVersion,
+                    AssetWriteHook assetWriteHook) {
+        this(serializer, deserializer, dawVersion, assetWriteHook, AssetPlanHook.NONE);
+    }
+
+    /**
+     * Test seam: as above, and {@code assetPlanHook} runs on the archiving
+     * thread while the plan is built, after a reference is read and before
+     * its file is hashed, so a test can edit the live project in between.
+     */
+    ProjectArchiver(ProjectSerializer serializer,
+                    ProjectDeserializer deserializer,
+                    String dawVersion,
+                    AssetWriteHook assetWriteHook,
+                    AssetPlanHook assetPlanHook) {
         this.serializer = Objects.requireNonNull(serializer, "serializer");
         this.deserializer = Objects.requireNonNull(deserializer, "deserializer");
         this.dawVersion = (dawVersion == null || dawVersion.isBlank())
                 ? DEFAULT_DAW_VERSION : dawVersion;
+        this.assetWriteHook = Objects.requireNonNull(assetWriteHook, "assetWriteHook");
+        this.assetPlanHook = Objects.requireNonNull(assetPlanHook, "assetPlanHook");
+    }
+
+    /** Runs before each asset entry an archive writes (test seam). */
+    @FunctionalInterface
+    interface AssetWriteHook {
+
+        /** Does nothing: the production behaviour. */
+        AssetWriteHook NONE = entryName -> { };
+
+        /**
+         * @param entryName the ZIP entry about to be written ({@code assets/<sha>_<name>})
+         * @throws IOException to fail the archive at this entry
+         */
+        void beforeAssetWrite(String entryName) throws IOException;
+    }
+
+    /** Runs while an archive's plan is built, between a reference's read and its hash (test seam). */
+    @FunctionalInterface
+    interface AssetPlanHook {
+
+        /** Does nothing: the production behaviour. */
+        AssetPlanHook NONE = reference -> { };
+
+        /** @param reference the reference just read, whose file is about to be hashed */
+        void beforeAssetHash(String reference);
     }
 
     private static String resolveDawVersion() {
@@ -145,9 +197,13 @@ public final class ProjectArchiver {
      * Writes the given project and every referenced asset to a {@code .dawz}
      * archive at {@code archiveFile} using the supplied options.
      *
-     * <p>The in-memory {@code project} is not mutated: original asset paths
-     * are restored before this method returns, even on failure — including a
-     * failure part-way through the rewrite to archive-relative paths.</p>
+     * <p>The in-memory {@code project} is never mutated, not even for the
+     * duration of the write: the archived document's archive-relative
+     * references are substituted as the serializer writes it
+     * ({@link ProjectSerializer#serialize(DawProject, ProjectSerializer.AssetReferenceRemap)}),
+     * so an edit or a recompile that runs while the archive is being
+     * written (it runs off the FX thread) only ever sees the project's own
+     * references.</p>
      *
      * @throws IOException              if the archive cannot be written
      * @throws IllegalArgumentException if {@code archiveFile} does not end in
@@ -182,82 +238,75 @@ public final class ProjectArchiver {
                     "Archive file must end with " + ARCHIVE_EXTENSION + ": " + archiveFile);
         }
 
-        // 1. Collect all unique assets, keyed by content hash.
+        // 1. Collect all unique assets, keyed by content hash, and plan each
+        //    reference's archive-relative substitute.
         AssetPlan plan = collectAssets(project, options, decisionsByPath(missingAssetDecisions));
 
-        // 2. Rewrite the project's asset paths to archive-relative form, saving
-        //    each original before its reference is touched. The rewrite runs
-        //    inside the try so that a rewrite that throws part-way through is
-        //    undone by the finally as well: the in-memory project is never
-        //    left half-rewritten to archive-relative references.
-        Map<AssetRef, String> originals = new LinkedHashMap<>();
-
-        try {
-            applyArchivePaths(plan, originals);
-
-            // 3. Serialize project document with rewritten paths.
-            String xml = serializer.serialize(project);
-            byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
-            String sha;
-            long totalAssetBytes;
-            try (var scope = DawScope.openShutdownOnFailure("archive-pack")) {
-                var projectSha = scope.fork("checksum-project", () -> sha256Hex(xmlBytes));
-                var assetBytes = scope.fork("measure-assets", plan::totalAssetBytes);
-                scope.joinAll();
-                sha = projectSha.resultNow();
-                totalAssetBytes = assetBytes.resultNow();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted while preparing archive", e);
-            } catch (ExecutionException e) {
-                throw asIOException("Failed to prepare archive", e.getCause());
-            }
-
-            // 4. Determine "original root" for the header.
-            String originalRoot = project.getMetadata() != null
-                    && project.getMetadata().projectPath() != null
-                    ? project.getMetadata().projectPath().toAbsolutePath().toString()
-                    : "";
-
-            ArchiveHeader header = new ArchiveHeader(
-                    project.getName(),
-                    Instant.now(),
-                    plan.uniqueAssetCount(),
-                    originalRoot,
-                    dawVersion,
-                    sha
-            );
-
-            // 5. Write the ZIP to a sibling temp file, then publish with a move
-            //    so a failed pack never leaves a partial .dawz at the target.
-            Path parent = archiveFile.toAbsolutePath().getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            Path tmpArchive = tempArchivePath(archiveFile);
-            try (OutputStream out = Files.newOutputStream(tmpArchive);
-                 ZipOutputStream zip = new ZipOutputStream(out)) {
-
-                writeStringEntry(zip, ArchiveHeader.FILE_NAME, headerToProperties(header));
-                writeBytesEntry(zip, ArchiveHeader.PROJECT_DOC_NAME, xmlBytes);
-
-                for (Map.Entry<String, ArchivePayload> e : plan.archiveNameToSource().entrySet()) {
-                    String entryName = ArchiveHeader.ASSETS_DIR + "/" + e.getKey();
-                    zip.putNextEntry(new ZipEntry(entryName));
-                    e.getValue().writeTo(zip);
-                    zip.closeEntry();
-                }
-            } catch (IOException | RuntimeException e) {
-                Files.deleteIfExists(tmpArchive);
-                throw e;
-            }
-            moveArchiveIntoPlace(tmpArchive, archiveFile);
-
-            return new ProjectArchiveSummary(
-                    archiveFile, plan.uniqueAssetCount(), totalAssetBytes, xmlBytes.length);
-        } finally {
-            restorePaths(project, originals);
+        // 2. Serialize the project document with the substitutes written in
+        //    place of the planned references. No live reference is rewritten:
+        //    the archive runs off the FX thread while the session stays
+        //    editable, and a recompile mid-archive would otherwise copy a
+        //    temporary assets/… path into new live comp clips (PR #984 review).
+        String xml = serializer.serialize(project, plan.remap());
+        byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
+        String sha;
+        long totalAssetBytes;
+        try (var scope = DawScope.openShutdownOnFailure("archive-pack")) {
+            var projectSha = scope.fork("checksum-project", () -> sha256Hex(xmlBytes));
+            var assetBytes = scope.fork("measure-assets", plan::totalAssetBytes);
+            scope.joinAll();
+            sha = projectSha.resultNow();
+            totalAssetBytes = assetBytes.resultNow();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while preparing archive", e);
+        } catch (ExecutionException e) {
+            throw asIOException("Failed to prepare archive", e.getCause());
         }
+
+        // 3. Determine "original root" for the header.
+        String originalRoot = project.getMetadata() != null
+                && project.getMetadata().projectPath() != null
+                ? project.getMetadata().projectPath().toAbsolutePath().toString()
+                : "";
+
+        ArchiveHeader header = new ArchiveHeader(
+                project.getName(),
+                Instant.now(),
+                plan.uniqueAssetCount(),
+                originalRoot,
+                dawVersion,
+                sha
+        );
+
+        // 4. Write the ZIP to a sibling temp file, then publish with a move
+        //    so a failed pack never leaves a partial .dawz at the target.
+        Path parent = archiveFile.toAbsolutePath().getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Path tmpArchive = tempArchivePath(archiveFile);
+        try (OutputStream out = Files.newOutputStream(tmpArchive);
+             ZipOutputStream zip = new ZipOutputStream(out)) {
+
+            writeStringEntry(zip, ArchiveHeader.FILE_NAME, headerToProperties(header));
+            writeBytesEntry(zip, ArchiveHeader.PROJECT_DOC_NAME, xmlBytes);
+
+            for (Map.Entry<String, ArchivePayload> e : plan.archiveNameToSource().entrySet()) {
+                String entryName = ArchiveHeader.ASSETS_DIR + "/" + e.getKey();
+                assetWriteHook.beforeAssetWrite(entryName);
+                zip.putNextEntry(new ZipEntry(entryName));
+                e.getValue().writeTo(zip);
+                zip.closeEntry();
+            }
+        } catch (IOException | RuntimeException e) {
+            Files.deleteIfExists(tmpArchive);
+            throw e;
+        }
+        moveArchiveIntoPlace(tmpArchive, archiveFile);
+
+        return new ProjectArchiveSummary(
+                archiveFile, plan.uniqueAssetCount(), totalAssetBytes, xmlBytes.length);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -412,10 +461,25 @@ public final class ProjectArchiver {
     /**
      * Walks every clip and SoundFont assignment, building a list of mutable refs.
      *
+     * <p>The clips walked are the ones whose references the saved project
+     * carries ({@link com.benesquivelmusic.daw.core.comping.TakeComping#referenceHoldersAsSaved}):
+     * a track's clips, or — while a take lane is auditioned — its non-comp
+     * clips and the take-lane clips the comp selection slices, because the
+     * serializer then writes the selection compile, whose clips copy their
+     * take clip's references. The archive's reference substitutes are keyed
+     * by those holders' references, so they reach the selection compile the
+     * document writes, and a selection drawn from a lane other than the
+     * soloed one is packaged (PR #984 review). {@link #saveAsArchive} and
+     * {@link #previewAssetSizes} only read the refs; {@link #consolidateInPlace}
+     * and the freshly read project of {@link #openArchive} update them.</p>
+     *
      * <p>A clip that carries a segment list (a recorded take, story 323 — even
      * a short take carries a one-element list) contributes one
      * {@link AudioClipSegmentRef} per segment and <em>no</em>
-     * {@link AudioClipRef}: the list is the authority and
+     * {@link AudioClipRef}. The list is read once per clip, and each segment
+     * ref captures its element from that one read, so all of a clip's
+     * segment refs come from one snapshot and none re-reads the live list to
+     * learn its reference. The list is the authority and
      * {@link AudioClip#getSourceFilePath()} is only its first element, so a
      * head-only ref would both miss segments 1…n and be refused by
      * {@link AudioClip#setSourceFilePath(String)}. A single-file clip keeps
@@ -431,12 +495,16 @@ public final class ProjectArchiver {
     private List<AssetRef> collectRefs(DawProject project, ArchiveOptions options) {
         List<AssetRef> refs = new ArrayList<>();
         for (Track track : project.getTracks()) {
-            for (AudioClip clip : track.getClips()) {
+            // The clips whose references the SAVED clips carry: mid-audition
+            // the saved comp is the selection, sliced from take-lane clips
+            // that may sit on a lane other than the soloed one (PR #984 review).
+            for (AudioClip clip : track.getTakeComping().referenceHoldersAsSaved(track)) {
                 List<String> segments = clip.getSourceSegmentPaths();
                 if (!segments.isEmpty()) {
                     for (int index = 0; index < segments.size(); index++) {
-                        if (!segments.get(index).isEmpty()) {
-                            refs.add(new AudioClipSegmentRef(clip, index));
+                        String segment = segments.get(index);
+                        if (!segment.isEmpty()) {
+                            refs.add(new AudioClipSegmentRef(clip, index, segment));
                         }
                     }
                     continue;
@@ -458,7 +526,26 @@ public final class ProjectArchiver {
         return refs;
     }
 
-    /** Plan stage: hash assets, deduplicate, and assign archive-relative names. */
+    /**
+     * Plan stage: hash assets, deduplicate, and assign archive-relative names.
+     * Each planned reference's substitute is recorded by the reference as the
+     * live project holds it; two refs that hold the same reference name the
+     * same file (or the same decision), so they plan the same substitute.
+     *
+     * <p>Each ref's reference is read once, at the top of its iteration, and
+     * never again: the file hashed, the missing-asset decision, the stub name
+     * and the planned key all derive from that one string. A reverse or
+     * normalize that re-points a clip while its file is hashed therefore
+     * leaves the new reference unplanned: the archived document keeps it
+     * verbatim and its file is not packaged, so on reopen it is reported
+     * missing wherever that path does not resolve. Whether or not it resolves,
+     * it is never mapped to the old file's asset, which would reopen as the
+     * wrong audio.
+     * A segment ref plans the segment captured when the refs were collected
+     * ({@link #collectRefs}), so a segment list replaced while an earlier
+     * segment is hashed neither fails the plan nor reaches a later segment's
+     * asset.</p>
+     */
     private AssetPlan collectAssets(DawProject project,
                                     ArchiveOptions options,
                                     Map<String, ArchiveAssetDecision> missingDecisions)
@@ -466,17 +553,19 @@ public final class ProjectArchiver {
         List<AssetRef> refs = collectRefs(project, options);
         Map<String, String> hashToArchiveName = new LinkedHashMap<>();
         Map<String, ArchivePayload> archiveNameToSource = new LinkedHashMap<>();
-        Map<AssetRef, String> refToArchivePath = new LinkedHashMap<>();
+        Map<PlannedReference, String> refToArchivePath = new LinkedHashMap<>();
 
         for (AssetRef ref : refs) {
-            Path abs = ref.absolutePath();
+            String reference = ref.currentPath();
+            PlannedReference planned = new PlannedReference(ref instanceof SoundFontRef, reference);
+            Path abs = ref.fileFor(reference);
             if (abs != null && Files.isRegularFile(abs)) {
-                includeFilePayload(ref, abs, hashToArchiveName,
+                includeFilePayload(planned, abs, hashToArchiveName,
                         archiveNameToSource, refToArchivePath);
                 continue;
             }
 
-            ArchiveAssetDecision decision = missingDecisions.get(ref.currentPath());
+            ArchiveAssetDecision decision = missingDecisions.get(reference);
             if (decision == null || decision.action() == ArchiveAssetDecision.Action.SKIP) {
                 // Unresolvable on disk — keep its existing path verbatim;
                 // openArchive will hand it to the missing-asset resolver.
@@ -488,10 +577,10 @@ public final class ProjectArchiver {
                     if (!Files.isRegularFile(located)) {
                         throw new IOException("Located asset does not exist: " + located);
                     }
-                    includeFilePayload(ref, located, hashToArchiveName,
+                    includeFilePayload(planned, located, hashToArchiveName,
                             archiveNameToSource, refToArchivePath);
                 }
-                case USE_STUB -> includeStubPayload(ref,
+                case USE_STUB -> includeStubPayload(planned,
                         archiveNameToSource, refToArchivePath);
                 case SKIP -> {
                     // handled above
@@ -501,12 +590,13 @@ public final class ProjectArchiver {
         return new AssetPlan(hashToArchiveName, archiveNameToSource, refToArchivePath);
     }
 
-    private static void includeFilePayload(AssetRef ref,
-                                           Path source,
-                                           Map<String, String> hashToArchiveName,
-                                           Map<String, ArchivePayload> archiveNameToSource,
-                                           Map<AssetRef, String> refToArchivePath)
+    private void includeFilePayload(PlannedReference planned,
+                                    Path source,
+                                    Map<String, String> hashToArchiveName,
+                                    Map<String, ArchivePayload> archiveNameToSource,
+                                    Map<PlannedReference, String> refToArchivePath)
             throws IOException {
+        assetPlanHook.beforeAssetHash(planned.reference());
         String hash = sha256Hex(source);
         String archiveName = hashToArchiveName.get(hash);
         if (archiveName == null) {
@@ -514,64 +604,18 @@ public final class ProjectArchiver {
             hashToArchiveName.put(hash, archiveName);
             archiveNameToSource.put(archiveName, new FilePayload(source));
         }
-        refToArchivePath.put(ref, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
+        refToArchivePath.put(planned, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
     }
 
-    private static void includeStubPayload(AssetRef ref,
+    private static void includeStubPayload(PlannedReference planned,
                                            Map<String, ArchivePayload> archiveNameToSource,
-                                           Map<AssetRef, String> refToArchivePath) {
-        String original = ref.currentPath();
+                                           Map<PlannedReference, String> refToArchivePath) {
+        String original = planned.reference();
         byte[] bytes = stubBytes(original);
         String hash = sha256Hex(bytes);
         String archiveName = hash + "_" + sanitize(basename(original));
         archiveNameToSource.putIfAbsent(archiveName, new BytesPayload(bytes));
-        refToArchivePath.put(ref, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
-    }
-
-    /**
-     * Rewrites every planned reference to its archive-relative path, recording
-     * each original in {@code originals} <em>before</em> the reference is
-     * touched — so whatever this method managed to rewrite before a throw is
-     * exactly what {@link #restorePaths} puts back.
-     */
-    private void applyArchivePaths(AssetPlan plan, Map<AssetRef, String> originals) {
-        int rewritten = 0;
-        for (Map.Entry<AssetRef, String> e : plan.refToArchivePath().entrySet()) {
-            AssetRef ref = e.getKey();
-            originals.put(ref, ref.currentPath());
-            ref.update(e.getValue());
-            rewritten++;
-            if (rewritten == failRewriteAfter) {
-                failRewriteAfter = NO_REWRITE_FAULT;
-                throw new IllegalStateException("injected archive rewrite failure (test seam) after "
-                        + rewritten + " reference(s); the last one was re-pointed to " + e.getValue());
-            }
-        }
-    }
-
-    /**
-     * Fault seam (test-only): the next {@link #saveAsArchive} throws an
-     * {@link IllegalStateException} from its rewrite to archive-relative
-     * paths, right after the {@code refs}-th reference was re-pointed — the
-     * part-way failure no production reference produces. The message names
-     * the path that reference was re-pointed to. Consumed by the rewrite
-     * that throws; a rewrite of fewer than {@code refs} references leaves it
-     * armed. Same thread as the archive operation.
-     *
-     * @param refs how many references are rewritten before the throw; positive
-     * @throws IllegalArgumentException if {@code refs} is not positive
-     */
-    void failRewriteAfter(int refs) {
-        if (refs <= 0) {
-            throw new IllegalArgumentException("refs must be positive: " + refs);
-        }
-        this.failRewriteAfter = refs;
-    }
-
-    private void restorePaths(DawProject project, Map<AssetRef, String> originals) {
-        for (Map.Entry<AssetRef, String> e : originals.entrySet()) {
-            e.getKey().update(e.getValue());
-        }
+        refToArchivePath.put(planned, ArchiveHeader.ASSETS_DIR + "/" + archiveName);
     }
 
     private List<String> resolveAssetPaths(DawProject project,
@@ -906,7 +950,13 @@ public final class ProjectArchiver {
         void update(String newPath);
         /** Best-effort resolution of the current path to an absolute file. */
         default Path absolutePath() {
-            String s = currentPath();
+            return fileFor(currentPath());
+        }
+        /**
+         * Best-effort resolution of {@code s}, a reference this ref held when
+         * it was read, to an absolute file; it does not read the live ref.
+         */
+        default Path fileFor(String s) {
             if (s == null || s.isBlank()) {
                 return null;
             }
@@ -921,7 +971,7 @@ public final class ProjectArchiver {
     /**
      * The file a clip reference names (story 323), and what
      * {@link AudioClipRef} and {@link AudioClipSegmentRef} return from
-     * {@code absolutePath()}: the reference as a path when it is absolute on
+     * {@code fileFor} (and so {@code absolutePath()}): the reference as a path when it is absolute on
      * this platform, and {@code null} for every other one — relative, drive-
      * or root-relative, unparseable, {@code null} or empty — which names no
      * file ({@link ProjectPaths#isAbsoluteReference}) and is never resolved
@@ -939,30 +989,38 @@ public final class ProjectArchiver {
         AudioClipRef(AudioClip clip) { this.clip = clip; }
         @Override public String currentPath() { return clip.getSourceFilePath(); }
         @Override public void update(String newPath) { clip.setSourceFilePath(newPath); }
-        @Override public Path absolutePath() { return clipReferenceFile(currentPath()); }
+        @Override public Path fileFor(String reference) { return clipReferenceFile(reference); }
     }
 
     /**
      * One element of a recorded clip's ordered segment list (story 323).
-     * {@link #update} rebuilds the list with only this element replaced, so
-     * the order and the other segments are untouched; replacing element 0
+     * {@link #currentPath()} is the element captured from the one list read
+     * {@link #collectRefs} makes per clip, or what this ref's own
+     * {@link #update} last wrote; it never re-reads the live list, so a
+     * reverse or normalize that replaces the list mid-archive cannot make a
+     * later segment's read fail or return another reference.
+     * {@link #update} rebuilds the live list with only this element replaced,
+     * so the order and the other segments are untouched; replacing element 0
      * moves {@link AudioClip#getSourceFilePath()} with it, because
      * {@link AudioClip#setSourceSegmentPaths(List)} derives the head.
      */
     private static final class AudioClipSegmentRef implements AssetRef {
         private final AudioClip clip;
         private final int index;
-        AudioClipSegmentRef(AudioClip clip, int index) {
+        private String segment;
+        AudioClipSegmentRef(AudioClip clip, int index, String segment) {
             this.clip = clip;
             this.index = index;
+            this.segment = segment;
         }
-        @Override public String currentPath() { return clip.getSourceSegmentPaths().get(index); }
+        @Override public String currentPath() { return segment; }
         @Override public void update(String newPath) {
             List<String> segments = new ArrayList<>(clip.getSourceSegmentPaths());
             segments.set(index, newPath);
             clip.setSourceSegmentPaths(segments);
+            this.segment = newPath;
         }
-        @Override public Path absolutePath() { return clipReferenceFile(currentPath()); }
+        @Override public Path fileFor(String reference) { return clipReferenceFile(reference); }
     }
 
     private static final class SoundFontRef implements AssetRef {
@@ -1028,9 +1086,25 @@ public final class ProjectArchiver {
     private record AssetPlan(
             Map<String, String> hashToArchiveName,
             Map<String, ArchivePayload> archiveNameToSource,
-            Map<AssetRef, String> refToArchivePath
+            Map<PlannedReference, String> refToArchivePath
     ) {
         int uniqueAssetCount() { return archiveNameToSource.size(); }
+
+        /**
+         * The planned substitutes, keyed by the reference each ref holds:
+         * audio-clip references (single files and segments) and SoundFont
+         * paths in separate maps, so a SoundFont the options leave out is
+         * never substituted because a clip happens to name the same file.
+         */
+        ProjectSerializer.AssetReferenceRemap remap() {
+            Map<String, String> clipReferences = new HashMap<>();
+            Map<String, String> soundFontPaths = new HashMap<>();
+            for (Map.Entry<PlannedReference, String> e : refToArchivePath.entrySet()) {
+                PlannedReference planned = e.getKey();
+                (planned.soundFont() ? soundFontPaths : clipReferences).put(planned.reference(), e.getValue());
+            }
+            return new ProjectSerializer.AssetReferenceRemap(clipReferences, soundFontPaths);
+        }
 
         long totalAssetBytes() throws IOException {
             long total = 0L;
@@ -1039,6 +1113,21 @@ public final class ProjectArchiver {
             }
             return total;
         }
+    }
+
+    /**
+     * A planned reference: the one read of its ref that
+     * {@link #collectAssets} makes while it builds the plan. Everything
+     * planned for the reference derives from this string, and the live ref
+     * is never read after it — not later in the plan, not while the archive
+     * is written — so an edit racing the archive (a clip re-pointed, a
+     * segment list replaced under an {@link AudioClipSegmentRef}) can neither
+     * map a new reference to an old file's asset nor fail the write.
+     *
+     * @param soundFont whether it is a SoundFont path rather than an audio-clip reference
+     * @param reference the reference as the live project held it when it was read
+     */
+    private record PlannedReference(boolean soundFont, String reference) {
     }
 
     // Exposed for tests — listing assets without committing the archive.

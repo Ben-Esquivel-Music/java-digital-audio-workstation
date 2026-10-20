@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.recording;
 
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.audio.CountInSchedule;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -97,6 +98,12 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     private final double punchFrameScale;
     private final double tempoBpm;
     private final StartGate startGate;
+    /**
+     * The count-in whose record start opens {@link #startGate}, or
+     * {@code null} when capture began at once (story 328). Read only by
+     * {@link #onCaptureHalted()}, never on the audio thread.
+     */
+    private final CountInSchedule countIn;
 
     /** Caller initializes the common origin before publishing the volatile activation. */
     static final class StartGate {
@@ -137,6 +144,22 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     CaptureCallback(CaptureRing ring, CaptureFlushService flush, Track[] instrumentTracks,
                     Transport transport, AudioEngine audioEngine, double sampleRate,
                     double projectSampleRate, double tempoBpm, StartGate startGate) {
+        this(ring, flush, instrumentTracks, transport, audioEngine, sampleRate,
+                projectSampleRate, tempoBpm, startGate, null);
+    }
+
+    /**
+     * The callback of a take whose capture start gate a count-in's record
+     * start opens (story 328): the engine's capture halt reaches the
+     * schedule through {@link #onCaptureHalted()}, so a halt between the
+     * schedule's installation and its firing cancels it and the record start
+     * never runs on a halted take.
+     *
+     * @param countIn the take's count-in, or {@code null} when capture begins at once
+     */
+    CaptureCallback(CaptureRing ring, CaptureFlushService flush, Track[] instrumentTracks,
+                    Transport transport, AudioEngine audioEngine, double sampleRate,
+                    double projectSampleRate, double tempoBpm, StartGate startGate, CountInSchedule countIn) {
         this.ring = Objects.requireNonNull(ring, "ring must not be null");
         this.flush = Objects.requireNonNull(flush, "flush must not be null");
         this.instrumentTracks = Objects.requireNonNull(instrumentTracks, "instrumentTracks must not be null").clone();
@@ -155,6 +178,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         this.punchFrameScale = sampleRate / projectSampleRate;
         this.tempoBpm = tempoBpm;
         this.startGate = startGate;
+        this.countIn = countIn;
     }
 
     /**
@@ -184,9 +208,19 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
      * thread's, and not reachable from {@link #onAudioCaptured}: it carries
      * no {@code @RealTimeSafe}. The pipeline's stop closes the same gate
      * again, harmlessly.
+     *
+     * <p>A take still counting in (story 328) has its count-in cancelled
+     * first, so the record start never runs on the halted take — unless the
+     * render thread had already passed the schedule's cancel check, in which
+     * case the transport goes to recording over a closed producer gate and
+     * the loss's own handling stops the take through the ordinary path.</p>
      */
     @Override
     public void onCaptureHalted() {
+        CountInSchedule schedule = countIn;
+        if (schedule != null) {
+            schedule.cancel();
+        }
         ring.closeProducer();
     }
 
